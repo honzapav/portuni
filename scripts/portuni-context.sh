@@ -21,6 +21,7 @@ if not data.get('match'):
 
 node = data['node']
 edges = data.get('edges', [])
+events = data.get('events', [])
 
 print(f\"Portuni: You are working in {node['type']} '{node['name']}' ({node['status']})\")
 if node.get('description'):
@@ -34,4 +35,11 @@ if edges:
         r = e['related']
         path_info = f\" -> {r['local_path']}\" if r.get('local_path') else ''
         print(f\"  --{e['relation']}--> {r['type']}: {r['name']}{path_info}\")
+
+if events:
+    print()
+    print('Recent events:')
+    for ev in events:
+        ts = ev['created_at'][:10]
+        print(f\"  [{ts}] {ev['type']}: {ev['content']}\")
 "

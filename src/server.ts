@@ -63,6 +63,20 @@ async function resolveContext(path: string): Promise<unknown> {
     args: [nodeId, nodeId, nodeId, nodeId, nodeId, nodeId],
   });
 
+  // Get recent events for this node (last 5 active)
+  const eventRes = await db.execute({
+    sql: `SELECT id, type, content, created_at
+          FROM events WHERE node_id = ? AND status = 'active'
+          ORDER BY created_at DESC LIMIT 5`,
+    args: [nodeId],
+  });
+
+  const events = eventRes.rows.map((e) => ({
+    type: e.type as string,
+    content: e.content as string,
+    created_at: e.created_at as string,
+  }));
+
   // Get local mirrors for related nodes
   const relatedIds = edges.rows.map((r) => r.related_id as string);
   let relatedMirrors: Record<string, string> = {};
@@ -97,6 +111,7 @@ async function resolveContext(path: string): Promise<unknown> {
         local_path: relatedMirrors[e.related_id as string] || null,
       },
     })),
+    events,
   };
 }
 
