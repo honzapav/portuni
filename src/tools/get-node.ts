@@ -85,6 +85,24 @@ export function registerGetNodeTool(server: McpServer): void {
         mime_type: f.mime_type as string | null,
       }));
 
+      // 3b. Fetch events for this node (most recent first, limit 50)
+      const eventResult = await db.execute({
+        sql: `SELECT id, type, content, meta, status, refs, task_ref, created_at
+              FROM events WHERE node_id = ? ORDER BY created_at DESC LIMIT 50`,
+        args: [row.id],
+      });
+
+      const events = eventResult.rows.map((e) => ({
+        id: e.id as string,
+        type: e.type as string,
+        content: e.content as string,
+        meta: e.meta ? JSON.parse(e.meta as string) : null,
+        status: e.status as string,
+        refs: e.refs ? JSON.parse(e.refs as string) : null,
+        task_ref: e.task_ref as string | null,
+        created_at: e.created_at as string,
+      }));
+
       // 4. Fetch local mirror for SOLO_USER
       const mirrorResult = await db.execute({
         sql: `SELECT local_path, registered_at
@@ -114,6 +132,7 @@ export function registerGetNodeTool(server: McpServer): void {
         updated_at: row.updated_at,
         edges,
         files,
+        events,
         local_mirror: localMirror,
       };
 
