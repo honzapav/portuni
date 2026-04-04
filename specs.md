@@ -592,9 +592,11 @@ Note: local filesystem mirrors are NOT stored on the node. Local paths are per-u
 
 Any agent can ask "where is this project's repo?" or "what's the folder for this area?" without searching.
 
-### Flat mirroring — graph is the structure, not folders
+### Mirroring structure — two levels, then flat
 
-Since POPP is a graph with many-to-many relationships, mirrored structures are **flat**. Each node gets its own folder at the root level within its target drive. The graph holds the relationships between them — the filesystem doesn't attempt to replicate them as nesting.
+Organization and shared drives have **type-level subdirectories** (`projects/`, `processes/`, `areas/`, `principles/`). Within each subdirectory, node folders are **flat** — no further nesting. The graph holds the relationships between them, not the filesystem.
+
+This gives predictable navigation (you always know where to look by type) without deep hierarchy.
 
 ### Google Drive architecture — multiple shared drives
 
@@ -618,39 +620,45 @@ One root shared drive doesn't work. Different orgs need separate access control,
 | process | org-internal (belongs_to single org) | That org's drive |
 | area | any | The org's drive it belongs_to |
 | principle | any | The org's drive it belongs_to |
-| methodology | any | The org's drive it belongs_to |
 
 The policy is configured once and applied consistently. No exceptions — predictability is the system.
 
 **Example: Projects Hub (shared drive)**
 
 ```
-stan-gws/
-    ├── outputs/
-    ├── wip/
-    └── resources/
-fidurock-gws/
-client-onboarding-workflow/
-adamai/
+projects/
+    stan-gws/
+        ├── outputs/
+        ├── wip/
+        └── resources/
+    fidurock-gws/
+    adamai/
 ```
 
 **Example: Shared Processes (shared drive)**
 
 ```
-license-procurement/
-    ├── outputs/
-    ├── wip/
-    └── resources/
-onboarding-framework/
+processes/
+    license-procurement/
+        ├��─ outputs/
+        ├── wip/
+        └���─ resources/
+    onboarding-framework/
+areas/
+principles/
 ```
 
 **Example: Tempo org drive**
 
 ```
-google-workspace-services/          ← area
-ai-transformation/                  ← area
-hiring/                             ← org-internal process
-start-with-assessment/              ← principle
+projects/
+areas/
+    google-workspace-services/
+    ai-transformation/
+processes/
+    hiring/
+principles/
+    start-with-assessment/
 ```
 
 Note: License Procurement belongs to both Workflow and Tempo — it lives once in the Shared Processes drive. The graph expresses the shared ownership via edges. People from both orgs access the same folder.
@@ -675,26 +683,39 @@ Archiving: set node status to "archived" via `portuni_update_node`. The node sta
 
 ### Local folder management
 
-When `portuni_mirror { node_id, targets: ["local"] }` is called, Portuni creates a local folder for the node and registers the path in the `local_mirrors` table for the current user:
+When `portuni_mirror { node_id, targets: ["local"] }` is called, Portuni creates a local folder for the node and registers the path in the `local_mirrors` table for the current user.
+
+The local workspace mirrors the same structure as Drive: organization and shared drives have type-level subdirectories (`projects/`, `processes/`, `areas/`, `principles/`). Within each subdirectory, node folders are flat with standard internal structure.
 
 ```
-~/work/                                ← configurable root (per-user setting)
-├── stan-gws/                          ← project (active)
-│   ├── outputs/
-│   ├── wip/
-│   └── resources/
-├── fidurock-gws/                      ← project (active)
-│   ├── outputs/
-│   ├── wip/
-│   └── resources/
-├── google-workspace-services/         ← area
-├── gws-implementation-methodology/    ← methodology
-├── adamai/                            ← project (active)
-├── license-procurement/               ← process
-└── start-with-assessment/             ← principle
+~/Workspaces/portuni/                  ← configurable root (PORTUNI_WORKSPACE_ROOT env var)
+├── workflow/                          ← org mirror
+│   ├── projects/
+│   │   └── stan-gws/
+│   │       ├── outputs/
+│   │       ├── wip/
+│   │       └── resources/
+│   ├── processes/
+│   │   └── partner-account-management/
+│   ├── areas/
+│   │   └── google-workspace-services/
+│   └── principles/
+│       └── start-with-assessment/
+├── tempo/                             ← org mirror
+│   ├── projects/
+│   ├── processes/
+│   ├── areas/
+│   │   └── staffing-services/
+│   └── principles/
+└── tempo_sdilene/                     ← shared (multi-org)
+    ├── projects/
+    ├── processes/
+    │   └── navrhy-cenotvorba/
+    ├── areas/
+    └── principles/
 ```
 
-Folder names are slug-ified from node names. All folders are at the root level — the graph holds the relationships, not the filesystem. Each folder gets the standard internal structure (outputs/, wip/, resources/). The convention (`{local_root}/{slug}/`) is the default — what `portuni_mirror` creates. But the source of truth for where a folder actually lives is the `local_mirrors` table, not the convention.
+Folder names are slug-ified from node names. Within each type subdirectory, folders are flat — no further nesting. Each node folder gets the standard internal structure (outputs/, wip/, resources/). The source of truth for where a folder actually lives is the `local_mirrors` table, not the convention.
 
 **Why per-user:** Local paths cannot be stored on the node because each user's machine is different. Users may have different root directories, may move folders, or may not mirror a node locally at all. Shared mirrors (Drive, Asana, GitHub) are the same for everyone and live on the node. Local mirrors are per-user.
 
@@ -766,6 +787,7 @@ Why not a graph DB: At the expected scale (hundreds to low thousands of nodes), 
 
 ### Phase 2 — Team
 
+- SessionStart hook: when cwd is under PORTUNI_WORKSPACE_ROOT, inject graph context (relevant nodes, recent events) into the agent's system prompt automatically. Deterministic — always runs, not dependent on LLM judgment.
 - Multi-user with Google OAuth
 - Permissions via Google Workspace Groups (Admin SDK Directory API)
 - Node-level visibility via project groups

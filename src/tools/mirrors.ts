@@ -19,7 +19,7 @@ function slugify(name: string): string {
 export function registerMirrorTools(server: McpServer): void {
   server.tool(
     "portuni_mirror",
-    "Create a local folder for a node and register it. Creates ~/work/{slug}/ with outputs/, wip/, resources/ subfolders. Targets: only 'local' supported in Phase 1.",
+    "Create a local folder for a node and register it. Creates {PORTUNI_WORKSPACE_ROOT}/{slug}/ with outputs/, wip/, resources/ subfolders. Targets: only 'local' supported in Phase 1.",
     {
       node_id: z.string().describe("Node ID (ULID)"),
       targets: z
@@ -28,7 +28,7 @@ export function registerMirrorTools(server: McpServer): void {
       custom_path: z
         .string()
         .optional()
-        .describe("Optional override for default path (~/work/{slug})"),
+        .describe("Optional override for default path ({PORTUNI_WORKSPACE_ROOT}/{slug})"),
     },
     async (args) => {
       const db = getDb();
@@ -51,7 +51,14 @@ export function registerMirrorTools(server: McpServer): void {
 
       // 2. Compute slug and path
       const slug = slugify(nodeName);
-      const localPath = args.custom_path ?? join(homedir(), "work", slug);
+      const root = process.env.PORTUNI_WORKSPACE_ROOT?.replace(/^~/, homedir());
+      if (!root) {
+        return {
+          content: [{ type: "text" as const, text: "Error: PORTUNI_WORKSPACE_ROOT env variable is not set" }],
+          isError: true,
+        };
+      }
+      const localPath = args.custom_path ?? join(root, slug);
 
       // 3. Create directory structure
       const subdirs = ["outputs", "wip", "resources"];
