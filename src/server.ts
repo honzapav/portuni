@@ -5,6 +5,7 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { ensureSchema } from "./schema.js";
 import { registerNodeTools } from "./tools/nodes.js";
 import { registerGetNodeTool } from "./tools/get-node.js";
+import { registerEdgeTools } from "./tools/edges.js";
 
 const PORT = Number(process.env.PORT ?? 3001);
 
@@ -18,6 +19,7 @@ async function main() {
 
   registerNodeTools(mcpServer);
   registerGetNodeTool(mcpServer);
+  registerEdgeTools(mcpServer);
 
   const transports = new Map<string, SSEServerTransport>();
 
