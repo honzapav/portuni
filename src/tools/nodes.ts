@@ -3,6 +3,7 @@ import { ulid } from "ulid";
 import { getDb } from "../db.js";
 import { logAudit } from "../audit.js";
 import { SOLO_USER } from "../schema.js";
+import { NodeRow, NodeSummaryRow } from "../types.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -82,7 +83,7 @@ export function registerNodeTools(server: McpServer): void {
         };
       }
 
-      const row = current.rows[0];
+      const row = NodeRow.parse(current.rows[0]);
 
       // Build dynamic SET clause for provided fields only
       const updates: string[] = [];
@@ -108,7 +109,7 @@ export function registerNodeTools(server: McpServer): void {
         updates.push("meta = ?");
         values.push(JSON.stringify(args.meta));
         changes.meta = {
-          from: row.meta ? JSON.parse(row.meta as string) : null,
+          from: row.meta ? JSON.parse(row.meta) : null,
           to: args.meta,
         };
       }
@@ -171,13 +172,7 @@ export function registerNodeTools(server: McpServer): void {
         args: values,
       });
 
-      const nodes = result.rows.map((row) => ({
-        id: row.id,
-        type: row.type,
-        name: row.name,
-        status: row.status,
-        description: row.description,
-      }));
+      const nodes = result.rows.map((row) => NodeSummaryRow.parse(row));
 
       return {
         content: [

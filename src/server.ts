@@ -13,6 +13,7 @@ import { registerFileTools } from "./tools/files.js";
 
 import { getDb } from "./db.js";
 import { SOLO_USER } from "./schema.js";
+import { NodeSummaryRow } from "./types.js";
 
 const PORT = Number(process.env.PORT ?? 3001);
 
@@ -45,7 +46,7 @@ async function resolveContext(path: string): Promise<unknown> {
     sql: "SELECT id, type, name, description, status FROM nodes WHERE id = ?",
     args: [nodeId],
   });
-  const node = nodeRes.rows[0];
+  const node = NodeSummaryRow.parse(nodeRes.rows[0]);
 
   // Get edges (depth 1) with resolved names
   const edges = await db.execute({

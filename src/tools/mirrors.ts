@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { getDb } from "../db.js";
 import { logAudit } from "../audit.js";
 import { SOLO_USER } from "../schema.js";
+import { NodeSummaryRow } from "../types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 function slugify(name: string): string {
@@ -46,8 +47,8 @@ export function registerMirrorTools(server: McpServer): void {
         };
       }
 
-      const node = nodeResult.rows[0];
-      const nodeName = node.name as string;
+      const node = NodeSummaryRow.parse(nodeResult.rows[0]);
+      const nodeName = node.name;
 
       // 2. Compute slug and path
       const slug = slugify(nodeName);

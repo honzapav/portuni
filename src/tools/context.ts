@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getDb } from "../db.js";
 import { SOLO_USER } from "../schema.js";
+import { NodeIdRow } from "../types.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 

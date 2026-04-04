@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getDb } from "../db.js";
 import { SOLO_USER } from "../schema.js";
+import { NodeRow } from "../types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerGetNodeTool(server: McpServer): void {
@@ -40,8 +41,7 @@ export function registerGetNodeTool(server: McpServer): void {
         };
       }
 
-      const row = result.rows[0];
-      const nodeId = row.id as string;
+      const row = NodeRow.parse(result.rows[0]);
 
       // 2. Fetch direct edges (both directions) with peer names/types
       const edgeResult = await db.execute({
@@ -52,16 +52,18 @@ export function registerGetNodeTool(server: McpServer): void {
               JOIN nodes ns ON ns.id = e.source_id
               JOIN nodes nt ON nt.id = e.target_id
               WHERE e.source_id = ? OR e.target_id = ?`,
-        args: [nodeId, nodeId],
+        args: [row.id, row.id],
       });
 
       const edges = edgeResult.rows.map((edge) => {
-        const isOutgoing = (edge.source_id as string) === nodeId;
+        const sourceId = edge.source_id as string;
+        const targetId = edge.target_id as string;
+        const isOutgoing = sourceId === row.id;
         return {
           id: edge.id as string,
           relation: edge.relation as string,
           direction: isOutgoing ? "outgoing" : "incoming",
-          peer_id: isOutgoing ? (edge.target_id as string) : (edge.source_id as string),
+          peer_id: isOutgoing ? targetId : sourceId,
           peer_name: isOutgoing ? (edge.target_name as string) : (edge.source_name as string),
           peer_type: isOutgoing ? (edge.target_type as string) : (edge.source_type as string),
         };
@@ -71,7 +73,7 @@ export function registerGetNodeTool(server: McpServer): void {
       const fileResult = await db.execute({
         sql: `SELECT id, filename, status, description, local_path, mime_type
               FROM files WHERE node_id = ? ORDER BY created_at DESC`,
-        args: [nodeId],
+        args: [row.id],
       });
 
       const files = fileResult.rows.map((f) => ({
@@ -87,7 +89,7 @@ export function registerGetNodeTool(server: McpServer): void {
       const mirrorResult = await db.execute({
         sql: `SELECT local_path, registered_at
               FROM local_mirrors WHERE user_id = ? AND node_id = ?`,
-        args: [SOLO_USER, nodeId],
+        args: [SOLO_USER, row.id],
       });
 
       const localMirror =
@@ -100,11 +102,11 @@ export function registerGetNodeTool(server: McpServer): void {
 
       // 5. Assemble response
       const node = {
-        id: nodeId,
+        id: row.id,
         type: row.type,
         name: row.name,
         description: row.description,
-        meta: row.meta ? JSON.parse(row.meta as string) : null,
+        meta: row.meta ? JSON.parse(row.meta) : null,
         status: row.status,
         visibility: row.visibility,
         created_by: row.created_by,
