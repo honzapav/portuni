@@ -3,3 +3,4 @@ dist/
 .env.local
 *.varlock.lock
 env.d.ts
+portuni.db
