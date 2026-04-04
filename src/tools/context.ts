@@ -138,20 +138,60 @@ export function registerContextTools(server: McpServer): void {
         }
       }
 
-      // 7. Build context nodes array
-      const contextNodes = walkResult.rows.map((row) => {
+      // 7. Build context nodes array with depth-aware events
+      const contextNodes = [];
+      for (const row of walkResult.rows) {
         const nodeId = row.node_id as string;
-        return {
+        const depth = row.depth as number;
+
+        let events: Array<Record<string, unknown>> = [];
+
+        if (depth === 0) {
+          // Full events
+          const evRes = await db.execute({
+            sql: `SELECT id, type, content, meta, status, refs, task_ref, created_at
+                  FROM events WHERE node_id = ? AND status = 'active'
+                  ORDER BY created_at DESC LIMIT 50`,
+            args: [nodeId],
+          });
+          events = evRes.rows.map((e) => ({
+            id: e.id as string,
+            type: e.type as string,
+            content: e.content as string,
+            meta: e.meta ? JSON.parse(e.meta as string) : null,
+            status: e.status as string,
+            task_ref: e.task_ref as string | null,
+            created_at: e.created_at as string,
+          }));
+        } else if (depth === 1) {
+          // Recent events only
+          const evRes = await db.execute({
+            sql: `SELECT id, type, content, status, created_at
+                  FROM events WHERE node_id = ? AND status = 'active'
+                  ORDER BY created_at DESC LIMIT 5`,
+            args: [nodeId],
+          });
+          events = evRes.rows.map((e) => ({
+            id: e.id as string,
+            type: e.type as string,
+            content: e.content as string,
+            created_at: e.created_at as string,
+          }));
+        }
+        // depth >= 2: no events
+
+        contextNodes.push({
           id: nodeId,
           type: row.type as string,
           name: row.name as string,
           description: row.description as string | null,
           status: row.status as string,
-          depth: row.depth as number,
+          depth,
           edges: edgesByNode.get(nodeId) ?? [],
+          events,
           local_path: mirrorMap.get(nodeId) ?? null,
-        };
-      });
+        });
+      }
 
       return {
         content: [
