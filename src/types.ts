@@ -72,6 +72,20 @@ export const FileRow = z.object({
 });
 export type FileRow = z.infer<typeof FileRow>;
 
+export const EventRow = z.object({
+  id: z.string(),
+  node_id: z.string(),
+  type: z.string(),
+  content: z.string(),
+  meta: z.union([z.string(), z.null()]),
+  status: z.string(),
+  refs: z.union([z.string(), z.null()]),
+  task_ref: z.union([z.string(), z.null()]),
+  created_by: z.string(),
+  created_at: z.string(),
+});
+export type EventRow = z.infer<typeof EventRow>;
+
 // --- Partial row schemas for SELECT subsets ---
 
 export const NodeSummaryRow = NodeRow.pick({

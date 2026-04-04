@@ -62,6 +62,20 @@ const DDL = [
     updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_files_node ON files(node_id)`,
+  `CREATE TABLE IF NOT EXISTS events (
+    id TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL REFERENCES nodes(id),
+    type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    meta TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    refs TEXT,
+    task_ref TEXT,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_events_node ON events(node_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_events_status ON events(status)`,
 ];
 
 const SOLO_USER_ID = "01SOLO0000000000000000000";

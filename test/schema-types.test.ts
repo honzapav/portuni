@@ -6,7 +6,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
-import { UserRow, NodeRow, EdgeRow, AuditLogRow, LocalMirrorRow, FileRow } from "../src/types.js";
+import { UserRow, NodeRow, EdgeRow, AuditLogRow, LocalMirrorRow, FileRow, EventRow } from "../src/types.js";
 
 async function createTestDb() {
   const db = createClient({ url: ":memory:" });
@@ -68,6 +68,18 @@ async function createTestDb() {
       created_by TEXT NOT NULL REFERENCES users(id),
       created_at DATETIME NOT NULL DEFAULT (datetime('now')),
       updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE events (
+      id TEXT PRIMARY KEY,
+      node_id TEXT NOT NULL REFERENCES nodes(id),
+      type TEXT NOT NULL,
+      content TEXT NOT NULL,
+      meta TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      refs TEXT,
+      task_ref TEXT,
+      created_by TEXT NOT NULL REFERENCES users(id),
+      created_at DATETIME NOT NULL DEFAULT (datetime('now'))
     )`,
   ];
 
@@ -155,5 +167,19 @@ describe("DDL vs Zod row schemas", () => {
     });
     const res = await db.execute("SELECT * FROM files WHERE id = 'F1'");
     assert.doesNotThrow(() => FileRow.parse(res.rows[0]));
+  });
+
+  it("EventRow matches events table", async () => {
+    const db = await createTestDb();
+    await db.execute({
+      sql: "INSERT INTO nodes (id, type, name, created_by) VALUES (?, ?, ?, ?)",
+      args: ["N1", "project", "Test", "U1"],
+    });
+    await db.execute({
+      sql: "INSERT INTO events (id, node_id, type, content, created_by) VALUES (?, ?, ?, ?, ?)",
+      args: ["EV1", "N1", "note", "Something happened", "U1"],
+    });
+    const res = await db.execute("SELECT * FROM events WHERE id = 'EV1'");
+    assert.doesNotThrow(() => EventRow.parse(res.rows[0]));
   });
 });
