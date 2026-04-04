@@ -129,10 +129,16 @@ TOOLS:
 - portuni_store: Publish a file to a node (like git commit)
 - portuni_pull: Pull files from a node (like git pull)
 - portuni_list_files: List files attached to a node
+- portuni_log: Log a decision, discovery, blocker, or other knowledge event on a node
+- portuni_resolve: Mark an event as resolved
+- portuni_supersede: Replace an event with an updated version
+- portuni_list_events: Query events with filters (node_id, type, status, since)
 
 LOCAL MIRRORS: Each node can have a local folder. Use portuni_get_node to find the local_path. The workspace root is configured via PORTUNI_WORKSPACE_ROOT env var. Each mirror has subdirectories: outputs/ (final files), wip/ (work in progress), resources/. Organization workspace folders additionally contain projects/, processes/, areas/, principles/ for organizing child nodes.
 
-EDGE TYPES: belongs_to, instance_of, applies, guided_by, depends_on, related_to.`;
+EDGE TYPES: belongs_to, instance_of, applies, guided_by, depends_on, related_to.
+
+EVENTS: Time-ordered knowledge attached to nodes. Log decisions, discoveries, blockers, references, milestones, notes, changes. Use portuni_log to record, portuni_list_events to query. Events appear in portuni_get_node and portuni_get_context responses.`;
 
 function createMcpServer(): McpServer {
   const server = new McpServer({
