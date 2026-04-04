@@ -80,9 +80,12 @@ const DDL = [
 
 const SOLO_USER_ID = "01SOLO0000000000000000000";
 
+const soloEmail = process.env.PORTUNI_USER_EMAIL ?? "solo@localhost";
+const soloName = process.env.PORTUNI_USER_NAME ?? "Solo User";
+
 const SEED = [
   `INSERT OR IGNORE INTO users (id, email, name, created_at)
-   VALUES ('${SOLO_USER_ID}', 'honza@workflow.ooo', 'Honza', datetime('now'))`,
+   VALUES ('${SOLO_USER_ID}', '${soloEmail}', '${soloName}', datetime('now'))`,
 ];
 
 export const SOLO_USER = SOLO_USER_ID;
