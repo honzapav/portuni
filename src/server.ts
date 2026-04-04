@@ -113,7 +113,7 @@ TOOLS:
 - portuni_pull: Pull files from a node (like git pull)
 - portuni_list_files: List files attached to a node
 
-LOCAL MIRRORS: Each node can have a local folder. Use portuni_get_node to find the local_path. The workspace root is configured via PORTUNI_WORKSPACE_ROOT env var. Organization mirrors have subdirectories: projects/, processes/, areas/, principles/.
+LOCAL MIRRORS: Each node can have a local folder. Use portuni_get_node to find the local_path. The workspace root is configured via PORTUNI_WORKSPACE_ROOT env var. Each mirror has subdirectories: outputs/ (final files), wip/ (work in progress), resources/. Organization workspace folders additionally contain projects/, processes/, areas/, principles/ for organizing child nodes.
 
 EDGE TYPES: belongs_to, instance_of, applies, guided_by, depends_on, related_to.`;
 

@@ -8,6 +8,18 @@ const DDL = [
     name TEXT NOT NULL,
     created_at DATETIME NOT NULL DEFAULT (datetime('now'))
   )`,
+  `CREATE TABLE IF NOT EXISTS nodes (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    meta TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    visibility TEXT NOT NULL DEFAULT 'team',
+    created_by TEXT NOT NULL REFERENCES users(id),
+    created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+  )`,
   `CREATE TABLE IF NOT EXISTS edges (
     id TEXT PRIMARY KEY,
     source_id TEXT NOT NULL REFERENCES nodes(id),
@@ -17,6 +29,7 @@ const DDL = [
     created_by TEXT NOT NULL REFERENCES users(id),
     created_at DATETIME NOT NULL DEFAULT (datetime('now'))
   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_unique ON edges(source_id, target_id, relation)`,
   `CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id)`,
   `CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id)`,
   `CREATE TABLE IF NOT EXISTS audit_log (

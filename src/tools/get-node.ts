@@ -104,7 +104,6 @@ export function registerGetNodeTool(server: McpServer): void {
         type: row.type,
         name: row.name,
         description: row.description,
-        summary: row.summary,
         meta: row.meta ? JSON.parse(row.meta as string) : null,
         status: row.status,
         visibility: row.visibility,

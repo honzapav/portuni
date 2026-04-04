@@ -1,12 +1,35 @@
 import { z } from "zod";
 import { ulid } from "ulid";
 import { copyFile, stat } from "node:fs/promises";
-import { join, basename } from "node:path";
+import { join, basename, extname } from "node:path";
 import { getDb } from "../db.js";
 import { logAudit } from "../audit.js";
 import { SOLO_USER } from "../schema.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+const MIME_TYPES: Record<string, string> = {
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".html": "text/html",
+  ".css": "text/css",
+  ".js": "application/javascript",
+  ".ts": "application/typescript",
+  ".json": "application/json",
+  ".xml": "application/xml",
+  ".csv": "text/csv",
+  ".pdf": "application/pdf",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".svg": "image/svg+xml",
+  ".webp": "image/webp",
+  ".zip": "application/zip",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
 
 async function getNodeLocalPath(nodeId: string): Promise<string | null> {
   const db = getDb();
@@ -72,10 +95,11 @@ export function registerFileTools(server: McpServer): void {
       const db = getDb();
       const id = ulid();
       const now = new Date().toISOString();
+      const mimeType = MIME_TYPES[extname(filename).toLowerCase()] ?? null;
 
       await db.execute({
-        sql: `INSERT INTO files (id, node_id, filename, local_path, status, description, created_by, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        sql: `INSERT INTO files (id, node_id, filename, local_path, status, description, mime_type, created_by, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           id,
           args.node_id,
@@ -83,6 +107,7 @@ export function registerFileTools(server: McpServer): void {
           targetPath,
           args.status,
           args.description ?? null,
+          mimeType,
           SOLO_USER,
           now,
           now,
