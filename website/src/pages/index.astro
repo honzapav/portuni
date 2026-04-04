@@ -1,0 +1,88 @@
+---
+import Base from '../layouts/Base.astro';
+---
+
+<Base title="Portuni">
+  <main>
+    <section class="hero">
+      <h1>Portuni</h1>
+      <p>
+        A thin, opinionated knowledge graph that connects organizational structure
+        to AI agents. It holds what your organization knows -- processes, decisions,
+        projects, principles -- and makes it accessible through a standard
+        <a href="https://modelcontextprotocol.io">MCP</a> interface.
+      </p>
+      <nav>
+        <a href="https://docs.portuni.com" class="btn">Documentation</a>
+        <a href="https://github.com/honzapav/portuni" class="btn btn-secondary">GitHub</a>
+      </nav>
+    </section>
+  </main>
+</Base>
+
+<style>
+  main {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+  }
+
+  .hero {
+    max-width: 560px;
+    text-align: center;
+  }
+
+  h1 {
+    font-size: 3rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 1.5rem;
+  }
+
+  p {
+    font-size: 1.2rem;
+    line-height: 1.7;
+    color: #444;
+    margin-bottom: 2rem;
+  }
+
+  a {
+    color: #1a1a1a;
+  }
+
+  nav {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+  }
+
+  .btn {
+    display: inline-block;
+    padding: 0.75rem 1.5rem;
+    border-radius: 6px;
+    font-size: 1rem;
+    font-weight: 500;
+    text-decoration: none;
+    transition: background 0.15s;
+  }
+
+  .btn:first-child {
+    background: #1a1a1a;
+    color: #fff;
+  }
+
+  .btn:first-child:hover {
+    background: #333;
+  }
+
+  .btn-secondary {
+    border: 1px solid #ddd;
+    color: #1a1a1a;
+  }
+
+  .btn-secondary:hover {
+    background: #f0f0f0;
+  }
+</style>
