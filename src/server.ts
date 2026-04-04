@@ -8,6 +8,7 @@ import { registerGetNodeTool } from "./tools/get-node.js";
 import { registerEdgeTools } from "./tools/edges.js";
 import { registerContextTools } from "./tools/context.js";
 import { registerMirrorTools } from "./tools/mirrors.js";
+import { registerFileTools } from "./tools/files.js";
 
 const PORT = Number(process.env.PORT ?? 3001);
 
@@ -24,6 +25,7 @@ async function main() {
   registerEdgeTools(mcpServer);
   registerContextTools(mcpServer);
   registerMirrorTools(mcpServer);
+  registerFileTools(mcpServer);
 
   const transports = new Map<string, SSEServerTransport>();
 
