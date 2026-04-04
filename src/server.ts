@@ -10,6 +10,7 @@ import { registerEdgeTools } from "./tools/edges.js";
 import { registerContextTools } from "./tools/context.js";
 import { registerMirrorTools } from "./tools/mirrors.js";
 import { registerFileTools } from "./tools/files.js";
+import { registerEventTools } from "./tools/events.js";
 
 import { getDb } from "./db.js";
 import { SOLO_USER } from "./schema.js";
@@ -131,6 +132,7 @@ function createMcpServer(): McpServer {
   registerContextTools(server);
   registerMirrorTools(server);
   registerFileTools(server);
+  registerEventTools(server);
   return server;
 }
 

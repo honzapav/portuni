@@ -1,0 +1,267 @@
+import { z } from "zod";
+import { ulid } from "ulid";
+import { getDb } from "../db.js";
+import { logAudit } from "../audit.js";
+import { SOLO_USER } from "../schema.js";
+import { EventRow } from "../types.js";
+import type { InValue } from "@libsql/client";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+export function registerEventTools(server: McpServer): void {
+  server.tool(
+    "portuni_log",
+    "Log a time-ordered event (decision, note, issue, status_change, etc.) to a node in the knowledge graph.",
+    {
+      node_id: z.string().describe("Node ID (ULID) to attach the event to"),
+      type: z.string().describe("Event type (e.g. decision, note, issue, status_change)"),
+      content: z.string().describe("Event content / description"),
+      meta: z.record(z.string(), z.unknown()).optional().describe("Optional structured metadata"),
+      refs: z.array(z.string()).optional().describe("Optional array of reference IDs (other events, external)"),
+      task_ref: z.string().optional().describe("Optional task reference (e.g. TASK-42)"),
+    },
+    async (args) => {
+      const db = getDb();
+
+      // Verify node exists
+      const nodeCheck = await db.execute({
+        sql: "SELECT id FROM nodes WHERE id = ?",
+        args: [args.node_id],
+      });
+      if (nodeCheck.rows.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
+          isError: true,
+        };
+      }
+
+      const id = ulid();
+      const now = new Date().toISOString();
+
+      await db.execute({
+        sql: `INSERT INTO events (id, node_id, type, content, meta, status, refs, task_ref, created_by, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          id,
+          args.node_id,
+          args.type,
+          args.content,
+          args.meta ? JSON.stringify(args.meta) : null,
+          "active",
+          args.refs ? JSON.stringify(args.refs) : null,
+          args.task_ref ?? null,
+          SOLO_USER,
+          now,
+        ],
+      });
+
+      await logAudit(SOLO_USER, "log_event", "event", id, {
+        node_id: args.node_id,
+        type: args.type,
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ id, node_id: args.node_id, type: args.type, status: "active" }),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "portuni_resolve",
+    "Resolve an active event (e.g. close an issue, confirm a decision). Merges optional resolution text into event meta.",
+    {
+      event_id: z.string().describe("Event ID (ULID) to resolve"),
+      resolution: z.string().optional().describe("Optional resolution text"),
+    },
+    async (args) => {
+      const db = getDb();
+
+      const existing = await db.execute({
+        sql: "SELECT * FROM events WHERE id = ?",
+        args: [args.event_id],
+      });
+      if (existing.rows.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: `Error: event ${args.event_id} not found` }],
+          isError: true,
+        };
+      }
+
+      const row = EventRow.parse(existing.rows[0]);
+      if (row.status !== "active") {
+        return {
+          content: [{ type: "text" as const, text: `Error: event ${args.event_id} is not active (status: ${row.status})` }],
+          isError: true,
+        };
+      }
+
+      // Merge resolution into existing meta
+      const existingMeta = row.meta ? JSON.parse(row.meta) : {};
+      if (args.resolution !== undefined) {
+        existingMeta.resolution = args.resolution;
+      }
+
+      await db.execute({
+        sql: "UPDATE events SET status = ?, meta = ? WHERE id = ?",
+        args: ["resolved", JSON.stringify(existingMeta), args.event_id],
+      });
+
+      await logAudit(SOLO_USER, "resolve_event", "event", args.event_id, {
+        resolution: args.resolution ?? null,
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ id: args.event_id, status: "resolved" }),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "portuni_supersede",
+    "Replace an event with a new version. The old event is marked as superseded and the new one references it.",
+    {
+      event_id: z.string().describe("Event ID (ULID) to supersede"),
+      new_content: z.string().describe("Content for the replacement event"),
+      meta: z.record(z.string(), z.unknown()).optional().describe("Optional new metadata (replaces old meta if provided)"),
+    },
+    async (args) => {
+      const db = getDb();
+
+      const existing = await db.execute({
+        sql: "SELECT * FROM events WHERE id = ?",
+        args: [args.event_id],
+      });
+      if (existing.rows.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: `Error: event ${args.event_id} not found` }],
+          isError: true,
+        };
+      }
+
+      const oldRow = EventRow.parse(existing.rows[0]);
+
+      // Mark old event as superseded
+      await db.execute({
+        sql: "UPDATE events SET status = ? WHERE id = ?",
+        args: ["superseded", args.event_id],
+      });
+
+      // Create new event
+      const newId = ulid();
+      const now = new Date().toISOString();
+      const newMeta = args.meta ? JSON.stringify(args.meta) : oldRow.meta;
+
+      await db.execute({
+        sql: `INSERT INTO events (id, node_id, type, content, meta, status, refs, task_ref, created_by, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          newId,
+          oldRow.node_id,
+          oldRow.type,
+          args.new_content,
+          newMeta,
+          "active",
+          JSON.stringify([args.event_id]),
+          oldRow.task_ref,
+          SOLO_USER,
+          now,
+        ],
+      });
+
+      await logAudit(SOLO_USER, "supersede_event", "event", newId, {
+        superseded_id: args.event_id,
+        node_id: oldRow.node_id,
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              new_id: newId,
+              superseded_id: args.event_id,
+              node_id: oldRow.node_id,
+              status: "active",
+            }),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "portuni_list_events",
+    "List events from the knowledge graph, optionally filtered by node, type, status, or time range.",
+    {
+      node_id: z.string().optional().describe("Filter by node ID"),
+      type: z.string().optional().describe("Filter by event type"),
+      status: z.string().optional().describe("Filter by status (active, resolved, superseded)"),
+      since: z.string().optional().describe("Filter events created after this ISO datetime"),
+    },
+    async (args) => {
+      const db = getDb();
+
+      const conditions: string[] = [];
+      const values: InValue[] = [];
+
+      if (args.node_id !== undefined) {
+        conditions.push("e.node_id = ?");
+        values.push(args.node_id);
+      }
+      if (args.type !== undefined) {
+        conditions.push("e.type = ?");
+        values.push(args.type);
+      }
+      if (args.status !== undefined) {
+        conditions.push("e.status = ?");
+        values.push(args.status);
+      }
+      if (args.since !== undefined) {
+        conditions.push("e.created_at >= ?");
+        values.push(args.since);
+      }
+
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+      const result = await db.execute({
+        sql: `SELECT e.id, e.node_id, n.name as node_name, e.type, e.content, e.meta, e.status, e.refs, e.task_ref, e.created_at
+              FROM events e
+              JOIN nodes n ON e.node_id = n.id
+              ${where}
+              ORDER BY e.created_at DESC`,
+        args: values,
+      });
+
+      const events = result.rows.map((row) => ({
+        id: row.id,
+        node_id: row.node_id,
+        node_name: row.node_name,
+        type: row.type,
+        content: row.content,
+        meta: row.meta ? JSON.parse(row.meta as string) : null,
+        status: row.status,
+        refs: row.refs ? JSON.parse(row.refs as string) : null,
+        task_ref: row.task_ref,
+        created_at: row.created_at,
+      }));
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(events, null, 2),
+          },
+        ],
+      };
+    },
+  );
+}
