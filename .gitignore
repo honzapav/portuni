@@ -4,3 +4,4 @@ dist/
 *.varlock.lock
 env.d.ts
 portuni.db
+docs/
