@@ -3,7 +3,8 @@ import { createServer } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { ensureSchema } from "./schema.js";
-import { registerTools } from "./tools.js";
+import { registerNodeTools } from "./tools/nodes.js";
+import { registerGetNodeTool } from "./tools/get-node.js";
 
 const PORT = Number(process.env.PORT ?? 3001);
 
@@ -15,7 +16,8 @@ async function main() {
     version: "0.1.0",
   });
 
-  registerTools(mcpServer);
+  registerNodeTools(mcpServer);
+  registerGetNodeTool(mcpServer);
 
   const transports = new Map<string, SSEServerTransport>();
 
