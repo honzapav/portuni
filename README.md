@@ -1,6 +1,6 @@
 # Portuni
 
-Knowledge graph MCP server. TypeScript, Turso, Streamable HTTP.
+Knowledge graph MCP server, built for teams. TypeScript, Turso (shared team database) or local SQLite (solo / testing), Streamable HTTP.
 
 ## Setup
 
@@ -11,11 +11,15 @@ npm run build
 
 ### Environment
 
-Managed via Varlock. Required variables (see `.env.schema`):
+Managed via Varlock. See `.env.schema` for the authoritative list.
 
-- `TURSO_URL` -- Turso database URL
-- `TURSO_AUTH_TOKEN` -- Turso auth token
-- `PORTUNI_WORKSPACE_ROOT` -- root for local mirror folders (e.g. `~/Workspaces/portuni`)
+- `PORTUNI_WORKSPACE_ROOT` (required) – root for local mirror folders (e.g. `~/Workspaces/portuni`)
+- `TURSO_URL` – Turso database URL. Required for team setups. Leave empty only when running Portuni locally for testing or solo use (falls back to a local SQLite file at `./portuni.db`).
+- `TURSO_AUTH_TOKEN` – Turso auth token. Required together with `TURSO_URL`.
+- `PORTUNI_USER_EMAIL` (optional, default `solo@localhost`) – solo user email for Phase 1 single-user mode
+- `PORTUNI_USER_NAME` (optional, default `Solo User`) – solo user display name
+
+**Team vs solo.** Portuni is primarily a team tool. A shared Turso database is the only way multiple users can work against the same graph; the local SQLite mode exists so you can try Portuni out, develop against it, or run a personal graph, but it does not scale beyond a single machine. Plan to move to Turso as soon as more than one person needs the graph.
 
 ### Run
 
@@ -91,7 +95,7 @@ SessionStart hook (`~/.claude/settings.json`): `scripts/portuni-context.sh` -- i
 src/
   server.ts          HTTP server, MCP setup, /context, /health
   schema.ts          DDL, ensureSchema(), SOLO_USER
-  db.ts              Turso client
+  db.ts              libsql client (Turso for team, local SQLite fallback for solo)
   audit.ts           Audit logging helper
   types.ts           Zod row schemas for all DB tables
   tools/
@@ -117,6 +121,11 @@ docs/
 
 ## Database
 
-Turso (libsql cloud). Schema auto-migrated on startup via `ensureSchema()`.
+Two deployment modes, same schema:
+
+- **Team / production:** Turso (libsql cloud) via `TURSO_URL` + `TURSO_AUTH_TOKEN`. This is the intended long-term mode – a shared cloud database is what lets multiple users and agents operate against the same graph.
+- **Solo / testing:** local SQLite at `./portuni.db`, used automatically when `TURSO_URL` is empty. Good for trying Portuni out or running a personal graph on one machine; does not scale beyond that.
+
+Schema auto-migrated on startup via `ensureSchema()` in both modes.
 
 Tables: `users`, `nodes`, `edges`, `events`, `files`, `local_mirrors`, `audit_log`.

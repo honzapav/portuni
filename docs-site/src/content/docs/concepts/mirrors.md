@@ -53,4 +53,4 @@ Files have two statuses:
 
 ## Context hook
 
-The `/context` endpoint resolves a filesystem path to a graph node. The SessionStart hook (`scripts/portuni-context.sh`) uses this to automatically show graph context when you start working in a mirror folder.
+The `/context` endpoint resolves a filesystem path to a graph node. The SessionStart hook (`scripts/portuni-context.sh`) uses this to automatically show graph context when you start working in a mirror folder. See [Setup → SessionStart hook](/getting-started/setup/#sessionstart-hook) for registration details, including how to run the hook against multiple Portuni instances.

@@ -26,11 +26,13 @@ AI agents use Portuni to:
 
 ## Architecture
 
-Portuni is a standalone HTTP server that speaks MCP (Model Context Protocol). It connects to a Turso database (SQLite cloud) and exposes 15 tools for graph manipulation, event logging, and file management.
+Portuni is a standalone HTTP server that speaks MCP (Model Context Protocol). It exposes 15 tools for graph manipulation, event logging, and file management.
+
+Data lives in a database. Portuni is built for teams, so the intended deployment is a shared [Turso](https://turso.tech/) (libsql cloud) database that every teammate and every agent connects to. For trying Portuni out, running a personal graph, or developing the server itself, it also supports a local SQLite fallback – handy for a single machine, but not a long-term answer once more than one person is involved.
 
 ```
-Claude Code  <--MCP-->  Portuni Server  <-->  Turso DB
-                            |
+Claude Code  <--MCP-->  Portuni Server  <-->  Turso (shared, team)
+                            |                    or SQLite (local, solo)
                        Local mirrors
                      (workspace folders)
 ```

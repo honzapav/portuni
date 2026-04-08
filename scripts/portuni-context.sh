@@ -1,23 +1,36 @@
 #!/bin/bash
-# Portuni SessionStart hook — injects graph context when cwd is a Portuni workspace
+# Portuni SessionStart hook – injects graph context when cwd is a Portuni workspace.
+#
+# Supports multiple Portuni instances. Set PORTUNI_URLS to a space-separated list
+# of base URLs (e.g. "http://localhost:3001 http://localhost:3002"); the hook tries
+# each in order and uses the first server whose workspace matches the current
+# working directory. If PORTUNI_URLS is not set, the hook falls back to
+# PORTUNI_URL (single URL), and finally to http://localhost:3001 as the default.
 
-PORTUNI_URL="${PORTUNI_URL:-http://localhost:3001}"
+if [ -n "$PORTUNI_URLS" ]; then
+  URLS="$PORTUNI_URLS"
+elif [ -n "$PORTUNI_URL" ]; then
+  URLS="$PORTUNI_URL"
+else
+  URLS="http://localhost:3001"
+fi
+
 CWD="$(pwd)"
 ENCODED_PATH=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$CWD")
 
-# Quick health check
-curl -s -m 0.2 "$PORTUNI_URL/health" > /dev/null 2>&1 || exit 0
+for URL in $URLS; do
+  # Quick health check – skip unreachable instances silently
+  curl -s -m 0.2 "$URL/health" > /dev/null 2>&1 || continue
 
-# Query and format
-curl -s -m 1 "$PORTUNI_URL/context?path=$ENCODED_PATH" | python3 -c "
+  OUTPUT=$(curl -s -m 1 "$URL/context?path=$ENCODED_PATH" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
 except:
-    sys.exit(0)
+    sys.exit(1)
 
 if not data.get('match'):
-    sys.exit(0)
+    sys.exit(1)
 
 node = data['node']
 edges = data.get('edges', [])
@@ -42,4 +55,12 @@ if events:
     for ev in events:
         ts = ev['created_at'][:10]
         print(f\"  [{ts}] {ev['type']}: {ev['content']}\")
-"
+")
+
+  if [ -n "$OUTPUT" ]; then
+    echo "$OUTPUT"
+    exit 0
+  fi
+done
+
+exit 0
