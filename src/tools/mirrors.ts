@@ -5,8 +5,13 @@ import { homedir } from "node:os";
 import { getDb } from "../db.js";
 import { logAudit } from "../audit.js";
 import { SOLO_USER } from "../schema.js";
-import { NodeSummaryRow } from "../types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+const NodeMinimalRow = z.object({
+  id: z.string(),
+  name: z.string(),
+  type: z.string(),
+});
 
 function slugify(name: string): string {
   return name
@@ -47,7 +52,7 @@ export function registerMirrorTools(server: McpServer): void {
         };
       }
 
-      const node = NodeSummaryRow.parse(nodeResult.rows[0]);
+      const node = NodeMinimalRow.parse(nodeResult.rows[0]);
       const nodeName = node.name;
 
       // 2. Compute slug and path
