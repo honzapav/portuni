@@ -30,6 +30,8 @@ const DDL = [
     meta TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     visibility TEXT NOT NULL DEFAULT 'team',
+    pos_x REAL,
+    pos_y REAL,
     created_by TEXT NOT NULL,
     created_at DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
@@ -111,6 +113,30 @@ export async function ensureSchema(): Promise<void> {
   }
   await migrateEnforceTypes(db);
   await migrateOrgInvariant(db);
+  await migratePositions(db);
+}
+
+// Adds nullable pos_x, pos_y columns to installs that predate position
+// persistence. Null means "no saved position yet" -- the frontend will
+// compute one on first layout and save it back. Idempotent: we probe
+// sqlite_master before altering so reruns are no-ops.
+//
+// SQLite's ALTER TABLE ADD COLUMN is safe for nullable columns without
+// defaults (it's an O(1) metadata change, not a table rewrite). We can
+// use it directly instead of the full recreate dance that
+// migrateEnforceTypes does.
+async function migratePositions(db: Client): Promise<void> {
+  const result = await db.execute({
+    sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name='nodes'",
+    args: [],
+  });
+  const existingSql = String(result.rows[0]?.sql ?? "");
+  if (!existingSql.includes("pos_x")) {
+    await db.execute("ALTER TABLE nodes ADD COLUMN pos_x REAL");
+  }
+  if (!existingSql.includes("pos_y")) {
+    await db.execute("ALTER TABLE nodes ADD COLUMN pos_y REAL");
+  }
 }
 
 // One-shot migration: adds CHECK constraints to `nodes.type` and

@@ -25,9 +25,13 @@ async function createTestDb() {
       type TEXT NOT NULL,
       name TEXT NOT NULL,
       description TEXT,
+      summary TEXT,
+      summary_updated_at DATETIME,
       meta TEXT,
       status TEXT NOT NULL DEFAULT 'active',
       visibility TEXT NOT NULL DEFAULT 'team',
+      pos_x REAL,
+      pos_y REAL,
       created_by TEXT NOT NULL REFERENCES users(id),
       created_at DATETIME NOT NULL DEFAULT (datetime('now')),
       updated_at DATETIME NOT NULL DEFAULT (datetime('now'))

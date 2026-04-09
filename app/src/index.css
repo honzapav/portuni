@@ -1,0 +1,154 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* ----- Dark theme (default) ----- */
+:root,
+html[data-theme="dark"] {
+  --color-bg: #0a0b0d;
+  --color-surface: #141518;
+  --color-surface-2: #1c1d21;
+  --color-border: #27282c;
+  --color-border-strong: #35363b;
+  --color-text: #e8e9eb;
+  --color-text-muted: #9ca0a8;
+  --color-text-dim: #6b6f77;
+  --color-accent: #76d9ff;
+  --color-accent-soft: rgba(118, 217, 255, 0.14);
+  --color-accent-dim: #3d8fb3;
+
+  --color-node-organization: #76d9ff;
+  --color-node-project: #a78bfa;
+  --color-node-process: #fbbf24;
+  --color-node-area: #f472b6;
+  --color-node-principle: #34d399;
+  --color-node-default: #94a3b8;
+
+  --color-status-active: #34d399;
+  --color-status-completed: #60a5fa;
+  --color-status-archived: #6b6f77;
+
+  --color-danger: #fca5a5;
+  --color-danger-strong: #f87171;
+  --color-danger-bg: rgba(127, 29, 29, 0.18);
+  --color-danger-bg-hover: rgba(127, 29, 29, 0.32);
+  --color-danger-border: rgba(185, 28, 28, 0.4);
+  --color-danger-border-hover: rgba(185, 28, 28, 0.7);
+}
+
+/* ----- Light theme ----- */
+html[data-theme="light"] {
+  --color-bg: #f8fafc;
+  --color-surface: #ffffff;
+  --color-surface-2: #f1f5f9;
+  --color-border: #e2e8f0;
+  --color-border-strong: #cbd5e1;
+  --color-text: #0f172a;
+  --color-text-muted: #475569;
+  --color-text-dim: #94a3b8;
+  --color-accent: #0284c7;
+  --color-accent-soft: rgba(2, 132, 199, 0.12);
+  --color-accent-dim: #7dd3fc;
+
+  --color-node-organization: #0891b2;
+  --color-node-project: #7c3aed;
+  --color-node-process: #d97706;
+  --color-node-area: #db2777;
+  --color-node-principle: #059669;
+  --color-node-default: #64748b;
+
+  --color-status-active: #059669;
+  --color-status-completed: #2563eb;
+  --color-status-archived: #94a3b8;
+
+  --color-danger: #b91c1c;
+  --color-danger-strong: #991b1b;
+  --color-danger-bg: #fef2f2;
+  --color-danger-bg-hover: #fee2e2;
+  --color-danger-border: #fecaca;
+  --color-danger-border-hover: #fca5a5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01", "ss03";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+/* subtle scrollbar for drawers */
+.scroll-thin::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.scroll-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 999px;
+  border: 3px solid var(--color-bg);
+}
+.scroll-thin::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-strong);
+}
+
+/* selection highlight */
+::selection {
+  background: var(--color-accent-dim);
+  color: #fff;
+}
+
+/* focus rings */
+input:focus,
+button:focus {
+  outline: none;
+}
+input:focus-visible,
+button:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* fade-in for detail pane */
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.animate-slide-in {
+  animation: slide-in 180ms ease-out;
+}
+
+/* soft pulse for copy feedback */
+@keyframes pulse-ok {
+  0% {
+    background: #34d399;
+  }
+  100% {
+    background: var(--color-surface-2);
+  }
+}
+.animate-pulse-ok {
+  animation: pulse-ok 800ms ease-out;
+}

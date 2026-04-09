@@ -1,0 +1,177 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import Sidebar from "./components/Sidebar";
+import GraphView from "./components/GraphView";
+import DetailPane from "./components/DetailPane";
+import { fetchGraph, fetchNode } from "./api";
+import type { GraphPayload, NodeDetail } from "./types";
+import type { Theme } from "./lib/theme";
+import { loadTheme, saveTheme } from "./lib/theme";
+
+export default function App() {
+  const [graph, setGraph] = useState<GraphPayload | null>(null);
+  const [graphError, setGraphError] = useState<string | null>(null);
+
+  const [theme, setTheme] = useState<Theme>(() => loadTheme());
+
+  const [selectedId, setSelectedIdRaw] = useState<string | null>(() => {
+    const p = new URLSearchParams(window.location.search);
+    return p.get("node");
+  });
+  const historyRef = useRef<string[]>([]);
+
+  const [nodeDetail, setNodeDetail] = useState<NodeDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  const [query, setQuery] = useState("");
+  const [disabledRelations, setDisabledRelations] = useState<Set<string>>(
+    () => new Set(),
+  );
+
+  // Apply theme to <html> and persist
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    saveTheme(theme);
+  }, [theme]);
+
+  // Load graph on mount
+  useEffect(() => {
+    fetchGraph()
+      .then(setGraph)
+      .catch((err) => setGraphError(String(err)));
+  }, []);
+
+  // Sync URL with selected node
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (selectedId) {
+      url.searchParams.set("node", selectedId);
+    } else {
+      url.searchParams.delete("node");
+    }
+    window.history.replaceState(null, "", url.toString());
+  }, [selectedId]);
+
+  // Load detail when selection changes
+  useEffect(() => {
+    if (!selectedId) {
+      setNodeDetail(null);
+      setDetailError(null);
+      return;
+    }
+    setDetailLoading(true);
+    setDetailError(null);
+    fetchNode(selectedId)
+      .then((n) => {
+        setNodeDetail(n);
+        setDetailLoading(false);
+      })
+      .catch((err) => {
+        setDetailError(String(err));
+        setDetailLoading(false);
+      });
+  }, [selectedId]);
+
+  // Refetch both the graph and the current node. Called by the DetailPane
+  // after any mutation so the viz and the detail stay in sync.
+  const refetchAll = useCallback(async () => {
+    const [graphRes, nodeRes] = await Promise.all([
+      fetchGraph(),
+      selectedId ? fetchNode(selectedId).catch(() => null) : Promise.resolve(null),
+    ]);
+    setGraph(graphRes);
+    if (nodeRes) setNodeDetail(nodeRes);
+  }, [selectedId]);
+
+  const setSelectedId = useCallback(
+    (id: string | null) => {
+      setSelectedIdRaw((prev) => {
+        if (prev && prev !== id) {
+          historyRef.current.push(prev);
+        }
+        return id;
+      });
+    },
+    [],
+  );
+
+  const goBack = useCallback(() => {
+    const prev = historyRef.current.pop();
+    if (prev) setSelectedIdRaw(prev);
+  }, []);
+
+  const toggleRelation = useCallback((r: string) => {
+    setDisabledRelations((prev) => {
+      const next = new Set(prev);
+      if (next.has(r)) next.delete(r);
+      else next.add(r);
+      return next;
+    });
+  }, []);
+
+  const toggleTheme = useCallback(() => {
+    setTheme((t) => (t === "dark" ? "light" : "dark"));
+  }, []);
+
+  return (
+    <div className="flex h-screen w-screen overflow-hidden">
+      {graph && (
+        <Sidebar
+          graph={graph}
+          query={query}
+          onQuery={setQuery}
+          disabledRelations={disabledRelations}
+          onToggleRelation={toggleRelation}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          theme={theme}
+          onThemeToggle={toggleTheme}
+        />
+      )}
+
+      <main className="relative min-w-0 flex-1 bg-[var(--color-bg)]">
+        {graphError && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="rounded-md border border-red-900 bg-red-950/30 px-6 py-4 text-[12px] text-red-300">
+              <div className="mb-2 font-semibold">Failed to load graph</div>
+              <div className="font-mono text-[10.5px] opacity-80">
+                {graphError}
+              </div>
+              <div className="mt-3 text-[10.5px] text-red-200/70">
+                Is the Portuni server running on :3001?
+              </div>
+            </div>
+          </div>
+        )}
+        {!graph && !graphError && (
+          <div className="absolute inset-0 flex items-center justify-center text-[11px] text-[var(--color-text-dim)]">
+            Loading graph...
+          </div>
+        )}
+        {graph && (
+          <GraphView
+            graph={graph}
+            selectedId={selectedId}
+            query={query}
+            disabledRelations={disabledRelations}
+            theme={theme}
+            onSelect={setSelectedId}
+          />
+        )}
+      </main>
+
+      {selectedId && (
+        <DetailPane
+          node={nodeDetail}
+          graph={graph}
+          loading={detailLoading}
+          error={detailError}
+          onSelect={setSelectedId}
+          canGoBack={historyRef.current.length > 0}
+          onBack={goBack}
+          onMutate={refetchAll}
+        />
+      )}
+    </div>
+  );
+}
