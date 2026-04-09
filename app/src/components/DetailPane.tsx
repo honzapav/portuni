@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
   ArrowRight,
   ArrowLeft,
@@ -667,40 +667,35 @@ function AddEdgeForm({
           <X size={12} />
         </button>
       </div>
-      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-        <select
-          value={relation}
-          onChange={(e) => setRelation(e.target.value)}
-          className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 font-mono text-[11px] text-[var(--color-text)]"
-        >
-          {RELATION_TYPES.map((r) => (
-            <option key={r} value={r}>
-              {r}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          onClick={() =>
-            setDirection((d) => (d === "outgoing" ? "incoming" : "outgoing"))
-          }
-          title="Swap direction"
-          className="flex h-7 w-7 items-center justify-center rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-        >
-          {direction === "outgoing" ? "→" : "←"}
-        </button>
-        <select
+      <div className="space-y-2">
+        <NodePicker
+          nodes={candidates}
           value={targetId}
-          onChange={(e) => setTargetId(e.target.value)}
-          className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[11.5px] text-[var(--color-text)]"
-        >
-          <option value="">Choose node...</option>
-          {candidates.map((n) => (
-            <option key={n.id} value={n.id}>
-              [{n.type[0].toUpperCase()}] {n.name}
-            </option>
-          ))}
-        </select>
+          onChange={setTargetId}
+        />
+        <div className="flex items-center gap-2">
+          <select
+            value={relation}
+            onChange={(e) => setRelation(e.target.value)}
+            className="flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 font-mono text-[11px] text-[var(--color-text)]"
+          >
+            {RELATION_TYPES.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() =>
+              setDirection((d) => (d === "outgoing" ? "incoming" : "outgoing"))
+            }
+            title="Swap direction"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+          >
+            {direction === "outgoing" ? "→" : "←"}
+          </button>
+        </div>
       </div>
       <div className="mt-2 flex justify-end">
         <button
@@ -711,6 +706,146 @@ function AddEdgeForm({
           {submitting ? "Adding..." : "Add connection"}
         </button>
       </div>
+    </div>
+  );
+}
+
+// Custom node picker that replaces the native <select>. The native select
+// can only show plain text, so project and process both show as "[P]" which
+// is useless. This dropdown renders a colored dot per node type and supports
+// keyboard search so it's fast even with many nodes.
+function NodePicker({
+  nodes,
+  value,
+  onChange,
+}: {
+  nodes: Array<{ id: string; type: string; name: string }>;
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const selected = nodes.find((n) => n.id === value);
+
+  const filtered = filter.trim()
+    ? nodes.filter(
+        (n) =>
+          n.name.toLowerCase().includes(filter.toLowerCase()) ||
+          n.type.toLowerCase().includes(filter.toLowerCase()),
+      )
+    : nodes;
+
+  // Close on outside click.
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+        setFilter("");
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  // Auto-focus input when dropdown opens.
+  useEffect(() => {
+    if (open && inputRef.current) inputRef.current.focus();
+  }, [open]);
+
+  const pick = (id: string) => {
+    onChange(id);
+    setOpen(false);
+    setFilter("");
+  };
+
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      setOpen(false);
+      setFilter("");
+    }
+  };
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-left text-[11.5px]"
+      >
+        {selected ? (
+          <>
+            <span
+              className="h-2 w-2 shrink-0 rounded-full"
+              style={{
+                background: nodeTypeVar(selected.type),
+                boxShadow: `0 0 6px ${nodeTypeGlow(selected.type, 0.35)}`,
+              }}
+            />
+            <span className="flex-1 truncate text-[var(--color-text)]">
+              {selected.name}
+            </span>
+            <span className="shrink-0 text-[10px] text-[var(--color-text-dim)]">
+              {selected.type}
+            </span>
+          </>
+        ) : (
+          <span className="text-[var(--color-text-dim)]">Choose node...</span>
+        )}
+      </button>
+
+      {open && (
+        <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] shadow-lg">
+          <div className="border-b border-[var(--color-border)] px-2.5 py-1.5">
+            <input
+              ref={inputRef}
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Search..."
+              className="w-full bg-transparent text-[11.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] outline-none"
+            />
+          </div>
+          <div className="scroll-thin max-h-[240px] overflow-y-auto py-1">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-2 text-[11px] text-[var(--color-text-dim)]">
+                No matches
+              </div>
+            ) : (
+              filtered.map((n) => (
+                <button
+                  key={n.id}
+                  type="button"
+                  onClick={() => pick(n.id)}
+                  className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
+                    n.id === value ? "bg-[var(--color-surface-2)]" : ""
+                  }`}
+                >
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{
+                      background: nodeTypeVar(n.type),
+                      boxShadow: `0 0 6px ${nodeTypeGlow(n.type, 0.35)}`,
+                    }}
+                  />
+                  <span className="flex-1 truncate text-[var(--color-text)]">
+                    {n.name}
+                  </span>
+                  <span className="shrink-0 text-[10px] text-[var(--color-text-dim)]">
+                    {n.type}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

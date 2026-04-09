@@ -1,4 +1,4 @@
-import { Search, Network, Sun, Moon } from "lucide-react";
+import { Search, Network, Sun, Moon, X } from "lucide-react";
 import type { GraphPayload, GraphNode } from "../types";
 import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
@@ -110,8 +110,16 @@ export default function Sidebar({
             value={query}
             onChange={(e) => onQuery(e.target.value)}
             placeholder="Search nodes..."
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] py-2 pl-8 pr-3 text-[12.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] transition-colors focus:border-[var(--color-accent-dim)]"
+            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] py-2 pl-8 pr-8 text-[12.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] transition-colors focus:border-[var(--color-accent-dim)]"
           />
+          {query.length > 0 && (
+            <button
+              onClick={() => onQuery("")}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-sm p-0.5 text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)]"
+            >
+              <X size={12} />
+            </button>
+          )}
         </div>
       </div>
 
