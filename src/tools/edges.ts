@@ -9,7 +9,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerEdgeTools(server: McpServer): void {
   server.tool(
     "portuni_connect",
-    "Create a directed edge between two nodes. Relation types (strictly enforced): related_to (near-default, lateral connection), belongs_to (scope, EXACTLY ONE per non-organization node), applies (concrete work uses a pattern, e.g. project applies process), informed_by (knowledge transfer). Every non-organization node must belong to exactly one organization -- belongs_to is single-parent and strictly enforced.",
+    "Create a directed edge between two nodes. ONLY create edges when the user explicitly asks or when creating a node that requires a belongs_to edge. Never speculatively connect nodes because they seem related. Relation types (strictly enforced): related_to (near-default, lateral connection), belongs_to (scope, EXACTLY ONE per non-organization node), applies (concrete work uses a pattern, e.g. project applies process), informed_by (knowledge transfer). Every non-organization node must belong to exactly one organization -- belongs_to is single-parent and strictly enforced.",
     {
       source_id: z.string().describe("Source node ID (ULID)"),
       target_id: z.string().describe("Target node ID (ULID)"),

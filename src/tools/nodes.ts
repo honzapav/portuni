@@ -15,7 +15,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerNodeTools(server: McpServer): void {
   server.tool(
     "portuni_create_node",
-    "Create a new node in the Portuni knowledge graph. Node types (strictly enforced): organization, project, process, area, principle. Every non-organization node MUST specify organization_id -- it will be atomically connected to that organization via a belongs_to edge. Every non-organization node belongs to exactly one organization.",
+    "Create a new node in the Portuni knowledge graph. ONLY create nodes when the user explicitly asks. Never create nodes as a side effect of other work or to organize things on your own initiative. Node types (strictly enforced): organization, project, process, area, principle. Every non-organization node MUST specify organization_id -- it will be atomically connected to that organization via a belongs_to edge. Every non-organization node belongs to exactly one organization.",
     {
       type: z.enum(NODE_TYPES).describe("Node type: organization, project, process, area, or principle"),
       name: z.string().describe("Human-readable name"),

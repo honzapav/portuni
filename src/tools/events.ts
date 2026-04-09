@@ -10,7 +10,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerEventTools(server: McpServer): void {
   server.tool(
     "portuni_log",
-    "Log a time-ordered event (decision, note, issue, status_change, etc.) to a node in the knowledge graph.",
+    "Log a time-ordered knowledge event to a node. ONLY log events that capture substantive knowledge: real decisions, discoveries, blockers, milestones. NEVER log technical operations (mirror moves, file renames, tool actions) or narrate what you just did. Events are organizational memory, not an activity log.",
     {
       node_id: z.string().describe("Node ID (ULID) to attach the event to"),
       type: z.enum(EVENT_TYPES).describe("Event type: decision, discovery, blocker, reference, milestone, note, or change"),

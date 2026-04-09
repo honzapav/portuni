@@ -43,7 +43,7 @@ async function getNodeLocalPath(nodeId: string): Promise<string | null> {
 export function registerFileTools(server: McpServer): void {
   server.tool(
     "portuni_store",
-    "Store a file in a node's local folder. Copies the file from source path into the node's mirror folder (wip/ or outputs/ based on status) and registers it in Portuni.",
+    "Store a file in a node's local folder. Only store files the user explicitly asks to publish. Never store temporary files, logs, or intermediate outputs. File registration is per-user -- each user manages their own files. Copies the file from source path into the node's mirror folder (wip/ or outputs/ based on status) and registers it in Portuni.",
     {
       node_id: z.string().describe("Node ID (ULID)"),
       local_path: z.string().describe("Absolute path to the source file"),
