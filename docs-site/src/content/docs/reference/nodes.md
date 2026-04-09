@@ -9,12 +9,14 @@ Create a new node in the knowledge graph.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `type` | string | yes | Node type (e.g. organization, process, project) |
+| `type` | enum | yes | One of: `organization`, `project`, `process`, `area`, `principle`. Strictly enforced |
 | `name` | string | yes | Human-readable name |
 | `description` | string | no | What this node represents |
 | `meta` | object | no | Type-specific JSON data |
 | `status` | enum | no | `active` (default), `completed`, `archived` |
 | `visibility` | enum | no | `team` (default), `private` |
+
+Node types are enforced both at the MCP tool layer (Zod enum) and at the database layer (SQL CHECK constraint on `nodes.type`). There is no way to create a node with a type outside the canonical five POPP entities.
 
 Returns: `{ id, type, name, status }`
 
@@ -38,7 +40,7 @@ List nodes with optional filtering.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `type` | string | no | Filter by node type |
+| `type` | enum | no | Filter by node type (one of the canonical five) |
 | `status` | enum | no | Filter by status |
 
 Returns: Array of `{ id, type, name, status, description }`

@@ -19,17 +19,22 @@ These are peers connected by edges, not a hierarchy. A project can relate to mul
 
 ## Edge types
 
+Portuni uses four flat, non-hierarchical edge relations. All are strictly enforced -- both in the MCP tool layer (via Zod enum) and at the database layer (via CHECK constraint). No edge type is privileged; any node can connect to any other node.
+
 | Relation | Meaning |
 |----------|---------|
-| `belongs_to` | Entity is part of a larger scope |
-| `instance_of` | Concrete run of a general process |
-| `applies` | Project uses a process |
-| `guided_by` | Entity follows a principle |
-| `depends_on` | Hard dependency |
-| `related_to` | Loose thematic connection |
-| `informed_by` | Knowledge transfer |
+| `related_to` | Lateral, semantically light connection. Near-default -- use when no more specific relation fits |
+| `belongs_to` | Entity is scoped to a larger scope. Can have multiple parents -- does not imply a tree |
+| `applies` | Concrete work uses a repeatable pattern, e.g. a project applies a process |
+| `informed_by` | Knowledge transfer from one node to another (learned from, referenced, drew on) |
 
 Edges are directed: `source` is the entity that has the relationship, `target` is what it points to. For bidirectional relationships, create two edges or query both directions.
+
+## Principles as culture
+
+Principles are not linked to other nodes via an explicit edge. They are the cultural defaults of the organizations they belong to -- anything within a scope implicitly follows the principles of that scope. When unsure how to act, look at the principles in the relevant organization.
+
+This is an intentional design choice: linking every project/process to every applicable principle would bloat the graph with low-signal edges. Culture is a fallback lookup, not pointer spaghetti.
 
 ## Example traversal
 
@@ -41,11 +46,3 @@ project:Goldea Presale
 ```
 
 Starting from any node, `portuni_get_context` walks the graph in all directions, returning connected nodes with decreasing detail by depth.
-
-## Additional node types
-
-The `type` field is an open string, not an enum. Beyond the core POPP types, the system also supports:
-
-- `methodology` -- reusable approach (e.g. GWS Implementation)
-- `process_instance` -- concrete run of a methodology
-- `artifact` -- hosted document or report (planned)

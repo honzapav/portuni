@@ -14,7 +14,7 @@ Create a directed edge between two nodes.
 | `relation` | string | yes | Relation type |
 | `meta` | object | no | Edge metadata |
 
-Relation types (not enforced): `instance_of`, `applies`, `belongs_to`, `guided_by`, `depends_on`, `related_to`, `informed_by`.
+Relation types (strictly enforced): `related_to`, `belongs_to`, `applies`, `informed_by`.
 
 Duplicate edges (same source, target, and relation) are prevented.
 

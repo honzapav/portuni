@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import { getDb } from "../db.js";
 import { logAudit } from "../audit.js";
-import { SOLO_USER } from "../schema.js";
+import { NODE_TYPES, SOLO_USER } from "../schema.js";
 import { NodeRow, NodeSummaryRow } from "../types.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -10,9 +10,9 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerNodeTools(server: McpServer): void {
   server.tool(
     "portuni_create_node",
-    "Create a new node in the Portuni knowledge graph. Node types: organization, process, process_instance, area, project, principle, methodology (not enforced).",
+    "Create a new node in the Portuni knowledge graph. Node types (strictly enforced): organization, project, process, area, principle.",
     {
-      type: z.string().describe("Node type (e.g. organization, process, project)"),
+      type: z.enum(NODE_TYPES).describe("Node type: organization, project, process, area, or principle"),
       name: z.string().describe("Human-readable name"),
       description: z.string().optional().describe("What this node represents"),
       meta: z.record(z.string(), z.unknown()).optional().describe("Type-specific JSON data"),
@@ -147,7 +147,7 @@ export function registerNodeTools(server: McpServer): void {
     "portuni_list_nodes",
     "List nodes from the Portuni knowledge graph, optionally filtered by type and/or status.",
     {
-      type: z.string().optional().describe("Filter by node type"),
+      type: z.enum(NODE_TYPES).optional().describe("Filter by node type"),
       status: z.enum(["active", "completed", "archived"]).optional().describe("Filter by status"),
     },
     async (args) => {

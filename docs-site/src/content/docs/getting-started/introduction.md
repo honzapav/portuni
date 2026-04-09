@@ -3,7 +3,7 @@ title: Introduction
 description: What Portuni is and why it exists.
 ---
 
-Portuni is a knowledge graph MCP server that gives AI agents structured access to organizational knowledge -- processes, decisions, methodology -- through a standard MCP interface.
+Portuni is a knowledge graph MCP server that gives AI agents structured access to organizational knowledge -- processes, decisions, principles -- through a standard MCP interface.
 
 ## What it does
 

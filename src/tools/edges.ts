@@ -2,18 +2,18 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import { getDb } from "../db.js";
 import { logAudit } from "../audit.js";
-import { SOLO_USER } from "../schema.js";
+import { EDGE_RELATIONS, SOLO_USER } from "../schema.js";
 import { NodeIdRow } from "../types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerEdgeTools(server: McpServer): void {
   server.tool(
     "portuni_connect",
-    "Create a directed edge between two nodes. Relation types: instance_of, applies, belongs_to, guided_by, depends_on, related_to, informed_by (not enforced).",
+    "Create a directed edge between two nodes. Relation types (strictly enforced): related_to (near-default, lateral connection), belongs_to (scope, multi-parent allowed, not hierarchical), applies (concrete work uses a pattern, e.g. project applies process), informed_by (knowledge transfer from one node to another).",
     {
       source_id: z.string().describe("Source node ID (ULID)"),
       target_id: z.string().describe("Target node ID (ULID)"),
-      relation: z.string().describe("Relation type (e.g. instance_of, applies, belongs_to, guided_by, depends_on, related_to, informed_by)"),
+      relation: z.enum(EDGE_RELATIONS).describe("Relation type: related_to, belongs_to, applies, or informed_by"),
       meta: z.record(z.string(), z.unknown()).optional().describe("Optional metadata for the edge"),
     },
     async (args) => {
@@ -104,7 +104,7 @@ export function registerEdgeTools(server: McpServer): void {
     {
       source_id: z.string().describe("Source node ID (ULID)"),
       target_id: z.string().describe("Target node ID (ULID)"),
-      relation: z.string().optional().describe("Relation type to remove (omit to remove all edges between the nodes)"),
+      relation: z.enum(EDGE_RELATIONS).optional().describe("Relation type to remove (omit to remove all edges between the nodes)"),
     },
     async (args) => {
       const db = getDb();

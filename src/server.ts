@@ -123,7 +123,7 @@ TOOLS:
 - portuni_list_nodes: Browse all nodes, filter by type
 - portuni_get_node: Get node details with edges, files, and local mirror path
 - portuni_get_context: Find related nodes by traversing the graph (use this first)
-- portuni_create_node: Create a new node (project, process, area, principle, organization)
+- portuni_create_node: Create a new node (organization, project, process, area, principle)
 - portuni_connect / portuni_disconnect: Manage edges between nodes
 - portuni_mirror: Create a local folder for a node
 - portuni_store: Publish a file to a node (like git commit)
@@ -134,9 +134,13 @@ TOOLS:
 - portuni_supersede: Replace an event with an updated version
 - portuni_list_events: Query events with filters (node_id, type, status, since)
 
-LOCAL MIRRORS: Each node can have a local folder. Use portuni_get_node to find the local_path. The workspace root is configured via PORTUNI_WORKSPACE_ROOT env var. Each mirror has subdirectories: outputs/ (final files), wip/ (work in progress), resources/. Organization workspace folders additionally contain projects/, processes/, areas/, principles/ for organizing child nodes.
+NODE TYPES (strictly enforced, five POPP entities): organization, project, process, area, principle. No other types exist. Do not invent new types.
 
-EDGE TYPES: belongs_to, instance_of, applies, guided_by, depends_on, related_to.
+EDGE TYPES (strictly enforced, four flat relations): related_to (near-default, lateral semantic connection), belongs_to (scope, can be multi-parent, not a tree), applies (concrete work uses a pattern, e.g. project applies process), informed_by (knowledge transfer). No edge type is privileged. The graph is rhizomatic: any node can connect to any other node. When unsure which relation fits, default to related_to.
+
+PRINCIPLES AS CULTURE: Principles are not linked via an explicit edge. They function as cultural defaults applied to everything in scope. When unsure how to act, look at the principles in the relevant organization.
+
+LOCAL MIRRORS: Each node can have a local folder. Use portuni_get_node to find the local_path. The workspace root is configured via PORTUNI_WORKSPACE_ROOT env var. Each mirror has subdirectories: outputs/ (final files), wip/ (work in progress), resources/. Organization workspace folders additionally contain projects/, processes/, areas/, principles/ for organizing child nodes.
 
 EVENTS: Time-ordered knowledge attached to nodes. Log decisions, discoveries, blockers, references, milestones, notes, changes. Use portuni_log to record, portuni_list_events to query. Events appear in portuni_get_node and portuni_get_context responses.`;
 
