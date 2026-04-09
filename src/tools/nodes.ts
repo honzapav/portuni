@@ -7,8 +7,6 @@ import {
   NODE_STATUSES,
   NODE_VISIBILITIES,
   SOLO_USER,
-  TRIGGER_PREVENT_MULTI_PARENT_ORG,
-  TRIGGER_PREVENT_ORPHAN_ON_EDGE_DELETE,
 } from "../schema.js";
 import { NodeRow, NodeSummaryRow } from "../types.js";
 import type { InValue } from "@libsql/client";
@@ -379,27 +377,16 @@ export function registerNodeTools(server: McpServer): void {
           ? (mirrorRes.rows[0].local_path as string)
           : null;
 
-      // C3: Temporarily drop the orphan-prevention trigger. CASCADE-triggered
-      // deletes on edges fire BEFORE triggers before the parent row is removed,
-      // which would incorrectly block the operation. The tool layer validates
-      // prerequisites above, so disabling the trigger in-transaction is safe.
-      await db.execute("BEGIN");
-      try {
-        await db.execute("DROP TRIGGER IF EXISTS prevent_orphan_on_edge_delete");
-        await db.execute({
-          sql: "DELETE FROM nodes WHERE id = ?",
-          args: [args.node_id],
-        });
-        await db.execute(TRIGGER_PREVENT_ORPHAN_ON_EDGE_DELETE);
-        await db.execute("COMMIT");
-      } catch (err) {
-        await db.execute("ROLLBACK");
-        // Ensure trigger is restored even on rollback (SQLite restores it
-        // automatically if the DROP was inside the rolled-back transaction,
-        // but be explicit for clarity).
-        await db.execute(TRIGGER_PREVENT_ORPHAN_ON_EDGE_DELETE);
-        throw err;
-      }
+      // Delete edges first so the orphan-prevention trigger does not fire
+      // during CASCADE. Then delete the node (remaining CASCADE covers
+      // files, events, mirrors).
+      await db.batch(
+        [
+          { sql: "DELETE FROM edges WHERE source_id = ? OR target_id = ?", args: [args.node_id, args.node_id] },
+          { sql: "DELETE FROM nodes WHERE id = ?", args: [args.node_id] },
+        ],
+        "write",
+      );
 
       await logAudit(SOLO_USER, "purge_node", "node", args.node_id, {
         type: nodeType,
