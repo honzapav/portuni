@@ -10,6 +10,8 @@ type Props = {
   onQuery: (q: string) => void;
   disabledRelations: Set<string>;
   onToggleRelation: (relation: string) => void;
+  disabledOrgs: Set<string>;
+  onToggleOrg: (id: string) => void;
   selectedId: string | null;
   onSelect: (id: string) => void;
   theme: Theme;
@@ -38,6 +40,8 @@ export default function Sidebar({
   onQuery,
   disabledRelations,
   onToggleRelation,
+  disabledOrgs,
+  onToggleOrg,
   selectedId,
   onSelect,
   theme,
@@ -136,6 +140,54 @@ export default function Sidebar({
       {/* Filters */}
       {q.length === 0 && (
         <div className="flex-1 overflow-y-auto scroll-thin px-5 py-5">
+          <Section title="Organizations">
+            <div className="space-y-1.5">
+              {graph.nodes
+                .filter((n) => n.type === "organization")
+                .sort((a, b) => a.name.localeCompare(b.name))
+                .map((org) => {
+                  const enabled = !disabledOrgs.has(org.id);
+                  const childCount = graph.nodes.filter(
+                    (n) =>
+                      n.type !== "organization" &&
+                      graph.edges.some(
+                        (e) =>
+                          e.source_id === n.id &&
+                          e.target_id === org.id &&
+                          e.relation === "belongs_to",
+                      ),
+                  ).length;
+                  return (
+                    <button
+                      key={org.id}
+                      onClick={() => onToggleOrg(org.id)}
+                      className="group flex w-full items-center gap-2.5 rounded px-2 py-1 text-left transition-colors hover:bg-[var(--color-surface)]"
+                    >
+                      <div
+                        className={`h-3 w-3 rounded-sm border transition-all ${
+                          enabled
+                            ? "border-[var(--color-accent)] bg-[var(--color-accent-dim)]"
+                            : "border-[var(--color-border-strong)] bg-transparent"
+                        }`}
+                      />
+                      <span
+                        className={`flex-1 text-[11.5px] transition-colors ${
+                          enabled
+                            ? "text-[var(--color-text)]"
+                            : "text-[var(--color-text-dim)] line-through"
+                        }`}
+                      >
+                        {org.name}
+                      </span>
+                      <span className="font-mono text-[10.5px] text-[var(--color-text-dim)]">
+                        {childCount}
+                      </span>
+                    </button>
+                  );
+                })}
+            </div>
+          </Section>
+
           <Section title="Edge types">
             <div className="space-y-1.5">
               {RELATION_TYPES.map((r) => {

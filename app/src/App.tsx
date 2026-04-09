@@ -27,6 +27,9 @@ export default function App() {
   const [disabledRelations, setDisabledRelations] = useState<Set<string>>(
     () => new Set(),
   );
+  const [disabledOrgs, setDisabledOrgs] = useState<Set<string>>(
+    () => new Set(),
+  );
 
   // Apply theme to <html> and persist
   useEffect(() => {
@@ -109,6 +112,15 @@ export default function App() {
     });
   }, []);
 
+  const toggleOrg = useCallback((id: string) => {
+    setDisabledOrgs((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
   const toggleTheme = useCallback(() => {
     setTheme((t) => (t === "dark" ? "light" : "dark"));
   }, []);
@@ -122,6 +134,8 @@ export default function App() {
           onQuery={setQuery}
           disabledRelations={disabledRelations}
           onToggleRelation={toggleRelation}
+          disabledOrgs={disabledOrgs}
+          onToggleOrg={toggleOrg}
           selectedId={selectedId}
           onSelect={setSelectedId}
           theme={theme}
@@ -154,6 +168,7 @@ export default function App() {
             selectedId={selectedId}
             query={query}
             disabledRelations={disabledRelations}
+            disabledOrgs={disabledOrgs}
             theme={theme}
             onSelect={setSelectedId}
           />

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import cytoscape from "cytoscape";
 import type { Core, EdgeSingular, NodeSingular } from "cytoscape";
 // @ts-expect-error — fcose has no first-party types
@@ -16,6 +16,7 @@ type Props = {
   selectedId: string | null;
   query: string;
   disabledRelations: Set<string>;
+  disabledOrgs: Set<string>;
   theme: Theme;
   onSelect: (id: string | null) => void;
 };
@@ -410,6 +411,7 @@ export default function GraphView({
   selectedId,
   query,
   disabledRelations,
+  disabledOrgs,
   theme,
   onSelect,
 }: Props) {
@@ -664,11 +666,29 @@ export default function GraphView({
     if (!cy) return;
     const q = query.trim().toLowerCase();
     const hasQuery = q.length > 0;
-    const hasFilter = disabledRelations.size > 0;
+    const hasRelFilter = disabledRelations.size > 0;
+    const hasOrgFilter = disabledOrgs.size > 0;
 
     cy.batch(() => {
       cy.nodes().removeClass("dim");
       cy.edges().removeClass("dim");
+
+      // Organization filter: dim the compound parent and every child
+      // inside it, plus all edges connected to those children.
+      if (hasOrgFilter) {
+        cy.nodes().forEach((n: NodeSingular) => {
+          if (
+            n.data("type") === "organization" &&
+            disabledOrgs.has(n.id())
+          ) {
+            n.addClass("dim");
+            n.descendants().forEach((child: NodeSingular) => {
+              child.addClass("dim");
+              child.connectedEdges().addClass("dim");
+            });
+          }
+        });
+      }
 
       if (hasQuery) {
         cy.nodes().forEach((n: NodeSingular) => {
@@ -686,7 +706,7 @@ export default function GraphView({
         });
       }
 
-      if (hasFilter) {
+      if (hasRelFilter) {
         cy.edges().forEach((e: EdgeSingular) => {
           if (disabledRelations.has(e.data("relation") as string)) {
             e.addClass("dim");
@@ -694,7 +714,7 @@ export default function GraphView({
         });
       }
     });
-  }, [query, disabledRelations]);
+  }, [query, disabledRelations, disabledOrgs]);
 
   // Apply selection highlight. Camera refits happen in the ResizeObserver
   // (triggered by the pane open/close) so no camera logic is needed here.
@@ -715,11 +735,61 @@ export default function GraphView({
     });
   }, [selectedId]);
 
+  // Re-run fcose from scratch, clearing all saved positions. Useful when
+  // the graph looks cluttered or orgs overlap after incremental edits.
+  const handleAutoLayout = useCallback(() => {
+    const cy = cyRef.current;
+    if (!cy || cy.nodes().length === 0) return;
+
+    const layout = cy.layout({
+      name: "fcose",
+      animate: true,
+      animationDuration: 700,
+      fit: true,
+      padding: 80,
+      nodeDimensionsIncludeLabels: true,
+      nodeRepulsion: 9000,
+      idealEdgeLength: 110,
+      edgeElasticity: 0.2,
+      gravity: 0.22,
+      gravityRangeCompound: 1.4,
+      gravityCompound: 0.5,
+      nestingFactor: 0.5,
+      numIter: 4500,
+      tile: true,
+      tilingPaddingVertical: 36,
+      tilingPaddingHorizontal: 36,
+      packComponents: true,
+      randomize: true,
+    } as unknown as cytoscape.LayoutOptions);
+
+    (layout as unknown as { one: (e: string, cb: () => void) => void }).one(
+      "layoutstop",
+      () => {
+        cy.nodes().forEach((n) => {
+          if (n.data("type") === "organization") return;
+          const p = n.position();
+          queuePositionSave(n.id(), p.x, p.y);
+        });
+      },
+    );
+    layout.run();
+  }, []);
+
   return (
-    <div
-      ref={containerRef}
-      className="h-full w-full"
-      style={{ background: THEMES[theme].bg }}
-    />
+    <div className="relative h-full w-full">
+      <div
+        ref={containerRef}
+        className="h-full w-full"
+        style={{ background: THEMES[theme].bg }}
+      />
+      <button
+        onClick={handleAutoLayout}
+        title="Re-run automatic layout"
+        className="absolute bottom-4 right-4 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[11px] font-medium text-[var(--color-text-muted)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+      >
+        Auto-layout
+      </button>
+    </div>
   );
 }
