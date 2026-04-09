@@ -25,7 +25,7 @@ function slugify(name: string): string {
 export function registerMirrorTools(server: McpServer): void {
   server.tool(
     "portuni_mirror",
-    "Create a local folder for a node and register it. Creates {PORTUNI_WORKSPACE_ROOT}/{slug}/ with outputs/, wip/, resources/ subfolders. Targets: only 'local' supported in Phase 1.",
+    "Create a local folder for a node and register it. Default path: {root}/{org-slug}/{type-plural}/{node-slug}/ (e.g. workflow/processes/gws-implementation). Organizations mirror directly to {root}/{org-slug}/. Creates outputs/, wip/, resources/ subfolders. Targets: only 'local' supported in Phase 1.",
     {
       node_id: z.string().describe("Node ID (ULID)"),
       targets: z
@@ -34,7 +34,7 @@ export function registerMirrorTools(server: McpServer): void {
       custom_path: z
         .string()
         .optional()
-        .describe("Optional override for default path ({PORTUNI_WORKSPACE_ROOT}/{slug})"),
+        .describe("Optional override for default path ({root}/{org-slug}/{type-plural}/{node-slug})"),
     },
     async (args) => {
       const db = getDb();
@@ -64,7 +64,34 @@ export function registerMirrorTools(server: McpServer): void {
           isError: true,
         };
       }
-      const localPath = args.custom_path ?? join(root, slug);
+
+      let localPath: string;
+      if (args.custom_path) {
+        localPath = args.custom_path;
+      } else if (node.type === "organization") {
+        localPath = join(root, slug);
+      } else {
+        // Resolve org-aware path: {root}/{org-slug}/{type-plural}/{node-slug}
+        const orgRow = await db.execute({
+          sql: `SELECT n.name FROM edges e JOIN nodes n ON n.id = e.target_id
+                WHERE e.source_id = ? AND e.relation = 'belongs_to' AND n.type = 'organization'
+                LIMIT 1`,
+          args: [args.node_id],
+        });
+        const TYPE_PLURAL: Record<string, string> = {
+          project: "projects",
+          process: "processes",
+          area: "areas",
+          principle: "principles",
+        };
+        const typePlural = TYPE_PLURAL[node.type] ?? node.type;
+        if (orgRow.rows.length > 0) {
+          const orgSlug = slugify(orgRow.rows[0].name as string);
+          localPath = join(root, orgSlug, typePlural, slug);
+        } else {
+          localPath = join(root, typePlural, slug);
+        }
+      }
 
       // 3. Create directory structure
       const subdirs = ["outputs", "wip", "resources"];
