@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import { getDb } from "../db.js";
 import { logAudit } from "../audit.js";
-import { SOLO_USER } from "../schema.js";
+import { SOLO_USER, EVENT_TYPES, EVENT_STATUSES } from "../schema.js";
 import { EventRow } from "../types.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -13,7 +13,7 @@ export function registerEventTools(server: McpServer): void {
     "Log a time-ordered event (decision, note, issue, status_change, etc.) to a node in the knowledge graph.",
     {
       node_id: z.string().describe("Node ID (ULID) to attach the event to"),
-      type: z.string().describe("Event type (e.g. decision, note, issue, status_change)"),
+      type: z.enum(EVENT_TYPES).describe("Event type: decision, discovery, blocker, reference, milestone, note, or change"),
       content: z.string().describe("Event content / description"),
       meta: z.record(z.string(), z.unknown()).optional().describe("Optional structured metadata"),
       refs: z.array(z.string()).optional().describe("Optional array of reference IDs (other events, external)"),
@@ -32,6 +32,21 @@ export function registerEventTools(server: McpServer): void {
           content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
           isError: true,
         };
+      }
+
+      // B5: Validate refs -- warn (not error) if any referenced event is missing.
+      let refsWarning: string | null = null;
+      if (args.refs && args.refs.length > 0) {
+        const ph = args.refs.map(() => "?").join(",");
+        const found = await db.execute({
+          sql: `SELECT id FROM events WHERE id IN (${ph})`,
+          args: args.refs,
+        });
+        const foundIds = new Set(found.rows.map((r) => r.id as string));
+        const missing = args.refs.filter((r) => !foundIds.has(r));
+        if (missing.length > 0) {
+          refsWarning = `Warning: ${missing.length} referenced event(s) not found: ${missing.join(", ")}. Orphan refs may occur from deleted events.`;
+        }
       }
 
       const id = ulid();
@@ -59,11 +74,19 @@ export function registerEventTools(server: McpServer): void {
         type: args.type,
       });
 
+      const result: Record<string, unknown> = {
+        id,
+        node_id: args.node_id,
+        type: args.type,
+        status: "active",
+      };
+      if (refsWarning) result.warning = refsWarning;
+
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ id, node_id: args.node_id, type: args.type, status: "active" }),
+            text: JSON.stringify(result),
           },
         ],
       };
@@ -203,8 +226,8 @@ export function registerEventTools(server: McpServer): void {
     "List events from the knowledge graph, optionally filtered by node, type, status, or time range.",
     {
       node_id: z.string().optional().describe("Filter by node ID"),
-      type: z.string().optional().describe("Filter by event type"),
-      status: z.string().optional().describe("Filter by status (active, resolved, superseded)"),
+      type: z.enum(EVENT_TYPES).optional().describe("Filter by event type"),
+      status: z.enum(EVENT_STATUSES).optional().describe("Filter by status (active, resolved, superseded, archived)"),
       since: z.string().optional().describe("Filter events created after this ISO datetime"),
     },
     async (args) => {

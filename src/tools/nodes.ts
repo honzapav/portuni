@@ -2,7 +2,14 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import { getDb } from "../db.js";
 import { logAudit } from "../audit.js";
-import { NODE_TYPES, SOLO_USER } from "../schema.js";
+import {
+  NODE_TYPES,
+  NODE_STATUSES,
+  NODE_VISIBILITIES,
+  SOLO_USER,
+  TRIGGER_PREVENT_MULTI_PARENT_ORG,
+  TRIGGER_PREVENT_ORPHAN_ON_EDGE_DELETE,
+} from "../schema.js";
 import { NodeRow, NodeSummaryRow } from "../types.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -17,8 +24,8 @@ export function registerNodeTools(server: McpServer): void {
       description: z.string().optional().describe("What this node represents"),
       organization_id: z.string().optional().describe("Organization ID (ULID) -- required for non-organization types. Ignored when type='organization'. The new node will be atomically connected to this organization via belongs_to."),
       meta: z.record(z.string(), z.unknown()).optional().describe("Type-specific JSON data"),
-      status: z.enum(["active", "completed", "archived"]).optional().describe("Node status (default: active)"),
-      visibility: z.enum(["team", "private"]).optional().describe("Visibility (default: team)"),
+      status: z.enum(NODE_STATUSES).optional().describe("Node status (default: active)"),
+      visibility: z.enum(NODE_VISIBILITIES).optional().describe("Visibility (default: team)"),
     },
     async (args) => {
       const db = getDb();
@@ -67,6 +74,16 @@ export function registerNodeTools(server: McpServer): void {
         }
       }
 
+      // B2: Check for duplicate name+type (warning, not block).
+      const dupeNameCheck = await db.execute({
+        sql: "SELECT id, name FROM nodes WHERE name = ? AND type = ?",
+        args: [args.name, args.type],
+      });
+      const nameWarning =
+        dupeNameCheck.rows.length > 0
+          ? `Warning: node with same name and type already exists: ${dupeNameCheck.rows.map((r) => r.id).join(", ")}. This is allowed but may cause ambiguity in name-based lookups.`
+          : null;
+
       const id = ulid();
       const now = new Date().toISOString();
       const edgeId = args.type !== "organization" ? ulid() : null;
@@ -110,19 +127,22 @@ export function registerNodeTools(server: McpServer): void {
         ...(args.organization_id ? { organization_id: args.organization_id } : {}),
       });
 
+      const result = {
+        id,
+        type: args.type,
+        name: args.name,
+        status: args.status ?? "active",
+        ...(args.organization_id && edgeId
+          ? { belongs_to: args.organization_id, edge_id: edgeId }
+          : {}),
+        ...(nameWarning ? { warning: nameWarning } : {}),
+      };
+
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({
-              id,
-              type: args.type,
-              name: args.name,
-              status: args.status ?? "active",
-              ...(args.organization_id && edgeId
-                ? { belongs_to: args.organization_id, edge_id: edgeId }
-                : {}),
-            }),
+            text: JSON.stringify(result),
           },
         ],
       };
@@ -136,7 +156,7 @@ export function registerNodeTools(server: McpServer): void {
       node_id: z.string().describe("Node ID (ULID)"),
       name: z.string().optional().describe("New human-readable name"),
       description: z.string().optional().describe("New description"),
-      status: z.enum(["active", "completed", "archived"]).optional().describe("New status"),
+      status: z.enum(NODE_STATUSES).optional().describe("New status"),
       meta: z.record(z.string(), z.unknown()).optional().describe("New type-specific JSON data"),
     },
     async (args) => {
@@ -220,7 +240,7 @@ export function registerNodeTools(server: McpServer): void {
     "List nodes from the Portuni knowledge graph, optionally filtered by type and/or status.",
     {
       type: z.enum(NODE_TYPES).optional().describe("Filter by node type"),
-      status: z.enum(["active", "completed", "archived"]).optional().describe("Filter by status"),
+      status: z.enum(NODE_STATUSES).optional().describe("Filter by status"),
     },
     async (args) => {
       const db = getDb();
@@ -252,6 +272,154 @@ export function registerNodeTools(server: McpServer): void {
             type: "text" as const,
             text: JSON.stringify(nodes, null, 2),
           },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "portuni_delete_node",
+    "Delete a node from the Portuni knowledge graph. Two modes: 'archive' (default, soft delete -- sets status to archived, preserves edges and history) or 'purge' (hard delete -- permanently removes node and cascade-deletes all edges, files, events, and mirrors). Purge is irreversible. Organizations with children cannot be purged -- re-parent children first.",
+    {
+      node_id: z.string().describe("Node ID (ULID) to delete"),
+      mode: z
+        .enum(["archive", "purge"])
+        .default("archive")
+        .describe("archive (soft delete, default) or purge (hard delete, irreversible)"),
+    },
+    async (args) => {
+      const db = getDb();
+
+      // Verify node exists and fetch its type/name for messages.
+      const existing = await db.execute({
+        sql: "SELECT id, type, name, status FROM nodes WHERE id = ?",
+        args: [args.node_id],
+      });
+      if (existing.rows.length === 0) {
+        return {
+          content: [
+            { type: "text" as const, text: `Error: node ${args.node_id} not found` },
+          ],
+          isError: true,
+        };
+      }
+      const node = existing.rows[0];
+      const nodeType = node.type as string;
+      const nodeName = node.name as string;
+
+      if (args.mode === "archive") {
+        if (node.status === "archived") {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Node ${args.node_id} ("${nodeName}") is already archived.`,
+              },
+            ],
+          };
+        }
+        const now = new Date().toISOString();
+        await db.execute({
+          sql: "UPDATE nodes SET status = 'archived', updated_at = ? WHERE id = ?",
+          args: [now, args.node_id],
+        });
+        await logAudit(SOLO_USER, "archive_node", "node", args.node_id, {
+          type: nodeType,
+          name: nodeName,
+        });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                id: args.node_id,
+                name: nodeName,
+                action: "archived",
+              }),
+            },
+          ],
+        };
+      }
+
+      // --- purge mode ---
+
+      // If this is an organization, check that no non-org children belong to it.
+      if (nodeType === "organization") {
+        const children = await db.execute({
+          sql: `SELECT n.id, n.type, n.name FROM edges e
+                  JOIN nodes n ON n.id = e.source_id
+                 WHERE e.target_id = ?
+                   AND e.relation = 'belongs_to'
+                   AND n.type != 'organization'`,
+          args: [args.node_id],
+        });
+        if (children.rows.length > 0) {
+          const list = children.rows
+            .map((r) => `${r.type}:${r.name} (${r.id})`)
+            .join("; ");
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Error: cannot purge organization "${nodeName}" -- it has ${children.rows.length} child node(s). Re-parent them first: ${list}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
+
+      // Fetch local mirror path before deletion (for informational response).
+      const mirrorRes = await db.execute({
+        sql: "SELECT local_path FROM local_mirrors WHERE user_id = ? AND node_id = ?",
+        args: [SOLO_USER, args.node_id],
+      });
+      const mirrorPath =
+        mirrorRes.rows.length > 0
+          ? (mirrorRes.rows[0].local_path as string)
+          : null;
+
+      // C3: Temporarily drop the orphan-prevention trigger. CASCADE-triggered
+      // deletes on edges fire BEFORE triggers before the parent row is removed,
+      // which would incorrectly block the operation. The tool layer validates
+      // prerequisites above, so disabling the trigger in-transaction is safe.
+      await db.execute("BEGIN");
+      try {
+        await db.execute("DROP TRIGGER IF EXISTS prevent_orphan_on_edge_delete");
+        await db.execute({
+          sql: "DELETE FROM nodes WHERE id = ?",
+          args: [args.node_id],
+        });
+        await db.execute(TRIGGER_PREVENT_ORPHAN_ON_EDGE_DELETE);
+        await db.execute("COMMIT");
+      } catch (err) {
+        await db.execute("ROLLBACK");
+        // Ensure trigger is restored even on rollback (SQLite restores it
+        // automatically if the DROP was inside the rolled-back transaction,
+        // but be explicit for clarity).
+        await db.execute(TRIGGER_PREVENT_ORPHAN_ON_EDGE_DELETE);
+        throw err;
+      }
+
+      await logAudit(SOLO_USER, "purge_node", "node", args.node_id, {
+        type: nodeType,
+        name: nodeName,
+      });
+
+      const response: Record<string, unknown> = {
+        id: args.node_id,
+        name: nodeName,
+        action: "purged",
+      };
+      if (mirrorPath) {
+        response.local_mirror_path = mirrorPath;
+        response.note =
+          "Local mirror folder was NOT deleted from disk. Remove it manually if no longer needed.";
+      }
+
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(response) },
         ],
       };
     },

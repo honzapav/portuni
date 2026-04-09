@@ -4,7 +4,7 @@ import { copyFile, stat } from "node:fs/promises";
 import { join, basename, extname } from "node:path";
 import { getDb } from "../db.js";
 import { logAudit } from "../audit.js";
-import { SOLO_USER } from "../schema.js";
+import { SOLO_USER, FILE_STATUSES } from "../schema.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -49,7 +49,7 @@ export function registerFileTools(server: McpServer): void {
       local_path: z.string().describe("Absolute path to the source file"),
       description: z.string().optional().describe("Description of the file"),
       status: z
-        .enum(["wip", "output"])
+        .enum(FILE_STATUSES)
         .default("wip")
         .describe("File status: wip (work in progress) or output (final)"),
     },
@@ -183,7 +183,7 @@ export function registerFileTools(server: McpServer): void {
     {
       node_id: z.string().optional().describe("Filter by node ID"),
       status: z
-        .enum(["wip", "output"])
+        .enum(FILE_STATUSES)
         .optional()
         .describe("Filter by file status"),
     },

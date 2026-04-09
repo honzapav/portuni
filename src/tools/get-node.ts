@@ -41,6 +41,20 @@ export function registerGetNodeTool(server: McpServer): void {
         };
       }
 
+      // B2: Name-based lookups may be ambiguous if duplicate names exist.
+      if (args.name && result.rows.length > 1) {
+        const matches = result.rows.map((r) => `${r.type}:${r.name} (${r.id})`).join("; ");
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Ambiguous: ${result.rows.length} nodes match name '${args.name}'. Use node_id instead. Matches: ${matches}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
       const row = NodeRow.parse(result.rows[0]);
 
       // 2. Fetch direct edges (both directions) with peer names/types

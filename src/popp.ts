@@ -32,3 +32,36 @@ export const EDGE_RELATIONS = [
   "informed_by",
 ] as const;
 export type EdgeRelation = (typeof EDGE_RELATIONS)[number];
+
+// Canonical event types. Time-ordered knowledge attached to nodes.
+export const EVENT_TYPES = [
+  "decision",
+  "discovery",
+  "blocker",
+  "reference",
+  "milestone",
+  "note",
+  "change",
+] as const;
+export type EventType = (typeof EVENT_TYPES)[number];
+
+// Canonical node statuses.
+export const NODE_STATUSES = ["active", "completed", "archived"] as const;
+export type NodeStatus = (typeof NODE_STATUSES)[number];
+
+// Canonical node visibilities. "group" is planned but not yet implemented.
+export const NODE_VISIBILITIES = ["team", "private"] as const;
+export type NodeVisibility = (typeof NODE_VISIBILITIES)[number];
+
+// Canonical event statuses.
+export const EVENT_STATUSES = [
+  "active",
+  "resolved",
+  "superseded",
+  "archived",
+] as const;
+export type EventStatus = (typeof EVENT_STATUSES)[number];
+
+// Canonical file statuses.
+export const FILE_STATUSES = ["wip", "output"] as const;
+export type FileStatus = (typeof FILE_STATUSES)[number];

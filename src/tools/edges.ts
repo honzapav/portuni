@@ -75,6 +75,19 @@ export function registerEdgeTools(server: McpServer): void {
         }
       }
 
+      // Self-loop prevention
+      if (args.source_id === args.target_id) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: cannot create edge from a node to itself (${args.source_id}). Self-loops are not allowed.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
       // Check for duplicate edge
       const dupeCheck = await db.execute({
         sql: "SELECT id FROM edges WHERE source_id = ? AND target_id = ? AND relation = ?",

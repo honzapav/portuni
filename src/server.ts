@@ -259,6 +259,7 @@ TOOLS:
 - portuni_get_node: Get node details with edges, files, and local mirror path
 - portuni_get_context: Find related nodes by traversing the graph (use this first)
 - portuni_create_node: Create a new node (organization, project, process, area, principle)
+- portuni_delete_node: Delete a node (archive=soft delete, purge=hard delete with cascade). Organizations with children cannot be purged.
 - portuni_connect / portuni_disconnect: Manage edges between nodes
 - portuni_mirror: Create a local folder for a node
 - portuni_store: Publish a file to a node (like git commit)
@@ -278,6 +279,16 @@ ORGANIZATION INVARIANT: Every non-organization node MUST have exactly one belong
 PRINCIPLES AS CULTURE: Principles are not linked to their subjects via an explicit edge. They function as cultural defaults applied to everything in scope. When unsure how to act, look at the principles in the relevant organization. Principles do still belong to an organization via belongs_to (the invariant applies to principles too) -- they are cultural defaults for that organization.
 
 LOCAL MIRRORS: Each node can have a local folder. Use portuni_get_node to find the local_path. The workspace root is configured via PORTUNI_WORKSPACE_ROOT env var. Each mirror has subdirectories: outputs/ (final files), wip/ (work in progress), resources/. Organization workspace folders additionally contain projects/, processes/, areas/, principles/ for organizing child nodes.
+
+EVENT TYPES (strictly enforced): decision, discovery, blocker, reference, milestone, note, change. No other event types are accepted by portuni_log.
+
+NODE STATUSES: active (default), completed, archived. Strictly enforced.
+
+EVENT STATUSES: active (default), resolved, superseded, archived. Use portuni_resolve to mark resolved, portuni_supersede to replace with updated version.
+
+FILE STATUSES: wip (work in progress, default), output (final deliverable). Strictly enforced by portuni_store.
+
+NODE VISIBILITY: team (default), private. "group" is planned but not yet implemented.
 
 EVENTS: Time-ordered knowledge attached to nodes. Log decisions, discoveries, blockers, references, milestones, notes, changes. Use portuni_log to record, portuni_list_events to query. Events appear in portuni_get_node and portuni_get_context responses.`;
 
