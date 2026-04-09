@@ -82,14 +82,11 @@ function buildElements(graph: GraphPayload): cytoscape.ElementDefinition[] {
     };
     const parent = parentOfChild.get(node.id);
     if (parent) data.parent = parent;
-    // Attach persisted position if the backend has one. Only leaves
-    // carry persisted positions -- compound parents (organizations) are
-    // derived from their children's bounding box by cytoscape. The
-    // `preset` layout will pick these up without any physics run; if
-    // positions are missing we fall through to fcose in the data effect.
+    // Attach persisted position if the backend has one. The `preset`
+    // layout will pick these up without any physics run; if positions
+    // are missing we fall through to fcose in the data effect.
     const el: cytoscape.ElementDefinition = { data };
     if (
-      node.type !== "organization" &&
       typeof node.pos_x === "number" &&
       typeof node.pos_y === "number"
     ) {
@@ -326,6 +323,59 @@ function placeNewNode(
 // pixel-perfect restore. Otherwise we fall back to fcose, pinning
 // whatever positioned leaves we do have via fixedNodeConstraint so
 // returning users don't see their anchored nodes move. After the layout
+// After layout, push overlapping organization bounding boxes apart.
+// fcose has no inter-compound repulsion, so we fix overlaps in a
+// simple iterative pass: for each pair of orgs that overlap, shift
+// them apart along the vector between their centers.
+function shiftOrgChildren(org: NodeSingular, dx: number, dy: number): void {
+  const children = org.children();
+  if (children.length === 0) {
+    // Empty org: shift the org node itself (it has a position as a childless compound).
+    org.shift({ x: dx, y: dy });
+  } else {
+    children.forEach((child) => child.shift({ x: dx, y: dy }));
+  }
+}
+
+function separateOverlappingOrgs(cy: Core): void {
+  const orgs = cy.nodes().filter((n) => n.data("type") === "organization");
+  if (orgs.length < 2) return;
+
+  const PAD = 60;
+  const MAX_ITER = 30;
+
+  for (let iter = 0; iter < MAX_ITER; iter++) {
+    let moved = false;
+    for (let i = 0; i < orgs.length; i++) {
+      for (let j = i + 1; j < orgs.length; j++) {
+        const a = orgs[i].boundingBox({});
+        const b = orgs[j].boundingBox({});
+
+        const overlapX = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1) + PAD;
+        const overlapY = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1) + PAD;
+
+        if (overlapX <= 0 || overlapY <= 0) continue;
+
+        const dx = (a.x1 + a.x2) / 2 - (b.x1 + b.x2) / 2;
+        const dy = (a.y1 + a.y2) / 2 - (b.y1 + b.y2) / 2;
+
+        let shiftX = 0;
+        let shiftY = 0;
+        if (overlapX < overlapY) {
+          shiftX = (overlapX / 2) * (dx >= 0 ? 1 : -1);
+        } else {
+          shiftY = (overlapY / 2) * (dy >= 0 ? 1 : -1);
+        }
+
+        shiftOrgChildren(orgs[i], shiftX, shiftY);
+        shiftOrgChildren(orgs[j], -shiftX, -shiftY);
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+}
+
 // settles we persist every leaf's resulting position so the next load
 // qualifies for the preset path.
 function applyInitialLayout(
@@ -342,7 +392,6 @@ function applyInitialLayout(
 
   const saveAll = () => {
     cy.nodes().forEach((n) => {
-      if (n.data("type") === "organization") return;
       const p = n.position();
       queueSave(n.id(), p.x, p.y);
     });
@@ -354,8 +403,9 @@ function applyInitialLayout(
       fit: true,
       padding: 80,
     } as cytoscape.LayoutOptions);
-    // No need to save -- positions came from the DB unchanged. Just fit.
     layout.run();
+    separateOverlappingOrgs(cy);
+    saveAll();
     return;
   }
 
@@ -377,17 +427,17 @@ function applyInitialLayout(
     fit: true,
     padding: 80,
     nodeDimensionsIncludeLabels: true,
-    nodeRepulsion: 9000,
+    nodeRepulsion: 14000,
     idealEdgeLength: 110,
     edgeElasticity: 0.2,
     gravity: 0.22,
     gravityRangeCompound: 1.4,
-    gravityCompound: 0.5,
-    nestingFactor: 0.5,
+    gravityCompound: 1.0,
+    nestingFactor: 0.15,
     numIter: 4500,
     tile: true,
-    tilingPaddingVertical: 36,
-    tilingPaddingHorizontal: 36,
+    tilingPaddingVertical: 80,
+    tilingPaddingHorizontal: 80,
     packComponents: true,
     randomize: !hasAnchors,
     quality: hasAnchors ? "proof" : "default",
@@ -397,11 +447,12 @@ function applyInitialLayout(
   }
 
   const layout = cy.layout(layoutOptions as unknown as cytoscape.LayoutOptions);
-  // Persist the settled positions once fcose stops. Use `one` so we
-  // don't leak a handler across repeat layouts.
   (layout as unknown as { one: (event: string, cb: () => void) => void }).one(
     "layoutstop",
-    saveAll,
+    () => {
+      separateOverlappingOrgs(cy);
+      saveAll();
+    },
   );
   layout.run();
 }
@@ -426,7 +477,7 @@ export default function GraphView({
     new Map(),
   );
   const saveTimerRef = useRef<number | null>(null);
-  const queuePositionSave = (id: string, x: number, y: number) => {
+  const queuePositionSave = useCallback((id: string, x: number, y: number) => {
     pendingSavesRef.current.set(id, { x, y });
     if (saveTimerRef.current !== null) {
       window.clearTimeout(saveTimerRef.current);
@@ -443,7 +494,7 @@ export default function GraphView({
         console.warn("savePositions failed", err);
       });
     }, 300);
-  };
+  }, []);
 
   // Initialize cytoscape once. Starts empty -- the data effect below
   // populates elements and chooses the initial layout strategy based on
@@ -503,23 +554,19 @@ export default function GraphView({
       if (evt.target === cy) onSelect(null);
     });
 
-    // Persist position after every drag. For a leaf node, just save it.
-    // For a compound parent (organization) we walk the descendants --
-    // dragging an org moves all its children and we need to save each
-    // one's new position, because the org itself has no persisted
-    // position (it's derived from its children's bbox).
+    // Persist position after every drag. Save the dragged node and, if
+    // it's an organization, all its descendants too (dragging an org
+    // moves all its children).
     cy.on("dragfree", "node", (evt) => {
       const n = evt.target as NodeSingular;
-      if (n.data("type") === "organization") {
-        n.descendants().forEach((child) => {
-          if (child.data("type") === "organization") return;
-          const p = child.position();
-          queuePositionSave(child.id(), p.x, p.y);
-        });
-        return;
-      }
       const p = n.position();
       queuePositionSave(n.id(), p.x, p.y);
+      if (n.data("type") === "organization") {
+        n.descendants().forEach((child) => {
+          const cp = child.position();
+          queuePositionSave(child.id(), cp.x, cp.y);
+        });
+      }
     });
 
     // Hover is intentionally NOT wired up. Any visual change on hover forces
@@ -748,17 +795,17 @@ export default function GraphView({
       fit: true,
       padding: 80,
       nodeDimensionsIncludeLabels: true,
-      nodeRepulsion: 9000,
+      nodeRepulsion: 14000,
       idealEdgeLength: 110,
       edgeElasticity: 0.2,
       gravity: 0.22,
       gravityRangeCompound: 1.4,
-      gravityCompound: 0.5,
-      nestingFactor: 0.5,
+      gravityCompound: 1.0,
+      nestingFactor: 0.15,
       numIter: 4500,
       tile: true,
-      tilingPaddingVertical: 36,
-      tilingPaddingHorizontal: 36,
+      tilingPaddingVertical: 80,
+      tilingPaddingHorizontal: 80,
       packComponents: true,
       randomize: true,
     } as unknown as cytoscape.LayoutOptions);
@@ -766,15 +813,15 @@ export default function GraphView({
     (layout as unknown as { one: (e: string, cb: () => void) => void }).one(
       "layoutstop",
       () => {
+        separateOverlappingOrgs(cy);
         cy.nodes().forEach((n) => {
-          if (n.data("type") === "organization") return;
           const p = n.position();
           queuePositionSave(n.id(), p.x, p.y);
         });
       },
     );
     layout.run();
-  }, []);
+  }, [queuePositionSave]);
 
   return (
     <div className="relative h-full w-full">

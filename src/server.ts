@@ -13,7 +13,7 @@ import { registerFileTools } from "./tools/files.js";
 import { registerEventTools } from "./tools/events.js";
 
 import { getDb } from "./db.js";
-import { SOLO_USER, NODE_TYPES, EDGE_RELATIONS } from "./schema.js";
+import { SOLO_USER, NODE_TYPES, EDGE_RELATIONS, EVENT_TYPES } from "./schema.js";
 import { NodeRow, NodeSummaryRow } from "./types.js";
 import type { GraphPayload, NodeDetail } from "./api-types.js";
 import { ulid } from "ulid";
@@ -502,9 +502,7 @@ async function main() {
     // layout settles and after the user drops a dragged node. Body shape:
     //   { updates: [{ id, x, y }, ...] }
     // No auth / no audit log -- positions are purely UI state and the MCP
-    // tool layer never touches them. Organization nodes are compound
-    // parents whose position is derived from their children's bbox, so
-    // writing pos_x/pos_y on an org is a no-op we silently skip.
+    // tool layer never touches them.
     if (url.pathname === "/positions" && req.method === "POST") {
       try {
         const body = (await parseBody(req)) as
@@ -531,7 +529,7 @@ async function main() {
           }
           const result = await db.execute({
             sql: `UPDATE nodes SET pos_x = ?, pos_y = ?
-                   WHERE id = ? AND type != 'organization'`,
+                   WHERE id = ?`,
             args: [entry.x, entry.y, entry.id],
           });
           updated += result.rowsAffected;
@@ -732,6 +730,158 @@ async function main() {
         await logAudit(SOLO_USER, "disconnect", "edge", edgeId, {});
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ deleted: edgeId }));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    // Create an event on a node.
+    if (url.pathname === "/events" && req.method === "POST") {
+      try {
+        const body = (await parseBody(req)) as
+          | { node_id?: string; type?: string; content?: string }
+          | undefined;
+        if (!body || !body.node_id || !body.type || !body.content) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "node_id, type, content required" }));
+          return;
+        }
+        if (!(EVENT_TYPES as readonly string[]).includes(body.type)) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              error: `invalid type; must be one of ${EVENT_TYPES.join(", ")}`,
+            }),
+          );
+          return;
+        }
+        const db = getDb();
+        const nodeCheck = await db.execute({
+          sql: "SELECT id FROM nodes WHERE id = ?",
+          args: [body.node_id],
+        });
+        if (nodeCheck.rows.length === 0) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "node not found" }));
+          return;
+        }
+        const id = ulid();
+        const now = new Date().toISOString();
+        await db.execute({
+          sql: `INSERT INTO events (id, node_id, type, content, meta, status, refs, task_ref, created_by, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          args: [id, body.node_id, body.type, body.content, null, "active", null, null, SOLO_USER, now],
+        });
+        await logAudit(SOLO_USER, "log_event", "event", id, {
+          node_id: body.node_id,
+          type: body.type,
+        });
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          id,
+          node_id: body.node_id,
+          type: body.type,
+          content: body.content,
+          status: "active",
+          created_at: now,
+        }));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    // Update an event (content, type, or status).
+    if (url.pathname.startsWith("/events/") && req.method === "PATCH") {
+      const eventId = decodeURIComponent(url.pathname.slice("/events/".length));
+      try {
+        const body = (await parseBody(req)) as
+          | { content?: string; type?: string; status?: string }
+          | undefined;
+        if (!body) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "body required" }));
+          return;
+        }
+        const db = getDb();
+        const existing = await db.execute({
+          sql: "SELECT id, status FROM events WHERE id = ?",
+          args: [eventId],
+        });
+        if (existing.rows.length === 0) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "event not found" }));
+          return;
+        }
+        const updates: string[] = [];
+        const values: (string | null)[] = [];
+        if (typeof body.content === "string" && body.content.trim().length > 0) {
+          updates.push("content = ?");
+          values.push(body.content.trim());
+        }
+        if (typeof body.type === "string") {
+          if (!(EVENT_TYPES as readonly string[]).includes(body.type)) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({
+                error: `invalid type; must be one of ${EVENT_TYPES.join(", ")}`,
+              }),
+            );
+            return;
+          }
+          updates.push("type = ?");
+          values.push(body.type);
+        }
+        if (typeof body.status === "string") {
+          updates.push("status = ?");
+          values.push(body.status);
+        }
+        if (updates.length === 0) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "no fields to update" }));
+          return;
+        }
+        values.push(eventId);
+        await db.execute({
+          sql: `UPDATE events SET ${updates.join(", ")} WHERE id = ?`,
+          args: values,
+        });
+        await logAudit(SOLO_USER, "update_event", "event", eventId, {
+          fields: Object.keys(body),
+        });
+        const updated = await db.execute({
+          sql: "SELECT id, type, content, status, created_at FROM events WHERE id = ?",
+          args: [eventId],
+        });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(updated.rows[0]));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    // Archive an event (soft delete).
+    if (url.pathname.startsWith("/events/") && req.method === "DELETE") {
+      const eventId = decodeURIComponent(url.pathname.slice("/events/".length));
+      try {
+        const db = getDb();
+        const result = await db.execute({
+          sql: "UPDATE events SET status = 'archived' WHERE id = ? AND status != 'archived'",
+          args: [eventId],
+        });
+        if (result.rowsAffected === 0) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "event not found or already archived" }));
+          return;
+        }
+        await logAudit(SOLO_USER, "archive_event", "event", eventId, {});
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ archived: eventId }));
       } catch (err) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: String(err) }));
