@@ -15,7 +15,19 @@ POPP is the organizational model behind Portuni. Five node types capture all wor
 
 ## Graph, not tree
 
-These are peers connected by edges, not a hierarchy. A project can relate to multiple processes and areas simultaneously. `belongs_to` does not imply a tree -- an entity can belong to multiple parents.
+These are peers connected by edges, not a hierarchy. A project can relate to multiple processes and areas simultaneously.
+
+## Organization invariant
+
+Every non-organization node belongs to **exactly one** organization via a `belongs_to` edge. No orphans, no multi-parent. This is the one invariant on the graph topology -- it exists so that ownership is unambiguous, local mirror paths are deterministic, and no entity can exist outside an organizational scope.
+
+An organization is the scoping unit for work. A project, process, area, or principle must belong to exactly one organization. To move a node to a different organization, disconnect and reconnect to the new organization in the same operation -- the invariant is enforced at both directions (no orphan, no multi-parent) at three layers:
+
+1. **`portuni_create_node`** requires an `organization_id` for non-organization types and creates the node plus its `belongs_to` edge atomically.
+2. **`portuni_connect` / `portuni_disconnect`** reject attempts to add a second `belongs_to -> organization` or to remove the only one.
+3. **SQL triggers** on the `edges` table catch any direct SQL that bypasses the tool layer (seed scripts, future REST endpoints, manual fixups).
+
+On startup, an integrity sweep verifies the invariant for all non-organization nodes (including archived). A violation aborts startup with the list of offending nodes so a human can fix them before Portuni serves any requests.
 
 ## Edge types
 
@@ -24,7 +36,7 @@ Portuni uses four flat, non-hierarchical edge relations. All are strictly enforc
 | Relation | Meaning |
 |----------|---------|
 | `related_to` | Lateral, semantically light connection. Near-default -- use when no more specific relation fits |
-| `belongs_to` | Entity is scoped to a larger scope. Can have multiple parents -- does not imply a tree |
+| `belongs_to` | Entity is scoped to its organization. Exactly one per non-organization node -- see the organization invariant above |
 | `applies` | Concrete work uses a repeatable pattern, e.g. a project applies a process |
 | `informed_by` | Knowledge transfer from one node to another (learned from, referenced, drew on) |
 

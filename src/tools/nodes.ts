@@ -10,47 +10,119 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerNodeTools(server: McpServer): void {
   server.tool(
     "portuni_create_node",
-    "Create a new node in the Portuni knowledge graph. Node types (strictly enforced): organization, project, process, area, principle.",
+    "Create a new node in the Portuni knowledge graph. Node types (strictly enforced): organization, project, process, area, principle. Every non-organization node MUST specify organization_id -- it will be atomically connected to that organization via a belongs_to edge. Every non-organization node belongs to exactly one organization.",
     {
       type: z.enum(NODE_TYPES).describe("Node type: organization, project, process, area, or principle"),
       name: z.string().describe("Human-readable name"),
       description: z.string().optional().describe("What this node represents"),
+      organization_id: z.string().optional().describe("Organization ID (ULID) -- required for non-organization types. Ignored when type='organization'. The new node will be atomically connected to this organization via belongs_to."),
       meta: z.record(z.string(), z.unknown()).optional().describe("Type-specific JSON data"),
       status: z.enum(["active", "completed", "archived"]).optional().describe("Node status (default: active)"),
       visibility: z.enum(["team", "private"]).optional().describe("Visibility (default: team)"),
     },
     async (args) => {
       const db = getDb();
+
+      // Validate organization_id requirement: non-org types MUST belong to
+      // exactly one organization. Pre-validate the org exists and has the
+      // right type so the error message is clear rather than a DB-level
+      // FK/trigger error fired deep inside the batch.
+      if (args.type !== "organization") {
+        if (!args.organization_id) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Error: organization_id is required for type=${args.type}. Every non-organization node must belong to exactly one organization.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        const orgCheck = await db.execute({
+          sql: "SELECT id, type FROM nodes WHERE id = ?",
+          args: [args.organization_id],
+        });
+        if (orgCheck.rows.length === 0) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Error: organization_id ${args.organization_id} not found`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        if (orgCheck.rows[0].type !== "organization") {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Error: ${args.organization_id} is a ${orgCheck.rows[0].type}, not an organization`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
+
       const id = ulid();
       const now = new Date().toISOString();
+      const edgeId = args.type !== "organization" ? ulid() : null;
 
-      await db.execute({
-        sql: `INSERT INTO nodes (id, type, name, description, meta, status, visibility, created_by, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [
-          id,
-          args.type,
-          args.name,
-          args.description ?? null,
-          args.meta ? JSON.stringify(args.meta) : null,
-          args.status ?? "active",
-          args.visibility ?? "team",
-          SOLO_USER,
-          now,
-          now,
-        ],
-      });
+      // Atomic batch: node INSERT and (for non-org types) belongs_to edge
+      // INSERT succeed or fail together. Guarantees the org invariant from
+      // the moment the node comes into existence -- there is no window in
+      // which the node exists without its required organization link.
+      const statements: Parameters<typeof db.batch>[0] = [
+        {
+          sql: `INSERT INTO nodes (id, type, name, description, meta, status, visibility, created_by, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          args: [
+            id,
+            args.type,
+            args.name,
+            args.description ?? null,
+            args.meta ? JSON.stringify(args.meta) : null,
+            args.status ?? "active",
+            args.visibility ?? "team",
+            SOLO_USER,
+            now,
+            now,
+          ],
+        },
+      ];
+
+      if (edgeId && args.organization_id) {
+        statements.push({
+          sql: `INSERT INTO edges (id, source_id, target_id, relation, meta, created_by, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          args: [edgeId, id, args.organization_id, "belongs_to", null, SOLO_USER, now],
+        });
+      }
+
+      await db.batch(statements, "write");
 
       await logAudit(SOLO_USER, "create_node", "node", id, {
         type: args.type,
         name: args.name,
+        ...(args.organization_id ? { organization_id: args.organization_id } : {}),
       });
 
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ id, type: args.type, name: args.name, status: args.status ?? "active" }),
+            text: JSON.stringify({
+              id,
+              type: args.type,
+              name: args.name,
+              status: args.status ?? "active",
+              ...(args.organization_id && edgeId
+                ? { belongs_to: args.organization_id, edge_id: edgeId }
+                : {}),
+            }),
           },
         ],
       };

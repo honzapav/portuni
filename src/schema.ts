@@ -110,6 +110,7 @@ export async function ensureSchema(): Promise<void> {
     await db.execute(sql);
   }
   await migrateEnforceTypes(db);
+  await migrateOrgInvariant(db);
 }
 
 // One-shot migration: adds CHECK constraints to `nodes.type` and
@@ -184,4 +185,109 @@ async function migrateEnforceTypes(db: Client): Promise<void> {
   } finally {
     await db.execute("PRAGMA foreign_keys = ON");
   }
+}
+
+// Organization invariant: every non-organization node must have exactly one
+// `belongs_to` edge pointing to an organization. No orphans, no multi-parent.
+//
+// The POPP framework treats organizations as the scoping unit for all work.
+// A project, process, area, or principle must belong to exactly one
+// organization. This keeps ownership unambiguous, makes local mirror paths
+// deterministic, and prevents the "where does this live" confusion that
+// motivated Portuni in the first place.
+//
+// Enforced at three layers:
+//   1. Tool layer (portuni_create_node): atomically creates the node and
+//      its belongs_to edge in a single batch. The `organization_id` param
+//      is required for non-organization types.
+//   2. Tool layer (portuni_connect / portuni_disconnect): runtime checks
+//      reject attempts to add a second belongs_to -> org or to remove the
+//      only belongs_to -> org for a non-org source.
+//   3. DB layer (this migration): two triggers on `edges` that catch any
+//      direct SQL that bypasses the tool layer. Defense in depth for seed
+//      scripts, manual fixups, and future REST endpoints.
+//
+// There is no BEFORE INSERT trigger on `nodes` because SQLite has no
+// deferred constraints: the trigger would fire before the companion edge
+// exists, and always fail. Create-time enforcement therefore lives in the
+// tool layer, which bundles node + edge into one atomic batch.
+async function migrateOrgInvariant(db: Client): Promise<void> {
+  // Idempotent: both triggers use CREATE TRIGGER IF NOT EXISTS so reruns
+  // are no-ops. Installing triggers on a database whose data already
+  // violates the invariant would succeed (triggers only fire on future
+  // changes), so we guard with an explicit invariant check first -- if any
+  // non-org node is an orphan or has multiple belongs_to -> org edges,
+  // abort the migration and surface the offending rows so a human can fix
+  // them before enforcement kicks in.
+  // The invariant applies to every non-organization node regardless of
+  // status -- archived and completed nodes count too. An archived project
+  // that lost its belongs_to would become an undetected orphan after a
+  // restart, which is how "CRUD Test 2" slipped past the first version of
+  // this check. Every startup re-runs this query as an integrity sweep.
+  const violations = await db.execute({
+    sql: `
+      SELECT id, type, name, org_count FROM (
+        SELECT n.id AS id, n.type AS type, n.name AS name,
+               (SELECT COUNT(*)
+                  FROM edges e
+                  JOIN nodes t ON t.id = e.target_id
+                 WHERE e.source_id = n.id
+                   AND e.relation = 'belongs_to'
+                   AND t.type = 'organization') AS org_count
+          FROM nodes n
+         WHERE n.type != 'organization'
+      ) WHERE org_count != 1
+    `,
+    args: [],
+  });
+  if (violations.rows.length > 0) {
+    const details = violations.rows
+      .map((r) => `${r.type}:${r.name} (${r.id}) has ${r.org_count} belongs_to -> organization edges`)
+      .join("; ");
+    throw new Error(
+      `Organization invariant migration aborted: ${violations.rows.length} node(s) violate "exactly one belongs_to -> organization". Fix the data first, then restart. Offenders: ${details}`,
+    );
+  }
+
+  // Prevent multi-parent: a non-organization node cannot gain a second
+  // belongs_to -> organization edge. Fires on INSERT to edges.
+  await db.execute(`
+    CREATE TRIGGER IF NOT EXISTS prevent_multi_parent_org
+    BEFORE INSERT ON edges
+    FOR EACH ROW
+    WHEN NEW.relation = 'belongs_to'
+    BEGIN
+      SELECT RAISE(ABORT, 'non-organization node already belongs to an organization; disconnect the existing belongs_to edge first')
+        WHERE (SELECT type FROM nodes WHERE id = NEW.source_id) != 'organization'
+          AND (SELECT type FROM nodes WHERE id = NEW.target_id) = 'organization'
+          AND EXISTS (
+            SELECT 1 FROM edges e
+              JOIN nodes t ON t.id = e.target_id
+             WHERE e.source_id = NEW.source_id
+               AND e.relation = 'belongs_to'
+               AND t.type = 'organization'
+          );
+    END
+  `);
+
+  // Prevent orphan: the only belongs_to -> organization edge of a
+  // non-organization node cannot be deleted. Fires on DELETE from edges.
+  await db.execute(`
+    CREATE TRIGGER IF NOT EXISTS prevent_orphan_on_edge_delete
+    BEFORE DELETE ON edges
+    FOR EACH ROW
+    WHEN OLD.relation = 'belongs_to'
+    BEGIN
+      SELECT RAISE(ABORT, 'cannot remove last belongs_to -> organization edge; every non-organization node must belong to exactly one organization')
+        WHERE (SELECT type FROM nodes WHERE id = OLD.source_id) != 'organization'
+          AND (SELECT type FROM nodes WHERE id = OLD.target_id) = 'organization'
+          AND (
+            SELECT COUNT(*) FROM edges e
+              JOIN nodes t ON t.id = e.target_id
+             WHERE e.source_id = OLD.source_id
+               AND e.relation = 'belongs_to'
+               AND t.type = 'organization'
+          ) <= 1;
+    END
+  `);
 }
