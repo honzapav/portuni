@@ -13,6 +13,7 @@ import { registerFileTools } from "./tools/files.js";
 import { registerEventTools } from "./tools/events.js";
 import { registerActorTools } from "./tools/actors.js";
 import { registerResponsibilityTools } from "./tools/responsibilities.js";
+import { registerEntityAttributeTools } from "./tools/entity-attributes.js";
 
 import { getDb } from "./db.js";
 import { SOLO_USER, NODE_TYPES, EDGE_RELATIONS, EVENT_TYPES } from "./schema.js";
@@ -310,6 +311,7 @@ function createMcpServer(): McpServer {
   registerEventTools(server);
   registerActorTools(server);
   registerResponsibilityTools(server);
+  registerEntityAttributeTools(server);
   return server;
 }
 
