@@ -7,6 +7,7 @@ export default defineConfig({
   server: {
     port: 4010,
     strictPort: true,
+    allowedHosts: ["portuni.test", "api.portuni.test", "localhost"],
     proxy: {
       "/api": {
         target: "http://localhost:4011",
