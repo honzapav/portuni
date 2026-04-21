@@ -54,55 +54,6 @@ Recommended: run in a tmux session so it persists in the background:
 tmux new-session -d -s portuni 'cd ~/Dev/projekty/portuni && npx varlock run -- npm run dev'
 ```
 
-## Claude Code integration
-
-### Global MCP config
-
-Add to `~/.claude.json`:
-
-```json
-{
-  "mcpServers": {
-    "portuni": {
-      "type": "http",
-      "url": "http://localhost:3001/mcp"
-    }
-  }
-}
-```
-
-:::caution
-Use `type: "http"` (Streamable HTTP), not `"sse"`. Claude Code ignores SSE transport in global config.
-:::
-
-### SessionStart hook
-
-The hook at `scripts/portuni-context.sh` automatically injects graph context when you start a Claude Code session inside a Portuni workspace folder. It shows which node you are working in, connected nodes, and recent events.
-
-Register it in `~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/absolute/path/to/portuni/scripts/portuni-context.sh",
-            "timeout": 3
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Replace the `command` path with the absolute path to your Portuni checkout.
-
-The hook is **registered once per user, globally**, not per Portuni instance. It fires on every Claude Code session start and asks the Portuni server whether the current working directory matches a known workspace. If nothing matches, it exits silently without touching your context.
-
 ## Running multiple instances
 
 Portuni instances are fully independent: each has its own database, its own workspace root, and its own port. To run more than one in parallel:
@@ -113,34 +64,8 @@ Portuni instances are fully independent: each has its own database, its own work
    - `PORTUNI_WORKSPACE_ROOT` – pick a different workspace root
    - optionally `PORTUNI_USER_EMAIL` / `PORTUNI_USER_NAME`
 3. **Start each instance in its own tmux session** with a distinct session name.
-4. **Register each instance as its own MCP server** in `~/.claude.json`:
 
-   ```json
-   {
-     "mcpServers": {
-       "portuni": {
-         "type": "http",
-         "url": "http://localhost:3001/mcp"
-       },
-       "portuni-alt": {
-         "type": "http",
-         "url": "http://localhost:3002/mcp"
-       }
-     }
-   }
-   ```
-
-### SessionStart hook with multiple instances
-
-The hook script accepts a space-separated list of base URLs via the `PORTUNI_URLS` environment variable. It tries each URL in order and uses the first server whose workspace matches the current working directory. If no server matches, the hook exits silently.
-
-Export the variable in your shell startup file (e.g. `~/.zshrc`):
-
-```bash
-export PORTUNI_URLS="http://localhost:3001 http://localhost:3002"
-```
-
-If `PORTUNI_URLS` is not set, the hook falls back to `PORTUNI_URL` (single URL), and finally to `http://localhost:3001` as the default. You only need one hook entry in `~/.claude/settings.json` regardless of how many instances you run – the script handles routing.
+Each running instance is a separate MCP endpoint. See the [MCP Clients](/clients/overview/) section for how to register multiple endpoints with your AI CLI.
 
 ## Verify
 
@@ -156,3 +81,7 @@ npm test
 ```
 
 Uses Node.js built-in test runner (`node:test`). No external test framework needed.
+
+## Connect a client
+
+Portuni on its own is a passive server. To actually use it, connect an MCP client. See the [MCP Clients](/clients/overview/) section for per-client instructions – including how to grant the client filesystem access to your mirror folders.

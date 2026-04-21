@@ -17,11 +17,21 @@ export default defineConfig({
 					],
 				},
 				{
+					label: 'MCP Clients',
+					items: [
+						{ label: 'Overview', slug: 'clients/overview' },
+						{ label: 'Claude Code', slug: 'clients/claude-code' },
+						{ label: 'Codex CLI', slug: 'clients/codex-cli' },
+						{ label: 'Gemini CLI', slug: 'clients/gemini-cli' },
+					],
+				},
+				{
 					label: 'Concepts',
 					items: [
 						{ label: 'POPP Framework', slug: 'concepts/popp' },
 						{ label: 'Events', slug: 'concepts/events' },
 						{ label: 'Local Mirrors', slug: 'concepts/mirrors' },
+						{ label: 'Filesystem Permissions', slug: 'concepts/permissions' },
 					],
 				},
 				{
