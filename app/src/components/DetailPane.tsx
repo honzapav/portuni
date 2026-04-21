@@ -14,6 +14,7 @@ import {
   Plus,
   Archive,
   Save,
+  User,
 } from "lucide-react";
 import type {
   NodeDetail,
@@ -1245,9 +1246,9 @@ function OwnerPicker({
         className="flex w-full items-center gap-2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-left text-[11.5px] transition-colors hover:border-[var(--color-border-strong)] disabled:opacity-50"
       >
         {node.owner ? (
-          <span className="flex-1 truncate text-[var(--color-text)]">
-            {"\u{1F464} "}
-            {node.owner.name}
+          <span className="flex flex-1 items-center gap-1.5 truncate text-[var(--color-text)]">
+            <User size={12} className="shrink-0 text-[var(--color-text-dim)]" />
+            <span className="truncate">{node.owner.name}</span>
           </span>
         ) : (
           <span className="flex-1 text-[var(--color-text-dim)]">
@@ -1296,9 +1297,9 @@ function OwnerPicker({
                         : ""
                     }`}
                   >
-                    <span className="flex-1 truncate text-[var(--color-text)]">
-                      {"\u{1F464} "}
-                      {a.name}
+                    <span className="flex flex-1 items-center gap-1.5 truncate text-[var(--color-text)]">
+                      <User size={12} className="shrink-0 text-[var(--color-text-dim)]" />
+                      <span className="truncate">{a.name}</span>
                     </span>
                   </button>
                 ))
