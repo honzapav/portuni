@@ -407,10 +407,22 @@ export async function runMigration006(db: Client): Promise<void> {
   await db.execute("CREATE INDEX IF NOT EXISTS idx_tools_node ON tools(node_id)");
   await db.execute(TRIGGER_TOOLS_VALID_NODE_TYPE);
 
-  // 6. Three new columns on nodes (additive ALTER TABLE)
-  await db.execute("ALTER TABLE nodes ADD COLUMN owner_id TEXT REFERENCES actors(id) ON DELETE SET NULL");
-  await db.execute("ALTER TABLE nodes ADD COLUMN lifecycle_state TEXT");
-  await db.execute("ALTER TABLE nodes ADD COLUMN goal TEXT");
+  // 6. Three new columns on nodes (additive ALTER TABLE).
+  //    Must be idempotent: DDL_MIGRATION_006 runs before this migration on
+  //    startup and creates the `actors` table, which in turn makes the old
+  //    isApplied check return true before ALTER TABLE ran. If columns already
+  //    exist (fresh install via updated DDL), skip — re-run must not crash.
+  const info = await db.execute("PRAGMA table_info(nodes)");
+  const existingCols = new Set(info.rows.map((r) => r.name as string));
+  if (!existingCols.has("owner_id")) {
+    await db.execute("ALTER TABLE nodes ADD COLUMN owner_id TEXT REFERENCES actors(id) ON DELETE SET NULL");
+  }
+  if (!existingCols.has("lifecycle_state")) {
+    await db.execute("ALTER TABLE nodes ADD COLUMN lifecycle_state TEXT");
+  }
+  if (!existingCols.has("goal")) {
+    await db.execute("ALTER TABLE nodes ADD COLUMN goal TEXT");
+  }
 
   // 7. Owner validation trigger
   await db.execute(TRIGGER_NODES_OWNER_MUST_BE_REAL_PERSON);
@@ -886,11 +898,19 @@ const MIGRATIONS: Migration[] = [
   {
     id: "006_people_responsibilities",
     isApplied: async (db) => {
-      const r = await db.execute({
+      // Check BOTH the new table AND the three new columns on nodes.
+      // DDL_MIGRATION_006 runs before this migration during ensureSchema()
+      // and unconditionally creates the `actors` table via CREATE TABLE IF
+      // NOT EXISTS — so checking only that table would spuriously report
+      // "applied" on databases where the ALTER TABLE statements never ran.
+      const tableCheck = await db.execute({
         sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='actors'",
         args: [],
       });
-      return r.rows.length > 0;
+      if (tableCheck.rows.length === 0) return false;
+      const info = await db.execute("PRAGMA table_info(nodes)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      return cols.has("owner_id") && cols.has("lifecycle_state") && cols.has("goal");
     },
     up: async (db) => {
       await runMigration006(db);
