@@ -54,6 +54,7 @@ export const LIFECYCLE_COLORS: Record<string, "green" | "yellow" | "red" | "gray
 export {
   NODE_TYPES,
   EDGE_RELATIONS as RELATION_TYPES,
+  EVENT_TYPES,
   LIFECYCLE_STATES_BY_TYPE,
 } from "../../src/popp";
 export type {

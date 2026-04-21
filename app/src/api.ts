@@ -98,6 +98,28 @@ export function deleteEdge(id: string): Promise<{ deleted: string }> {
   );
 }
 
+export function createEvent(input: {
+  node_id: string;
+  type: string;
+  content: string;
+}): Promise<{ id: string }> {
+  return jsonRequest<{ id: string }>("POST", "/events", input);
+}
+
+export function updateEvent(
+  id: string,
+  patch: { content?: string; type?: string; status?: string },
+): Promise<unknown> {
+  return jsonRequest("PATCH", `/events/${encodeURIComponent(id)}`, patch);
+}
+
+export function archiveEvent(id: string): Promise<{ archived: string }> {
+  return jsonRequest<{ archived: string }>(
+    "DELETE",
+    `/events/${encodeURIComponent(id)}`,
+  );
+}
+
 // Persist cytoscape node positions to the backend. Called after the
 // initial layout settles and after every dragfree event. Fire and forget
 // -- positions are soft state, losing one write is not catastrophic, so
