@@ -51,14 +51,14 @@ Portuni listens on `http://localhost:3001` by default. Set `PORT` to change it.
 If you'd like it to stay running in the background (so it survives closing the terminal), drop it into a tmux session:
 
 ```bash
-tmux new-session -d -s portuni 'cd ~/Dev/projekty/portuni && npx varlock run -- npm run dev'
+tmux new-session -d -s portuni -c /path/to/portuni 'npx varlock run -- npm run dev'
 ```
 
 ## Running multiple instances
 
 Portuni instances are independent: each has its own database, its own workspace root, and its own port. To run more than one side by side:
 
-1. **Clone the repo in a second location** (e.g. `~/Dev/projekty/portuni-alt`). Each clone keeps its own local SQLite file.
+1. **Clone the repo in a second location** (e.g. `/path/to/portuni-alt`). Each clone keeps its own local SQLite file.
 2. **Give each instance distinct values** in its `.env.local`:
    - `PORT` – pick a different port, e.g. `3002`
    - `PORTUNI_WORKSPACE_ROOT` – pick a different workspace root

@@ -36,7 +36,7 @@ For everyday Portuni work, `workspace-write` is the one that matters.
 
 ## Letting Codex into your mirror folder
 
-Here's the situation that trips people up. You launch Codex from, say, `~/Dev/projekty/acme-marketing`, but a Portuni mirror lives at `~/Workspaces/portuni/q2-rebrand`. In `workspace-write` mode, that mirror is outside Codex's reach. It'll fail to write there – silently, if you're not watching.
+Here's the situation that trips people up. You launch Codex from, say, `~/code/acme-marketing`, but a Portuni mirror lives at `~/Workspaces/portuni/q2-rebrand`. In `workspace-write` mode, that mirror is outside Codex's reach. It'll fail to write there – silently, if you're not watching.
 
 Three ways to fix that:
 
