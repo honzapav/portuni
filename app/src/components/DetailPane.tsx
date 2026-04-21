@@ -88,7 +88,7 @@ export default function DetailPane({
     return (
       <PaneShell onClose={() => onSelect(null)} canGoBack={false} onBack={onBack}>
         <div className="flex h-full items-center justify-center text-[12px] text-[var(--color-text-dim)]">
-          Loading...
+          Načítám...
         </div>
       </PaneShell>
     );
@@ -191,7 +191,7 @@ function DetailPaneBody({
   const handleArchive = async () => {
     if (
       !confirm(
-        `Archive "${node.name}"? It will be hidden from the graph but edges and history stay in the DB.`,
+        `Archivovat „${node.name}"? Uzel bude skryt z grafu, ale vazby a historie zůstanou v databázi.`,
       )
     ) {
       return;
@@ -312,13 +312,13 @@ function DetailPaneBody({
       {/* Scroll area */}
       <div className="scroll-thin flex-1 overflow-y-auto">
         {(editing || node.description) && (
-          <Section title={editing ? "Description" : undefined}>
+          <Section title={editing ? "Popis" : undefined}>
             {editing ? (
               <textarea
                 value={draftDescription}
                 onChange={(e) => setDraftDescription(e.target.value)}
                 rows={5}
-                placeholder="Describe what this node represents..."
+                placeholder="Popište, co tento uzel reprezentuje..."
                 className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
               />
             ) : (
@@ -418,7 +418,7 @@ function DetailPaneBody({
         )}
 
         {/* Connections — always shown in edit mode so you can manage them */}
-        <Section title="Connections">
+        <Section title="Propojení">
           {grouped.size > 0 ? (
             <div className="space-y-4">
               {Array.from(grouped.entries()).map(([relation, edges]) => (
@@ -442,7 +442,7 @@ function DetailPaneBody({
             </div>
           ) : (
             <div className="mb-3 text-[11px] text-[var(--color-text-dim)]">
-              No connections yet.
+              Zatím žádná propojení.
             </div>
           )}
           {graph && (
@@ -457,7 +457,7 @@ function DetailPaneBody({
 
         {/* Events */}
         {node.events.length > 0 && (
-          <Section title="Recent events">
+          <Section title="Nedávné události">
             <div className="space-y-2.5">
               {node.events.slice(0, 6).map((evt) => (
                 <div
@@ -480,7 +480,7 @@ function DetailPaneBody({
               ))}
               {node.events.length > 6 && (
                 <div className="text-[10.5px] text-[var(--color-text-dim)]">
-                  + {node.events.length - 6} more
+                  + další {node.events.length - 6}
                 </div>
               )}
             </div>
@@ -489,7 +489,7 @@ function DetailPaneBody({
 
         {/* Files */}
         {node.files.length > 0 && (
-          <Section title="Files">
+          <Section title="Soubory">
             <div className="space-y-1">
               {node.files.map((f) => (
                 <div
@@ -521,7 +521,7 @@ function DetailPaneBody({
 
         {/* Local mirror */}
         {node.local_mirror && (
-          <Section title="Local mirror">
+          <Section title="Lokální zrcadlo">
             <div className="flex items-start gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
               <Folder
                 size={12}
@@ -535,7 +535,7 @@ function DetailPaneBody({
         )}
 
         {editing && (
-          <Section title="Danger zone">
+          <Section title="Nebezpečná oblast">
             <button
               onClick={handleArchive}
               disabled={busy}
@@ -557,11 +557,11 @@ function DetailPaneBody({
               }}
             >
               <Archive size={12} />
-              Archive this node
+              Archivovat tento uzel
             </button>
             <p className="mt-2 text-[10px] text-[var(--color-text-dim)]">
-              The node is hidden from the graph but its edges and events stay
-              in the database for audit.
+              Uzel bude skryt z grafu, ale jeho vazby a události zůstanou
+              v databázi pro audit.
             </p>
           </Section>
         )}
@@ -577,14 +577,14 @@ function DetailPaneBody({
               className="flex flex-1 items-center justify-center gap-2 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[12px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)] disabled:opacity-50"
             >
               <Save size={13} />
-              {saving ? "Saving..." : "Save changes"}
+              {saving ? "Ukládám..." : "Uložit změny"}
             </button>
             <button
               onClick={cancelEdit}
               disabled={saving}
               className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2.5 text-[12px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
             >
-              Cancel
+              Zrušit
             </button>
           </div>
         ) : (
@@ -619,17 +619,17 @@ function PaneShell({
           className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)] disabled:opacity-30 disabled:hover:text-[var(--color-text-dim)]"
         >
           <ArrowLeft size={12} />
-          Back
+          Zpět
         </button>
         <div className="flex items-center gap-1">
           {onEdit && !editing && (
             <button
               onClick={onEdit}
-              title="Edit node"
+              title="Upravit uzel"
               className="flex h-6 items-center gap-1.5 rounded px-2 text-[11px] text-[var(--color-text-dim)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
             >
               <Pencil size={12} />
-              Edit
+              Upravit
             </button>
           )}
           <button
@@ -705,7 +705,7 @@ function ConnectionLink({
           onRemove();
         }}
         disabled={disabled}
-        title="Remove edge"
+        title="Odebrat vazbu"
         className="ml-0.5 flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] opacity-0 transition-all group-hover:opacity-100 disabled:pointer-events-none"
         onMouseEnter={(e) => {
           e.currentTarget.style.background = "var(--color-danger-bg)";
@@ -752,7 +752,7 @@ function AddEdgeForm({
         className="mt-3 flex items-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[11px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
       >
         <Plus size={12} />
-        Add connection
+        Přidat propojení
       </button>
     );
   }
@@ -780,7 +780,7 @@ function AddEdgeForm({
     <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
       <div className="mb-2 flex items-center justify-between">
         <div className="font-mono text-[9.5px] uppercase tracking-widest text-[var(--color-text-dim)]">
-          New connection
+          Nové propojení
         </div>
         <button
           onClick={() => setOpen(false)}
@@ -812,7 +812,7 @@ function AddEdgeForm({
             onClick={() =>
               setDirection((d) => (d === "outgoing" ? "incoming" : "outgoing"))
             }
-            title="Swap direction"
+            title="Otočit směr"
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
           >
             {direction === "outgoing" ? "→" : "←"}
@@ -825,7 +825,7 @@ function AddEdgeForm({
           disabled={!targetId || submitting || disabled}
           className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[11px] text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
         >
-          {submitting ? "Adding..." : "Add connection"}
+          {submitting ? "Přidávám..." : "Přidat propojení"}
         </button>
       </div>
     </div>
@@ -918,7 +918,7 @@ function NodePicker({
             </span>
           </>
         ) : (
-          <span className="text-[var(--color-text-dim)]">Choose node...</span>
+          <span className="text-[var(--color-text-dim)]">Vyberte uzel...</span>
         )}
       </button>
 
@@ -930,14 +930,14 @@ function NodePicker({
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Search..."
+              placeholder="Hledat..."
               className="w-full bg-transparent text-[11.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] outline-none"
             />
           </div>
           <div className="scroll-thin max-h-[240px] overflow-y-auto py-1">
             {filtered.length === 0 ? (
               <div className="px-3 py-2 text-[11px] text-[var(--color-text-dim)]">
-                No matches
+                Žádné výsledky
               </div>
             ) : (
               filtered.map((n) => (
@@ -1036,7 +1036,7 @@ function LifecycleDropdown({
         type="button"
         onClick={() => setOpen((o) => !o)}
         disabled={saving}
-        title="Change lifecycle state"
+        title="Změnit stav životního cyklu"
         className={`${badgeClass} cursor-pointer transition-opacity hover:opacity-80 disabled:opacity-50`}
       >
         {value ?? "nevyplněno"}
@@ -1135,7 +1135,7 @@ function EditableGoal({
         </div>
         <button
           onClick={() => setEditing(true)}
-          title="Edit goal"
+          title="Upravit účel"
           className="flex h-6 items-center gap-1 rounded px-1.5 text-[10.5px] text-[var(--color-text-dim)] opacity-0 transition-all hover:text-[var(--color-text)] group-hover:opacity-100"
         >
           <Pencil size={11} />
@@ -1161,14 +1161,14 @@ function EditableGoal({
           className="flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[11px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
         >
           <Save size={11} />
-          {saving ? "Saving..." : "Save"}
+          {saving ? "Ukládám..." : "Uložit"}
         </button>
         <button
           onClick={cancel}
           disabled={saving}
           className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[11px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
         >
-          Cancel
+          Zrušit
         </button>
       </div>
     </div>
@@ -2163,7 +2163,7 @@ function IdCopy({ id }: { id: string }) {
   return (
     <button
       onClick={handle}
-      title="Click to copy ID"
+      title="Kliknutím zkopírujete ID"
       className="group inline-flex items-center gap-1.5 rounded font-mono text-[10px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text-muted)]"
     >
       <span>{id}</span>
@@ -2246,19 +2246,19 @@ function ActionButtons({ node }: { node: NodeDetail }) {
         {copiedPrompt ? (
           <>
             <Check size={13} />
-            Copied
+            Zkopírováno
           </>
         ) : (
           <>
             <Sparkles size={13} />
-            Copy agent prompt
+            Zkopírovat prompt pro agenta
           </>
         )}
       </button>
       {node.local_mirror && (
         <button
           onClick={handleCopyCd}
-          title="Copy cd command"
+          title="Zkopírovat příkaz cd"
           className="flex items-center justify-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5 text-[11px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
         >
           {copiedCd ? <Check size={12} /> : <Copy size={12} />}

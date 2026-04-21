@@ -1036,10 +1036,10 @@ export default function GraphView({
       />
       <button
         onClick={handleAutoLayout}
-        title="Re-run automatic layout"
+        title="Znovu spustit automatické rozložení"
         className="absolute bottom-4 right-4 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[12.5px] font-medium text-[var(--color-text-muted)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
       >
-        Auto-layout
+        Auto-rozložení
       </button>
     </div>
   );

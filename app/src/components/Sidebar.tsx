@@ -68,12 +68,12 @@ export default function Sidebar({
             Portuni
           </div>
           <div className="text-[10px] uppercase tracking-widest text-[var(--color-text-dim)]">
-            Knowledge graph
+            Znalostní graf
           </div>
         </div>
         <button
           onClick={onThemeToggle}
-          title={theme === "dark" ? "Switch to light" : "Switch to dark"}
+          title={theme === "dark" ? "Přepnout na světlý režim" : "Přepnout na tmavý režim"}
           className="flex h-7 w-7 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
         >
           {theme === "dark" ? <Sun size={13} /> : <Moon size={13} />}
@@ -121,7 +121,7 @@ export default function Sidebar({
 
       <div className="border-t border-[var(--color-border)] px-5 py-3 text-[10px] text-[var(--color-text-dim)]">
         {view === "graph"
-          ? "Click any node to open detail. Drag to pan, scroll to zoom."
+          ? "Kliknutím na uzel otevřete detail. Tažením posunete pohled, kolečkem přibližujete."
           : "Klikněte na aktéra v tabulce pro úpravu."}
       </div>
     </aside>
@@ -212,7 +212,7 @@ function GraphSidebarContent({
             name="search"
             value={query}
             onChange={(e) => onQuery(e.target.value)}
-            placeholder="Search nodes..."
+            placeholder="Hledat uzly..."
             className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] py-2 pl-8 pr-8 text-[12.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] transition-colors focus:border-[var(--color-accent-dim)]"
           />
           {query.length > 0 && (
@@ -232,7 +232,7 @@ function GraphSidebarContent({
           <div className="scroll-thin max-h-[280px] overflow-y-auto">
             {matches.length === 0 ? (
               <div className="px-3 py-4 text-center text-[11px] text-[var(--color-text-dim)]">
-                No matches
+                Žádné výsledky
               </div>
             ) : (
               matches.map((n) => (
@@ -251,7 +251,7 @@ function GraphSidebarContent({
       {/* Filters */}
       {q.length === 0 && (
         <div className="flex-1 overflow-y-auto scroll-thin px-5 py-5">
-          <Section title="Organizations">
+          <Section title="Organizace">
             <div className="space-y-1.5">
               {graph.nodes
                 .filter((n) => n.type === "organization")
@@ -299,7 +299,7 @@ function GraphSidebarContent({
             </div>
           </Section>
 
-          <Section title="Edge types">
+          <Section title="Typy vazeb">
             <div className="space-y-1.5">
               {RELATION_TYPES.map((r) => {
                 const enabled = !disabledRelations.has(r);
@@ -331,7 +331,7 @@ function GraphSidebarContent({
             </div>
           </Section>
 
-          <Section title="Node types">
+          <Section title="Typy uzlů">
             <div className="space-y-1.5">
               {orderedTypes.map((type) => {
                 const count = typeCounts.get(type) ?? 0;
@@ -361,16 +361,16 @@ function GraphSidebarContent({
             </div>
           </Section>
 
-          <Section title="Overview">
+          <Section title="Přehled">
             <div className="space-y-1.5 px-2">
               <div className="flex items-center justify-between text-[11.5px]">
-                <span className="text-[var(--color-text-muted)]">Nodes</span>
+                <span className="text-[var(--color-text-muted)]">Uzly</span>
                 <span className="font-mono text-[var(--color-text)]">
                   {graph.nodes.length}
                 </span>
               </div>
               <div className="flex items-center justify-between text-[11.5px]">
-                <span className="text-[var(--color-text-muted)]">Edges</span>
+                <span className="text-[var(--color-text-muted)]">Vazby</span>
                 <span className="font-mono text-[var(--color-text)]">
                   {graph.edges.length}
                 </span>

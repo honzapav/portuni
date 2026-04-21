@@ -168,19 +168,19 @@ export default function App() {
         {graphError && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="rounded-md border border-red-900 bg-red-950/30 px-6 py-4 text-[12px] text-red-300">
-              <div className="mb-2 font-semibold">Failed to load graph</div>
+              <div className="mb-2 font-semibold">Nepodařilo se načíst graf</div>
               <div className="font-mono text-[10.5px] opacity-80">
                 {graphError}
               </div>
               <div className="mt-3 text-[10.5px] text-red-200/70">
-                Is the Portuni server running on :3001?
+                Běží Portuni server na portu 4011?
               </div>
             </div>
           </div>
         )}
         {!graph && !graphError && (
           <div className="absolute inset-0 flex items-center justify-center text-[11px] text-[var(--color-text-dim)]">
-            Loading graph...
+            Načítám graf...
           </div>
         )}
         {graph && view === "graph" && (
