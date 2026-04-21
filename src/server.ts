@@ -488,6 +488,41 @@ async function main() {
       return;
     }
 
+    // List actors across the organization, filterable by type or placeholder
+    // status. Used by future Actors UI; DetailPane gets its assignees inline
+    // via loadNodeDetail, so this endpoint is optional for the initial ship.
+    if (url.pathname === "/actors" && req.method === "GET") {
+      try {
+        const db = getDb();
+        const clauses: string[] = [];
+        const values: (string | number)[] = [];
+        const orgId = url.searchParams.get("org_id");
+        if (orgId) { clauses.push("org_id = ?"); values.push(orgId); }
+        const type = url.searchParams.get("type");
+        if (type === "person" || type === "automation") {
+          clauses.push("type = ?"); values.push(type);
+        }
+        const placeholder = url.searchParams.get("is_placeholder");
+        if (placeholder === "1" || placeholder === "true") {
+          clauses.push("is_placeholder = 1");
+        } else if (placeholder === "0" || placeholder === "false") {
+          clauses.push("is_placeholder = 0");
+        }
+        const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+        const rows = await db.execute({
+          sql: `SELECT id, org_id, type, name, description, is_placeholder, user_id, notes, external_id
+                FROM actors ${where} ORDER BY type, name`,
+          args: values,
+        });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(rows.rows));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
     if (url.pathname.startsWith("/nodes/") && req.method === "GET") {
       const nodeId = decodeURIComponent(url.pathname.slice("/nodes/".length));
       if (!nodeId) {
