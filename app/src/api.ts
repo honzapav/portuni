@@ -7,10 +7,10 @@ import type {
 } from "./types";
 
 // Actor shape returned by GET /actors. Mirrors the DB row; separate from
-// NodeDetail's assignee shape (which is narrower — just id/name/type).
+// NodeDetail's assignee shape (which is narrower – just id/name/type).
+// Actors are global (cross-organizational) – no org_id field.
 export type Actor = {
   id: string;
-  org_id: string;
   type: "person" | "automation";
   name: string;
   description: string | null;
@@ -136,12 +136,10 @@ export function savePositions(
 // -- Actors --------------------------------------------------------------
 
 export async function fetchActors(params?: {
-  org_id?: string;
   type?: "person" | "automation";
   is_placeholder?: boolean;
 }): Promise<Actor[]> {
   const qs = new URLSearchParams();
-  if (params?.org_id) qs.set("org_id", params.org_id);
   if (params?.type) qs.set("type", params.type);
   if (params?.is_placeholder !== undefined) {
     qs.set("is_placeholder", params.is_placeholder ? "1" : "0");
@@ -152,7 +150,6 @@ export async function fetchActors(params?: {
 }
 
 export function createActor(input: {
-  org_id: string;
   type: "person" | "automation";
   name: string;
   description?: string;

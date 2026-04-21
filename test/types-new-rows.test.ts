@@ -12,7 +12,6 @@ describe("ActorRow schema", () => {
   it("accepts a valid person row", () => {
     const ok = ActorRow.parse({
       id: "01HZ" + "X".repeat(22),
-      org_id: "01ORG" + "X".repeat(21),
       type: "person",
       name: "Honza Pav",
       description: null,
@@ -30,7 +29,6 @@ describe("ActorRow schema", () => {
   it("accepts an automation row without user_id", () => {
     const ok = ActorRow.parse({
       id: "01HZ" + "X".repeat(22),
-      org_id: "01ORG" + "X".repeat(21),
       type: "automation",
       name: "Stripe sync",
       description: "Pulls daily Stripe reports",

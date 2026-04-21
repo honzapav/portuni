@@ -19,14 +19,13 @@ import { ActorRow } from "../types.js";
 const ACTOR_TYPES = ["person", "automation"] as const;
 
 const CreateActorInput = z.object({
-  org_id: z.string().describe("Organization node ID (ULID). Must reference a node of type=organization."),
   type: z.enum(ACTOR_TYPES).describe("Actor type: person (human) or automation (script, bot, integration)."),
   name: z.string().describe("Display name."),
   description: z.string().optional().describe("Optional description."),
   is_placeholder: z.boolean().optional().describe("Person-only. True means a role sketch without a real human yet (e.g. 'need a lawyer'). Must be false for automations."),
   user_id: z.string().optional().describe("Person-only. Links the actor to a users.id row. Must be null for automations."),
   notes: z.string().optional().describe("Optional freeform notes."),
-  external_id: z.string().optional().describe("Optional external system id (unique per org when set)."),
+  external_id: z.string().optional().describe("Optional external system id (globally unique when set)."),
 });
 type CreateActorInput = z.infer<typeof CreateActorInput>;
 
@@ -42,7 +41,6 @@ const UpdateActorInput = z.object({
 type UpdateActorInput = z.infer<typeof UpdateActorInput>;
 
 const ListActorsInput = z.object({
-  org_id: z.string().optional().describe("Filter by organization."),
   type: z.enum(ACTOR_TYPES).optional().describe("Filter by actor type."),
   is_placeholder: z.boolean().optional().describe("Filter by placeholder flag."),
 });
@@ -103,11 +101,10 @@ export async function createActor(
   const isPlaceholder = parsed.is_placeholder ? 1 : 0;
 
   await db.execute({
-    sql: `INSERT INTO actors (id, org_id, type, name, description, is_placeholder, user_id, notes, external_id, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO actors (id, type, name, description, is_placeholder, user_id, notes, external_id, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       id,
-      parsed.org_id,
       parsed.type,
       parsed.name,
       parsed.description ?? null,
@@ -121,7 +118,6 @@ export async function createActor(
   });
 
   await writeAudit(db, createdBy, "create_actor", "actor", id, {
-    org_id: parsed.org_id,
     type: parsed.type,
     name: parsed.name,
   });
@@ -223,10 +219,6 @@ export async function listActors(
   const conditions: string[] = [];
   const values: InValue[] = [];
 
-  if (parsed.org_id !== undefined) {
-    conditions.push("org_id = ?");
-    values.push(parsed.org_id);
-  }
   if (parsed.type !== undefined) {
     conditions.push("type = ?");
     values.push(parsed.type);
@@ -290,7 +282,6 @@ export async function archiveActor(
   });
 
   await writeAudit(db, archivedBy, "archive_actor", "actor", actorId, {
-    org_id: existing.org_id,
     type: existing.type,
     name: existing.name,
   });
@@ -301,16 +292,15 @@ export async function archiveActor(
 export function registerActorTools(server: McpServer): void {
   server.tool(
     "portuni_create_actor",
-    "Create an actor (person or automation) in an organization's registry. ONLY create when the user explicitly asks -- do not spawn actors as a side effect of other work. Person: a human collaborator; can be a real person (link via user_id) or a placeholder role (is_placeholder=true) such as 'need a lawyer' before anyone is hired. Automation: a script, bot, or integration; must NOT be a placeholder and must NOT have user_id. The org_id must reference an existing node of type=organization.",
+    "Create an actor (person or automation) in the global actor registry. Actors are cross-organizational -- a single person can be assigned to responsibilities or own nodes across any number of organizations. ONLY create when the user explicitly asks -- do not spawn actors as a side effect of other work. Person: a human collaborator; can be a real person (link via user_id) or a placeholder role (is_placeholder=true) such as 'need a lawyer' before anyone is hired. Automation: a script, bot, or integration; must NOT be a placeholder and must NOT have user_id.",
     {
-      org_id: z.string().describe("Organization node ID (ULID)."),
       type: z.enum(ACTOR_TYPES).describe("person or automation."),
       name: z.string().describe("Display name."),
       description: z.string().optional().describe("Optional description."),
       is_placeholder: z.boolean().optional().describe("Person-only. True for a role sketch without a real human. Must be false for automations."),
       user_id: z.string().optional().describe("Person-only. Link to users.id."),
       notes: z.string().optional().describe("Optional freeform notes."),
-      external_id: z.string().optional().describe("Optional external system id (unique per org)."),
+      external_id: z.string().optional().describe("Optional external system id (globally unique when set)."),
     },
     async (args) => {
       try {
@@ -358,9 +348,8 @@ export function registerActorTools(server: McpServer): void {
 
   server.tool(
     "portuni_list_actors",
-    "List actors, optionally filtered by organization, type, or placeholder flag. Use this to find who exists before creating responsibility assignments.",
+    "List all actors in the global registry, optionally filtered by type or placeholder flag. Actors are cross-organizational, so this returns the full registry regardless of which organization you're working in. Use this to find who exists before creating responsibility assignments.",
     {
-      org_id: z.string().optional().describe("Filter by organization."),
       type: z.enum(ACTOR_TYPES).optional().describe("Filter by actor type."),
       is_placeholder: z.boolean().optional().describe("Filter by placeholder flag."),
     },

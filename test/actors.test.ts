@@ -1,6 +1,7 @@
 // test/actors.test.ts
 // TDD tests for Task B1: 5 MCP tools for actors (person/automation) registry.
 // Uses in-memory libsql + runMigration006 to exercise the real schema.
+// Actors are global (cross-organizational) -- no org_id.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -24,39 +25,39 @@ async function freshEnv() {
 
 describe("createActor", () => {
   it("creates a real person and returns id", async () => {
-    const { db, orgId } = await freshEnv();
-    const res = await createActor(db, "U1", { org_id: orgId, type: "person", name: "Honza", user_id: "U1" });
+    const { db } = await freshEnv();
+    const res = await createActor(db, "U1", { type: "person", name: "Honza", user_id: "U1" });
     assert.ok(res.id);
     assert.equal(res.is_placeholder, 0);
   });
 
   it("creates a placeholder person (no user_id)", async () => {
-    const { db, orgId } = await freshEnv();
-    const res = await createActor(db, "U1", { org_id: orgId, type: "person", name: "Chybí nám právník", is_placeholder: true });
+    const { db } = await freshEnv();
+    const res = await createActor(db, "U1", { type: "person", name: "Chybí nám právník", is_placeholder: true });
     assert.equal(res.is_placeholder, 1);
     assert.equal(res.user_id, null);
   });
 
   it("creates an automation without user_id", async () => {
-    const { db, orgId } = await freshEnv();
-    const res = await createActor(db, "U1", { org_id: orgId, type: "automation", name: "Stripe sync", description: "Daily reports" });
+    const { db } = await freshEnv();
+    const res = await createActor(db, "U1", { type: "automation", name: "Stripe sync", description: "Daily reports" });
     assert.equal(res.type, "automation");
   });
 
   it("rejects automation with is_placeholder=true", async () => {
-    const { db, orgId } = await freshEnv();
+    const { db } = await freshEnv();
     await assert.rejects(
-      createActor(db, "U1", { org_id: orgId, type: "automation", name: "X", is_placeholder: true }),
+      createActor(db, "U1", { type: "automation", name: "X", is_placeholder: true }),
     );
   });
 });
 
 describe("listActors", () => {
   it("filters by type", async () => {
-    const { db, orgId } = await freshEnv();
-    await createActor(db, "U1", { org_id: orgId, type: "person", name: "A", user_id: "U1" });
-    await createActor(db, "U1", { org_id: orgId, type: "automation", name: "B" });
-    const persons = await listActors(db, { org_id: orgId, type: "person" });
+    const { db } = await freshEnv();
+    await createActor(db, "U1", { type: "person", name: "A", user_id: "U1" });
+    await createActor(db, "U1", { type: "automation", name: "B" });
+    const persons = await listActors(db, { type: "person" });
     assert.equal(persons.length, 1);
     assert.equal(persons[0].name, "A");
   });
@@ -70,16 +71,16 @@ describe("getActor, updateActor, archiveActor", () => {
   });
 
   it("updateActor changes name and notes", async () => {
-    const { db, orgId } = await freshEnv();
-    const a = await createActor(db, "U1", { org_id: orgId, type: "person", name: "A", user_id: "U1" });
+    const { db } = await freshEnv();
+    const a = await createActor(db, "U1", { type: "person", name: "A", user_id: "U1" });
     const u = await updateActor(db, "U1", { actor_id: a.id, name: "Alice", notes: "VIP" });
     assert.equal(u.name, "Alice");
     assert.equal(u.notes, "VIP");
   });
 
   it("archiveActor removes the row", async () => {
-    const { db, orgId } = await freshEnv();
-    const a = await createActor(db, "U1", { org_id: orgId, type: "person", name: "A", user_id: "U1" });
+    const { db } = await freshEnv();
+    const a = await createActor(db, "U1", { type: "person", name: "A", user_id: "U1" });
     await archiveActor(db, "U1", a.id);
     const after = await getActor(db, a.id);
     assert.equal(after, null);

@@ -206,7 +206,7 @@ export default function App() {
             onSelect={setSelectedId}
           />
         )}
-        {view === "actors" && <ActorsPage graph={graph} />}
+        {view === "actors" && <ActorsPage />}
       </main>
 
       {view === "graph" && selectedId && (

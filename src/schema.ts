@@ -198,16 +198,6 @@ export const TRIGGER_PREVENT_ORPHAN_ON_EDGE_DELETE = `
 
 // --- Migration 006 trigger constants (shared by DDL + runMigration006) ---
 
-export const TRIGGER_ACTORS_ORG_MUST_BE_ORGANIZATION = `
-  CREATE TRIGGER IF NOT EXISTS actors_org_must_be_organization
-  BEFORE INSERT ON actors
-  FOR EACH ROW
-  BEGIN
-    SELECT RAISE(ABORT, 'actors.org_id must reference a node of type=organization')
-      WHERE (SELECT type FROM nodes WHERE id = NEW.org_id) != 'organization';
-  END
-`;
-
 export const TRIGGER_RESPONSIBILITIES_VALID_NODE_TYPE = `
   CREATE TRIGGER IF NOT EXISTS responsibilities_valid_node_type
   BEFORE INSERT ON responsibilities
@@ -238,34 +228,23 @@ export const TRIGGER_TOOLS_VALID_NODE_TYPE = `
   END
 `;
 
-// Validate owner_id is a real, user-linked person in the same organization.
-// For non-organization nodes: the actor's org_id must match the node's
-// belongs_to -> organization target. For organization nodes themselves:
-// the actor's org_id must match the org node's own id.
+// Validate owner_id references a real, user-linked person. Actors are
+// global (cross-organizational), so there is no same-org constraint --
+// any real person can own any node.
 export const TRIGGER_NODES_OWNER_MUST_BE_REAL_PERSON = `
   CREATE TRIGGER IF NOT EXISTS nodes_owner_must_be_real_person
   BEFORE UPDATE OF owner_id ON nodes
   FOR EACH ROW
   WHEN NEW.owner_id IS NOT NULL
   BEGIN
-    SELECT RAISE(ABORT, 'owner_id must reference an actor of type=person with user_id set, in the same organization')
+    SELECT RAISE(ABORT, 'owner_id must reference an actor of type=person with user_id set')
       WHERE NOT EXISTS (
         SELECT 1 FROM actors a
-        JOIN edges e ON e.source_id = NEW.id AND e.relation = 'belongs_to'
         WHERE a.id = NEW.owner_id
           AND a.type = 'person'
           AND a.user_id IS NOT NULL
           AND a.is_placeholder = 0
-          AND a.org_id = e.target_id
-      )
-      AND NOT (NEW.type = 'organization' AND EXISTS (
-        SELECT 1 FROM actors a
-        WHERE a.id = NEW.owner_id
-          AND a.type = 'person'
-          AND a.user_id IS NOT NULL
-          AND a.is_placeholder = 0
-          AND a.org_id = NEW.id
-      ));
+      );
   END
 `;
 
@@ -307,9 +286,11 @@ export const TRIGGER_NODES_VALIDATE_LIFECYCLE_STATE = `
 // DDL for the five people/responsibilities tables (used by both fresh DDL
 // and runMigration006). Kept as statement constants so the two callers stay
 // in sync.
+// Actors are global (cross-organizational) entities: a single person or
+// automation can be assigned to responsibilities or own nodes across any
+// number of organizations. No org_id column.
 export const DDL_ACTORS_TABLE = `CREATE TABLE IF NOT EXISTS actors (
   id TEXT PRIMARY KEY CHECK(length(id) = 26),
-  org_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
   type TEXT NOT NULL CHECK(type IN ('person','automation')),
   name TEXT NOT NULL,
   description TEXT,
@@ -380,14 +361,13 @@ END WHERE lifecycle_state IS NULL`;
 // data_sources, tools; add owner_id/lifecycle_state/goal columns to nodes;
 // install validation + lifecycle-derivation triggers; seed lifecycle_state.
 export async function runMigration006(db: Client): Promise<void> {
-  // 1. actors table + indexes + org_id trigger
+  // 1. actors table + indexes. Actors are global (no org_id); external_id is
+  // unique across the whole registry when set.
   await db.execute(DDL_ACTORS_TABLE);
-  await db.execute("CREATE INDEX IF NOT EXISTS idx_actors_org ON actors(org_id)");
   await db.execute("CREATE INDEX IF NOT EXISTS idx_actors_type ON actors(type)");
   await db.execute(
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_actors_org_external ON actors(org_id, external_id) WHERE external_id IS NOT NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_actors_external ON actors(external_id) WHERE external_id IS NOT NULL",
   );
-  await db.execute(TRIGGER_ACTORS_ORG_MUST_BE_ORGANIZATION);
 
   // 2. responsibilities + index + node_type trigger
   await db.execute(DDL_RESPONSIBILITIES_TABLE);
@@ -916,6 +896,72 @@ const MIGRATIONS: Migration[] = [
       await runMigration006(db);
     },
   },
+
+  // Migration 007: make actors global (cross-organizational).
+  // Drops actors.org_id, the org-matching trigger and org-scoped indexes,
+  // and rewrites the owner-validation trigger to drop its same-org check.
+  // Idempotent -- isApplied returns true when actors.org_id no longer exists
+  // (fresh installs via the updated DDL skip this migration entirely).
+  {
+    id: "007_actors_cross_org",
+    isApplied: async (db) => {
+      // If actors table missing, migration 006 hasn't run -- can't be
+      // considered applied. Otherwise, applied iff org_id column is gone.
+      const tableCheck = await db.execute({
+        sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='actors'",
+        args: [],
+      });
+      if (tableCheck.rows.length === 0) return false;
+      const info = await db.execute("PRAGMA table_info(actors)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      return !cols.has("org_id");
+    },
+    up: async (db) => {
+      await db.execute("PRAGMA foreign_keys = OFF");
+      try {
+        // Drop dependents that reference actors or actors.org_id.
+        await db.execute("DROP TRIGGER IF EXISTS actors_org_must_be_organization");
+        await db.execute("DROP TRIGGER IF EXISTS nodes_owner_must_be_real_person");
+        await db.execute("DROP INDEX IF EXISTS idx_actors_org");
+        await db.execute("DROP INDEX IF EXISTS idx_actors_org_external");
+
+        // Rebuild actors table without org_id via the standard table-copy
+        // pattern (safer than ALTER TABLE DROP COLUMN across libsql versions).
+        await db.execute(`CREATE TABLE actors_new (
+          id TEXT PRIMARY KEY CHECK(length(id) = 26),
+          type TEXT NOT NULL CHECK(type IN ('person','automation')),
+          name TEXT NOT NULL,
+          description TEXT,
+          is_placeholder INTEGER NOT NULL DEFAULT 0 CHECK(is_placeholder IN (0,1)),
+          user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+          notes TEXT,
+          external_id TEXT,
+          created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+          updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
+          CHECK(type = 'person' OR (is_placeholder = 0 AND user_id IS NULL))
+        )`);
+        await db.execute(`INSERT INTO actors_new (
+          id, type, name, description, is_placeholder, user_id, notes, external_id, created_at, updated_at
+        ) SELECT
+          id, type, name, description, is_placeholder, user_id, notes, external_id, created_at, updated_at
+        FROM actors`);
+        await db.execute("DROP TABLE actors");
+        await db.execute("ALTER TABLE actors_new RENAME TO actors");
+
+        // Recreate indexes -- type index as before, external_id now globally
+        // unique (no longer scoped per organization).
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_actors_type ON actors(type)");
+        await db.execute(
+          "CREATE UNIQUE INDEX IF NOT EXISTS idx_actors_external ON actors(external_id) WHERE external_id IS NOT NULL",
+        );
+
+        // Reinstall the owner-validation trigger without the same-org check.
+        await db.execute(TRIGGER_NODES_OWNER_MUST_BE_REAL_PERSON);
+      } finally {
+        await db.execute("PRAGMA foreign_keys = ON");
+      }
+    },
+  },
 ];
 
 async function runMigrations(db: Client): Promise<void> {
@@ -979,10 +1025,8 @@ async function runMigrations(db: Client): Promise<void> {
 // lifecycle_state, and goal columns.)
 const DDL_MIGRATION_006 = [
   DDL_ACTORS_TABLE,
-  "CREATE INDEX IF NOT EXISTS idx_actors_org ON actors(org_id)",
   "CREATE INDEX IF NOT EXISTS idx_actors_type ON actors(type)",
-  "CREATE UNIQUE INDEX IF NOT EXISTS idx_actors_org_external ON actors(org_id, external_id) WHERE external_id IS NOT NULL",
-  TRIGGER_ACTORS_ORG_MUST_BE_ORGANIZATION,
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_actors_external ON actors(external_id) WHERE external_id IS NOT NULL",
   DDL_RESPONSIBILITIES_TABLE,
   "CREATE INDEX IF NOT EXISTS idx_responsibilities_node ON responsibilities(node_id)",
   TRIGGER_RESPONSIBILITIES_VALID_NODE_TYPE,

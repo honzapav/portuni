@@ -54,16 +54,16 @@ describe("updateNodeInternal: goal, lifecycle_state, owner_id", () => {
   });
 
   it("sets owner_id to a real registered person", async () => {
-    const { db, orgId, projectId } = await freshEnv();
-    const honza = await createActor(db, "U1", { org_id: orgId, type: "person", name: "Honza", user_id: "U1" });
+    const { db, projectId } = await freshEnv();
+    const honza = await createActor(db, "U1", { type: "person", name: "Honza", user_id: "U1" });
     await updateNodeInternal(db, "U1", { node_id: projectId, owner_id: honza.id });
     const n = await db.execute({ sql: "SELECT owner_id FROM nodes WHERE id = ?", args: [projectId] });
     assert.equal(n.rows[0].owner_id, honza.id);
   });
 
   it("rejects owner_id pointing to placeholder actor", async () => {
-    const { db, orgId, projectId } = await freshEnv();
-    const placeholder = await createActor(db, "U1", { org_id: orgId, type: "person", name: "TBD", is_placeholder: true });
+    const { db, projectId } = await freshEnv();
+    const placeholder = await createActor(db, "U1", { type: "person", name: "TBD", is_placeholder: true });
     await assert.rejects(
       updateNodeInternal(db, "U1", { node_id: projectId, owner_id: placeholder.id }),
       /owner_id must reference/,
@@ -71,8 +71,8 @@ describe("updateNodeInternal: goal, lifecycle_state, owner_id", () => {
   });
 
   it("rejects owner_id pointing to automation", async () => {
-    const { db, orgId, projectId } = await freshEnv();
-    const bot = await createActor(db, "U1", { org_id: orgId, type: "automation", name: "Bot" });
+    const { db, projectId } = await freshEnv();
+    const bot = await createActor(db, "U1", { type: "automation", name: "Bot" });
     await assert.rejects(
       updateNodeInternal(db, "U1", { node_id: projectId, owner_id: bot.id }),
       /owner_id must reference/,

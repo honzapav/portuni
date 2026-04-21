@@ -505,16 +505,14 @@ async function main() {
       return;
     }
 
-    // List actors across the organization, filterable by type or placeholder
-    // status. Used by future Actors UI; DetailPane gets its assignees inline
-    // via loadNodeDetail, so this endpoint is optional for the initial ship.
+    // List actors from the global (cross-organizational) registry,
+    // filterable by type or placeholder status. Used by the Actors page
+    // and by the OwnerPicker / AssigneePicker inside the node detail pane.
     if (url.pathname === "/actors" && req.method === "GET") {
       try {
         const db = getDb();
         const clauses: string[] = [];
         const values: (string | number)[] = [];
-        const orgId = url.searchParams.get("org_id");
-        if (orgId) { clauses.push("org_id = ?"); values.push(orgId); }
         const type = url.searchParams.get("type");
         if (type === "person" || type === "automation") {
           clauses.push("type = ?"); values.push(type);
@@ -527,7 +525,7 @@ async function main() {
         }
         const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
         const rows = await db.execute({
-          sql: `SELECT id, org_id, type, name, description, is_placeholder, user_id, notes, external_id
+          sql: `SELECT id, type, name, description, is_placeholder, user_id, notes, external_id
                 FROM actors ${where} ORDER BY type, name`,
           args: values,
         });

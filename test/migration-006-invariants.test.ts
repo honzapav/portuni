@@ -1,9 +1,8 @@
 // test/migration-006-invariants.test.ts
 // Verifies DB-level triggers installed by migration 006 actually enforce
-// their invariants: actor.org_id must point to organization, automation
-// cannot be placeholder or have user_id, responsibilities/data_sources/tools
-// only on project/process/area, lifecycle_state per-type validation,
-// status derivation from lifecycle_state.
+// their invariants: automation cannot be placeholder or have user_id,
+// responsibilities/data_sources/tools only on project/process/area,
+// lifecycle_state per-type validation, status derivation from lifecycle_state.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -24,48 +23,33 @@ async function freshEnv() {
 }
 
 describe("actors invariants", () => {
-  it("rejects actor whose org_id points to a non-organization node", async () => {
-    const { db, orgId } = await freshEnv();
-    const projectId = ulid();
-    await db.execute({ sql: `INSERT INTO nodes (id, type, name, created_by) VALUES (?, 'project', 'P', 'U1')`, args: [projectId] });
-    await db.execute({ sql: `INSERT INTO edges (id, source_id, target_id, relation, created_by) VALUES (?, ?, ?, 'belongs_to', 'U1')`, args: [ulid(), projectId, orgId] });
-
-    await assert.rejects(
-      db.execute({
-        sql: `INSERT INTO actors (id, org_id, type, name) VALUES (?, ?, 'person', 'X')`,
-        args: [ulid(), projectId],
-      }),
-      /must reference a node of type=organization/,
-    );
-  });
-
   it("rejects automation with is_placeholder=1", async () => {
-    const { db, orgId } = await freshEnv();
+    const { db } = await freshEnv();
     await assert.rejects(
       db.execute({
-        sql: `INSERT INTO actors (id, org_id, type, name, is_placeholder) VALUES (?, ?, 'automation', 'X', 1)`,
-        args: [ulid(), orgId],
+        sql: `INSERT INTO actors (id, type, name, is_placeholder) VALUES (?, 'automation', 'X', 1)`,
+        args: [ulid()],
       }),
       /CHECK/,
     );
   });
 
   it("rejects automation with user_id set", async () => {
-    const { db, orgId } = await freshEnv();
+    const { db } = await freshEnv();
     await assert.rejects(
       db.execute({
-        sql: `INSERT INTO actors (id, org_id, type, name, user_id) VALUES (?, ?, 'automation', 'X', 'U1')`,
-        args: [ulid(), orgId],
+        sql: `INSERT INTO actors (id, type, name, user_id) VALUES (?, 'automation', 'X', 'U1')`,
+        args: [ulid()],
       }),
       /CHECK/,
     );
   });
 
   it("accepts a person actor with placeholder=1 and user_id=null", async () => {
-    const { db, orgId } = await freshEnv();
+    const { db } = await freshEnv();
     await db.execute({
-      sql: `INSERT INTO actors (id, org_id, type, name, is_placeholder) VALUES (?, ?, 'person', 'TBD', 1)`,
-      args: [ulid(), orgId],
+      sql: `INSERT INTO actors (id, type, name, is_placeholder) VALUES (?, 'person', 'TBD', 1)`,
+      args: [ulid()],
     });
     const rows = await db.execute("SELECT COUNT(*) as c FROM actors WHERE is_placeholder = 1");
     assert.equal(rows.rows[0].c, 1);
@@ -97,7 +81,7 @@ describe("responsibilities, data_sources, tools invariants", () => {
   });
 
   it("rejects data_source on principle node", async () => {
-    const { db, orgId } = await freshEnv();
+    const { db } = await freshEnv();
     const principleId = ulid();
     await db.execute({ sql: `INSERT INTO nodes (id, type, name, created_by) VALUES (?, 'principle', 'P', 'U1')`, args: [principleId] });
     await assert.rejects(

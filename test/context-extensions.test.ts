@@ -36,8 +36,8 @@ async function freshEnv() {
 
 describe("buildContextPayload at depth 0", () => {
   it("includes owner, responsibilities, goal, lifecycle_state, data_sources, tools", async () => {
-    const { db, orgId, projectId } = await freshEnv();
-    const honza = await createActor(db, "U1", { org_id: orgId, type: "person", name: "Honza", user_id: "U1" });
+    const { db, projectId } = await freshEnv();
+    const honza = await createActor(db, "U1", { type: "person", name: "Honza", user_id: "U1" });
     await updateNodeInternal(db, "U1", { node_id: projectId, owner_id: honza.id, goal: "G", lifecycle_state: "in_progress" });
     await createResponsibility(db, "U1", { node_id: projectId, title: "R1", assignees: [honza.id] });
     await createResponsibility(db, "U1", { node_id: projectId, title: "R2" });

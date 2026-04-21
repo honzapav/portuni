@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Plus, Pencil, Trash2, X, Users, Search } from "lucide-react";
-import type { GraphPayload } from "../types";
 import {
   fetchActors,
   createActor,
@@ -9,19 +8,16 @@ import {
   type Actor,
 } from "../api";
 
-type Props = {
-  graph: GraphPayload | null;
-};
+type Props = Record<string, never>;
 
 type TypeFilter = "all" | "person" | "automation";
 type PlaceholderFilter = "all" | "real" | "placeholder";
 
-export default function ActorsPage({ graph }: Props) {
+export default function ActorsPage(_props: Props) {
   const [actors, setActors] = useState<Actor[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [orgFilter, setOrgFilter] = useState<string>("all");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [placeholderFilter, setPlaceholderFilter] =
     useState<PlaceholderFilter>("all");
@@ -29,19 +25,6 @@ export default function ActorsPage({ graph }: Props) {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Actor | null>(null);
-
-  const organizations = useMemo(() => {
-    if (!graph) return [];
-    return graph.nodes
-      .filter((n) => n.type === "organization")
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [graph]);
-
-  const orgNameById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const o of organizations) m.set(o.id, o.name);
-    return m;
-  }, [organizations]);
 
   const loadActors = useCallback(async () => {
     setLoading(true);
@@ -64,7 +47,6 @@ export default function ActorsPage({ graph }: Props) {
     if (!actors) return [];
     const q = query.trim().toLowerCase();
     return actors.filter((a) => {
-      if (orgFilter !== "all" && a.org_id !== orgFilter) return false;
       if (typeFilter !== "all" && a.type !== typeFilter) return false;
       if (placeholderFilter === "real" && a.is_placeholder) return false;
       if (placeholderFilter === "placeholder" && !a.is_placeholder) return false;
@@ -74,7 +56,7 @@ export default function ActorsPage({ graph }: Props) {
       }
       return true;
     });
-  }, [actors, orgFilter, typeFilter, placeholderFilter, query]);
+  }, [actors, typeFilter, placeholderFilter, query]);
 
   const openCreate = () => {
     setEditing(null);
@@ -143,15 +125,6 @@ export default function ActorsPage({ graph }: Props) {
           </div>
 
           <FilterSelect
-            value={orgFilter}
-            onChange={setOrgFilter}
-            options={[
-              { value: "all", label: "Všechny organizace" },
-              ...organizations.map((o) => ({ value: o.id, label: o.name })),
-            ]}
-          />
-
-          <FilterSelect
             value={typeFilter}
             onChange={(v) => setTypeFilter(v as TypeFilter)}
             options={[
@@ -212,7 +185,6 @@ export default function ActorsPage({ graph }: Props) {
               <tr className="text-left text-[10px] uppercase tracking-widest text-[var(--color-text-dim)]">
                 <Th>Jméno</Th>
                 <Th>Typ</Th>
-                <Th>Organizace</Th>
                 <Th>Stav</Th>
                 <Th>Popis</Th>
                 <Th className="w-[96px] text-right">Akce</Th>
@@ -234,15 +206,6 @@ export default function ActorsPage({ graph }: Props) {
                   </Td>
                   <Td>
                     <TypeBadge type={a.type} />
-                  </Td>
-                  <Td>
-                    <span className="text-[var(--color-text-muted)]">
-                      {orgNameById.get(a.org_id) ?? (
-                        <span className="font-mono text-[13.5px] text-[var(--color-text-dim)]">
-                          {a.org_id}
-                        </span>
-                      )}
-                    </span>
                   </Td>
                   <Td>
                     <StatusBadge actor={a} />
@@ -281,7 +244,6 @@ export default function ActorsPage({ graph }: Props) {
       {modalOpen && (
         <ActorModal
           actor={editing}
-          organizations={organizations}
           onClose={closeModal}
           onSaved={async () => {
             await loadActors();
@@ -435,22 +397,17 @@ function truncate(s: string, n: number): string {
 
 type ActorModalProps = {
   actor: Actor | null;
-  organizations: Array<{ id: string; name: string }>;
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 };
 
 function ActorModal({
   actor,
-  organizations,
   onClose,
   onSaved,
 }: ActorModalProps) {
   const isEdit = actor !== null;
 
-  const [orgId, setOrgId] = useState<string>(
-    actor?.org_id ?? organizations[0]?.id ?? "",
-  );
   const [type, setType] = useState<"person" | "automation">(
     actor?.type ?? "person",
   );
@@ -482,10 +439,6 @@ function ActorModal({
       setFormError("Jméno je povinné.");
       return;
     }
-    if (!isEdit && !orgId) {
-      setFormError("Vyberte organizaci.");
-      return;
-    }
 
     setSaving(true);
     try {
@@ -502,7 +455,6 @@ function ActorModal({
         });
       } else {
         await createActor({
-          org_id: orgId,
           type,
           name: trimmedName,
           description: description.trim() || undefined,
@@ -548,27 +500,6 @@ function ActorModal({
 
         <form onSubmit={handleSubmit} className="px-5 py-4">
           <div className="space-y-4">
-            <Field label="Organizace" required>
-              <select
-                value={orgId}
-                onChange={(e) => setOrgId(e.target.value)}
-                disabled={isEdit}
-                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none disabled:opacity-60"
-              >
-                {organizations.length === 0 && (
-                  <option value="">(žádná organizace)</option>
-                )}
-                {organizations.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.name}
-                  </option>
-                ))}
-              </select>
-              {isEdit && (
-                <FieldHint>Organizaci nelze po vytvoření změnit.</FieldHint>
-              )}
-            </Field>
-
             <Field label="Typ" required>
               <div className="flex gap-2">
                 <TypeRadio

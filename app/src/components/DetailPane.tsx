@@ -1172,23 +1172,10 @@ function EditableGoal({
   );
 }
 
-// Resolve the organization id for a node. Organization nodes are their
-// own org; every other node has exactly one outgoing belongs_to edge to
-// an organization per the POPP schema.
-function resolveOrgId(node: NodeDetail): string | null {
-  if (node.type === "organization") return node.id;
-  const edge = node.edges.find(
-    (e) =>
-      e.relation === "belongs_to" &&
-      e.direction === "outgoing" &&
-      e.peer_type === "organization",
-  );
-  return edge?.peer_id ?? null;
-}
-
-// Owner picker for a node. Fetches people from the node's organization on
-// open, filters down to real people (non-placeholder, with user_id), and
-// PATCHes owner_id on selection. "— Žádný —" unsets the owner.
+// Owner picker for a node. Fetches all real registered people from the
+// global actor registry on open (actors are cross-organizational), filters
+// down to non-placeholder persons with a user_id, and PATCHes owner_id on
+// selection. "— Žádný —" unsets the owner.
 function OwnerPicker({
   node,
   onMutate,
@@ -1204,8 +1191,6 @@ function OwnerPicker({
   const [saving, setSaving] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-
-  const orgId = resolveOrgId(node);
 
   useEffect(() => {
     if (!open) return;
@@ -1223,11 +1208,11 @@ function OwnerPicker({
 
   const openPicker = async () => {
     setOpen(true);
-    if (actors !== null || !orgId) return;
+    if (actors !== null) return;
     setLoading(true);
     setFetchError(null);
     try {
-      const list = await fetchActors({ org_id: orgId, type: "person" });
+      const list = await fetchActors({ type: "person" });
       setActors(list.filter((a) => a.user_id !== null && a.is_placeholder === 0));
     } catch (e) {
       setFetchError(String(e));
@@ -1297,7 +1282,7 @@ function OwnerPicker({
               </button>
               {actors && actors.length === 0 ? (
                 <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
-                  Žádní vhodní lidé v organizaci.
+                  Žádní registrovaní lidé nejsou k dispozici.
                 </div>
               ) : (
                 actors?.map((a) => (
@@ -1371,7 +1356,6 @@ function ResponsibilitiesEditor({
   onError: (msg: string | null) => void;
 }) {
   const [adding, setAdding] = useState(false);
-  const orgId = resolveOrgId(node);
 
   return (
     <div>
@@ -1381,7 +1365,6 @@ function ResponsibilitiesEditor({
             <ResponsibilityItem
               key={r.id}
               responsibility={r}
-              orgId={orgId}
               onMutate={onMutate}
               onError={onError}
             />
@@ -1396,7 +1379,6 @@ function ResponsibilitiesEditor({
       {adding ? (
         <AddResponsibilityForm
           nodeId={node.id}
-          orgId={orgId}
           onCancel={() => setAdding(false)}
           onDone={async () => {
             await onMutate();
@@ -1419,12 +1401,10 @@ function ResponsibilitiesEditor({
 
 function ResponsibilityItem({
   responsibility,
-  orgId,
   onMutate,
   onError,
 }: {
   responsibility: DetailResponsibility;
-  orgId: string | null;
   onMutate: () => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
@@ -1585,7 +1565,6 @@ function ResponsibilityItem({
             ))}
             {pickerOpen ? (
               <AssigneePicker
-                orgId={orgId}
                 existing={responsibility.assignees.map((a) => a.id)}
                 onPick={assign}
                 onClose={() => setPickerOpen(false)}
@@ -1637,13 +1616,11 @@ function ResponsibilityItem({
 
 function AddResponsibilityForm({
   nodeId,
-  orgId,
   onCancel,
   onDone,
   onError,
 }: {
   nodeId: string;
-  orgId: string | null;
   onCancel: () => void;
   onDone: () => Promise<void>;
   onError: (msg: string | null) => void;
@@ -1658,13 +1635,9 @@ function AddResponsibilityForm({
 
   useEffect(() => {
     let cancelled = false;
-    if (!orgId) {
-      setActors([]);
-      return;
-    }
     setLoadingActors(true);
     setFetchError(null);
-    fetchActors({ org_id: orgId })
+    fetchActors()
       .then((list) => {
         if (!cancelled) setActors(list);
       })
@@ -1677,7 +1650,7 @@ function AddResponsibilityForm({
     return () => {
       cancelled = true;
     };
-  }, [orgId]);
+  }, []);
 
   const toggle = (id: string) => {
     setSelected((s) =>
@@ -1740,11 +1713,7 @@ function AddResponsibilityForm({
           <div className="mb-1 font-mono text-[14px] uppercase tracking-widest text-[var(--color-text-dim)]">
             Přiřazení
           </div>
-          {!orgId ? (
-            <div className="text-[14px] text-[var(--color-text-dim)]">
-              Uzel nemá organizaci.
-            </div>
-          ) : loadingActors ? (
+          {loadingActors ? (
             <div className="text-[14px] text-[var(--color-text-dim)]">
               Načítám...
             </div>
@@ -1757,7 +1726,7 @@ function AddResponsibilityForm({
             </div>
           ) : actors && actors.length === 0 ? (
             <div className="text-[14px] text-[var(--color-text-dim)]">
-              Žádní actoři v organizaci.
+              Registr aktérů je prázdný.
             </div>
           ) : (
             <div className="scroll-thin max-h-[180px] space-y-1 overflow-y-auto rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-1.5">
@@ -2036,16 +2005,14 @@ function AddEntityAttributeForm<TItem extends EntityAttributeItem>({
 }
 
 // Inline picker shown when user clicks "+ přiřadit" on an existing
-// responsibility. Lazy-loads org actors, filters out those already
-// assigned, and closes on outside click.
+// responsibility. Lazy-loads the global actor registry, filters out those
+// already assigned, and closes on outside click.
 function AssigneePicker({
-  orgId,
   existing,
   onPick,
   onClose,
   disabled,
 }: {
-  orgId: string | null;
   existing: string[];
   onPick: (actorId: string) => Promise<void>;
   onClose: () => void;
@@ -2071,13 +2038,9 @@ function AssigneePicker({
 
   useEffect(() => {
     let cancelled = false;
-    if (!orgId) {
-      setActors([]);
-      return;
-    }
     setLoading(true);
     setFetchError(null);
-    fetchActors({ org_id: orgId })
+    fetchActors()
       .then((list) => {
         if (!cancelled) setActors(list);
       })
@@ -2090,7 +2053,7 @@ function AssigneePicker({
     return () => {
       cancelled = true;
     };
-  }, [orgId]);
+  }, []);
 
   const candidates = (actors ?? []).filter((a) => !existing.includes(a.id));
 
@@ -2114,7 +2077,7 @@ function AssigneePicker({
           </div>
         ) : candidates.length === 0 ? (
           <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
-            Žádní další actoři k přiřazení.
+            Žádní další aktéři k přiřazení.
           </div>
         ) : (
           <div className="scroll-thin max-h-[220px] overflow-y-auto">

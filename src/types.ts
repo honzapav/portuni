@@ -109,7 +109,6 @@ export type NodeIdRow = z.infer<typeof NodeIdRow>;
 
 export const ActorRow = z.object({
   id: z.string(),
-  org_id: z.string(),
   type: z.string(),
   name: z.string(),
   description: z.union([z.string(), z.null()]),
