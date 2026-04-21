@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef } from "react";
 import cytoscape from "cytoscape";
-import type { Core, EdgeSingular, NodeSingular } from "cytoscape";
+import type {
+  Core,
+  EdgeCollection,
+  EdgeSingular,
+  NodeCollection,
+  NodeSingular,
+} from "cytoscape";
 // @ts-expect-error — fcose has no first-party types
 import fcose from "cytoscape-fcose";
 import type { GraphPayload, GraphNode } from "../types";
@@ -140,7 +146,7 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
         "text-halign": "center",
         "text-margin-y": -6,
         color: theme.textMuted,
-        "font-size": 13,
+        "font-size": 15,
         "font-weight": 600,
         "font-family": "Inter, sans-serif",
         padding: "32px",
@@ -167,7 +173,7 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
         "text-halign": "center",
         "text-margin-y": 6,
         color: theme.text,
-        "font-size": 11,
+        "font-size": 13,
         "font-weight": 500,
         "font-family": "Inter, sans-serif",
         "text-wrap": "wrap",
@@ -178,7 +184,7 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
         "text-background-shape": "roundrectangle",
         width: "data(size)",
         height: "data(size)",
-        "text-opacity": 0.9,
+        "text-opacity": 1,
       },
     },
     // Edges
@@ -238,7 +244,24 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
         "border-opacity": 0.9,
       },
     },
-    // Dimmed (non-match of search/filter).
+    // Soft-dim: 1st-level neighbours of a search match. Still readable,
+    // but clearly secondary to the matched node.
+    {
+      selector: "node.dim-soft",
+      style: {
+        "background-opacity": 0.45,
+        "border-opacity": 0.5,
+        "text-opacity": 0.55,
+      },
+    },
+    {
+      selector: "edge.dim-soft",
+      style: {
+        opacity: 0.35,
+      },
+    },
+    // Dimmed (non-match of search/filter). Applied after dim-soft so the
+    // stronger dim wins when an element qualifies for both.
     {
       selector: "node.dim",
       style: {
@@ -333,8 +356,35 @@ function shiftOrgChildren(org: NodeSingular, dx: number, dy: number): void {
     // Empty org: shift the org node itself (it has a position as a childless compound).
     org.shift({ x: dx, y: dy });
   } else {
-    children.forEach((child) => child.shift({ x: dx, y: dy }));
+    children.forEach((child) => {
+      child.shift({ x: dx, y: dy });
+    });
   }
+}
+
+// Animate to fit a collection, but cap the resulting zoom so tiny
+// clusters (a single match with one neighbour) don't slam into
+// maxZoom and leave the user staring at two huge dots. Uses
+// center + explicit zoom rather than cytoscape's native `fit`,
+// which ignores custom caps and only respects core min/maxZoom.
+function animateFit(
+  cy: Core,
+  eles: NodeCollection,
+  padding: number,
+  maxZoom: number,
+  duration: number,
+): void {
+  if (eles.length === 0) return;
+  const bb = eles.boundingBox({});
+  const availW = Math.max(cy.width() - 2 * padding, 50);
+  const availH = Math.max(cy.height() - 2 * padding, 50);
+  const zoomX = availW / Math.max(bb.w, 50);
+  const zoomY = availH / Math.max(bb.h, 50);
+  const zoom = Math.min(Math.min(zoomX, zoomY), maxZoom);
+  cy.animate(
+    { zoom, center: { eles } },
+    { duration, easing: "ease-in-out-cubic" },
+  );
 }
 
 function separateOverlappingOrgs(cy: Core): void {
@@ -469,6 +519,18 @@ export default function GraphView({
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const prevSelectedRef = useRef<string | null>(selectedId);
+  // When a search query is active this holds the set of nodes the
+  // viewport should stay framed on (matches + their 1st-level
+  // neighbours). ResizeObserver reads this so that opening the
+  // DetailPane on a search hit doesn't snap the camera back to the
+  // whole graph and undo the centring.
+  const focusElesRef = useRef<NodeCollection | null>(null);
+  // Debounce the focus fit so fast typing ("A" -> "As" -> "Asa" -> ...)
+  // coalesces into a single camera move once the user pauses. Without
+  // this, every keystroke fires a new animation and cytoscape's default
+  // animation queue plays them back-to-back, producing a visible
+  // "jumping back and forth" effect.
+  const focusAnimTimerRef = useRef<number | null>(null);
 
   // Debounced queue of position changes. Node drags and layout settles
   // both funnel through this so we coalesce a flurry of updates into one
@@ -530,10 +592,18 @@ export default function GraphView({
       }
       if (fitTimer !== null) window.clearTimeout(fitTimer);
       fitTimer = window.setTimeout(() => {
-        cy.animate(
-          { fit: { eles: cy.elements(), padding: 80 } },
-          { duration: 360, easing: "ease-in-out-cubic" },
-        );
+        const focus = focusElesRef.current;
+        // Cancel any running animation so this fit replaces it cleanly
+        // instead of queueing behind it.
+        cy.stop();
+        if (focus && focus.length > 0) {
+          animateFit(cy, focus, 120, 1.6, 360);
+        } else {
+          cy.animate(
+            { fit: { eles: cy.elements(), padding: 80 } },
+            { duration: 360, easing: "ease-in-out-cubic" },
+          );
+        }
         fitTimer = null;
       }, 30);
     });
@@ -578,6 +648,10 @@ export default function GraphView({
       if (saveTimerRef.current !== null) {
         window.clearTimeout(saveTimerRef.current);
         saveTimerRef.current = null;
+      }
+      if (focusAnimTimerRef.current !== null) {
+        window.clearTimeout(focusAnimTimerRef.current);
+        focusAnimTimerRef.current = null;
       }
       cy.destroy();
       cyRef.current = null;
@@ -707,7 +781,12 @@ export default function GraphView({
     });
   }, [graph]);
 
-  // Apply search + filter dimming
+  // Apply search + filter dimming. When a search query is active the
+  // matches stay fully visible, their 1st-level neighbours get a soft
+  // dim (still readable) and everything else gets the strong dim. The
+  // camera re-fits to the match + neighbour cluster so the user doesn't
+  // have to hunt for the hit.
+  const prevQueryRef = useRef("");
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
@@ -716,9 +795,29 @@ export default function GraphView({
     const hasRelFilter = disabledRelations.size > 0;
     const hasOrgFilter = disabledOrgs.size > 0;
 
+    // Compute match sets before the batch so TS flow-narrowing is happy
+    // and the camera logic below can read them.
+    let matches: NodeCollection | null = null;
+    let neighborNodes: NodeCollection | null = null;
+    let neighborEdges: EdgeCollection | null = null;
+
+    if (hasQuery) {
+      const hits = cy.nodes().filter((n) => {
+        if (n.data("type") === "organization") return false;
+        const label = (n.data("label") as string).toLowerCase();
+        const desc = ((n.data("description") as string) ?? "").toLowerCase();
+        const type = (n.data("type") as string).toLowerCase();
+        return label.includes(q) || desc.includes(q) || type.includes(q);
+      });
+      matches = hits;
+      const neighborhood = hits.neighborhood();
+      neighborNodes = neighborhood.nodes().difference(hits);
+      neighborEdges = neighborhood.edges();
+    }
+
     cy.batch(() => {
-      cy.nodes().removeClass("dim");
-      cy.edges().removeClass("dim");
+      cy.nodes().removeClass("dim dim-soft");
+      cy.edges().removeClass("dim dim-soft");
 
       // Organization filter: dim the compound parent and every child
       // inside it, plus all edges connected to those children.
@@ -737,30 +836,93 @@ export default function GraphView({
         });
       }
 
-      if (hasQuery) {
+      if (hasQuery && matches && neighborNodes && neighborEdges) {
+        const matchSet = matches;
+        const neighborNodeSet = neighborNodes;
+        const neighborEdgeSet = neighborEdges;
+
         cy.nodes().forEach((n: NodeSingular) => {
-          if (n.data("type") === "organization") return;
-          const label = (n.data("label") as string).toLowerCase();
-          const desc = ((n.data("description") as string) ?? "").toLowerCase();
-          const type = (n.data("type") as string).toLowerCase();
-          if (
-            !label.includes(q) &&
-            !desc.includes(q) &&
-            !type.includes(q)
-          ) {
-            n.addClass("dim");
+          if (n.hasClass("dim")) return;
+          if (n.data("type") === "organization") {
+            // Org is visible if any of its children are match or neighbour.
+            const anyVisibleChild = n
+              .children()
+              .some((c) => matchSet.contains(c) || neighborNodeSet.contains(c));
+            if (!anyVisibleChild) n.addClass("dim");
+            return;
           }
+          if (matchSet.contains(n)) return;
+          if (neighborNodeSet.contains(n)) {
+            n.addClass("dim-soft");
+            return;
+          }
+          n.addClass("dim");
+        });
+
+        cy.edges().forEach((e: EdgeSingular) => {
+          if (e.hasClass("dim")) return;
+          const srcMatch = matchSet.contains(e.source());
+          const tgtMatch = matchSet.contains(e.target());
+          if (srcMatch && tgtMatch) return;
+          if (neighborEdgeSet.contains(e)) {
+            e.addClass("dim-soft");
+            return;
+          }
+          e.addClass("dim");
         });
       }
 
       if (hasRelFilter) {
         cy.edges().forEach((e: EdgeSingular) => {
           if (disabledRelations.has(e.data("relation") as string)) {
+            e.removeClass("dim-soft");
             e.addClass("dim");
           }
         });
       }
     });
+
+    // Publish the current focus for the ResizeObserver so that a later
+    // DetailPane open/close refits onto the search cluster instead of
+    // snapping back to the whole graph.
+    const focus =
+      hasQuery && matches && matches.length > 0
+        ? neighborNodes
+          ? matches.union(neighborNodes)
+          : matches
+        : null;
+    focusElesRef.current = focus;
+
+    // Re-centre only when the query string itself changed (not when
+    // filter toggles re-run this effect). That keeps filter
+    // interactions from shoving the viewport around.
+    const queryChanged = q !== prevQueryRef.current;
+    prevQueryRef.current = q;
+    if (queryChanged) {
+      if (focusAnimTimerRef.current !== null) {
+        window.clearTimeout(focusAnimTimerRef.current);
+      }
+      // Capture targets for the timer. `focus` is the NodeCollection
+      // computed in this effect run, but by the time the timer fires
+      // the effect may have re-run — capturing here means the animation
+      // reflects the latest query.
+      const targetFocus = focus;
+      const targetHasQuery = hasQuery;
+      focusAnimTimerRef.current = window.setTimeout(() => {
+        focusAnimTimerRef.current = null;
+        // Stop any in-flight camera animation so the new one replaces
+        // it cleanly instead of queueing behind it.
+        cy.stop();
+        if (targetFocus) {
+          animateFit(cy, targetFocus, 120, 1.6, 400);
+        } else if (!targetHasQuery) {
+          cy.animate(
+            { fit: { eles: cy.elements(), padding: 80 } },
+            { duration: 400, easing: "ease-in-out-cubic" },
+          );
+        }
+      }, 220);
+    }
   }, [query, disabledRelations, disabledOrgs]);
 
   // Apply selection highlight. Camera refits happen in the ResizeObserver
@@ -833,7 +995,7 @@ export default function GraphView({
       <button
         onClick={handleAutoLayout}
         title="Re-run automatic layout"
-        className="absolute bottom-4 right-4 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[11px] font-medium text-[var(--color-text-muted)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+        className="absolute bottom-4 right-4 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[12.5px] font-medium text-[var(--color-text-muted)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
       >
         Auto-layout
       </button>
