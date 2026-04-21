@@ -26,6 +26,9 @@ export const NodeRow = z.object({
   visibility: z.string(),
   pos_x: z.union([z.number(), z.null()]),
   pos_y: z.union([z.number(), z.null()]),
+  owner_id: z.union([z.string(), z.null()]),
+  lifecycle_state: z.union([z.string(), z.null()]),
+  goal: z.union([z.string(), z.null()]),
   created_by: z.string(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -103,3 +106,50 @@ export type NodeSummaryRow = z.infer<typeof NodeSummaryRow>;
 
 export const NodeIdRow = NodeRow.pick({ id: true });
 export type NodeIdRow = z.infer<typeof NodeIdRow>;
+
+export const ActorRow = z.object({
+  id: z.string(),
+  org_id: z.string(),
+  type: z.string(),
+  name: z.string(),
+  description: z.union([z.string(), z.null()]),
+  is_placeholder: z.number(), // SQLite BOOLEAN stored as 0/1
+  user_id: z.union([z.string(), z.null()]),
+  notes: z.union([z.string(), z.null()]),
+  external_id: z.union([z.string(), z.null()]),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type ActorRow = z.infer<typeof ActorRow>;
+
+export const ResponsibilityRow = z.object({
+  id: z.string(),
+  node_id: z.string(),
+  title: z.string(),
+  description: z.union([z.string(), z.null()]),
+  sort_order: z.number(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type ResponsibilityRow = z.infer<typeof ResponsibilityRow>;
+
+export const ResponsibilityAssignmentRow = z.object({
+  responsibility_id: z.string(),
+  actor_id: z.string(),
+  created_at: z.string(),
+});
+export type ResponsibilityAssignmentRow = z.infer<typeof ResponsibilityAssignmentRow>;
+
+export const DataSourceRow = z.object({
+  id: z.string(),
+  node_id: z.string(),
+  name: z.string(),
+  description: z.union([z.string(), z.null()]),
+  external_link: z.union([z.string(), z.null()]),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type DataSourceRow = z.infer<typeof DataSourceRow>;
+
+export const ToolRow = DataSourceRow; // same columns, aliased for intent
+export type ToolRow = z.infer<typeof ToolRow>;
