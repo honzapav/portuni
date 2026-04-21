@@ -65,3 +65,40 @@ export type EventStatus = (typeof EVENT_STATUSES)[number];
 // Canonical file statuses.
 export const FILE_STATUSES = ["wip", "output"] as const;
 export type FileStatus = (typeof FILE_STATUSES)[number];
+
+// Lifecycle states per node type. Primary, visible, color-coded status.
+// The coarse `status` column (active/completed/archived) is derived from
+// lifecycle_state by a DB trigger; do not set status directly in new code.
+export const LIFECYCLE_STATES_BY_TYPE = {
+  organization: ["active", "inactive", "archived"],
+  area: ["active", "needs_attention", "inactive", "archived"],
+  process: ["not_implemented", "implementing", "operating", "at_risk", "broken", "retired"],
+  project: ["backlog", "planned", "in_progress", "on_hold", "done", "cancelled"],
+  principle: ["active", "archived"],
+} as const satisfies Record<NodeType, readonly string[]>;
+
+export type LifecycleState =
+  (typeof LIFECYCLE_STATES_BY_TYPE)[keyof typeof LIFECYCLE_STATES_BY_TYPE][number];
+
+export function getLifecycleStatesForType(type: NodeType): readonly string[] {
+  return LIFECYCLE_STATES_BY_TYPE[type];
+}
+
+// Mapping from lifecycle_state to coarse status. Used by DB trigger and
+// frontend when computing status without a DB round-trip.
+const LIFECYCLE_TO_STATUS: Record<string, NodeStatus> = {
+  done: "completed",
+  archived: "archived",
+  retired: "archived",
+  cancelled: "archived",
+  inactive: "archived",
+};
+
+export function deriveStatusFromLifecycle(
+  _type: NodeType,
+  lifecycle: string,
+): NodeStatus {
+  return LIFECYCLE_TO_STATUS[lifecycle] ?? "active";
+}
+
+export const STATUS_FROM_LIFECYCLE = LIFECYCLE_TO_STATUS;
