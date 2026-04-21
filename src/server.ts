@@ -28,7 +28,7 @@ async function loadGraph(): Promise<GraphPayload> {
   const db = getDb();
 
   const nodesRes = await db.execute({
-    sql: `SELECT id, type, name, description, status, pos_x, pos_y
+    sql: `SELECT id, type, name, description, status, lifecycle_state, pos_x, pos_y
           FROM nodes
           WHERE status = 'active'
           ORDER BY type, name`,
@@ -46,6 +46,7 @@ async function loadGraph(): Promise<GraphPayload> {
       name: row.name as string,
       description: (row.description as string | null) ?? null,
       status: row.status as string,
+      lifecycle_state: (row.lifecycle_state as string | null) ?? null,
       pos_x: row.pos_x as number | null,
       pos_y: row.pos_y as number | null,
     })),
@@ -139,6 +140,63 @@ async function loadNodeDetail(nodeId: string): Promise<NodeDetail | null> {
         }
       : null;
 
+  // Owner
+  const ownerRow = row.owner_id
+    ? (await db.execute({ sql: "SELECT id, name FROM actors WHERE id = ?", args: [row.owner_id] })).rows[0]
+    : null;
+  const owner = ownerRow ? { id: ownerRow.id as string, name: ownerRow.name as string } : null;
+
+  // Responsibilities with assignees
+  const respRes = await db.execute({
+    sql: "SELECT id, title, description, sort_order FROM responsibilities WHERE node_id = ? ORDER BY sort_order, title",
+    args: [row.id],
+  });
+  const responsibilities = [];
+  for (const r of respRes.rows) {
+    const as = await db.execute({
+      sql: `SELECT a.id, a.name, a.type FROM actors a
+            JOIN responsibility_assignments ra ON ra.actor_id = a.id
+            WHERE ra.responsibility_id = ?
+            ORDER BY a.name`,
+      args: [r.id as string],
+    });
+    responsibilities.push({
+      id: r.id as string,
+      title: r.title as string,
+      description: (r.description as string | null) ?? null,
+      sort_order: (r.sort_order as number) ?? 0,
+      assignees: as.rows.map((x) => ({
+        id: x.id as string,
+        name: x.name as string,
+        type: x.type as string,
+      })),
+    });
+  }
+
+  // Data sources
+  const dsRes = await db.execute({
+    sql: "SELECT id, name, description, external_link FROM data_sources WHERE node_id = ? ORDER BY name",
+    args: [row.id],
+  });
+  const data_sources = dsRes.rows.map((r) => ({
+    id: r.id as string,
+    name: r.name as string,
+    description: (r.description as string | null) ?? null,
+    external_link: (r.external_link as string | null) ?? null,
+  }));
+
+  // Tools
+  const toolsRes = await db.execute({
+    sql: "SELECT id, name, description, external_link FROM tools WHERE node_id = ? ORDER BY name",
+    args: [row.id],
+  });
+  const tools = toolsRes.rows.map((r) => ({
+    id: r.id as string,
+    name: r.name as string,
+    description: (r.description as string | null) ?? null,
+    external_link: (r.external_link as string | null) ?? null,
+  }));
+
   return {
     id: row.id,
     type: row.type,
@@ -153,6 +211,12 @@ async function loadNodeDetail(nodeId: string): Promise<NodeDetail | null> {
     files,
     events,
     local_mirror,
+    owner,
+    responsibilities,
+    data_sources,
+    tools,
+    goal: row.goal ?? null,
+    lifecycle_state: row.lifecycle_state ?? null,
   };
 }
 
