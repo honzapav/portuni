@@ -3,16 +3,27 @@ import Sidebar, { type AppView } from "./components/Sidebar";
 import GraphView from "./components/GraphView";
 import DetailPane from "./components/DetailPane";
 import ActorsPage from "./components/ActorsPage";
+import SettingsPanel from "./components/SettingsPanel";
 import { fetchGraph, fetchNode } from "./api";
 import type { GraphPayload, NodeDetail } from "./types";
 import type { Theme } from "./lib/theme";
 import { loadTheme, saveTheme } from "./lib/theme";
+import { loadAgentCommand, saveAgentCommand } from "./lib/settings";
 
 export default function App() {
   const [graph, setGraph] = useState<GraphPayload | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
 
   const [theme, setTheme] = useState<Theme>(() => loadTheme());
+  const [agentCommand, setAgentCommandRaw] = useState<string>(() =>
+    loadAgentCommand(),
+  );
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const setAgentCommand = useCallback((value: string) => {
+    setAgentCommandRaw(value);
+    saveAgentCommand(value);
+  }, []);
 
   const [view, setView] = useState<AppView>(() => {
     const p = new URLSearchParams(window.location.search);
@@ -161,6 +172,7 @@ export default function App() {
           onThemeToggle={toggleTheme}
           view={view}
           onViewChange={setView}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
       )}
 
@@ -207,6 +219,15 @@ export default function App() {
           canGoBack={historyRef.current.length > 0}
           onBack={goBack}
           onMutate={refetchAll}
+          agentCommand={agentCommand}
+        />
+      )}
+
+      {settingsOpen && (
+        <SettingsPanel
+          agentCommand={agentCommand}
+          onAgentCommandChange={setAgentCommand}
+          onClose={() => setSettingsOpen(false)}
         />
       )}
     </div>

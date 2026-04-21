@@ -28,7 +28,7 @@ import {
   LIFECYCLE_COLORS,
   LIFECYCLE_STATES_BY_TYPE,
 } from "../types";
-import { buildAgentPrompt, buildCdCommand } from "../lib/prompt";
+import { buildAgentCommand, buildCdCommand } from "../lib/prompt";
 import type { Actor } from "../api";
 import {
   updateNode,
@@ -72,6 +72,7 @@ type Props = {
   canGoBack: boolean;
   onBack: () => void;
   onMutate: () => Promise<void>;
+  agentCommand: string;
 };
 
 export default function DetailPane({
@@ -83,6 +84,7 @@ export default function DetailPane({
   canGoBack,
   onBack,
   onMutate,
+  agentCommand,
 }: Props) {
   if (loading && !node) {
     return (
@@ -117,6 +119,7 @@ export default function DetailPane({
       canGoBack={canGoBack}
       onBack={onBack}
       onMutate={onMutate}
+      agentCommand={agentCommand}
     />
   );
 }
@@ -128,6 +131,7 @@ function DetailPaneBody({
   canGoBack,
   onBack,
   onMutate,
+  agentCommand,
 }: {
   node: NodeDetail;
   graph: GraphPayload | null;
@@ -135,6 +139,7 @@ function DetailPaneBody({
   canGoBack: boolean;
   onBack: () => void;
   onMutate: () => Promise<void>;
+  agentCommand: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
@@ -588,7 +593,7 @@ function DetailPaneBody({
             </button>
           </div>
         ) : (
-          <ActionButtons node={node} />
+          <ActionButtons node={node} agentCommand={agentCommand} />
         )}
       </div>
     </PaneShell>
@@ -2218,15 +2223,21 @@ function FileStatusBadge({ status }: { status: string }) {
   );
 }
 
-function ActionButtons({ node }: { node: NodeDetail }) {
-  const [copiedPrompt, setCopiedPrompt] = useState(false);
+function ActionButtons({
+  node,
+  agentCommand,
+}: {
+  node: NodeDetail;
+  agentCommand: string;
+}) {
+  const [copiedLaunch, setCopiedLaunch] = useState(false);
   const [copiedCd, setCopiedCd] = useState(false);
 
-  const handleCopyPrompt = async () => {
-    const prompt = buildAgentPrompt(node);
-    await navigator.clipboard.writeText(prompt);
-    setCopiedPrompt(true);
-    setTimeout(() => setCopiedPrompt(false), 1500);
+  const handleCopyLaunch = async () => {
+    const cmd = buildAgentCommand(node, agentCommand);
+    await navigator.clipboard.writeText(cmd);
+    setCopiedLaunch(true);
+    setTimeout(() => setCopiedLaunch(false), 1500);
   };
 
   const handleCopyCd = async () => {
@@ -2237,13 +2248,16 @@ function ActionButtons({ node }: { node: NodeDetail }) {
     setTimeout(() => setCopiedCd(false), 1500);
   };
 
+  const agentLabel = agentCommand.trim().split(/\s+/)[0] || "agent";
+
   return (
     <div className="flex gap-2">
       <button
-        onClick={handleCopyPrompt}
+        onClick={handleCopyLaunch}
+        title="Zkopíruje shell příkaz, který vstoupí do složky uzlu a spustí nakonfigurovaného agenta s promptem"
         className="group flex flex-1 items-center justify-center gap-2 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)]"
       >
-        {copiedPrompt ? (
+        {copiedLaunch ? (
           <>
             <Check size={13} />
             Zkopírováno
@@ -2251,7 +2265,7 @@ function ActionButtons({ node }: { node: NodeDetail }) {
         ) : (
           <>
             <Sparkles size={13} />
-            Zkopírovat prompt pro agenta
+            Spouštěcí příkaz ({agentLabel})
           </>
         )}
       </button>

@@ -1,4 +1,4 @@
-import { Search, Network, Sun, Moon, X, Users } from "lucide-react";
+import { Search, Network, Sun, Moon, X, Users, Settings } from "lucide-react";
 import type { GraphPayload, GraphNode } from "../types";
 import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
@@ -20,6 +20,7 @@ type Props = {
   onThemeToggle: () => void;
   view: AppView;
   onViewChange: (view: AppView) => void;
+  onOpenSettings: () => void;
 };
 
 function nodeTypeVar(type: string): string {
@@ -52,6 +53,7 @@ export default function Sidebar({
   onThemeToggle,
   view,
   onViewChange,
+  onOpenSettings,
 }: Props) {
   return (
     <aside className="flex h-full w-[300px] shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-bg)]">
@@ -71,6 +73,13 @@ export default function Sidebar({
             Znalostní graf
           </div>
         </div>
+        <button
+          onClick={onOpenSettings}
+          title="Nastavení"
+          className="flex h-7 w-7 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+        >
+          <Settings size={13} />
+        </button>
         <button
           onClick={onThemeToggle}
           title={theme === "dark" ? "Přepnout na světlý režim" : "Přepnout na tmavý režim"}
