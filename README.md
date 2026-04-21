@@ -1,6 +1,8 @@
 # Portuni
 
-Knowledge graph MCP server, built for teams. TypeScript, Turso (shared team database) or local SQLite (solo / testing), Streamable HTTP.
+Portuni is a shared map of how your organization works – its processes, projects, areas, and principles – held as one graph that every tool and every AI agent can read. People and agents draw from the same picture instead of rebuilding context from scratch in every app.
+
+Built for teams. TypeScript, Turso (shared team database) or local SQLite (solo / testing), Streamable HTTP. MCP is how agents plug in.
 
 ## Setup
 
