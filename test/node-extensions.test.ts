@@ -79,3 +79,49 @@ describe("updateNodeInternal: goal, lifecycle_state, owner_id", () => {
     );
   });
 });
+
+describe("createNodeInternal with goal and lifecycle_state", () => {
+  it("accepts goal at create time", async () => {
+    const { db, orgId } = await freshEnv();
+    const { createNodeInternal } = await import("../src/tools/nodes.js");
+    const id = await createNodeInternal(db, "U1", {
+      type: "project",
+      name: "Nový projekt",
+      organization_id: orgId,
+      goal: "Dodat ve 2 týdnech",
+      lifecycle_state: "planned",
+    });
+    const n = await db.execute({ sql: "SELECT goal, lifecycle_state, status FROM nodes WHERE id = ?", args: [id] });
+    assert.equal(n.rows[0].goal, "Dodat ve 2 týdnech");
+    assert.equal(n.rows[0].lifecycle_state, "planned");
+    // status is derived; 'planned' maps to 'active'
+    assert.equal(n.rows[0].status, "active");
+  });
+
+  it("rejects invalid lifecycle_state at create time", async () => {
+    const { db, orgId } = await freshEnv();
+    const { createNodeInternal } = await import("../src/tools/nodes.js");
+    await assert.rejects(
+      createNodeInternal(db, "U1", {
+        type: "project",
+        name: "X",
+        organization_id: orgId,
+        lifecycle_state: "operating",
+      }),
+      /invalid lifecycle/i,
+    );
+  });
+
+  it("default lifecycle_state null when not provided", async () => {
+    const { db, orgId } = await freshEnv();
+    const { createNodeInternal } = await import("../src/tools/nodes.js");
+    const id = await createNodeInternal(db, "U1", {
+      type: "project",
+      name: "X",
+      organization_id: orgId,
+    });
+    const n = await db.execute({ sql: "SELECT goal, lifecycle_state FROM nodes WHERE id = ?", args: [id] });
+    assert.equal(n.rows[0].goal, null);
+    assert.equal(n.rows[0].lifecycle_state, null);
+  });
+});
