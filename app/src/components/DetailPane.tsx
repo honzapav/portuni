@@ -16,9 +16,20 @@ import {
   Save,
 } from "lucide-react";
 import type { NodeDetail, DetailEdge, GraphPayload } from "../types";
-import { RELATION_TYPES, LIFECYCLE_COLORS } from "../types";
+import {
+  RELATION_TYPES,
+  LIFECYCLE_COLORS,
+  LIFECYCLE_STATES_BY_TYPE,
+} from "../types";
 import { buildAgentPrompt, buildCdCommand } from "../lib/prompt";
-import { updateNode, archiveNode, createEdge, deleteEdge } from "../api";
+import type { Actor } from "../api";
+import {
+  updateNode,
+  archiveNode,
+  createEdge,
+  deleteEdge,
+  fetchActors,
+} from "../api";
 
 function nodeTypeVar(type: string): string {
   const known = [
@@ -245,15 +256,13 @@ function DetailPaneBody({
           >
             {node.type}
           </span>
-          {node.lifecycle_state && (
-            <span
-              className={`lifecycle-badge lifecycle-${
-                LIFECYCLE_COLORS[node.lifecycle_state] ?? "gray"
-              }`}
-            >
-              {node.lifecycle_state}
-            </span>
-          )}
+          <LifecycleDropdown
+            nodeId={node.id}
+            nodeType={node.type}
+            value={node.lifecycle_state}
+            onMutate={onMutate}
+            onError={setErrorMsg}
+          />
           <StatusDot status={node.status} />
         </div>
         {editing ? (
@@ -304,21 +313,30 @@ function DetailPaneBody({
           </Section>
         )}
 
-        {/* Goal (Účel) */}
-        {node.goal && (
+        {/* Goal (Účel) — editable, only for project/process/area */}
+        {(node.type === "project" ||
+          node.type === "process" ||
+          node.type === "area") && (
           <Section title="Účel">
-            <p className="text-[12.5px] leading-relaxed text-[var(--color-text-muted)]">
-              {node.goal}
-            </p>
+            <EditableGoal
+              nodeId={node.id}
+              value={node.goal}
+              onMutate={onMutate}
+              onError={setErrorMsg}
+            />
           </Section>
         )}
 
-        {/* Owner (Vlastník) */}
-        {node.owner && (
+        {/* Owner (Vlastník) — editable, only for project/process/area */}
+        {(node.type === "project" ||
+          node.type === "process" ||
+          node.type === "area") && (
           <Section title="Vlastník">
-            <p className="text-[12.5px] leading-relaxed text-[var(--color-text)]">
-              {node.owner.name}
-            </p>
+            <OwnerPicker
+              node={node}
+              onMutate={onMutate}
+              onError={setErrorMsg}
+            />
           </Section>
         )}
 
@@ -956,6 +974,363 @@ function NodePicker({
               ))
             )}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Clickable lifecycle badge that opens a dropdown of valid states for the
+// node's type (from LIFECYCLE_STATES_BY_TYPE). Selecting a state PATCHes
+// the node and triggers a refetch. Includes an explicit "unset" option at
+// the top which sends lifecycle_state: null.
+function LifecycleDropdown({
+  nodeId,
+  nodeType,
+  value,
+  onMutate,
+  onError,
+}: {
+  nodeId: string;
+  nodeType: string;
+  value: string | null;
+  onMutate: () => Promise<void>;
+  onError: (msg: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const states =
+    (LIFECYCLE_STATES_BY_TYPE as Record<string, readonly string[]>)[nodeType] ??
+    [];
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const pick = async (next: string | null) => {
+    setOpen(false);
+    if (next === value) return;
+    setSaving(true);
+    onError(null);
+    try {
+      await updateNode(nodeId, { lifecycle_state: next });
+      await onMutate();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const badgeClass = value
+    ? `lifecycle-badge lifecycle-${LIFECYCLE_COLORS[value] ?? "gray"}`
+    : "lifecycle-badge lifecycle-gray";
+
+  return (
+    <div ref={containerRef} className="relative inline-flex">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        disabled={saving}
+        title="Change lifecycle state"
+        className={`${badgeClass} cursor-pointer transition-opacity hover:opacity-80 disabled:opacity-50`}
+      >
+        {value ?? "nevyplněno"}
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-1 min-w-[160px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
+          <button
+            type="button"
+            onClick={() => pick(null)}
+            className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
+              value === null ? "bg-[var(--color-surface-2)]" : ""
+            }`}
+          >
+            <span className="text-[var(--color-text-dim)]">— nevyplněno —</span>
+          </button>
+          {states.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => pick(s)}
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
+                value === s ? "bg-[var(--color-surface-2)]" : ""
+              }`}
+            >
+              <span
+                className={`lifecycle-badge lifecycle-${LIFECYCLE_COLORS[s] ?? "gray"}`}
+              >
+                {s}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Inline editor for the `goal` field. Read-mode shows the current value
+// (or a muted placeholder). Clicking Edit reveals a textarea with
+// Save/Cancel buttons. Empty goal saves as null.
+function EditableGoal({
+  nodeId,
+  value,
+  onMutate,
+  onError,
+}: {
+  nodeId: string;
+  value: string | null;
+  onMutate: () => Promise<void>;
+  onError: (msg: string | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value ?? "");
+  const [saving, setSaving] = useState(false);
+
+  // Reset local draft when node/value changes from the outside.
+  useEffect(() => {
+    setDraft(value ?? "");
+    setEditing(false);
+  }, [nodeId, value]);
+
+  const save = async () => {
+    setSaving(true);
+    onError(null);
+    try {
+      const trimmed = draft.trim();
+      await updateNode(nodeId, { goal: trimmed ? trimmed : null });
+      await onMutate();
+      setEditing(false);
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cancel = () => {
+    setDraft(value ?? "");
+    setEditing(false);
+    onError(null);
+  };
+
+  if (!editing) {
+    return (
+      <div className="group flex items-start gap-2">
+        <div className="flex-1">
+          {value ? (
+            <p className="text-[12.5px] leading-relaxed text-[var(--color-text-muted)]">
+              {value}
+            </p>
+          ) : (
+            <p className="text-[12.5px] italic leading-relaxed text-[var(--color-text-dim)]">
+              Nevyplněno
+            </p>
+          )}
+        </div>
+        <button
+          onClick={() => setEditing(true)}
+          title="Edit goal"
+          className="flex h-6 items-center gap-1 rounded px-1.5 text-[10.5px] text-[var(--color-text-dim)] opacity-0 transition-all hover:text-[var(--color-text)] group-hover:opacity-100"
+        >
+          <Pencil size={11} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        rows={4}
+        autoFocus
+        placeholder="Proč tento uzel existuje, čeho má dosáhnout..."
+        className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+      />
+      <div className="flex gap-2">
+        <button
+          onClick={save}
+          disabled={saving}
+          className="flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[11px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
+        >
+          <Save size={11} />
+          {saving ? "Saving..." : "Save"}
+        </button>
+        <button
+          onClick={cancel}
+          disabled={saving}
+          className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[11px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Resolve the organization id for a node. Organization nodes are their
+// own org; every other node has exactly one outgoing belongs_to edge to
+// an organization per the POPP schema.
+function resolveOrgId(node: NodeDetail): string | null {
+  if (node.type === "organization") return node.id;
+  const edge = node.edges.find(
+    (e) =>
+      e.relation === "belongs_to" &&
+      e.direction === "outgoing" &&
+      e.peer_type === "organization",
+  );
+  return edge?.peer_id ?? null;
+}
+
+// Owner picker for a node. Fetches people from the node's organization on
+// open, filters down to real people (non-placeholder, with user_id), and
+// PATCHes owner_id on selection. "— Žádný —" unsets the owner.
+function OwnerPicker({
+  node,
+  onMutate,
+  onError,
+}: {
+  node: NodeDetail;
+  onMutate: () => Promise<void>;
+  onError: (msg: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [actors, setActors] = useState<Actor[] | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const orgId = resolveOrgId(node);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const openPicker = async () => {
+    setOpen(true);
+    if (actors !== null || !orgId) return;
+    setLoading(true);
+    setFetchError(null);
+    try {
+      const list = await fetchActors({ org_id: orgId, type: "person" });
+      setActors(list.filter((a) => a.user_id !== null && a.is_placeholder === 0));
+    } catch (e) {
+      setFetchError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const pick = async (actorId: string | null) => {
+    setOpen(false);
+    if (actorId === (node.owner?.id ?? null)) return;
+    setSaving(true);
+    onError(null);
+    try {
+      await updateNode(node.id, { owner_id: actorId });
+      await onMutate();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={openPicker}
+        disabled={saving}
+        className="flex w-full items-center gap-2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-left text-[11.5px] transition-colors hover:border-[var(--color-border-strong)] disabled:opacity-50"
+      >
+        {node.owner ? (
+          <span className="flex-1 truncate text-[var(--color-text)]">
+            {"\u{1F464} "}
+            {node.owner.name}
+          </span>
+        ) : (
+          <span className="flex-1 text-[var(--color-text-dim)]">
+            — Žádný —
+          </span>
+        )}
+        <Pencil size={11} className="shrink-0 text-[var(--color-text-dim)]" />
+      </button>
+      {open && (
+        <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
+          {loading ? (
+            <div className="px-3 py-2 text-[11px] text-[var(--color-text-dim)]">
+              Načítám lidi...
+            </div>
+          ) : fetchError ? (
+            <div
+              className="px-3 py-2 text-[11px]"
+              style={{ color: "var(--color-danger)" }}
+            >
+              {fetchError}
+            </div>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => pick(null)}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
+                  !node.owner ? "bg-[var(--color-surface-2)]" : ""
+                }`}
+              >
+                <span className="text-[var(--color-text-dim)]">— Žádný —</span>
+              </button>
+              {actors && actors.length === 0 ? (
+                <div className="px-3 py-2 text-[11px] text-[var(--color-text-dim)]">
+                  Žádní vhodní lidé v organizaci.
+                </div>
+              ) : (
+                actors?.map((a) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    onClick={() => pick(a.id)}
+                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
+                      node.owner?.id === a.id
+                        ? "bg-[var(--color-surface-2)]"
+                        : ""
+                    }`}
+                  >
+                    <span className="flex-1 truncate text-[var(--color-text)]">
+                      {"\u{1F464} "}
+                      {a.name}
+                    </span>
+                  </button>
+                ))
+              )}
+            </>
+          )}
         </div>
       )}
     </div>
