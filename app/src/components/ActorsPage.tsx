@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Plus, Pencil, Trash2, X, Users, Search } from "lucide-react";
 import {
   fetchActors,
+  fetchUsers,
   createActor,
   updateActor,
   archiveActor,
   type Actor,
+  type User,
 } from "../api";
 
 type Props = Record<string, never>;
@@ -418,6 +420,8 @@ function ActorModal({
   );
   const [userId, setUserId] = useState(actor?.user_id ?? "");
   const [notes, setNotes] = useState(actor?.notes ?? "");
+  const [users, setUsers] = useState<User[] | null>(null);
+  const [usersError, setUsersError] = useState<string | null>(null);
 
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -429,6 +433,21 @@ function ActorModal({
       if (userId) setUserId("");
     }
   }, [type, isPlaceholder, userId]);
+
+  // Load users for the user_id dropdown when a real person is being edited.
+  useEffect(() => {
+    let cancelled = false;
+    fetchUsers()
+      .then((list) => {
+        if (!cancelled) setUsers(list);
+      })
+      .catch((e) => {
+        if (!cancelled) setUsersError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -565,17 +584,30 @@ function ActorModal({
             </Field>
 
             {type === "person" && !isPlaceholder && (
-              <Field label="User ID">
-                <input
+              <Field label="Uživatelský účet">
+                <select
                   value={userId}
                   onChange={(e) => setUserId(e.target.value)}
-                  placeholder="(volitelné) propojení s uživatelským účtem"
-                  className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 font-mono text-[11.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] focus:outline-none"
-                />
-                <FieldHint>
-                  Zatím vkládejte ručně. Výběr ze seznamu uživatelů bude
-                  doplněn později.
-                </FieldHint>
+                  disabled={users === null && !usersError}
+                  className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none disabled:opacity-60"
+                >
+                  <option value="">— Nepropojeno —</option>
+                  {users?.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name} ({u.email})
+                    </option>
+                  ))}
+                  {userId && !users?.some((u) => u.id === userId) && (
+                    <option value={userId}>{userId} (neznámý)</option>
+                  )}
+                </select>
+                {usersError ? (
+                  <FieldHint>Nepodařilo se načíst uživatele: {usersError}</FieldHint>
+                ) : users === null ? (
+                  <FieldHint>Načítám uživatele…</FieldHint>
+                ) : users.length === 0 ? (
+                  <FieldHint>Žádní registrovaní uživatelé k dispozici.</FieldHint>
+                ) : null}
               </Field>
             )}
 

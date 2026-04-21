@@ -505,6 +505,23 @@ async function main() {
       return;
     }
 
+    // List registered users, used by the Actors page to pick a user_id
+    // when creating or editing a real (non-placeholder) person.
+    if (url.pathname === "/users" && req.method === "GET") {
+      try {
+        const db = getDb();
+        const rows = await db.execute(
+          "SELECT id, email, name FROM users ORDER BY name",
+        );
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(rows.rows));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
     // List actors from the global (cross-organizational) registry,
     // filterable by type or placeholder status. Used by the Actors page
     // and by the OwnerPicker / AssigneePicker inside the node detail pane.

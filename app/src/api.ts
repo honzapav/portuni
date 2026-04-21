@@ -6,6 +6,20 @@ import type {
   DetailTool,
 } from "./types";
 
+// User shape returned by GET /users. Used by the Actors page to pick a
+// user_id when creating/editing a real (non-placeholder) person actor.
+export type User = {
+  id: string;
+  email: string;
+  name: string;
+};
+
+export async function fetchUsers(): Promise<User[]> {
+  const res = await fetch(`${BASE}/users`);
+  if (!res.ok) throw new Error(`users: ${res.status}`);
+  return res.json();
+}
+
 // Actor shape returned by GET /actors. Mirrors the DB row; separate from
 // NodeDetail's assignee shape (which is narrower – just id/name/type).
 // Actors are global (cross-organizational) – no org_id field.
