@@ -87,5 +87,33 @@ export function buildAgentPrompt(node: NodeDetail): string {
 
 export function buildCdCommand(node: NodeDetail): string | null {
   if (!node.local_mirror) return null;
-  return `cd "${node.local_mirror.local_path}"`;
+  return `cd ${shellQuote(node.local_mirror.local_path)}`;
+}
+
+// POSIX single-quote escape. Safe for arbitrary prompt content (newlines,
+// backticks, $, quotes). Internal single quotes are closed, escaped, reopened.
+export function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Build a full shell command that cd's into the node's local mirror (if any)
+ * and launches the user's configured agent with the prompt as argument.
+ *
+ * The template may contain `{prompt}` which is replaced by the shell-escaped
+ * prompt. If the template has no placeholder, the escaped prompt is appended.
+ */
+export function buildAgentCommand(node: NodeDetail, template: string): string {
+  const prompt = buildAgentPrompt(node);
+  const escaped = shellQuote(prompt);
+
+  const tpl = template.trim() || "claude {prompt}";
+  const invocation = tpl.includes("{prompt}")
+    ? tpl.replaceAll("{prompt}", escaped)
+    : `${tpl} ${escaped}`;
+
+  if (node.local_mirror) {
+    return `cd ${shellQuote(node.local_mirror.local_path)} && ${invocation}`;
+  }
+  return invocation;
 }

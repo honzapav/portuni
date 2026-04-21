@@ -87,7 +87,7 @@ export default function DetailPane({
   if (loading && !node) {
     return (
       <PaneShell onClose={() => onSelect(null)} canGoBack={false} onBack={onBack}>
-        <div className="flex h-full items-center justify-center text-[12px] text-[var(--color-text-dim)]">
+        <div className="flex h-full items-center justify-center text-[13.5px] text-[var(--color-text-dim)]">
           Načítám...
         </div>
       </PaneShell>
@@ -98,7 +98,7 @@ export default function DetailPane({
     return (
       <PaneShell onClose={() => onSelect(null)} canGoBack={false} onBack={onBack}>
         <div
-          className="flex h-full items-center justify-center text-[12px]"
+          className="flex h-full items-center justify-center text-[13.5px]"
           style={{ color: "var(--color-danger)" }}
         >
           {error}
@@ -267,7 +267,7 @@ function DetailPaneBody({
             }}
           />
           <span
-            className="font-mono text-[9.5px] uppercase tracking-[0.14em]"
+            className="font-mono text-[14px] uppercase tracking-[0.14em]"
             style={{ color: nodeTypeVar(node.type) }}
           >
             {node.type}
@@ -286,10 +286,10 @@ function DetailPaneBody({
             value={draftName}
             onChange={(e) => setDraftName(e.target.value)}
             autoFocus
-            className="mb-1 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[19px] font-semibold leading-tight tracking-tight text-[var(--color-text)] focus:border-[var(--color-accent-dim)]"
+            className="mb-1 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[22px] font-semibold leading-tight tracking-tight text-[var(--color-text)] focus:border-[var(--color-accent-dim)]"
           />
         ) : (
-          <h1 className="mb-1 text-[20px] font-semibold leading-tight tracking-tight text-[var(--color-text)]">
+          <h1 className="mb-1 text-[22px] font-semibold leading-tight tracking-tight text-[var(--color-text)]">
             {node.name}
           </h1>
         )}
@@ -298,7 +298,7 @@ function DetailPaneBody({
 
       {errorMsg && (
         <div
-          className="border-b px-6 py-2 text-[11px]"
+          className="border-b px-6 py-2 text-[14px]"
           style={{
             color: "var(--color-danger)",
             borderColor: "var(--color-danger-border)",
@@ -319,10 +319,10 @@ function DetailPaneBody({
                 onChange={(e) => setDraftDescription(e.target.value)}
                 rows={5}
                 placeholder="Popište, co tento uzel reprezentuje..."
-                className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+                className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[14px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
               />
             ) : (
-              <p className="text-[12.5px] leading-relaxed text-[var(--color-text-muted)]">
+              <p className="text-[14px] leading-relaxed text-[var(--color-text-muted)]">
                 {node.description}
               </p>
             )}
@@ -423,7 +423,7 @@ function DetailPaneBody({
             <div className="space-y-4">
               {Array.from(grouped.entries()).map(([relation, edges]) => (
                 <div key={relation}>
-                  <div className="mb-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-[var(--color-text-dim)]">
+                  <div className="mb-1.5 font-mono text-[14px] uppercase tracking-[0.14em] text-[var(--color-text-dim)]">
                     {relation}
                   </div>
                   <div className="space-y-0.5">
@@ -441,7 +441,7 @@ function DetailPaneBody({
               ))}
             </div>
           ) : (
-            <div className="mb-3 text-[11px] text-[var(--color-text-dim)]">
+            <div className="mb-3 text-[14px] text-[var(--color-text-dim)]">
               Zatím žádná propojení.
             </div>
           )}
@@ -465,7 +465,7 @@ function DetailPaneBody({
                   className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2"
                 >
                   <div className="mb-0.5 flex items-center gap-2">
-                    <span className="font-mono text-[9.5px] uppercase tracking-wider text-[var(--color-accent)]">
+                    <span className="font-mono text-[14px] uppercase tracking-wider text-[var(--color-accent)]">
                       {evt.type}
                     </span>
                     <span className="flex items-center gap-1 text-[10px] text-[var(--color-text-dim)]">
@@ -479,7 +479,7 @@ function DetailPaneBody({
                 </div>
               ))}
               {node.events.length > 6 && (
-                <div className="text-[10.5px] text-[var(--color-text-dim)]">
+                <div className="text-[13.5px] text-[var(--color-text-dim)]">
                   + další {node.events.length - 6}
                 </div>
               )}
@@ -508,7 +508,7 @@ function DetailPaneBody({
                       <FileStatusBadge status={f.status} />
                     </div>
                     {f.description && (
-                      <div className="mt-0.5 line-clamp-2 text-[10.5px] leading-relaxed text-[var(--color-text-dim)]">
+                      <div className="mt-0.5 line-clamp-2 text-[13.5px] leading-relaxed text-[var(--color-text-dim)]">
                         {f.description}
                       </div>
                     )}
@@ -527,7 +527,7 @@ function DetailPaneBody({
                 size={12}
                 className="mt-0.5 shrink-0 text-[var(--color-text-dim)]"
               />
-              <code className="break-all font-mono text-[10.5px] text-[var(--color-text-muted)]">
+              <code className="break-all font-mono text-[13.5px] text-[var(--color-text-muted)]">
                 {node.local_mirror.local_path}
               </code>
             </div>
@@ -574,7 +574,7 @@ function DetailPaneBody({
             <button
               onClick={saveEdit}
               disabled={saving || !draftName.trim()}
-              className="flex flex-1 items-center justify-center gap-2 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[12px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)] disabled:opacity-50"
+              className="flex flex-1 items-center justify-center gap-2 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)] disabled:opacity-50"
             >
               <Save size={13} />
               {saving ? "Ukládám..." : "Uložit změny"}
@@ -582,7 +582,7 @@ function DetailPaneBody({
             <button
               onClick={cancelEdit}
               disabled={saving}
-              className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2.5 text-[12px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
+              className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2.5 text-[13.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
             >
               Zrušit
             </button>
@@ -616,7 +616,7 @@ function PaneShell({
         <button
           disabled={!canGoBack}
           onClick={onBack}
-          className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)] disabled:opacity-30 disabled:hover:text-[var(--color-text-dim)]"
+          className="flex items-center gap-1.5 rounded px-2 py-1 text-[14px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)] disabled:opacity-30 disabled:hover:text-[var(--color-text-dim)]"
         >
           <ArrowLeft size={12} />
           Zpět
@@ -626,7 +626,7 @@ function PaneShell({
             <button
               onClick={onEdit}
               title="Upravit uzel"
-              className="flex h-6 items-center gap-1.5 rounded px-2 text-[11px] text-[var(--color-text-dim)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
+              className="flex h-6 items-center gap-1.5 rounded px-2 text-[14px] text-[var(--color-text-dim)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
             >
               <Pencil size={12} />
               Upravit
@@ -655,7 +655,7 @@ function Section({
   return (
     <div className="border-b border-[var(--color-border)] px-6 py-5 last:border-b-0">
       {title && (
-        <div className="mb-3 font-mono text-[9.5px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
+        <div className="mb-3 font-mono text-[14px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
           {title}
         </div>
       )}
@@ -688,10 +688,10 @@ function ConnectionLink({
             boxShadow: `0 0 8px ${nodeTypeGlow(edge.peer_type, 0.4)}`,
           }}
         />
-        <span className="flex-1 truncate text-[12px] text-[var(--color-text)]">
+        <span className="flex-1 truncate text-[13.5px] text-[var(--color-text)]">
           {edge.peer_name}
         </span>
-        <span className="font-mono text-[9.5px] text-[var(--color-text-dim)]">
+        <span className="font-mono text-[14px] text-[var(--color-text-dim)]">
           {edge.peer_type}
         </span>
         <ArrowRight
@@ -749,7 +749,7 @@ function AddEdgeForm({
     return (
       <button
         onClick={() => setOpen(true)}
-        className="mt-3 flex items-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[11px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
+        className="mt-3 flex items-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[14px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
       >
         <Plus size={12} />
         Přidat propojení
@@ -779,7 +779,7 @@ function AddEdgeForm({
   return (
     <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
       <div className="mb-2 flex items-center justify-between">
-        <div className="font-mono text-[9.5px] uppercase tracking-widest text-[var(--color-text-dim)]">
+        <div className="font-mono text-[14px] uppercase tracking-widest text-[var(--color-text-dim)]">
           Nové propojení
         </div>
         <button
@@ -799,7 +799,7 @@ function AddEdgeForm({
           <select
             value={relation}
             onChange={(e) => setRelation(e.target.value)}
-            className="flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 font-mono text-[11px] text-[var(--color-text)]"
+            className="flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 font-mono text-[14px] text-[var(--color-text)]"
           >
             {RELATION_TYPES.map((r) => (
               <option key={r} value={r}>
@@ -823,7 +823,7 @@ function AddEdgeForm({
         <button
           onClick={submit}
           disabled={!targetId || submitting || disabled}
-          className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[11px] text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
+          className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[14px] text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
         >
           {submitting ? "Přidávám..." : "Přidat propojení"}
         </button>
@@ -936,7 +936,7 @@ function NodePicker({
           </div>
           <div className="scroll-thin max-h-[240px] overflow-y-auto py-1">
             {filtered.length === 0 ? (
-              <div className="px-3 py-2 text-[11px] text-[var(--color-text-dim)]">
+              <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
                 Žádné výsledky
               </div>
             ) : (
@@ -1124,11 +1124,11 @@ function EditableGoal({
       <div className="group flex items-start gap-2">
         <div className="flex-1">
           {value ? (
-            <p className="text-[12.5px] leading-relaxed text-[var(--color-text-muted)]">
+            <p className="text-[14px] leading-relaxed text-[var(--color-text-muted)]">
               {value}
             </p>
           ) : (
-            <p className="text-[12.5px] italic leading-relaxed text-[var(--color-text-dim)]">
+            <p className="text-[14px] italic leading-relaxed text-[var(--color-text-dim)]">
               Nevyplněno
             </p>
           )}
@@ -1136,7 +1136,7 @@ function EditableGoal({
         <button
           onClick={() => setEditing(true)}
           title="Upravit účel"
-          className="flex h-6 items-center gap-1 rounded px-1.5 text-[10.5px] text-[var(--color-text-dim)] opacity-0 transition-all hover:text-[var(--color-text)] group-hover:opacity-100"
+          className="flex h-6 items-center gap-1 rounded px-1.5 text-[13.5px] text-[var(--color-text-dim)] opacity-0 transition-all hover:text-[var(--color-text)] group-hover:opacity-100"
         >
           <Pencil size={11} />
         </button>
@@ -1152,13 +1152,13 @@ function EditableGoal({
         rows={4}
         autoFocus
         placeholder="Proč tento uzel existuje, čeho má dosáhnout..."
-        className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+        className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[14px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
       />
       <div className="flex gap-2">
         <button
           onClick={save}
           disabled={saving}
-          className="flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[11px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[14px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
         >
           <Save size={11} />
           {saving ? "Ukládám..." : "Uložit"}
@@ -1166,7 +1166,7 @@ function EditableGoal({
         <button
           onClick={cancel}
           disabled={saving}
-          className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[11px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
+          className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[14px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
         >
           Zrušit
         </button>
@@ -1277,12 +1277,12 @@ function OwnerPicker({
       {open && (
         <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
           {loading ? (
-            <div className="px-3 py-2 text-[11px] text-[var(--color-text-dim)]">
+            <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
               Načítám lidi...
             </div>
           ) : fetchError ? (
             <div
-              className="px-3 py-2 text-[11px]"
+              className="px-3 py-2 text-[14px]"
               style={{ color: "var(--color-danger)" }}
             >
               {fetchError}
@@ -1299,7 +1299,7 @@ function OwnerPicker({
                 <span className="text-[var(--color-text-dim)]">— Žádný —</span>
               </button>
               {actors && actors.length === 0 ? (
-                <div className="px-3 py-2 text-[11px] text-[var(--color-text-dim)]">
+                <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
                   Žádní vhodní lidé v organizaci.
                 </div>
               ) : (
@@ -1391,7 +1391,7 @@ function ResponsibilitiesEditor({
           ))}
         </ul>
       ) : (
-        <p className="mb-2 text-[12px] italic text-[var(--color-text-dim)]">
+        <p className="mb-2 text-[13.5px] italic text-[var(--color-text-dim)]">
           Žádné úlohy zatím nejsou.
         </p>
       )}
@@ -1410,7 +1410,7 @@ function ResponsibilitiesEditor({
       ) : (
         <button
           onClick={() => setAdding(true)}
-          className="mt-3 flex items-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[11px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
+          className="mt-3 flex items-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[14px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
         >
           <Plus size={12} />
           Přidat úlohu
@@ -1526,20 +1526,20 @@ function ResponsibilityItem({
             onChange={(e) => setDraftTitle(e.target.value)}
             autoFocus
             placeholder="Název úlohy"
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[12.5px] font-semibold text-[var(--color-text)] focus:border-[var(--color-accent-dim)]"
+            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] font-semibold text-[var(--color-text)] focus:border-[var(--color-accent-dim)]"
           />
           <textarea
             value={draftDescription}
             onChange={(e) => setDraftDescription(e.target.value)}
             rows={3}
             placeholder="Popis (volitelné)"
-            className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+            className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[13.5px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
           />
           <div className="flex gap-2">
             <button
               onClick={save}
               disabled={saving || !draftTitle.trim()}
-              className="flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[11px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[14px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
             >
               <Save size={11} />
               {saving ? "Ukládám..." : "Uložit"}
@@ -1547,7 +1547,7 @@ function ResponsibilityItem({
             <button
               onClick={cancel}
               disabled={saving}
-              className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[11px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
+              className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[14px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
             >
               Zrušit
             </button>
@@ -1714,7 +1714,7 @@ function AddResponsibilityForm({
   return (
     <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
       <div className="mb-2 flex items-center justify-between">
-        <div className="font-mono text-[9.5px] uppercase tracking-widest text-[var(--color-text-dim)]">
+        <div className="font-mono text-[14px] uppercase tracking-widest text-[var(--color-text-dim)]">
           Nová úloha
         </div>
         <button
@@ -1730,36 +1730,36 @@ function AddResponsibilityForm({
           onChange={(e) => setTitle(e.target.value)}
           autoFocus
           placeholder="Název úlohy"
-          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[12px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[13.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
         />
         <textarea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           rows={3}
           placeholder="Popis (volitelné)"
-          className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[12px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+          className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[13.5px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
         />
         <div>
-          <div className="mb-1 font-mono text-[9.5px] uppercase tracking-widest text-[var(--color-text-dim)]">
+          <div className="mb-1 font-mono text-[14px] uppercase tracking-widest text-[var(--color-text-dim)]">
             Přiřazení
           </div>
           {!orgId ? (
-            <div className="text-[11px] text-[var(--color-text-dim)]">
+            <div className="text-[14px] text-[var(--color-text-dim)]">
               Uzel nemá organizaci.
             </div>
           ) : loadingActors ? (
-            <div className="text-[11px] text-[var(--color-text-dim)]">
+            <div className="text-[14px] text-[var(--color-text-dim)]">
               Načítám...
             </div>
           ) : fetchError ? (
             <div
-              className="text-[11px]"
+              className="text-[14px]"
               style={{ color: "var(--color-danger)" }}
             >
               {fetchError}
             </div>
           ) : actors && actors.length === 0 ? (
-            <div className="text-[11px] text-[var(--color-text-dim)]">
+            <div className="text-[14px] text-[var(--color-text-dim)]">
               Žádní actoři v organizaci.
             </div>
           ) : (
@@ -1800,14 +1800,14 @@ function AddResponsibilityForm({
         <button
           onClick={onCancel}
           disabled={saving}
-          className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5 text-[11px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
+          className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5 text-[14px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
         >
           Zrušit
         </button>
         <button
           onClick={submit}
           disabled={!title.trim() || saving}
-          className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[11px] text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
+          className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[14px] text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
         >
           {saving ? "Vytvářím..." : "Vytvořit"}
         </button>
@@ -1902,7 +1902,7 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
         </ul>
       ) : (
         canEdit && (
-          <p className="mb-2 text-[12px] italic text-[var(--color-text-dim)]">
+          <p className="mb-2 text-[13.5px] italic text-[var(--color-text-dim)]">
             Žádné záznamy.
           </p>
         )
@@ -1924,7 +1924,7 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
         ) : (
           <button
             onClick={() => setAdding(true)}
-            className="mt-3 flex items-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[11px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
+            className="mt-3 flex items-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[14px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
           >
             <Plus size={12} />
             Přidat {title}
@@ -1985,7 +1985,7 @@ function AddEntityAttributeForm<TItem extends EntityAttributeItem>({
   return (
     <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
       <div className="mb-2 flex items-center justify-between">
-        <div className="font-mono text-[9.5px] uppercase tracking-widest text-[var(--color-text-dim)]">
+        <div className="font-mono text-[14px] uppercase tracking-widest text-[var(--color-text-dim)]">
           Nový {title}
         </div>
         <button
@@ -2001,35 +2001,35 @@ function AddEntityAttributeForm<TItem extends EntityAttributeItem>({
           onChange={(e) => setName(e.target.value)}
           autoFocus
           placeholder="Název"
-          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[12px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[13.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
         />
         <textarea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           rows={2}
           placeholder="Popis (volitelné)"
-          className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[12px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+          className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[13.5px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
         />
         <input
           value={externalLink}
           onChange={(e) => setExternalLink(e.target.value)}
           type="url"
           placeholder="Odkaz (volitelné, např. https://…)"
-          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[12px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[13.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
         />
       </div>
       <div className="mt-2 flex justify-end gap-2">
         <button
           onClick={onCancel}
           disabled={saving}
-          className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5 text-[11px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
+          className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5 text-[14px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
         >
           Zrušit
         </button>
         <button
           onClick={submit}
           disabled={!name.trim() || saving}
-          className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[11px] text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
+          className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[14px] text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
         >
           {saving ? "Vytvářím..." : "Vytvořit"}
         </button>
@@ -2105,18 +2105,18 @@ function AssigneePicker({
       </span>
       <div className="absolute left-0 top-full z-50 mt-1 w-[220px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
         {loading ? (
-          <div className="px-3 py-2 text-[11px] text-[var(--color-text-dim)]">
+          <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
             Načítám...
           </div>
         ) : fetchError ? (
           <div
-            className="px-3 py-2 text-[11px]"
+            className="px-3 py-2 text-[14px]"
             style={{ color: "var(--color-danger)" }}
           >
             {fetchError}
           </div>
         ) : candidates.length === 0 ? (
-          <div className="px-3 py-2 text-[11px] text-[var(--color-text-dim)]">
+          <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
             Žádní další actoři k přiřazení.
           </div>
         ) : (
@@ -2241,7 +2241,7 @@ function ActionButtons({ node }: { node: NodeDetail }) {
     <div className="flex gap-2">
       <button
         onClick={handleCopyPrompt}
-        className="group flex flex-1 items-center justify-center gap-2 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[12px] font-medium text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)]"
+        className="group flex flex-1 items-center justify-center gap-2 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)]"
       >
         {copiedPrompt ? (
           <>
@@ -2259,7 +2259,7 @@ function ActionButtons({ node }: { node: NodeDetail }) {
         <button
           onClick={handleCopyCd}
           title="Zkopírovat příkaz cd"
-          className="flex items-center justify-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5 text-[11px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+          className="flex items-center justify-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5 text-[14px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
         >
           {copiedCd ? <Check size={12} /> : <Copy size={12} />}
           cd

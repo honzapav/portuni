@@ -115,12 +115,12 @@ export default function ActorsPage({ graph }: Props) {
           >
             <Users size={16} className="text-[var(--color-accent)]" />
           </div>
-          <h1 className="flex-1 text-[20px] font-semibold leading-tight tracking-tight text-[var(--color-text)]">
+          <h1 className="flex-1 text-[22px] font-semibold leading-tight tracking-tight text-[var(--color-text)]">
             Aktéři
           </h1>
           <button
             onClick={openCreate}
-            className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-3 py-1.5 text-[12px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-text)]"
+            className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-3 py-1.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-text)]"
           >
             <Plus size={13} />
             Přidat aktéra
@@ -138,7 +138,7 @@ export default function ActorsPage({ graph }: Props) {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Hledat aktéry..."
-              className="w-[240px] rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] py-1.5 pl-8 pr-3 text-[12px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] focus:outline-none"
+              className="w-[240px] rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] py-1.5 pl-8 pr-3 text-[13.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] focus:outline-none"
             />
           </div>
 
@@ -171,7 +171,7 @@ export default function ActorsPage({ graph }: Props) {
             ]}
           />
 
-          <span className="ml-auto text-[11px] text-[var(--color-text-dim)]">
+          <span className="ml-auto text-[14px] text-[var(--color-text-dim)]">
             {filtered.length} / {actors?.length ?? 0}
           </span>
         </div>
@@ -193,13 +193,13 @@ export default function ActorsPage({ graph }: Props) {
         )}
 
         {loading && !actors && (
-          <div className="flex h-40 items-center justify-center text-[12px] text-[var(--color-text-dim)]">
+          <div className="flex h-40 items-center justify-center text-[13.5px] text-[var(--color-text-dim)]">
             Načítám aktéry...
           </div>
         )}
 
         {!loading && actors && filtered.length === 0 && (
-          <div className="flex h-40 items-center justify-center text-[12px] text-[var(--color-text-dim)]">
+          <div className="flex h-40 items-center justify-center text-[13.5px] text-[var(--color-text-dim)]">
             {actors.length === 0
               ? "Zatím žádní aktéři. Přidejte prvního."
               : "Žádní aktéři neodpovídají filtrům."}
@@ -207,7 +207,7 @@ export default function ActorsPage({ graph }: Props) {
         )}
 
         {actors && filtered.length > 0 && (
-          <table className="w-full border-separate border-spacing-0 text-[12px]">
+          <table className="w-full border-separate border-spacing-0 text-[13.5px]">
             <thead className="sticky top-0 z-10 bg-[var(--color-bg)]">
               <tr className="text-left text-[10px] uppercase tracking-widest text-[var(--color-text-dim)]">
                 <Th>Jméno</Th>
@@ -238,7 +238,7 @@ export default function ActorsPage({ graph }: Props) {
                   <Td>
                     <span className="text-[var(--color-text-muted)]">
                       {orgNameById.get(a.org_id) ?? (
-                        <span className="font-mono text-[10.5px] text-[var(--color-text-dim)]">
+                        <span className="font-mono text-[13.5px] text-[var(--color-text-dim)]">
                           {a.org_id}
                         </span>
                       )}
@@ -308,7 +308,7 @@ function FilterSelect({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[12px] text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none"
+      className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[13.5px] text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none"
     >
       {options.map((o) => (
         <option key={o.value} value={o.value}>
@@ -387,7 +387,7 @@ function StatusBadge({ actor }: { actor: Actor }) {
   }
   return (
     <span
-      className="inline-flex items-center gap-1.5 text-[11px]"
+      className="inline-flex items-center gap-1.5 text-[14px]"
       style={{ color }}
     >
       <span
@@ -553,7 +553,7 @@ function ActorModal({
                 value={orgId}
                 onChange={(e) => setOrgId(e.target.value)}
                 disabled={isEdit}
-                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[12.5px] text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none disabled:opacity-60"
+                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none disabled:opacity-60"
               >
                 {organizations.length === 0 && (
                   <option value="">(žádná organizace)</option>
@@ -594,7 +594,7 @@ function ActorModal({
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 autoFocus
-                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[12.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] focus:outline-none"
+                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] focus:outline-none"
                 placeholder={
                   type === "person" ? "Jan Novák" : "Denní report z CRM"
                 }
@@ -606,14 +606,14 @@ function ActorModal({
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 rows={3}
-                className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[12.5px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] focus:outline-none"
+                className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] focus:outline-none"
                 placeholder="Volitelný popis role nebo automatizace..."
               />
             </Field>
 
             <Field label="Placeholder">
               <label
-                className={`inline-flex items-center gap-2 text-[12px] ${
+                className={`inline-flex items-center gap-2 text-[13.5px] ${
                   type === "automation"
                     ? "cursor-not-allowed opacity-50"
                     : "cursor-pointer"
@@ -653,7 +653,7 @@ function ActorModal({
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
                 rows={2}
-                className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[12.5px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] focus:outline-none"
+                className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] focus:outline-none"
                 placeholder="Interní poznámky..."
               />
             </Field>
@@ -677,14 +677,14 @@ function ActorModal({
               type="button"
               onClick={onClose}
               disabled={saving}
-              className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[12px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
+              className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[13.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
             >
               Zrušit
             </button>
             <button
               type="submit"
               disabled={saving}
-              className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-3 py-1.5 text-[12px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-text)] disabled:opacity-50"
+              className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-3 py-1.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-text)] disabled:opacity-50"
             >
               {saving ? "Ukládám..." : isEdit ? "Uložit změny" : "Vytvořit"}
             </button>
@@ -706,7 +706,7 @@ function Field({
 }) {
   return (
     <div>
-      <label className="mb-1 block text-[10.5px] font-semibold uppercase tracking-widest text-[var(--color-text-dim)]">
+      <label className="mb-1 block text-[13.5px] font-semibold uppercase tracking-widest text-[var(--color-text-dim)]">
         {label}
         {required && <span className="ml-1 text-[var(--color-danger)]">*</span>}
       </label>
@@ -717,7 +717,7 @@ function Field({
 
 function FieldHint({ children }: { children: React.ReactNode }) {
   return (
-    <div className="mt-1 text-[10.5px] text-[var(--color-text-dim)]">
+    <div className="mt-1 text-[13.5px] text-[var(--color-text-dim)]">
       {children}
     </div>
   );
@@ -739,7 +739,7 @@ function TypeRadio({
       type="button"
       onClick={onChange}
       disabled={disabled}
-      className={`flex-1 rounded-md border px-3 py-1.5 text-[12px] transition-colors ${
+      className={`flex-1 rounded-md border px-3 py-1.5 text-[13.5px] transition-colors ${
         checked
           ? "border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
           : "border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"

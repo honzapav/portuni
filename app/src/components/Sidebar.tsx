@@ -213,7 +213,7 @@ function GraphSidebarContent({
             value={query}
             onChange={(e) => onQuery(e.target.value)}
             placeholder="Hledat uzly..."
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] py-2 pl-8 pr-8 text-[12.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] transition-colors focus:border-[var(--color-accent-dim)]"
+            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] py-2 pl-8 pr-8 text-[14px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] transition-colors focus:border-[var(--color-accent-dim)]"
           />
           {query.length > 0 && (
             <button
@@ -231,7 +231,7 @@ function GraphSidebarContent({
         <div className="border-b border-[var(--color-border)] px-2 py-2">
           <div className="scroll-thin max-h-[280px] overflow-y-auto">
             {matches.length === 0 ? (
-              <div className="px-3 py-4 text-center text-[11px] text-[var(--color-text-dim)]">
+              <div className="px-3 py-4 text-center text-[14px] text-[var(--color-text-dim)]">
                 Žádné výsledky
               </div>
             ) : (
@@ -290,7 +290,7 @@ function GraphSidebarContent({
                       >
                         {org.name}
                       </span>
-                      <span className="font-mono text-[10.5px] text-[var(--color-text-dim)]">
+                      <span className="font-mono text-[13.5px] text-[var(--color-text-dim)]">
                         {childCount}
                       </span>
                     </button>
@@ -317,7 +317,7 @@ function GraphSidebarContent({
                       }`}
                     />
                     <span
-                      className={`font-mono text-[11px] transition-colors ${
+                      className={`font-mono text-[14px] transition-colors ${
                         enabled
                           ? "text-[var(--color-text)]"
                           : "text-[var(--color-text-dim)] line-through"
@@ -352,7 +352,7 @@ function GraphSidebarContent({
                         {type}
                       </span>
                     </div>
-                    <span className="font-mono text-[10.5px] text-[var(--color-text-dim)]">
+                    <span className="font-mono text-[13.5px] text-[var(--color-text-dim)]">
                       {count}
                     </span>
                   </div>
@@ -392,7 +392,7 @@ function Section({
 }) {
   return (
     <div className="mb-6">
-      <div className="mb-2 px-2 text-[9.5px] font-semibold uppercase tracking-widest text-[var(--color-text-dim)]">
+      <div className="mb-2 px-2 text-[14px] font-semibold uppercase tracking-widest text-[var(--color-text-dim)]">
         {title}
       </div>
       {children}
@@ -426,7 +426,7 @@ function SearchHit({
         }}
       />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[12px] font-medium text-[var(--color-text)]">
+        <div className="truncate text-[13.5px] font-medium text-[var(--color-text)]">
           {node.name}
         </div>
         <div className="truncate text-[10px] text-[var(--color-text-dim)]">

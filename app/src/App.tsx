@@ -167,19 +167,19 @@ export default function App() {
       <main className="relative min-w-0 flex-1 bg-[var(--color-bg)]">
         {graphError && (
           <div className="absolute inset-0 flex items-center justify-center">
-            <div className="rounded-md border border-red-900 bg-red-950/30 px-6 py-4 text-[12px] text-red-300">
+            <div className="rounded-md border border-red-900 bg-red-950/30 px-6 py-4 text-[13.5px] text-red-300">
               <div className="mb-2 font-semibold">Nepodařilo se načíst graf</div>
-              <div className="font-mono text-[10.5px] opacity-80">
+              <div className="font-mono text-[13.5px] opacity-80">
                 {graphError}
               </div>
-              <div className="mt-3 text-[10.5px] text-red-200/70">
+              <div className="mt-3 text-[13.5px] text-red-200/70">
                 Běží Portuni server na portu 4011?
               </div>
             </div>
           </div>
         )}
         {!graph && !graphError && (
-          <div className="absolute inset-0 flex items-center justify-center text-[11px] text-[var(--color-text-dim)]">
+          <div className="absolute inset-0 flex items-center justify-center text-[14px] text-[var(--color-text-dim)]">
             Načítám graf...
           </div>
         )}
