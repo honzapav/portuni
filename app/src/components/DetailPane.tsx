@@ -19,6 +19,8 @@ import type {
   NodeDetail,
   DetailEdge,
   DetailResponsibility,
+  DetailDataSource,
+  DetailTool,
   GraphPayload,
 } from "../types";
 import {
@@ -39,6 +41,10 @@ import {
   deleteResponsibility,
   assignResponsibility,
   unassignResponsibility,
+  addDataSource,
+  removeDataSource,
+  addTool,
+  removeTool,
 } from "../api";
 
 function nodeTypeVar(type: string): string {
@@ -363,57 +369,51 @@ function DetailPaneBody({
           </Section>
         )}
 
-        {/* Data sources (Datové zdroje) */}
-        {node.data_sources.length > 0 && (
+        {/* Data sources (Datové zdroje) — interactive on project/process/area,
+            read-only otherwise. Hidden entirely if empty on non-editable types. */}
+        {(node.type === "project" ||
+          node.type === "process" ||
+          node.type === "area" ||
+          node.data_sources.length > 0) && (
           <Section title="Datové zdroje">
-            <ul className="entity-attr-list">
-              {node.data_sources.map((d) => (
-                <li key={d.id}>
-                  {d.external_link ? (
-                    <a
-                      href={d.external_link}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-[var(--color-accent)] hover:underline"
-                    >
-                      {d.name}
-                    </a>
-                  ) : (
-                    <span className="text-[var(--color-text)]">{d.name}</span>
-                  )}
-                  {d.description && (
-                    <span className="attr-desc"> — {d.description}</span>
-                  )}
-                </li>
-              ))}
-            </ul>
+            <EntityAttributeSection
+              title="datový zdroj"
+              items={node.data_sources}
+              nodeId={node.id}
+              canEdit={
+                node.type === "project" ||
+                node.type === "process" ||
+                node.type === "area"
+              }
+              addCreator={addDataSource}
+              removeCreator={removeDataSource}
+              onMutate={onMutate}
+              onError={setErrorMsg}
+            />
           </Section>
         )}
 
-        {/* Tools (Nástroje) */}
-        {node.tools.length > 0 && (
+        {/* Tools (Nástroje) — interactive on project/process/area,
+            read-only otherwise. Hidden entirely if empty on non-editable types. */}
+        {(node.type === "project" ||
+          node.type === "process" ||
+          node.type === "area" ||
+          node.tools.length > 0) && (
           <Section title="Nástroje">
-            <ul className="entity-attr-list">
-              {node.tools.map((t) => (
-                <li key={t.id}>
-                  {t.external_link ? (
-                    <a
-                      href={t.external_link}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-[var(--color-accent)] hover:underline"
-                    >
-                      {t.name}
-                    </a>
-                  ) : (
-                    <span className="text-[var(--color-text)]">{t.name}</span>
-                  )}
-                  {t.description && (
-                    <span className="attr-desc"> — {t.description}</span>
-                  )}
-                </li>
-              ))}
-            </ul>
+            <EntityAttributeSection
+              title="nástroj"
+              items={node.tools}
+              nodeId={node.id}
+              canEdit={
+                node.type === "project" ||
+                node.type === "process" ||
+                node.type === "area"
+              }
+              addCreator={addTool}
+              removeCreator={removeTool}
+              onMutate={onMutate}
+              onError={setErrorMsg}
+            />
           </Section>
         )}
 
@@ -1807,6 +1807,228 @@ function AddResponsibilityForm({
         <button
           onClick={submit}
           disabled={!title.trim() || saving}
+          className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[11px] text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
+        >
+          {saving ? "Vytvářím..." : "Vytvořit"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Shared editor for entity-attached attribute collections (data_sources,
+// tools). Both share identical shape { id, name, description, external_link }
+// and identical UX: list with per-item X, "Přidat …" button that opens an
+// inline form below the list. Parametrized by title (used in button label
+// and form header) and by add/remove API wrappers.
+type EntityAttributeItem = DetailDataSource | DetailTool;
+
+function EntityAttributeSection<TItem extends EntityAttributeItem>({
+  title,
+  items,
+  nodeId,
+  canEdit,
+  addCreator,
+  removeCreator,
+  onMutate,
+  onError,
+}: {
+  title: string; // e.g. "datový zdroj" | "nástroj"
+  items: TItem[];
+  nodeId: string;
+  canEdit: boolean;
+  addCreator: (input: {
+    node_id: string;
+    name: string;
+    description?: string;
+    external_link?: string;
+  }) => Promise<TItem>;
+  removeCreator: (id: string) => Promise<{ deleted: string }>;
+  onMutate: () => Promise<void>;
+  onError: (msg: string | null) => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const remove = async (item: TItem) => {
+    if (!confirm("Opravdu smazat?")) return;
+    setBusyId(item.id);
+    onError(null);
+    try {
+      await removeCreator(item.id);
+      await onMutate();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div>
+      {items.length > 0 ? (
+        <ul className="entity-attr-list">
+          {items.map((item) => (
+            <li key={item.id} className="group flex items-start gap-2">
+              <div className="flex-1">
+                {item.external_link ? (
+                  <a
+                    href={item.external_link}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[var(--color-accent)] hover:underline"
+                  >
+                    {item.name}
+                  </a>
+                ) : (
+                  <span className="text-[var(--color-text)]">{item.name}</span>
+                )}
+                {item.description && (
+                  <span className="attr-desc"> — {item.description}</span>
+                )}
+              </div>
+              {canEdit && (
+                <button
+                  onClick={() => remove(item)}
+                  disabled={busyId === item.id}
+                  aria-label={`Smazat ${title}`}
+                  className="shrink-0 text-[var(--color-text-dim)] opacity-0 transition-opacity hover:text-[var(--color-danger)] focus:opacity-100 group-hover:opacity-100 disabled:opacity-30"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        canEdit && (
+          <p className="mb-2 text-[12px] italic text-[var(--color-text-dim)]">
+            Žádné záznamy.
+          </p>
+        )
+      )}
+
+      {canEdit &&
+        (adding ? (
+          <AddEntityAttributeForm
+            title={title}
+            nodeId={nodeId}
+            addCreator={addCreator}
+            onCancel={() => setAdding(false)}
+            onDone={async () => {
+              await onMutate();
+              setAdding(false);
+            }}
+            onError={onError}
+          />
+        ) : (
+          <button
+            onClick={() => setAdding(true)}
+            className="mt-3 flex items-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[11px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
+          >
+            <Plus size={12} />
+            Přidat {title}
+          </button>
+        ))}
+    </div>
+  );
+}
+
+function AddEntityAttributeForm<TItem extends EntityAttributeItem>({
+  title,
+  nodeId,
+  addCreator,
+  onCancel,
+  onDone,
+  onError,
+}: {
+  title: string;
+  nodeId: string;
+  addCreator: (input: {
+    node_id: string;
+    name: string;
+    description?: string;
+    external_link?: string;
+  }) => Promise<TItem>;
+  onCancel: () => void;
+  onDone: () => Promise<void>;
+  onError: (msg: string | null) => void;
+}) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [externalLink, setExternalLink] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+    setSaving(true);
+    onError(null);
+    try {
+      await addCreator({
+        node_id: nodeId,
+        name: trimmedName,
+        description: description.trim() || undefined,
+        external_link: externalLink.trim() || undefined,
+      });
+      await onDone();
+      setName("");
+      setDescription("");
+      setExternalLink("");
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="font-mono text-[9.5px] uppercase tracking-widest text-[var(--color-text-dim)]">
+          Nový {title}
+        </div>
+        <button
+          onClick={onCancel}
+          className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+        >
+          <X size={12} />
+        </button>
+      </div>
+      <div className="space-y-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          autoFocus
+          placeholder="Název"
+          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[12px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+        />
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          rows={2}
+          placeholder="Popis (volitelné)"
+          className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[12px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+        />
+        <input
+          value={externalLink}
+          onChange={(e) => setExternalLink(e.target.value)}
+          type="url"
+          placeholder="Odkaz (volitelné, např. https://…)"
+          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[12px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+        />
+      </div>
+      <div className="mt-2 flex justify-end gap-2">
+        <button
+          onClick={onCancel}
+          disabled={saving}
+          className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5 text-[11px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
+        >
+          Zrušit
+        </button>
+        <button
+          onClick={submit}
+          disabled={!name.trim() || saving}
           className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[11px] text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
         >
           {saving ? "Vytvářím..." : "Vytvořit"}
