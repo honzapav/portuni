@@ -1,4 +1,24 @@
-import type { GraphPayload, NodeDetail } from "./types";
+import type {
+  GraphPayload,
+  NodeDetail,
+  DetailResponsibility,
+  DetailDataSource,
+  DetailTool,
+} from "./types";
+
+// Actor shape returned by GET /actors. Mirrors the DB row; separate from
+// NodeDetail's assignee shape (which is narrower — just id/name/type).
+export type Actor = {
+  id: string;
+  org_id: string;
+  type: "person" | "automation";
+  name: string;
+  description: string | null;
+  is_placeholder: number;
+  user_id: string | null;
+  notes: string | null;
+  external_id: string | null;
+};
 
 const BASE = "/api";
 
@@ -33,7 +53,13 @@ async function jsonRequest<T>(
 
 export function updateNode(
   id: string,
-  patch: { name?: string; description?: string | null },
+  patch: {
+    name?: string;
+    description?: string | null;
+    goal?: string | null;
+    lifecycle_state?: string | null;
+    owner_id?: string | null;
+  },
 ): Promise<NodeDetail> {
   return jsonRequest<NodeDetail>(
     "PATCH",
@@ -83,4 +109,142 @@ export function savePositions(
     return Promise.resolve({ updated: 0 });
   }
   return jsonRequest<{ updated: number }>("POST", "/positions", { updates });
+}
+
+// -- Actors --------------------------------------------------------------
+
+export async function fetchActors(params?: {
+  org_id?: string;
+  type?: "person" | "automation";
+  is_placeholder?: boolean;
+}): Promise<Actor[]> {
+  const qs = new URLSearchParams();
+  if (params?.org_id) qs.set("org_id", params.org_id);
+  if (params?.type) qs.set("type", params.type);
+  if (params?.is_placeholder !== undefined) {
+    qs.set("is_placeholder", params.is_placeholder ? "1" : "0");
+  }
+  const res = await fetch(`${BASE}/actors?${qs}`);
+  if (!res.ok) throw new Error(`actors: ${res.status}`);
+  return res.json();
+}
+
+export function createActor(input: {
+  org_id: string;
+  type: "person" | "automation";
+  name: string;
+  description?: string;
+  is_placeholder?: boolean;
+  user_id?: string;
+  notes?: string;
+  external_id?: string;
+}): Promise<Actor> {
+  return jsonRequest<Actor>("POST", "/actors", input);
+}
+
+export function updateActor(
+  id: string,
+  patch: {
+    name?: string;
+    description?: string | null;
+    is_placeholder?: boolean;
+    user_id?: string | null;
+    notes?: string | null;
+  },
+): Promise<Actor> {
+  return jsonRequest<Actor>("PATCH", `/actors/${encodeURIComponent(id)}`, patch);
+}
+
+export function archiveActor(id: string): Promise<{ archived: string }> {
+  return jsonRequest<{ archived: string }>(
+    "DELETE",
+    `/actors/${encodeURIComponent(id)}`,
+  );
+}
+
+// -- Responsibilities ---------------------------------------------------
+
+export function createResponsibility(input: {
+  node_id: string;
+  title: string;
+  description?: string;
+  sort_order?: number;
+  assignees?: string[];
+}): Promise<DetailResponsibility> {
+  return jsonRequest<DetailResponsibility>("POST", "/responsibilities", input);
+}
+
+export function updateResponsibility(
+  id: string,
+  patch: { title?: string; description?: string | null; sort_order?: number },
+): Promise<DetailResponsibility> {
+  return jsonRequest<DetailResponsibility>(
+    "PATCH",
+    `/responsibilities/${encodeURIComponent(id)}`,
+    patch,
+  );
+}
+
+export function deleteResponsibility(id: string): Promise<{ deleted: string }> {
+  return jsonRequest<{ deleted: string }>(
+    "DELETE",
+    `/responsibilities/${encodeURIComponent(id)}`,
+  );
+}
+
+export function assignResponsibility(
+  responsibilityId: string,
+  actorId: string,
+): Promise<{ ok: true }> {
+  return jsonRequest<{ ok: true }>(
+    "POST",
+    `/responsibilities/${encodeURIComponent(responsibilityId)}/assignments`,
+    { actor_id: actorId },
+  );
+}
+
+export function unassignResponsibility(
+  responsibilityId: string,
+  actorId: string,
+): Promise<{ ok: true }> {
+  return jsonRequest<{ ok: true }>(
+    "DELETE",
+    `/responsibilities/${encodeURIComponent(responsibilityId)}/assignments/${encodeURIComponent(actorId)}`,
+  );
+}
+
+// -- Data sources -------------------------------------------------------
+
+export function addDataSource(input: {
+  node_id: string;
+  name: string;
+  description?: string;
+  external_link?: string;
+}): Promise<DetailDataSource> {
+  return jsonRequest<DetailDataSource>("POST", "/data-sources", input);
+}
+
+export function removeDataSource(id: string): Promise<{ deleted: string }> {
+  return jsonRequest<{ deleted: string }>(
+    "DELETE",
+    `/data-sources/${encodeURIComponent(id)}`,
+  );
+}
+
+// -- Tools --------------------------------------------------------------
+
+export function addTool(input: {
+  node_id: string;
+  name: string;
+  description?: string;
+  external_link?: string;
+}): Promise<DetailTool> {
+  return jsonRequest<DetailTool>("POST", "/tools", input);
+}
+
+export function removeTool(id: string): Promise<{ deleted: string }> {
+  return jsonRequest<{ deleted: string }>(
+    "DELETE",
+    `/tools/${encodeURIComponent(id)}`,
+  );
 }
