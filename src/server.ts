@@ -11,6 +11,7 @@ import { registerContextTools } from "./tools/context.js";
 import { registerMirrorTools } from "./tools/mirrors.js";
 import { registerFileTools } from "./tools/files.js";
 import { registerEventTools } from "./tools/events.js";
+import { registerActorTools } from "./tools/actors.js";
 
 import { getDb } from "./db.js";
 import { SOLO_USER, NODE_TYPES, EDGE_RELATIONS, EVENT_TYPES } from "./schema.js";
@@ -19,7 +20,7 @@ import type { GraphPayload, NodeDetail } from "./api-types.js";
 import { ulid } from "ulid";
 import { logAudit } from "./audit.js";
 
-const PORT = Number(process.env.PORT ?? 3001);
+const PORT = Number(process.env.PORT ?? 4011);
 
 async function loadGraph(): Promise<GraphPayload> {
   const db = getDb();
@@ -306,6 +307,7 @@ function createMcpServer(): McpServer {
   registerMirrorTools(server);
   registerFileTools(server);
   registerEventTools(server);
+  registerActorTools(server);
   return server;
 }
 
