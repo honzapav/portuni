@@ -124,47 +124,9 @@ function buildElements(graph: GraphPayload): cytoscape.ElementDefinition[] {
   return elements;
 }
 
-// Lifecycle-state -> graph fill color. Mirrors LIFECYCLE_COLORS in
-// app/src/types.ts but resolves to concrete hex so cytoscape renders it
-// without a round-trip to CSS. When lifecycle_state is empty or unknown,
-// returns null and the caller falls back to the type-based color.
-const LIFECYCLE_FILL: Record<string, string> = {
-  // green
-  active: "#1fa973",
-  operating: "#1fa973",
-  in_progress: "#1fa973",
-  done: "#1fa973",
-  // yellow
-  needs_attention: "#eab308",
-  at_risk: "#eab308",
-  on_hold: "#eab308",
-  implementing: "#eab308",
-  // red
-  broken: "#dc2626",
-  cancelled: "#dc2626",
-  // gray
-  inactive: "#94a3b8",
-  archived: "#94a3b8",
-  retired: "#94a3b8",
-  backlog: "#94a3b8",
-  planned: "#94a3b8",
-  not_implemented: "#94a3b8",
-};
-
 function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
-  // Type-based color used for the border (so the node type is still
-  // distinguishable at a glance) and as a fallback fill when no lifecycle
-  // state is set.
-  const typeColor = (ele: NodeSingular) =>
+  const nodeColor = (ele: NodeSingular) =>
     theme.nodeColors[ele.data("type") as string] ?? theme.nodeColorDefault;
-  // Lifecycle-driven fill. Semantic signal (green/yellow/red/gray) takes
-  // precedence over the structural type color; when the node has no
-  // lifecycle_state (principles, legacy data), we fall back to type color
-  // so the node is never invisible.
-  const lifecycleFill = (ele: NodeSingular) => {
-    const state = ele.data("lifecycle_state") as string | undefined;
-    return (state && LIFECYCLE_FILL[state]) || typeColor(ele);
-  };
 
   return [
     // Compound parents (organizations).
@@ -202,13 +164,10 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
       selector: "node[type != 'organization']",
       style: {
         shape: "ellipse",
-        // Fill = lifecycle state (green/yellow/red/gray); border = node
-        // type (project/process/area/principle). Both dimensions stay
-        // readable at a glance.
-        "background-color": lifecycleFill,
+        "background-color": nodeColor,
         "background-opacity": 0.9,
-        "border-color": typeColor,
-        "border-width": 2,
+        "border-color": nodeColor,
+        "border-width": 1,
         "border-opacity": 1,
         label: "data(label)",
         "text-valign": "bottom",
@@ -272,6 +231,43 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
     },
     // Selected: color change only. border-width, width, height, padding stay
     // constant so the compound parent never refits.
+    // Lifecycle signal — only for abnormal states. "Healthy" states
+    // (active/operating/in_progress/done/planned/...) keep the default
+    // type color; abnormal states get a subtle treatment so they stand
+    // out without repainting the whole graph.
+    //
+    // Problem states get a red/amber border overlay without changing fill.
+    {
+      selector: "node[lifecycle_state = 'broken'][type != 'organization']",
+      style: { "border-color": "#dc2626", "border-width": 2.5 },
+    },
+    {
+      selector: "node[lifecycle_state = 'at_risk'][type != 'organization']",
+      style: { "border-color": "#eab308", "border-width": 2.5 },
+    },
+    {
+      selector: "node[lifecycle_state = 'needs_attention'][type != 'organization']",
+      style: { "border-color": "#eab308", "border-width": 2.5 },
+    },
+    // Dormant/terminal states dim the node so it recedes visually.
+    {
+      selector:
+        "node[lifecycle_state = 'archived'][type != 'organization']," +
+        "node[lifecycle_state = 'retired'][type != 'organization']," +
+        "node[lifecycle_state = 'cancelled'][type != 'organization']," +
+        "node[lifecycle_state = 'inactive'][type != 'organization']",
+      style: {
+        "background-opacity": 0.35,
+        "border-opacity": 0.35,
+        "text-opacity": 0.55,
+      },
+    },
+    // On-hold: dashed border, same fill.
+    {
+      selector: "node[lifecycle_state = 'on_hold'][type != 'organization']",
+      style: { "border-style": "dashed", "border-width": 1.5 },
+    },
+    // Selected wins over lifecycle signaling.
     {
       selector: "node.selected[type != 'organization']",
       style: {
