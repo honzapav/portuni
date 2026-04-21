@@ -152,3 +152,97 @@ button:focus-visible {
 .animate-pulse-ok {
   animation: pulse-ok 800ms ease-out;
 }
+
+/* ----- Lifecycle state badge ----- */
+.lifecycle-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: 8px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+}
+.lifecycle-green {
+  background: rgba(31, 169, 115, 0.2);
+  color: #1fa973;
+}
+.lifecycle-yellow {
+  background: rgba(234, 179, 8, 0.2);
+  color: #a16207;
+}
+.lifecycle-red {
+  background: rgba(220, 38, 38, 0.2);
+  color: #dc2626;
+}
+.lifecycle-gray {
+  background: rgba(100, 116, 139, 0.2);
+  color: #94a3b8;
+}
+
+/* ----- Responsibilities list ----- */
+.responsibility-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.responsibility-list li {
+  padding: 10px 0;
+  border-top: 1px solid var(--color-border);
+}
+.responsibility-list li:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.resp-title {
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--color-text);
+}
+.resp-description {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  margin-top: 2px;
+  line-height: 1.5;
+}
+.resp-assignees {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.assignee {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+}
+.assignee-automation {
+  background: color-mix(in srgb, var(--color-node-project) 18%, transparent);
+  border-color: color-mix(in srgb, var(--color-node-project) 35%, transparent);
+  color: var(--color-node-project);
+}
+.assignee-empty {
+  color: var(--color-text-dim);
+  font-style: italic;
+  font-size: 11px;
+}
+
+/* ----- Data sources & tools list ----- */
+.entity-attr-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.entity-attr-list li {
+  padding: 4px 0;
+  font-size: 12.5px;
+  color: var(--color-text);
+}
+.attr-desc {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}

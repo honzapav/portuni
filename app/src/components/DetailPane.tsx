@@ -16,7 +16,7 @@ import {
   Save,
 } from "lucide-react";
 import type { NodeDetail, DetailEdge, GraphPayload } from "../types";
-import { RELATION_TYPES } from "../types";
+import { RELATION_TYPES, LIFECYCLE_COLORS } from "../types";
 import { buildAgentPrompt, buildCdCommand } from "../lib/prompt";
 import { updateNode, archiveNode, createEdge, deleteEdge } from "../api";
 
@@ -245,6 +245,15 @@ function DetailPaneBody({
           >
             {node.type}
           </span>
+          {node.lifecycle_state && (
+            <span
+              className={`lifecycle-badge lifecycle-${
+                LIFECYCLE_COLORS[node.lifecycle_state] ?? "gray"
+              }`}
+            >
+              {node.lifecycle_state}
+            </span>
+          )}
           <StatusDot status={node.status} />
         </div>
         {editing ? (
@@ -292,6 +301,109 @@ function DetailPaneBody({
                 {node.description}
               </p>
             )}
+          </Section>
+        )}
+
+        {/* Goal (Účel) */}
+        {node.goal && (
+          <Section title="Účel">
+            <p className="text-[12.5px] leading-relaxed text-[var(--color-text-muted)]">
+              {node.goal}
+            </p>
+          </Section>
+        )}
+
+        {/* Owner (Vlastník) */}
+        {node.owner && (
+          <Section title="Vlastník">
+            <p className="text-[12.5px] leading-relaxed text-[var(--color-text)]">
+              {node.owner.name}
+            </p>
+          </Section>
+        )}
+
+        {/* Responsibilities (Úlohy) */}
+        {node.responsibilities.length > 0 && (
+          <Section title="Úlohy">
+            <ul className="responsibility-list">
+              {node.responsibilities.map((r) => (
+                <li key={r.id}>
+                  <div className="resp-title">{r.title}</div>
+                  {r.description && (
+                    <div className="resp-description">{r.description}</div>
+                  )}
+                  <div className="resp-assignees">
+                    {r.assignees.length === 0 ? (
+                      <span className="assignee-empty">— Nikdo zatím</span>
+                    ) : (
+                      r.assignees.map((a) => (
+                        <span
+                          key={a.id}
+                          className={`assignee assignee-${a.type}`}
+                        >
+                          {a.type === "automation" ? "\u2699\uFE0E " : "\u{1F464} "}
+                          {a.name}
+                        </span>
+                      ))
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        )}
+
+        {/* Data sources (Datové zdroje) */}
+        {node.data_sources.length > 0 && (
+          <Section title="Datové zdroje">
+            <ul className="entity-attr-list">
+              {node.data_sources.map((d) => (
+                <li key={d.id}>
+                  {d.external_link ? (
+                    <a
+                      href={d.external_link}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[var(--color-accent)] hover:underline"
+                    >
+                      {d.name}
+                    </a>
+                  ) : (
+                    <span className="text-[var(--color-text)]">{d.name}</span>
+                  )}
+                  {d.description && (
+                    <span className="attr-desc"> — {d.description}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </Section>
+        )}
+
+        {/* Tools (Nástroje) */}
+        {node.tools.length > 0 && (
+          <Section title="Nástroje">
+            <ul className="entity-attr-list">
+              {node.tools.map((t) => (
+                <li key={t.id}>
+                  {t.external_link ? (
+                    <a
+                      href={t.external_link}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[var(--color-accent)] hover:underline"
+                    >
+                      {t.name}
+                    </a>
+                  ) : (
+                    <span className="text-[var(--color-text)]">{t.name}</span>
+                  )}
+                  {t.description && (
+                    <span className="attr-desc"> — {t.description}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
           </Section>
         )}
 
