@@ -8,9 +8,130 @@ import {
   NODE_VISIBILITIES,
   SOLO_USER,
 } from "../schema.js";
+import { getLifecycleStatesForType } from "../popp.js";
+import type { NodeType } from "../popp.js";
 import { NodeRow, NodeSummaryRow } from "../types.js";
-import type { InValue } from "@libsql/client";
+import type { Client, InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+// --- Task E1: pure updateNode, exported for tests ---
+//
+// updateNodeInternal accepts db explicitly so tests can run it against an
+// in-memory client. The MCP tool handler below calls this with getDb().
+export const UpdateNodeInput = z.object({
+  node_id: z.string(),
+  name: z.string().optional(),
+  description: z.string().nullable().optional(),
+  status: z.enum(NODE_STATUSES).optional(),
+  visibility: z.enum(NODE_VISIBILITIES).optional(),
+  meta: z.record(z.string(), z.unknown()).optional(),
+  goal: z.string().nullable().optional(),
+  lifecycle_state: z.string().nullable().optional(),
+  owner_id: z.string().nullable().optional(),
+});
+export type UpdateNodeInput = z.infer<typeof UpdateNodeInput>;
+
+// Direct audit writer taking db explicitly. The shared logAudit() helper
+// hard-codes getDb(), so we re-implement the INSERT here to keep the pure
+// function pure.
+async function writeAudit(
+  db: Client,
+  userId: string,
+  action: string,
+  targetType: string,
+  targetId: string,
+  detail?: Record<string, unknown>,
+): Promise<void> {
+  await db.execute({
+    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+          VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+    args: [ulid(), userId, action, targetType, targetId, detail ? JSON.stringify(detail) : null],
+  });
+}
+
+export async function updateNodeInternal(
+  db: Client,
+  updatedBy: string,
+  input: UpdateNodeInput,
+): Promise<void> {
+  const args = UpdateNodeInput.parse(input);
+
+  // Look up node type for lifecycle validation and to confirm existence.
+  const row = await db.execute({
+    sql: "SELECT type FROM nodes WHERE id = ?",
+    args: [args.node_id],
+  });
+  if (row.rows.length === 0) {
+    throw new Error(`node ${args.node_id} not found`);
+  }
+  const nodeType = row.rows[0].type as NodeType;
+
+  // Pre-validate lifecycle_state against per-type enum for a friendly error
+  // before the DB trigger fires.
+  if (args.lifecycle_state !== undefined && args.lifecycle_state !== null) {
+    const valid = getLifecycleStatesForType(nodeType);
+    if (!valid.includes(args.lifecycle_state)) {
+      throw new Error(
+        `invalid lifecycle_state '${args.lifecycle_state}' for node type '${nodeType}'. Valid: ${valid.join(", ")}`,
+      );
+    }
+  }
+
+  // Update non-lifecycle fields first (all in one UPDATE so owner_id trigger
+  // fires once, and updated_at bumps once).
+  const sets: string[] = [];
+  const values: InValue[] = [];
+  if (args.name !== undefined) {
+    sets.push("name = ?");
+    values.push(args.name);
+  }
+  if (args.description !== undefined) {
+    sets.push("description = ?");
+    values.push(args.description);
+  }
+  if (args.status !== undefined) {
+    sets.push("status = ?");
+    values.push(args.status);
+  }
+  if (args.visibility !== undefined) {
+    sets.push("visibility = ?");
+    values.push(args.visibility);
+  }
+  if (args.meta !== undefined) {
+    sets.push("meta = ?");
+    values.push(JSON.stringify(args.meta));
+  }
+  if (args.goal !== undefined) {
+    sets.push("goal = ?");
+    values.push(args.goal);
+  }
+  if (args.owner_id !== undefined) {
+    sets.push("owner_id = ?");
+    values.push(args.owner_id);
+  }
+
+  if (sets.length > 0) {
+    sets.push("updated_at = ?");
+    values.push(new Date().toISOString());
+    values.push(args.node_id);
+    await db.execute({
+      sql: `UPDATE nodes SET ${sets.join(", ")} WHERE id = ?`,
+      args: values,
+    });
+  }
+
+  // Update lifecycle_state separately so the AFTER UPDATE OF lifecycle_state
+  // trigger fires and derives status. (Splitting guarantees the trigger
+  // sees a real column-value change on exactly that column.)
+  if (args.lifecycle_state !== undefined) {
+    await db.execute({
+      sql: "UPDATE nodes SET lifecycle_state = ? WHERE id = ?",
+      args: [args.lifecycle_state, args.node_id],
+    });
+  }
+
+  await writeAudit(db, updatedBy, "update_node", "node", args.node_id, { input: args });
+}
 
 export function registerNodeTools(server: McpServer): void {
   server.tool(
@@ -149,84 +270,74 @@ export function registerNodeTools(server: McpServer): void {
 
   server.tool(
     "portuni_update_node",
-    "Update an existing node in the Portuni knowledge graph. Only provided fields are changed.",
+    "Update an existing node in the Portuni knowledge graph. Only provided fields are changed. Status is derived automatically from lifecycle_state -- prefer setting lifecycle_state. owner_id must reference an actor of type=person with user_id set, in the same organization.",
     {
       node_id: z.string().describe("Node ID (ULID)"),
       name: z.string().optional().describe("New human-readable name"),
-      description: z.string().optional().describe("New description"),
-      status: z.enum(NODE_STATUSES).optional().describe("New status"),
+      description: z.string().nullable().optional().describe("New description"),
+      status: z.enum(NODE_STATUSES).optional().describe("New coarse status. Prefer setting lifecycle_state -- status is derived automatically."),
+      visibility: z.enum(NODE_VISIBILITIES).optional().describe("New visibility"),
       meta: z.record(z.string(), z.unknown()).optional().describe("New type-specific JSON data"),
+      goal: z.string().nullable().optional().describe("New goal text. Pass null to clear."),
+      lifecycle_state: z.string().nullable().optional().describe("New lifecycle state. Must be valid for node type (project: backlog/planned/in_progress/on_hold/done/cancelled; process: not_implemented/implementing/operating/at_risk/broken/retired; etc.). Pass null to clear."),
+      owner_id: z.string().nullable().optional().describe("New owner (actors.id). Must reference an actor of type=person with user_id set (non-placeholder) in the same organization. Pass null to clear."),
     },
     async (args) => {
       const db = getDb();
 
-      // Fetch current state
+      // Pre-existing behavior: verify node exists up front so the error
+      // message is friendly (rather than letting the UPDATE silently affect
+      // zero rows or a trigger fire with confusing text).
       const current = await db.execute({
         sql: "SELECT * FROM nodes WHERE id = ?",
         args: [args.node_id],
       });
-
       if (current.rows.length === 0) {
         return {
           content: [{ type: "text" as const, text: "Error: node not found" }],
           isError: true,
         };
       }
+      // Parse so legacy callers still get the same validation surface.
+      NodeRow.parse(current.rows[0]);
 
-      const row = NodeRow.parse(current.rows[0]);
-
-      // Build dynamic SET clause for provided fields only
-      const updates: string[] = [];
-      const values: InValue[] = [];
-      const changes: Record<string, { from: unknown; to: unknown }> = {};
-
-      if (args.name !== undefined) {
-        updates.push("name = ?");
-        values.push(args.name);
-        changes.name = { from: row.name, to: args.name };
-      }
-      if (args.description !== undefined) {
-        updates.push("description = ?");
-        values.push(args.description);
-        changes.description = { from: row.description, to: args.description };
-      }
-      if (args.status !== undefined) {
-        updates.push("status = ?");
-        values.push(args.status);
-        changes.status = { from: row.status, to: args.status };
-      }
-      if (args.meta !== undefined) {
-        updates.push("meta = ?");
-        values.push(JSON.stringify(args.meta));
-        changes.meta = {
-          from: row.meta ? JSON.parse(row.meta) : null,
-          to: args.meta,
-        };
-      }
-
-      if (updates.length === 0) {
+      // Determine whether any field was actually provided, so we keep the
+      // pre-existing "no fields to update" error.
+      const provided = [
+        args.name,
+        args.description,
+        args.status,
+        args.visibility,
+        args.meta,
+        args.goal,
+        args.lifecycle_state,
+        args.owner_id,
+      ].some((v) => v !== undefined);
+      if (!provided) {
         return {
           content: [{ type: "text" as const, text: "Error: no fields to update" }],
           isError: true,
         };
       }
 
-      updates.push("updated_at = ?");
-      values.push(new Date().toISOString());
-      values.push(args.node_id);
+      try {
+        await updateNodeInternal(db, SOLO_USER, args);
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
 
-      await db.execute({
-        sql: `UPDATE nodes SET ${updates.join(", ")} WHERE id = ?`,
-        args: values,
-      });
-
-      await logAudit(SOLO_USER, "update_node", "node", args.node_id, { changes });
+      const updatedKeys = Object.entries(args)
+        .filter(([k, v]) => k !== "node_id" && v !== undefined)
+        .map(([k]) => k);
 
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ id: args.node_id, updated: Object.keys(changes) }),
+            text: JSON.stringify({ id: args.node_id, updated: updatedKeys }),
           },
         ],
       };
