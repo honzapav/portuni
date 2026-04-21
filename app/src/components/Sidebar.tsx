@@ -1,8 +1,10 @@
-import { Search, Network, Sun, Moon, X } from "lucide-react";
+import { Search, Network, Sun, Moon, X, Users } from "lucide-react";
 import type { GraphPayload, GraphNode } from "../types";
 import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
 import type { Theme } from "../lib/theme";
+
+export type AppView = "graph" | "actors";
 
 type Props = {
   graph: GraphPayload;
@@ -16,6 +18,8 @@ type Props = {
   onSelect: (id: string) => void;
   theme: Theme;
   onThemeToggle: () => void;
+  view: AppView;
+  onViewChange: (view: AppView) => void;
 };
 
 function nodeTypeVar(type: string): string {
@@ -46,31 +50,9 @@ export default function Sidebar({
   onSelect,
   theme,
   onThemeToggle,
+  view,
+  onViewChange,
 }: Props) {
-  const q = query.trim().toLowerCase();
-  const matches = q
-    ? graph.nodes
-        .filter((n) => {
-          if (n.type === "organization") return false;
-          return (
-            n.name.toLowerCase().includes(q) ||
-            (n.description ?? "").toLowerCase().includes(q) ||
-            n.type.toLowerCase().includes(q)
-          );
-        })
-        .slice(0, 60)
-    : [];
-
-  const typeCounts = new Map<string, number>();
-  for (const n of graph.nodes) {
-    typeCounts.set(n.type, (typeCounts.get(n.type) ?? 0) + 1);
-  }
-
-  const orderedTypes = [
-    ...TYPE_ORDER.filter((t) => typeCounts.has(t)),
-    ...Array.from(typeCounts.keys()).filter((t) => !TYPE_ORDER.includes(t)),
-  ];
-
   return (
     <aside className="flex h-full w-[300px] shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-bg)]">
       {/* Header */}
@@ -98,6 +80,127 @@ export default function Sidebar({
         </button>
       </div>
 
+      {/* View toggle */}
+      <div className="px-4 pt-4">
+        <div className="flex rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-0.5">
+          <ViewToggleButton
+            label="Graf"
+            icon={<Network size={12} />}
+            active={view === "graph"}
+            onClick={() => onViewChange("graph")}
+          />
+          <ViewToggleButton
+            label="Aktéři"
+            icon={<Users size={12} />}
+            active={view === "actors"}
+            onClick={() => onViewChange("actors")}
+          />
+        </div>
+      </div>
+
+      {view === "actors" && (
+        <div className="flex-1 px-5 py-5 text-[11.5px] leading-relaxed text-[var(--color-text-dim)]">
+          Správa aktérů napříč organizacemi. Přidávejte, upravujte a mažte
+          lidi i automatizace, které jsou přiřazovány úlohám.
+        </div>
+      )}
+
+      {view === "graph" && (
+        <GraphSidebarContent
+          graph={graph}
+          query={query}
+          onQuery={onQuery}
+          disabledRelations={disabledRelations}
+          onToggleRelation={onToggleRelation}
+          disabledOrgs={disabledOrgs}
+          onToggleOrg={onToggleOrg}
+          selectedId={selectedId}
+          onSelect={onSelect}
+        />
+      )}
+
+      <div className="border-t border-[var(--color-border)] px-5 py-3 text-[10px] text-[var(--color-text-dim)]">
+        {view === "graph"
+          ? "Click any node to open detail. Drag to pan, scroll to zoom."
+          : "Klikněte na aktéra v tabulce pro úpravu."}
+      </div>
+    </aside>
+  );
+}
+
+function ViewToggleButton({
+  label,
+  icon,
+  active,
+  onClick,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex flex-1 items-center justify-center gap-1.5 rounded-sm px-2 py-1.5 text-[11.5px] transition-colors ${
+        active
+          ? "bg-[var(--color-bg)] text-[var(--color-text)] shadow-sm"
+          : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+function GraphSidebarContent({
+  graph,
+  query,
+  onQuery,
+  disabledRelations,
+  onToggleRelation,
+  disabledOrgs,
+  onToggleOrg,
+  selectedId,
+  onSelect,
+}: {
+  graph: GraphPayload;
+  query: string;
+  onQuery: (q: string) => void;
+  disabledRelations: Set<string>;
+  onToggleRelation: (relation: string) => void;
+  disabledOrgs: Set<string>;
+  onToggleOrg: (id: string) => void;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const q = query.trim().toLowerCase();
+  const matches = q
+    ? graph.nodes
+        .filter((n) => {
+          if (n.type === "organization") return false;
+          return (
+            n.name.toLowerCase().includes(q) ||
+            (n.description ?? "").toLowerCase().includes(q) ||
+            n.type.toLowerCase().includes(q)
+          );
+        })
+        .slice(0, 60)
+    : [];
+
+  const typeCounts = new Map<string, number>();
+  for (const n of graph.nodes) {
+    typeCounts.set(n.type, (typeCounts.get(n.type) ?? 0) + 1);
+  }
+
+  const orderedTypes = [
+    ...TYPE_ORDER.filter((t) => typeCounts.has(t)),
+    ...Array.from(typeCounts.keys()).filter((t) => !TYPE_ORDER.includes(t)),
+  ];
+
+  return (
+    <>
       {/* Search */}
       <div className="px-4 pt-4">
         <div className="relative">
@@ -276,11 +379,7 @@ export default function Sidebar({
           </Section>
         </div>
       )}
-
-      <div className="border-t border-[var(--color-border)] px-5 py-3 text-[10px] text-[var(--color-text-dim)]">
-        Click any node to open detail. Drag to pan, scroll to zoom.
-      </div>
-    </aside>
+    </>
   );
 }
 
