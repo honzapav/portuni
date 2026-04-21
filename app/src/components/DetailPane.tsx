@@ -15,7 +15,12 @@ import {
   Archive,
   Save,
 } from "lucide-react";
-import type { NodeDetail, DetailEdge, GraphPayload } from "../types";
+import type {
+  NodeDetail,
+  DetailEdge,
+  DetailResponsibility,
+  GraphPayload,
+} from "../types";
 import {
   RELATION_TYPES,
   LIFECYCLE_COLORS,
@@ -29,6 +34,11 @@ import {
   createEdge,
   deleteEdge,
   fetchActors,
+  createResponsibility,
+  updateResponsibility,
+  deleteResponsibility,
+  assignResponsibility,
+  unassignResponsibility,
 } from "../api";
 
 function nodeTypeVar(type: string): string {
@@ -340,34 +350,16 @@ function DetailPaneBody({
           </Section>
         )}
 
-        {/* Responsibilities (Úlohy) */}
-        {node.responsibilities.length > 0 && (
+        {/* Responsibilities (Úlohy) — interactive on project/process/area */}
+        {(node.type === "project" ||
+          node.type === "process" ||
+          node.type === "area") && (
           <Section title="Úlohy">
-            <ul className="responsibility-list">
-              {node.responsibilities.map((r) => (
-                <li key={r.id}>
-                  <div className="resp-title">{r.title}</div>
-                  {r.description && (
-                    <div className="resp-description">{r.description}</div>
-                  )}
-                  <div className="resp-assignees">
-                    {r.assignees.length === 0 ? (
-                      <span className="assignee-empty">— Nikdo zatím</span>
-                    ) : (
-                      r.assignees.map((a) => (
-                        <span
-                          key={a.id}
-                          className={`assignee assignee-${a.type}`}
-                        >
-                          {a.type === "automation" ? "\u2699\uFE0E " : "\u{1F464} "}
-                          {a.name}
-                        </span>
-                      ))
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
+            <ResponsibilitiesEditor
+              node={node}
+              onMutate={onMutate}
+              onError={setErrorMsg}
+            />
           </Section>
         )}
 
@@ -1333,6 +1325,607 @@ function OwnerPicker({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ----- Responsibilities editor -----
+
+// Small tag showing assignee type (P = person, A = automation) with
+// optional placeholder marking. Kept minimal so it fits in pills & rows.
+function ActorBadge({
+  type,
+  placeholder,
+}: {
+  type: "person" | "automation" | string;
+  placeholder?: boolean;
+}) {
+  const letter = type === "automation" ? "A" : "P";
+  const color = placeholder
+    ? "var(--color-text-dim)"
+    : type === "automation"
+    ? "var(--color-node-project)"
+    : "var(--color-accent)";
+  return (
+    <span
+      className="ml-0.5 inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded font-mono text-[8.5px] font-semibold"
+      style={{
+        color,
+        background: `color-mix(in srgb, ${color} 14%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
+      }}
+      title={
+        (type === "automation" ? "Automatizace" : "Člověk") +
+        (placeholder ? " (placeholder)" : "")
+      }
+    >
+      {letter}
+    </span>
+  );
+}
+
+function ResponsibilitiesEditor({
+  node,
+  onMutate,
+  onError,
+}: {
+  node: NodeDetail;
+  onMutate: () => Promise<void>;
+  onError: (msg: string | null) => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const orgId = resolveOrgId(node);
+
+  return (
+    <div>
+      {node.responsibilities.length > 0 ? (
+        <ul className="responsibility-list">
+          {node.responsibilities.map((r) => (
+            <ResponsibilityItem
+              key={r.id}
+              responsibility={r}
+              orgId={orgId}
+              onMutate={onMutate}
+              onError={onError}
+            />
+          ))}
+        </ul>
+      ) : (
+        <p className="mb-2 text-[12px] italic text-[var(--color-text-dim)]">
+          Žádné úlohy zatím nejsou.
+        </p>
+      )}
+
+      {adding ? (
+        <AddResponsibilityForm
+          nodeId={node.id}
+          orgId={orgId}
+          onCancel={() => setAdding(false)}
+          onDone={async () => {
+            await onMutate();
+            setAdding(false);
+          }}
+          onError={onError}
+        />
+      ) : (
+        <button
+          onClick={() => setAdding(true)}
+          className="mt-3 flex items-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[11px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
+        >
+          <Plus size={12} />
+          Přidat úlohu
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ResponsibilityItem({
+  responsibility,
+  orgId,
+  onMutate,
+  onError,
+}: {
+  responsibility: DetailResponsibility;
+  orgId: string | null;
+  onMutate: () => Promise<void>;
+  onError: (msg: string | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(responsibility.title);
+  const [draftDescription, setDraftDescription] = useState(
+    responsibility.description ?? "",
+  );
+  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  // Reset drafts whenever the underlying row changes (e.g. after onMutate
+  // refetch while this row stays mounted).
+  useEffect(() => {
+    setDraftTitle(responsibility.title);
+    setDraftDescription(responsibility.description ?? "");
+    setEditing(false);
+  }, [responsibility.id, responsibility.title, responsibility.description]);
+
+  const save = async () => {
+    const title = draftTitle.trim();
+    if (!title) return;
+    setSaving(true);
+    onError(null);
+    try {
+      await updateResponsibility(responsibility.id, {
+        title,
+        description: draftDescription.trim() ? draftDescription.trim() : null,
+      });
+      await onMutate();
+      setEditing(false);
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cancel = () => {
+    setDraftTitle(responsibility.title);
+    setDraftDescription(responsibility.description ?? "");
+    setEditing(false);
+  };
+
+  const remove = async () => {
+    if (
+      !confirm(`Smazat úlohu „${responsibility.title}"? Tato akce je trvalá.`)
+    ) {
+      return;
+    }
+    setBusy(true);
+    onError(null);
+    try {
+      await deleteResponsibility(responsibility.id);
+      await onMutate();
+    } catch (e) {
+      onError(String(e));
+      setBusy(false);
+    }
+  };
+
+  const unassign = async (actorId: string) => {
+    setBusy(true);
+    onError(null);
+    try {
+      await unassignResponsibility(responsibility.id, actorId);
+      await onMutate();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const assign = async (actorId: string) => {
+    setBusy(true);
+    onError(null);
+    try {
+      await assignResponsibility(responsibility.id, actorId);
+      await onMutate();
+      setPickerOpen(false);
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <li>
+        <div className="space-y-2">
+          <input
+            value={draftTitle}
+            onChange={(e) => setDraftTitle(e.target.value)}
+            autoFocus
+            placeholder="Název úlohy"
+            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[12.5px] font-semibold text-[var(--color-text)] focus:border-[var(--color-accent-dim)]"
+          />
+          <textarea
+            value={draftDescription}
+            onChange={(e) => setDraftDescription(e.target.value)}
+            rows={3}
+            placeholder="Popis (volitelné)"
+            className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={save}
+              disabled={saving || !draftTitle.trim()}
+              className="flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[11px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
+            >
+              <Save size={11} />
+              {saving ? "Ukládám..." : "Uložit"}
+            </button>
+            <button
+              onClick={cancel}
+              disabled={saving}
+              className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[11px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
+            >
+              Zrušit
+            </button>
+          </div>
+        </div>
+      </li>
+    );
+  }
+
+  return (
+    <li>
+      <div className="group flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="resp-title">{responsibility.title}</div>
+          {responsibility.description && (
+            <div className="resp-description">{responsibility.description}</div>
+          )}
+          <div className="resp-assignees">
+            {responsibility.assignees.length === 0 && !pickerOpen && (
+              <span className="assignee-empty">— Nikdo zatím</span>
+            )}
+            {responsibility.assignees.map((a) => (
+              <span
+                key={a.id}
+                className={`assignee assignee-${a.type} inline-flex items-center gap-1`}
+              >
+                <span className="truncate">{a.name}</span>
+                <ActorBadge type={a.type} />
+                <button
+                  onClick={() => unassign(a.id)}
+                  disabled={busy}
+                  title="Odebrat"
+                  className="ml-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full text-[var(--color-text-dim)] hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)] disabled:opacity-50"
+                >
+                  <X size={9} />
+                </button>
+              </span>
+            ))}
+            {pickerOpen ? (
+              <AssigneePicker
+                orgId={orgId}
+                existing={responsibility.assignees.map((a) => a.id)}
+                onPick={assign}
+                onClose={() => setPickerOpen(false)}
+                disabled={busy}
+              />
+            ) : (
+              <button
+                onClick={() => setPickerOpen(true)}
+                disabled={busy}
+                className="assignee inline-flex items-center gap-1 border-dashed text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)] disabled:opacity-50"
+                style={{ borderStyle: "dashed" }}
+              >
+                <Plus size={10} />
+                přiřadit
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <button
+            onClick={() => setEditing(true)}
+            disabled={busy}
+            title="Upravit úlohu"
+            className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)] disabled:opacity-50"
+          >
+            <Pencil size={11} />
+          </button>
+          <button
+            onClick={remove}
+            disabled={busy}
+            title="Smazat úlohu"
+            className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] disabled:opacity-50"
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "var(--color-danger-bg)";
+              e.currentTarget.style.color = "var(--color-danger)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "";
+              e.currentTarget.style.color = "";
+            }}
+          >
+            <Trash2 size={11} />
+          </button>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function AddResponsibilityForm({
+  nodeId,
+  orgId,
+  onCancel,
+  onDone,
+  onError,
+}: {
+  nodeId: string;
+  orgId: string | null;
+  onCancel: () => void;
+  onDone: () => Promise<void>;
+  onError: (msg: string | null) => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [actors, setActors] = useState<Actor[] | null>(null);
+  const [loadingActors, setLoadingActors] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!orgId) {
+      setActors([]);
+      return;
+    }
+    setLoadingActors(true);
+    setFetchError(null);
+    fetchActors({ org_id: orgId })
+      .then((list) => {
+        if (!cancelled) setActors(list);
+      })
+      .catch((e) => {
+        if (!cancelled) setFetchError(String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingActors(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [orgId]);
+
+  const toggle = (id: string) => {
+    setSelected((s) =>
+      s.includes(id) ? s.filter((x) => x !== id) : [...s, id],
+    );
+  };
+
+  const submit = async () => {
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle) return;
+    setSaving(true);
+    onError(null);
+    try {
+      await createResponsibility({
+        node_id: nodeId,
+        title: trimmedTitle,
+        description: description.trim() || undefined,
+        assignees: selected.length > 0 ? selected : undefined,
+      });
+      await onDone();
+      setTitle("");
+      setDescription("");
+      setSelected([]);
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="font-mono text-[9.5px] uppercase tracking-widest text-[var(--color-text-dim)]">
+          Nová úloha
+        </div>
+        <button
+          onClick={onCancel}
+          className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+        >
+          <X size={12} />
+        </button>
+      </div>
+      <div className="space-y-2">
+        <input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          autoFocus
+          placeholder="Název úlohy"
+          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[12px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+        />
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          rows={3}
+          placeholder="Popis (volitelné)"
+          className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[12px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+        />
+        <div>
+          <div className="mb-1 font-mono text-[9.5px] uppercase tracking-widest text-[var(--color-text-dim)]">
+            Přiřazení
+          </div>
+          {!orgId ? (
+            <div className="text-[11px] text-[var(--color-text-dim)]">
+              Uzel nemá organizaci.
+            </div>
+          ) : loadingActors ? (
+            <div className="text-[11px] text-[var(--color-text-dim)]">
+              Načítám...
+            </div>
+          ) : fetchError ? (
+            <div
+              className="text-[11px]"
+              style={{ color: "var(--color-danger)" }}
+            >
+              {fetchError}
+            </div>
+          ) : actors && actors.length === 0 ? (
+            <div className="text-[11px] text-[var(--color-text-dim)]">
+              Žádní actoři v organizaci.
+            </div>
+          ) : (
+            <div className="scroll-thin max-h-[180px] space-y-1 overflow-y-auto rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-1.5">
+              {actors?.map((a) => {
+                const isPlaceholder = a.is_placeholder === 1;
+                const checked = selected.includes(a.id);
+                return (
+                  <label
+                    key={a.id}
+                    className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[11.5px] hover:bg-[var(--color-surface)]"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggle(a.id)}
+                      className="h-3 w-3 shrink-0"
+                    />
+                    <span
+                      className={`flex-1 truncate ${
+                        isPlaceholder
+                          ? "italic text-[var(--color-text-dim)]"
+                          : "text-[var(--color-text)]"
+                      }`}
+                    >
+                      {a.name}
+                      {isPlaceholder ? " (placeholder)" : ""}
+                    </span>
+                    <ActorBadge type={a.type} placeholder={isPlaceholder} />
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="mt-2 flex justify-end gap-2">
+        <button
+          onClick={onCancel}
+          disabled={saving}
+          className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5 text-[11px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
+        >
+          Zrušit
+        </button>
+        <button
+          onClick={submit}
+          disabled={!title.trim() || saving}
+          className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[11px] text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
+        >
+          {saving ? "Vytvářím..." : "Vytvořit"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Inline picker shown when user clicks "+ přiřadit" on an existing
+// responsibility. Lazy-loads org actors, filters out those already
+// assigned, and closes on outside click.
+function AssigneePicker({
+  orgId,
+  existing,
+  onPick,
+  onClose,
+  disabled,
+}: {
+  orgId: string | null;
+  existing: string[];
+  onPick: (actorId: string) => Promise<void>;
+  onClose: () => void;
+  disabled: boolean;
+}) {
+  const [actors, setActors] = useState<Actor[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        onClose();
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [onClose]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!orgId) {
+      setActors([]);
+      return;
+    }
+    setLoading(true);
+    setFetchError(null);
+    fetchActors({ org_id: orgId })
+      .then((list) => {
+        if (!cancelled) setActors(list);
+      })
+      .catch((e) => {
+        if (!cancelled) setFetchError(String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [orgId]);
+
+  const candidates = (actors ?? []).filter((a) => !existing.includes(a.id));
+
+  return (
+    <div ref={containerRef} className="relative inline-block">
+      <span className="assignee inline-flex items-center gap-1 border-dashed text-[var(--color-accent)]">
+        <Plus size={10} />
+        přiřadit
+      </span>
+      <div className="absolute left-0 top-full z-50 mt-1 w-[220px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
+        {loading ? (
+          <div className="px-3 py-2 text-[11px] text-[var(--color-text-dim)]">
+            Načítám...
+          </div>
+        ) : fetchError ? (
+          <div
+            className="px-3 py-2 text-[11px]"
+            style={{ color: "var(--color-danger)" }}
+          >
+            {fetchError}
+          </div>
+        ) : candidates.length === 0 ? (
+          <div className="px-3 py-2 text-[11px] text-[var(--color-text-dim)]">
+            Žádní další actoři k přiřazení.
+          </div>
+        ) : (
+          <div className="scroll-thin max-h-[220px] overflow-y-auto">
+            {candidates.map((a) => {
+              const isPlaceholder = a.is_placeholder === 1;
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onPick(a.id)}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] disabled:opacity-50"
+                >
+                  <span
+                    className={`flex-1 truncate ${
+                      isPlaceholder
+                        ? "italic text-[var(--color-text-dim)]"
+                        : "text-[var(--color-text)]"
+                    }`}
+                  >
+                    {a.name}
+                    {isPlaceholder ? " (placeholder)" : ""}
+                  </span>
+                  <ActorBadge type={a.type} placeholder={isPlaceholder} />
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
