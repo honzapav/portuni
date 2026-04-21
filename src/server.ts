@@ -542,7 +542,7 @@ async function main() {
         }
         const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
         const rows = await db.execute({
-          sql: `SELECT id, type, name, description, is_placeholder, user_id, notes, external_id
+          sql: `SELECT id, type, name, is_placeholder, user_id, notes, external_id
                 FROM actors ${where} ORDER BY type, name`,
           args: values,
         });

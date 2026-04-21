@@ -22,12 +22,13 @@ export async function fetchUsers(): Promise<User[]> {
 
 // Actor shape returned by GET /actors. Mirrors the DB row; separate from
 // NodeDetail's assignee shape (which is narrower – just id/name/type).
-// Actors are global (cross-organizational) – no org_id field.
+// Actors are global (cross-organizational) – no org_id field. No
+// description field either – what an actor does is defined by their
+// responsibilities on specific nodes, not a generic role blurb.
 export type Actor = {
   id: string;
   type: "person" | "automation";
   name: string;
-  description: string | null;
   is_placeholder: number;
   user_id: string | null;
   notes: string | null;
@@ -166,7 +167,6 @@ export async function fetchActors(params?: {
 export function createActor(input: {
   type: "person" | "automation";
   name: string;
-  description?: string;
   is_placeholder?: boolean;
   user_id?: string;
   notes?: string;
@@ -179,7 +179,6 @@ export function updateActor(
   id: string,
   patch: {
     name?: string;
-    description?: string | null;
     is_placeholder?: boolean;
     user_id?: string | null;
     notes?: string | null;

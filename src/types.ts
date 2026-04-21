@@ -111,7 +111,6 @@ export const ActorRow = z.object({
   id: z.string(),
   type: z.string(),
   name: z.string(),
-  description: z.union([z.string(), z.null()]),
   is_placeholder: z.number(), // SQLite BOOLEAN stored as 0/1
   user_id: z.union([z.string(), z.null()]),
   notes: z.union([z.string(), z.null()]),

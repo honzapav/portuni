@@ -40,7 +40,7 @@ describe("createActor", () => {
 
   it("creates an automation without user_id", async () => {
     const { db } = await freshEnv();
-    const res = await createActor(db, "U1", { type: "automation", name: "Stripe sync", description: "Daily reports" });
+    const res = await createActor(db, "U1", { type: "automation", name: "Stripe sync", notes: "Daily reports" });
     assert.equal(res.type, "automation");
   });
 

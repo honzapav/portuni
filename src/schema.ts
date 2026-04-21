@@ -288,12 +288,13 @@ export const TRIGGER_NODES_VALIDATE_LIFECYCLE_STATE = `
 // in sync.
 // Actors are global (cross-organizational) entities: a single person or
 // automation can be assigned to responsibilities or own nodes across any
-// number of organizations. No org_id column.
+// number of organizations. No org_id column. No description column either
+// -- what an actor does is defined by their responsibilities on specific
+// nodes, not by a generic role blurb. Internal notes live in `notes`.
 export const DDL_ACTORS_TABLE = `CREATE TABLE IF NOT EXISTS actors (
   id TEXT PRIMARY KEY CHECK(length(id) = 26),
   type TEXT NOT NULL CHECK(type IN ('person','automation')),
   name TEXT NOT NULL,
-  description TEXT,
   is_placeholder INTEGER NOT NULL DEFAULT 0 CHECK(is_placeholder IN (0,1)),
   user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   notes TEXT,
@@ -361,8 +362,8 @@ END WHERE lifecycle_state IS NULL`;
 // data_sources, tools; add owner_id/lifecycle_state/goal columns to nodes;
 // install validation + lifecycle-derivation triggers; seed lifecycle_state.
 export async function runMigration006(db: Client): Promise<void> {
-  // 1. actors table + indexes. Actors are global (no org_id); external_id is
-  // unique across the whole registry when set.
+  // 1. actors table + indexes. Actors are global (no org_id, no description);
+  // external_id is unique across the whole registry when set.
   await db.execute(DDL_ACTORS_TABLE);
   await db.execute("CREATE INDEX IF NOT EXISTS idx_actors_type ON actors(type)");
   await db.execute(
@@ -956,6 +957,62 @@ const MIGRATIONS: Migration[] = [
         );
 
         // Reinstall the owner-validation trigger without the same-org check.
+        await db.execute(TRIGGER_NODES_OWNER_MUST_BE_REAL_PERSON);
+      } finally {
+        await db.execute("PRAGMA foreign_keys = ON");
+      }
+    },
+  },
+
+  // Migration 008: drop actors.description. A generic role description on
+  // the actor contradicts the model where what an actor does is expressed
+  // via responsibilities attached to specific nodes. Internal notes still
+  // live in actors.notes.
+  {
+    id: "008_actors_drop_description",
+    isApplied: async (db) => {
+      const tableCheck = await db.execute({
+        sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='actors'",
+        args: [],
+      });
+      if (tableCheck.rows.length === 0) return false;
+      const info = await db.execute("PRAGMA table_info(actors)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      return !cols.has("description");
+    },
+    up: async (db) => {
+      await db.execute("PRAGMA foreign_keys = OFF");
+      try {
+        // Drop dependents that reference actors so the table-copy pattern
+        // doesn't leave orphan triggers/indexes.
+        await db.execute("DROP TRIGGER IF EXISTS nodes_owner_must_be_real_person");
+        await db.execute("DROP INDEX IF EXISTS idx_actors_type");
+        await db.execute("DROP INDEX IF EXISTS idx_actors_external");
+
+        await db.execute(`CREATE TABLE actors_new (
+          id TEXT PRIMARY KEY CHECK(length(id) = 26),
+          type TEXT NOT NULL CHECK(type IN ('person','automation')),
+          name TEXT NOT NULL,
+          is_placeholder INTEGER NOT NULL DEFAULT 0 CHECK(is_placeholder IN (0,1)),
+          user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+          notes TEXT,
+          external_id TEXT,
+          created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+          updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
+          CHECK(type = 'person' OR (is_placeholder = 0 AND user_id IS NULL))
+        )`);
+        await db.execute(`INSERT INTO actors_new (
+          id, type, name, is_placeholder, user_id, notes, external_id, created_at, updated_at
+        ) SELECT
+          id, type, name, is_placeholder, user_id, notes, external_id, created_at, updated_at
+        FROM actors`);
+        await db.execute("DROP TABLE actors");
+        await db.execute("ALTER TABLE actors_new RENAME TO actors");
+
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_actors_type ON actors(type)");
+        await db.execute(
+          "CREATE UNIQUE INDEX IF NOT EXISTS idx_actors_external ON actors(external_id) WHERE external_id IS NOT NULL",
+        );
         await db.execute(TRIGGER_NODES_OWNER_MUST_BE_REAL_PERSON);
       } finally {
         await db.execute("PRAGMA foreign_keys = ON");

@@ -21,10 +21,9 @@ const ACTOR_TYPES = ["person", "automation"] as const;
 const CreateActorInput = z.object({
   type: z.enum(ACTOR_TYPES).describe("Actor type: person (human) or automation (script, bot, integration)."),
   name: z.string().describe("Display name."),
-  description: z.string().optional().describe("Optional description."),
   is_placeholder: z.boolean().optional().describe("Person-only. True means a role sketch without a real human yet (e.g. 'need a lawyer'). Must be false for automations."),
   user_id: z.string().optional().describe("Person-only. Links the actor to a users.id row. Must be null for automations."),
-  notes: z.string().optional().describe("Optional freeform notes."),
+  notes: z.string().optional().describe("Optional internal notes. NOT a role description -- what an actor does is expressed by responsibilities on specific nodes."),
   external_id: z.string().optional().describe("Optional external system id (globally unique when set)."),
 });
 type CreateActorInput = z.infer<typeof CreateActorInput>;
@@ -32,10 +31,9 @@ type CreateActorInput = z.infer<typeof CreateActorInput>;
 const UpdateActorInput = z.object({
   actor_id: z.string().describe("Actor ID (ULID) to update."),
   name: z.string().optional().describe("New display name."),
-  description: z.string().optional().describe("New description."),
   is_placeholder: z.boolean().optional().describe("Person-only. Flip between real person and placeholder role."),
   user_id: z.union([z.string(), z.null()]).optional().describe("Person-only. Link/unlink a users.id row."),
-  notes: z.string().optional().describe("New notes."),
+  notes: z.string().optional().describe("New internal notes."),
   external_id: z.string().optional().describe("New external id."),
 });
 type UpdateActorInput = z.infer<typeof UpdateActorInput>;
@@ -101,13 +99,12 @@ export async function createActor(
   const isPlaceholder = parsed.is_placeholder ? 1 : 0;
 
   await db.execute({
-    sql: `INSERT INTO actors (id, type, name, description, is_placeholder, user_id, notes, external_id, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO actors (id, type, name, is_placeholder, user_id, notes, external_id, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       id,
       parsed.type,
       parsed.name,
-      parsed.description ?? null,
       isPlaceholder,
       parsed.user_id ?? null,
       parsed.notes ?? null,
@@ -163,11 +160,6 @@ export async function updateActor(
     updates.push("name = ?");
     values.push(parsed.name);
     changes.name = { from: existing.name, to: parsed.name };
-  }
-  if (parsed.description !== undefined) {
-    updates.push("description = ?");
-    values.push(parsed.description);
-    changes.description = { from: existing.description, to: parsed.description };
   }
   if (parsed.is_placeholder !== undefined) {
     updates.push("is_placeholder = ?");
@@ -296,10 +288,9 @@ export function registerActorTools(server: McpServer): void {
     {
       type: z.enum(ACTOR_TYPES).describe("person or automation."),
       name: z.string().describe("Display name."),
-      description: z.string().optional().describe("Optional description."),
       is_placeholder: z.boolean().optional().describe("Person-only. True for a role sketch without a real human. Must be false for automations."),
       user_id: z.string().optional().describe("Person-only. Link to users.id."),
-      notes: z.string().optional().describe("Optional freeform notes."),
+      notes: z.string().optional().describe("Optional internal notes. NOT a role description."),
       external_id: z.string().optional().describe("Optional external system id (globally unique when set)."),
     },
     async (args) => {
@@ -324,10 +315,9 @@ export function registerActorTools(server: McpServer): void {
     {
       actor_id: z.string().describe("Actor ID (ULID)."),
       name: z.string().optional().describe("New display name."),
-      description: z.string().optional().describe("New description."),
       is_placeholder: z.boolean().optional().describe("Person-only. Flip between real person and placeholder role."),
       user_id: z.union([z.string(), z.null()]).optional().describe("Person-only. Link or unlink a users.id row."),
-      notes: z.string().optional().describe("New notes."),
+      notes: z.string().optional().describe("New internal notes."),
       external_id: z.string().optional().describe("New external id."),
     },
     async (args) => {

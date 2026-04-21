@@ -53,7 +53,7 @@ export default function ActorsPage(_props: Props) {
       if (placeholderFilter === "real" && a.is_placeholder) return false;
       if (placeholderFilter === "placeholder" && !a.is_placeholder) return false;
       if (q) {
-        const hay = `${a.name} ${a.description ?? ""} ${a.notes ?? ""}`.toLowerCase();
+        const hay = `${a.name} ${a.notes ?? ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -188,7 +188,7 @@ export default function ActorsPage(_props: Props) {
                 <Th>Jméno</Th>
                 <Th>Typ</Th>
                 <Th>Stav</Th>
-                <Th>Popis</Th>
+                <Th>Poznámky</Th>
                 <Th className="w-[96px] text-right">Akce</Th>
               </tr>
             </thead>
@@ -214,7 +214,7 @@ export default function ActorsPage(_props: Props) {
                   </Td>
                   <Td>
                     <span className="text-[var(--color-text-muted)]">
-                      {truncate(a.description ?? "", 80) || (
+                      {truncate(a.notes ?? "", 80) || (
                         <span className="text-[var(--color-text-dim)]">—</span>
                       )}
                     </span>
@@ -414,7 +414,6 @@ function ActorModal({
     actor?.type ?? "person",
   );
   const [name, setName] = useState(actor?.name ?? "");
-  const [description, setDescription] = useState(actor?.description ?? "");
   const [isPlaceholder, setIsPlaceholder] = useState(
     actor ? Boolean(actor.is_placeholder) : false,
   );
@@ -464,7 +463,6 @@ function ActorModal({
       if (isEdit && actor) {
         await updateActor(actor.id, {
           name: trimmedName,
-          description: description.trim() || null,
           is_placeholder: type === "person" ? isPlaceholder : false,
           user_id:
             type === "person" && !isPlaceholder && userId.trim()
@@ -476,7 +474,6 @@ function ActorModal({
         await createActor({
           type,
           name: trimmedName,
-          description: description.trim() || undefined,
           is_placeholder: type === "person" ? isPlaceholder : undefined,
           user_id:
             type === "person" && !isPlaceholder && userId.trim()
@@ -548,16 +545,6 @@ function ActorModal({
                 placeholder={
                   type === "person" ? "Jan Novák" : "Denní report z CRM"
                 }
-              />
-            </Field>
-
-            <Field label="Popis">
-              <textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                rows={3}
-                className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] focus:outline-none"
-                placeholder="Volitelný popis role nebo automatizace..."
               />
             </Field>
 
