@@ -83,6 +83,7 @@ function buildElements(graph: GraphPayload): cytoscape.ElementDefinition[] {
       type: node.type,
       description: node.description ?? "",
       status: node.status,
+      lifecycle_state: node.lifecycle_state ?? "",
       degree: d,
       size: node.type === "organization" ? 0 : sizeFor(d),
     };
@@ -123,9 +124,47 @@ function buildElements(graph: GraphPayload): cytoscape.ElementDefinition[] {
   return elements;
 }
 
+// Lifecycle-state -> graph fill color. Mirrors LIFECYCLE_COLORS in
+// app/src/types.ts but resolves to concrete hex so cytoscape renders it
+// without a round-trip to CSS. When lifecycle_state is empty or unknown,
+// returns null and the caller falls back to the type-based color.
+const LIFECYCLE_FILL: Record<string, string> = {
+  // green
+  active: "#1fa973",
+  operating: "#1fa973",
+  in_progress: "#1fa973",
+  done: "#1fa973",
+  // yellow
+  needs_attention: "#eab308",
+  at_risk: "#eab308",
+  on_hold: "#eab308",
+  implementing: "#eab308",
+  // red
+  broken: "#dc2626",
+  cancelled: "#dc2626",
+  // gray
+  inactive: "#94a3b8",
+  archived: "#94a3b8",
+  retired: "#94a3b8",
+  backlog: "#94a3b8",
+  planned: "#94a3b8",
+  not_implemented: "#94a3b8",
+};
+
 function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
-  const nodeColor = (ele: NodeSingular) =>
+  // Type-based color used for the border (so the node type is still
+  // distinguishable at a glance) and as a fallback fill when no lifecycle
+  // state is set.
+  const typeColor = (ele: NodeSingular) =>
     theme.nodeColors[ele.data("type") as string] ?? theme.nodeColorDefault;
+  // Lifecycle-driven fill. Semantic signal (green/yellow/red/gray) takes
+  // precedence over the structural type color; when the node has no
+  // lifecycle_state (principles, legacy data), we fall back to type color
+  // so the node is never invisible.
+  const lifecycleFill = (ele: NodeSingular) => {
+    const state = ele.data("lifecycle_state") as string | undefined;
+    return (state && LIFECYCLE_FILL[state]) || typeColor(ele);
+  };
 
   return [
     // Compound parents (organizations).
@@ -163,10 +202,13 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
       selector: "node[type != 'organization']",
       style: {
         shape: "ellipse",
-        "background-color": nodeColor,
+        // Fill = lifecycle state (green/yellow/red/gray); border = node
+        // type (project/process/area/principle). Both dimensions stay
+        // readable at a glance.
+        "background-color": lifecycleFill,
         "background-opacity": 0.9,
-        "border-color": nodeColor,
-        "border-width": 1,
+        "border-color": typeColor,
+        "border-width": 2,
         "border-opacity": 1,
         label: "data(label)",
         "text-valign": "bottom",
