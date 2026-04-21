@@ -19,6 +19,7 @@ export type GraphNode = {
   name: string;
   description: string | null;
   status: string;
+  lifecycle_state: string | null;
   // Persisted layout. Null means "no saved position yet" -- the frontend
   // will compute one on first layout and POST it back via /positions.
   // Only leaf (non-organization) nodes actually persist here; org
@@ -76,6 +77,39 @@ export type LocalMirror = {
   registered_at: string;
 } | null;
 
+export type DetailOwner = {
+  id: string;
+  name: string;
+};
+
+export type DetailResponsibilityAssignee = {
+  id: string;
+  name: string;
+  type: string;
+};
+
+export type DetailResponsibility = {
+  id: string;
+  title: string;
+  description: string | null;
+  sort_order: number;
+  assignees: DetailResponsibilityAssignee[];
+};
+
+export type DetailDataSource = {
+  id: string;
+  name: string;
+  description: string | null;
+  external_link: string | null;
+};
+
+export type DetailTool = {
+  id: string;
+  name: string;
+  description: string | null;
+  external_link: string | null;
+};
+
 export type NodeDetail = {
   id: string;
   type: NodeType | string;
@@ -90,4 +124,10 @@ export type NodeDetail = {
   events: DetailEvent[];
   local_mirror: LocalMirror;
   meta?: unknown;
+  owner: DetailOwner | null;
+  responsibilities: DetailResponsibility[];
+  data_sources: DetailDataSource[];
+  tools: DetailTool[];
+  goal: string | null;
+  lifecycle_state: string | null;
 };

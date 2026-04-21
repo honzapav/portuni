@@ -69,17 +69,19 @@ SessionStart hook (`~/.claude/settings.json`): `scripts/portuni-context.sh` -- i
 | `/context?path=...` | GET | Resolve filesystem path to graph node |
 | `/health` | GET | Health check |
 
-## MCP tools (15)
+## MCP tools
+
+**Graph (15)**
 
 | Tool | Description |
 |------|-------------|
-| `portuni_create_node` | Create node |
-| `portuni_update_node` | Update node fields |
+| `portuni_create_node` | Create node (accepts optional `goal`, `lifecycle_state`) |
+| `portuni_update_node` | Update node (accepts `goal`, `lifecycle_state`, `owner_id`) |
 | `portuni_list_nodes` | List/filter nodes |
-| `portuni_get_node` | Node detail with edges, files, events, mirror |
+| `portuni_get_node` | Node detail with edges, files, events, owner, responsibilities, data sources, tools, mirror |
 | `portuni_connect` | Create edge |
 | `portuni_disconnect` | Remove edge(s) |
-| `portuni_get_context` | Recursive graph traversal |
+| `portuni_get_context` | Recursive graph traversal (enriched with owner/responsibilities/data sources/tools at depth 0) |
 | `portuni_log` | Log event on node |
 | `portuni_resolve` | Resolve event |
 | `portuni_supersede` | Replace event |
@@ -88,6 +90,40 @@ SessionStart hook (`~/.claude/settings.json`): `scripts/portuni-context.sh` -- i
 | `portuni_pull` | List node files |
 | `portuni_list_files` | List files across nodes |
 | `portuni_mirror` | Create local folder for node |
+
+**Actors, responsibilities, tools (17)** -- distribution of work across people and automations.
+
+| Tool | Description |
+|------|-------------|
+| `portuni_create_actor` | Create a person or automation actor in an organization |
+| `portuni_update_actor` | Update actor name/description/notes/placeholder/user link |
+| `portuni_list_actors` | List actors, filter by org/type/placeholder |
+| `portuni_get_actor` | Get actor + their responsibility assignments across entities |
+| `portuni_archive_actor` | Hard-delete actor (cascades assignments) |
+| `portuni_create_responsibility` | Create responsibility (unit of work) on project/process/area with optional initial assignees |
+| `portuni_update_responsibility` | Update title/description/sort order |
+| `portuni_delete_responsibility` | Delete responsibility (cascades assignments) |
+| `portuni_list_responsibilities` | List responsibilities, filter by node or actor |
+| `portuni_assign_responsibility` | Attach actor to responsibility (idempotent) |
+| `portuni_unassign_responsibility` | Remove actor from responsibility |
+| `portuni_add_data_source` | Attach a data source (CRM, BQ, report) to project/process/area |
+| `portuni_remove_data_source` | Remove a data source |
+| `portuni_list_data_sources` | List data sources for a node |
+| `portuni_add_tool` | Attach a tool (Asana, Figma, ...) to project/process/area |
+| `portuni_remove_tool` | Remove a tool |
+| `portuni_list_tools` | List tools for a node |
+
+### Aktéři, úlohy, stav entit
+
+Portuni mapuje nejen strukturu organizace, ale také distribuci odpovědností:
+
+- **Aktéři** (lidé a automatizace) -- registr per organizace. Lidé mohou být reální nebo placeholder (hiring need). Automatizace jsou pojmenované funkční jednotky bez technických detailů.
+- **Úlohy** (responsibilities) na entitě (project/process/area) -- jednotka práce, kterou někdo vykonává. M:N přiřazení k aktérům. Úloha bez assignee = validní "tohle se musí dělat, ale zatím nikdo".
+- **Vlastník** entity -- explicit FK na aktéra typu person s `user_id` (reálný registrovaný uživatel, ne placeholder, ne automatizace).
+- **Lifecycle_state** (type-specific) -- primární viditelný stav entity, color-coded ve frontendu. Coarse `status` (active/completed/archived) je derivovaný triggerem.
+- **Účel** entity, **datové zdroje**, **nástroje** -- kontext, co entita dělá a s čím pracuje. `external_link` je plain URL, nikdy connection string s credentials.
+
+Design spec: `docs/superpowers/specs/2026-04-21-people-responsibilities-design.md`.
 
 ## Project structure
 

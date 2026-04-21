@@ -83,6 +83,7 @@ function buildElements(graph: GraphPayload): cytoscape.ElementDefinition[] {
       type: node.type,
       description: node.description ?? "",
       status: node.status,
+      lifecycle_state: node.lifecycle_state ?? "",
       degree: d,
       size: node.type === "organization" ? 0 : sizeFor(d),
     };
@@ -230,6 +231,43 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
     },
     // Selected: color change only. border-width, width, height, padding stay
     // constant so the compound parent never refits.
+    // Lifecycle signal — only for abnormal states. "Healthy" states
+    // (active/operating/in_progress/done/planned/...) keep the default
+    // type color; abnormal states get a subtle treatment so they stand
+    // out without repainting the whole graph.
+    //
+    // Problem states get a red/amber border overlay without changing fill.
+    {
+      selector: "node[lifecycle_state = 'broken'][type != 'organization']",
+      style: { "border-color": "#dc2626", "border-width": 2.5 },
+    },
+    {
+      selector: "node[lifecycle_state = 'at_risk'][type != 'organization']",
+      style: { "border-color": "#eab308", "border-width": 2.5 },
+    },
+    {
+      selector: "node[lifecycle_state = 'needs_attention'][type != 'organization']",
+      style: { "border-color": "#eab308", "border-width": 2.5 },
+    },
+    // Dormant/terminal states dim the node so it recedes visually.
+    {
+      selector:
+        "node[lifecycle_state = 'archived'][type != 'organization']," +
+        "node[lifecycle_state = 'retired'][type != 'organization']," +
+        "node[lifecycle_state = 'cancelled'][type != 'organization']," +
+        "node[lifecycle_state = 'inactive'][type != 'organization']",
+      style: {
+        "background-opacity": 0.35,
+        "border-opacity": 0.35,
+        "text-opacity": 0.55,
+      },
+    },
+    // On-hold: dashed border, same fill.
+    {
+      selector: "node[lifecycle_state = 'on_hold'][type != 'organization']",
+      style: { "border-style": "dashed", "border-width": 1.5 },
+    },
+    // Selected wins over lifecycle signaling.
     {
       selector: "node.selected[type != 'organization']",
       style: {
@@ -994,10 +1032,10 @@ export default function GraphView({
       />
       <button
         onClick={handleAutoLayout}
-        title="Re-run automatic layout"
-        className="absolute bottom-4 right-4 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[12.5px] font-medium text-[var(--color-text-muted)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+        title="Znovu spustit automatické rozložení"
+        className="absolute bottom-4 right-4 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[14px] font-medium text-[var(--color-text-muted)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
       >
-        Auto-layout
+        Auto-rozložení
       </button>
     </div>
   );

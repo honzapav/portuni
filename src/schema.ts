@@ -61,6 +61,9 @@ const DDL = [
     visibility TEXT NOT NULL DEFAULT 'team' CHECK(visibility IN (${NODE_VISIBILITIES_SQL})),
     pos_x REAL,
     pos_y REAL,
+    owner_id TEXT,
+    lifecycle_state TEXT,
+    goal TEXT,
     created_by TEXT NOT NULL,
     created_at DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
@@ -192,6 +195,247 @@ export const TRIGGER_PREVENT_ORPHAN_ON_EDGE_DELETE = `
         ) <= 1;
   END
 `;
+
+// --- Migration 006 trigger constants (shared by DDL + runMigration006) ---
+
+export const TRIGGER_ACTORS_ORG_MUST_BE_ORGANIZATION = `
+  CREATE TRIGGER IF NOT EXISTS actors_org_must_be_organization
+  BEFORE INSERT ON actors
+  FOR EACH ROW
+  BEGIN
+    SELECT RAISE(ABORT, 'actors.org_id must reference a node of type=organization')
+      WHERE (SELECT type FROM nodes WHERE id = NEW.org_id) != 'organization';
+  END
+`;
+
+export const TRIGGER_RESPONSIBILITIES_VALID_NODE_TYPE = `
+  CREATE TRIGGER IF NOT EXISTS responsibilities_valid_node_type
+  BEFORE INSERT ON responsibilities
+  FOR EACH ROW
+  BEGIN
+    SELECT RAISE(ABORT, 'responsibilities can only attach to project/process/area nodes')
+      WHERE (SELECT type FROM nodes WHERE id = NEW.node_id) NOT IN ('project','process','area');
+  END
+`;
+
+export const TRIGGER_DATA_SOURCES_VALID_NODE_TYPE = `
+  CREATE TRIGGER IF NOT EXISTS data_sources_valid_node_type
+  BEFORE INSERT ON data_sources
+  FOR EACH ROW
+  BEGIN
+    SELECT RAISE(ABORT, 'data_sources can only attach to project/process/area nodes')
+      WHERE (SELECT type FROM nodes WHERE id = NEW.node_id) NOT IN ('project','process','area');
+  END
+`;
+
+export const TRIGGER_TOOLS_VALID_NODE_TYPE = `
+  CREATE TRIGGER IF NOT EXISTS tools_valid_node_type
+  BEFORE INSERT ON tools
+  FOR EACH ROW
+  BEGIN
+    SELECT RAISE(ABORT, 'tools can only attach to project/process/area nodes')
+      WHERE (SELECT type FROM nodes WHERE id = NEW.node_id) NOT IN ('project','process','area');
+  END
+`;
+
+// Validate owner_id is a real, user-linked person in the same organization.
+// For non-organization nodes: the actor's org_id must match the node's
+// belongs_to -> organization target. For organization nodes themselves:
+// the actor's org_id must match the org node's own id.
+export const TRIGGER_NODES_OWNER_MUST_BE_REAL_PERSON = `
+  CREATE TRIGGER IF NOT EXISTS nodes_owner_must_be_real_person
+  BEFORE UPDATE OF owner_id ON nodes
+  FOR EACH ROW
+  WHEN NEW.owner_id IS NOT NULL
+  BEGIN
+    SELECT RAISE(ABORT, 'owner_id must reference an actor of type=person with user_id set, in the same organization')
+      WHERE NOT EXISTS (
+        SELECT 1 FROM actors a
+        JOIN edges e ON e.source_id = NEW.id AND e.relation = 'belongs_to'
+        WHERE a.id = NEW.owner_id
+          AND a.type = 'person'
+          AND a.user_id IS NOT NULL
+          AND a.is_placeholder = 0
+          AND a.org_id = e.target_id
+      )
+      AND NOT (NEW.type = 'organization' AND EXISTS (
+        SELECT 1 FROM actors a
+        WHERE a.id = NEW.owner_id
+          AND a.type = 'person'
+          AND a.user_id IS NOT NULL
+          AND a.is_placeholder = 0
+          AND a.org_id = NEW.id
+      ));
+  END
+`;
+
+// Derive coarse status from lifecycle_state after it changes.
+// SQLite re-fires a trigger only for the specific column named in UPDATE OF,
+// so updating status here does not re-enter this trigger.
+export const TRIGGER_NODES_DERIVE_STATUS_FROM_LIFECYCLE = `
+  CREATE TRIGGER IF NOT EXISTS nodes_derive_status_from_lifecycle
+  AFTER UPDATE OF lifecycle_state ON nodes
+  FOR EACH ROW
+  WHEN NEW.lifecycle_state IS NOT NULL
+  BEGIN
+    UPDATE nodes SET status = CASE NEW.lifecycle_state
+      WHEN 'done' THEN 'completed'
+      WHEN 'archived' THEN 'archived'
+      WHEN 'retired' THEN 'archived'
+      WHEN 'cancelled' THEN 'archived'
+      WHEN 'inactive' THEN 'archived'
+      ELSE 'active'
+    END WHERE id = NEW.id;
+  END
+`;
+
+export const TRIGGER_NODES_VALIDATE_LIFECYCLE_STATE = `
+  CREATE TRIGGER IF NOT EXISTS nodes_validate_lifecycle_state
+  BEFORE UPDATE OF lifecycle_state ON nodes
+  FOR EACH ROW
+  WHEN NEW.lifecycle_state IS NOT NULL
+  BEGIN
+    SELECT RAISE(ABORT, 'invalid lifecycle_state for node type')
+      WHERE (NEW.type = 'organization' AND NEW.lifecycle_state NOT IN ('active','inactive','archived'))
+         OR (NEW.type = 'area'         AND NEW.lifecycle_state NOT IN ('active','needs_attention','inactive','archived'))
+         OR (NEW.type = 'process'      AND NEW.lifecycle_state NOT IN ('not_implemented','implementing','operating','at_risk','broken','retired'))
+         OR (NEW.type = 'project'      AND NEW.lifecycle_state NOT IN ('backlog','planned','in_progress','on_hold','done','cancelled'))
+         OR (NEW.type = 'principle'    AND NEW.lifecycle_state NOT IN ('active','archived'));
+  END
+`;
+
+// DDL for the five people/responsibilities tables (used by both fresh DDL
+// and runMigration006). Kept as statement constants so the two callers stay
+// in sync.
+export const DDL_ACTORS_TABLE = `CREATE TABLE IF NOT EXISTS actors (
+  id TEXT PRIMARY KEY CHECK(length(id) = 26),
+  org_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  type TEXT NOT NULL CHECK(type IN ('person','automation')),
+  name TEXT NOT NULL,
+  description TEXT,
+  is_placeholder INTEGER NOT NULL DEFAULT 0 CHECK(is_placeholder IN (0,1)),
+  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  notes TEXT,
+  external_id TEXT,
+  created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+  updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
+  CHECK(type = 'person' OR (is_placeholder = 0 AND user_id IS NULL))
+)`;
+
+export const DDL_RESPONSIBILITIES_TABLE = `CREATE TABLE IF NOT EXISTS responsibilities (
+  id TEXT PRIMARY KEY CHECK(length(id) = 26),
+  node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+  updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+)`;
+
+export const DDL_RESPONSIBILITY_ASSIGNMENTS_TABLE = `CREATE TABLE IF NOT EXISTS responsibility_assignments (
+  responsibility_id TEXT NOT NULL REFERENCES responsibilities(id) ON DELETE CASCADE,
+  actor_id TEXT NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+  created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (responsibility_id, actor_id)
+)`;
+
+export const DDL_DATA_SOURCES_TABLE = `CREATE TABLE IF NOT EXISTS data_sources (
+  id TEXT PRIMARY KEY CHECK(length(id) = 26),
+  node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  external_link TEXT,
+  created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+  updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+)`;
+
+export const DDL_TOOLS_TABLE = `CREATE TABLE IF NOT EXISTS tools (
+  id TEXT PRIMARY KEY CHECK(length(id) = 26),
+  node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  external_link TEXT,
+  created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+  updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+)`;
+
+// Seeds lifecycle_state for existing rows based on current status+type.
+// Idempotent: only affects rows where lifecycle_state IS NULL.
+export const SEED_LIFECYCLE_STATE_FROM_STATUS = `UPDATE nodes SET lifecycle_state = CASE
+  WHEN type = 'organization' AND status = 'active' THEN 'active'
+  WHEN type = 'organization' AND status = 'archived' THEN 'archived'
+  WHEN type = 'area' AND status = 'active' THEN 'active'
+  WHEN type = 'area' AND status = 'archived' THEN 'archived'
+  WHEN type = 'process' AND status = 'active' THEN 'operating'
+  WHEN type = 'process' AND status = 'archived' THEN 'retired'
+  WHEN type = 'project' AND status = 'active' THEN 'in_progress'
+  WHEN type = 'project' AND status = 'completed' THEN 'done'
+  WHEN type = 'project' AND status = 'archived' THEN 'cancelled'
+  WHEN type = 'principle' AND status = 'active' THEN 'active'
+  WHEN type = 'principle' AND status = 'archived' THEN 'archived'
+  ELSE lifecycle_state
+END WHERE lifecycle_state IS NULL`;
+
+// Migration 006: add actors, responsibilities, responsibility_assignments,
+// data_sources, tools; add owner_id/lifecycle_state/goal columns to nodes;
+// install validation + lifecycle-derivation triggers; seed lifecycle_state.
+export async function runMigration006(db: Client): Promise<void> {
+  // 1. actors table + indexes + org_id trigger
+  await db.execute(DDL_ACTORS_TABLE);
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_actors_org ON actors(org_id)");
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_actors_type ON actors(type)");
+  await db.execute(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_actors_org_external ON actors(org_id, external_id) WHERE external_id IS NOT NULL",
+  );
+  await db.execute(TRIGGER_ACTORS_ORG_MUST_BE_ORGANIZATION);
+
+  // 2. responsibilities + index + node_type trigger
+  await db.execute(DDL_RESPONSIBILITIES_TABLE);
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_responsibilities_node ON responsibilities(node_id)");
+  await db.execute(TRIGGER_RESPONSIBILITIES_VALID_NODE_TYPE);
+
+  // 3. responsibility_assignments (PK prevents duplicates)
+  await db.execute(DDL_RESPONSIBILITY_ASSIGNMENTS_TABLE);
+
+  // 4. data_sources + index + node_type trigger
+  await db.execute(DDL_DATA_SOURCES_TABLE);
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_data_sources_node ON data_sources(node_id)");
+  await db.execute(TRIGGER_DATA_SOURCES_VALID_NODE_TYPE);
+
+  // 5. tools + index + node_type trigger
+  await db.execute(DDL_TOOLS_TABLE);
+  await db.execute("CREATE INDEX IF NOT EXISTS idx_tools_node ON tools(node_id)");
+  await db.execute(TRIGGER_TOOLS_VALID_NODE_TYPE);
+
+  // 6. Three new columns on nodes (additive ALTER TABLE).
+  //    Must be idempotent: DDL_MIGRATION_006 runs before this migration on
+  //    startup and creates the `actors` table, which in turn makes the old
+  //    isApplied check return true before ALTER TABLE ran. If columns already
+  //    exist (fresh install via updated DDL), skip — re-run must not crash.
+  const info = await db.execute("PRAGMA table_info(nodes)");
+  const existingCols = new Set(info.rows.map((r) => r.name as string));
+  if (!existingCols.has("owner_id")) {
+    await db.execute("ALTER TABLE nodes ADD COLUMN owner_id TEXT REFERENCES actors(id) ON DELETE SET NULL");
+  }
+  if (!existingCols.has("lifecycle_state")) {
+    await db.execute("ALTER TABLE nodes ADD COLUMN lifecycle_state TEXT");
+  }
+  if (!existingCols.has("goal")) {
+    await db.execute("ALTER TABLE nodes ADD COLUMN goal TEXT");
+  }
+
+  // 7. Owner validation trigger
+  await db.execute(TRIGGER_NODES_OWNER_MUST_BE_REAL_PERSON);
+
+  // 8. Status derivation trigger (AFTER UPDATE OF lifecycle_state)
+  await db.execute(TRIGGER_NODES_DERIVE_STATUS_FROM_LIFECYCLE);
+
+  // 9. Lifecycle-state validation trigger
+  await db.execute(TRIGGER_NODES_VALIDATE_LIFECYCLE_STATE);
+
+  // 10. Seed lifecycle_state for existing rows based on current status+type
+  await db.execute(SEED_LIFECYCLE_STATE_FROM_STATUS);
+}
 
 const MIGRATIONS: Migration[] = [
   // Legacy migration 001: CHECK constraints on nodes.type and edges.relation.
@@ -645,6 +889,33 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+
+  // Migration 006: people + responsibilities + data sources + tools.
+  // Adds five new tables, three node columns (owner_id, lifecycle_state,
+  // goal), and validation/derivation triggers. Fresh installs get the new
+  // columns directly from DDL and the new tables via ensureSchema(); the
+  // migration applies to existing databases.
+  {
+    id: "006_people_responsibilities",
+    isApplied: async (db) => {
+      // Check BOTH the new table AND the three new columns on nodes.
+      // DDL_MIGRATION_006 runs before this migration during ensureSchema()
+      // and unconditionally creates the `actors` table via CREATE TABLE IF
+      // NOT EXISTS — so checking only that table would spuriously report
+      // "applied" on databases where the ALTER TABLE statements never ran.
+      const tableCheck = await db.execute({
+        sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='actors'",
+        args: [],
+      });
+      if (tableCheck.rows.length === 0) return false;
+      const info = await db.execute("PRAGMA table_info(nodes)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      return cols.has("owner_id") && cols.has("lifecycle_state") && cols.has("goal");
+    },
+    up: async (db) => {
+      await runMigration006(db);
+    },
+  },
 ];
 
 async function runMigrations(db: Client): Promise<void> {
@@ -702,9 +973,34 @@ async function runMigrations(db: Client): Promise<void> {
   }
 }
 
+// Migration 006 table DDL, indexes, and triggers — applied on fresh installs
+// so ensureSchema() on a brand-new DB has the complete schema without
+// running the migration. (The nodes table in DDL already includes owner_id,
+// lifecycle_state, and goal columns.)
+const DDL_MIGRATION_006 = [
+  DDL_ACTORS_TABLE,
+  "CREATE INDEX IF NOT EXISTS idx_actors_org ON actors(org_id)",
+  "CREATE INDEX IF NOT EXISTS idx_actors_type ON actors(type)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_actors_org_external ON actors(org_id, external_id) WHERE external_id IS NOT NULL",
+  TRIGGER_ACTORS_ORG_MUST_BE_ORGANIZATION,
+  DDL_RESPONSIBILITIES_TABLE,
+  "CREATE INDEX IF NOT EXISTS idx_responsibilities_node ON responsibilities(node_id)",
+  TRIGGER_RESPONSIBILITIES_VALID_NODE_TYPE,
+  DDL_RESPONSIBILITY_ASSIGNMENTS_TABLE,
+  DDL_DATA_SOURCES_TABLE,
+  "CREATE INDEX IF NOT EXISTS idx_data_sources_node ON data_sources(node_id)",
+  TRIGGER_DATA_SOURCES_VALID_NODE_TYPE,
+  DDL_TOOLS_TABLE,
+  "CREATE INDEX IF NOT EXISTS idx_tools_node ON tools(node_id)",
+  TRIGGER_TOOLS_VALID_NODE_TYPE,
+  TRIGGER_NODES_OWNER_MUST_BE_REAL_PERSON,
+  TRIGGER_NODES_DERIVE_STATUS_FROM_LIFECYCLE,
+  TRIGGER_NODES_VALIDATE_LIFECYCLE_STATE,
+];
+
 export async function ensureSchema(): Promise<void> {
   const db = getDb();
-  for (const sql of [...DDL, ...SEED]) {
+  for (const sql of [...DDL, ...DDL_MIGRATION_006, ...SEED]) {
     await db.execute(sql);
   }
   await runMigrations(db);

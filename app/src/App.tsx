@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import Sidebar from "./components/Sidebar";
+import Sidebar, { type AppView } from "./components/Sidebar";
 import GraphView from "./components/GraphView";
 import DetailPane from "./components/DetailPane";
+import ActorsPage from "./components/ActorsPage";
 import { fetchGraph, fetchNode } from "./api";
 import type { GraphPayload, NodeDetail } from "./types";
 import type { Theme } from "./lib/theme";
@@ -12,6 +13,11 @@ export default function App() {
   const [graphError, setGraphError] = useState<string | null>(null);
 
   const [theme, setTheme] = useState<Theme>(() => loadTheme());
+
+  const [view, setView] = useState<AppView>(() => {
+    const p = new URLSearchParams(window.location.search);
+    return p.get("view") === "actors" ? "actors" : "graph";
+  });
 
   const [selectedId, setSelectedIdRaw] = useState<string | null>(() => {
     const p = new URLSearchParams(window.location.search);
@@ -54,6 +60,19 @@ export default function App() {
     }
     window.history.replaceState(null, "", url.toString());
   }, [selectedId]);
+
+  // Sync URL with current view. Default "graph" is omitted from the URL
+  // to keep it clean; ?view=actors is only present when actually on that
+  // view. The ?node param coexists and is only meaningful in graph view.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (view === "actors") {
+      url.searchParams.set("view", "actors");
+    } else {
+      url.searchParams.delete("view");
+    }
+    window.history.replaceState(null, "", url.toString());
+  }, [view]);
 
   // Load detail when selection changes
   useEffect(() => {
@@ -140,29 +159,31 @@ export default function App() {
           onSelect={setSelectedId}
           theme={theme}
           onThemeToggle={toggleTheme}
+          view={view}
+          onViewChange={setView}
         />
       )}
 
       <main className="relative min-w-0 flex-1 bg-[var(--color-bg)]">
         {graphError && (
           <div className="absolute inset-0 flex items-center justify-center">
-            <div className="rounded-md border border-red-900 bg-red-950/30 px-6 py-4 text-[12px] text-red-300">
-              <div className="mb-2 font-semibold">Failed to load graph</div>
-              <div className="font-mono text-[10.5px] opacity-80">
+            <div className="rounded-md border border-red-900 bg-red-950/30 px-6 py-4 text-[13.5px] text-red-300">
+              <div className="mb-2 font-semibold">Nepodařilo se načíst graf</div>
+              <div className="font-mono text-[13.5px] opacity-80">
                 {graphError}
               </div>
-              <div className="mt-3 text-[10.5px] text-red-200/70">
-                Is the Portuni server running on :3001?
+              <div className="mt-3 text-[13.5px] text-red-200/70">
+                Běží Portuni server na portu 4011?
               </div>
             </div>
           </div>
         )}
         {!graph && !graphError && (
-          <div className="absolute inset-0 flex items-center justify-center text-[11px] text-[var(--color-text-dim)]">
-            Loading graph...
+          <div className="absolute inset-0 flex items-center justify-center text-[14px] text-[var(--color-text-dim)]">
+            Načítám graf...
           </div>
         )}
-        {graph && (
+        {graph && view === "graph" && (
           <GraphView
             graph={graph}
             selectedId={selectedId}
@@ -173,9 +194,10 @@ export default function App() {
             onSelect={setSelectedId}
           />
         )}
+        {view === "actors" && <ActorsPage graph={graph} />}
       </main>
 
-      {selectedId && (
+      {view === "graph" && selectedId && (
         <DetailPane
           node={nodeDetail}
           graph={graph}

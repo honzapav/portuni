@@ -11,6 +11,26 @@ import { registerContextTools } from "./tools/context.js";
 import { registerMirrorTools } from "./tools/mirrors.js";
 import { registerFileTools } from "./tools/files.js";
 import { registerEventTools } from "./tools/events.js";
+import { registerActorTools, createActor, updateActor, archiveActor } from "./tools/actors.js";
+import {
+  registerResponsibilityTools,
+  createResponsibility,
+  updateResponsibility,
+  deleteResponsibility,
+  listResponsibilities,
+  assignResponsibility,
+  unassignResponsibility,
+} from "./tools/responsibilities.js";
+import {
+  registerEntityAttributeTools,
+  addDataSource,
+  removeDataSource,
+  listDataSources,
+  addTool,
+  removeTool,
+  listTools,
+} from "./tools/entity-attributes.js";
+import { updateNodeInternal } from "./tools/nodes.js";
 
 import { getDb } from "./db.js";
 import { SOLO_USER, NODE_TYPES, EDGE_RELATIONS, EVENT_TYPES } from "./schema.js";
@@ -19,13 +39,13 @@ import type { GraphPayload, NodeDetail } from "./api-types.js";
 import { ulid } from "ulid";
 import { logAudit } from "./audit.js";
 
-const PORT = Number(process.env.PORT ?? 3001);
+const PORT = Number(process.env.PORT ?? 4011);
 
 async function loadGraph(): Promise<GraphPayload> {
   const db = getDb();
 
   const nodesRes = await db.execute({
-    sql: `SELECT id, type, name, description, status, pos_x, pos_y
+    sql: `SELECT id, type, name, description, status, lifecycle_state, pos_x, pos_y
           FROM nodes
           WHERE status = 'active'
           ORDER BY type, name`,
@@ -43,6 +63,7 @@ async function loadGraph(): Promise<GraphPayload> {
       name: row.name as string,
       description: (row.description as string | null) ?? null,
       status: row.status as string,
+      lifecycle_state: (row.lifecycle_state as string | null) ?? null,
       pos_x: row.pos_x as number | null,
       pos_y: row.pos_y as number | null,
     })),
@@ -136,6 +157,63 @@ async function loadNodeDetail(nodeId: string): Promise<NodeDetail | null> {
         }
       : null;
 
+  // Owner
+  const ownerRow = row.owner_id
+    ? (await db.execute({ sql: "SELECT id, name FROM actors WHERE id = ?", args: [row.owner_id] })).rows[0]
+    : null;
+  const owner = ownerRow ? { id: ownerRow.id as string, name: ownerRow.name as string } : null;
+
+  // Responsibilities with assignees
+  const respRes = await db.execute({
+    sql: "SELECT id, title, description, sort_order FROM responsibilities WHERE node_id = ? ORDER BY sort_order, title",
+    args: [row.id],
+  });
+  const responsibilities = [];
+  for (const r of respRes.rows) {
+    const as = await db.execute({
+      sql: `SELECT a.id, a.name, a.type FROM actors a
+            JOIN responsibility_assignments ra ON ra.actor_id = a.id
+            WHERE ra.responsibility_id = ?
+            ORDER BY a.name`,
+      args: [r.id as string],
+    });
+    responsibilities.push({
+      id: r.id as string,
+      title: r.title as string,
+      description: (r.description as string | null) ?? null,
+      sort_order: (r.sort_order as number) ?? 0,
+      assignees: as.rows.map((x) => ({
+        id: x.id as string,
+        name: x.name as string,
+        type: x.type as string,
+      })),
+    });
+  }
+
+  // Data sources
+  const dsRes = await db.execute({
+    sql: "SELECT id, name, description, external_link FROM data_sources WHERE node_id = ? ORDER BY name",
+    args: [row.id],
+  });
+  const data_sources = dsRes.rows.map((r) => ({
+    id: r.id as string,
+    name: r.name as string,
+    description: (r.description as string | null) ?? null,
+    external_link: (r.external_link as string | null) ?? null,
+  }));
+
+  // Tools
+  const toolsRes = await db.execute({
+    sql: "SELECT id, name, description, external_link FROM tools WHERE node_id = ? ORDER BY name",
+    args: [row.id],
+  });
+  const tools = toolsRes.rows.map((r) => ({
+    id: r.id as string,
+    name: r.name as string,
+    description: (r.description as string | null) ?? null,
+    external_link: (r.external_link as string | null) ?? null,
+  }));
+
   return {
     id: row.id,
     type: row.type,
@@ -150,6 +228,12 @@ async function loadNodeDetail(nodeId: string): Promise<NodeDetail | null> {
     files,
     events,
     local_mirror,
+    owner,
+    responsibilities,
+    data_sources,
+    tools,
+    goal: row.goal ?? null,
+    lifecycle_state: row.lifecycle_state ?? null,
   };
 }
 
@@ -306,6 +390,9 @@ function createMcpServer(): McpServer {
   registerMirrorTools(server);
   registerFileTools(server);
   registerEventTools(server);
+  registerActorTools(server);
+  registerResponsibilityTools(server);
+  registerEntityAttributeTools(server);
   return server;
 }
 
@@ -418,6 +505,352 @@ async function main() {
       return;
     }
 
+    // List actors across the organization, filterable by type or placeholder
+    // status. Used by future Actors UI; DetailPane gets its assignees inline
+    // via loadNodeDetail, so this endpoint is optional for the initial ship.
+    if (url.pathname === "/actors" && req.method === "GET") {
+      try {
+        const db = getDb();
+        const clauses: string[] = [];
+        const values: (string | number)[] = [];
+        const orgId = url.searchParams.get("org_id");
+        if (orgId) { clauses.push("org_id = ?"); values.push(orgId); }
+        const type = url.searchParams.get("type");
+        if (type === "person" || type === "automation") {
+          clauses.push("type = ?"); values.push(type);
+        }
+        const placeholder = url.searchParams.get("is_placeholder");
+        if (placeholder === "1" || placeholder === "true") {
+          clauses.push("is_placeholder = 1");
+        } else if (placeholder === "0" || placeholder === "false") {
+          clauses.push("is_placeholder = 0");
+        }
+        const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+        const rows = await db.execute({
+          sql: `SELECT id, org_id, type, name, description, is_placeholder, user_id, notes, external_id
+                FROM actors ${where} ORDER BY type, name`,
+          args: values,
+        });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(rows.rows));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    // --- Actors: POST / PATCH / DELETE ---
+    // GET /actors is handled above. These mutations route through the
+    // actors.ts pure functions, which handle Zod validation + audit logging.
+
+    if (url.pathname === "/actors" && req.method === "POST") {
+      try {
+        const body = (await parseBody(req)) as Record<string, unknown> | undefined;
+        if (!body || Object.keys(body).length === 0) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "body required" }));
+          return;
+        }
+        const row = await createActor(getDb(), SOLO_USER, body as Parameters<typeof createActor>[2]);
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(row));
+      } catch (err) {
+        const e = err as Error;
+        const status = e?.name === "ZodError" ? 400 : 500;
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/actors/") && req.method === "PATCH") {
+      const actorId = decodeURIComponent(url.pathname.slice("/actors/".length));
+      try {
+        const body = (await parseBody(req)) as Record<string, unknown> | undefined;
+        if (!body || Object.keys(body).length === 0) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "no fields to update" }));
+          return;
+        }
+        const row = await updateActor(getDb(), SOLO_USER, {
+          actor_id: actorId,
+          ...(body as object),
+        } as Parameters<typeof updateActor>[2]);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(row));
+      } catch (err) {
+        const e = err as Error;
+        const status = e?.name === "ZodError" ? 400 : 500;
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/actors/") && req.method === "DELETE") {
+      const actorId = decodeURIComponent(url.pathname.slice("/actors/".length));
+      try {
+        await archiveActor(getDb(), SOLO_USER, actorId);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ archived: actorId }));
+      } catch (err) {
+        const e = err as Error;
+        const status = e?.name === "ZodError" ? 400 : 500;
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    // --- Responsibilities: CRUD + assignments ---
+
+    // Match /responsibilities/:id/assignments[/:actorId] first so it doesn't
+    // collide with the bare /responsibilities/:id handlers below.
+    const respAssignMatch = url.pathname.match(
+      /^\/responsibilities\/([^/]+)\/assignments(?:\/([^/]+))?$/,
+    );
+    if (respAssignMatch) {
+      const respId = decodeURIComponent(respAssignMatch[1]);
+      const actorIdFromPath = respAssignMatch[2]
+        ? decodeURIComponent(respAssignMatch[2])
+        : undefined;
+      if (req.method === "POST" && !actorIdFromPath) {
+        try {
+          const body = (await parseBody(req)) as { actor_id?: string } | undefined;
+          if (!body || !body.actor_id) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "actor_id required" }));
+            return;
+          }
+          await assignResponsibility(getDb(), SOLO_USER, {
+            responsibility_id: respId,
+            actor_id: body.actor_id,
+          });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (err) {
+          const e = err as Error;
+          const status = e?.name === "ZodError" ? 400 : 500;
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: String(err) }));
+        }
+        return;
+      }
+      if (req.method === "DELETE" && actorIdFromPath) {
+        try {
+          await unassignResponsibility(getDb(), SOLO_USER, {
+            responsibility_id: respId,
+            actor_id: actorIdFromPath,
+          });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (err) {
+          const e = err as Error;
+          const status = e?.name === "ZodError" ? 400 : 500;
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: String(err) }));
+        }
+        return;
+      }
+    }
+
+    if (url.pathname === "/responsibilities" && req.method === "GET") {
+      try {
+        const filters: { node_id?: string; actor_id?: string } = {};
+        const nodeId = url.searchParams.get("node_id");
+        const actorId = url.searchParams.get("actor_id");
+        if (nodeId) filters.node_id = nodeId;
+        if (actorId) filters.actor_id = actorId;
+        const rows = await listResponsibilities(getDb(), filters);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(rows));
+      } catch (err) {
+        const e = err as Error;
+        const status = e?.name === "ZodError" ? 400 : 500;
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    if (url.pathname === "/responsibilities" && req.method === "POST") {
+      try {
+        const body = (await parseBody(req)) as Record<string, unknown> | undefined;
+        if (!body || Object.keys(body).length === 0) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "body required" }));
+          return;
+        }
+        const row = await createResponsibility(
+          getDb(),
+          SOLO_USER,
+          body as Parameters<typeof createResponsibility>[2],
+        );
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(row));
+      } catch (err) {
+        const e = err as Error;
+        const status = e?.name === "ZodError" ? 400 : 500;
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/responsibilities/") && req.method === "PATCH") {
+      const respId = decodeURIComponent(url.pathname.slice("/responsibilities/".length));
+      try {
+        const body = (await parseBody(req)) as Record<string, unknown> | undefined;
+        if (!body || Object.keys(body).length === 0) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "no fields to update" }));
+          return;
+        }
+        const row = await updateResponsibility(getDb(), SOLO_USER, {
+          responsibility_id: respId,
+          ...(body as object),
+        } as Parameters<typeof updateResponsibility>[2]);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(row));
+      } catch (err) {
+        const e = err as Error;
+        const status = e?.name === "ZodError" ? 400 : 500;
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/responsibilities/") && req.method === "DELETE") {
+      const respId = decodeURIComponent(url.pathname.slice("/responsibilities/".length));
+      try {
+        await deleteResponsibility(getDb(), SOLO_USER, respId);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ deleted: respId }));
+      } catch (err) {
+        const e = err as Error;
+        const status = e?.name === "ZodError" ? 400 : 500;
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    // --- Data sources: POST / DELETE / GET ---
+
+    if (url.pathname === "/data-sources" && req.method === "GET") {
+      const nodeId = url.searchParams.get("node_id");
+      if (!nodeId) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "node_id parameter required" }));
+        return;
+      }
+      try {
+        const rows = await listDataSources(getDb(), nodeId);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(rows));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    if (url.pathname === "/data-sources" && req.method === "POST") {
+      try {
+        const body = (await parseBody(req)) as Record<string, unknown> | undefined;
+        if (!body || Object.keys(body).length === 0) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "body required" }));
+          return;
+        }
+        const row = await addDataSource(
+          getDb(),
+          SOLO_USER,
+          body as Parameters<typeof addDataSource>[2],
+        );
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(row));
+      } catch (err) {
+        const e = err as Error;
+        const status = e?.name === "ZodError" ? 400 : 500;
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/data-sources/") && req.method === "DELETE") {
+      const dsId = decodeURIComponent(url.pathname.slice("/data-sources/".length));
+      try {
+        await removeDataSource(getDb(), SOLO_USER, dsId);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ deleted: dsId }));
+      } catch (err) {
+        const e = err as Error;
+        const status = e?.name === "ZodError" ? 400 : 500;
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    // --- Tools: POST / DELETE / GET ---
+
+    if (url.pathname === "/tools" && req.method === "GET") {
+      const nodeId = url.searchParams.get("node_id");
+      if (!nodeId) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "node_id parameter required" }));
+        return;
+      }
+      try {
+        const rows = await listTools(getDb(), nodeId);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(rows));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    if (url.pathname === "/tools" && req.method === "POST") {
+      try {
+        const body = (await parseBody(req)) as Record<string, unknown> | undefined;
+        if (!body || Object.keys(body).length === 0) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "body required" }));
+          return;
+        }
+        const row = await addTool(getDb(), SOLO_USER, body as Parameters<typeof addTool>[2]);
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(row));
+      } catch (err) {
+        const e = err as Error;
+        const status = e?.name === "ZodError" ? 400 : 500;
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/tools/") && req.method === "DELETE") {
+      const toolId = decodeURIComponent(url.pathname.slice("/tools/".length));
+      try {
+        await removeTool(getDb(), SOLO_USER, toolId);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ deleted: toolId }));
+      } catch (err) {
+        const e = err as Error;
+        const status = e?.name === "ZodError" ? 400 : 500;
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
     if (url.pathname.startsWith("/nodes/") && req.method === "GET") {
       const nodeId = decodeURIComponent(url.pathname.slice("/nodes/".length));
       if (!nodeId) {
@@ -441,58 +874,74 @@ async function main() {
       return;
     }
 
-    // Update name / description on an existing node.
+    // Update fields on an existing node. Routes through updateNodeInternal
+    // so lifecycle/owner/goal validation + audit logging stay centralized in
+    // the pure function.
     if (url.pathname.startsWith("/nodes/") && req.method === "PATCH") {
       const nodeId = decodeURIComponent(url.pathname.slice("/nodes/".length));
       try {
         const body = (await parseBody(req)) as
-          | { name?: string; description?: string | null }
+          | {
+              name?: string;
+              description?: string | null;
+              goal?: string | null;
+              lifecycle_state?: string | null;
+              owner_id?: string | null;
+            }
           | undefined;
         if (!body) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "body required" }));
           return;
         }
-        const db = getDb();
-        const existing = await db.execute({
-          sql: "SELECT id FROM nodes WHERE id = ?",
-          args: [nodeId],
-        });
-        if (existing.rows.length === 0) {
-          res.writeHead(404, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "node not found" }));
-          return;
-        }
-        const updates: string[] = [];
-        const values: (string | null)[] = [];
+        const update: {
+          node_id: string;
+          name?: string;
+          description?: string | null;
+          goal?: string | null;
+          lifecycle_state?: string | null;
+          owner_id?: string | null;
+        } = { node_id: nodeId };
         if (typeof body.name === "string" && body.name.trim().length > 0) {
-          updates.push("name = ?");
-          values.push(body.name.trim());
+          update.name = body.name.trim();
         }
         if (body.description !== undefined) {
-          updates.push("description = ?");
-          values.push(body.description === null ? null : String(body.description));
+          update.description = body.description === null ? null : String(body.description);
         }
-        if (updates.length === 0) {
+        if (body.goal !== undefined) {
+          update.goal = body.goal === null ? null : String(body.goal);
+        }
+        if (body.lifecycle_state !== undefined) {
+          update.lifecycle_state =
+            body.lifecycle_state === null ? null : String(body.lifecycle_state);
+        }
+        if (body.owner_id !== undefined) {
+          update.owner_id = body.owner_id === null ? null : String(body.owner_id);
+        }
+        const hasUpdate =
+          update.name !== undefined ||
+          update.description !== undefined ||
+          update.goal !== undefined ||
+          update.lifecycle_state !== undefined ||
+          update.owner_id !== undefined;
+        if (!hasUpdate) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "no fields to update" }));
           return;
         }
-        updates.push("updated_at = ?");
-        values.push(new Date().toISOString());
-        values.push(nodeId);
-        await db.execute({
-          sql: `UPDATE nodes SET ${updates.join(", ")} WHERE id = ?`,
-          args: values,
-        });
-        await logAudit(SOLO_USER, "update_node", "node", nodeId, {
-          fields: Object.keys(body),
-        });
+        await updateNodeInternal(getDb(), SOLO_USER, update);
         const node = await loadNodeDetail(nodeId);
+        if (!node) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "node not found" }));
+          return;
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(node));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
+        const e = err as Error;
+        const status = e?.name === "ZodError" ? 400 : 500;
+        res.writeHead(status, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: String(err) }));
       }
       return;

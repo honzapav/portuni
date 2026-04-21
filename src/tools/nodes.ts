@@ -8,71 +8,279 @@ import {
   NODE_VISIBILITIES,
   SOLO_USER,
 } from "../schema.js";
+import { getLifecycleStatesForType } from "../popp.js";
+import type { NodeType } from "../popp.js";
 import { NodeRow, NodeSummaryRow } from "../types.js";
-import type { InValue } from "@libsql/client";
+import type { Client, InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+// --- Task E2: pure createNode, exported for tests ---
+//
+// createNodeInternal accepts db explicitly so tests can run it against an
+// in-memory client. The MCP tool handler below calls this with getDb().
+// Mirrors the shape of updateNodeInternal (E1).
+export const CreateNodeInput = z.object({
+  type: z.enum(NODE_TYPES),
+  name: z.string(),
+  description: z.string().optional(),
+  organization_id: z.string().optional(),
+  meta: z.record(z.string(), z.unknown()).optional(),
+  status: z.enum(NODE_STATUSES).optional(),
+  visibility: z.enum(NODE_VISIBILITIES).optional(),
+  goal: z.string().optional(),
+  lifecycle_state: z.string().optional(),
+});
+export type CreateNodeInput = z.infer<typeof CreateNodeInput>;
+
+// --- Task E1: pure updateNode, exported for tests ---
+//
+// updateNodeInternal accepts db explicitly so tests can run it against an
+// in-memory client. The MCP tool handler below calls this with getDb().
+export const UpdateNodeInput = z.object({
+  node_id: z.string(),
+  name: z.string().optional(),
+  description: z.string().nullable().optional(),
+  status: z.enum(NODE_STATUSES).optional(),
+  visibility: z.enum(NODE_VISIBILITIES).optional(),
+  meta: z.record(z.string(), z.unknown()).optional(),
+  goal: z.string().nullable().optional(),
+  lifecycle_state: z.string().nullable().optional(),
+  owner_id: z.string().nullable().optional(),
+});
+export type UpdateNodeInput = z.infer<typeof UpdateNodeInput>;
+
+// Direct audit writer taking db explicitly. The shared logAudit() helper
+// hard-codes getDb(), so we re-implement the INSERT here to keep the pure
+// function pure.
+async function writeAudit(
+  db: Client,
+  userId: string,
+  action: string,
+  targetType: string,
+  targetId: string,
+  detail?: Record<string, unknown>,
+): Promise<void> {
+  await db.execute({
+    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+          VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+    args: [ulid(), userId, action, targetType, targetId, detail ? JSON.stringify(detail) : null],
+  });
+}
+
+export async function updateNodeInternal(
+  db: Client,
+  updatedBy: string,
+  input: UpdateNodeInput,
+): Promise<void> {
+  const args = UpdateNodeInput.parse(input);
+
+  // Look up node type for lifecycle validation and to confirm existence.
+  const row = await db.execute({
+    sql: "SELECT type FROM nodes WHERE id = ?",
+    args: [args.node_id],
+  });
+  if (row.rows.length === 0) {
+    throw new Error(`node ${args.node_id} not found`);
+  }
+  const nodeType = row.rows[0].type as NodeType;
+
+  // Pre-validate lifecycle_state against per-type enum for a friendly error
+  // before the DB trigger fires.
+  if (args.lifecycle_state !== undefined && args.lifecycle_state !== null) {
+    const valid = getLifecycleStatesForType(nodeType);
+    if (!valid.includes(args.lifecycle_state)) {
+      throw new Error(
+        `invalid lifecycle_state '${args.lifecycle_state}' for node type '${nodeType}'. Valid: ${valid.join(", ")}`,
+      );
+    }
+  }
+
+  // Update non-lifecycle fields first (all in one UPDATE so owner_id trigger
+  // fires once, and updated_at bumps once).
+  const sets: string[] = [];
+  const values: InValue[] = [];
+  if (args.name !== undefined) {
+    sets.push("name = ?");
+    values.push(args.name);
+  }
+  if (args.description !== undefined) {
+    sets.push("description = ?");
+    values.push(args.description);
+  }
+  if (args.status !== undefined) {
+    sets.push("status = ?");
+    values.push(args.status);
+  }
+  if (args.visibility !== undefined) {
+    sets.push("visibility = ?");
+    values.push(args.visibility);
+  }
+  if (args.meta !== undefined) {
+    sets.push("meta = ?");
+    values.push(JSON.stringify(args.meta));
+  }
+  if (args.goal !== undefined) {
+    sets.push("goal = ?");
+    values.push(args.goal);
+  }
+  if (args.owner_id !== undefined) {
+    sets.push("owner_id = ?");
+    values.push(args.owner_id);
+  }
+
+  if (sets.length > 0) {
+    sets.push("updated_at = ?");
+    values.push(new Date().toISOString());
+    values.push(args.node_id);
+    await db.execute({
+      sql: `UPDATE nodes SET ${sets.join(", ")} WHERE id = ?`,
+      args: values,
+    });
+  }
+
+  // Update lifecycle_state separately so the AFTER UPDATE OF lifecycle_state
+  // trigger fires and derives status. (Splitting guarantees the trigger
+  // sees a real column-value change on exactly that column.)
+  if (args.lifecycle_state !== undefined) {
+    await db.execute({
+      sql: "UPDATE nodes SET lifecycle_state = ? WHERE id = ?",
+      args: [args.lifecycle_state, args.node_id],
+    });
+  }
+
+  await writeAudit(db, updatedBy, "update_node", "node", args.node_id, { input: args });
+}
+
+// Result type for createNodeInternal's in-process callers (the MCP handler
+// uses only `id`; tests use only `id`). Returning the id is enough; the
+// handler derives the rest.
+export async function createNodeInternal(
+  db: Client,
+  createdBy: string,
+  input: CreateNodeInput,
+): Promise<string> {
+  const args = CreateNodeInput.parse(input);
+
+  // Non-organization nodes must belong to exactly one organization. Verify
+  // here so the error message is friendly instead of a DB-level FK/trigger
+  // error fired deep inside the batch.
+  if (args.type !== "organization") {
+    if (!args.organization_id) {
+      throw new Error(
+        `organization_id is required for type=${args.type}. Every non-organization node must belong to exactly one organization.`,
+      );
+    }
+    const orgCheck = await db.execute({
+      sql: "SELECT id, type FROM nodes WHERE id = ?",
+      args: [args.organization_id],
+    });
+    if (orgCheck.rows.length === 0) {
+      throw new Error(`organization_id ${args.organization_id} not found`);
+    }
+    if (orgCheck.rows[0].type !== "organization") {
+      throw new Error(
+        `${args.organization_id} is a ${orgCheck.rows[0].type}, not an organization`,
+      );
+    }
+  }
+
+  // Pre-validate lifecycle_state against per-type enum for a friendly error
+  // before the DB trigger fires. Matches updateNodeInternal (E1).
+  if (args.lifecycle_state !== undefined) {
+    const valid = getLifecycleStatesForType(args.type as NodeType);
+    if (!valid.includes(args.lifecycle_state)) {
+      throw new Error(
+        `invalid lifecycle_state '${args.lifecycle_state}' for node type '${args.type}'. Valid: ${valid.join(", ")}`,
+      );
+    }
+  }
+
+  const id = ulid();
+  const now = new Date().toISOString();
+  const edgeId = args.type !== "organization" ? ulid() : null;
+
+  // Atomic batch: node INSERT and (for non-org types) belongs_to edge INSERT
+  // succeed or fail together. Guarantees the org invariant from the moment
+  // the node comes into existence -- there is no window in which the node
+  // exists without its required organization link.
+  const statements: Parameters<typeof db.batch>[0] = [
+    {
+      sql: `INSERT INTO nodes (id, type, name, description, meta, status, visibility, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        id,
+        args.type,
+        args.name,
+        args.description ?? null,
+        args.meta ? JSON.stringify(args.meta) : null,
+        args.status ?? "active",
+        args.visibility ?? "team",
+        createdBy,
+        now,
+        now,
+      ],
+    },
+  ];
+
+  if (edgeId && args.organization_id) {
+    statements.push({
+      sql: `INSERT INTO edges (id, source_id, target_id, relation, meta, created_by, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      args: [edgeId, id, args.organization_id, "belongs_to", null, createdBy, now],
+    });
+  }
+
+  await db.batch(statements, "write");
+
+  // Post-INSERT UPDATE to persist goal and/or lifecycle_state. We do this as
+  // an UPDATE (not as part of the INSERT) so the AFTER UPDATE OF
+  // lifecycle_state trigger fires and derives status correctly -- the
+  // trigger cannot observe an INSERT. Matches the pattern in
+  // updateNodeInternal (E1).
+  if (args.lifecycle_state !== undefined) {
+    await db.execute({
+      sql: "UPDATE nodes SET lifecycle_state = ?, goal = ? WHERE id = ?",
+      args: [args.lifecycle_state, args.goal ?? null, id],
+    });
+  } else if (args.goal !== undefined) {
+    await db.execute({
+      sql: "UPDATE nodes SET goal = ? WHERE id = ?",
+      args: [args.goal, id],
+    });
+  }
+
+  await writeAudit(db, createdBy, "create_node", "node", id, {
+    type: args.type,
+    name: args.name,
+    ...(args.organization_id ? { organization_id: args.organization_id } : {}),
+    ...(args.goal !== undefined ? { goal: args.goal } : {}),
+    ...(args.lifecycle_state !== undefined ? { lifecycle_state: args.lifecycle_state } : {}),
+  });
+
+  return id;
+}
 
 export function registerNodeTools(server: McpServer): void {
   server.tool(
     "portuni_create_node",
-    "Create a new node in the Portuni knowledge graph. ONLY create nodes when the user explicitly asks. Never create nodes as a side effect of other work or to organize things on your own initiative. Node types (strictly enforced): organization, project, process, area, principle. Every non-organization node MUST specify organization_id -- it will be atomically connected to that organization via a belongs_to edge. Every non-organization node belongs to exactly one organization.",
+    "Create a new node in the Portuni knowledge graph. ONLY create nodes when the user explicitly asks. Never create nodes as a side effect of other work or to organize things on your own initiative. Node types (strictly enforced): organization, project, process, area, principle. Every non-organization node MUST specify organization_id -- it will be atomically connected to that organization via a belongs_to edge. Every non-organization node belongs to exactly one organization. Optionally set goal (textual purpose) and lifecycle_state (type-specific primary state -- status is then derived automatically).",
     {
       type: z.enum(NODE_TYPES).describe("Node type: organization, project, process, area, or principle"),
       name: z.string().describe("Human-readable name"),
       description: z.string().optional().describe("What this node represents"),
       organization_id: z.string().optional().describe("Organization ID (ULID) -- required for non-organization types. Ignored when type='organization'. The new node will be atomically connected to this organization via belongs_to."),
       meta: z.record(z.string(), z.unknown()).optional().describe("Type-specific JSON data"),
-      status: z.enum(NODE_STATUSES).optional().describe("Node status (default: active)"),
+      status: z.enum(NODE_STATUSES).optional().describe("Node status (default: active). Prefer setting lifecycle_state -- status is derived automatically."),
       visibility: z.enum(NODE_VISIBILITIES).optional().describe("Visibility (default: team)"),
+      goal: z.string().optional().describe("Optional textual goal / purpose of the node."),
+      lifecycle_state: z.string().optional().describe("Optional primary lifecycle state. Must be valid for node type (project: backlog/planned/in_progress/on_hold/done/cancelled; process: not_implemented/implementing/operating/at_risk/broken/retired; etc.). status is derived from this."),
     },
     async (args) => {
       const db = getDb();
 
-      // Validate organization_id requirement: non-org types MUST belong to
-      // exactly one organization. Pre-validate the org exists and has the
-      // right type so the error message is clear rather than a DB-level
-      // FK/trigger error fired deep inside the batch.
-      if (args.type !== "organization") {
-        if (!args.organization_id) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: `Error: organization_id is required for type=${args.type}. Every non-organization node must belong to exactly one organization.`,
-              },
-            ],
-            isError: true,
-          };
-        }
-        const orgCheck = await db.execute({
-          sql: "SELECT id, type FROM nodes WHERE id = ?",
-          args: [args.organization_id],
-        });
-        if (orgCheck.rows.length === 0) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: `Error: organization_id ${args.organization_id} not found`,
-              },
-            ],
-            isError: true,
-          };
-        }
-        if (orgCheck.rows[0].type !== "organization") {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: `Error: ${args.organization_id} is a ${orgCheck.rows[0].type}, not an organization`,
-              },
-            ],
-            isError: true,
-          };
-        }
-      }
-
-      // B2: Check for duplicate name+type (warning, not block).
+      // B2: Check for duplicate name+type (warning, not block). Surfaced
+      // only on the MCP response -- kept at handler layer because it's
+      // about shaping the text response, not about DB writes.
       const dupeNameCheck = await db.execute({
         sql: "SELECT id, name FROM nodes WHERE name = ? AND type = ?",
         args: [args.name, args.type],
@@ -82,56 +290,25 @@ export function registerNodeTools(server: McpServer): void {
           ? `Warning: node with same name and type already exists: ${dupeNameCheck.rows.map((r) => r.id).join(", ")}. This is allowed but may cause ambiguity in name-based lookups.`
           : null;
 
-      const id = ulid();
-      const now = new Date().toISOString();
-      const edgeId = args.type !== "organization" ? ulid() : null;
-
-      // Atomic batch: node INSERT and (for non-org types) belongs_to edge
-      // INSERT succeed or fail together. Guarantees the org invariant from
-      // the moment the node comes into existence -- there is no window in
-      // which the node exists without its required organization link.
-      const statements: Parameters<typeof db.batch>[0] = [
-        {
-          sql: `INSERT INTO nodes (id, type, name, description, meta, status, visibility, created_by, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          args: [
-            id,
-            args.type,
-            args.name,
-            args.description ?? null,
-            args.meta ? JSON.stringify(args.meta) : null,
-            args.status ?? "active",
-            args.visibility ?? "team",
-            SOLO_USER,
-            now,
-            now,
+      let id: string;
+      try {
+        id = await createNodeInternal(db, SOLO_USER, args);
+      } catch (err) {
+        return {
+          content: [
+            { type: "text" as const, text: `Error: ${(err as Error).message}` },
           ],
-        },
-      ];
-
-      if (edgeId && args.organization_id) {
-        statements.push({
-          sql: `INSERT INTO edges (id, source_id, target_id, relation, meta, created_by, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          args: [edgeId, id, args.organization_id, "belongs_to", null, SOLO_USER, now],
-        });
+          isError: true,
+        };
       }
-
-      await db.batch(statements, "write");
-
-      await logAudit(SOLO_USER, "create_node", "node", id, {
-        type: args.type,
-        name: args.name,
-        ...(args.organization_id ? { organization_id: args.organization_id } : {}),
-      });
 
       const result = {
         id,
         type: args.type,
         name: args.name,
         status: args.status ?? "active",
-        ...(args.organization_id && edgeId
-          ? { belongs_to: args.organization_id, edge_id: edgeId }
+        ...(args.organization_id && args.type !== "organization"
+          ? { belongs_to: args.organization_id }
           : {}),
         ...(nameWarning ? { warning: nameWarning } : {}),
       };
@@ -149,84 +326,74 @@ export function registerNodeTools(server: McpServer): void {
 
   server.tool(
     "portuni_update_node",
-    "Update an existing node in the Portuni knowledge graph. Only provided fields are changed.",
+    "Update an existing node in the Portuni knowledge graph. Only provided fields are changed. Status is derived automatically from lifecycle_state -- prefer setting lifecycle_state. owner_id must reference an actor of type=person with user_id set, in the same organization.",
     {
       node_id: z.string().describe("Node ID (ULID)"),
       name: z.string().optional().describe("New human-readable name"),
-      description: z.string().optional().describe("New description"),
-      status: z.enum(NODE_STATUSES).optional().describe("New status"),
+      description: z.string().nullable().optional().describe("New description"),
+      status: z.enum(NODE_STATUSES).optional().describe("New coarse status. Prefer setting lifecycle_state -- status is derived automatically."),
+      visibility: z.enum(NODE_VISIBILITIES).optional().describe("New visibility"),
       meta: z.record(z.string(), z.unknown()).optional().describe("New type-specific JSON data"),
+      goal: z.string().nullable().optional().describe("New goal text. Pass null to clear."),
+      lifecycle_state: z.string().nullable().optional().describe("New lifecycle state. Must be valid for node type (project: backlog/planned/in_progress/on_hold/done/cancelled; process: not_implemented/implementing/operating/at_risk/broken/retired; etc.). Pass null to clear."),
+      owner_id: z.string().nullable().optional().describe("New owner (actors.id). Must reference an actor of type=person with user_id set (non-placeholder) in the same organization. Pass null to clear."),
     },
     async (args) => {
       const db = getDb();
 
-      // Fetch current state
+      // Pre-existing behavior: verify node exists up front so the error
+      // message is friendly (rather than letting the UPDATE silently affect
+      // zero rows or a trigger fire with confusing text).
       const current = await db.execute({
         sql: "SELECT * FROM nodes WHERE id = ?",
         args: [args.node_id],
       });
-
       if (current.rows.length === 0) {
         return {
           content: [{ type: "text" as const, text: "Error: node not found" }],
           isError: true,
         };
       }
+      // Parse so legacy callers still get the same validation surface.
+      NodeRow.parse(current.rows[0]);
 
-      const row = NodeRow.parse(current.rows[0]);
-
-      // Build dynamic SET clause for provided fields only
-      const updates: string[] = [];
-      const values: InValue[] = [];
-      const changes: Record<string, { from: unknown; to: unknown }> = {};
-
-      if (args.name !== undefined) {
-        updates.push("name = ?");
-        values.push(args.name);
-        changes.name = { from: row.name, to: args.name };
-      }
-      if (args.description !== undefined) {
-        updates.push("description = ?");
-        values.push(args.description);
-        changes.description = { from: row.description, to: args.description };
-      }
-      if (args.status !== undefined) {
-        updates.push("status = ?");
-        values.push(args.status);
-        changes.status = { from: row.status, to: args.status };
-      }
-      if (args.meta !== undefined) {
-        updates.push("meta = ?");
-        values.push(JSON.stringify(args.meta));
-        changes.meta = {
-          from: row.meta ? JSON.parse(row.meta) : null,
-          to: args.meta,
-        };
-      }
-
-      if (updates.length === 0) {
+      // Determine whether any field was actually provided, so we keep the
+      // pre-existing "no fields to update" error.
+      const provided = [
+        args.name,
+        args.description,
+        args.status,
+        args.visibility,
+        args.meta,
+        args.goal,
+        args.lifecycle_state,
+        args.owner_id,
+      ].some((v) => v !== undefined);
+      if (!provided) {
         return {
           content: [{ type: "text" as const, text: "Error: no fields to update" }],
           isError: true,
         };
       }
 
-      updates.push("updated_at = ?");
-      values.push(new Date().toISOString());
-      values.push(args.node_id);
+      try {
+        await updateNodeInternal(db, SOLO_USER, args);
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
 
-      await db.execute({
-        sql: `UPDATE nodes SET ${updates.join(", ")} WHERE id = ?`,
-        args: values,
-      });
-
-      await logAudit(SOLO_USER, "update_node", "node", args.node_id, { changes });
+      const updatedKeys = Object.entries(args)
+        .filter(([k, v]) => k !== "node_id" && v !== undefined)
+        .map(([k]) => k);
 
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ id: args.node_id, updated: Object.keys(changes) }),
+            text: JSON.stringify({ id: args.node_id, updated: updatedKeys }),
           },
         ],
       };
