@@ -1,11 +1,11 @@
 ---
 title: Gemini CLI
-description: Connecting Gemini CLI to Portuni and including mirror folders in its workspace.
+description: Connecting Gemini CLI to Portuni and including your mirror folders in its workspace.
 ---
 
-Google's [Gemini CLI](https://github.com/google-gemini/gemini-cli) uses an approval-based permission model similar to Claude Code, with an optional OS-level sandbox on top (macOS Seatbelt, or Docker/Podman on Linux).
+Google's [Gemini CLI](https://github.com/google-gemini/gemini-cli) works similarly to Claude Code in spirit – permissions are checked by the agent harness rather than the kernel – with an optional operating-system sandbox layer you can turn on if you want stricter isolation (macOS Seatbelt, or Docker/Podman elsewhere).
 
-## Register the MCP server
+## Connect to Portuni
 
 Add Portuni to `~/.gemini/settings.json`:
 
@@ -21,33 +21,35 @@ Add Portuni to `~/.gemini/settings.json`:
 ```
 
 :::caution
-Use `httpUrl` for Streamable HTTP, not `url` – the `url` key is reserved for SSE transport, which Portuni does not serve.
+Use `httpUrl` for Streamable HTTP, not `url` – in Gemini CLI the `url` key is reserved for SSE transport, which Portuni doesn't serve. Easy to mix up, hard to notice.
 :::
 
-Optional keys on the same object: `headers` (for auth), `trust` (skip per-tool approval), `timeout` (ms).
+Other useful keys on the same object: `headers` (for auth), `trust` (skip per-tool approval prompts), `timeout` (in milliseconds).
 
-Reference: [docs/tools/mcp-server.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md).
+For the full picture, see the [Gemini MCP server docs](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md).
 
-## Accessing mirror folders
+## Letting Gemini into your mirror folders
 
-By default Gemini CLI treats `cwd` as the workspace root and ignores everything outside. Mirror folders therefore need to be included explicitly.
+Out of the box, Gemini CLI treats the directory you launched it from as its workspace and ignores everything else. Mirror folders living in a separate workspace root need to be included on purpose.
 
-**At launch (recommended).** Pass `--include-directories` (max 5, comma-separated):
+Three ways to do it:
+
+**At launch (recommended).** Pass `--include-directories` – up to five, comma-separated:
 
 ```bash
 gemini --include-directories /Users/me/Workspaces/portuni
 ```
 
-Scope is the current session only. Put the flag in a shell alias if you open Portuni mirrors regularly.
+Scope is the current session only. Bake it into a shell alias if you open Portuni mirrors often.
 
-**Mid-session.** Inside a running session:
+**Mid-session.** If you realise later that you need another folder:
 
 ```
 /directory add ~/Workspaces/portuni/q2-rebrand
 /directory show
 ```
 
-Adds the directory for the current session. The command is disabled under restrictive sandbox profiles – use `--include-directories` at launch in that case.
+Heads up: the slash command is disabled when running under a restrictive sandbox profile. In that case, use `--include-directories` at launch instead.
 
 **Persistent (use with care).**
 
@@ -60,33 +62,35 @@ Adds the directory for the current session. The command is disabled under restri
 }
 ```
 
-Every `gemini` session on the machine inherits the directory. Prefer the launch flag or slash command unless the machine is dedicated to Portuni.
+Every Gemini session on the machine now sees the folder. Useful on a dedicated workstation; otherwise the launch flag stays cleaner.
 
 :::caution
-Open upstream issues ([#5512](https://github.com/google-gemini/gemini-cli/issues/5512), [#7365](https://github.com/google-gemini/gemini-cli/issues/7365)) report that `includeDirectories` in `settings.json` is sometimes ignored. `--include-directories` is more reliable today.
+A couple of upstream issues ([#5512](https://github.com/google-gemini/gemini-cli/issues/5512), [#7365](https://github.com/google-gemini/gemini-cli/issues/7365)) report that `includeDirectories` in `settings.json` is sometimes ignored. `--include-directories` on the command line is more reliable today.
 :::
 
 ## Approval modes
 
-| Mode | Flag | Behaviour |
-|------|------|-----------|
-| `default` | none | Prompt on every tool call |
-| `auto_edit` | `--approval-mode=auto_edit` | Auto-approve edits, ask for the rest |
-| `plan` | `--approval-mode=plan` | Read-only planning mode |
-| `yolo` | `--yolo` or `Ctrl+Y` | Auto-approve everything |
+Gemini CLI has a few different personalities when it comes to asking for confirmation:
 
-`--yolo` automatically turns on the sandbox.
+| Mode | How to enable | What it does |
+|------|---------------|--------------|
+| `default` | no flag | Asks before every tool call |
+| `auto_edit` | `--approval-mode=auto_edit` | Auto-approves edits; still asks for the rest |
+| `plan` | `--approval-mode=plan` | Read-only planning – no writes execute |
+| `yolo` | `--yolo` or `Ctrl+Y` | Auto-approves everything |
 
-## Sandbox
+`--yolo` automatically turns the sandbox on, which is a sensible safety net when you're letting the agent act freely.
 
-Enable with `--sandbox` / `-s`, `GEMINI_SANDBOX=true`, or `tools.sandbox: true` in settings.
+## The optional sandbox
 
-- **macOS** – `sandbox-exec` with the `permissive-open` profile (writes restricted outside the project directory, most other operations allowed).
-- **Linux / cross-platform** – Docker or Podman image `gemini-cli-sandbox`, customisable via `.gemini/sandbox.Dockerfile`.
+If you'd like stronger isolation, Gemini can run the agent process inside a sandbox. Turn it on with `--sandbox` / `-s`, the `GEMINI_SANDBOX=true` env var, or `tools.sandbox: true` in settings.
 
-Pair the sandbox with `--include-directories` so it picks up mirror folders. Directories added at runtime via `/directory add` are blocked under restrictive profiles.
+- **macOS** – uses `sandbox-exec` with the `permissive-open` profile: writes outside the project directory are restricted, most other operations are allowed.
+- **Linux / cross-platform** – uses a Docker or Podman image called `gemini-cli-sandbox`, which you can customise via `.gemini/sandbox.Dockerfile`.
 
-## Multiple Portuni instances
+Pair the sandbox with `--include-directories` so the sandbox image picks up your mirror folders at start-up. Runtime additions through `/directory add` are blocked under restrictive profiles.
+
+## Running more than one Portuni instance
 
 Register each instance as its own MCP server in `~/.gemini/settings.json`:
 
@@ -103,9 +107,9 @@ Register each instance as its own MCP server in `~/.gemini/settings.json`:
 }
 ```
 
-Gemini CLI does not ship a `SessionStart` equivalent. Bootstrap graph context by calling a Portuni tool at the start of the session.
+Gemini CLI doesn't ship a `SessionStart`-equivalent hook, so when you start a session, just call a Portuni tool (like `portuni_get_context`) as your first move to bootstrap context.
 
-## Reference
+## Further reading
 
 - [Configuration reference](https://geminicli.com/docs/reference/configuration/)
 - [Sandboxing](https://geminicli.com/docs/cli/sandbox/)

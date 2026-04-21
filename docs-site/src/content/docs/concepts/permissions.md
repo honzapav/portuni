@@ -3,50 +3,54 @@ title: Filesystem Permissions
 description: How each MCP client handles access to mirror folders outside the current project.
 ---
 
-Portuni's data lives in two places: the graph (in Turso or SQLite) and [local mirrors](/concepts/mirrors/) on disk. The graph is reached over MCP and needs no filesystem access at all. Mirrors are different – they are plain folders, often outside the directory where you launched your AI agent, and the agent needs permission from its host to read and write them.
+Portuni's data lives in two places: the graph – which sits in Turso or SQLite and is reached entirely through MCP – and your [local mirrors](/concepts/mirrors/), which are real folders on your disk. The graph never needs filesystem access. Mirrors absolutely do.
 
-Every client handles this differently. That matters, because "Portuni works fine but the agent can't touch the mirror folder" is an easy trap.
+And that's where things get interesting. Mirror folders often live outside the directory where you launched your AI agent, and every CLI has its own opinion about whether the agent is allowed to read or write there.
 
-## The three models
+This page is the single place that explains why – because "Portuni works fine but the agent can't touch the mirror folder" is a very common trap, and understanding the models makes it much easier to avoid.
 
-| Client | Where is it enforced? | What happens without config? |
-|--------|----------------------|-------------------------------|
-| Claude Code | Harness (policy check before tool call) | Agent asks for per-session approval |
-| Codex CLI | OS kernel sandbox (Seatbelt / Landlock+seccomp) | Write silently fails; model may not realise why |
-| Gemini CLI | Harness + optional OS sandbox | Mirror files are invisible to the workspace |
+## Three clients, three different philosophies
+
+| Client | Where it's enforced | What happens if you forget to grant access |
+|--------|---------------------|---------------------------------------------|
+| Claude Code | In the agent harness – a policy check before each tool call | Agent asks for per-session approval |
+| Codex CLI | In the operating-system kernel (Seatbelt / Landlock + seccomp) | Write silently fails; the model may not even notice |
+| Gemini CLI | In the agent harness, with an optional kernel sandbox on top | Mirror files simply don't appear in the agent's world |
 
 ### Claude Code
 
-Policy-based. The harness intercepts each tool call and checks it against allow/deny rules before the kernel ever sees it.
+Claude Code is **policy-based**. Before each tool call, the harness checks it against allow/deny rules you've set in `settings.json`. The kernel never gets involved; everything is handled inside the agent. Granting access is a matter of adding the mirror root to `permissions.additionalDirectories` or passing `--add-dir` at launch.
 
 ### Codex CLI
 
-Kernel sandbox. `sandbox-exec` on macOS, Landlock + seccomp on Linux. A misbehaving model genuinely cannot escape – which makes Codex attractive for unattended runs, but also means a missing `writable_roots` entry is a hard block with no runtime escape hatch.
+Codex takes the strictest approach: a real **kernel sandbox**. On macOS it uses `sandbox-exec`; on Linux it combines Landlock with seccomp. A model that tries to write outside its allowed roots genuinely cannot – the operating system itself refuses. That makes Codex attractive when you want to hand agents a lot of autonomy. It also means a missing `writable_roots` entry is a hard block, with no in-session escape hatch.
 
 ### Gemini CLI
 
-Harness-based with an optional OS sandbox layer. The **workspace concept** is explicit: only directories the CLI knows about enter the agent's world. Directories outside simply don't exist from the agent's point of view – there is nothing to deny, because there is nothing to see.
+Gemini CLI lives somewhere in between. At heart it's harness-based like Claude Code, but it adds an **explicit workspace concept**: the agent only sees directories that have been listed (via `includeDirectories`, `--include-directories`, or `/directory add`). Everything else simply doesn't exist from the agent's point of view – so there's nothing to deny, because there's nothing to see. An optional operating-system sandbox can be layered on top for extra safety.
 
-## Granting access: prefer flags over global config
+## Our recommendation: grant access at launch, not globally
 
-The instinct is to add your mirror root to each client's user-level config (`~/.claude/settings.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`) and forget about it. That works, but it also means **every** CLI session – unrelated work too – inherits that access quietly.
+The instinct, when you first hit this, is to drop your mirror root into each client's user-level config and forget about it – `~/.claude/settings.json`, `~/.codex/config.toml`, or `~/.gemini/settings.json`. That works, but it also means **every** session on the machine now has access to those folders, whether or not you intended. It's a quiet global default, and it's easy to forget about.
 
-Safer default: grant access at launch time. The scope is obvious, it lives alongside the command that needs it, and you can bake it into an alias or a project README.
+The safer habit is to grant access when you launch the client. The scope is obvious, the path is tied to the command that needs it, and you can bake it into a shell alias or a project README so the team picks it up for free.
 
-| Client | At launch (recommended) | Mid-session | Persistent (quiet default) |
-|--------|-------------------------|-------------|----------------------------|
+| Client | At launch (recommended) | Mid-session | Persistent (quiet global default) |
+|--------|-------------------------|-------------|------------------------------------|
 | Claude Code | `claude --add-dir <path>` | `/add-dir <path>` | `permissions.additionalDirectories` |
 | Codex CLI | `codex --add-dir <path>` | — requires restart | `[sandbox_workspace_write].writable_roots` |
 | Gemini CLI | `gemini --include-directories <path>` | `/directory add <path>` | `context.includeDirectories` |
 
 A few practical notes:
 
-- Put the flag in a shell alias or a project README so anyone opening a Portuni mirror knows to use it.
-- Codex CLI has no mid-session escape: once launched, the sandbox is fixed. Plan which roots you need before `codex` starts.
-- Persistent config is still legitimate on dedicated Portuni machines where the global default matches reality. Just choose it deliberately, not by accident.
+- Bake the flag into a shell alias or a project README so anyone opening a Portuni mirror gets it without thinking about it.
+- Codex CLI gives you no mid-session escape – once it's running, the sandbox is fixed. Decide which roots you need before you launch.
+- Persistent config is perfectly reasonable on machines dedicated to Portuni, where the global default matches reality. Just pick it deliberately, rather than by accident.
 
 ## Why Portuni doesn't solve this for you
 
-Portuni is the MCP server; it returns paths but never touches your filesystem from the agent's side. Filesystem permissions sit squarely with the client. Keeping the two concerns separate is what lets Portuni stay thin and pluggable – but it does mean this one piece of setup has to be done per client.
+Portuni is the MCP server. It returns paths and records where files live, but it never reaches into your filesystem from the agent's side. The file access belongs to the client, by design. Keeping those two concerns separate is what lets Portuni stay thin and pluggable – and it's what lets you swap Claude Code for Codex, or add Gemini on the side, without changing anything on the server.
 
-See the per-client pages for exact config blocks: [Claude Code](/clients/claude-code/), [Codex CLI](/clients/codex-cli/), [Gemini CLI](/clients/gemini-cli/).
+The price of that separation is that filesystem permissions need to be set up once per client. Fortunately, that's a five-minute job each.
+
+For exact config blocks, see the per-client pages: [Claude Code](/clients/claude-code/), [Codex CLI](/clients/codex-cli/), [Gemini CLI](/clients/gemini-cli/).

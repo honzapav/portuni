@@ -1,9 +1,11 @@
 ---
 title: Claude Code
-description: Connecting Claude Code to Portuni and granting it access to mirror folders.
+description: Connecting Claude Code to Portuni and giving it access to your mirror folders.
 ---
 
-## Register the MCP server
+Anthropic's Claude Code is the agent most Portuni users start with. It's the one we've tested the most and the one that ships with the `SessionStart` hook integration, so graph context lands in the agent without you having to lift a finger.
+
+## Connect to Portuni
 
 Add Portuni to `~/.claude.json`:
 
@@ -19,30 +21,32 @@ Add Portuni to `~/.claude.json`:
 ```
 
 :::caution
-Use `type: "http"` (Streamable HTTP), not `"sse"`. Claude Code ignores SSE transport in global config.
+Use `type: "http"` (Streamable HTTP), not `"sse"` – Claude Code quietly ignores SSE transport in the global config, and you'll be left wondering why nothing's connecting.
 :::
 
-## Accessing mirror folders
+## Letting Claude Code into your mirror folders
 
-Claude Code enforces filesystem access in the **harness** – tool calls are checked against rules before they run. By default it can read and write inside the directory you launched it from. Portuni mirrors often live outside that directory, so the agent needs explicit access.
+Claude Code checks filesystem access through its own rules, not through an operating-system sandbox. By default it can read and write inside the directory you launched it from. Anything outside – including mirror folders in a separate workspace – needs a nudge.
 
-**At launch (recommended).** Pass `--add-dir` with the mirror root:
+You have three options, from friendliest to heaviest:
+
+**At launch (recommended).** Pass `--add-dir`:
 
 ```bash
 claude --add-dir ~/Workspaces/portuni
 ```
 
-Every subdirectory under the given path is available for this session only. Put the flag in a shell alias or a project README if you open Portuni projects regularly.
+Everything below that path is accessible for this session only. Drop the flag into a shell alias or a project README if you open Portuni projects regularly.
 
-**Mid-session.** Inside a running session:
+**Mid-session.** If you realise halfway through that you need another folder:
 
 ```
 /add-dir ~/Workspaces/portuni/q2-rebrand
 ```
 
-Adds the directory for the current session. Note that `.claude/` configuration is **not** re-discovered from the added directory – only file access is granted.
+Note: `.claude/` configuration from the added directory is **not** picked up – you're granting file access, not importing settings.
 
-**Persistent (use with care).** Adding to `~/.claude/settings.json` gives every Claude Code session on the machine access, whether you launched it for Portuni or not:
+**Persistent (use with care).** Adding to `~/.claude/settings.json` hands every Claude Code session on the machine access to the folder, regardless of what you launched it for:
 
 ```json
 {
@@ -52,11 +56,13 @@ Adds the directory for the current session. Note that `.claude/` configuration i
 }
 ```
 
-Reserve for workstations dedicated to Portuni work.
+Fine on a workstation dedicated to Portuni. Worth thinking twice about on anything shared.
 
-## SessionStart hook
+## The SessionStart hook
 
-The hook at `scripts/portuni-context.sh` injects graph context on every session start. Register it in `~/.claude/settings.json`:
+One of Claude Code's nicer tricks is the `SessionStart` hook – a script that runs at the start of every session. Portuni ships one at `scripts/portuni-context.sh` that automatically injects the right graph context whenever you start work inside a Portuni mirror folder.
+
+Register it in `~/.claude/settings.json`:
 
 ```json
 {
@@ -76,11 +82,11 @@ The hook at `scripts/portuni-context.sh` injects graph context on every session 
 }
 ```
 
-Replace the `command` path with the absolute path to your Portuni checkout. The hook queries Portuni for whichever workspace the current directory belongs to; if nothing matches it exits silently.
+Replace the `command` path with the absolute path to your Portuni checkout. The hook asks Portuni whether your current working directory corresponds to a known workspace; if nothing matches it exits silently without touching your conversation.
 
-## Multiple Portuni instances
+## Running more than one Portuni instance
 
-Register each running instance as its own MCP server in `~/.claude.json`:
+If you're running several Portuni servers side by side, register each as its own MCP server in `~/.claude.json`:
 
 ```json
 {
@@ -97,7 +103,7 @@ Register each running instance as its own MCP server in `~/.claude.json`:
 }
 ```
 
-The `SessionStart` hook script accepts a space-separated list of base URLs via the `PORTUNI_URLS` environment variable. It tries each URL in order and uses the first server whose workspace matches the current working directory.
+The `SessionStart` hook script can route across all of them. It reads a space-separated list of base URLs from `PORTUNI_URLS`, tries each one in turn, and uses the first one whose workspace matches your current directory.
 
 Export the variable in your shell startup file (e.g. `~/.zshrc`):
 
@@ -105,9 +111,11 @@ Export the variable in your shell startup file (e.g. `~/.zshrc`):
 export PORTUNI_URLS="http://localhost:3001 http://localhost:3002"
 ```
 
-If `PORTUNI_URLS` is not set, the hook falls back to `PORTUNI_URL` (single URL), and finally to `http://localhost:3001`.
+If `PORTUNI_URLS` isn't set, the hook falls back to `PORTUNI_URL` (a single URL), and ultimately to `http://localhost:3001`. You only need one hook entry in `settings.json` – the script handles routing across instances.
 
-## Plan and bypass modes
+## Plan mode and bypass mode
 
-- **Plan mode** (default `Shift+Tab`): read-only exploration, no tool writes execute.
-- **Bypass mode** (`--dangerously-skip-permissions`): skips all permission checks. Useful in ephemeral sandboxes; avoid on a host machine with a populated Portuni mirror root.
+A couple of useful modes worth knowing about:
+
+- **Plan mode** (default `Shift+Tab`) – read-only exploration. Useful when you're still figuring out what you want the agent to do and don't want it writing anything yet.
+- **Bypass mode** (`--dangerously-skip-permissions`) – skips every permission check. Handy inside ephemeral sandboxes (Docker, VMs); worth avoiding on a host machine with a populated Portuni mirror root.

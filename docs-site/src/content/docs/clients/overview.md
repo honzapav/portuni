@@ -3,21 +3,25 @@ title: MCP Clients
 description: How to connect Portuni from Claude Code, Codex CLI, and Gemini CLI, and how each client handles filesystem permissions.
 ---
 
-Portuni is a plain HTTP MCP server – any client that speaks Streamable HTTP MCP can connect to it. This section covers the three CLIs most Portuni users run today:
+Portuni is a plain HTTP server that speaks MCP – which means any AI client that speaks MCP over HTTP can talk to it. The three clients most teams are running today each have their own page here:
 
-- [Claude Code](/clients/claude-code/) (Anthropic)
-- [Codex CLI](/clients/codex-cli/) (OpenAI)
-- [Gemini CLI](/clients/gemini-cli/) (Google)
+- [Claude Code](/clients/claude-code/) – Anthropic's terminal agent
+- [Codex CLI](/clients/codex-cli/) – OpenAI's terminal agent
+- [Gemini CLI](/clients/gemini-cli/) – Google's terminal agent
 
-## Why each client has its own page
+If you're using something else that speaks MCP, the same ideas apply – you just have to hunt down the equivalent settings yourself.
 
-Connecting is trivial – all three need roughly the same URL. What differs is **how the client reaches the files that Portuni's mirrors point to**. Mirrors live on your local disk, often outside the directory where you started the CLI, and each client has its own permission model.
+## One URL, three different habits around your files
 
-## Grant access per launch, not globally
+The hard part isn't connecting. All three clients need roughly the same URL. What differs is **how each one treats your local files** – specifically, the mirror folders that Portuni points to. Those folders often sit outside the directory where you launched the CLI, and every client has its own opinion about whether the agent is allowed to read or write there.
 
-Every client lets you list mirror directories permanently in a user-level config file (`~/.claude/settings.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`). It works, but it is a quiet global default: **every** session on the machine inherits that access, not just the ones actually working with Portuni. It is easy to forget about.
+This is where Portuni users most often get stuck: the server is running, the graph is loading, but the agent quietly fails to write a file and nobody's quite sure why. The short answer is almost always "the client doesn't know it's allowed to touch that folder yet."
 
-The safer default is to grant access **at launch** with a flag. Scope is obvious, it lives alongside the command that needs it, and you can bake it into an alias or a project README.
+## Our recommendation: grant access at launch, not globally
+
+Every client lets you list allowed directories in a config file once and forget about it – `~/.claude/settings.json`, `~/.codex/config.toml`, or `~/.gemini/settings.json`. That works, but it's a quiet global default: **every** session on the machine inherits that access, not just the ones you actually meant for Portuni. It's easy to stop thinking about, and easy to be surprised by later.
+
+The friendlier approach is to hand the path to the client at launch time. The scope is obvious, it lives alongside the command that needs it, and you can bake it into a shell alias or a project README.
 
 | Client | At launch (recommended) | Mid-session | Persistent (quiet global) |
 |--------|-------------------------|-------------|----------------------------|
@@ -25,10 +29,10 @@ The safer default is to grant access **at launch** with a flag. Scope is obvious
 | Codex CLI | `codex --add-dir <path>` | — requires restart | `[sandbox_workspace_write].writable_roots` |
 | Gemini CLI | `gemini --include-directories <path>` | `/directory add <path>` | `context.includeDirectories` |
 
-Codex CLI is the outlier. It enforces the sandbox in the OS kernel, so there is no slash command that can widen `writable_roots` in a running session. Decide which roots you need before launching.
+Codex CLI is a little different. It locks the sandbox at the operating-system level, so once it's running there's no way to widen access without restarting. Worth deciding which roots you'll need before you launch it.
 
-See [Concepts → Filesystem Permissions](/concepts/permissions/) for why this shapes up the way it does.
+For the full reasoning behind all this, head to [Concepts → Filesystem Permissions](/concepts/permissions/).
 
-## Prerequisite
+## Before you start
 
-All pages in this section assume the Portuni server is already running on `http://localhost:3001/mcp`. If not, see [Getting Started → Setup](/getting-started/setup/).
+All pages in this section assume Portuni is already running on `http://localhost:3001/mcp`. If it isn't, pop over to [Getting Started → Setup](/getting-started/setup/) first – it's a few minutes of work and you can come back.
