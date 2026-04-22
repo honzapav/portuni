@@ -1,4 +1,4 @@
-import { Search, Network, Sun, Moon, X, Users, Settings } from "lucide-react";
+import { Search, Sun, Moon, X, Users, Settings, Waypoints } from "lucide-react";
 import type { GraphPayload, GraphNode } from "../types";
 import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
@@ -62,19 +62,16 @@ export default function Sidebar({
   return (
     <aside className="flex h-full w-[300px] shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-bg)]">
       {/* Header */}
-      <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-5 py-5">
+      <div className="flex items-center gap-2.5 border-b border-[var(--color-border)] px-5 py-5">
         <div
-          className="flex h-7 w-7 items-center justify-center rounded-md"
+          className="flex h-9 w-9 items-center justify-center rounded-md"
           style={{ background: "var(--color-accent-soft)" }}
         >
-          <Network size={15} className="text-[var(--color-accent)]" />
+          <Waypoints size={18} className="text-[var(--color-accent)]" />
         </div>
         <div className="flex-1">
-          <div className="text-[13px] font-semibold tracking-tight text-[var(--color-text)]">
+          <div className="text-[18px] font-semibold tracking-tight text-[var(--color-text)]">
             Portuni
-          </div>
-          <div className="text-[11px] uppercase tracking-widest text-[var(--color-text-dim)]">
-            Znalostní graf
           </div>
         </div>
         <button
@@ -98,7 +95,7 @@ export default function Sidebar({
         <div className="flex rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-0.5">
           <ViewToggleButton
             label="Graf"
-            icon={<Network size={12} />}
+            icon={<Waypoints size={12} />}
             active={view === "graph"}
             onClick={() => onViewChange("graph")}
           />
