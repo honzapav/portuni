@@ -24,9 +24,11 @@ import {
 import {
   registerEntityAttributeTools,
   addDataSource,
+  updateDataSource,
   removeDataSource,
   listDataSources,
   addTool,
+  updateTool,
   removeTool,
   listTools,
 } from "./tools/entity-attributes.js";
@@ -811,6 +813,32 @@ async function main() {
       return;
     }
 
+    if (url.pathname.startsWith("/data-sources/") && req.method === "PATCH") {
+      const dsId = decodeURIComponent(url.pathname.slice("/data-sources/".length));
+      try {
+        const body = (await parseBody(req)) as Record<string, unknown> | undefined;
+        if (!body || Object.keys(body).length === 0) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "no fields to update" }));
+          return;
+        }
+        const row = await updateDataSource(
+          getDb(),
+          SOLO_USER,
+          dsId,
+          body as Parameters<typeof updateDataSource>[3],
+        );
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(row));
+      } catch (err) {
+        const e = err as Error;
+        const status = e?.name === "ZodError" ? 400 : 500;
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
     // --- Tools: POST / DELETE / GET ---
 
     if (url.pathname === "/tools" && req.method === "GET") {
@@ -857,6 +885,32 @@ async function main() {
         await removeTool(getDb(), SOLO_USER, toolId);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ deleted: toolId }));
+      } catch (err) {
+        const e = err as Error;
+        const status = e?.name === "ZodError" ? 400 : 500;
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/tools/") && req.method === "PATCH") {
+      const toolId = decodeURIComponent(url.pathname.slice("/tools/".length));
+      try {
+        const body = (await parseBody(req)) as Record<string, unknown> | undefined;
+        if (!body || Object.keys(body).length === 0) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "no fields to update" }));
+          return;
+        }
+        const row = await updateTool(
+          getDb(),
+          SOLO_USER,
+          toolId,
+          body as Parameters<typeof updateTool>[3],
+        );
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(row));
       } catch (err) {
         const e = err as Error;
         const status = e?.name === "ZodError" ? 400 : 500;

@@ -48,8 +48,10 @@ import {
   assignResponsibility,
   unassignResponsibility,
   addDataSource,
+  updateDataSource,
   removeDataSource,
   addTool,
+  updateTool,
   removeTool,
 } from "../api";
 
@@ -422,6 +424,7 @@ function DetailPaneBody({
                 node.type === "area"
               }
               addCreator={addDataSource}
+              updateCreator={updateDataSource}
               removeCreator={removeDataSource}
               onMutate={onMutate}
               onError={setErrorMsg}
@@ -446,6 +449,7 @@ function DetailPaneBody({
                 node.type === "area"
               }
               addCreator={addTool}
+              updateCreator={updateTool}
               removeCreator={removeTool}
               onMutate={onMutate}
               onError={setErrorMsg}
@@ -1919,6 +1923,7 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
   nodeId,
   canEdit,
   addCreator,
+  updateCreator,
   removeCreator,
   onMutate,
   onError,
@@ -1933,6 +1938,14 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
     description?: string;
     external_link?: string;
   }) => Promise<TItem>;
+  updateCreator: (
+    id: string,
+    patch: {
+      name?: string;
+      description?: string | null;
+      external_link?: string | null;
+    },
+  ) => Promise<TItem>;
   removeCreator: (id: string) => Promise<{ deleted: string }>;
   onMutate: () => Promise<void>;
   onError: (msg: string | null) => void;
@@ -1959,35 +1972,17 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
       {items.length > 0 ? (
         <ul className="entity-attr-list">
           {items.map((item) => (
-            <li key={item.id} className="group flex items-start gap-2">
-              <div className="flex-1">
-                {item.external_link ? (
-                  <a
-                    href={item.external_link}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-[var(--color-accent)] hover:underline"
-                  >
-                    {item.name}
-                  </a>
-                ) : (
-                  <span className="text-[var(--color-text)]">{item.name}</span>
-                )}
-                {item.description && (
-                  <span className="attr-desc"> — {item.description}</span>
-                )}
-              </div>
-              {canEdit && (
-                <button
-                  onClick={() => remove(item)}
-                  disabled={busyId === item.id}
-                  aria-label={`Smazat ${title}`}
-                  className="shrink-0 text-[var(--color-text-dim)] opacity-0 transition-opacity hover:text-[var(--color-danger)] focus:opacity-100 group-hover:opacity-100 disabled:opacity-30"
-                >
-                  <X size={12} />
-                </button>
-              )}
-            </li>
+            <EntityAttributeItem
+              key={item.id}
+              item={item}
+              title={title}
+              canEdit={canEdit}
+              busy={busyId === item.id}
+              updateCreator={updateCreator}
+              onSavedMutate={onMutate}
+              onRemove={() => remove(item)}
+              onError={onError}
+            />
           ))}
         </ul>
       ) : (
@@ -2021,6 +2016,162 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
           </button>
         ))}
     </div>
+  );
+}
+
+// Single row with inline edit (click Pencil) or delete (click X). Used
+// for both data sources and tools via the generic updateCreator.
+function EntityAttributeItem<TItem extends EntityAttributeItem>({
+  item,
+  title,
+  canEdit,
+  busy,
+  updateCreator,
+  onSavedMutate,
+  onRemove,
+  onError,
+}: {
+  item: TItem;
+  title: string;
+  canEdit: boolean;
+  busy: boolean;
+  updateCreator: (
+    id: string,
+    patch: {
+      name?: string;
+      description?: string | null;
+      external_link?: string | null;
+    },
+  ) => Promise<TItem>;
+  onSavedMutate: () => Promise<void>;
+  onRemove: () => void;
+  onError: (msg: string | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(item.name);
+  const [description, setDescription] = useState(item.description ?? "");
+  const [link, setLink] = useState(item.external_link ?? "");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setName(item.name);
+    setDescription(item.description ?? "");
+    setLink(item.external_link ?? "");
+    setEditing(false);
+  }, [item.id, item.name, item.description, item.external_link]);
+
+  const save = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setSaving(true);
+    onError(null);
+    try {
+      await updateCreator(item.id, {
+        name: trimmed,
+        description: description.trim() ? description.trim() : null,
+        external_link: link.trim() ? link.trim() : null,
+      });
+      await onSavedMutate();
+      setEditing(false);
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cancel = () => {
+    setName(item.name);
+    setDescription(item.description ?? "");
+    setLink(item.external_link ?? "");
+    setEditing(false);
+    onError(null);
+  };
+
+  if (editing) {
+    return (
+      <li className="space-y-1.5 py-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          autoFocus
+          placeholder="Název"
+          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[13.5px] text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none"
+        />
+        <input
+          value={link}
+          onChange={(e) => setLink(e.target.value)}
+          placeholder="Odkaz (volitelné)"
+          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 font-mono text-[12px] text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none"
+        />
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          rows={2}
+          placeholder="Popis (volitelné)"
+          className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[13.5px] leading-relaxed text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none"
+        />
+        <div className="flex gap-2">
+          <button
+            onClick={save}
+            disabled={saving || !name.trim()}
+            className="flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1 text-[13px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
+          >
+            <Save size={11} />
+            {saving ? "Ukládám..." : "Uložit"}
+          </button>
+          <button
+            onClick={cancel}
+            disabled={saving}
+            className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
+          >
+            Zrušit
+          </button>
+        </div>
+      </li>
+    );
+  }
+
+  return (
+    <li className="group flex items-start gap-2">
+      <div className="flex-1">
+        {item.external_link ? (
+          <a
+            href={item.external_link}
+            target="_blank"
+            rel="noreferrer"
+            className="text-[var(--color-accent)] hover:underline"
+          >
+            {item.name}
+          </a>
+        ) : (
+          <span className="text-[var(--color-text)]">{item.name}</span>
+        )}
+        {item.description && (
+          <span className="attr-desc"> — {item.description}</span>
+        )}
+      </div>
+      {canEdit && (
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+          <button
+            onClick={() => setEditing(true)}
+            disabled={busy}
+            aria-label={`Upravit ${title}`}
+            className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)] disabled:opacity-30"
+          >
+            <Pencil size={11} />
+          </button>
+          <button
+            onClick={onRemove}
+            disabled={busy}
+            aria-label={`Smazat ${title}`}
+            className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)] disabled:opacity-30"
+          >
+            <X size={11} />
+          </button>
+        </div>
+      )}
+    </li>
   );
 }
 

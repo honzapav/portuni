@@ -11,7 +11,7 @@
 
 import { z } from "zod";
 import { ulid } from "ulid";
-import type { Client } from "@libsql/client";
+import type { Client, InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getDb } from "../db.js";
 import { SOLO_USER } from "../schema.js";
@@ -90,6 +90,63 @@ async function addRow<T>(
   return parser(res.rows[0]);
 }
 
+const UpdateEntityAttrInput = z.object({
+  name: z.string().optional(),
+  description: z.union([z.string(), z.null()]).optional(),
+  external_link: z.union([z.string(), z.null()]).optional(),
+});
+type UpdateEntityAttrInput = z.infer<typeof UpdateEntityAttrInput>;
+
+async function updateRow<T>(
+  db: Client,
+  updatedBy: string,
+  table: EntityAttrTable,
+  id: string,
+  patch: UpdateEntityAttrInput,
+  parser: (r: unknown) => T,
+): Promise<T> {
+  const parsed = UpdateEntityAttrInput.parse(patch);
+  const sets: string[] = [];
+  const args: InValue[] = [];
+  if (parsed.name !== undefined) {
+    sets.push("name = ?");
+    args.push(parsed.name);
+  }
+  if (parsed.description !== undefined) {
+    sets.push("description = ?");
+    args.push(parsed.description);
+  }
+  if (parsed.external_link !== undefined) {
+    sets.push("external_link = ?");
+    args.push(parsed.external_link);
+  }
+  if (sets.length === 0) {
+    const current = await db.execute({
+      sql: `SELECT * FROM ${table} WHERE id = ?`,
+      args: [id],
+    });
+    if (current.rows.length === 0) throw new Error(`update_${table}: ${id} not found`);
+    return parser(current.rows[0]);
+  }
+  sets.push("updated_at = datetime('now')");
+  args.push(id);
+  const result = await db.execute({
+    sql: `UPDATE ${table} SET ${sets.join(", ")} WHERE id = ?`,
+    args,
+  });
+  if (result.rowsAffected === 0) {
+    throw new Error(`update_${table}: ${id} not found`);
+  }
+  await writeAudit(db, updatedBy, `update_${table}`, table.slice(0, -1), id, {
+    changes: parsed,
+  });
+  const res = await db.execute({
+    sql: `SELECT * FROM ${table} WHERE id = ?`,
+    args: [id],
+  });
+  return parser(res.rows[0]);
+}
+
 async function removeRow(
   db: Client,
   removedBy: string,
@@ -136,6 +193,17 @@ export async function addDataSource(
   return addRow(db, createdBy, "data_sources", input, (r) => DataSourceRow.parse(r));
 }
 
+export async function updateDataSource(
+  db: Client,
+  updatedBy: string,
+  id: string,
+  patch: UpdateEntityAttrInput,
+): Promise<DataSourceRow> {
+  return updateRow(db, updatedBy, "data_sources", id, patch, (r) =>
+    DataSourceRow.parse(r),
+  );
+}
+
 export async function removeDataSource(
   db: Client,
   removedBy: string,
@@ -157,6 +225,15 @@ export async function addTool(
   input: AddEntityAttrInput,
 ): Promise<ToolRow> {
   return addRow(db, createdBy, "tools", input, (r) => ToolRow.parse(r));
+}
+
+export async function updateTool(
+  db: Client,
+  updatedBy: string,
+  id: string,
+  patch: UpdateEntityAttrInput,
+): Promise<ToolRow> {
+  return updateRow(db, updatedBy, "tools", id, patch, (r) => ToolRow.parse(r));
 }
 
 export async function removeTool(

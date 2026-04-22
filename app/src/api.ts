@@ -256,6 +256,21 @@ export function addDataSource(input: {
   return jsonRequest<DetailDataSource>("POST", "/data-sources", input);
 }
 
+export function updateDataSource(
+  id: string,
+  patch: {
+    name?: string;
+    description?: string | null;
+    external_link?: string | null;
+  },
+): Promise<DetailDataSource> {
+  return jsonRequest<DetailDataSource>(
+    "PATCH",
+    `/data-sources/${encodeURIComponent(id)}`,
+    patch,
+  );
+}
+
 export function removeDataSource(id: string): Promise<{ deleted: string }> {
   return jsonRequest<{ deleted: string }>(
     "DELETE",
@@ -272,6 +287,21 @@ export function addTool(input: {
   external_link?: string;
 }): Promise<DetailTool> {
   return jsonRequest<DetailTool>("POST", "/tools", input);
+}
+
+export function updateTool(
+  id: string,
+  patch: {
+    name?: string;
+    description?: string | null;
+    external_link?: string | null;
+  },
+): Promise<DetailTool> {
+  return jsonRequest<DetailTool>(
+    "PATCH",
+    `/tools/${encodeURIComponent(id)}`,
+    patch,
+  );
 }
 
 export function removeTool(id: string): Promise<{ deleted: string }> {
