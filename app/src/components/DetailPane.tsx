@@ -15,6 +15,8 @@ import {
   Archive,
   Save,
   User,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 import type {
   NodeDetail,
@@ -1485,14 +1487,36 @@ function ResponsibilitiesEditor({
 }) {
   const [adding, setAdding] = useState(false);
 
+  // Swap two responsibilities' sort_order by sending both PATCHes in
+  // parallel. Uses the neighbour's current sort_order so values stay
+  // stable when the list is later re-sorted server-side.
+  const swap = async (a: DetailResponsibility, b: DetailResponsibility) => {
+    onError(null);
+    try {
+      await Promise.all([
+        updateResponsibility(a.id, { sort_order: b.sort_order }),
+        updateResponsibility(b.id, { sort_order: a.sort_order }),
+      ]);
+      await onMutate();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  const items = node.responsibilities;
+
   return (
     <div>
-      {node.responsibilities.length > 0 ? (
+      {items.length > 0 ? (
         <ul className="responsibility-list">
-          {node.responsibilities.map((r) => (
+          {items.map((r, i) => (
             <ResponsibilityItem
               key={r.id}
               responsibility={r}
+              canMoveUp={i > 0}
+              canMoveDown={i < items.length - 1}
+              onMoveUp={() => swap(r, items[i - 1])}
+              onMoveDown={() => swap(r, items[i + 1])}
               onMutate={onMutate}
               onError={onError}
             />
@@ -1529,10 +1553,18 @@ function ResponsibilitiesEditor({
 
 function ResponsibilityItem({
   responsibility,
+  canMoveUp,
+  canMoveDown,
+  onMoveUp,
+  onMoveDown,
   onMutate,
   onError,
 }: {
   responsibility: DetailResponsibility;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMoveUp: () => Promise<void>;
+  onMoveDown: () => Promise<void>;
   onMutate: () => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
@@ -1712,6 +1744,22 @@ function ResponsibilityItem({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <button
+            onClick={onMoveUp}
+            disabled={busy || !canMoveUp}
+            title="Posunout nahoru"
+            className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)] disabled:opacity-30 disabled:hover:bg-transparent"
+          >
+            <ChevronUp size={12} />
+          </button>
+          <button
+            onClick={onMoveDown}
+            disabled={busy || !canMoveDown}
+            title="Posunout dolů"
+            className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)] disabled:opacity-30 disabled:hover:bg-transparent"
+          >
+            <ChevronDown size={12} />
+          </button>
           <button
             onClick={() => setEditing(true)}
             disabled={busy}
