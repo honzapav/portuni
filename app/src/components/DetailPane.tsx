@@ -308,10 +308,15 @@ function DetailPaneBody({
             {node.name}
           </h1>
         )}
-        <IdCopy id={node.id} />
-        {node.local_mirror && (
-          <PathCopy path={node.local_mirror.local_path} />
-        )}
+        <div className="flex items-center gap-3 min-w-0">
+          <IdCopy id={node.id} />
+          {node.local_mirror && (
+            <>
+              <span className="text-[var(--color-border-strong)]">·</span>
+              <PathCopy path={node.local_mirror.local_path} />
+            </>
+          )}
+        </div>
       </div>
 
       {/* Tabs */}
@@ -2180,7 +2185,7 @@ function PathCopy({ path }: { path: string }) {
     <button
       onClick={handle}
       title="Kliknutím zkopírujete cestu"
-      className="group mt-1.5 flex w-full items-center gap-1.5 rounded font-mono text-[10px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text-muted)]"
+      className="group flex min-w-0 flex-1 items-center gap-1.5 rounded font-mono text-[10px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text-muted)]"
     >
       <Folder size={10} className="shrink-0" />
       <span className="truncate">{path}</span>
