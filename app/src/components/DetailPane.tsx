@@ -155,6 +155,9 @@ function DetailPaneBody({
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [tab, setTab] = useState<"overview" | "events" | "connections">(
+    "overview",
+  );
 
   // Reset edit drafts whenever we switch to a different node.
   const lastIdRef = useRef(node.id);
@@ -165,6 +168,7 @@ function DetailPaneBody({
       setDraftName(node.name);
       setDraftDescription(node.description ?? "");
       setErrorMsg(null);
+      setTab("overview");
     }
   }, [node.id, node.name, node.description]);
 
@@ -305,6 +309,30 @@ function DetailPaneBody({
           </h1>
         )}
         <IdCopy id={node.id} />
+        {node.local_mirror && (
+          <PathCopy path={node.local_mirror.local_path} />
+        )}
+      </div>
+
+      {/* Tabs */}
+      <div className="flex border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4">
+        <TabButton
+          active={tab === "overview"}
+          onClick={() => setTab("overview")}
+          label="Přehled"
+        />
+        <TabButton
+          active={tab === "events"}
+          onClick={() => setTab("events")}
+          label="Události"
+          count={node.events.length}
+        />
+        <TabButton
+          active={tab === "connections"}
+          onClick={() => setTab("connections")}
+          label="Propojení"
+          count={node.edges.length}
+        />
       </div>
 
       {errorMsg && (
@@ -322,6 +350,8 @@ function DetailPaneBody({
 
       {/* Scroll area */}
       <div className="scroll-thin flex-1 overflow-y-auto">
+        {tab === "overview" && (
+          <>
         {(editing || node.description) && (
           <Section title={editing ? "Popis" : undefined}>
             {editing ? (
@@ -428,64 +458,7 @@ function DetailPaneBody({
           </Section>
         )}
 
-        {/* Connections — always shown in edit mode so you can manage them */}
-        <Section title="Propojení">
-          {grouped.size > 0 ? (
-            <div className="space-y-4">
-              {Array.from(grouped.entries()).map(([relation, edges]) => (
-                <div key={relation}>
-                  <div className="mb-1.5 font-mono text-[14px] uppercase tracking-[0.14em] text-[var(--color-text-dim)]">
-                    {relation}
-                  </div>
-                  <div className="space-y-0.5">
-                    {edges.map((edge) => (
-                      <ConnectionLink
-                        key={edge.id}
-                        edge={edge}
-                        onSelect={onSelect}
-                        onRemove={() => handleRemoveEdge(edge.id)}
-                        disabled={busy}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="mb-3 text-[14px] text-[var(--color-text-dim)]">
-              Zatím žádná propojení.
-            </div>
-          )}
-          {graph && (
-            <AddEdgeForm
-              currentNodeId={node.id}
-              graph={graph}
-              onAdd={handleAddEdge}
-              disabled={busy}
-            />
-          )}
-        </Section>
-
-        {/* Events */}
-        <Section title="Události">
-          <div className="space-y-2">
-            {node.events.map((evt) => (
-              <EventCard
-                key={evt.id}
-                event={evt}
-                onMutate={onMutate}
-                busy={busy}
-              />
-            ))}
-          </div>
-          <AddEventForm
-            nodeId={node.id}
-            onMutate={onMutate}
-            disabled={busy}
-          />
-        </Section>
-
-        {/* Files */}
+        {/* Files stays in Overview */}
         {node.files.length > 0 && (
           <Section title="Soubory">
             <div className="space-y-1">
@@ -513,21 +486,6 @@ function DetailPaneBody({
                   </div>
                 </div>
               ))}
-            </div>
-          </Section>
-        )}
-
-        {/* Local mirror */}
-        {node.local_mirror && (
-          <Section title="Lokální zrcadlo">
-            <div className="flex items-start gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
-              <Folder
-                size={12}
-                className="mt-0.5 shrink-0 text-[var(--color-text-dim)]"
-              />
-              <code className="break-all font-mono text-[13.5px] text-[var(--color-text-muted)]">
-                {node.local_mirror.local_path}
-              </code>
             </div>
           </Section>
         )}
@@ -562,6 +520,74 @@ function DetailPaneBody({
               v databázi pro audit.
             </p>
           </Section>
+        )}
+          </>
+        )}
+
+        {tab === "events" && (
+          <div className="px-5 py-4">
+            <div className="space-y-2">
+              {node.events.map((evt) => (
+                <EventCard
+                  key={evt.id}
+                  event={evt}
+                  onMutate={onMutate}
+                  busy={busy}
+                />
+              ))}
+              {node.events.length === 0 && (
+                <div className="text-[14px] text-[var(--color-text-dim)]">
+                  Zatím žádné události.
+                </div>
+              )}
+            </div>
+            <AddEventForm
+              nodeId={node.id}
+              onMutate={onMutate}
+              disabled={busy}
+            />
+          </div>
+        )}
+
+        {tab === "connections" && (
+          <div className="px-5 py-4">
+            {grouped.size > 0 ? (
+              <div className="space-y-4">
+                {Array.from(grouped.entries()).map(([relation, edges]) => (
+                  <div key={relation}>
+                    <div className="mb-1.5 font-mono text-[14px] uppercase tracking-[0.14em] text-[var(--color-text-dim)]">
+                      {relation}
+                    </div>
+                    <div className="space-y-0.5">
+                      {edges.map((edge) => (
+                        <ConnectionLink
+                          key={edge.id}
+                          edge={edge}
+                          onSelect={onSelect}
+                          onRemove={() => handleRemoveEdge(edge.id)}
+                          disabled={busy}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mb-3 text-[14px] text-[var(--color-text-dim)]">
+                Zatím žádná propojení.
+              </div>
+            )}
+            {graph && (
+              <div className="mt-4">
+                <AddEdgeForm
+                  currentNodeId={node.id}
+                  graph={graph}
+                  onAdd={handleAddEdge}
+                  disabled={busy}
+                />
+              </div>
+            )}
+          </div>
         )}
       </div>
 
@@ -2134,6 +2160,79 @@ function IdCopy({ id }: { id: string }) {
         <Copy
           size={10}
           className="opacity-0 transition-opacity group-hover:opacity-100"
+        />
+      )}
+    </button>
+  );
+}
+
+// Click-to-copy local mirror path. Sits right under IdCopy in the header so
+// the two share the same "inline identifier" feel.
+function PathCopy({ path }: { path: string }) {
+  const [copied, setCopied] = useState(false);
+  const handle = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    await navigator.clipboard.writeText(path);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  };
+  return (
+    <button
+      onClick={handle}
+      title="Kliknutím zkopírujete cestu"
+      className="group mt-1.5 flex w-full items-center gap-1.5 rounded font-mono text-[10px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text-muted)]"
+    >
+      <Folder size={10} className="shrink-0" />
+      <span className="truncate">{path}</span>
+      {copied ? (
+        <Check size={10} className="shrink-0 text-[var(--color-accent)]" />
+      ) : (
+        <Copy
+          size={10}
+          className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+        />
+      )}
+    </button>
+  );
+}
+
+// Tab button for the detail pane. Underline indicator + optional count badge.
+function TabButton({
+  active,
+  onClick,
+  label,
+  count,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  count?: number;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`relative flex items-center gap-1.5 px-3 py-2.5 text-[13px] font-medium transition-colors ${
+        active
+          ? "text-[var(--color-text)]"
+          : "text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)]"
+      }`}
+    >
+      {label}
+      {count !== undefined && count > 0 && (
+        <span
+          className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] ${
+            active
+              ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+              : "bg-[var(--color-surface)] text-[var(--color-text-dim)]"
+          }`}
+        >
+          {count}
+        </span>
+      )}
+      {active && (
+        <span
+          className="absolute inset-x-0 bottom-0 h-[2px]"
+          style={{ background: "var(--color-accent)" }}
         />
       )}
     </button>

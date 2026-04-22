@@ -14,6 +14,8 @@ type Props = {
   onToggleRelation: (relation: string) => void;
   disabledOrgs: Set<string>;
   onToggleOrg: (id: string) => void;
+  disabledTypes: Set<string>;
+  onToggleType: (type: string) => void;
   selectedId: string | null;
   onSelect: (id: string) => void;
   theme: Theme;
@@ -47,6 +49,8 @@ export default function Sidebar({
   onToggleRelation,
   disabledOrgs,
   onToggleOrg,
+  disabledTypes,
+  onToggleType,
   selectedId,
   onSelect,
   theme,
@@ -69,7 +73,7 @@ export default function Sidebar({
           <div className="text-[13px] font-semibold tracking-tight text-[var(--color-text)]">
             Portuni
           </div>
-          <div className="text-[10px] uppercase tracking-widest text-[var(--color-text-dim)]">
+          <div className="text-[11px] uppercase tracking-widest text-[var(--color-text-dim)]">
             Znalostní graf
           </div>
         </div>
@@ -108,7 +112,7 @@ export default function Sidebar({
       </div>
 
       {view === "actors" && (
-        <div className="flex-1 px-5 py-5 text-[11.5px] leading-relaxed text-[var(--color-text-dim)]">
+        <div className="flex-1 px-5 py-5 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
           Správa aktérů napříč organizacemi. Přidávejte, upravujte a mažte
           lidi i automatizace, které jsou přiřazovány úlohám.
         </div>
@@ -123,12 +127,14 @@ export default function Sidebar({
           onToggleRelation={onToggleRelation}
           disabledOrgs={disabledOrgs}
           onToggleOrg={onToggleOrg}
+          disabledTypes={disabledTypes}
+          onToggleType={onToggleType}
           selectedId={selectedId}
           onSelect={onSelect}
         />
       )}
 
-      <div className="border-t border-[var(--color-border)] px-5 py-3 text-[10px] text-[var(--color-text-dim)]">
+      <div className="border-t border-[var(--color-border)] px-5 py-3 text-[11px] text-[var(--color-text-dim)]">
         {view === "graph"
           ? "Kliknutím na uzel otevřete detail. Tažením posunete pohled, kolečkem přibližujete."
           : "Klikněte na aktéra v tabulce pro úpravu."}
@@ -151,7 +157,7 @@ function ViewToggleButton({
   return (
     <button
       onClick={onClick}
-      className={`flex flex-1 items-center justify-center gap-1.5 rounded-sm px-2 py-1.5 text-[11.5px] transition-colors ${
+      className={`flex flex-1 items-center justify-center gap-1.5 rounded-sm px-2 py-1.5 text-[13px] transition-colors ${
         active
           ? "bg-[var(--color-bg)] text-[var(--color-text)] shadow-sm"
           : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
@@ -171,6 +177,8 @@ function GraphSidebarContent({
   onToggleRelation,
   disabledOrgs,
   onToggleOrg,
+  disabledTypes,
+  onToggleType,
   selectedId,
   onSelect,
 }: {
@@ -181,6 +189,8 @@ function GraphSidebarContent({
   onToggleRelation: (relation: string) => void;
   disabledOrgs: Set<string>;
   onToggleOrg: (id: string) => void;
+  disabledTypes: Set<string>;
+  onToggleType: (type: string) => void;
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
@@ -222,7 +232,7 @@ function GraphSidebarContent({
             value={query}
             onChange={(e) => onQuery(e.target.value)}
             placeholder="Hledat uzly..."
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] py-2 pl-8 pr-8 text-[14px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] transition-colors focus:border-[var(--color-accent-dim)]"
+            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] py-2 pl-8 pr-8 text-[13px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] transition-colors focus:border-[var(--color-accent-dim)]"
           />
           {query.length > 0 && (
             <button
@@ -240,7 +250,7 @@ function GraphSidebarContent({
         <div className="border-b border-[var(--color-border)] px-2 py-2">
           <div className="scroll-thin max-h-[280px] overflow-y-auto">
             {matches.length === 0 ? (
-              <div className="px-3 py-4 text-center text-[14px] text-[var(--color-text-dim)]">
+              <div className="px-3 py-4 text-center text-[13px] text-[var(--color-text-dim)]">
                 Žádné výsledky
               </div>
             ) : (
@@ -278,31 +288,13 @@ function GraphSidebarContent({
                       ),
                   ).length;
                   return (
-                    <button
+                    <FilterRow
                       key={org.id}
+                      enabled={enabled}
                       onClick={() => onToggleOrg(org.id)}
-                      className="group flex w-full items-center gap-2.5 rounded px-2 py-1 text-left transition-colors hover:bg-[var(--color-surface)]"
-                    >
-                      <div
-                        className={`h-3 w-3 rounded-sm border transition-all ${
-                          enabled
-                            ? "border-[var(--color-accent)] bg-[var(--color-accent-dim)]"
-                            : "border-[var(--color-border-strong)] bg-transparent"
-                        }`}
-                      />
-                      <span
-                        className={`flex-1 text-[11.5px] transition-colors ${
-                          enabled
-                            ? "text-[var(--color-text)]"
-                            : "text-[var(--color-text-dim)] line-through"
-                        }`}
-                      >
-                        {org.name}
-                      </span>
-                      <span className="font-mono text-[13.5px] text-[var(--color-text-dim)]">
-                        {childCount}
-                      </span>
-                    </button>
+                      label={org.name}
+                      count={childCount}
+                    />
                   );
                 })}
             </div>
@@ -313,28 +305,13 @@ function GraphSidebarContent({
               {RELATION_TYPES.map((r) => {
                 const enabled = !disabledRelations.has(r);
                 return (
-                  <button
+                  <FilterRow
                     key={r}
+                    enabled={enabled}
                     onClick={() => onToggleRelation(r)}
-                    className="group flex w-full items-center gap-2.5 rounded px-2 py-1 text-left transition-colors hover:bg-[var(--color-surface)]"
-                  >
-                    <div
-                      className={`h-3 w-3 rounded-sm border transition-all ${
-                        enabled
-                          ? "border-[var(--color-accent)] bg-[var(--color-accent-dim)]"
-                          : "border-[var(--color-border-strong)] bg-transparent"
-                      }`}
-                    />
-                    <span
-                      className={`font-mono text-[14px] transition-colors ${
-                        enabled
-                          ? "text-[var(--color-text)]"
-                          : "text-[var(--color-text-dim)] line-through"
-                      }`}
-                    >
-                      {r}
-                    </span>
-                  </button>
+                    label={r}
+                    mono
+                  />
                 );
               })}
             </div>
@@ -344,27 +321,17 @@ function GraphSidebarContent({
             <div className="space-y-1.5">
               {orderedTypes.map((type) => {
                 const count = typeCounts.get(type) ?? 0;
+                const enabled = !disabledTypes.has(type);
                 return (
-                  <div
+                  <FilterRow
                     key={type}
-                    className="flex items-center justify-between px-2 py-1"
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <span
-                        className="h-2.5 w-2.5 rounded-full"
-                        style={{
-                          background: nodeTypeVar(type),
-                          boxShadow: `0 0 10px ${nodeTypeGlow(type, 0.4)}`,
-                        }}
-                      />
-                      <span className="text-[11.5px] text-[var(--color-text)]">
-                        {type}
-                      </span>
-                    </div>
-                    <span className="font-mono text-[13.5px] text-[var(--color-text-dim)]">
-                      {count}
-                    </span>
-                  </div>
+                    enabled={enabled}
+                    onClick={() => onToggleType(type)}
+                    label={type}
+                    count={count}
+                    dotColor={nodeTypeVar(type)}
+                    dotGlow={nodeTypeGlow(type, 0.4)}
+                  />
                 );
               })}
             </div>
@@ -372,15 +339,15 @@ function GraphSidebarContent({
 
           <Section title="Přehled">
             <div className="space-y-1.5 px-2">
-              <div className="flex items-center justify-between text-[11.5px]">
+              <div className="flex items-center justify-between text-[13px]">
                 <span className="text-[var(--color-text-muted)]">Uzly</span>
-                <span className="font-mono text-[var(--color-text)]">
+                <span className="font-mono text-[12px] text-[var(--color-text)]">
                   {graph.nodes.length}
                 </span>
               </div>
-              <div className="flex items-center justify-between text-[11.5px]">
+              <div className="flex items-center justify-between text-[13px]">
                 <span className="text-[var(--color-text-muted)]">Vazby</span>
-                <span className="font-mono text-[var(--color-text)]">
+                <span className="font-mono text-[12px] text-[var(--color-text)]">
                   {graph.edges.length}
                 </span>
               </div>
@@ -389,6 +356,65 @@ function GraphSidebarContent({
         </div>
       )}
     </>
+  );
+}
+
+// Unified filter row. Used for all three filter groups (orgs, relations,
+// types) so every toggle in the sidebar shares the same shape and sizing.
+function FilterRow({
+  enabled,
+  onClick,
+  label,
+  count,
+  mono,
+  dotColor,
+  dotGlow,
+}: {
+  enabled: boolean;
+  onClick: () => void;
+  label: string;
+  count?: number;
+  mono?: boolean;
+  dotColor?: string;
+  dotGlow?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="group flex w-full items-center gap-2.5 rounded px-2 py-1 text-left transition-colors hover:bg-[var(--color-surface)]"
+    >
+      {dotColor ? (
+        <span
+          className={`h-2.5 w-2.5 rounded-full transition-opacity ${enabled ? "" : "opacity-30"}`}
+          style={{
+            background: dotColor,
+            boxShadow: dotGlow ? `0 0 10px ${dotGlow}` : undefined,
+          }}
+        />
+      ) : (
+        <div
+          className={`h-3 w-3 rounded-sm border transition-all ${
+            enabled
+              ? "border-[var(--color-accent)] bg-[var(--color-accent-dim)]"
+              : "border-[var(--color-border-strong)] bg-transparent"
+          }`}
+        />
+      )}
+      <span
+        className={`flex-1 text-[13px] transition-colors ${mono ? "font-mono" : ""} ${
+          enabled
+            ? "text-[var(--color-text)]"
+            : "text-[var(--color-text-dim)] line-through"
+        }`}
+      >
+        {label}
+      </span>
+      {count !== undefined && (
+        <span className="font-mono text-[12px] text-[var(--color-text-dim)]">
+          {count}
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -401,7 +427,7 @@ function Section({
 }) {
   return (
     <div className="mb-6">
-      <div className="mb-2 px-2 text-[14px] font-semibold uppercase tracking-widest text-[var(--color-text-dim)]">
+      <div className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-widest text-[var(--color-text-dim)]">
         {title}
       </div>
       {children}
@@ -435,10 +461,10 @@ function SearchHit({
         }}
       />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[13.5px] font-medium text-[var(--color-text)]">
+        <div className="truncate text-[13px] font-medium text-[var(--color-text)]">
           {node.name}
         </div>
-        <div className="truncate text-[10px] text-[var(--color-text-dim)]">
+        <div className="truncate text-[11px] text-[var(--color-text-dim)]">
           {node.type}
         </div>
       </div>

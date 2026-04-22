@@ -23,6 +23,7 @@ type Props = {
   query: string;
   disabledRelations: Set<string>;
   disabledOrgs: Set<string>;
+  disabledTypes: Set<string>;
   theme: Theme;
   onSelect: (id: string | null) => void;
 };
@@ -551,6 +552,7 @@ export default function GraphView({
   query,
   disabledRelations,
   disabledOrgs,
+  disabledTypes,
   theme,
   onSelect,
 }: Props) {
@@ -832,6 +834,7 @@ export default function GraphView({
     const hasQuery = q.length > 0;
     const hasRelFilter = disabledRelations.size > 0;
     const hasOrgFilter = disabledOrgs.size > 0;
+    const hasTypeFilter = disabledTypes.size > 0;
 
     // Compute match sets before the batch so TS flow-narrowing is happy
     // and the camera logic below can read them.
@@ -918,6 +921,21 @@ export default function GraphView({
           }
         });
       }
+
+      // Node type filter: dim nodes of any disabled type and every edge
+      // touching them. Works orthogonally to the org/query filters.
+      if (hasTypeFilter) {
+        cy.nodes().forEach((n: NodeSingular) => {
+          if (disabledTypes.has(n.data("type") as string)) {
+            n.removeClass("dim-soft");
+            n.addClass("dim");
+            n.connectedEdges().forEach((e: EdgeSingular) => {
+              e.removeClass("dim-soft");
+              e.addClass("dim");
+            });
+          }
+        });
+      }
     });
 
     // Publish the current focus for the ResizeObserver so that a later
@@ -961,7 +979,7 @@ export default function GraphView({
         }
       }, 220);
     }
-  }, [query, disabledRelations, disabledOrgs]);
+  }, [query, disabledRelations, disabledOrgs, disabledTypes]);
 
   // Apply selection highlight. Camera refits happen in the ResizeObserver
   // (triggered by the pane open/close) so no camera logic is needed here.
