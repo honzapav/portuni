@@ -149,15 +149,12 @@ function DetailPaneBody({
 }) {
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
-  const [draftDescription, setDraftDescription] = useState(
-    node.description ?? "",
-  );
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [tab, setTab] = useState<"overview" | "events" | "connections">(
-    "overview",
-  );
+  const [tab, setTab] = useState<
+    "overview" | "events" | "files" | "connections"
+  >("overview");
 
   // Reset edit drafts whenever we switch to a different node.
   const lastIdRef = useRef(node.id);
@@ -166,15 +163,13 @@ function DetailPaneBody({
       lastIdRef.current = node.id;
       setEditing(false);
       setDraftName(node.name);
-      setDraftDescription(node.description ?? "");
       setErrorMsg(null);
       setTab("overview");
     }
-  }, [node.id, node.name, node.description]);
+  }, [node.id, node.name]);
 
   const startEdit = () => {
     setDraftName(node.name);
-    setDraftDescription(node.description ?? "");
     setEditing(true);
     setErrorMsg(null);
   };
@@ -182,7 +177,6 @@ function DetailPaneBody({
   const cancelEdit = () => {
     setEditing(false);
     setDraftName(node.name);
-    setDraftDescription(node.description ?? "");
     setErrorMsg(null);
   };
 
@@ -192,7 +186,6 @@ function DetailPaneBody({
     try {
       await updateNode(node.id, {
         name: draftName.trim(),
-        description: draftDescription.trim() || null,
       });
       await onMutate();
       setEditing(false);
@@ -333,6 +326,12 @@ function DetailPaneBody({
           count={node.events.length}
         />
         <TabButton
+          active={tab === "files"}
+          onClick={() => setTab("files")}
+          label="Soubory"
+          count={node.files.length}
+        />
+        <TabButton
           active={tab === "connections"}
           onClick={() => setTab("connections")}
           label="Propojení"
@@ -357,23 +356,14 @@ function DetailPaneBody({
       <div className="scroll-thin flex-1 overflow-y-auto">
         {tab === "overview" && (
           <>
-        {(editing || node.description) && (
-          <Section title={editing ? "Popis" : undefined}>
-            {editing ? (
-              <textarea
-                value={draftDescription}
-                onChange={(e) => setDraftDescription(e.target.value)}
-                rows={5}
-                placeholder="Popište, co tento uzel reprezentuje..."
-                className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[14px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
-              />
-            ) : (
-              <p className="text-[14px] leading-relaxed text-[var(--color-text-muted)]">
-                {node.description}
-              </p>
-            )}
-          </Section>
-        )}
+        <Section title="Popis">
+          <EditableDescription
+            nodeId={node.id}
+            value={node.description}
+            onMutate={onMutate}
+            onError={setErrorMsg}
+          />
+        </Section>
 
         {/* Goal (Účel) — editable, only for project/process/area */}
         {(node.type === "project" ||
@@ -463,38 +453,6 @@ function DetailPaneBody({
           </Section>
         )}
 
-        {/* Files stays in Overview */}
-        {node.files.length > 0 && (
-          <Section title="Soubory">
-            <div className="space-y-1">
-              {node.files.map((f) => (
-                <div
-                  key={f.id}
-                  className="flex items-start gap-2.5 rounded px-2 py-1.5 hover:bg-[var(--color-surface)]"
-                >
-                  <FileText
-                    size={12}
-                    className="mt-0.5 shrink-0 text-[var(--color-text-dim)]"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-[11.5px] text-[var(--color-text)]">
-                        {f.filename}
-                      </span>
-                      <FileStatusBadge status={f.status} />
-                    </div>
-                    {f.description && (
-                      <div className="mt-0.5 line-clamp-2 text-[13.5px] leading-relaxed text-[var(--color-text-dim)]">
-                        {f.description}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Section>
-        )}
-
         {editing && (
           <Section title="Nebezpečná oblast">
             <button
@@ -551,6 +509,43 @@ function DetailPaneBody({
               onMutate={onMutate}
               disabled={busy}
             />
+          </div>
+        )}
+
+        {tab === "files" && (
+          <div className="px-5 py-4">
+            {node.files.length > 0 ? (
+              <div className="space-y-1">
+                {node.files.map((f) => (
+                  <div
+                    key={f.id}
+                    className="flex items-start gap-2.5 rounded px-2 py-1.5 hover:bg-[var(--color-surface)]"
+                  >
+                    <FileText
+                      size={12}
+                      className="mt-0.5 shrink-0 text-[var(--color-text-dim)]"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-[13.5px] text-[var(--color-text)]">
+                          {f.filename}
+                        </span>
+                        <FileStatusBadge status={f.status} />
+                      </div>
+                      {f.description && (
+                        <div className="mt-0.5 line-clamp-2 text-[13.5px] leading-relaxed text-[var(--color-text-dim)]">
+                          {f.description}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-[14px] text-[var(--color-text-dim)]">
+                Zatím žádné soubory.
+              </div>
+            )}
           </div>
         )}
 
@@ -1106,6 +1101,106 @@ function LifecycleDropdown({
 // Inline editor for the `goal` field. Read-mode shows the current value
 // (or a muted placeholder). Clicking Edit reveals a textarea with
 // Save/Cancel buttons. Empty goal saves as null.
+// Inline editor for node.description. Same interaction pattern as
+// EditableGoal: click to edit, Save/Cancel on commit. Freed from the
+// node-level "Upravit" dialog so it works the same as other inline fields.
+function EditableDescription({
+  nodeId,
+  value,
+  onMutate,
+  onError,
+}: {
+  nodeId: string;
+  value: string | null;
+  onMutate: () => Promise<void>;
+  onError: (msg: string | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value ?? "");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setDraft(value ?? "");
+    setEditing(false);
+  }, [nodeId, value]);
+
+  const save = async () => {
+    setSaving(true);
+    onError(null);
+    try {
+      const trimmed = draft.trim();
+      await updateNode(nodeId, { description: trimmed ? trimmed : null });
+      await onMutate();
+      setEditing(false);
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cancel = () => {
+    setDraft(value ?? "");
+    setEditing(false);
+    onError(null);
+  };
+
+  if (!editing) {
+    return (
+      <div className="group flex items-start gap-2">
+        <div className="flex-1">
+          {value ? (
+            <p className="text-[14px] leading-relaxed text-[var(--color-text-muted)]">
+              {value}
+            </p>
+          ) : (
+            <p className="text-[14px] italic leading-relaxed text-[var(--color-text-dim)]">
+              Nevyplněno
+            </p>
+          )}
+        </div>
+        <button
+          onClick={() => setEditing(true)}
+          title="Upravit popis"
+          className="flex h-6 items-center gap-1 rounded px-1.5 text-[13.5px] text-[var(--color-text-dim)] opacity-0 transition-all hover:text-[var(--color-text)] group-hover:opacity-100"
+        >
+          <Pencil size={11} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        rows={5}
+        autoFocus
+        placeholder="Popište, co tento uzel reprezentuje..."
+        className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[14px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+      />
+      <div className="flex gap-2">
+        <button
+          onClick={save}
+          disabled={saving}
+          className="flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[14px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
+        >
+          <Save size={11} />
+          {saving ? "Ukládám..." : "Uložit"}
+        </button>
+        <button
+          onClick={cancel}
+          disabled={saving}
+          className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[14px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
+        >
+          Zrušit
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function EditableGoal({
   nodeId,
   value,
