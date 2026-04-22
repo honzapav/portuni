@@ -16,6 +16,8 @@ type Props = {
   onToggleOrg: (id: string) => void;
   disabledTypes: Set<string>;
   onToggleType: (type: string) => void;
+  disabledStatuses: Set<string>;
+  onToggleStatus: (status: string) => void;
   selectedId: string | null;
   onSelect: (id: string) => void;
   theme: Theme;
@@ -51,6 +53,8 @@ export default function Sidebar({
   onToggleOrg,
   disabledTypes,
   onToggleType,
+  disabledStatuses,
+  onToggleStatus,
   selectedId,
   onSelect,
   theme,
@@ -126,6 +130,8 @@ export default function Sidebar({
           onToggleOrg={onToggleOrg}
           disabledTypes={disabledTypes}
           onToggleType={onToggleType}
+          disabledStatuses={disabledStatuses}
+          onToggleStatus={onToggleStatus}
           selectedId={selectedId}
           onSelect={onSelect}
         />
@@ -176,6 +182,8 @@ function GraphSidebarContent({
   onToggleOrg,
   disabledTypes,
   onToggleType,
+  disabledStatuses,
+  onToggleStatus,
   selectedId,
   onSelect,
 }: {
@@ -188,6 +196,8 @@ function GraphSidebarContent({
   onToggleOrg: (id: string) => void;
   disabledTypes: Set<string>;
   onToggleType: (type: string) => void;
+  disabledStatuses: Set<string>;
+  onToggleStatus: (status: string) => void;
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
@@ -307,6 +317,30 @@ function GraphSidebarContent({
                     enabled={enabled}
                     onClick={() => onToggleRelation(r)}
                     label={r}
+                  />
+                );
+              })}
+            </div>
+          </Section>
+
+          <Section title="Stav">
+            <div className="space-y-1.5">
+              {(["active", "completed", "archived"] as const).map((s) => {
+                const enabled = !disabledStatuses.has(s);
+                const count = graph.nodes.filter((n) => n.status === s).length;
+                const label =
+                  s === "active"
+                    ? "Aktivní"
+                    : s === "completed"
+                    ? "Dokončené"
+                    : "Archivované";
+                return (
+                  <FilterRow
+                    key={s}
+                    enabled={enabled}
+                    onClick={() => onToggleStatus(s)}
+                    label={label}
+                    count={count}
                   />
                 );
               })}

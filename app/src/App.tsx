@@ -50,6 +50,11 @@ export default function App() {
   const [disabledTypes, setDisabledTypes] = useState<Set<string>>(
     () => new Set(),
   );
+  // Status filter defaults: show active + completed, hide archived. Users
+  // can toggle all three in the sidebar.
+  const [disabledStatuses, setDisabledStatuses] = useState<Set<string>>(
+    () => new Set(["archived"]),
+  );
 
   // Apply theme to <html> and persist
   useEffect(() => {
@@ -163,6 +168,15 @@ export default function App() {
     });
   }, []);
 
+  const toggleStatus = useCallback((s: string) => {
+    setDisabledStatuses((prev) => {
+      const next = new Set(prev);
+      if (next.has(s)) next.delete(s);
+      else next.add(s);
+      return next;
+    });
+  }, []);
+
   const toggleTheme = useCallback(() => {
     setTheme((t) => (t === "dark" ? "light" : "dark"));
   }, []);
@@ -180,6 +194,8 @@ export default function App() {
           onToggleOrg={toggleOrg}
           disabledTypes={disabledTypes}
           onToggleType={toggleType}
+          disabledStatuses={disabledStatuses}
+          onToggleStatus={toggleStatus}
           selectedId={selectedId}
           onSelect={setSelectedId}
           theme={theme}
@@ -217,6 +233,7 @@ export default function App() {
             disabledRelations={disabledRelations}
             disabledOrgs={disabledOrgs}
             disabledTypes={disabledTypes}
+            disabledStatuses={disabledStatuses}
             theme={theme}
             onSelect={setSelectedId}
           />

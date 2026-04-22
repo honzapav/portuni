@@ -46,10 +46,12 @@ const PORT = Number(process.env.PORT ?? 4011);
 async function loadGraph(): Promise<GraphPayload> {
   const db = getDb();
 
+  // Return all nodes regardless of status. The frontend filters by
+  // completed/archived on the client so toggles are instantaneous and
+  // completed work stays visible by default.
   const nodesRes = await db.execute({
     sql: `SELECT id, type, name, description, status, lifecycle_state, pos_x, pos_y
           FROM nodes
-          WHERE status = 'active'
           ORDER BY type, name`,
   });
 

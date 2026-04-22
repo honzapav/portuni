@@ -24,6 +24,7 @@ type Props = {
   disabledRelations: Set<string>;
   disabledOrgs: Set<string>;
   disabledTypes: Set<string>;
+  disabledStatuses: Set<string>;
   theme: Theme;
   onSelect: (id: string | null) => void;
 };
@@ -553,6 +554,7 @@ export default function GraphView({
   disabledRelations,
   disabledOrgs,
   disabledTypes,
+  disabledStatuses,
   theme,
   onSelect,
 }: Props) {
@@ -835,6 +837,7 @@ export default function GraphView({
     const hasRelFilter = disabledRelations.size > 0;
     const hasOrgFilter = disabledOrgs.size > 0;
     const hasTypeFilter = disabledTypes.size > 0;
+    const hasStatusFilter = disabledStatuses.size > 0;
 
     // Compute match sets before the batch so TS flow-narrowing is happy
     // and the camera logic below can read them.
@@ -936,6 +939,22 @@ export default function GraphView({
           }
         });
       }
+
+      // Status filter: dim nodes whose current status is toggled off
+      // (typically: archived, optionally completed). Edges touching a
+      // filtered node also dim so the graph doesn't show dangling lines.
+      if (hasStatusFilter) {
+        cy.nodes().forEach((n: NodeSingular) => {
+          if (disabledStatuses.has(n.data("status") as string)) {
+            n.removeClass("dim-soft");
+            n.addClass("dim");
+            n.connectedEdges().forEach((e: EdgeSingular) => {
+              e.removeClass("dim-soft");
+              e.addClass("dim");
+            });
+          }
+        });
+      }
     });
 
     // Publish the current focus for the ResizeObserver so that a later
@@ -979,7 +998,7 @@ export default function GraphView({
         }
       }, 220);
     }
-  }, [query, disabledRelations, disabledOrgs, disabledTypes]);
+  }, [query, disabledRelations, disabledOrgs, disabledTypes, disabledStatuses]);
 
   // Apply selection highlight. Camera refits happen in the ResizeObserver
   // (triggered by the pane open/close) so no camera logic is needed here.
