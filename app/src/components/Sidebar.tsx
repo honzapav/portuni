@@ -310,7 +310,6 @@ function GraphSidebarContent({
                     enabled={enabled}
                     onClick={() => onToggleRelation(r)}
                     label={r}
-                    mono
                   />
                 );
               })}
@@ -366,7 +365,6 @@ function FilterRow({
   onClick,
   label,
   count,
-  mono,
   dotColor,
   dotGlow,
 }: {
@@ -374,7 +372,6 @@ function FilterRow({
   onClick: () => void;
   label: string;
   count?: number;
-  mono?: boolean;
   dotColor?: string;
   dotGlow?: string;
 }) {
@@ -401,7 +398,7 @@ function FilterRow({
         />
       )}
       <span
-        className={`flex-1 text-[13px] transition-colors ${mono ? "font-mono" : ""} ${
+        className={`flex-1 text-[13px] transition-colors ${
           enabled
             ? "text-[var(--color-text)]"
             : "text-[var(--color-text-dim)] line-through"

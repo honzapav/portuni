@@ -31,7 +31,7 @@ import {
   LIFECYCLE_COLORS,
   LIFECYCLE_STATES_BY_TYPE,
 } from "../types";
-import { buildAgentCommand, buildCdCommand } from "../lib/prompt";
+import { buildAgentCommand } from "../lib/prompt";
 import type { Actor } from "../api";
 import {
   updateNode,
@@ -2286,21 +2286,12 @@ function ActionButtons({
   agentCommand: string;
 }) {
   const [copiedLaunch, setCopiedLaunch] = useState(false);
-  const [copiedCd, setCopiedCd] = useState(false);
 
   const handleCopyLaunch = async () => {
     const cmd = buildAgentCommand(node, agentCommand);
     await navigator.clipboard.writeText(cmd);
     setCopiedLaunch(true);
     setTimeout(() => setCopiedLaunch(false), 1500);
-  };
-
-  const handleCopyCd = async () => {
-    const cmd = buildCdCommand(node);
-    if (!cmd) return;
-    await navigator.clipboard.writeText(cmd);
-    setCopiedCd(true);
-    setTimeout(() => setCopiedCd(false), 1500);
   };
 
   const agentLabel = agentCommand.trim().split(/\s+/)[0] || "agent";
@@ -2324,16 +2315,6 @@ function ActionButtons({
           </>
         )}
       </button>
-      {node.local_mirror && (
-        <button
-          onClick={handleCopyCd}
-          title="Zkopírovat příkaz cd"
-          className="flex items-center justify-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5 text-[14px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
-        >
-          {copiedCd ? <Check size={12} /> : <Copy size={12} />}
-          cd
-        </button>
-      )}
     </div>
   );
 }
