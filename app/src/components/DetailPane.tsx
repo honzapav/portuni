@@ -1442,6 +1442,8 @@ function OwnerPicker({
 
 // Small tag showing assignee type (P = person, A = automation) with
 // optional placeholder marking. Kept minimal so it fits in pills & rows.
+// Only automations get a visible "A" badge. Humans are the default and
+// stay unmarked to reduce visual noise on responsibility rows.
 function ActorBadge({
   type,
   placeholder,
@@ -1449,12 +1451,10 @@ function ActorBadge({
   type: "person" | "automation" | string;
   placeholder?: boolean;
 }) {
-  const letter = type === "automation" ? "A" : "P";
+  if (type !== "automation") return null;
   const color = placeholder
     ? "var(--color-text-dim)"
-    : type === "automation"
-    ? "var(--color-node-project)"
-    : "var(--color-accent)";
+    : "var(--color-node-project)";
   return (
     <span
       className="ml-0.5 inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded font-mono text-[8.5px] font-semibold"
@@ -1463,12 +1463,9 @@ function ActorBadge({
         background: `color-mix(in srgb, ${color} 14%, transparent)`,
         border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
       }}
-      title={
-        (type === "automation" ? "Automatizace" : "Člověk") +
-        (placeholder ? " (placeholder)" : "")
-      }
+      title={"Automatizace" + (placeholder ? " (placeholder)" : "")}
     >
-      {letter}
+      A
     </span>
   );
 }
