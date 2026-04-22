@@ -1487,23 +1487,35 @@ function ResponsibilitiesEditor({
 }) {
   const [adding, setAdding] = useState(false);
 
-  // Swap two responsibilities' sort_order by sending both PATCHes in
-  // parallel. Uses the neighbour's current sort_order so values stay
-  // stable when the list is later re-sorted server-side.
-  const swap = async (a: DetailResponsibility, b: DetailResponsibility) => {
+  const items = node.responsibilities;
+
+  // Renumber the whole list whenever an item moves: historical rows all
+  // share sort_order=0, so swapping a single pair wouldn't change the
+  // rendered order (DB tiebreaker is title). Instead, rewrite indices
+  // 0..N-1 in the target order; only send PATCHes for rows whose
+  // sort_order actually changes.
+  const moveBy = async (index: number, delta: -1 | 1) => {
+    const target = index + delta;
+    if (target < 0 || target >= items.length) return;
+    const next = [...items];
+    const [moved] = next.splice(index, 1);
+    next.splice(target, 0, moved);
     onError(null);
     try {
-      await Promise.all([
-        updateResponsibility(a.id, { sort_order: b.sort_order }),
-        updateResponsibility(b.id, { sort_order: a.sort_order }),
-      ]);
+      await Promise.all(
+        next
+          .map((r, i) =>
+            r.sort_order === i
+              ? null
+              : updateResponsibility(r.id, { sort_order: i }),
+          )
+          .filter((p): p is Promise<DetailResponsibility> => p !== null),
+      );
       await onMutate();
     } catch (e) {
       onError(String(e));
     }
   };
-
-  const items = node.responsibilities;
 
   return (
     <div>
@@ -1515,8 +1527,8 @@ function ResponsibilitiesEditor({
               responsibility={r}
               canMoveUp={i > 0}
               canMoveDown={i < items.length - 1}
-              onMoveUp={() => swap(r, items[i - 1])}
-              onMoveDown={() => swap(r, items[i + 1])}
+              onMoveUp={() => moveBy(i, -1)}
+              onMoveDown={() => moveBy(i, 1)}
               onMutate={onMutate}
               onError={onError}
             />
