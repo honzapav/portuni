@@ -14,6 +14,7 @@ import { STRUCTURAL_RELATIONS } from "../lib/colors";
 import type { Theme, ThemeColors } from "../lib/theme";
 import { THEMES } from "../lib/theme";
 import { savePositions } from "../api";
+import { foldForSearch } from "../lib/normalize";
 
 cytoscape.use(fcose);
 
@@ -832,7 +833,7 @@ export default function GraphView({
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
-    const q = query.trim().toLowerCase();
+    const q = foldForSearch(query.trim());
     const hasQuery = q.length > 0;
     const hasRelFilter = disabledRelations.size > 0;
     const hasOrgFilter = disabledOrgs.size > 0;
@@ -848,9 +849,9 @@ export default function GraphView({
     if (hasQuery) {
       const hits = cy.nodes().filter((n) => {
         if (n.data("type") === "organization") return false;
-        const label = (n.data("label") as string).toLowerCase();
-        const desc = ((n.data("description") as string) ?? "").toLowerCase();
-        const type = (n.data("type") as string).toLowerCase();
+        const label = foldForSearch((n.data("label") as string) ?? "");
+        const desc = foldForSearch((n.data("description") as string) ?? "");
+        const type = foldForSearch((n.data("type") as string) ?? "");
         return label.includes(q) || desc.includes(q) || type.includes(q);
       });
       matches = hits;

@@ -4,6 +4,7 @@ import type { GraphPayload, GraphNode } from "../types";
 import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
 import type { Theme } from "../lib/theme";
+import { foldForSearch } from "../lib/normalize";
 
 export type AppView = "graph" | "actors";
 
@@ -202,15 +203,15 @@ function GraphSidebarContent({
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
-  const q = query.trim().toLowerCase();
+  const q = foldForSearch(query.trim());
   const matches = q
     ? graph.nodes
         .filter((n) => {
           if (n.type === "organization") return false;
           return (
-            n.name.toLowerCase().includes(q) ||
-            (n.description ?? "").toLowerCase().includes(q) ||
-            n.type.toLowerCase().includes(q)
+            foldForSearch(n.name).includes(q) ||
+            foldForSearch(n.description ?? "").includes(q) ||
+            foldForSearch(n.type).includes(q)
           );
         })
         .slice(0, 60)
