@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { Search, Sun, Moon, X, Users, Settings, Waypoints } from "lucide-react";
 import type { GraphPayload, GraphNode } from "../types";
 import { RELATION_TYPES } from "../types";
@@ -228,29 +229,7 @@ function GraphSidebarContent({
   return (
     <>
       {/* Search */}
-      <div className="px-4 pt-4">
-        <div className="relative">
-          <Search
-            size={13}
-            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-dim)]"
-          />
-          <input
-            name="search"
-            value={query}
-            onChange={(e) => onQuery(e.target.value)}
-            placeholder="Hledat uzly..."
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] py-2 pl-8 pr-8 text-[13px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] transition-colors focus:border-[var(--color-accent-dim)]"
-          />
-          {query.length > 0 && (
-            <button
-              onClick={() => onQuery("")}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-sm p-0.5 text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)]"
-            >
-              <X size={12} />
-            </button>
-          )}
-        </div>
-      </div>
+      <SearchBox query={query} onQuery={onQuery} />
 
       {/* Search results (only when querying) */}
       {q.length > 0 && (
@@ -386,6 +365,83 @@ function GraphSidebarContent({
         </div>
       )}
     </>
+  );
+}
+
+// Search box with global Cmd+K (mac) / Ctrl+K (Windows/Linux) shortcut to
+// focus, plus Esc to clear+blur. Shows a small kbd hint inside the input
+// when empty and unfocused.
+function SearchBox({
+  query,
+  onQuery,
+}: {
+  query: string;
+  onQuery: (q: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [focused, setFocused] = useState(false);
+
+  const isMac =
+    typeof navigator !== "undefined" &&
+    /mac|iphone|ipad|ipod/i.test(navigator.platform || navigator.userAgent);
+  const shortcut = isMac ? "⌘K" : "Ctrl K";
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (mod && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [isMac]);
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Escape") {
+      if (query) onQuery("");
+      inputRef.current?.blur();
+    }
+  };
+
+  return (
+    <div className="px-4 pt-4">
+      <div className="relative">
+        <Search
+          size={13}
+          className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-dim)]"
+        />
+        <input
+          ref={inputRef}
+          name="search"
+          value={query}
+          onChange={(e) => onQuery(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onKeyDown={onKeyDown}
+          placeholder="Hledat uzly..."
+          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] py-2 pl-8 pr-12 text-[13px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] transition-colors focus:border-[var(--color-accent-dim)]"
+        />
+        {query.length > 0 ? (
+          <button
+            onClick={() => onQuery("")}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-sm p-0.5 text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)]"
+          >
+            <X size={12} />
+          </button>
+        ) : (
+          !focused && (
+            <kbd
+              className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--color-text-dim)]"
+            >
+              {shortcut}
+            </kbd>
+          )
+        )}
+      </div>
+    </div>
   );
 }
 
