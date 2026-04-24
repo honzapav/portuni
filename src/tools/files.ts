@@ -5,6 +5,7 @@ import { join, basename, extname } from "node:path";
 import { getDb } from "../db.js";
 import { logAudit } from "../audit.js";
 import { SOLO_USER, FILE_STATUSES } from "../schema.js";
+import { getMirrorPath } from "../sync/mirror-registry.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -32,12 +33,7 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 async function getNodeLocalPath(nodeId: string): Promise<string | null> {
-  const db = getDb();
-  const result = await db.execute({
-    sql: "SELECT local_path FROM local_mirrors WHERE user_id = ? AND node_id = ?",
-    args: [SOLO_USER, nodeId],
-  });
-  return result.rows.length > 0 ? (result.rows[0].local_path as string) : null;
+  return getMirrorPath(SOLO_USER, nodeId);
 }
 
 export function registerFileTools(server: McpServer): void {

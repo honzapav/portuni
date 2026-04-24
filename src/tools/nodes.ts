@@ -9,6 +9,7 @@ import {
   SOLO_USER,
 } from "../schema.js";
 import { generateSyncKey } from "../sync/sync-key.js";
+import { getMirrorPath } from "../sync/mirror-registry.js";
 import { getLifecycleStatesForType } from "../popp.js";
 import type { NodeType } from "../popp.js";
 import { NodeRow, NodeSummaryRow } from "../types.js";
@@ -541,14 +542,7 @@ export function registerNodeTools(server: McpServer): void {
       }
 
       // Fetch local mirror path before deletion (for informational response).
-      const mirrorRes = await db.execute({
-        sql: "SELECT local_path FROM local_mirrors WHERE user_id = ? AND node_id = ?",
-        args: [SOLO_USER, args.node_id],
-      });
-      const mirrorPath =
-        mirrorRes.rows.length > 0
-          ? (mirrorRes.rows[0].local_path as string)
-          : null;
+      const mirrorPath = await getMirrorPath(SOLO_USER, args.node_id);
 
       // Delete edges first so the orphan-prevention trigger does not fire
       // during CASCADE. Then delete the node (remaining CASCADE covers
