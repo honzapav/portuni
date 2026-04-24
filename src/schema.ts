@@ -96,13 +96,9 @@ const DDL = [
     timestamp DATETIME NOT NULL DEFAULT (datetime('now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)`,
-  `CREATE TABLE IF NOT EXISTS local_mirrors (
-    user_id TEXT NOT NULL REFERENCES users(id),
-    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-    local_path TEXT NOT NULL,
-    registered_at DATETIME NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (user_id, node_id)
-  )`,
+  // NOTE: `local_mirrors` is NOT created in Turso. Per-device mirror paths
+  // live in the local sync.db (see src/sync/local-db.ts). Migration 011
+  // drops the legacy Turso `local_mirrors` table on existing installs.
   `CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY,
     node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
@@ -502,6 +498,15 @@ export async function runMigration013(db: Client): Promise<void> {
 
   await db.execute(TRIGGER_NODES_SYNC_KEY_NOT_NULL_INSERT);
   await db.execute(TRIGGER_NODES_SYNC_KEY_NOT_NULL_UPDATE);
+}
+
+// Migration 011: drop the legacy Turso `local_mirrors` table. Per-device
+// mirror paths now live exclusively in the local sync.db. Safe to run on
+// any DB (DROP TABLE IF EXISTS is a no-op when the table is already gone).
+// All readers/writers were rewired to mirror-registry (which targets the
+// local sync.db) before this migration was introduced.
+export async function runMigration011(db: Client): Promise<void> {
+  await db.execute("DROP TABLE IF EXISTS local_mirrors");
 }
 
 // Migration 010: additively extend `files` with the columns needed to track
@@ -1221,6 +1226,19 @@ const MIGRATIONS: Migration[] = [
       ].every((c) => cols.has(c));
     },
     up: runMigration010,
+  },
+
+  // Migration 011: drop the legacy Turso `local_mirrors` table. Per-device
+  // mirror paths now live exclusively in the local sync.db.
+  {
+    id: "011_drop_turso_local_mirrors",
+    isApplied: async (db) => {
+      const r = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='local_mirrors'",
+      );
+      return r.rows.length === 0;
+    },
+    up: runMigration011,
   },
 
   // Migration 013: nodes.sync_key (immutable path identity).
