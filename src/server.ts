@@ -420,6 +420,13 @@ PRINCIPLES AS CULTURE: Principles are not linked to their subjects via an explic
 
 LOCAL MIRRORS: Each node can have a local folder. Use portuni_get_node to find the local_path. The workspace root is configured via PORTUNI_WORKSPACE_ROOT env var. Each mirror has subdirectories: outputs/ (final files), wip/ (work in progress), resources/. Organization workspace folders additionally contain projects/, processes/, areas/, principles/ for organizing child nodes.
 
+FILE SYNC TOOLS (portuni_store / portuni_pull / portuni_status / portuni_list_files / portuni_list_remotes / portuni_setup_remote / portuni_set_routing_policy):
+- portuni_store copies a file into the node's mirror and uploads it via the configured remote. Call with node_id + local_path; optional status (wip | output) and subpath.
+- portuni_pull with file_id downloads the remote version into the mirror. portuni_pull with node_id returns a preview of each file's status (unchanged/updated/conflict/orphan/native) without modifying anything.
+- portuni_status scans tracked files and optionally discovers new local / new remote files. Call at session end when files were touched, before major migrations, or whenever the user asks about sync state.
+- Node paths are built from immutable sync_key identifiers, so renaming a node does NOT break remote folder structure.
+- Each device has its own mirror registry in .portuni/sync.db. Stale rows (node deleted on another device) are skipped and cleaned up lazily.
+
 EVENT TYPES (strictly enforced): decision, discovery, blocker, reference, milestone, note, change. No other event types are accepted by portuni_log.
 
 NODE STATUSES: active (default), completed, archived. Strictly enforced.

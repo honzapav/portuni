@@ -166,4 +166,21 @@ Two deployment modes, same schema:
 
 Schema auto-migrated on startup via `ensureSchema()` in both modes.
 
-Tables: `users`, `nodes`, `edges`, `events`, `files`, `local_mirrors`, `audit_log`.
+### Tables (Turso / shared)
+
+| Table | Purpose |
+|-------|---------|
+| `users` | Registered users (single solo user in Phase 1). |
+| `nodes` | POPP entities. New column `sync_key` (immutable, slugified, unique) anchors filesystem and remote paths so renames do not break sync. |
+| `edges` | Typed relations between nodes. |
+| `events` | Time-ordered knowledge attached to nodes. |
+| `files` | File metadata bound to a node + remote. New columns: `remote_name`, `remote_path`, `current_remote_hash`, `last_pushed_by`, `last_pushed_at`, `is_native_format`. The legacy `local_path` column was removed (migration 012); the path on the current device is derived from the per-device mirror + `remote_path` + `sync_key` at read time. |
+| `remotes` | Pluggable remote backends (gdrive, dropbox, s3, fs, webdav, sftp). One row per configured remote. |
+| `remote_routing` | Priority-ordered routing rules that map (`node_type`, `org_slug`) to a remote. Wildcards via `NULL`. |
+| `audit_log` | Append-only audit trail of every mutation. |
+| `actors`, `responsibilities`, `responsibility_assignments`, `data_sources`, `tools` | People/automation registry and the distribution of work over POPP entities. |
+
+The shared DB no longer stores per-device mirror paths. Each device keeps
+its own mirror registry in a local SQLite at `~/.portuni/sync.db`
+(see `src/sync/local-db.ts`); migration 011 dropped the legacy Turso
+`local_mirrors` table.

@@ -27,7 +27,10 @@ Array of nodes, each containing:
 - `depth` -- distance from starting node
 - `edges` -- direct edges with direction and peer info
 - `events` -- depth-aware (see table above)
-- `local_path` -- local mirror path if registered
+- `local_path` -- local mirror path on the current device, read from
+  `~/.portuni/sync.db` (per-device registry). Null when the node is not
+  mirrored on this machine. Stale rows -- a registration for a node that
+  was purged from the shared graph -- are skipped and cleaned up lazily.
 
 Uses a recursive CTE for efficient single-query traversal.
 
@@ -41,4 +44,7 @@ GET /context?path=/Users/you/Workspaces/portuni/workflow/projects/goldea-presale
 
 Returns the matching node, its edges (depth 1), and recent events (last 5 active).
 
-Path matching: finds the longest registered `local_path` that is a prefix of the given path.
+Path matching: finds the longest registered mirror path on the current
+device that is a prefix of the given path. Mirrors are read from
+`~/.portuni/sync.db`, so each machine can have a different layout without
+trampling teammates' setups.
