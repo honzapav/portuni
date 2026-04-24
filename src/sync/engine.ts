@@ -348,6 +348,13 @@ export interface NewRemoteEntry {
   hash: string | null;
 }
 
+export interface MoveProposal {
+  file_id: string;
+  old_local_path: string;
+  new_local_path: string;
+  hash: string;
+}
+
 export interface StatusResult {
   clean: StatusFileEntry[];
   push_candidates: StatusFileEntry[];
@@ -358,6 +365,7 @@ export interface StatusResult {
   new_local: NewLocalEntry[];
   new_remote: NewRemoteEntry[];
   deleted_local: StatusFileEntry[];
+  moved: MoveProposal[];
 }
 
 async function fileExistsAt(path: string): Promise<boolean> {
@@ -432,6 +440,7 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
     new_local: [],
     new_remote: [],
     deleted_local: [],
+    moved: [],
   };
 
   // Select files to scan.
@@ -569,9 +578,38 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
 
   if (a.includeDiscovery !== false) {
     await runDiscovery(db, a, out);
+    await moveDetectionPhase(db, a, out);
   }
 
   return out;
+}
+
+async function moveDetectionPhase(
+  _db: Client,
+  _a: StatusArgs,
+  out: StatusResult,
+): Promise<void> {
+  if (out.deleted_local.length === 0 || out.new_local.length === 0) return;
+  const byHash = new Map<string, { file_id: string; old_local_path: string }>();
+  for (const dl of out.deleted_local) {
+    if (dl.last_synced_hash && dl.local_path) {
+      byHash.set(dl.last_synced_hash, {
+        file_id: dl.file_id,
+        old_local_path: dl.local_path,
+      });
+    }
+  }
+  for (const nl of out.new_local) {
+    const match = byHash.get(nl.hash);
+    if (match) {
+      out.moved.push({
+        file_id: match.file_id,
+        old_local_path: match.old_local_path,
+        new_local_path: nl.local_path,
+        hash: nl.hash,
+      });
+    }
+  }
 }
 
 // discovery walks mirrors to find new_local files and lists adapters to find new_remote files.
