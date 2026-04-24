@@ -38,7 +38,14 @@ export async function makeSharedDb(): Promise<SharedDb> {
   )`);
   await db.execute(`CREATE TABLE files (
     id TEXT PRIMARY KEY, node_id TEXT NOT NULL, filename TEXT NOT NULL,
-    local_path TEXT, status TEXT NOT NULL DEFAULT 'wip', description TEXT, mime_type TEXT,
+    local_path TEXT,
+    remote_name TEXT,
+    remote_path TEXT,
+    current_remote_hash TEXT,
+    last_pushed_by TEXT,
+    last_pushed_at DATETIME,
+    is_native_format INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'wip', description TEXT, mime_type TEXT,
     created_by TEXT NOT NULL, created_at DATETIME DEFAULT (datetime('now')), updated_at DATETIME DEFAULT (datetime('now'))
   )`);
   await db.execute(
