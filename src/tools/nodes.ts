@@ -9,12 +9,32 @@ import {
   SOLO_USER,
 } from "../schema.js";
 import { generateSyncKey } from "../sync/sync-key.js";
-import { getMirrorPath } from "../sync/mirror-registry.js";
+import { getMirrorPath, unregisterMirror } from "../sync/mirror-registry.js";
 import { getLifecycleStatesForType } from "../popp.js";
 import type { NodeType } from "../popp.js";
 import { NodeRow, NodeSummaryRow } from "../types.js";
 import type { Client, InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+// Cleanup hook for portuni_delete_node purge: removes the per-device local
+// mirror row for the node being purged. Best-effort -- never fails the tool
+// on local cleanup errors. Other devices clean up their stale mirror rows
+// lazily via tryCleanStaleMirrors.
+//
+// _db is unused today (the per-device sync.db is reached via PORTUNI_WORKSPACE_ROOT)
+// but kept in the signature for future-proofing -- callers already have a Client
+// in hand at the call site.
+export async function purgeNodeLocalCleanup(
+  _db: Client,
+  userId: string,
+  nodeId: string,
+): Promise<void> {
+  try {
+    await unregisterMirror(userId, nodeId);
+  } catch {
+    /* best-effort -- never fail the tool on local cleanup errors */
+  }
+}
 
 // --- Task E2: pure createNode, exported for tests ---
 //
@@ -554,6 +574,10 @@ export function registerNodeTools(server: McpServer): void {
         ],
         "write",
       );
+
+      // Local cleanup: remove the per-device mirror row on this device.
+      // Other devices clean up lazily via tryCleanStaleMirrors.
+      await purgeNodeLocalCleanup(db, SOLO_USER, args.node_id);
 
       await logAudit(SOLO_USER, "purge_node", "node", args.node_id, {
         type: nodeType,
