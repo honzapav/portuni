@@ -8,18 +8,31 @@ import {
 } from "../src/tools/sync-remotes.js";
 import { upsertRemote, listRules } from "../src/sync/routing.js";
 import { TOKEN_ENV_PREFIX } from "../src/sync/device-tokens.js";
+import { resetTokenStoreForTests } from "../src/sync/token-store.js";
 
 function envKey(name: string, field: string): string {
   return `${TOKEN_ENV_PREFIX}${name.toUpperCase().replace(/-/g, "_")}__${field}`;
 }
 
+let originalTokenStore: string | undefined;
+let originalWorkspaceRoot: string | undefined;
+
 beforeEach(() => {
   for (const k of Object.keys(process.env))
     if (k.startsWith(TOKEN_ENV_PREFIX)) delete process.env[k];
+  originalTokenStore = process.env.PORTUNI_TOKEN_STORE;
+  originalWorkspaceRoot = process.env.PORTUNI_WORKSPACE_ROOT;
+  process.env.PORTUNI_TOKEN_STORE = "varlock";
+  resetTokenStoreForTests();
 });
 afterEach(() => {
   for (const k of Object.keys(process.env))
     if (k.startsWith(TOKEN_ENV_PREFIX)) delete process.env[k];
+  if (originalTokenStore === undefined) delete process.env.PORTUNI_TOKEN_STORE;
+  else process.env.PORTUNI_TOKEN_STORE = originalTokenStore;
+  if (originalWorkspaceRoot === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
+  else process.env.PORTUNI_WORKSPACE_ROOT = originalWorkspaceRoot;
+  resetTokenStoreForTests();
 });
 
 describe("listRemotesService auth detection", () => {
