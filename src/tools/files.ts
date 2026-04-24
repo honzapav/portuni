@@ -2,7 +2,15 @@ import { z } from "zod";
 import { getDb } from "../db.js";
 import { logAudit } from "../audit.js";
 import { SOLO_USER, FILE_STATUSES } from "../schema.js";
-import { storeFile, pullFile, previewNode } from "../sync/engine.js";
+import {
+  storeFile,
+  pullFile,
+  previewNode,
+  moveFile,
+  renameFolder,
+  adoptFiles,
+  deleteFile,
+} from "../sync/engine.js";
 import { getMirrorPath } from "../sync/mirror-registry.js";
 import { buildNodeRoot, deriveLocalPath } from "../sync/remote-path.js";
 import type { InValue } from "@libsql/client";
@@ -149,6 +157,92 @@ export function registerFileTools(server: McpServer): void {
       return {
         content: [{ type: "text" as const, text: JSON.stringify(enriched, null, 2) }],
       };
+    },
+  );
+
+  server.tool(
+    "portuni_move_file",
+    "Move a file within its node (new subpath or section) or across nodes. First call returns a preview; pass confirmed: true on the second call to execute. Best-effort ordered: remote, then local, then DB. Partial failure returns repair_needed with a hint.",
+    {
+      file_id: z.string(),
+      new_subpath: z.string().nullable().optional(),
+      new_section: z.enum(["wip", "outputs", "resources"]).optional(),
+      new_node_id: z.string().optional(),
+      confirmed: z.boolean().optional(),
+    },
+    async (args) => {
+      const db = getDb();
+      const r = await moveFile(db, {
+        userId: SOLO_USER,
+        fileId: args.file_id,
+        newSubpath: args.new_subpath ?? null,
+        newSection: args.new_section,
+        newNodeId: args.new_node_id,
+        confirmed: args.confirmed,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    "portuni_rename_folder",
+    "Rename a subpath within a node's sync layout. Default dry_run: true returns preview of affected files. Pass dry_run: false to apply.",
+    {
+      node_id: z.string(),
+      old_prefix: z.string(),
+      new_prefix: z.string(),
+      dry_run: z.boolean().optional(),
+    },
+    async (args) => {
+      const db = getDb();
+      const r = await renameFolder(db, {
+        userId: SOLO_USER,
+        nodeId: args.node_id,
+        oldPrefix: args.old_prefix,
+        newPrefix: args.new_prefix,
+        dryRun: args.dry_run !== false,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    "portuni_adopt_files",
+    "Register existing remote files (not currently tracked) as files rows for the given node. Safe, non-destructive.",
+    {
+      node_id: z.string(),
+      paths: z.array(z.string()),
+      status: z.enum(["wip", "output"]).optional(),
+    },
+    async (args) => {
+      const db = getDb();
+      const r = await adoptFiles(db, {
+        userId: SOLO_USER,
+        nodeId: args.node_id,
+        paths: args.paths,
+        status: args.status,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    "portuni_delete_file",
+    "Delete a file. Modes: complete (remote + local + portuni) or unregister_only (only portuni row). First call returns preview; second call with confirmed: true executes.",
+    {
+      file_id: z.string(),
+      mode: z.enum(["complete", "unregister_only"]).optional(),
+      confirmed: z.boolean().optional(),
+    },
+    async (args) => {
+      const db = getDb();
+      const r = await deleteFile(db, {
+        userId: SOLO_USER,
+        fileId: args.file_id,
+        mode: args.mode,
+        confirmed: args.confirmed,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
     },
   );
 }
