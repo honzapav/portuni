@@ -114,3 +114,88 @@ describe("setupRemoteService + setRoutingPolicyService", () => {
     assert.equal(rules[0].priority, 5);
   });
 });
+
+describe("setupRemoteService gdrive validation", () => {
+  it("rejects gdrive without service_account_json", async () => {
+    const { db } = await makeSharedDb();
+    await assert.rejects(
+      () =>
+        setupRemoteService(db, {
+          userId: "U1",
+          name: "g1",
+          type: "gdrive",
+          config: { shared_drive_id: "0AX" },
+        }),
+      /service_account_json/,
+    );
+  });
+
+  it("rejects gdrive with invalid SA JSON", async () => {
+    const { db } = await makeSharedDb();
+    await assert.rejects(
+      () =>
+        setupRemoteService(db, {
+          userId: "U1",
+          name: "g1",
+          type: "gdrive",
+          config: { shared_drive_id: "0AX" },
+          service_account_json: "not json",
+        }),
+      /JSON/,
+    );
+  });
+
+  it("rejects gdrive without shared_drive_id", async () => {
+    const { db } = await makeSharedDb();
+    await assert.rejects(
+      () =>
+        setupRemoteService(db, {
+          userId: "U1",
+          name: "g1",
+          type: "gdrive",
+          config: {},
+          service_account_json: JSON.stringify({
+            type: "service_account",
+            client_email: "x@y",
+            private_key: "k",
+            token_uri: "t",
+          }),
+        }),
+      /shared_drive_id/,
+    );
+  });
+
+  it("accepts fully-valid gdrive config and writes SA via TokenStore", async () => {
+    const { db } = await makeSharedDb();
+    // Use file store with a temp workspace so write is self-contained.
+    process.env.PORTUNI_TOKEN_STORE = "file";
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const wsRoot = await mkdtemp(join(tmpdir(), "portuni-setup-gdrive-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = wsRoot;
+    resetTokenStoreForTests();
+    const sa = JSON.stringify({
+      type: "service_account",
+      client_email: "a@b",
+      private_key: "k",
+      token_uri: "t",
+    });
+    try {
+      await setupRemoteService(db, {
+        userId: "U1",
+        name: "g2",
+        type: "gdrive",
+        config: { shared_drive_id: "0AX" },
+        service_account_json: sa,
+      });
+      // Verify TokenStore has it.
+      const { getTokenStore } = await import("../src/sync/token-store.js");
+      const store = await getTokenStore();
+      const t = await store.read("g2");
+      assert.ok(t?.service_account_json?.includes("client_email"));
+    } finally {
+      await rm(wsRoot, { recursive: true, force: true });
+    }
+  });
+});

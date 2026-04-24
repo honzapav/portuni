@@ -16,6 +16,7 @@ export interface SetupRemoteArgs {
   name: string;
   type: "fs" | "gdrive" | "dropbox" | "s3" | "webdav" | "sftp";
   config: Record<string, unknown>;
+  service_account_json?: string;
 }
 
 export async function setupRemoteService(db: Client, a: SetupRemoteArgs): Promise<void> {
@@ -23,6 +24,20 @@ export async function setupRemoteService(db: Client, a: SetupRemoteArgs): Promis
     if (typeof a.config.root !== "string") {
       throw new Error("fs remote requires config.root as a string");
     }
+  }
+  if (a.type === "gdrive") {
+    const { parseDriveConfig, parseServiceAccountJson } = await import("../sync/drive-config.js");
+    parseDriveConfig(a.config);
+    if (!a.service_account_json) {
+      throw new Error("gdrive remote requires service_account_json");
+    }
+    parseServiceAccountJson(a.service_account_json);
+    const { getTokenStore } = await import("../sync/token-store.js");
+    const store = await getTokenStore();
+    await store.write(a.name, {
+      mode: "service_account",
+      service_account_json: a.service_account_json,
+    });
   }
   await upsertRemote(db, {
     name: a.name,
@@ -64,11 +79,12 @@ export async function listRemotesService(db: Client): Promise<RemoteListing[]> {
 export function registerSyncRemoteTools(server: McpServer): void {
   server.tool(
     "portuni_setup_remote",
-    "Create or update a named remote (fs, gdrive, dropbox, s3, webdav, sftp). Admin tool.",
+    "Create or update a named remote (fs, gdrive, dropbox, s3, webdav, sftp). For gdrive, pass service_account_json.",
     {
       name: z.string().min(1),
       type: z.enum(["fs", "gdrive", "dropbox", "s3", "webdav", "sftp"]),
       config: z.record(z.string(), z.unknown()),
+      service_account_json: z.string().optional(),
     },
     async (args) => {
       const db = getDb();
@@ -77,6 +93,7 @@ export function registerSyncRemoteTools(server: McpServer): void {
         name: args.name,
         type: args.type,
         config: args.config,
+        service_account_json: args.service_account_json,
       });
       return {
         content: [
