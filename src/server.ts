@@ -10,6 +10,7 @@ import { registerEdgeTools } from "./tools/edges.js";
 import { registerContextTools } from "./tools/context.js";
 import { registerMirrorTools } from "./tools/mirrors.js";
 import { registerFileTools } from "./tools/files.js";
+import { registerSyncStatusTools } from "./tools/sync-status.js";
 import { registerEventTools } from "./tools/events.js";
 import { registerActorTools, createActor, updateActor, archiveActor } from "./tools/actors.js";
 import {
@@ -444,6 +445,7 @@ function createMcpServer(): McpServer {
   registerContextTools(server);
   registerMirrorTools(server);
   registerFileTools(server);
+  registerSyncStatusTools(server);
   registerEventTools(server);
   registerActorTools(server);
   registerResponsibilityTools(server);
