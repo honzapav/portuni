@@ -1,236 +1,154 @@
 import { z } from "zod";
-import { ulid } from "ulid";
-import { copyFile, stat } from "node:fs/promises";
-import { join, basename, extname } from "node:path";
 import { getDb } from "../db.js";
 import { logAudit } from "../audit.js";
 import { SOLO_USER, FILE_STATUSES } from "../schema.js";
+import { storeFile, pullFile, previewNode } from "../sync/engine.js";
 import { getMirrorPath } from "../sync/mirror-registry.js";
+import { buildNodeRoot, deriveLocalPath } from "../sync/remote-path.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-
-const MIME_TYPES: Record<string, string> = {
-  ".txt": "text/plain",
-  ".md": "text/markdown",
-  ".html": "text/html",
-  ".css": "text/css",
-  ".js": "application/javascript",
-  ".ts": "application/typescript",
-  ".json": "application/json",
-  ".xml": "application/xml",
-  ".csv": "text/csv",
-  ".pdf": "application/pdf",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".svg": "image/svg+xml",
-  ".webp": "image/webp",
-  ".zip": "application/zip",
-  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-};
-
-async function getNodeLocalPath(nodeId: string): Promise<string | null> {
-  return getMirrorPath(SOLO_USER, nodeId);
-}
 
 export function registerFileTools(server: McpServer): void {
   server.tool(
     "portuni_store",
-    "Store a file in a node's local folder. Only store files the user explicitly asks to publish. Never store temporary files, logs, or intermediate outputs. File registration is per-user -- each user manages their own files. Copies the file from source path into the node's mirror folder (wip/ or outputs/ based on status) and registers it in Portuni.",
+    "Store a file for a node: copies into the node's local mirror, uploads to the routed remote, and tracks it for sync. Uses sync_key-based paths so renaming nodes does not break remote storage.",
     {
-      node_id: z.string().describe("Node ID (ULID)"),
-      local_path: z.string().describe("Absolute path to the source file"),
-      description: z.string().optional().describe("Description of the file"),
+      node_id: z.string().describe("Target node ID"),
+      local_path: z.string().describe("Absolute path of the source file on this device"),
+      description: z.string().optional(),
       status: z
-        .enum(FILE_STATUSES)
-        .default("wip")
-        .describe("File status: wip (work in progress) or output (final)"),
+        .enum(["wip", "output"])
+        .optional()
+        .describe("Section routing (wip or outputs)"),
+      subpath: z
+        .string()
+        .nullable()
+        .optional()
+        .describe("Optional subfolder within the section"),
     },
     async (args) => {
-      // 1. Get node's mirror path
-      const mirrorPath = await getNodeLocalPath(args.node_id);
-      if (!mirrorPath) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "Error: Node has no local mirror. Run portuni_mirror first.",
-            },
-          ],
-          isError: true,
-        };
-      }
-
-      // 2. Verify source file exists
-      try {
-        await stat(args.local_path);
-      } catch {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error: Source file not found at ${args.local_path}`,
-            },
-          ],
-          isError: true,
-        };
-      }
-
-      // 3. Determine target directory
-      const targetDir = args.status === "output" ? "outputs" : "wip";
-      const filename = basename(args.local_path);
-      const targetPath = join(mirrorPath, targetDir, filename);
-
-      // 4. Copy file
-      await copyFile(args.local_path, targetPath);
-
-      // 5. Insert into files table
       const db = getDb();
-      const id = ulid();
-      const now = new Date().toISOString();
-      const mimeType = MIME_TYPES[extname(filename).toLowerCase()] ?? null;
-
-      await db.execute({
-        sql: `INSERT INTO files (id, node_id, filename, local_path, status, description, mime_type, created_by, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [
-          id,
-          args.node_id,
-          filename,
-          targetPath,
-          args.status,
-          args.description ?? null,
-          mimeType,
-          SOLO_USER,
-          now,
-          now,
-        ],
-      });
-
-      // 6. Audit
-      await logAudit(SOLO_USER, "store_file", "file", id, {
-        node_id: args.node_id,
-        filename,
+      const result = await storeFile(db, {
+        userId: SOLO_USER,
+        nodeId: args.node_id,
+        localPath: args.local_path,
+        description: args.description ?? null,
         status: args.status,
+        subpath: args.subpath ?? null,
       });
-
-      // 7. Return result
+      await logAudit(SOLO_USER, "portuni_store", "file", result.file_id, {
+        ...result,
+      });
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({ id, filename, local_path: targetPath, status: args.status }),
-          },
-        ],
+        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       };
     },
   );
 
   server.tool(
     "portuni_pull",
-    "List files attached to a node with their local paths and statuses. In Phase 1 (local-only), this returns file metadata and paths.",
+    "Pull mode: with file_id, download remote content into mirror. With node_id (preview), classify each file (unchanged/updated/conflict/orphan/native) without modifying anything.",
     {
-      node_id: z.string().describe("Node ID (ULID)"),
+      file_id: z.string().optional(),
+      node_id: z.string().optional(),
     },
     async (args) => {
+      if (!args.file_id && !args.node_id) {
+        throw new Error("portuni_pull requires either file_id or node_id");
+      }
       const db = getDb();
-
-      // 1. Query files for this node
-      const result = await db.execute({
-        sql: `SELECT id, filename, local_path, status, description, updated_at
-              FROM files WHERE node_id = ? ORDER BY updated_at DESC`,
-        args: [args.node_id],
-      });
-
-      // 2. Get node's mirror path
-      const mirrorPath = await getNodeLocalPath(args.node_id);
-
-      // 3. Return result
-      const files = result.rows.map((row) => ({
-        id: row.id,
-        filename: row.filename,
-        local_path: row.local_path,
-        status: row.status,
-        description: row.description,
-        updated_at: row.updated_at,
-      }));
-
+      if (args.file_id) {
+        const r = await pullFile(db, { userId: SOLO_USER, fileId: args.file_id });
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }],
+        };
+      }
+      const p = await previewNode(db, { userId: SOLO_USER, nodeId: args.node_id! });
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(
-              { node_id: args.node_id, mirror_path: mirrorPath, files },
-              null,
-              2,
-            ),
-          },
-        ],
+        content: [{ type: "text" as const, text: JSON.stringify(p, null, 2) }],
       };
     },
   );
 
   server.tool(
     "portuni_list_files",
-    "List files across all nodes, optionally filtered by node and/or status.",
+    "List files across all nodes, optionally filtered by node and/or status. Each file includes a derived local_path (from the current mirror + remote_path + sync_key) when available.",
     {
-      node_id: z.string().optional().describe("Filter by node ID"),
-      status: z
-        .enum(FILE_STATUSES)
-        .optional()
-        .describe("Filter by file status"),
+      node_id: z.string().optional(),
+      status: z.enum(FILE_STATUSES).optional(),
     },
     async (args) => {
       const db = getDb();
-
-      // 1. Build dynamic WHERE
-      const conditions: string[] = [];
-      const values: InValue[] = [];
-
+      const conds: string[] = [];
+      const params: InValue[] = [];
       if (args.node_id !== undefined) {
-        conditions.push("f.node_id = ?");
-        values.push(args.node_id);
+        conds.push("f.node_id = ?");
+        params.push(args.node_id);
       }
       if (args.status !== undefined) {
-        conditions.push("f.status = ?");
-        values.push(args.status);
+        conds.push("f.status = ?");
+        params.push(args.status);
       }
+      const where = conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "";
 
-      const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-
-      // 2. JOIN with nodes for node_name
       const result = await db.execute({
-        sql: `SELECT f.id, f.node_id, n.name AS node_name, f.filename, f.local_path,
-                     f.status, f.description, f.updated_at
-              FROM files f
-              JOIN nodes n ON f.node_id = n.id
+        sql: `SELECT f.id, f.node_id, n.name AS node_name, n.type AS node_type, n.sync_key AS node_sync_key,
+                     f.filename, f.local_path AS legacy_local_path, f.status, f.description,
+                     f.remote_name, f.remote_path, f.current_remote_hash,
+                     f.last_pushed_at, f.is_native_format, f.updated_at,
+                     (SELECT org.sync_key FROM edges e JOIN nodes org ON org.id = e.target_id
+                       WHERE e.source_id = f.node_id AND e.relation = 'belongs_to' AND org.type = 'organization' LIMIT 1) AS org_sync_key
+              FROM files f JOIN nodes n ON f.node_id = n.id
               ${where}
               ORDER BY f.updated_at DESC`,
-        args: values,
+        args: params,
       });
 
-      // 3. Return results
-      const files = result.rows.map((row) => ({
-        id: row.id,
-        node_id: row.node_id,
-        node_name: row.node_name,
-        filename: row.filename,
-        local_path: row.local_path,
-        status: row.status,
-        description: row.description,
-        updated_at: row.updated_at,
-      }));
+      const enriched = await Promise.all(
+        result.rows.map(async (row) => {
+          const nodeId = row.node_id as string;
+          const rp = row.remote_path as string | null;
+          let localPath: string | null = null;
+          if (rp) {
+            const mirror = await getMirrorPath(SOLO_USER, nodeId);
+            if (mirror) {
+              const nodeRoot = buildNodeRoot({
+                orgSyncKey: (row.org_sync_key as string | null) ?? null,
+                nodeType: row.node_type as string,
+                nodeSyncKey: row.node_sync_key as string,
+              });
+              try {
+                localPath = deriveLocalPath({
+                  mirrorRoot: mirror,
+                  nodeRoot,
+                  remotePath: rp,
+                });
+              } catch {
+                localPath = null;
+              }
+            }
+          }
+          if (!localPath) localPath = (row.legacy_local_path as string | null) ?? null;
+          return {
+            id: row.id,
+            node_id: nodeId,
+            node_name: row.node_name,
+            filename: row.filename,
+            status: row.status,
+            description: row.description,
+            remote_name: row.remote_name,
+            remote_path: rp,
+            current_remote_hash: row.current_remote_hash,
+            last_pushed_at: row.last_pushed_at,
+            is_native_format: Number(row.is_native_format) === 1,
+            local_path: localPath,
+            updated_at: row.updated_at,
+          };
+        }),
+      );
 
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(files, null, 2),
-          },
-        ],
+        content: [{ type: "text" as const, text: JSON.stringify(enriched, null, 2) }],
       };
     },
   );
