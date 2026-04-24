@@ -147,13 +147,12 @@ async function loadNodeDetail(nodeId: string): Promise<NodeDetail | null> {
   }
 
   const fileRes = await db.execute({
-    sql: `SELECT id, filename, status, description, local_path, remote_path, mime_type
+    sql: `SELECT id, filename, status, description, remote_path, mime_type
           FROM files WHERE node_id = ? ORDER BY created_at DESC`,
     args: [row.id],
   });
   const files = fileRes.rows.map((f) => {
     const remotePath = (f.remote_path as string | null) ?? null;
-    const legacyLocal = (f.local_path as string | null) ?? null;
     let derivedLocal: string | null = null;
     if (mirrorPath && remotePath) {
       const nodeRoot = buildNodeRoot({
@@ -172,7 +171,7 @@ async function loadNodeDetail(nodeId: string): Promise<NodeDetail | null> {
       filename: f.filename as string,
       status: f.status as string,
       description: (f.description as string | null) ?? null,
-      local_path: derivedLocal ?? legacyLocal,
+      local_path: derivedLocal,
       mime_type: (f.mime_type as string | null) ?? null,
     };
   });

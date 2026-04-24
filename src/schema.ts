@@ -99,11 +99,13 @@ const DDL = [
   // NOTE: `local_mirrors` is NOT created in Turso. Per-device mirror paths
   // live in the local sync.db (see src/sync/local-db.ts). Migration 011
   // drops the legacy Turso `local_mirrors` table on existing installs.
+  // NOTE: `local_path` is NOT a column on `files`. The path on the current
+  // device is derived from the per-device mirror root + remote_path + sync_key
+  // at read time. Migration 012 drops the legacy column on existing installs.
   `CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY,
     node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     filename TEXT NOT NULL,
-    local_path TEXT,
     remote_name TEXT,
     remote_path TEXT,
     current_remote_hash TEXT,
@@ -507,6 +509,22 @@ export async function runMigration013(db: Client): Promise<void> {
 // local sync.db) before this migration was introduced.
 export async function runMigration011(db: Client): Promise<void> {
   await db.execute("DROP TABLE IF EXISTS local_mirrors");
+}
+
+// Migration 012: drop the legacy `files.local_path` column.
+//
+// The path on the current device is now derived from the per-device mirror
+// root + remote_path + sync_key at read time, so the persisted column is
+// redundant and (worse) goes stale across devices and renames. libSQL /
+// SQLite 3.35+ supports native ALTER TABLE DROP COLUMN; we gate on
+// PRAGMA table_info so the migration is idempotent across re-runs and on
+// fresh installs (where the column never existed).
+export async function runMigration012(db: Client): Promise<void> {
+  const info = await db.execute("PRAGMA table_info(files)");
+  const cols = new Set(info.rows.map((r) => r.name as string));
+  if (cols.has("local_path")) {
+    await db.execute("ALTER TABLE files DROP COLUMN local_path");
+  }
 }
 
 // Migration 010: additively extend `files` with the columns needed to track
@@ -1239,6 +1257,18 @@ const MIGRATIONS: Migration[] = [
       return r.rows.length === 0;
     },
     up: runMigration011,
+  },
+
+  // Migration 012: drop the legacy `files.local_path` column. local_path is
+  // now a derived field (per-device mirror + remote_path + sync_key).
+  {
+    id: "012_drop_files_local_path",
+    isApplied: async (db) => {
+      const info = await db.execute("PRAGMA table_info(files)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      return !cols.has("local_path");
+    },
+    up: runMigration012,
   },
 
   // Migration 013: nodes.sync_key (immutable path identity).

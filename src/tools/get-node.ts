@@ -93,18 +93,17 @@ export function registerGetNodeTool(server: McpServer): void {
       }
 
       // 5. Fetch files for this node (kept here -- buildContextPayload does
-      //    not include files). Derive local_path from remote_path + sync_key
-      //    when both mirror and remote_path are present; otherwise fall back
-      //    to the legacy files.local_path column.
+      //    not include files). local_path is a DERIVED response field built
+      //    from the per-device mirror + remote_path + sync_key; the column
+      //    no longer exists on the files table.
       const fileResult = await db.execute({
-        sql: `SELECT id, filename, status, description, local_path, remote_path, mime_type
+        sql: `SELECT id, filename, status, description, remote_path, mime_type
               FROM files WHERE node_id = ? ORDER BY created_at DESC`,
         args: [row.id],
       });
 
       const files = fileResult.rows.map((f) => {
         const remotePath = (f.remote_path as string | null) ?? null;
-        const legacyLocal = (f.local_path as string | null) ?? null;
         let derivedLocal: string | null = null;
         if (mirrorPath && remotePath) {
           const nodeRoot = buildNodeRoot({
@@ -123,7 +122,7 @@ export function registerGetNodeTool(server: McpServer): void {
           filename: f.filename as string,
           status: f.status as string,
           description: f.description as string | null,
-          local_path: derivedLocal ?? legacyLocal,
+          local_path: derivedLocal,
           mime_type: f.mime_type as string | null,
         };
       });

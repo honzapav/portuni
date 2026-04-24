@@ -72,7 +72,7 @@ export function registerFileTools(server: McpServer): void {
 
   server.tool(
     "portuni_list_files",
-    "List files across all nodes, optionally filtered by node and/or status. Each file includes a derived local_path (from the current mirror + remote_path + sync_key) when available.",
+    "List files across all nodes, optionally filtered by node and/or status. Each file includes a derived local_path built from the current mirror + remote_path + sync_key (null when the node has no mirror on this device).",
     {
       node_id: z.string().optional(),
       status: z.enum(FILE_STATUSES).optional(),
@@ -93,7 +93,7 @@ export function registerFileTools(server: McpServer): void {
 
       const result = await db.execute({
         sql: `SELECT f.id, f.node_id, n.name AS node_name, n.type AS node_type, n.sync_key AS node_sync_key,
-                     f.filename, f.local_path AS legacy_local_path, f.status, f.description,
+                     f.filename, f.status, f.description,
                      f.remote_name, f.remote_path, f.current_remote_hash,
                      f.last_pushed_at, f.is_native_format, f.updated_at,
                      (SELECT org.sync_key FROM edges e JOIN nodes org ON org.id = e.target_id
@@ -128,7 +128,6 @@ export function registerFileTools(server: McpServer): void {
               }
             }
           }
-          if (!localPath) localPath = (row.legacy_local_path as string | null) ?? null;
           return {
             id: row.id,
             node_id: nodeId,

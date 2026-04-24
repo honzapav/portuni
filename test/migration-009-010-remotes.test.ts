@@ -164,7 +164,9 @@ describe("migration 010 -- extend files table", () => {
     assert.ok(after.has("remote_name"));
   });
 
-  it("does NOT drop files.local_path (deferred to a later plan)", async () => {
+  it("does NOT drop files.local_path (deferred to migration 012)", async () => {
+    // Migration 010 is purely additive -- it must not touch the legacy
+    // local_path column. Removal is the responsibility of migration 012.
     const db = await freshPre010Db();
     await runMigration010(db);
     const info = await db.execute("PRAGMA table_info(files)");

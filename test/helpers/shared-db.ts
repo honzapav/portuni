@@ -36,9 +36,11 @@ export async function makeSharedDb(): Promise<SharedDb> {
     target_id TEXT NOT NULL REFERENCES nodes(id), relation TEXT NOT NULL,
     meta TEXT, created_by TEXT NOT NULL, created_at DATETIME DEFAULT (datetime('now'))
   )`);
+  // Mirror current production schema (post-migration 012): no `local_path`
+  // column on `files`. Anything that needs the on-disk path derives it from
+  // the per-device mirror + remote_path + sync_key.
   await db.execute(`CREATE TABLE files (
     id TEXT PRIMARY KEY, node_id TEXT NOT NULL, filename TEXT NOT NULL,
-    local_path TEXT,
     remote_name TEXT,
     remote_path TEXT,
     current_remote_hash TEXT,

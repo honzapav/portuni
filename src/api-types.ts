@@ -57,6 +57,11 @@ export type DetailFile = {
   filename: string;
   status: string;
   description: string | null;
+  // Derived field. The `files` table no longer stores a local path
+  // (migration 012). The server resolves this on read by combining the
+  // per-device mirror root with the file's remote_path + node sync_key.
+  // Null when the node has no mirror on this device or remote_path is
+  // unset (e.g. legacy file rows that pre-date the file-sync foundation).
   local_path: string | null;
   mime_type: string | null;
 };

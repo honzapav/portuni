@@ -161,7 +161,7 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
     await db.execute({
       sql: `UPDATE files SET filename = ?, status = COALESCE(?, status), description = COALESCE(?, description),
                                remote_name = ?, remote_path = ?, current_remote_hash = ?,
-                               last_pushed_by = ?, last_pushed_at = ?, mime_type = ?, local_path = ?,
+                               last_pushed_by = ?, last_pushed_at = ?, mime_type = ?,
                                updated_at = ?
                                WHERE id = ?`,
       args: [
@@ -174,7 +174,6 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
         a.userId,
         now,
         mt,
-        mirroredAbs,
         now,
         fileId,
       ],
@@ -182,15 +181,14 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
   } else {
     fileId = ulid();
     await db.execute({
-      sql: `INSERT INTO files (id, node_id, filename, local_path, status, description, mime_type,
+      sql: `INSERT INTO files (id, node_id, filename, status, description, mime_type,
                                 remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
                                 is_native_format, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
       args: [
         fileId,
         a.nodeId,
         filename,
-        mirroredAbs,
         a.status ?? "wip",
         a.description ?? null,
         mt,
