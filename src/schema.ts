@@ -130,6 +130,23 @@ const DDL = [
     id TEXT PRIMARY KEY,
     applied_at DATETIME NOT NULL DEFAULT (datetime('now'))
   )`,
+  // Migration 009 tables (pluggable remotes + routing). Kept in DDL so a
+  // fresh install gets these tables before any migration runs.
+  `CREATE TABLE IF NOT EXISTS remotes (
+    name TEXT PRIMARY KEY,
+    type TEXT NOT NULL CHECK(type IN ('gdrive','dropbox','s3','fs','webdav','sftp')),
+    config_json TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS remote_routing (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    priority INTEGER NOT NULL,
+    node_type TEXT,
+    org_slug TEXT,
+    remote_name TEXT NOT NULL REFERENCES remotes(name) ON DELETE RESTRICT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_remote_routing_priority ON remote_routing(priority)`,
 ];
 
 const SOLO_USER_ID = "01SOLO0000000000000000000";
@@ -357,6 +374,43 @@ export const SEED_LIFECYCLE_STATE_FROM_STATUS = `UPDATE nodes SET lifecycle_stat
   WHEN type = 'principle' AND status = 'archived' THEN 'archived'
   ELSE lifecycle_state
 END WHERE lifecycle_state IS NULL`;
+
+// --- Migration 009 / 010 / 013 DDL constants (file-sync foundation) ---
+
+// Migration 009: pluggable remote backends + routing rules. A `remote` is a
+// named storage adapter (gdrive, dropbox, etc.) with backend-specific
+// config_json. `remote_routing` maps node-type / org-slug filters to a
+// remote, applied in priority order so different node types can land on
+// different remotes.
+export const DDL_REMOTES_TABLE = `
+  CREATE TABLE IF NOT EXISTS remotes (
+    name TEXT PRIMARY KEY,
+    type TEXT NOT NULL CHECK(type IN ('gdrive','dropbox','s3','fs','webdav','sftp')),
+    config_json TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+  )
+`;
+
+export const DDL_REMOTE_ROUTING_TABLE = `
+  CREATE TABLE IF NOT EXISTS remote_routing (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    priority INTEGER NOT NULL,
+    node_type TEXT,
+    org_slug TEXT,
+    remote_name TEXT NOT NULL REFERENCES remotes(name) ON DELETE RESTRICT
+  )
+`;
+
+export const INDEX_REMOTE_ROUTING_PRIORITY =
+  "CREATE INDEX IF NOT EXISTS idx_remote_routing_priority ON remote_routing(priority)";
+
+// Migration 009 runner. Idempotent via IF NOT EXISTS clauses.
+export async function runMigration009(db: Client): Promise<void> {
+  await db.execute(DDL_REMOTES_TABLE);
+  await db.execute(DDL_REMOTE_ROUTING_TABLE);
+  await db.execute(INDEX_REMOTE_ROUTING_PRIORITY);
+}
 
 // Migration 006: add actors, responsibilities, responsibility_assignments,
 // data_sources, tools; add owner_id/lifecycle_state/goal columns to nodes;
@@ -1019,6 +1073,25 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+
+  // Migration 009: pluggable remote backends + routing rules. Fresh installs
+  // get the tables via DDL; this migration applies to existing databases that
+  // pre-date the file-sync foundation.
+  {
+    id: "009_remotes_and_routing",
+    isApplied: async (db) => {
+      const r = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='remotes'",
+      );
+      if (r.rows.length === 0) return false;
+      const r2 = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='remote_routing'",
+      );
+      return r2.rows.length > 0;
+    },
+    up: runMigration009,
+  },
+
 ];
 
 async function runMigrations(db: Client): Promise<void> {
