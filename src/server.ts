@@ -12,6 +12,7 @@ import { registerMirrorTools } from "./tools/mirrors.js";
 import { registerFileTools } from "./tools/files.js";
 import { registerSyncStatusTools } from "./tools/sync-status.js";
 import { registerSyncRemoteTools } from "./tools/sync-remotes.js";
+import { registerSyncSnapshotTools } from "./tools/sync-snapshot.js";
 import { registerEventTools } from "./tools/events.js";
 import { registerActorTools, createActor, updateActor, archiveActor } from "./tools/actors.js";
 import {
@@ -454,6 +455,7 @@ function createMcpServer(): McpServer {
   registerFileTools(server);
   registerSyncStatusTools(server);
   registerSyncRemoteTools(server);
+  registerSyncSnapshotTools(server);
   registerEventTools(server);
   registerActorTools(server);
   registerResponsibilityTools(server);
