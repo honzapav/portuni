@@ -74,6 +74,7 @@ export function updateNode(
     goal?: string | null;
     lifecycle_state?: string | null;
     owner_id?: string | null;
+    visibility?: string;
   },
 ): Promise<NodeDetail> {
   return jsonRequest<NodeDetail>(

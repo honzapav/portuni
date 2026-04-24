@@ -35,7 +35,7 @@ import {
 import { updateNodeInternal } from "./tools/nodes.js";
 
 import { getDb } from "./db.js";
-import { SOLO_USER, NODE_TYPES, EDGE_RELATIONS, EVENT_TYPES } from "./schema.js";
+import { SOLO_USER, NODE_TYPES, NODE_VISIBILITIES, EDGE_RELATIONS, EVENT_TYPES } from "./schema.js";
 import { NodeRow, NodeSummaryRow } from "./types.js";
 import type { GraphPayload, NodeDetail } from "./api-types.js";
 import { ulid } from "ulid";
@@ -958,6 +958,7 @@ async function main() {
               goal?: string | null;
               lifecycle_state?: string | null;
               owner_id?: string | null;
+              visibility?: string;
             }
           | undefined;
         if (!body) {
@@ -972,6 +973,7 @@ async function main() {
           goal?: string | null;
           lifecycle_state?: string | null;
           owner_id?: string | null;
+          visibility?: (typeof NODE_VISIBILITIES)[number];
         } = { node_id: nodeId };
         if (typeof body.name === "string" && body.name.trim().length > 0) {
           update.name = body.name.trim();
@@ -989,12 +991,25 @@ async function main() {
         if (body.owner_id !== undefined) {
           update.owner_id = body.owner_id === null ? null : String(body.owner_id);
         }
+        if (body.visibility !== undefined) {
+          if (!(NODE_VISIBILITIES as readonly string[]).includes(body.visibility)) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({
+                error: `invalid visibility '${body.visibility}'. Valid: ${NODE_VISIBILITIES.join(", ")}`,
+              }),
+            );
+            return;
+          }
+          update.visibility = body.visibility as (typeof NODE_VISIBILITIES)[number];
+        }
         const hasUpdate =
           update.name !== undefined ||
           update.description !== undefined ||
           update.goal !== undefined ||
           update.lifecycle_state !== undefined ||
-          update.owner_id !== undefined;
+          update.owner_id !== undefined ||
+          update.visibility !== undefined;
         if (!hasUpdate) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "no fields to update" }));

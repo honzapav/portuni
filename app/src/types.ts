@@ -56,8 +56,10 @@ export {
   EDGE_RELATIONS as RELATION_TYPES,
   EVENT_TYPES,
   LIFECYCLE_STATES_BY_TYPE,
+  NODE_VISIBILITIES,
 } from "../../src/popp";
 export type {
   NodeType,
   EdgeRelation as RelationType,
+  NodeVisibility,
 } from "../../src/popp";

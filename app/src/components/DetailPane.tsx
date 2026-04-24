@@ -15,6 +15,8 @@ import {
   Archive,
   Save,
   User,
+  Users,
+  Lock,
   ChevronUp,
   ChevronDown,
 } from "lucide-react";
@@ -32,6 +34,7 @@ import {
   EVENT_TYPES,
   LIFECYCLE_COLORS,
   LIFECYCLE_STATES_BY_TYPE,
+  NODE_VISIBILITIES,
 } from "../types";
 import { buildAgentCommand } from "../lib/prompt";
 import type { Actor } from "../api";
@@ -292,6 +295,12 @@ function DetailPaneBody({
             onError={setErrorMsg}
           />
           <StatusDot status={node.status} />
+          <VisibilityDropdown
+            nodeId={node.id}
+            value={node.visibility}
+            onMutate={onMutate}
+            onError={setErrorMsg}
+          />
         </div>
         {editing ? (
           <input
@@ -1098,6 +1107,109 @@ function LifecycleDropdown({
               </span>
             </button>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VisibilityDropdown({
+  nodeId,
+  value,
+  onMutate,
+  onError,
+}: {
+  nodeId: string;
+  value: string;
+  onMutate: () => Promise<void>;
+  onError: (msg: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const pick = async (next: string) => {
+    setOpen(false);
+    if (next === value) return;
+    setSaving(true);
+    onError(null);
+    try {
+      await updateNode(nodeId, { visibility: next });
+      await onMutate();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const isPrivate = value === "private";
+  const Icon = isPrivate ? Lock : Users;
+  const label = isPrivate ? "soukromé" : "tým";
+  const tone = isPrivate
+    ? "border-[color:color-mix(in_srgb,var(--color-warning,#a16207)_50%,transparent)] text-[color:var(--color-warning,#a16207)]"
+    : "border-[var(--color-border)] text-[var(--color-text-dim)]";
+
+  return (
+    <div ref={containerRef} className="relative inline-flex">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        disabled={saving}
+        title="Změnit viditelnost nodu"
+        className={`inline-flex items-center gap-1 rounded-md border px-2 py-[2px] font-mono text-[11px] transition-opacity hover:opacity-80 disabled:opacity-50 ${tone}`}
+      >
+        <Icon size={11} strokeWidth={2} />
+        <span>{label}</span>
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-50 mt-1 min-w-[180px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
+          {NODE_VISIBILITIES.map((v) => {
+            const priv = v === "private";
+            const VIcon = priv ? Lock : Users;
+            const vLabel = priv ? "soukromé" : "tým";
+            const vHint = priv
+              ? "jen tvůrce"
+              : "všichni v týmu";
+            return (
+              <button
+                key={v}
+                type="button"
+                onClick={() => pick(v)}
+                className={`flex w-full items-start gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
+                  value === v ? "bg-[var(--color-surface-2)]" : ""
+                }`}
+              >
+                <VIcon
+                  size={12}
+                  strokeWidth={2}
+                  className="mt-[2px] shrink-0 text-[var(--color-text-dim)]"
+                />
+                <span className="flex flex-col">
+                  <span className="font-mono text-[11px] text-[var(--color-text)]">
+                    {vLabel}
+                  </span>
+                  <span className="text-[10px] text-[var(--color-text-dim)]">
+                    {vHint}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
