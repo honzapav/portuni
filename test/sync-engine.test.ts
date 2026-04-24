@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile, readFile, stat as fsStat, mkdir } from "node:fs
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { storeFile, resolveNodeInfo, pullFile, statusScan } from "../src/sync/engine.js";
+import { storeFile, resolveNodeInfo, pullFile, statusScan, previewNode } from "../src/sync/engine.js";
 import { registerMirror } from "../src/sync/mirror-registry.js";
 import { sha256Buffer, sha256File } from "../src/sync/hash.js";
 import { getFileState, resetLocalDbForTests } from "../src/sync/local-db.js";
@@ -187,6 +187,20 @@ describe("statusScan", () => {
       scan.new_local.find((e) => e.filename === "unknown.md"),
       "expected unknown.md in new_local",
     );
+  });
+});
+
+describe("previewNode", () => {
+  it("returns per-file statuses scoped to the node", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await registerMirror("U1", nodeId, join(workspace, "mirror"));
+    const src = join(workspace, "pv.txt");
+    await writeFile(src, "pv");
+    const stored = await storeFile(db, { userId: "U1", nodeId, localPath: src });
+    const r = await previewNode(db, { userId: "U1", nodeId });
+    const entry = r.files.find((f) => f.file_id === stored.file_id);
+    assert.ok(entry);
+    assert.equal(entry!.status, "unchanged");
   });
 });
 

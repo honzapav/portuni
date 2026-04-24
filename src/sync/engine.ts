@@ -699,3 +699,53 @@ async function walkMirror(
   }
 }
 
+// ---------------------------------------------------------------------------
+// previewNode
+// ---------------------------------------------------------------------------
+
+export interface PreviewNodeArgs {
+  userId: string;
+  nodeId: string;
+}
+
+export interface PreviewFileEntry {
+  file_id: string;
+  filename: string;
+  status: "new" | "updated" | "unchanged" | "conflict" | "orphan" | "native";
+  remote_hash: string | null;
+  local_hash: string | null;
+  last_synced_hash: string | null;
+}
+
+export interface PreviewNodeResult {
+  files: PreviewFileEntry[];
+}
+
+export async function previewNode(
+  db: Client,
+  a: PreviewNodeArgs,
+): Promise<PreviewNodeResult> {
+  const scan = await statusScan(db, {
+    userId: a.userId,
+    nodeId: a.nodeId,
+    includeDiscovery: false,
+  });
+  const files: PreviewFileEntry[] = [];
+  const toEntry =
+    (cls: "new" | "updated" | "unchanged" | "conflict" | "orphan" | "native") =>
+    (e: StatusFileEntry): PreviewFileEntry => ({
+      file_id: e.file_id,
+      filename: e.filename,
+      status: cls,
+      remote_hash: e.remote_hash,
+      local_hash: e.local_hash,
+      last_synced_hash: e.last_synced_hash,
+    });
+  scan.clean.forEach((e) => files.push(toEntry("unchanged")(e)));
+  scan.push_candidates.forEach((e) => files.push(toEntry("updated")(e)));
+  scan.pull_candidates.forEach((e) => files.push(toEntry("updated")(e)));
+  scan.conflicts.forEach((e) => files.push(toEntry("conflict")(e)));
+  scan.orphan.forEach((e) => files.push(toEntry("orphan")(e)));
+  scan.native.forEach((e) => files.push(toEntry("native")(e)));
+  return { files };
+}
