@@ -34,6 +34,9 @@ import {
 } from "./tools/entity-attributes.js";
 import { updateNodeInternal } from "./tools/nodes.js";
 import { generateSyncKey } from "./sync/sync-key.js";
+import { listUserMirrors, unregisterMirror } from "./sync/mirror-registry.js";
+import { getLocalMirror } from "./sync/local-db.js";
+import { deriveLocalPath, buildNodeRoot } from "./sync/remote-path.js";
 
 import { getDb } from "./db.js";
 import { SOLO_USER, NODE_TYPES, NODE_VISIBILITIES, EDGE_RELATIONS, EVENT_TYPES } from "./schema.js";
@@ -118,19 +121,59 @@ async function loadNodeDetail(nodeId: string): Promise<NodeDetail | null> {
     };
   });
 
+  const mirror = await getLocalMirror(SOLO_USER, row.id);
+  const mirrorPath = mirror?.local_path ?? null;
+  const local_mirror = mirror
+    ? { local_path: mirror.local_path, registered_at: mirror.registered_at }
+    : null;
+
+  // Resolve the org_sync_key once for this node so per-file derivation can
+  // reuse it. Organizations themselves have no parent org -- buildNodeRoot
+  // falls back to the node's own sync_key in that case.
+  let orgSyncKey: string | null = null;
+  if (row.type !== "organization") {
+    const orgRes = await db.execute({
+      sql: `SELECT org.sync_key FROM edges e
+              JOIN nodes org ON org.id = e.target_id
+             WHERE e.source_id = ? AND e.relation = 'belongs_to' AND org.type = 'organization'
+             LIMIT 1`,
+      args: [row.id],
+    });
+    orgSyncKey = orgRes.rows.length > 0 ? (orgRes.rows[0].sync_key as string | null) ?? null : null;
+  } else {
+    orgSyncKey = row.sync_key;
+  }
+
   const fileRes = await db.execute({
-    sql: `SELECT id, filename, status, description, local_path, mime_type
+    sql: `SELECT id, filename, status, description, local_path, remote_path, mime_type
           FROM files WHERE node_id = ? ORDER BY created_at DESC`,
     args: [row.id],
   });
-  const files = fileRes.rows.map((f) => ({
-    id: f.id as string,
-    filename: f.filename as string,
-    status: f.status as string,
-    description: (f.description as string | null) ?? null,
-    local_path: (f.local_path as string | null) ?? null,
-    mime_type: (f.mime_type as string | null) ?? null,
-  }));
+  const files = fileRes.rows.map((f) => {
+    const remotePath = (f.remote_path as string | null) ?? null;
+    const legacyLocal = (f.local_path as string | null) ?? null;
+    let derivedLocal: string | null = null;
+    if (mirrorPath && remotePath) {
+      const nodeRoot = buildNodeRoot({
+        orgSyncKey,
+        nodeType: row.type,
+        nodeSyncKey: row.sync_key,
+      });
+      try {
+        derivedLocal = deriveLocalPath({ mirrorRoot: mirrorPath, nodeRoot, remotePath });
+      } catch {
+        derivedLocal = null;
+      }
+    }
+    return {
+      id: f.id as string,
+      filename: f.filename as string,
+      status: f.status as string,
+      description: (f.description as string | null) ?? null,
+      local_path: derivedLocal ?? legacyLocal,
+      mime_type: (f.mime_type as string | null) ?? null,
+    };
+  });
 
   const eventRes = await db.execute({
     sql: `SELECT id, type, content, meta, status, refs, task_ref, created_at
@@ -148,19 +191,6 @@ async function loadNodeDetail(nodeId: string): Promise<NodeDetail | null> {
     task_ref: (e.task_ref as string | null) ?? null,
     created_at: e.created_at as string,
   }));
-
-  const mirrorRes = await db.execute({
-    sql: `SELECT local_path, registered_at
-          FROM local_mirrors WHERE user_id = ? AND node_id = ?`,
-    args: [SOLO_USER, row.id],
-  });
-  const local_mirror =
-    mirrorRes.rows.length > 0
-      ? {
-          local_path: mirrorRes.rows[0].local_path as string,
-          registered_at: mirrorRes.rows[0].registered_at as string,
-        }
-      : null;
 
   // Owner
   const ownerRow = row.owner_id
@@ -245,18 +275,32 @@ async function loadNodeDetail(nodeId: string): Promise<NodeDetail | null> {
 async function resolveContext(path: string): Promise<unknown> {
   const db = getDb();
 
-  // Find node whose local_path matches or is a parent of the given path
-  const mirrors = await db.execute({
-    sql: "SELECT node_id, local_path FROM local_mirrors WHERE user_id = ? ORDER BY length(local_path) DESC",
-    args: [SOLO_USER],
-  });
+  // Find node whose local_path matches or is a parent of the given path.
+  // Read mirrors from per-device sync.db; tolerate stale rows (mirror exists
+  // for a node that was purged from the shared DB) by skipping them and
+  // firing a fire-and-forget cleanup.
+  const rawMirrors = await listUserMirrors(SOLO_USER);
+  const mirrors: Array<{ node_id: string; local_path: string }> = [];
+  for (const m of rawMirrors) {
+    const e = await db.execute({
+      sql: "SELECT 1 FROM nodes WHERE id = ? LIMIT 1",
+      args: [m.node_id],
+    });
+    if (e.rows.length > 0) {
+      mirrors.push({ node_id: m.node_id, local_path: m.local_path });
+    } else {
+      void unregisterMirror(SOLO_USER, m.node_id).catch(() => undefined);
+    }
+  }
+  // Longest-prefix match: order by path length desc (matches old ORDER BY).
+  mirrors.sort((a, b) => b.local_path.length - a.local_path.length);
 
   let nodeId: string | null = null;
   let mirrorPath: string | null = null;
-  for (const row of mirrors.rows) {
-    const lp = row.local_path as string;
+  for (const row of mirrors) {
+    const lp = row.local_path;
     if (path === lp || path.startsWith(lp + "/")) {
-      nodeId = row.node_id as string;
+      nodeId = row.node_id;
       mirrorPath = lp;
       break;
     }
@@ -301,17 +345,23 @@ async function resolveContext(path: string): Promise<unknown> {
     created_at: e.created_at as string,
   }));
 
-  // Get local mirrors for related nodes
+  // Get local mirrors for related nodes (per-device sync.db, with stale
+  // tolerance like the parent scan above).
   const relatedIds = edges.rows.map((r) => r.related_id as string);
   let relatedMirrors: Record<string, string> = {};
   if (relatedIds.length > 0) {
-    const ph = relatedIds.map(() => "?").join(",");
-    const mr = await db.execute({
-      sql: `SELECT node_id, local_path FROM local_mirrors WHERE user_id = ? AND node_id IN (${ph})`,
-      args: [SOLO_USER, ...relatedIds],
-    });
-    for (const row of mr.rows) {
-      relatedMirrors[row.node_id as string] = row.local_path as string;
+    const allMirrors = await listUserMirrors(SOLO_USER);
+    for (const m of allMirrors) {
+      if (!relatedIds.includes(m.node_id)) continue;
+      const e = await db.execute({
+        sql: "SELECT 1 FROM nodes WHERE id = ? LIMIT 1",
+        args: [m.node_id],
+      });
+      if (e.rows.length > 0) {
+        relatedMirrors[m.node_id] = m.local_path;
+      } else {
+        void unregisterMirror(SOLO_USER, m.node_id).catch(() => undefined);
+      }
     }
   }
 
