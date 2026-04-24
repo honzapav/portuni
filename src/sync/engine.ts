@@ -1004,3 +1004,171 @@ export async function moveFile(
     detail: { remote_done: true, local_done: localDone },
   };
 }
+
+export interface RenameFolderArgs {
+  userId: string;
+  nodeId: string;
+  oldPrefix: string;
+  newPrefix: string;
+  dryRun?: boolean;
+}
+
+export type RenameFolderResult =
+  | {
+      type: "preview";
+      files: Array<{
+        file_id: string;
+        filename: string;
+        old_remote_path: string;
+        new_remote_path: string;
+        old_local_path: string | null;
+        new_local_path: string | null;
+      }>;
+    }
+  | {
+      type: "applied";
+      renamed: number;
+      failed: number;
+      files: Array<{
+        file_id: string;
+        status: "ok" | "repair_needed";
+        old_remote_path: string;
+        new_remote_path: string;
+        error?: string;
+      }>;
+    };
+
+export async function renameFolder(
+  db: Client,
+  a: RenameFolderArgs,
+): Promise<RenameFolderResult> {
+  const info = await resolveNodeInfo(db, a.nodeId);
+  const nodeRoot = buildNodeRoot(info);
+  const oldAbs = `${nodeRoot}/${a.oldPrefix}`;
+  const newAbs = `${nodeRoot}/${a.newPrefix}`;
+  const mirrorRoot = await getMirrorPath(a.userId, a.nodeId);
+
+  const rows = await db.execute({
+    sql: "SELECT id, filename, remote_name, remote_path FROM files WHERE node_id = ? AND remote_path LIKE ?",
+    args: [a.nodeId, `${oldAbs}/%`],
+  });
+  const affected = rows.rows.map((r) => {
+    const oldRemote = r.remote_path as string;
+    const newRemote = oldRemote.replace(oldAbs, newAbs);
+    return {
+      file_id: r.id as string,
+      filename: r.filename as string,
+      remote_name: r.remote_name as string,
+      old_remote_path: oldRemote,
+      new_remote_path: newRemote,
+      old_local_path: mirrorRoot
+        ? (() => {
+            try {
+              return deriveLocalPath({ mirrorRoot, nodeRoot, remotePath: oldRemote });
+            } catch {
+              return null;
+            }
+          })()
+        : null,
+      new_local_path: mirrorRoot
+        ? (() => {
+            try {
+              return deriveLocalPath({ mirrorRoot, nodeRoot, remotePath: newRemote });
+            } catch {
+              return null;
+            }
+          })()
+        : null,
+    };
+  });
+
+  if (a.dryRun !== false) {
+    return {
+      type: "preview",
+      files: affected.map(
+        ({ file_id, filename, old_remote_path, new_remote_path, old_local_path, new_local_path }) => ({
+          file_id,
+          filename,
+          old_remote_path,
+          new_remote_path,
+          old_local_path,
+          new_local_path,
+        }),
+      ),
+    };
+  }
+
+  const results: Array<{
+    file_id: string;
+    status: "ok" | "repair_needed";
+    old_remote_path: string;
+    new_remote_path: string;
+    error?: string;
+  }> = [];
+  const now = new Date().toISOString();
+
+  for (const f of affected) {
+    try {
+      const adapter = await getAdapter(db, f.remote_name);
+      await adapter.rename(f.old_remote_path, f.new_remote_path);
+      if (f.old_local_path && f.new_local_path) {
+        try {
+          await mkdir(dirname(f.new_local_path), { recursive: true });
+          await fsRename(f.old_local_path, f.new_local_path);
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+            await db.execute({
+              sql: "UPDATE files SET remote_path = ?, updated_at = ? WHERE id = ?",
+              args: [f.new_remote_path, now, f.file_id],
+            });
+            results.push({
+              file_id: f.file_id,
+              status: "repair_needed",
+              old_remote_path: f.old_remote_path,
+              new_remote_path: f.new_remote_path,
+              error: `local: ${(e as Error).message}`,
+            });
+            continue;
+          }
+        }
+      }
+      await db.execute({
+        sql: "UPDATE files SET remote_path = ?, updated_at = ? WHERE id = ?",
+        args: [f.new_remote_path, now, f.file_id],
+      });
+      results.push({
+        file_id: f.file_id,
+        status: "ok",
+        old_remote_path: f.old_remote_path,
+        new_remote_path: f.new_remote_path,
+      });
+    } catch (e) {
+      results.push({
+        file_id: f.file_id,
+        status: "repair_needed",
+        old_remote_path: f.old_remote_path,
+        new_remote_path: f.new_remote_path,
+        error: `remote: ${(e as Error).message}`,
+      });
+    }
+  }
+
+  await db.execute({
+    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+          VALUES (?, ?, 'sync_rename_folder', 'node', ?, ?, ?)`,
+    args: [
+      ulid(),
+      a.userId,
+      a.nodeId,
+      JSON.stringify({ old_prefix: a.oldPrefix, new_prefix: a.newPrefix, results }),
+      now,
+    ],
+  });
+
+  return {
+    type: "applied",
+    renamed: results.filter((r) => r.status === "ok").length,
+    failed: results.filter((r) => r.status === "repair_needed").length,
+    files: results,
+  };
+}
