@@ -10,6 +10,7 @@ import {
   getFileState,
   getRemoteStat,
   upsertRemoteStat,
+  deleteFileState,
 } from "./local-db.js";
 import { getMirrorPath, listUserMirrors, unregisterMirror } from "./mirror-registry.js";
 import {
@@ -1254,4 +1255,127 @@ export async function adoptFiles(
     adopted.push({ file_id: id, remote_path: p, filename, hash: stat.hash });
   }
   return { adopted, skipped };
+}
+
+// ---------------------------------------------------------------------------
+// deleteFile (confirm-first; modes: complete | unregister_only)
+// ---------------------------------------------------------------------------
+
+export interface DeleteFileArgs {
+  userId: string;
+  fileId: string;
+  mode?: "complete" | "unregister_only";
+  confirmed?: boolean;
+}
+
+export interface DeleteFilePreview {
+  requires_confirmation: true;
+  preview: {
+    file_id: string;
+    filename: string;
+    mode: "complete" | "unregister_only";
+    remote_name: string | null;
+    remote_path: string | null;
+    local_path: string | null;
+    will_remove_from: string[];
+  };
+  next_call: string;
+}
+
+export interface DeleteFileSuccess {
+  file_id: string;
+  mode: "complete" | "unregister_only";
+  deleted_at: string;
+}
+
+export async function deleteFile(
+  db: Client,
+  a: DeleteFileArgs,
+): Promise<DeleteFilePreview | DeleteFileSuccess> {
+  const r = await db.execute({
+    sql: "SELECT id, node_id, filename, remote_name, remote_path FROM files WHERE id = ?",
+    args: [a.fileId],
+  });
+  if (r.rows.length === 0) throw new Error(`File ${a.fileId} not found`);
+  const f = r.rows[0];
+  const mode = a.mode ?? "complete";
+  const nodeId = f.node_id as string;
+  const remoteName = f.remote_name as string | null;
+  const remotePath = f.remote_path as string | null;
+  const filename = f.filename as string;
+
+  let localPath: string | null = null;
+  const mirror = await getMirrorPath(a.userId, nodeId);
+  if (mirror && remotePath) {
+    try {
+      const info = await resolveNodeInfo(db, nodeId);
+      localPath = deriveLocalPath({
+        mirrorRoot: mirror,
+        nodeRoot: buildNodeRoot(info),
+        remotePath,
+      });
+    } catch {
+      localPath = null;
+    }
+  }
+
+  if (!a.confirmed) {
+    const willRemove: string[] = [];
+    if (mode === "complete") {
+      if (remoteName && remotePath) willRemove.push("remote");
+      if (localPath) willRemove.push("local");
+    }
+    willRemove.push("portuni");
+    return {
+      requires_confirmation: true,
+      preview: {
+        file_id: a.fileId,
+        filename,
+        mode,
+        remote_name: remoteName,
+        remote_path: remotePath,
+        local_path: localPath,
+        will_remove_from: willRemove,
+      },
+      next_call: "portuni_delete_file with confirmed: true",
+    };
+  }
+
+  const now = new Date().toISOString();
+
+  if (mode === "complete" && remoteName && remotePath) {
+    try {
+      const adapter = await getAdapter(db, remoteName);
+      await adapter.delete(remotePath);
+    } catch {
+      // best-effort: continue
+    }
+    if (localPath) {
+      const { rm } = await import("node:fs/promises");
+      await rm(localPath, { force: true }).catch(() => undefined);
+    }
+  }
+
+  await db.execute({ sql: "DELETE FROM files WHERE id = ?", args: [a.fileId] });
+  await deleteFileState(a.fileId).catch(() => undefined);
+
+  await db.execute({
+    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+          VALUES (?, ?, 'sync_delete', 'file', ?, ?, ?)`,
+    args: [
+      ulid(),
+      a.userId,
+      a.fileId,
+      JSON.stringify({
+        mode,
+        remote_name: remoteName,
+        remote_path: remotePath,
+        local_path: localPath,
+        filename,
+      }),
+      now,
+    ],
+  });
+
+  return { file_id: a.fileId, mode, deleted_at: now };
 }
