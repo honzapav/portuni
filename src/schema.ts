@@ -104,6 +104,12 @@ const DDL = [
     node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     filename TEXT NOT NULL,
     local_path TEXT,
+    remote_name TEXT,
+    remote_path TEXT,
+    current_remote_hash TEXT,
+    last_pushed_by TEXT,
+    last_pushed_at DATETIME,
+    is_native_format INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'wip' CHECK(status IN (${FILE_STATUSES_SQL})),
     description TEXT,
     mime_type TEXT,
@@ -410,6 +416,26 @@ export async function runMigration009(db: Client): Promise<void> {
   await db.execute(DDL_REMOTES_TABLE);
   await db.execute(DDL_REMOTE_ROUTING_TABLE);
   await db.execute(INDEX_REMOTE_ROUTING_PRIORITY);
+}
+
+// Migration 010: additively extend `files` with the columns needed to track
+// the remote source-of-truth. Does NOT drop `local_path` -- that happens in
+// a later plan (migration 012). Each ALTER is gated by a column-existence
+// check so the migration is safe to re-run.
+export async function runMigration010(db: Client): Promise<void> {
+  const info = await db.execute("PRAGMA table_info(files)");
+  const existing = new Set(info.rows.map((r) => r.name as string));
+  const additions: Array<[string, string]> = [
+    ["remote_name", "ALTER TABLE files ADD COLUMN remote_name TEXT"],
+    ["remote_path", "ALTER TABLE files ADD COLUMN remote_path TEXT"],
+    ["current_remote_hash", "ALTER TABLE files ADD COLUMN current_remote_hash TEXT"],
+    ["last_pushed_by", "ALTER TABLE files ADD COLUMN last_pushed_by TEXT"],
+    ["last_pushed_at", "ALTER TABLE files ADD COLUMN last_pushed_at DATETIME"],
+    ["is_native_format", "ALTER TABLE files ADD COLUMN is_native_format INTEGER NOT NULL DEFAULT 0"],
+  ];
+  for (const [col, sql] of additions) {
+    if (!existing.has(col)) await db.execute(sql);
+  }
 }
 
 // Migration 006: add actors, responsibilities, responsibility_assignments,
@@ -1092,6 +1118,24 @@ const MIGRATIONS: Migration[] = [
     up: runMigration009,
   },
 
+  // Migration 010: extend `files` with the columns needed to track the
+  // remote source-of-truth. Additive only -- does not drop legacy columns.
+  {
+    id: "010_files_remote_columns",
+    isApplied: async (db) => {
+      const info = await db.execute("PRAGMA table_info(files)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      return [
+        "remote_name",
+        "remote_path",
+        "current_remote_hash",
+        "last_pushed_by",
+        "last_pushed_at",
+        "is_native_format",
+      ].every((c) => cols.has(c));
+    },
+    up: runMigration010,
+  },
 ];
 
 async function runMigrations(db: Client): Promise<void> {

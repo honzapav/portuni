@@ -4,7 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient, type Client } from "@libsql/client";
-import { runMigration009 } from "../src/schema.js";
+import { runMigration009, runMigration010 } from "../src/schema.js";
 
 async function freshPre009Db(): Promise<Client> {
   const db = createClient({ url: ":memory:" });
@@ -100,6 +100,76 @@ describe("migration 009 -- remotes + remote_routing", () => {
         args: [10, "nonexistent"],
       }),
     );
+  });
+});
+
+describe("migration 010 -- extend files table", () => {
+  async function freshPre010Db(): Promise<Client> {
+    const db = await freshPre009Db();
+    await runMigration009(db);
+    return db;
+  }
+
+  it("adds 6 new columns to files", async () => {
+    const db = await freshPre010Db();
+    await runMigration010(db);
+    const info = await db.execute("PRAGMA table_info(files)");
+    const cols = new Set(info.rows.map((r) => r.name as string));
+    for (const expected of [
+      "remote_name",
+      "remote_path",
+      "current_remote_hash",
+      "last_pushed_by",
+      "last_pushed_at",
+      "is_native_format",
+    ]) {
+      assert.ok(cols.has(expected), `expected column ${expected} on files`);
+    }
+  });
+
+  it("is_native_format defaults to 0", async () => {
+    const db = await freshPre010Db();
+    await runMigration010(db);
+    // Insert a node + a file to verify default
+    await db.execute({
+      sql: "INSERT INTO nodes (id, type, name, created_by) VALUES (?, 'project', 'P', 'U1')",
+      args: ["01J7N100000000000000000001"],
+    });
+    await db.execute({
+      sql: "INSERT INTO files (id, node_id, filename, created_by) VALUES (?, ?, ?, ?)",
+      args: ["F1", "01J7N100000000000000000001", "x.md", "U1"],
+    });
+    const r = await db.execute("SELECT is_native_format FROM files WHERE id = 'F1'");
+    assert.equal(Number(r.rows[0].is_native_format), 0);
+  });
+
+  it("is idempotent on re-run", async () => {
+    const db = await freshPre010Db();
+    await runMigration010(db);
+    await runMigration010(db);
+    const info = await db.execute("PRAGMA table_info(files)");
+    const cols = new Set(info.rows.map((r) => r.name as string));
+    assert.ok(cols.has("remote_name"));
+  });
+
+  it("isApplied flips false -> true", async () => {
+    const db = await freshPre010Db();
+    // Before: missing the new columns
+    const infoBefore = await db.execute("PRAGMA table_info(files)");
+    const before = new Set(infoBefore.rows.map((r) => r.name as string));
+    assert.ok(!before.has("remote_name"));
+    await runMigration010(db);
+    const infoAfter = await db.execute("PRAGMA table_info(files)");
+    const after = new Set(infoAfter.rows.map((r) => r.name as string));
+    assert.ok(after.has("remote_name"));
+  });
+
+  it("does NOT drop files.local_path (deferred to a later plan)", async () => {
+    const db = await freshPre010Db();
+    await runMigration010(db);
+    const info = await db.execute("PRAGMA table_info(files)");
+    const cols = new Set(info.rows.map((r) => r.name as string));
+    assert.ok(cols.has("local_path"), "local_path must still exist after 010");
   });
 });
 
