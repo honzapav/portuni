@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, readdir, stat as fsStat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rename as fsRename, stat as fsStat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { Client } from "@libsql/client";
 import { ulid } from "ulid";
@@ -746,4 +746,261 @@ export async function previewNode(
   scan.orphan.forEach((e) => files.push(toEntry("orphan")(e)));
   scan.native.forEach((e) => files.push(toEntry("native")(e)));
   return { files };
+}
+
+// ---------------------------------------------------------------------------
+// moveFile / renameFolder (advanced ops)
+// ---------------------------------------------------------------------------
+
+export type OpStatus = "ok" | "repair_needed";
+export interface OpResult {
+  status: OpStatus;
+  detail: Record<string, unknown>;
+  repair_hint?: string;
+}
+
+export interface MoveFileArgs {
+  userId: string;
+  fileId: string;
+  newSubpath?: string | null;
+  newSection?: Section;
+  newNodeId?: string;
+  confirmed?: boolean;
+}
+
+export interface MoveFilePreview {
+  requires_confirmation: true;
+  preview: {
+    file_id: string;
+    filename: string;
+    old_remote_name: string;
+    old_remote_path: string;
+    new_remote_name: string;
+    new_remote_path: string;
+    old_local_path: string | null;
+    new_local_path: string | null;
+    cross_node: boolean;
+    cross_remote: boolean;
+  };
+  next_call: string;
+}
+
+export interface MoveFileSuccess extends OpResult {
+  file_id: string;
+  new_remote_name: string;
+  new_remote_path: string;
+  new_local_path: string | null;
+  moved_at: string;
+}
+
+function inferSectionFromPath(p: string): Section {
+  if (p.includes("/outputs/")) return "outputs";
+  if (p.includes("/resources/")) return "resources";
+  return "wip";
+}
+
+export async function moveFile(
+  db: Client,
+  a: MoveFileArgs,
+): Promise<MoveFilePreview | MoveFileSuccess> {
+  const row = await db.execute({
+    sql: "SELECT id, node_id, filename, remote_name, remote_path FROM files WHERE id = ?",
+    args: [a.fileId],
+  });
+  if (row.rows.length === 0) throw new Error(`File ${a.fileId} not found`);
+  const fr = row.rows[0];
+  const oldRemoteName = fr.remote_name as string | null;
+  const oldRemotePath = fr.remote_path as string | null;
+  if (!oldRemoteName || !oldRemotePath) throw new Error(`File ${a.fileId} has no remote binding`);
+
+  const targetNodeId = a.newNodeId ?? (fr.node_id as string);
+  const newInfo = await resolveNodeInfo(db, targetNodeId);
+  const newRemoteName = await resolveRemote(db, newInfo.nodeType, newInfo.orgSyncKey);
+  if (!newRemoteName) throw new Error(`No remote for target node`);
+  const filename = fr.filename as string;
+  const newRemotePath = buildRemotePath({
+    ...newInfo,
+    section: a.newSection ?? inferSectionFromPath(oldRemotePath),
+    subpath: a.newSubpath ?? null,
+    filename,
+  });
+
+  const oldMirrorRoot = await getMirrorPath(a.userId, fr.node_id as string);
+  const oldInfo = await resolveNodeInfo(db, fr.node_id as string);
+  const oldLocalPath = oldMirrorRoot
+    ? (() => {
+        try {
+          return deriveLocalPath({
+            mirrorRoot: oldMirrorRoot,
+            nodeRoot: buildNodeRoot(oldInfo),
+            remotePath: oldRemotePath,
+          });
+        } catch {
+          return null;
+        }
+      })()
+    : null;
+  const newMirrorRoot = await getMirrorPath(a.userId, targetNodeId);
+  const newLocalPath = newMirrorRoot
+    ? (() => {
+        try {
+          return deriveLocalPath({
+            mirrorRoot: newMirrorRoot,
+            nodeRoot: buildNodeRoot(newInfo),
+            remotePath: newRemotePath,
+          });
+        } catch {
+          return null;
+        }
+      })()
+    : null;
+
+  const crossNode = targetNodeId !== (fr.node_id as string);
+  const crossRemote = newRemoteName !== oldRemoteName;
+
+  if (!a.confirmed) {
+    return {
+      requires_confirmation: true,
+      preview: {
+        file_id: a.fileId,
+        filename,
+        old_remote_name: oldRemoteName,
+        old_remote_path: oldRemotePath,
+        new_remote_name: newRemoteName,
+        new_remote_path: newRemotePath,
+        old_local_path: oldLocalPath,
+        new_local_path: newLocalPath,
+        cross_node: crossNode,
+        cross_remote: crossRemote,
+      },
+      next_call: "portuni_move_file with confirmed: true",
+    };
+  }
+
+  // Best-effort ordered execution.
+  // 1. Remote move.
+  try {
+    if (!crossRemote) {
+      const adapter = await getAdapter(db, oldRemoteName);
+      await adapter.rename(oldRemotePath, newRemotePath);
+    } else {
+      const src = await getAdapter(db, oldRemoteName);
+      const dst = await getAdapter(db, newRemoteName);
+      const bytes = await src.get(oldRemotePath);
+      await dst.put(newRemotePath, bytes);
+      await src.delete(oldRemotePath);
+    }
+  } catch (e) {
+    return {
+      status: "repair_needed",
+      file_id: a.fileId,
+      new_remote_name: newRemoteName,
+      new_remote_path: newRemotePath,
+      new_local_path: newLocalPath,
+      moved_at: new Date().toISOString(),
+      detail: {
+        phase: "remote",
+        error: (e as Error).message,
+        old_remote_path: oldRemotePath,
+        new_remote_path: newRemotePath,
+      },
+      repair_hint:
+        "Remote move failed. No state changed. Retry the tool; if it still fails, inspect the remote manually.",
+    };
+  }
+
+  // 2. Local move.
+  let localDone = true;
+  if (oldLocalPath && newLocalPath && oldLocalPath !== newLocalPath) {
+    try {
+      await mkdir(dirname(newLocalPath), { recursive: true });
+      await fsRename(oldLocalPath, newLocalPath);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+        // Local file absent - not fatal, remote is already moved.
+        localDone = true;
+      } else {
+        const now = new Date().toISOString();
+        await db.execute({
+          sql: `UPDATE files SET remote_name = ?, remote_path = ?, node_id = ?, updated_at = ? WHERE id = ?`,
+          args: [newRemoteName, newRemotePath, targetNodeId, now, a.fileId],
+        });
+        await db.execute({
+          sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+                VALUES (?, ?, 'sync_move_partial', 'file', ?, ?, ?)`,
+          args: [
+            ulid(),
+            a.userId,
+            a.fileId,
+            JSON.stringify({
+              remote_ok: true,
+              local_error: (e as Error).message,
+              old_local_path: oldLocalPath,
+              new_local_path: newLocalPath,
+            }),
+            now,
+          ],
+        });
+        return {
+          status: "repair_needed",
+          file_id: a.fileId,
+          new_remote_name: newRemoteName,
+          new_remote_path: newRemotePath,
+          new_local_path: newLocalPath,
+          moved_at: now,
+          detail: {
+            phase: "local",
+            remote_already_moved: true,
+            error: (e as Error).message,
+            old_local_path: oldLocalPath,
+            new_local_path: newLocalPath,
+          },
+          repair_hint:
+            "Remote is already at new path; local file could not be moved. Move or copy the local file manually, or run portuni_pull { file_id } to re-download.",
+        };
+      }
+    }
+  }
+
+  // 3. DB update.
+  const now = new Date().toISOString();
+  await db.execute({
+    sql: `UPDATE files SET remote_name = ?, remote_path = ?, node_id = ?, updated_at = ? WHERE id = ?`,
+    args: [newRemoteName, newRemotePath, targetNodeId, now, a.fileId],
+  });
+
+  await db.execute({
+    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+          VALUES (?, ?, 'sync_move', 'file', ?, ?, ?)`,
+    args: [
+      ulid(),
+      a.userId,
+      a.fileId,
+      JSON.stringify({
+        old: {
+          remote_name: oldRemoteName,
+          remote_path: oldRemotePath,
+          local_path: oldLocalPath,
+        },
+        new: {
+          remote_name: newRemoteName,
+          remote_path: newRemotePath,
+          local_path: newLocalPath,
+        },
+        cross_node: crossNode,
+        cross_remote: crossRemote,
+      }),
+      now,
+    ],
+  });
+
+  return {
+    status: "ok",
+    file_id: a.fileId,
+    new_remote_name: newRemoteName,
+    new_remote_path: newRemotePath,
+    new_local_path: newLocalPath,
+    moved_at: now,
+    detail: { remote_done: true, local_done: localDone },
+  };
 }
