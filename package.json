@@ -14,6 +14,7 @@
   "dependencies": {
     "@libsql/client": "^0.17.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "opendal": "^0.49.2",
     "ulid": "^3.0.2",
     "varlock": "^0.7.1"
   },
