@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile, readFile, stat as fsStat, mkdir } from "node:fs
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { storeFile, resolveNodeInfo, pullFile } from "../src/sync/engine.js";
+import { storeFile, resolveNodeInfo, pullFile, statusScan } from "../src/sync/engine.js";
 import { registerMirror } from "../src/sync/mirror-registry.js";
 import { sha256Buffer, sha256File } from "../src/sync/hash.js";
 import { getFileState, resetLocalDbForTests } from "../src/sync/local-db.js";
@@ -138,3 +138,55 @@ describe("pullFile", () => {
     await assert.rejects(() => pullFile(db, { userId: "U1", fileId: "BADID" }));
   });
 });
+
+describe("statusScan", () => {
+  it("classifies a freshly stored file as clean", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await registerMirror("U1", nodeId, join(workspace, "mirror"));
+    const src = join(workspace, "ok.txt");
+    await writeFile(src, "v1");
+    const { file_id } = await storeFile(db, { userId: "U1", nodeId, localPath: src });
+    const scan = await statusScan(db, { userId: "U1", nodeId, includeDiscovery: false });
+    assert.equal(scan.clean.length, 1);
+    assert.equal(scan.clean[0].file_id, file_id);
+  });
+
+  it("classifies a locally modified file as push candidate", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const src = join(workspace, "p.txt");
+    await writeFile(src, "first");
+    const { file_id, local_path } = await storeFile(db, {
+      userId: "U1",
+      nodeId,
+      localPath: src,
+    });
+    // Modify local. Bump mtime explicitly (some filesystems give same ms when
+    // writes happen close together) so the hash cache is invalidated.
+    await writeFile(local_path, "second");
+    const { utimes } = await import("node:fs/promises");
+    const future = new Date(Date.now() + 5000);
+    await utimes(local_path, future, future);
+    const scan = await statusScan(db, { userId: "U1", nodeId, includeDiscovery: false });
+    assert.ok(
+      scan.push_candidates.find((e) => e.file_id === file_id),
+      "expected file in push_candidates",
+    );
+  });
+
+  it("reports a stored file's mirror file as known; unknown files become new_local in discovery phase", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    // Add an un-stored file inside wip/.
+    await mkdir(join(mirrorRoot, "wip"), { recursive: true });
+    await writeFile(join(mirrorRoot, "wip", "unknown.md"), "u");
+    const scan = await statusScan(db, { userId: "U1", nodeId, includeDiscovery: true });
+    assert.ok(
+      scan.new_local.find((e) => e.filename === "unknown.md"),
+      "expected unknown.md in new_local",
+    );
+  });
+});
+
