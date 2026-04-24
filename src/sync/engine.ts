@@ -1172,3 +1172,86 @@ export async function renameFolder(
     files: results,
   };
 }
+
+// ---------------------------------------------------------------------------
+// adoptFiles (remote-only: register untracked remote paths)
+// ---------------------------------------------------------------------------
+
+export interface AdoptFilesArgs {
+  userId: string;
+  nodeId: string;
+  paths: string[];
+  status?: "wip" | "output";
+}
+
+export interface AdoptFilesResult {
+  adopted: Array<{
+    file_id: string;
+    remote_path: string;
+    filename: string;
+    hash: string | null;
+  }>;
+  skipped: Array<{ remote_path: string; reason: string }>;
+}
+
+export async function adoptFiles(
+  db: Client,
+  a: AdoptFilesArgs,
+): Promise<AdoptFilesResult> {
+  const info = await resolveNodeInfo(db, a.nodeId);
+  const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
+  if (!remoteName) throw new Error(`No remote for node ${a.nodeId}`);
+  const adapter = await getAdapter(db, remoteName);
+  const adopted: AdoptFilesResult["adopted"] = [];
+  const skipped: AdoptFilesResult["skipped"] = [];
+  for (const p of a.paths) {
+    const existing = await db.execute({
+      sql: "SELECT id FROM files WHERE node_id = ? AND remote_name = ? AND remote_path = ? LIMIT 1",
+      args: [a.nodeId, remoteName, p],
+    });
+    if (existing.rows.length > 0) {
+      skipped.push({ remote_path: p, reason: "already tracked" });
+      continue;
+    }
+    const stat = await adapter.stat(p);
+    if (!stat) {
+      skipped.push({ remote_path: p, reason: "remote file not found" });
+      continue;
+    }
+    const id = ulid();
+    const now = new Date().toISOString();
+    const filename = p.split("/").pop() ?? p;
+    await db.execute({
+      sql: `INSERT INTO files (id, node_id, filename, status, remote_name, remote_path, current_remote_hash, is_native_format, last_pushed_by, last_pushed_at, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        id,
+        a.nodeId,
+        filename,
+        a.status ?? "wip",
+        remoteName,
+        p,
+        stat.hash,
+        stat.is_native_format ? 1 : 0,
+        a.userId,
+        now,
+        a.userId,
+        now,
+        now,
+      ],
+    });
+    await db.execute({
+      sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+            VALUES (?, ?, 'sync_adopt', 'file', ?, ?, ?)`,
+      args: [
+        ulid(),
+        a.userId,
+        id,
+        JSON.stringify({ remote_name: remoteName, remote_path: p, hash: stat.hash }),
+        now,
+      ],
+    });
+    adopted.push({ file_id: id, remote_path: p, filename, hash: stat.hash });
+  }
+  return { adopted, skipped };
+}
