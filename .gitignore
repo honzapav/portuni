@@ -7,3 +7,6 @@ env.d.ts
 portuni.db
 .firecrawl/
 /docs/
+
+# Local Netlify folder
+.netlify
