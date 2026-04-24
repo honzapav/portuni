@@ -1,6 +1,8 @@
 // src/schema.ts
 import type { Client } from "@libsql/client";
+import { ulid } from "ulid";
 import { getDb } from "./db.js";
+import { slugifyForSyncKey } from "./sync/sync-key.js";
 import {
   NODE_TYPES,
   EDGE_RELATIONS,
@@ -64,11 +66,13 @@ const DDL = [
     owner_id TEXT,
     lifecycle_state TEXT,
     goal TEXT,
+    sync_key TEXT NOT NULL,
     created_by TEXT NOT NULL,
     created_at DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
     CHECK(updated_at >= created_at)
   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_sync_key ON nodes(sync_key) WHERE sync_key IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS edges (
     id TEXT PRIMARY KEY CHECK(length(id) = 26),
     source_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
@@ -416,6 +420,88 @@ export async function runMigration009(db: Client): Promise<void> {
   await db.execute(DDL_REMOTES_TABLE);
   await db.execute(DDL_REMOTE_ROUTING_TABLE);
   await db.execute(INDEX_REMOTE_ROUTING_PRIORITY);
+}
+
+// --- Migration 013 trigger constants (sync_key NOT-NULL enforcement) ---
+//
+// SQLite ALTER TABLE cannot add a NOT NULL column to a table that already
+// has rows, and rebuilding `nodes` to add NOT NULL would force re-creating
+// every CHECK constraint and trigger. Instead, migration 013 adds the
+// column as nullable, backfills it, then enforces non-emptiness via two
+// BEFORE triggers -- INSERT and UPDATE OF sync_key. Combined with the
+// partial UNIQUE index, this gives the full UNIQUE NOT NULL semantics.
+
+export const TRIGGER_NODES_SYNC_KEY_NOT_NULL_INSERT = `
+  CREATE TRIGGER IF NOT EXISTS nodes_sync_key_not_null_insert
+  BEFORE INSERT ON nodes
+  FOR EACH ROW
+  WHEN NEW.sync_key IS NULL OR NEW.sync_key = ''
+  BEGIN
+    SELECT RAISE(ABORT, 'nodes.sync_key must be a non-empty string');
+  END
+`;
+
+export const TRIGGER_NODES_SYNC_KEY_NOT_NULL_UPDATE = `
+  CREATE TRIGGER IF NOT EXISTS nodes_sync_key_not_null_update
+  BEFORE UPDATE OF sync_key ON nodes
+  FOR EACH ROW
+  WHEN NEW.sync_key IS NULL OR NEW.sync_key = ''
+  BEGIN
+    SELECT RAISE(ABORT, 'nodes.sync_key must be a non-empty string');
+  END
+`;
+
+// Migration 013: nodes.sync_key (immutable path identity).
+//
+// 1. Add `sync_key TEXT` column (nullable initially -- ALTER TABLE limit).
+// 2. Backfill existing rows with collision-free slugs derived from name.
+// 3. Install a partial UNIQUE index (`WHERE sync_key IS NOT NULL`).
+// 4. Install BEFORE INSERT/UPDATE triggers that reject NULL or empty
+//    string, giving the column the same enforcement as NOT NULL without
+//    rebuilding the table.
+//
+// Idempotent and recoverable: each step checks current state before acting,
+// so re-running on a clean DB is a no-op and re-running after a partial
+// failure picks up where it left off.
+export async function runMigration013(db: Client): Promise<void> {
+  const info = await db.execute("PRAGMA table_info(nodes)");
+  const cols = new Set(info.rows.map((r) => r.name as string));
+
+  if (!cols.has("sync_key")) {
+    await db.execute("ALTER TABLE nodes ADD COLUMN sync_key TEXT");
+  }
+
+  // Backfill rows with NULL sync_key, deterministic order so re-runs match.
+  const nullRows = await db.execute(
+    "SELECT id, name FROM nodes WHERE sync_key IS NULL ORDER BY created_at ASC",
+  );
+  if (nullRows.rows.length > 0) {
+    const existing = await db.execute(
+      "SELECT sync_key FROM nodes WHERE sync_key IS NOT NULL",
+    );
+    const used = new Set<string>(existing.rows.map((r) => r.sync_key as string));
+    for (const row of nullRows.rows) {
+      const name = row.name as string;
+      const id = row.id as string;
+      const base = slugifyForSyncKey(name);
+      let key = base.length > 0 ? base : `node-${ulid().toLowerCase().slice(-8)}`;
+      while (used.has(key)) {
+        key = `${base.length > 0 ? base : "node"}-${ulid().toLowerCase().slice(-6)}`;
+      }
+      used.add(key);
+      await db.execute({
+        sql: "UPDATE nodes SET sync_key = ? WHERE id = ?",
+        args: [key, id],
+      });
+    }
+  }
+
+  await db.execute(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_sync_key ON nodes(sync_key) WHERE sync_key IS NOT NULL",
+  );
+
+  await db.execute(TRIGGER_NODES_SYNC_KEY_NOT_NULL_INSERT);
+  await db.execute(TRIGGER_NODES_SYNC_KEY_NOT_NULL_UPDATE);
 }
 
 // Migration 010: additively extend `files` with the columns needed to track
@@ -1136,6 +1222,32 @@ const MIGRATIONS: Migration[] = [
     },
     up: runMigration010,
   },
+
+  // Migration 013: nodes.sync_key (immutable path identity).
+  // Adds a UNIQUE NOT-NULL-equivalent column without rebuilding nodes.
+  // See runMigration013 for the rationale (preserves all CHECK constraints
+  // and triggers attached to the existing nodes table).
+  {
+    id: "013_nodes_sync_key",
+    isApplied: async (db) => {
+      const info = await db.execute("PRAGMA table_info(nodes)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      if (!cols.has("sync_key")) return false;
+      const nulls = await db.execute(
+        "SELECT COUNT(*) AS c FROM nodes WHERE sync_key IS NULL",
+      );
+      if (Number(nulls.rows[0].c) > 0) return false;
+      const idx = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_nodes_sync_key'",
+      );
+      if (idx.rows.length === 0) return false;
+      const trg = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND name='nodes_sync_key_not_null_insert'",
+      );
+      return trg.rows.length > 0;
+    },
+    up: runMigration013,
+  },
 ];
 
 async function runMigrations(db: Client): Promise<void> {
@@ -1216,9 +1328,19 @@ const DDL_MIGRATION_006 = [
   TRIGGER_NODES_VALIDATE_LIFECYCLE_STATE,
 ];
 
+// Migration 013 triggers — applied on fresh installs so the sync_key
+// non-empty enforcement is in place from the very first INSERT. The
+// fresh-install nodes DDL declares sync_key as NOT NULL at the column
+// level, but these triggers also catch empty-string and reapply on any
+// existing DB picked up via runMigrations.
+const DDL_MIGRATION_013 = [
+  TRIGGER_NODES_SYNC_KEY_NOT_NULL_INSERT,
+  TRIGGER_NODES_SYNC_KEY_NOT_NULL_UPDATE,
+];
+
 export async function ensureSchema(): Promise<void> {
   const db = getDb();
-  for (const sql of [...DDL, ...DDL_MIGRATION_006, ...SEED]) {
+  for (const sql of [...DDL, ...DDL_MIGRATION_006, ...DDL_MIGRATION_013, ...SEED]) {
     await db.execute(sql);
   }
   await runMigrations(db);

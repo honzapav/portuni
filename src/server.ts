@@ -33,6 +33,7 @@ import {
   listTools,
 } from "./tools/entity-attributes.js";
 import { updateNodeInternal } from "./tools/nodes.js";
+import { generateSyncKey } from "./sync/sync-key.js";
 
 import { getDb } from "./db.js";
 import { SOLO_USER, NODE_TYPES, NODE_VISIBILITIES, EDGE_RELATIONS, EVENT_TYPES } from "./schema.js";
@@ -1101,9 +1102,10 @@ async function main() {
         const db = getDb();
         const id = ulid();
         const now = new Date().toISOString();
+        const syncKey = await generateSyncKey(db, body.name.trim());
         await db.execute({
-          sql: `INSERT INTO nodes (id, type, name, description, meta, status, visibility, created_by, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          sql: `INSERT INTO nodes (id, type, name, description, meta, status, visibility, sync_key, created_by, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           args: [
             id,
             body.type,
@@ -1112,6 +1114,7 @@ async function main() {
             null,
             "active",
             "team",
+            syncKey,
             SOLO_USER,
             now,
             now,

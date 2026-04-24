@@ -36,6 +36,7 @@ async function createTestDb() {
       owner_id TEXT,
       lifecycle_state TEXT,
       goal TEXT,
+      sync_key TEXT NOT NULL,
       created_by TEXT NOT NULL REFERENCES users(id),
       created_at DATETIME NOT NULL DEFAULT (datetime('now')),
       updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
@@ -121,8 +122,8 @@ describe("DDL vs Zod row schemas", () => {
     const db = await createTestDb();
     const id = ulid();
     await db.execute({
-      sql: "INSERT INTO nodes (id, type, name, created_by) VALUES (?, ?, ?, ?)",
-      args: [id, "project", "Test Project", "U1"],
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+      args: [id, "project", "Test Project", id, "U1"],
     });
     const res = await db.execute({ sql: "SELECT * FROM nodes WHERE id = ?", args: [id] });
     assert.doesNotThrow(() => NodeRow.parse(res.rows[0]));
@@ -134,12 +135,12 @@ describe("DDL vs Zod row schemas", () => {
     const n2 = ulid();
     const e1 = ulid();
     await db.execute({
-      sql: "INSERT INTO nodes (id, type, name, created_by) VALUES (?, ?, ?, ?)",
-      args: [n1, "project", "A", "U1"],
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+      args: [n1, "project", "A", n1, "U1"],
     });
     await db.execute({
-      sql: "INSERT INTO nodes (id, type, name, created_by) VALUES (?, ?, ?, ?)",
-      args: [n2, "area", "B", "U1"],
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+      args: [n2, "area", "B", n2, "U1"],
     });
     await db.execute({
       sql: "INSERT INTO edges (id, source_id, target_id, relation, created_by) VALUES (?, ?, ?, ?, ?)",
@@ -163,8 +164,8 @@ describe("DDL vs Zod row schemas", () => {
     const db = await createTestDb();
     const n1 = ulid();
     await db.execute({
-      sql: "INSERT INTO nodes (id, type, name, created_by) VALUES (?, ?, ?, ?)",
-      args: [n1, "project", "Test", "U1"],
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+      args: [n1, "project", "Test", n1, "U1"],
     });
     await db.execute({
       sql: "INSERT INTO local_mirrors (user_id, node_id, local_path) VALUES (?, ?, ?)",
@@ -181,8 +182,8 @@ describe("DDL vs Zod row schemas", () => {
     const db = await createTestDb();
     const n1 = ulid();
     await db.execute({
-      sql: "INSERT INTO nodes (id, type, name, created_by) VALUES (?, ?, ?, ?)",
-      args: [n1, "project", "Test", "U1"],
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+      args: [n1, "project", "Test", n1, "U1"],
     });
     await db.execute({
       sql: "INSERT INTO files (id, node_id, filename, created_by) VALUES (?, ?, ?, ?)",
@@ -196,8 +197,8 @@ describe("DDL vs Zod row schemas", () => {
     const db = await createTestDb();
     const n1 = ulid();
     await db.execute({
-      sql: "INSERT INTO nodes (id, type, name, created_by) VALUES (?, ?, ?, ?)",
-      args: [n1, "project", "Test", "U1"],
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+      args: [n1, "project", "Test", n1, "U1"],
     });
     await db.execute({
       sql: "INSERT INTO events (id, node_id, type, content, created_by) VALUES (?, ?, ?, ?, ?)",
@@ -212,8 +213,8 @@ describe("DDL vs Zod row schemas", () => {
     const id = ulid();
     await assert.rejects(
       db.execute({
-        sql: "INSERT INTO nodes (id, type, name, created_by) VALUES (?, ?, ?, ?)",
-        args: [id, "invalid_type", "Bad", "U1"],
+        sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+        args: [id, "invalid_type", "Bad", id, "U1"],
       }),
     );
   });
@@ -223,8 +224,8 @@ describe("DDL vs Zod row schemas", () => {
     const id = ulid();
     await assert.rejects(
       db.execute({
-        sql: "INSERT INTO nodes (id, type, name, status, created_by) VALUES (?, ?, ?, ?, ?)",
-        args: [id, "project", "Bad", "deleted", "U1"],
+        sql: "INSERT INTO nodes (id, type, name, status, sync_key, created_by) VALUES (?, ?, ?, ?, ?, ?)",
+        args: [id, "project", "Bad", "deleted", id, "U1"],
       }),
     );
   });
@@ -233,8 +234,8 @@ describe("DDL vs Zod row schemas", () => {
     const db = await createTestDb();
     await assert.rejects(
       db.execute({
-        sql: "INSERT INTO nodes (id, type, name, created_by) VALUES (?, ?, ?, ?)",
-        args: ["short", "project", "Bad", "U1"],
+        sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+        args: ["short", "project", "Bad", "short-key", "U1"],
       }),
     );
   });
@@ -244,8 +245,8 @@ describe("DDL vs Zod row schemas", () => {
     const n1 = ulid();
     const e1 = ulid();
     await db.execute({
-      sql: "INSERT INTO nodes (id, type, name, created_by) VALUES (?, ?, ?, ?)",
-      args: [n1, "project", "A", "U1"],
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+      args: [n1, "project", "A", n1, "U1"],
     });
     await assert.rejects(
       db.execute({
@@ -259,8 +260,8 @@ describe("DDL vs Zod row schemas", () => {
     const db = await createTestDb();
     const n1 = ulid();
     await db.execute({
-      sql: "INSERT INTO nodes (id, type, name, created_by) VALUES (?, ?, ?, ?)",
-      args: [n1, "project", "Test", "U1"],
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+      args: [n1, "project", "Test", n1, "U1"],
     });
     await assert.rejects(
       db.execute({
@@ -274,8 +275,8 @@ describe("DDL vs Zod row schemas", () => {
     const db = await createTestDb();
     const n1 = ulid();
     await db.execute({
-      sql: "INSERT INTO nodes (id, type, name, created_by) VALUES (?, ?, ?, ?)",
-      args: [n1, "project", "Test", "U1"],
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+      args: [n1, "project", "Test", n1, "U1"],
     });
     await assert.rejects(
       db.execute({
@@ -289,8 +290,8 @@ describe("DDL vs Zod row schemas", () => {
     const db = await createTestDb();
     const n1 = ulid();
     await db.execute({
-      sql: "INSERT INTO nodes (id, type, name, created_by) VALUES (?, ?, ?, ?)",
-      args: [n1, "project", "Test", "U1"],
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+      args: [n1, "project", "Test", n1, "U1"],
     });
     await assert.rejects(
       db.execute({
@@ -308,12 +309,12 @@ describe("DDL vs Zod row schemas", () => {
     const e1 = ulid();
     // Create two nodes and an edge between them
     await db.execute({
-      sql: "INSERT INTO nodes (id, type, name, created_by) VALUES (?, ?, ?, ?)",
-      args: [n1, "organization", "Org", "U1"],
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+      args: [n1, "organization", "Org", n1, "U1"],
     });
     await db.execute({
-      sql: "INSERT INTO nodes (id, type, name, created_by) VALUES (?, ?, ?, ?)",
-      args: [n2, "project", "Proj", "U1"],
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+      args: [n2, "project", "Proj", n2, "U1"],
     });
     await db.execute({
       sql: "INSERT INTO edges (id, source_id, target_id, relation, created_by) VALUES (?, ?, ?, ?, ?)",
