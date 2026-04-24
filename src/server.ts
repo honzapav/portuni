@@ -428,6 +428,35 @@ FILE SYNC TOOLS (portuni_store / portuni_pull / portuni_status / portuni_list_fi
 - Node paths are built from immutable sync_key identifiers, so renaming a node does NOT break remote folder structure.
 - Each device has its own mirror registry in .portuni/sync.db. Stale rows (node deleted on another device) are skipped and cleaned up lazily.
 
+Destructive sync operations (confirm-first):
+- portuni_delete_file and portuni_move_file return a preview when called without
+  confirmed: true. Present the preview to the user, get explicit confirmation,
+  then call again with confirmed: true. Do not skip.
+- portuni_rename_folder defaults to dry_run: true. Show the affected file list;
+  call again with dry_run: false to apply.
+- portuni_adopt_files is not destructive. Safe to run after portuni_status
+  surfaces new_remote entries.
+
+Operation semantics:
+- Operations are best-effort ordered (remote, then local, then DB). On partial
+  failure the service returns a structured status "repair_needed" with a
+  repair_hint describing the next step. The operator (you, agent) surfaces it
+  to the user and follows the hint.
+
+Session discipline:
+- Call portuni_status before ending a session if files were touched. It
+  classifies tracked files and surfaces untracked local / remote files.
+  Move detection flags files where a deleted_local + new_local pair share
+  the same last-synced hash.
+
+Data-safety defaults:
+- Portuni never auto-deletes and never auto-merges conflicts.
+- Hash (not timestamp) is file identity.
+- Drive delete is soft (trash, 30-day recovery). Drive versioning is not
+  disabled by Portuni.
+- Node display names can be renamed freely; sync paths use an immutable
+  sync_key, so remote folders stay stable.
+
 EVENT TYPES (strictly enforced): decision, discovery, blocker, reference, milestone, note, change. No other event types are accepted by portuni_log.
 
 NODE STATUSES: active (default), completed, archived. Strictly enforced.
