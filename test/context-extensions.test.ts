@@ -4,9 +4,12 @@
 // the exported function against an in-memory libsql + runMigration006 schema
 // so the DB triggers are in effect.
 
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ulid } from "ulid";
 import { runMigration006 } from "../src/schema.js";
 import { createActor } from "../src/tools/actors.js";
@@ -14,6 +17,27 @@ import { createResponsibility } from "../src/tools/responsibilities.js";
 import { addDataSource, addTool } from "../src/tools/entity-attributes.js";
 import { updateNodeInternal } from "../src/tools/nodes.js";
 import { buildContextPayload } from "../src/tools/context.js";
+import { resetLocalDbForTests } from "../src/sync/local-db.js";
+
+// buildContextPayload now reads mirrors from the per-device sync.db (driven
+// by PORTUNI_WORKSPACE_ROOT). Set up a temp workspace per test so
+// listUserMirrors does not throw.
+let workspace: string;
+let originalEnv: string | undefined;
+
+beforeEach(async () => {
+  workspace = await mkdtemp(join(tmpdir(), "portuni-ctx-ext-"));
+  originalEnv = process.env.PORTUNI_WORKSPACE_ROOT;
+  process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+  resetLocalDbForTests();
+});
+
+afterEach(async () => {
+  resetLocalDbForTests();
+  if (originalEnv === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
+  else process.env.PORTUNI_WORKSPACE_ROOT = originalEnv;
+  await rm(workspace, { recursive: true, force: true });
+});
 
 async function freshEnv() {
   const db = createClient({ url: ":memory:" });
