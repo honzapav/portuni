@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile, readFile, stat as fsStat, mkdir } from "node:fs
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { storeFile, resolveNodeInfo } from "../src/sync/engine.js";
+import { storeFile, resolveNodeInfo, pullFile } from "../src/sync/engine.js";
 import { registerMirror } from "../src/sync/mirror-registry.js";
 import { sha256Buffer, sha256File } from "../src/sync/hash.js";
 import { getFileState, resetLocalDbForTests } from "../src/sync/local-db.js";
@@ -118,3 +118,23 @@ describe("storeFile v3 (sync_key paths)", () => {
   });
 });
 
+describe("pullFile", () => {
+  it("downloads remote content into the mirror and writes file_state", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await registerMirror("U1", nodeId, join(workspace, "mirror"));
+    const src = join(workspace, "src.txt");
+    await writeFile(src, "source-bytes");
+    const stored = await storeFile(db, { userId: "U1", nodeId, localPath: src });
+    // Simulate: delete local mirror file; pull should restore.
+    await rm(stored.local_path, { force: true });
+    const pulled = await pullFile(db, { userId: "U1", fileId: stored.file_id });
+    assert.equal(pulled.local_path, stored.local_path);
+    assert.equal(pulled.hash, stored.hash);
+    const content = await readFile(pulled.local_path, "utf-8");
+    assert.equal(content, "source-bytes");
+  });
+  it("throws when file_id does not exist", async () => {
+    const { db } = await makeSharedDb();
+    await assert.rejects(() => pullFile(db, { userId: "U1", fileId: "BADID" }));
+  });
+});

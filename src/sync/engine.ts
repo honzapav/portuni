@@ -1,14 +1,16 @@
-import { copyFile, mkdir, readFile, stat as fsStat } from "node:fs/promises";
+import { copyFile, mkdir, readFile, stat as fsStat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { Client } from "@libsql/client";
 import { ulid } from "ulid";
-import { sha256File, statForCache } from "./hash.js";
+import { sha256Buffer, sha256File, statForCache } from "./hash.js";
 import { getAdapter } from "./adapter-cache.js";
 import { resolveRemote } from "./routing.js";
 import { upsertFileState } from "./local-db.js";
 import { getMirrorPath } from "./mirror-registry.js";
 import {
+  buildNodeRoot,
   buildRemotePath,
+  deriveLocalPath,
   subpathFromMirror,
   type Section,
   type NodeInfo,
@@ -229,4 +231,72 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
     local_path: mirroredAbs,
     hash,
   };
+}
+
+export interface PullFileArgs {
+  userId: string;
+  fileId: string;
+}
+
+export interface PullFileResult {
+  file_id: string;
+  local_path: string;
+  hash: string;
+}
+
+export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileResult> {
+  const row = await db.execute({
+    sql: "SELECT id, node_id, filename, remote_name, remote_path FROM files WHERE id = ?",
+    args: [a.fileId],
+  });
+  if (row.rows.length === 0) throw new Error(`File ${a.fileId} not found`);
+  const f = row.rows[0];
+  const nodeId = f.node_id as string;
+  const remoteName = f.remote_name as string | null;
+  const remotePath = f.remote_path as string | null;
+  if (!remoteName || !remotePath) {
+    throw new Error(`File ${a.fileId} has no remote binding`);
+  }
+
+  const mirrorRoot = await getMirrorPath(a.userId, nodeId);
+  if (!mirrorRoot) {
+    throw new Error(
+      `Node ${nodeId} has no local mirror on this device. Register via portuni_mirror first.`,
+    );
+  }
+
+  const info = await resolveNodeInfo(db, nodeId);
+  const nodeRoot = buildNodeRoot(info);
+  const localPath = deriveLocalPath({ mirrorRoot, nodeRoot, remotePath });
+
+  const adapter = await getAdapter(db, remoteName);
+  const content = await adapter.get(remotePath);
+  await mkdir(dirname(localPath), { recursive: true });
+  await writeFile(localPath, content);
+
+  const hash = sha256Buffer(content);
+  const fsInfo = await statForCache(localPath);
+  const now = new Date().toISOString();
+  await upsertFileState({
+    file_id: a.fileId,
+    last_synced_hash: hash,
+    last_synced_at: now,
+    cached_local_hash: hash,
+    cached_mtime: fsInfo.mtime,
+    cached_size: fsInfo.size,
+  });
+
+  await db.execute({
+    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+          VALUES (?, ?, 'sync_pull', 'file', ?, ?, ?)`,
+    args: [
+      ulid(),
+      a.userId,
+      a.fileId,
+      JSON.stringify({ remote_name: remoteName, remote_path: remotePath, hash }),
+      now,
+    ],
+  });
+
+  return { file_id: a.fileId, local_path: localPath, hash };
 }
