@@ -326,6 +326,12 @@ export interface StatusArgs {
   nodeId?: string;
   remoteName?: string;
   includeDiscovery?: boolean;
+  // Fast mode: classify purely from DB cache (file_state.cached_local_hash
+  // + files.current_remote_hash + file_state.last_synced_hash) without
+  // touching the filesystem or the remote adapter. Used by the UI sync
+  // indicator where "what we last knew" is acceptable; the trigger path
+  // still uses the slow scan for ground truth before acting.
+  fast?: boolean;
 }
 
 export interface StatusFileEntry {
@@ -551,11 +557,15 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
     const state = await getFileState(fileId);
     base.last_synced_hash = state?.last_synced_hash ?? null;
     const currentRemoteHash = (row.current_remote_hash as string | null) ?? null;
-    const localHash = localPath
-      ? await localHashFor(localPath, fileId, currentRemoteHash)
-      : null;
+    const localHash = a.fast
+      ? (state?.cached_local_hash ?? null)
+      : localPath
+        ? await localHashFor(localPath, fileId, currentRemoteHash)
+        : null;
     base.local_hash = localHash;
-    const rs = await cachedRemoteStat(db, fileId, remoteName, remotePath);
+    const rs = a.fast
+      ? { hash: currentRemoteHash, exists: currentRemoteHash !== null }
+      : await cachedRemoteStat(db, fileId, remoteName, remotePath);
     if (rs === null) {
       out.orphan.push({ ...base, class: "orphan" });
       continue;

@@ -66,6 +66,14 @@ import {
   runNodeSync,
 } from "../api";
 
+// Module-level cache of the per-node sync-status map, so revisiting a
+// node shows the last-known badges instantly while the background
+// refresh runs. Lives outside the component tree because DetailPane
+// unmounts whenever no node is selected. The backend's `fast` mode is
+// already DB-only, but caching here also avoids the network round-trip
+// for repeat visits during a single session.
+const SYNC_STATUS_CACHE = new Map<string, Map<string, SyncStatusFile>>();
+
 function nodeTypeVar(type: string): string {
   const known = [
     "organization",
@@ -169,13 +177,15 @@ function DetailPaneBody({
     "overview" | "events" | "files" | "connections"
   >("overview");
   const [syncStatus, setSyncStatus] = useState<Map<string, SyncStatusFile>>(
-    () => new Map(),
+    () => SYNC_STATUS_CACHE.get(node.id) ?? new Map(),
   );
   // Flips to true after the read-only fetch finishes (success or error).
   // Used to gate the SyncBar button label and the Files-tab dot indicator
   // -- both should stay neutral until we actually know the per-file
   // classification.
-  const [syncLoaded, setSyncLoaded] = useState(false);
+  const [syncLoaded, setSyncLoaded] = useState(
+    () => SYNC_STATUS_CACHE.has(node.id),
+  );
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncRunning, setSyncRunning] = useState(false);
   const [syncRunResult, setSyncRunResult] = useState<SyncRunResponse | null>(
@@ -191,8 +201,12 @@ function DetailPaneBody({
       setDraftName(node.name);
       setErrorMsg(null);
       setTab("overview");
-      setSyncStatus(new Map());
-      setSyncLoaded(false);
+      // Seed sync state from the module cache so revisits feel instant.
+      // The background refetch below will update cache + state when the
+      // server responds.
+      const cached = SYNC_STATUS_CACHE.get(node.id);
+      setSyncStatus(cached ?? new Map());
+      setSyncLoaded(cached !== undefined);
       setSyncError(null);
       setSyncRunning(false);
       setSyncRunResult(null);
@@ -218,6 +232,7 @@ function DetailPaneBody({
         if (lastIdRef.current !== requestNodeId) return;
         const m = new Map<string, SyncStatusFile>();
         for (const f of fresh.files) m.set(f.file_id, f);
+        SYNC_STATUS_CACHE.set(requestNodeId, m);
         setSyncStatus(m);
         setSyncLoaded(true);
       } catch {
@@ -251,6 +266,7 @@ function DetailPaneBody({
         if (cancelled) return;
         const m = new Map<string, SyncStatusFile>();
         for (const f of res.files) m.set(f.file_id, f);
+        SYNC_STATUS_CACHE.set(node.id, m);
         setSyncStatus(m);
         setSyncLoaded(true);
       })

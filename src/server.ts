@@ -1034,6 +1034,10 @@ async function main() {
           userId: SOLO_USER,
           nodeId,
           includeDiscovery: false,
+          // DB-only fast path: no fs.stat, no Drive .stat() calls. The
+          // UI indicator is allowed to lag a real on-disk change until
+          // the next storeFile/pullFile/sync writes file_state.
+          fast: true,
         });
         // engine.statusScan tags deleted_local entries with class:"clean"
         // (legacy of the helper that stamps the cluster). Re-tag here from
