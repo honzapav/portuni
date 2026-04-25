@@ -19,7 +19,7 @@ export function registerGetNodeTool(server: McpServer): void {
       const db = getDb();
 
       // 1. Look up the node (by id or case-insensitive name).
-      let result;
+      let result: Awaited<ReturnType<typeof db.execute>>;
       if (args.node_id) {
         result = await db.execute({
           sql: "SELECT * FROM nodes WHERE id = ?",

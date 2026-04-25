@@ -198,7 +198,7 @@ export function registerEdgeTools(server: McpServer): void {
         }
       }
 
-      let result;
+      let result: Awaited<ReturnType<typeof db.execute>>;
       if (args.relation !== undefined) {
         result = await db.execute({
           sql: "DELETE FROM edges WHERE source_id = ? AND target_id = ? AND relation = ?",

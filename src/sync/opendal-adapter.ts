@@ -91,7 +91,7 @@ export function createOpenDALAdapter(
       // listing. Empty prefix means root.
       const normalized =
         prefix === "" ? "" : prefix.endsWith("/") ? prefix : `${prefix}/`;
-      let entries;
+      let entries: Awaited<ReturnType<typeof op.list>>;
       try {
         entries = await op.list(normalized);
       } catch {

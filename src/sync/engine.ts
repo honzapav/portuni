@@ -819,12 +819,12 @@ export async function previewNode(
       local_hash: e.local_hash,
       last_synced_hash: e.last_synced_hash,
     });
-  scan.clean.forEach((e) => files.push(toEntry("unchanged")(e)));
-  scan.push_candidates.forEach((e) => files.push(toEntry("updated")(e)));
-  scan.pull_candidates.forEach((e) => files.push(toEntry("updated")(e)));
-  scan.conflicts.forEach((e) => files.push(toEntry("conflict")(e)));
-  scan.orphan.forEach((e) => files.push(toEntry("orphan")(e)));
-  scan.native.forEach((e) => files.push(toEntry("native")(e)));
+  for (const e of scan.clean) files.push(toEntry("unchanged")(e));
+  for (const e of scan.push_candidates) files.push(toEntry("updated")(e));
+  for (const e of scan.pull_candidates) files.push(toEntry("updated")(e));
+  for (const e of scan.conflicts) files.push(toEntry("conflict")(e));
+  for (const e of scan.orphan) files.push(toEntry("orphan")(e));
+  for (const e of scan.native) files.push(toEntry("native")(e));
   return { files };
 }
 

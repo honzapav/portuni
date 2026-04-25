@@ -246,32 +246,50 @@ async function loadNodeDetail(nodeId: string): Promise<NodeDetail | null> {
     : null;
   const owner = ownerRow ? { id: ownerRow.id as string, name: ownerRow.name as string } : null;
 
-  // Responsibilities with assignees
+  // Responsibilities with assignees: fetch in two queries (one for the
+  // responsibilities, one JOIN that returns every assignee for those
+  // responsibilities) and bucket assignees by responsibility id in JS.
+  // The previous implementation issued N+1 queries (one per responsibility),
+  // which made detail loads scale linearly with assignment fan-out and was
+  // noticeable on Turso/cloud DBs.
   const respRes = await db.execute({
     sql: "SELECT id, title, description, sort_order FROM responsibilities WHERE node_id = ? ORDER BY sort_order, title",
     args: [row.id],
   });
-  const responsibilities = [];
-  for (const r of respRes.rows) {
-    const as = await db.execute({
-      sql: `SELECT a.id, a.name, a.type FROM actors a
+  type AssigneeBucket = Array<{ id: string; name: string; type: string }>;
+  const assigneesByResp = new Map<string, AssigneeBucket>();
+  if (respRes.rows.length > 0) {
+    const ids = respRes.rows.map((r) => r.id as string);
+    const placeholders = ids.map(() => "?").join(",");
+    const assigneeRes = await db.execute({
+      sql: `SELECT ra.responsibility_id AS rid, a.id, a.name, a.type
+            FROM actors a
             JOIN responsibility_assignments ra ON ra.actor_id = a.id
-            WHERE ra.responsibility_id = ?
+            WHERE ra.responsibility_id IN (${placeholders})
             ORDER BY a.name`,
-      args: [r.id as string],
+      args: ids,
     });
-    responsibilities.push({
-      id: r.id as string,
-      title: r.title as string,
-      description: (r.description as string | null) ?? null,
-      sort_order: (r.sort_order as number) ?? 0,
-      assignees: as.rows.map((x) => ({
+    for (const x of assigneeRes.rows) {
+      const rid = x.rid as string;
+      let bucket = assigneesByResp.get(rid);
+      if (!bucket) {
+        bucket = [];
+        assigneesByResp.set(rid, bucket);
+      }
+      bucket.push({
         id: x.id as string,
         name: x.name as string,
         type: x.type as string,
-      })),
-    });
+      });
+    }
   }
+  const responsibilities = respRes.rows.map((r) => ({
+    id: r.id as string,
+    title: r.title as string,
+    description: (r.description as string | null) ?? null,
+    sort_order: (r.sort_order as number) ?? 0,
+    assignees: assigneesByResp.get(r.id as string) ?? [],
+  }));
 
   // Data sources
   const dsRes = await db.execute({
@@ -545,6 +563,30 @@ class RequestBodyTooLargeError extends Error {
   }
 }
 
+// Centralised error responder. Logs the full error server-side with a short
+// request id; sends a generic message + that id to the client. ZodError
+// messages are surfaced as 400 because they describe input shape, not
+// internals. Anything else becomes a 500 with a generic body so we don't
+// leak DB errors, file paths, or stack traces to the network.
+function respondError(
+  res: import("node:http").ServerResponse,
+  ctx: string,
+  err: unknown,
+): void {
+  const id = randomUUID().slice(0, 8);
+  const detail =
+    err instanceof Error ? (err.stack ?? `${err.name}: ${err.message}`) : String(err);
+  console.error(`[req:${id}] ${ctx} -> ${detail}`);
+  if (res.headersSent) return;
+  if (err instanceof Error && err.name === "ZodError") {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: err.message, request_id: id }));
+    return;
+  }
+  res.writeHead(500, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ error: "Internal server error", request_id: id }));
+}
+
 function parseBody(
   req: import("node:http").IncomingMessage,
   maxBytes: number = MAX_BODY_BYTES,
@@ -704,8 +746,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(context));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -716,8 +757,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(graph));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -733,8 +773,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(rows.rows));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -766,8 +805,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(rows.rows));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -788,10 +826,7 @@ async function main() {
         res.writeHead(201, { "Content-Type": "application/json" });
         res.end(JSON.stringify(row));
       } catch (err) {
-        const e = err as Error;
-        const status = e?.name === "ZodError" ? 400 : 500;
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -812,10 +847,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(row));
       } catch (err) {
-        const e = err as Error;
-        const status = e?.name === "ZodError" ? 400 : 500;
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -827,10 +859,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ archived: actorId }));
       } catch (err) {
-        const e = err as Error;
-        const status = e?.name === "ZodError" ? 400 : 500;
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -862,10 +891,7 @@ async function main() {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
         } catch (err) {
-          const e = err as Error;
-          const status = e?.name === "ZodError" ? 400 : 500;
-          res.writeHead(status, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: String(err) }));
+          respondError(res, `${req.method} ${url.pathname}`, err);
         }
         return;
       }
@@ -878,10 +904,7 @@ async function main() {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
         } catch (err) {
-          const e = err as Error;
-          const status = e?.name === "ZodError" ? 400 : 500;
-          res.writeHead(status, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: String(err) }));
+          respondError(res, `${req.method} ${url.pathname}`, err);
         }
         return;
       }
@@ -898,10 +921,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(rows));
       } catch (err) {
-        const e = err as Error;
-        const status = e?.name === "ZodError" ? 400 : 500;
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -922,10 +942,7 @@ async function main() {
         res.writeHead(201, { "Content-Type": "application/json" });
         res.end(JSON.stringify(row));
       } catch (err) {
-        const e = err as Error;
-        const status = e?.name === "ZodError" ? 400 : 500;
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -946,10 +963,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(row));
       } catch (err) {
-        const e = err as Error;
-        const status = e?.name === "ZodError" ? 400 : 500;
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -961,10 +975,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ deleted: respId }));
       } catch (err) {
-        const e = err as Error;
-        const status = e?.name === "ZodError" ? 400 : 500;
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -983,8 +994,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(rows));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1005,10 +1015,7 @@ async function main() {
         res.writeHead(201, { "Content-Type": "application/json" });
         res.end(JSON.stringify(row));
       } catch (err) {
-        const e = err as Error;
-        const status = e?.name === "ZodError" ? 400 : 500;
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1020,10 +1027,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ deleted: dsId }));
       } catch (err) {
-        const e = err as Error;
-        const status = e?.name === "ZodError" ? 400 : 500;
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1046,10 +1050,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(row));
       } catch (err) {
-        const e = err as Error;
-        const status = e?.name === "ZodError" ? 400 : 500;
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1068,8 +1069,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(rows));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1086,10 +1086,7 @@ async function main() {
         res.writeHead(201, { "Content-Type": "application/json" });
         res.end(JSON.stringify(row));
       } catch (err) {
-        const e = err as Error;
-        const status = e?.name === "ZodError" ? 400 : 500;
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1101,10 +1098,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ deleted: toolId }));
       } catch (err) {
-        const e = err as Error;
-        const status = e?.name === "ZodError" ? 400 : 500;
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1127,10 +1121,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(row));
       } catch (err) {
-        const e = err as Error;
-        const status = e?.name === "ZodError" ? 400 : 500;
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1195,8 +1186,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(payload));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1275,8 +1265,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(result));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1298,8 +1287,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(node));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1384,10 +1372,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(node));
       } catch (err) {
-        const e = err as Error;
-        const status = e?.name === "ZodError" ? 400 : 500;
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1431,8 +1416,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ updated }));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1486,8 +1470,7 @@ async function main() {
         res.writeHead(201, { "Content-Type": "application/json" });
         res.end(JSON.stringify(node));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1515,8 +1498,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ archived: nodeId }));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1603,8 +1585,7 @@ async function main() {
           }),
         );
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1627,8 +1608,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ deleted: edgeId }));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1684,8 +1664,7 @@ async function main() {
           created_at: now,
         }));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1755,8 +1734,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(updated.rows[0]));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }
@@ -1779,8 +1757,7 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ archived: eventId }));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: String(err) }));
+        respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;
     }

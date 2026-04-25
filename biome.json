@@ -1,0 +1,88 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "includes": [
+      "src/**/*.ts",
+      "test/**/*.ts",
+      "scripts/**/*.ts",
+      "app/src/**/*.{ts,tsx}",
+      "!**/node_modules/**",
+      "!**/dist/**",
+      "!**/env.d.ts",
+      "!**/.varlock-types.d.ts",
+      "!app/dist/**"
+    ]
+  },
+  "formatter": {
+    "enabled": false,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "lineEnding": "lf"
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "trailingCommas": "all",
+      "semicolons": "always"
+    }
+  },
+  "assist": {
+    "enabled": true,
+    "actions": {
+      "source": {
+        "organizeImports": "off"
+      }
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "suspicious": {
+        "noExplicitAny": "warn",
+        "noConsole": "off",
+        "noEmptyBlockStatements": "warn",
+        "useIterableCallbackReturn": "error",
+        "noImplicitAnyLet": "error"
+      },
+      "style": {
+        "useImportType": "warn",
+        "useExportType": "warn",
+        "noNonNullAssertion": "off",
+        "noParameterAssign": "off",
+        "useNumberNamespace": "off",
+        "useEnumInitializers": "off",
+        "useTemplate": "off"
+      },
+      "complexity": {
+        "noForEach": "off",
+        "useOptionalChain": "warn"
+      },
+      "correctness": {
+        "noUnusedImports": "warn",
+        "useExhaustiveDependencies": "off",
+        "noUnusedVariables": "warn"
+      },
+      "performance": {
+        "noDelete": "off"
+      },
+      "a11y": {
+        "noSvgWithoutTitle": "off",
+        "useKeyWithClickEvents": "off",
+        "useButtonType": "warn",
+        "noAutofocus": "off",
+        "noStaticElementInteractions": "off",
+        "noLabelWithoutControl": "warn"
+      },
+      "security": {
+        "noDangerouslySetInnerHtml": "error"
+      }
+    }
+  }
+}
