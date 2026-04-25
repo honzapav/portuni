@@ -9,6 +9,7 @@ export default defineConfig({
 			title: 'Portuni',
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/honzapav/portuni' }],
 			sidebar: [
+				{ label: '← portuni.com', link: 'https://portuni.com', attrs: { 'aria-label': 'Back to portuni.com' } },
 				{
 					label: 'Getting Started',
 					items: [
