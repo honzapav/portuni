@@ -4,6 +4,8 @@ import { SOLO_USER } from "../schema.js";
 import { NodeRow } from "../types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { buildContextPayload } from "./context.js";
+import { getLocalMirror } from "../sync/local-db.js";
+import { deriveLocalPath, buildNodeRoot } from "../sync/remote-path.js";
 
 export function registerGetNodeTool(server: McpServer): void {
   server.tool(
@@ -66,38 +68,64 @@ export function registerGetNodeTool(server: McpServer): void {
       //    (registered_at).
       const { root } = await buildContextPayload(db, row.id, 0);
 
-      // 3. Fetch files for this node (kept here -- buildContextPayload does
-      //    not include files).
+      // 3. Fetch local mirror from per-device sync.db (the context payload
+      //    only exposes local_path; this tool returns the richer pair).
+      const mirror = await getLocalMirror(SOLO_USER, row.id);
+      const mirrorPath = mirror?.local_path ?? null;
+      const localMirror = mirror
+        ? { local_path: mirror.local_path, registered_at: mirror.registered_at }
+        : null;
+
+      // 4. Resolve the org_sync_key once for the per-file derivation below.
+      let orgSyncKey: string | null = null;
+      if (row.type !== "organization") {
+        const orgRes = await db.execute({
+          sql: `SELECT org.sync_key FROM edges e
+                  JOIN nodes org ON org.id = e.target_id
+                 WHERE e.source_id = ? AND e.relation = 'belongs_to' AND org.type = 'organization'
+                 LIMIT 1`,
+          args: [row.id],
+        });
+        orgSyncKey =
+          orgRes.rows.length > 0 ? (orgRes.rows[0].sync_key as string | null) ?? null : null;
+      } else {
+        orgSyncKey = row.sync_key;
+      }
+
+      // 5. Fetch files for this node (kept here -- buildContextPayload does
+      //    not include files). local_path is a DERIVED response field built
+      //    from the per-device mirror + remote_path + sync_key; the column
+      //    no longer exists on the files table.
       const fileResult = await db.execute({
-        sql: `SELECT id, filename, status, description, local_path, mime_type
+        sql: `SELECT id, filename, status, description, remote_path, mime_type
               FROM files WHERE node_id = ? ORDER BY created_at DESC`,
         args: [row.id],
       });
 
-      const files = fileResult.rows.map((f) => ({
-        id: f.id as string,
-        filename: f.filename as string,
-        status: f.status as string,
-        description: f.description as string | null,
-        local_path: f.local_path as string | null,
-        mime_type: f.mime_type as string | null,
-      }));
-
-      // 4. Fetch local mirror with registered_at (the context payload only
-      //    exposes local_path; this tool returns the richer pair).
-      const mirrorResult = await db.execute({
-        sql: `SELECT local_path, registered_at
-              FROM local_mirrors WHERE user_id = ? AND node_id = ?`,
-        args: [SOLO_USER, row.id],
+      const files = fileResult.rows.map((f) => {
+        const remotePath = (f.remote_path as string | null) ?? null;
+        let derivedLocal: string | null = null;
+        if (mirrorPath && remotePath) {
+          const nodeRoot = buildNodeRoot({
+            orgSyncKey,
+            nodeType: row.type,
+            nodeSyncKey: row.sync_key,
+          });
+          try {
+            derivedLocal = deriveLocalPath({ mirrorRoot: mirrorPath, nodeRoot, remotePath });
+          } catch {
+            derivedLocal = null;
+          }
+        }
+        return {
+          id: f.id as string,
+          filename: f.filename as string,
+          status: f.status as string,
+          description: f.description as string | null,
+          local_path: derivedLocal,
+          mime_type: f.mime_type as string | null,
+        };
       });
-
-      const localMirror =
-        mirrorResult.rows.length > 0
-          ? {
-              local_path: mirrorResult.rows[0].local_path as string,
-              registered_at: mirrorResult.rows[0].registered_at as string,
-            }
-          : null;
 
       // 5. Assemble response. The new E3 fields (owner, responsibilities,
       //    data_sources, tools, goal, lifecycle_state) come from root;

@@ -29,6 +29,7 @@ export const NodeRow = z.object({
   owner_id: z.union([z.string(), z.null()]),
   lifecycle_state: z.union([z.string(), z.null()]),
   goal: z.union([z.string(), z.null()]),
+  sync_key: z.string(),
   created_by: z.string(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -65,14 +66,23 @@ export const LocalMirrorRow = z.object({
 });
 export type LocalMirrorRow = z.infer<typeof LocalMirrorRow>;
 
+// FileRow validates rows returned from `SELECT * FROM files`. There is NO
+// `local_path` column on the table -- migration 012 dropped it. The path on
+// the current device is derived at read time from the per-device mirror +
+// remote_path + sync_key (see api-types.ts DetailFile.local_path).
 export const FileRow = z.object({
   id: z.string(),
   node_id: z.string(),
   filename: z.string(),
-  local_path: z.union([z.string(), z.null()]),
   status: z.string(),
   description: z.union([z.string(), z.null()]),
   mime_type: z.union([z.string(), z.null()]),
+  remote_name: z.union([z.string(), z.null()]),
+  remote_path: z.union([z.string(), z.null()]),
+  current_remote_hash: z.union([z.string(), z.null()]),
+  last_pushed_by: z.union([z.string(), z.null()]),
+  last_pushed_at: z.union([z.string(), z.null()]),
+  is_native_format: z.number(),
   created_by: z.string(),
   created_at: z.string(),
   updated_at: z.string(),

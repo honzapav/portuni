@@ -8,11 +8,33 @@ import {
   NODE_VISIBILITIES,
   SOLO_USER,
 } from "../schema.js";
+import { generateSyncKey } from "../sync/sync-key.js";
+import { getMirrorPath, unregisterMirror } from "../sync/mirror-registry.js";
 import { getLifecycleStatesForType } from "../popp.js";
 import type { NodeType } from "../popp.js";
 import { NodeRow, NodeSummaryRow } from "../types.js";
 import type { Client, InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+// Cleanup hook for portuni_delete_node purge: removes the per-device local
+// mirror row for the node being purged. Best-effort -- never fails the tool
+// on local cleanup errors. Other devices clean up their stale mirror rows
+// lazily via tryCleanStaleMirrors.
+//
+// _db is unused today (the per-device sync.db is reached via PORTUNI_WORKSPACE_ROOT)
+// but kept in the signature for future-proofing -- callers already have a Client
+// in hand at the call site.
+export async function purgeNodeLocalCleanup(
+  _db: Client,
+  userId: string,
+  nodeId: string,
+): Promise<void> {
+  try {
+    await unregisterMirror(userId, nodeId);
+  } catch {
+    /* best-effort -- never fail the tool on local cleanup errors */
+  }
+}
 
 // --- Task E2: pure createNode, exported for tests ---
 //
@@ -198,6 +220,10 @@ export async function createNodeInternal(
   const id = ulid();
   const now = new Date().toISOString();
   const edgeId = args.type !== "organization" ? ulid() : null;
+  // Generate a stable, unique sync_key from the node name. Used as the
+  // immutable path component when files for this node are pushed to a
+  // remote -- so renames don't break stored URLs.
+  const syncKey = await generateSyncKey(db, args.name);
 
   // Atomic batch: node INSERT and (for non-org types) belongs_to edge INSERT
   // succeed or fail together. Guarantees the org invariant from the moment
@@ -205,8 +231,8 @@ export async function createNodeInternal(
   // exists without its required organization link.
   const statements: Parameters<typeof db.batch>[0] = [
     {
-      sql: `INSERT INTO nodes (id, type, name, description, meta, status, visibility, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      sql: `INSERT INTO nodes (id, type, name, description, meta, status, visibility, sync_key, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         id,
         args.type,
@@ -215,6 +241,7 @@ export async function createNodeInternal(
         args.meta ? JSON.stringify(args.meta) : null,
         args.status ?? "active",
         args.visibility ?? "team",
+        syncKey,
         createdBy,
         now,
         now,
@@ -535,14 +562,7 @@ export function registerNodeTools(server: McpServer): void {
       }
 
       // Fetch local mirror path before deletion (for informational response).
-      const mirrorRes = await db.execute({
-        sql: "SELECT local_path FROM local_mirrors WHERE user_id = ? AND node_id = ?",
-        args: [SOLO_USER, args.node_id],
-      });
-      const mirrorPath =
-        mirrorRes.rows.length > 0
-          ? (mirrorRes.rows[0].local_path as string)
-          : null;
+      const mirrorPath = await getMirrorPath(SOLO_USER, args.node_id);
 
       // Delete edges first so the orphan-prevention trigger does not fire
       // during CASCADE. Then delete the node (remaining CASCADE covers
@@ -554,6 +574,10 @@ export function registerNodeTools(server: McpServer): void {
         ],
         "write",
       );
+
+      // Local cleanup: remove the per-device mirror row on this device.
+      // Other devices clean up lazily via tryCleanStaleMirrors.
+      await purgeNodeLocalCleanup(db, SOLO_USER, args.node_id);
 
       await logAudit(SOLO_USER, "purge_node", "node", args.node_id, {
         type: nodeType,

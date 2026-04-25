@@ -1,6 +1,8 @@
 // src/schema.ts
 import type { Client } from "@libsql/client";
+import { ulid } from "ulid";
 import { getDb } from "./db.js";
+import { slugifyForSyncKey } from "./sync/sync-key.js";
 import {
   NODE_TYPES,
   EDGE_RELATIONS,
@@ -64,11 +66,13 @@ const DDL = [
     owner_id TEXT,
     lifecycle_state TEXT,
     goal TEXT,
+    sync_key TEXT NOT NULL,
     created_by TEXT NOT NULL,
     created_at DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
     CHECK(updated_at >= created_at)
   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_sync_key ON nodes(sync_key) WHERE sync_key IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS edges (
     id TEXT PRIMARY KEY CHECK(length(id) = 26),
     source_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
@@ -92,18 +96,22 @@ const DDL = [
     timestamp DATETIME NOT NULL DEFAULT (datetime('now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)`,
-  `CREATE TABLE IF NOT EXISTS local_mirrors (
-    user_id TEXT NOT NULL REFERENCES users(id),
-    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-    local_path TEXT NOT NULL,
-    registered_at DATETIME NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (user_id, node_id)
-  )`,
+  // NOTE: `local_mirrors` is NOT created in Turso. Per-device mirror paths
+  // live in the local sync.db (see src/sync/local-db.ts). Migration 011
+  // drops the legacy Turso `local_mirrors` table on existing installs.
+  // NOTE: `local_path` is NOT a column on `files`. The path on the current
+  // device is derived from the per-device mirror root + remote_path + sync_key
+  // at read time. Migration 012 drops the legacy column on existing installs.
   `CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY,
     node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     filename TEXT NOT NULL,
-    local_path TEXT,
+    remote_name TEXT,
+    remote_path TEXT,
+    current_remote_hash TEXT,
+    last_pushed_by TEXT,
+    last_pushed_at DATETIME,
+    is_native_format INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'wip' CHECK(status IN (${FILE_STATUSES_SQL})),
     description TEXT,
     mime_type TEXT,
@@ -130,6 +138,23 @@ const DDL = [
     id TEXT PRIMARY KEY,
     applied_at DATETIME NOT NULL DEFAULT (datetime('now'))
   )`,
+  // Migration 009 tables (pluggable remotes + routing). Kept in DDL so a
+  // fresh install gets these tables before any migration runs.
+  `CREATE TABLE IF NOT EXISTS remotes (
+    name TEXT PRIMARY KEY,
+    type TEXT NOT NULL CHECK(type IN ('gdrive','dropbox','s3','fs','webdav','sftp')),
+    config_json TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS remote_routing (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    priority INTEGER NOT NULL,
+    node_type TEXT,
+    org_slug TEXT,
+    remote_name TEXT NOT NULL REFERENCES remotes(name) ON DELETE RESTRICT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_remote_routing_priority ON remote_routing(priority)`,
 ];
 
 const SOLO_USER_ID = "01SOLO0000000000000000000";
@@ -357,6 +382,170 @@ export const SEED_LIFECYCLE_STATE_FROM_STATUS = `UPDATE nodes SET lifecycle_stat
   WHEN type = 'principle' AND status = 'archived' THEN 'archived'
   ELSE lifecycle_state
 END WHERE lifecycle_state IS NULL`;
+
+// --- Migration 009 / 010 / 013 DDL constants (file-sync foundation) ---
+
+// Migration 009: pluggable remote backends + routing rules. A `remote` is a
+// named storage adapter (gdrive, dropbox, etc.) with backend-specific
+// config_json. `remote_routing` maps node-type / org-slug filters to a
+// remote, applied in priority order so different node types can land on
+// different remotes.
+export const DDL_REMOTES_TABLE = `
+  CREATE TABLE IF NOT EXISTS remotes (
+    name TEXT PRIMARY KEY,
+    type TEXT NOT NULL CHECK(type IN ('gdrive','dropbox','s3','fs','webdav','sftp')),
+    config_json TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+  )
+`;
+
+export const DDL_REMOTE_ROUTING_TABLE = `
+  CREATE TABLE IF NOT EXISTS remote_routing (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    priority INTEGER NOT NULL,
+    node_type TEXT,
+    org_slug TEXT,
+    remote_name TEXT NOT NULL REFERENCES remotes(name) ON DELETE RESTRICT
+  )
+`;
+
+export const INDEX_REMOTE_ROUTING_PRIORITY =
+  "CREATE INDEX IF NOT EXISTS idx_remote_routing_priority ON remote_routing(priority)";
+
+// Migration 009 runner. Idempotent via IF NOT EXISTS clauses.
+export async function runMigration009(db: Client): Promise<void> {
+  await db.execute(DDL_REMOTES_TABLE);
+  await db.execute(DDL_REMOTE_ROUTING_TABLE);
+  await db.execute(INDEX_REMOTE_ROUTING_PRIORITY);
+}
+
+// --- Migration 013 trigger constants (sync_key NOT-NULL enforcement) ---
+//
+// SQLite ALTER TABLE cannot add a NOT NULL column to a table that already
+// has rows, and rebuilding `nodes` to add NOT NULL would force re-creating
+// every CHECK constraint and trigger. Instead, migration 013 adds the
+// column as nullable, backfills it, then enforces non-emptiness via two
+// BEFORE triggers -- INSERT and UPDATE OF sync_key. Combined with the
+// partial UNIQUE index, this gives the full UNIQUE NOT NULL semantics.
+
+export const TRIGGER_NODES_SYNC_KEY_NOT_NULL_INSERT = `
+  CREATE TRIGGER IF NOT EXISTS nodes_sync_key_not_null_insert
+  BEFORE INSERT ON nodes
+  FOR EACH ROW
+  WHEN NEW.sync_key IS NULL OR NEW.sync_key = ''
+  BEGIN
+    SELECT RAISE(ABORT, 'nodes.sync_key must be a non-empty string');
+  END
+`;
+
+export const TRIGGER_NODES_SYNC_KEY_NOT_NULL_UPDATE = `
+  CREATE TRIGGER IF NOT EXISTS nodes_sync_key_not_null_update
+  BEFORE UPDATE OF sync_key ON nodes
+  FOR EACH ROW
+  WHEN NEW.sync_key IS NULL OR NEW.sync_key = ''
+  BEGIN
+    SELECT RAISE(ABORT, 'nodes.sync_key must be a non-empty string');
+  END
+`;
+
+// Migration 013: nodes.sync_key (immutable path identity).
+//
+// 1. Add `sync_key TEXT` column (nullable initially -- ALTER TABLE limit).
+// 2. Backfill existing rows with collision-free slugs derived from name.
+// 3. Install a partial UNIQUE index (`WHERE sync_key IS NOT NULL`).
+// 4. Install BEFORE INSERT/UPDATE triggers that reject NULL or empty
+//    string, giving the column the same enforcement as NOT NULL without
+//    rebuilding the table.
+//
+// Idempotent and recoverable: each step checks current state before acting,
+// so re-running on a clean DB is a no-op and re-running after a partial
+// failure picks up where it left off.
+export async function runMigration013(db: Client): Promise<void> {
+  const info = await db.execute("PRAGMA table_info(nodes)");
+  const cols = new Set(info.rows.map((r) => r.name as string));
+
+  if (!cols.has("sync_key")) {
+    await db.execute("ALTER TABLE nodes ADD COLUMN sync_key TEXT");
+  }
+
+  // Backfill rows with NULL sync_key, deterministic order so re-runs match.
+  const nullRows = await db.execute(
+    "SELECT id, name FROM nodes WHERE sync_key IS NULL ORDER BY created_at ASC",
+  );
+  if (nullRows.rows.length > 0) {
+    const existing = await db.execute(
+      "SELECT sync_key FROM nodes WHERE sync_key IS NOT NULL",
+    );
+    const used = new Set<string>(existing.rows.map((r) => r.sync_key as string));
+    for (const row of nullRows.rows) {
+      const name = row.name as string;
+      const id = row.id as string;
+      const base = slugifyForSyncKey(name);
+      let key = base.length > 0 ? base : `node-${ulid().toLowerCase().slice(-8)}`;
+      while (used.has(key)) {
+        key = `${base.length > 0 ? base : "node"}-${ulid().toLowerCase().slice(-6)}`;
+      }
+      used.add(key);
+      await db.execute({
+        sql: "UPDATE nodes SET sync_key = ? WHERE id = ?",
+        args: [key, id],
+      });
+    }
+  }
+
+  await db.execute(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_sync_key ON nodes(sync_key) WHERE sync_key IS NOT NULL",
+  );
+
+  await db.execute(TRIGGER_NODES_SYNC_KEY_NOT_NULL_INSERT);
+  await db.execute(TRIGGER_NODES_SYNC_KEY_NOT_NULL_UPDATE);
+}
+
+// Migration 011: drop the legacy Turso `local_mirrors` table. Per-device
+// mirror paths now live exclusively in the local sync.db. Safe to run on
+// any DB (DROP TABLE IF EXISTS is a no-op when the table is already gone).
+// All readers/writers were rewired to mirror-registry (which targets the
+// local sync.db) before this migration was introduced.
+export async function runMigration011(db: Client): Promise<void> {
+  await db.execute("DROP TABLE IF EXISTS local_mirrors");
+}
+
+// Migration 012: drop the legacy `files.local_path` column.
+//
+// The path on the current device is now derived from the per-device mirror
+// root + remote_path + sync_key at read time, so the persisted column is
+// redundant and (worse) goes stale across devices and renames. libSQL /
+// SQLite 3.35+ supports native ALTER TABLE DROP COLUMN; we gate on
+// PRAGMA table_info so the migration is idempotent across re-runs and on
+// fresh installs (where the column never existed).
+export async function runMigration012(db: Client): Promise<void> {
+  const info = await db.execute("PRAGMA table_info(files)");
+  const cols = new Set(info.rows.map((r) => r.name as string));
+  if (cols.has("local_path")) {
+    await db.execute("ALTER TABLE files DROP COLUMN local_path");
+  }
+}
+
+// Migration 010: additively extend `files` with the columns needed to track
+// the remote source-of-truth. Does NOT drop `local_path` -- that happens in
+// a later plan (migration 012). Each ALTER is gated by a column-existence
+// check so the migration is safe to re-run.
+export async function runMigration010(db: Client): Promise<void> {
+  const info = await db.execute("PRAGMA table_info(files)");
+  const existing = new Set(info.rows.map((r) => r.name as string));
+  const additions: Array<[string, string]> = [
+    ["remote_name", "ALTER TABLE files ADD COLUMN remote_name TEXT"],
+    ["remote_path", "ALTER TABLE files ADD COLUMN remote_path TEXT"],
+    ["current_remote_hash", "ALTER TABLE files ADD COLUMN current_remote_hash TEXT"],
+    ["last_pushed_by", "ALTER TABLE files ADD COLUMN last_pushed_by TEXT"],
+    ["last_pushed_at", "ALTER TABLE files ADD COLUMN last_pushed_at DATETIME"],
+    ["is_native_format", "ALTER TABLE files ADD COLUMN is_native_format INTEGER NOT NULL DEFAULT 0"],
+  ];
+  for (const [col, sql] of additions) {
+    if (!existing.has(col)) await db.execute(sql);
+  }
+}
 
 // Migration 006: add actors, responsibilities, responsibility_assignments,
 // data_sources, tools; add owner_id/lifecycle_state/goal columns to nodes;
@@ -1019,6 +1208,94 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+
+  // Migration 009: pluggable remote backends + routing rules. Fresh installs
+  // get the tables via DDL; this migration applies to existing databases that
+  // pre-date the file-sync foundation.
+  {
+    id: "009_remotes_and_routing",
+    isApplied: async (db) => {
+      const r = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='remotes'",
+      );
+      if (r.rows.length === 0) return false;
+      const r2 = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='remote_routing'",
+      );
+      return r2.rows.length > 0;
+    },
+    up: runMigration009,
+  },
+
+  // Migration 010: extend `files` with the columns needed to track the
+  // remote source-of-truth. Additive only -- does not drop legacy columns.
+  {
+    id: "010_files_remote_columns",
+    isApplied: async (db) => {
+      const info = await db.execute("PRAGMA table_info(files)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      return [
+        "remote_name",
+        "remote_path",
+        "current_remote_hash",
+        "last_pushed_by",
+        "last_pushed_at",
+        "is_native_format",
+      ].every((c) => cols.has(c));
+    },
+    up: runMigration010,
+  },
+
+  // Migration 011: drop the legacy Turso `local_mirrors` table. Per-device
+  // mirror paths now live exclusively in the local sync.db.
+  {
+    id: "011_drop_turso_local_mirrors",
+    isApplied: async (db) => {
+      const r = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='local_mirrors'",
+      );
+      return r.rows.length === 0;
+    },
+    up: runMigration011,
+  },
+
+  // Migration 012: drop the legacy `files.local_path` column. local_path is
+  // now a derived field (per-device mirror + remote_path + sync_key).
+  {
+    id: "012_drop_files_local_path",
+    isApplied: async (db) => {
+      const info = await db.execute("PRAGMA table_info(files)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      return !cols.has("local_path");
+    },
+    up: runMigration012,
+  },
+
+  // Migration 013: nodes.sync_key (immutable path identity).
+  // Adds a UNIQUE NOT-NULL-equivalent column without rebuilding nodes.
+  // See runMigration013 for the rationale (preserves all CHECK constraints
+  // and triggers attached to the existing nodes table).
+  {
+    id: "013_nodes_sync_key",
+    isApplied: async (db) => {
+      const info = await db.execute("PRAGMA table_info(nodes)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      if (!cols.has("sync_key")) return false;
+      const nulls = await db.execute(
+        "SELECT COUNT(*) AS c FROM nodes WHERE sync_key IS NULL",
+      );
+      if (Number(nulls.rows[0].c) > 0) return false;
+      const idx = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_nodes_sync_key'",
+      );
+      if (idx.rows.length === 0) return false;
+      const trg = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND name='nodes_sync_key_not_null_insert'",
+      );
+      return trg.rows.length > 0;
+    },
+    up: runMigration013,
+  },
 ];
 
 async function runMigrations(db: Client): Promise<void> {
@@ -1099,9 +1376,19 @@ const DDL_MIGRATION_006 = [
   TRIGGER_NODES_VALIDATE_LIFECYCLE_STATE,
 ];
 
+// Migration 013 triggers — applied on fresh installs so the sync_key
+// non-empty enforcement is in place from the very first INSERT. The
+// fresh-install nodes DDL declares sync_key as NOT NULL at the column
+// level, but these triggers also catch empty-string and reapply on any
+// existing DB picked up via runMigrations.
+const DDL_MIGRATION_013 = [
+  TRIGGER_NODES_SYNC_KEY_NOT_NULL_INSERT,
+  TRIGGER_NODES_SYNC_KEY_NOT_NULL_UPDATE,
+];
+
 export async function ensureSchema(): Promise<void> {
   const db = getDb();
-  for (const sql of [...DDL, ...DDL_MIGRATION_006, ...SEED]) {
+  for (const sql of [...DDL, ...DDL_MIGRATION_006, ...DDL_MIGRATION_013, ...SEED]) {
     await db.execute(sql);
   }
   await runMigrations(db);

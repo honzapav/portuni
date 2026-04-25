@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getDb } from "../db.js";
 import { SOLO_USER } from "../schema.js";
+import { listUserMirrors, unregisterMirror } from "../sync/mirror-registry.js";
 import type { Client, InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -271,17 +272,24 @@ export async function buildContextPayload(
     }
   }
 
-  // 4. Fetch local_mirrors (best-effort: table may not exist in tests).
+  // 4. Fetch local mirrors from the per-device sync.db. Tolerate stale rows
+  //    (mirror exists for a node that was purged from the shared DB) by
+  //    skipping them and firing fire-and-forget cleanup.
   const mirrorMap = new Map<string, string>();
-  if (nodeIds.length > 0 && (await tableExists(db, "local_mirrors"))) {
-    const placeholders = nodeIds.map(() => "?").join(",");
-    const mirrorResult = await db.execute({
-      sql: `SELECT node_id, local_path FROM local_mirrors
-             WHERE user_id = ? AND node_id IN (${placeholders})`,
-      args: [SOLO_USER, ...nodeIds] as InValue[],
-    });
-    for (const row of mirrorResult.rows) {
-      mirrorMap.set(row.node_id as string, row.local_path as string);
+  if (nodeIds.length > 0) {
+    const wanted = new Set(nodeIds);
+    const allMirrors = await listUserMirrors(SOLO_USER);
+    for (const m of allMirrors) {
+      if (!wanted.has(m.node_id)) continue;
+      const e = await db.execute({
+        sql: "SELECT 1 FROM nodes WHERE id = ? LIMIT 1",
+        args: [m.node_id],
+      });
+      if (e.rows.length > 0) {
+        mirrorMap.set(m.node_id, m.local_path);
+      } else {
+        void unregisterMirror(SOLO_USER, m.node_id).catch(() => undefined);
+      }
     }
   }
 

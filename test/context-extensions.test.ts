@@ -4,9 +4,12 @@
 // the exported function against an in-memory libsql + runMigration006 schema
 // so the DB triggers are in effect.
 
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ulid } from "ulid";
 import { runMigration006 } from "../src/schema.js";
 import { createActor } from "../src/tools/actors.js";
@@ -14,6 +17,27 @@ import { createResponsibility } from "../src/tools/responsibilities.js";
 import { addDataSource, addTool } from "../src/tools/entity-attributes.js";
 import { updateNodeInternal } from "../src/tools/nodes.js";
 import { buildContextPayload } from "../src/tools/context.js";
+import { resetLocalDbForTests } from "../src/sync/local-db.js";
+
+// buildContextPayload now reads mirrors from the per-device sync.db (driven
+// by PORTUNI_WORKSPACE_ROOT). Set up a temp workspace per test so
+// listUserMirrors does not throw.
+let workspace: string;
+let originalEnv: string | undefined;
+
+beforeEach(async () => {
+  workspace = await mkdtemp(join(tmpdir(), "portuni-ctx-ext-"));
+  originalEnv = process.env.PORTUNI_WORKSPACE_ROOT;
+  process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+  resetLocalDbForTests();
+});
+
+afterEach(async () => {
+  resetLocalDbForTests();
+  if (originalEnv === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
+  else process.env.PORTUNI_WORKSPACE_ROOT = originalEnv;
+  await rm(workspace, { recursive: true, force: true });
+});
 
 async function freshEnv() {
   const db = createClient({ url: ":memory:" });
@@ -21,7 +45,7 @@ async function freshEnv() {
   await db.execute(`CREATE TABLE nodes (id TEXT PRIMARY KEY CHECK(length(id)=26), type TEXT NOT NULL, name TEXT NOT NULL, description TEXT, summary TEXT, summary_updated_at DATETIME, meta TEXT, status TEXT NOT NULL DEFAULT 'active', visibility TEXT NOT NULL DEFAULT 'team', pos_x REAL, pos_y REAL, created_by TEXT NOT NULL, created_at DATETIME DEFAULT (datetime('now')), updated_at DATETIME DEFAULT (datetime('now')))`);
   await db.execute(`CREATE TABLE edges (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, target_id TEXT NOT NULL, relation TEXT NOT NULL, meta TEXT, created_by TEXT NOT NULL, created_at DATETIME DEFAULT (datetime('now')))`);
   await db.execute(`CREATE TABLE events (id TEXT PRIMARY KEY, node_id TEXT NOT NULL, type TEXT NOT NULL, content TEXT NOT NULL, meta TEXT, status TEXT NOT NULL DEFAULT 'active', refs TEXT, task_ref TEXT, created_by TEXT NOT NULL, created_at DATETIME DEFAULT (datetime('now')))`);
-  await db.execute(`CREATE TABLE files (id TEXT PRIMARY KEY, node_id TEXT NOT NULL, filename TEXT NOT NULL, local_path TEXT, status TEXT NOT NULL DEFAULT 'wip', description TEXT, mime_type TEXT, created_by TEXT NOT NULL, created_at DATETIME DEFAULT (datetime('now')), updated_at DATETIME DEFAULT (datetime('now')))`);
+  await db.execute(`CREATE TABLE files (id TEXT PRIMARY KEY, node_id TEXT NOT NULL, filename TEXT NOT NULL, remote_name TEXT, remote_path TEXT, current_remote_hash TEXT, last_pushed_by TEXT, last_pushed_at DATETIME, is_native_format INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'wip', description TEXT, mime_type TEXT, created_by TEXT NOT NULL, created_at DATETIME DEFAULT (datetime('now')), updated_at DATETIME DEFAULT (datetime('now')))`);
   await db.execute(`CREATE TABLE audit_log (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, action TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, detail TEXT, timestamp DATETIME DEFAULT (datetime('now')))`);
   await db.execute(`CREATE TABLE local_mirrors (user_id TEXT NOT NULL, node_id TEXT NOT NULL, local_path TEXT NOT NULL, registered_at DATETIME NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (user_id, node_id))`);
   await db.execute(`INSERT INTO users (id, email, name) VALUES ('U1','t@t','T')`);

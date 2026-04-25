@@ -10,6 +10,9 @@ import { registerEdgeTools } from "./tools/edges.js";
 import { registerContextTools } from "./tools/context.js";
 import { registerMirrorTools } from "./tools/mirrors.js";
 import { registerFileTools } from "./tools/files.js";
+import { registerSyncStatusTools } from "./tools/sync-status.js";
+import { registerSyncRemoteTools } from "./tools/sync-remotes.js";
+import { registerSyncSnapshotTools } from "./tools/sync-snapshot.js";
 import { registerEventTools } from "./tools/events.js";
 import { registerActorTools, createActor, updateActor, archiveActor } from "./tools/actors.js";
 import {
@@ -33,6 +36,10 @@ import {
   listTools,
 } from "./tools/entity-attributes.js";
 import { updateNodeInternal } from "./tools/nodes.js";
+import { generateSyncKey } from "./sync/sync-key.js";
+import { listUserMirrors, unregisterMirror } from "./sync/mirror-registry.js";
+import { getLocalMirror } from "./sync/local-db.js";
+import { deriveLocalPath, buildNodeRoot } from "./sync/remote-path.js";
 
 import { getDb } from "./db.js";
 import { SOLO_USER, NODE_TYPES, NODE_VISIBILITIES, EDGE_RELATIONS, EVENT_TYPES } from "./schema.js";
@@ -117,19 +124,58 @@ async function loadNodeDetail(nodeId: string): Promise<NodeDetail | null> {
     };
   });
 
+  const mirror = await getLocalMirror(SOLO_USER, row.id);
+  const mirrorPath = mirror?.local_path ?? null;
+  const local_mirror = mirror
+    ? { local_path: mirror.local_path, registered_at: mirror.registered_at }
+    : null;
+
+  // Resolve the org_sync_key once for this node so per-file derivation can
+  // reuse it. Organizations themselves have no parent org -- buildNodeRoot
+  // falls back to the node's own sync_key in that case.
+  let orgSyncKey: string | null = null;
+  if (row.type !== "organization") {
+    const orgRes = await db.execute({
+      sql: `SELECT org.sync_key FROM edges e
+              JOIN nodes org ON org.id = e.target_id
+             WHERE e.source_id = ? AND e.relation = 'belongs_to' AND org.type = 'organization'
+             LIMIT 1`,
+      args: [row.id],
+    });
+    orgSyncKey = orgRes.rows.length > 0 ? (orgRes.rows[0].sync_key as string | null) ?? null : null;
+  } else {
+    orgSyncKey = row.sync_key;
+  }
+
   const fileRes = await db.execute({
-    sql: `SELECT id, filename, status, description, local_path, mime_type
+    sql: `SELECT id, filename, status, description, remote_path, mime_type
           FROM files WHERE node_id = ? ORDER BY created_at DESC`,
     args: [row.id],
   });
-  const files = fileRes.rows.map((f) => ({
-    id: f.id as string,
-    filename: f.filename as string,
-    status: f.status as string,
-    description: (f.description as string | null) ?? null,
-    local_path: (f.local_path as string | null) ?? null,
-    mime_type: (f.mime_type as string | null) ?? null,
-  }));
+  const files = fileRes.rows.map((f) => {
+    const remotePath = (f.remote_path as string | null) ?? null;
+    let derivedLocal: string | null = null;
+    if (mirrorPath && remotePath) {
+      const nodeRoot = buildNodeRoot({
+        orgSyncKey,
+        nodeType: row.type,
+        nodeSyncKey: row.sync_key,
+      });
+      try {
+        derivedLocal = deriveLocalPath({ mirrorRoot: mirrorPath, nodeRoot, remotePath });
+      } catch {
+        derivedLocal = null;
+      }
+    }
+    return {
+      id: f.id as string,
+      filename: f.filename as string,
+      status: f.status as string,
+      description: (f.description as string | null) ?? null,
+      local_path: derivedLocal,
+      mime_type: (f.mime_type as string | null) ?? null,
+    };
+  });
 
   const eventRes = await db.execute({
     sql: `SELECT id, type, content, meta, status, refs, task_ref, created_at
@@ -147,19 +193,6 @@ async function loadNodeDetail(nodeId: string): Promise<NodeDetail | null> {
     task_ref: (e.task_ref as string | null) ?? null,
     created_at: e.created_at as string,
   }));
-
-  const mirrorRes = await db.execute({
-    sql: `SELECT local_path, registered_at
-          FROM local_mirrors WHERE user_id = ? AND node_id = ?`,
-    args: [SOLO_USER, row.id],
-  });
-  const local_mirror =
-    mirrorRes.rows.length > 0
-      ? {
-          local_path: mirrorRes.rows[0].local_path as string,
-          registered_at: mirrorRes.rows[0].registered_at as string,
-        }
-      : null;
 
   // Owner
   const ownerRow = row.owner_id
@@ -244,18 +277,32 @@ async function loadNodeDetail(nodeId: string): Promise<NodeDetail | null> {
 async function resolveContext(path: string): Promise<unknown> {
   const db = getDb();
 
-  // Find node whose local_path matches or is a parent of the given path
-  const mirrors = await db.execute({
-    sql: "SELECT node_id, local_path FROM local_mirrors WHERE user_id = ? ORDER BY length(local_path) DESC",
-    args: [SOLO_USER],
-  });
+  // Find node whose local_path matches or is a parent of the given path.
+  // Read mirrors from per-device sync.db; tolerate stale rows (mirror exists
+  // for a node that was purged from the shared DB) by skipping them and
+  // firing a fire-and-forget cleanup.
+  const rawMirrors = await listUserMirrors(SOLO_USER);
+  const mirrors: Array<{ node_id: string; local_path: string }> = [];
+  for (const m of rawMirrors) {
+    const e = await db.execute({
+      sql: "SELECT 1 FROM nodes WHERE id = ? LIMIT 1",
+      args: [m.node_id],
+    });
+    if (e.rows.length > 0) {
+      mirrors.push({ node_id: m.node_id, local_path: m.local_path });
+    } else {
+      void unregisterMirror(SOLO_USER, m.node_id).catch(() => undefined);
+    }
+  }
+  // Longest-prefix match: order by path length desc (matches old ORDER BY).
+  mirrors.sort((a, b) => b.local_path.length - a.local_path.length);
 
   let nodeId: string | null = null;
   let mirrorPath: string | null = null;
-  for (const row of mirrors.rows) {
-    const lp = row.local_path as string;
+  for (const row of mirrors) {
+    const lp = row.local_path;
     if (path === lp || path.startsWith(lp + "/")) {
-      nodeId = row.node_id as string;
+      nodeId = row.node_id;
       mirrorPath = lp;
       break;
     }
@@ -300,17 +347,23 @@ async function resolveContext(path: string): Promise<unknown> {
     created_at: e.created_at as string,
   }));
 
-  // Get local mirrors for related nodes
+  // Get local mirrors for related nodes (per-device sync.db, with stale
+  // tolerance like the parent scan above).
   const relatedIds = edges.rows.map((r) => r.related_id as string);
   let relatedMirrors: Record<string, string> = {};
   if (relatedIds.length > 0) {
-    const ph = relatedIds.map(() => "?").join(",");
-    const mr = await db.execute({
-      sql: `SELECT node_id, local_path FROM local_mirrors WHERE user_id = ? AND node_id IN (${ph})`,
-      args: [SOLO_USER, ...relatedIds],
-    });
-    for (const row of mr.rows) {
-      relatedMirrors[row.node_id as string] = row.local_path as string;
+    const allMirrors = await listUserMirrors(SOLO_USER);
+    for (const m of allMirrors) {
+      if (!relatedIds.includes(m.node_id)) continue;
+      const e = await db.execute({
+        sql: "SELECT 1 FROM nodes WHERE id = ? LIMIT 1",
+        args: [m.node_id],
+      });
+      if (e.rows.length > 0) {
+        relatedMirrors[m.node_id] = m.local_path;
+      } else {
+        void unregisterMirror(SOLO_USER, m.node_id).catch(() => undefined);
+      }
     }
   }
 
@@ -368,6 +421,42 @@ PRINCIPLES AS CULTURE: Principles are not linked to their subjects via an explic
 
 LOCAL MIRRORS: Each node can have a local folder. Use portuni_get_node to find the local_path. The workspace root is configured via PORTUNI_WORKSPACE_ROOT env var. Each mirror has subdirectories: outputs/ (final files), wip/ (work in progress), resources/. Organization workspace folders additionally contain projects/, processes/, areas/, principles/ for organizing child nodes.
 
+FILE SYNC TOOLS (portuni_store / portuni_pull / portuni_status / portuni_list_files / portuni_list_remotes / portuni_setup_remote / portuni_set_routing_policy):
+- portuni_store copies a file into the node's mirror and uploads it via the configured remote. Call with node_id + local_path; optional status (wip | output) and subpath.
+- portuni_pull with file_id downloads the remote version into the mirror. portuni_pull with node_id returns a preview of each file's status (unchanged/updated/conflict/orphan/native) without modifying anything.
+- portuni_status scans tracked files and optionally discovers new local / new remote files. Call at session end when files were touched, before major migrations, or whenever the user asks about sync state.
+- Node paths are built from immutable sync_key identifiers, so renaming a node does NOT break remote folder structure.
+- Each device has its own mirror registry in .portuni/sync.db. Stale rows (node deleted on another device) are skipped and cleaned up lazily.
+
+Destructive sync operations (confirm-first):
+- portuni_delete_file and portuni_move_file return a preview when called without
+  confirmed: true. Present the preview to the user, get explicit confirmation,
+  then call again with confirmed: true. Do not skip.
+- portuni_rename_folder defaults to dry_run: true. Show the affected file list;
+  call again with dry_run: false to apply.
+- portuni_adopt_files is not destructive. Safe to run after portuni_status
+  surfaces new_remote entries.
+
+Operation semantics:
+- Operations are best-effort ordered (remote, then local, then DB). On partial
+  failure the service returns a structured status "repair_needed" with a
+  repair_hint describing the next step. The operator (you, agent) surfaces it
+  to the user and follows the hint.
+
+Session discipline:
+- Call portuni_status before ending a session if files were touched. It
+  classifies tracked files and surfaces untracked local / remote files.
+  Move detection flags files where a deleted_local + new_local pair share
+  the same last-synced hash.
+
+Data-safety defaults:
+- Portuni never auto-deletes and never auto-merges conflicts.
+- Hash (not timestamp) is file identity.
+- Drive delete is soft (trash, 30-day recovery). Drive versioning is not
+  disabled by Portuni.
+- Node display names can be renamed freely; sync paths use an immutable
+  sync_key, so remote folders stay stable.
+
 EVENT TYPES (strictly enforced): decision, discovery, blocker, reference, milestone, note, change. No other event types are accepted by portuni_log.
 
 NODE STATUSES: active (default), completed, archived. Strictly enforced.
@@ -393,6 +482,9 @@ function createMcpServer(): McpServer {
   registerContextTools(server);
   registerMirrorTools(server);
   registerFileTools(server);
+  registerSyncStatusTools(server);
+  registerSyncRemoteTools(server);
+  registerSyncSnapshotTools(server);
   registerEventTools(server);
   registerActorTools(server);
   registerResponsibilityTools(server);
@@ -1101,9 +1193,10 @@ async function main() {
         const db = getDb();
         const id = ulid();
         const now = new Date().toISOString();
+        const syncKey = await generateSyncKey(db, body.name.trim());
         await db.execute({
-          sql: `INSERT INTO nodes (id, type, name, description, meta, status, visibility, created_by, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          sql: `INSERT INTO nodes (id, type, name, description, meta, status, visibility, sync_key, created_by, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           args: [
             id,
             body.type,
@@ -1112,6 +1205,7 @@ async function main() {
             null,
             "active",
             "team",
+            syncKey,
             SOLO_USER,
             now,
             now,

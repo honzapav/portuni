@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { getDb } from "../db.js";
 import { logAudit } from "../audit.js";
 import { SOLO_USER } from "../schema.js";
+import { registerMirror } from "../sync/mirror-registry.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const NodeMinimalRow = z.object({
@@ -99,13 +100,8 @@ export function registerMirrorTools(server: McpServer): void {
         await mkdir(join(localPath, subdir), { recursive: true });
       }
 
-      // 4. Upsert into local_mirrors
-      await db.execute({
-        sql: `INSERT INTO local_mirrors (user_id, node_id, local_path, registered_at)
-              VALUES (?, ?, ?, datetime('now'))
-              ON CONFLICT(user_id, node_id) DO UPDATE SET local_path = ?, registered_at = datetime('now')`,
-        args: [SOLO_USER, args.node_id, localPath, localPath],
-      });
+      // 4. Register mirror in per-device sync.db
+      await registerMirror(SOLO_USER, args.node_id, localPath);
 
       // 5. Log audit
       await logAudit(SOLO_USER, "mirror_local", "node", args.node_id, {
