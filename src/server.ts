@@ -53,6 +53,7 @@ import type {
 } from "./api-types.js";
 import { ulid } from "ulid";
 import { logAudit } from "./audit.js";
+import { checkAuthRequiredForConfig } from "./server-config.js";
 
 const PORT = Number(process.env.PORT ?? 4011);
 const HOST = process.env.HOST ?? "127.0.0.1";
@@ -100,6 +101,15 @@ const AUTH_PUBLIC_PATHS = new Set(["/health"]);
 function timingSafeStringEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
+function assertAuthRequiredIfNotLoopback(): void {
+  const result = checkAuthRequiredForConfig({
+    authEnabled: AUTH_ENABLED,
+    host: HOST,
+    tursoUrl: process.env.TURSO_URL ?? "",
+  });
+  if (!result.ok) throw new Error(result.message);
 }
 
 async function loadGraph(): Promise<GraphPayload> {
@@ -630,6 +640,7 @@ function parseBody(
 }
 
 async function main() {
+  assertAuthRequiredIfNotLoopback();
   await ensureSchema();
 
   interface SessionEntry {
