@@ -647,8 +647,12 @@ async function runDiscovery(db: Client, a: StatusArgs, out: StatusResult): Promi
       })()
     : await listUserMirrors(a.userId);
 
-  // Collect file-row paths per node to identify NEW_LOCAL/NEW_REMOTE.
+  // Collect file-row paths per node (for new_local local-file discovery) AND
+  // a global set keyed by "remoteName::remotePath" (for new_remote discovery).
+  // The global set matters when a parent (org) node's mirror lists its full
+  // subtree -- files registered on child nodes are still "known", not new.
   const knownRemoteByNode = new Map<string, { remoteName: string; remotePath: string }[]>();
+  const knownRemoteGlobal = new Set<string>();
   const filesRes = await db.execute({
     sql: `SELECT node_id, remote_name, remote_path FROM files`,
   });
@@ -659,6 +663,7 @@ async function runDiscovery(db: Client, a: StatusArgs, out: StatusResult): Promi
     if (rn && rp) {
       if (!knownRemoteByNode.has(nid)) knownRemoteByNode.set(nid, []);
       knownRemoteByNode.get(nid)!.push({ remoteName: rn, remotePath: rp });
+      knownRemoteGlobal.add(`${rn}::${rp}`);
     }
   }
 
@@ -688,15 +693,17 @@ async function runDiscovery(db: Client, a: StatusArgs, out: StatusResult): Promi
       await walkMirror(out, m.node_id, m.local_path, section, localSet);
     }
 
-    // Discovery on remote: list adapter paths under buildNodeRoot, skip known.
+    // Discovery on remote: list adapter paths under buildNodeRoot, skip any
+    // file that is tracked anywhere in `files` (not just under this node id).
+    // Org nodes' nodeRoot expands to the whole org subtree, so per-node-only
+    // matching would falsely flag every child's file as new_remote.
     const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
     if (!remoteName) continue;
     try {
       const adapter = await getAdapter(db, remoteName);
       const entries = await adapter.list(nodeRoot);
-      const knownRemotePaths = new Set(knownForNode.map((x) => x.remotePath));
       for (const e of entries) {
-        if (!knownRemotePaths.has(e.path)) {
+        if (!knownRemoteGlobal.has(`${remoteName}::${e.path}`)) {
           out.new_remote.push({
             node_id: m.node_id,
             remote_name: remoteName,

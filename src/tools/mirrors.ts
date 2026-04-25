@@ -6,7 +6,42 @@ import { getDb } from "../db.js";
 import { logAudit } from "../audit.js";
 import { SOLO_USER } from "../schema.js";
 import { registerMirror } from "../sync/mirror-registry.js";
+import { resolveNodeInfo } from "../sync/engine.js";
+import { resolveRemote } from "../sync/routing.js";
+import { getAdapter } from "../sync/adapter-cache.js";
+import { buildNodeRoot } from "../sync/remote-path.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+// Per-type remote folder shape:
+// - organizations get the parent type plurals (projects/processes/areas/principles)
+// - everything else gets section folders (wip/outputs/resources)
+const ORG_PLURALS = ["projects", "processes", "areas", "principles"] as const;
+const NODE_SECTIONS = ["wip", "outputs", "resources"] as const;
+
+async function scaffoldRemoteStructure(
+  db: import("@libsql/client").Client,
+  nodeId: string,
+): Promise<{ scaffolded: string[]; remote_name: string | null; error?: string }> {
+  try {
+    const info = await resolveNodeInfo(db, nodeId);
+    const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
+    if (!remoteName) return { scaffolded: [], remote_name: null };
+    const adapter = await getAdapter(db, remoteName);
+    if (!adapter.ensureFolder) return { scaffolded: [], remote_name: remoteName };
+    const nodeRoot = buildNodeRoot(info);
+    const subpaths =
+      info.nodeType === "organization" ? ORG_PLURALS : NODE_SECTIONS;
+    const created: string[] = [];
+    for (const sub of subpaths) {
+      const target = `${nodeRoot}/${sub}`;
+      await adapter.ensureFolder(target);
+      created.push(target);
+    }
+    return { scaffolded: created, remote_name: remoteName };
+  } catch (e) {
+    return { scaffolded: [], remote_name: null, error: (e as Error).message };
+  }
+}
 
 const NodeMinimalRow = z.object({
   id: z.string(),
@@ -103,12 +138,18 @@ export function registerMirrorTools(server: McpServer): void {
       // 4. Register mirror in per-device sync.db
       await registerMirror(SOLO_USER, args.node_id, localPath);
 
-      // 5. Log audit
+      // 5. Scaffold the remote folder structure if a remote is routed.
+      // Best-effort: if Drive is unreachable or no routing is configured,
+      // local mirror still succeeds.
+      const remoteScaffold = await scaffoldRemoteStructure(db, args.node_id);
+
+      // 6. Log audit
       await logAudit(SOLO_USER, "mirror_local", "node", args.node_id, {
         local_path: localPath,
+        remote_scaffold: remoteScaffold,
       });
 
-      // 6. Return result
+      // 7. Return result
       return {
         content: [
           {
@@ -117,6 +158,7 @@ export function registerMirrorTools(server: McpServer): void {
               node_id: args.node_id,
               local_path: localPath,
               subdirs: ["outputs/", "wip/", "resources/"],
+              remote_scaffold: remoteScaffold,
             }),
           },
         ],

@@ -264,6 +264,12 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
       if (!res.ok) throw new Error(`Drive export: ${res.status} ${await res.text()}`);
       return Buffer.from(await res.arrayBuffer());
     },
+
+    async ensureFolder(path) {
+      // Idempotent: ensureFolderPath either resolves an existing folder or
+      // creates the missing segments. The pathCache makes repeat calls cheap.
+      await ensureFolderPath(path);
+    },
   };
 
   return adapter;

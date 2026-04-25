@@ -19,6 +19,10 @@ export interface FileAdapter {
   rename(from: string, to: string): Promise<void>;
   url(path: string): Promise<string>;
   export?(pathOrId: string, format: "pdf" | "markdown" | "docx"): Promise<Buffer>;
+  // Idempotently create a directory (and its ancestors) on the backend.
+  // Optional because not every backend has a meaningful concept of empty
+  // directories; callers should treat absence as best-effort no-op.
+  ensureFolder?(path: string): Promise<void>;
 }
 
 export interface RemoteConfig {

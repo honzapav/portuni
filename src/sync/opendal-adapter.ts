@@ -130,5 +130,11 @@ export function createOpenDALAdapter(
       }
       throw new CapabilityError(remote.type, "url");
     },
+    async ensureFolder(path) {
+      // OpenDAL exposes createDir for backends that have a folder concept.
+      // Trailing slash is required to signal "this is a directory".
+      const dirPath = path.endsWith("/") ? path : `${path}/`;
+      await op.createDir(dirPath);
+    },
   };
 }
