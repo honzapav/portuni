@@ -236,14 +236,13 @@ function DetailPaneBody({
     }
   };
 
-  // Lazy-load per-file sync classification when the user opens the Files
-  // tab. statusScan does I/O (file hashing + cached remote stat), so we
-  // keep it off the critical path of node detail rendering. Cached for the
-  // current node; re-runs after a mutation via onMutate -> the parent
-  // re-fetches, but the sync map stays valid until the user leaves and
-  // comes back. Errors fall back silently to "no badge".
+  // Auto-load per-file sync classification as soon as the node is
+  // selected, so the Files tab badges (and the eventual count indicator)
+  // are ready when the user looks at them. statusScan does I/O (file
+  // hashing + 30s-cached remote stat) but it runs in parallel with the
+  // detail fetch and never blocks rendering. Errors fall back silently
+  // to "no badge".
   useEffect(() => {
-    if (tab !== "files") return;
     if (syncLoaded || syncLoading) return;
     let cancelled = false;
     setSyncLoading(true);
@@ -268,7 +267,7 @@ function DetailPaneBody({
     return () => {
       cancelled = true;
     };
-  }, [tab, node.id, syncLoaded, syncLoading]);
+  }, [node.id, syncLoaded, syncLoading]);
 
   const startEdit = () => {
     setDraftName(node.name);
