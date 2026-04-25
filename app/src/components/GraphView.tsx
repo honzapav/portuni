@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useDeferredValue, useEffect, useRef } from "react";
 import cytoscape from "cytoscape";
 import type {
   Core,
@@ -559,6 +559,12 @@ export default function GraphView({
   theme,
   onSelect,
 }: Props) {
+  // Defer the search query so typing stays responsive even when the graph
+  // is large enough that the filter pass takes a perceptible amount of
+  // time. React re-runs the filter effect with the deferred value during
+  // idle time; the input itself updates immediately on the controlled
+  // input upstream.
+  const deferredQuery = useDeferredValue(query);
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const prevSelectedRef = useRef<string | null>(selectedId);
@@ -833,7 +839,7 @@ export default function GraphView({
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
-    const q = foldForSearch(query.trim());
+    const q = foldForSearch(deferredQuery.trim());
     const hasQuery = q.length > 0;
     const hasRelFilter = disabledRelations.size > 0;
     const hasOrgFilter = disabledOrgs.size > 0;
@@ -999,7 +1005,7 @@ export default function GraphView({
         }
       }, 220);
     }
-  }, [query, disabledRelations, disabledOrgs, disabledTypes, disabledStatuses]);
+  }, [deferredQuery, disabledRelations, disabledOrgs, disabledTypes, disabledStatuses]);
 
   // Apply selection highlight. Camera refits happen in the ResizeObserver
   // (triggered by the pane open/close) so no camera logic is needed here.

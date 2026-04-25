@@ -456,6 +456,142 @@ async function cachedRemoteStat(
   }
 }
 
+type ScanBucket = "clean" | "push_candidates" | "pull_candidates" | "conflicts" | "orphan" | "native" | "deleted_local";
+
+interface ScanRowResult {
+  bucket: ScanBucket;
+  entry: StatusFileEntry;
+}
+
+async function scanRow(
+  db: Client,
+  a: StatusArgs,
+  row: Record<string, unknown>,
+  nodeInfoCache: Map<string, NodeInfo | null>,
+  mirrorCache: Map<string, string | null>,
+): Promise<ScanRowResult> {
+  const fileId = row.id as string;
+  const nodeId = row.node_id as string;
+  const filename = row.filename as string;
+  const remoteName = (row.remote_name as string | null) ?? null;
+  const remotePath = (row.remote_path as string | null) ?? null;
+  const isNative = Number(row.is_native_format) === 1;
+
+  const info = nodeInfoCache.get(nodeId) ?? null;
+  if (info === null) {
+    return {
+      bucket: "orphan",
+      entry: {
+        file_id: fileId,
+        node_id: nodeId,
+        filename,
+        local_path: null,
+        remote_name: remoteName,
+        remote_path: remotePath,
+        local_hash: null,
+        remote_hash: null,
+        last_synced_hash: null,
+        class: "orphan",
+      },
+    };
+  }
+
+  const mirrorRoot = mirrorCache.get(nodeId) ?? null;
+  const localPath =
+    mirrorRoot && remotePath
+      ? (() => {
+          try {
+            return deriveLocalPath({ mirrorRoot, nodeRoot: buildNodeRoot(info), remotePath });
+          } catch {
+            return null;
+          }
+        })()
+      : null;
+
+  const base: StatusFileEntry = {
+    file_id: fileId,
+    node_id: nodeId,
+    filename,
+    local_path: localPath,
+    remote_name: remoteName,
+    remote_path: remotePath,
+    local_hash: null,
+    remote_hash: null,
+    last_synced_hash: null,
+    class: "clean",
+  };
+
+  if (isNative) return { bucket: "native", entry: { ...base, class: "native" } };
+  if (!remoteName || !remotePath) return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+
+  const state = await getFileState(fileId);
+  base.last_synced_hash = state?.last_synced_hash ?? null;
+  const currentRemoteHash = (row.current_remote_hash as string | null) ?? null;
+  const localHash = a.fast
+    ? (state?.cached_local_hash ?? null)
+    : localPath
+      ? await localHashFor(localPath, fileId, currentRemoteHash)
+      : null;
+  base.local_hash = localHash;
+  const rs = a.fast
+    ? { hash: currentRemoteHash, exists: currentRemoteHash !== null }
+    : await cachedRemoteStat(db, fileId, remoteName, remotePath);
+  if (rs === null) return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+  base.remote_hash = rs.hash;
+  if (!rs.exists) return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+
+  if (localHash === null) {
+    if (base.last_synced_hash) {
+      return { bucket: "deleted_local", entry: { ...base, class: "clean" } };
+    }
+    return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+  }
+
+  const last = base.last_synced_hash;
+  const remoteUnknown = rs.hash === null;
+  const remoteMatchesLast = rs.hash !== null ? rs.hash === last : last !== null;
+  const localMatchesLast = localHash === last;
+
+  if (remoteUnknown && localMatchesLast) return { bucket: "clean", entry: { ...base, class: "clean" } };
+  if (remoteUnknown && !localMatchesLast)
+    return { bucket: "push_candidates", entry: { ...base, class: "push" } };
+
+  if (localMatchesLast && remoteMatchesLast)
+    return { bucket: "clean", entry: { ...base, class: "clean" } };
+  if (!localMatchesLast && remoteMatchesLast)
+    return { bucket: "push_candidates", entry: { ...base, class: "push" } };
+  if (localMatchesLast && !remoteMatchesLast)
+    return { bucket: "pull_candidates", entry: { ...base, class: "pull" } };
+  return { bucket: "conflicts", entry: { ...base, class: "conflict" } };
+}
+
+// Bounded-concurrency map. Workers pull from a shared index; results land in
+// the same positions as the inputs. Used by statusScan to fan out the
+// per-file local-hash / remote-stat work without serialising on each row.
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const idx = next++;
+      if (idx >= items.length) return;
+      results[idx] = await fn(items[idx]);
+    }
+  };
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
+const STATUS_SCAN_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.PORTUNI_STATUS_SCAN_CONCURRENCY ?? 8),
+);
+
 export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResult> {
   const out: StatusResult = {
     clean: [],
@@ -492,123 +628,29 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
     args: params as never[],
   });
 
-  for (const row of rowsRes.rows) {
-    const fileId = row.id as string;
-    const nodeId = row.node_id as string;
-    const filename = row.filename as string;
-    const remoteName = (row.remote_name as string | null) ?? null;
-    const remotePath = (row.remote_path as string | null) ?? null;
-    const isNative = Number(row.is_native_format) === 1;
-
-    let info: NodeInfo;
-    try {
-      info = await resolveNodeInfo(db, nodeId);
-    } catch {
-      // Node gone -> treat as orphan, best-effort cleanup.
-      out.orphan.push({
-        file_id: fileId,
-        node_id: nodeId,
-        filename,
-        local_path: null,
-        remote_name: remoteName,
-        remote_path: remotePath,
-        local_hash: null,
-        remote_hash: null,
-        last_synced_hash: null,
-        class: "orphan",
-      });
-      continue;
-    }
-
-    const mirrorRoot = await getMirrorPath(a.userId, nodeId);
-    const localPath =
-      mirrorRoot && remotePath
-        ? (() => {
-            try {
-              return deriveLocalPath({ mirrorRoot, nodeRoot: buildNodeRoot(info), remotePath });
-            } catch {
-              return null;
-            }
-          })()
-        : null;
-
-    const base: StatusFileEntry = {
-      file_id: fileId,
-      node_id: nodeId,
-      filename,
-      local_path: localPath,
-      remote_name: remoteName,
-      remote_path: remotePath,
-      local_hash: null,
-      remote_hash: null,
-      last_synced_hash: null,
-      class: "clean",
-    };
-
-    if (isNative) {
-      out.native.push({ ...base, class: "native" });
-      continue;
-    }
-    if (!remoteName || !remotePath) {
-      out.orphan.push({ ...base, class: "orphan" });
-      continue;
-    }
-
-    const state = await getFileState(fileId);
-    base.last_synced_hash = state?.last_synced_hash ?? null;
-    const currentRemoteHash = (row.current_remote_hash as string | null) ?? null;
-    const localHash = a.fast
-      ? (state?.cached_local_hash ?? null)
-      : localPath
-        ? await localHashFor(localPath, fileId, currentRemoteHash)
-        : null;
-    base.local_hash = localHash;
-    const rs = a.fast
-      ? { hash: currentRemoteHash, exists: currentRemoteHash !== null }
-      : await cachedRemoteStat(db, fileId, remoteName, remotePath);
-    if (rs === null) {
-      out.orphan.push({ ...base, class: "orphan" });
-      continue;
-    }
-    base.remote_hash = rs.hash;
-
-    if (!rs.exists) {
-      out.orphan.push({ ...base, class: "orphan" });
-      continue;
-    }
-
-    if (localHash === null) {
-      if (base.last_synced_hash) {
-        out.deleted_local.push({ ...base, class: "clean" });
-      } else {
-        // Haven't pulled yet — this is essentially a new_remote scenario; but
-        // since the row exists we keep it as an orphan candidate.
-        out.orphan.push({ ...base, class: "orphan" });
+  // Pre-resolve node info + mirror root once per unique nodeId. The original
+  // loop did this per-row, multiplying DB roundtrips by the file fan-out
+  // even though all files for the same node share the same answer.
+  const uniqueNodeIds = Array.from(new Set(rowsRes.rows.map((r) => r.node_id as string)));
+  const nodeInfoCache = new Map<string, NodeInfo | null>();
+  const mirrorCache = new Map<string, string | null>();
+  await Promise.all(
+    uniqueNodeIds.map(async (nodeId) => {
+      try {
+        nodeInfoCache.set(nodeId, await resolveNodeInfo(db, nodeId));
+      } catch {
+        nodeInfoCache.set(nodeId, null);
       }
-      continue;
-    }
+      mirrorCache.set(nodeId, await getMirrorPath(a.userId, nodeId));
+    }),
+  );
 
-    const last = base.last_synced_hash;
-    const remoteUnknown = rs.hash === null;
-    const remoteMatchesLast = rs.hash !== null ? rs.hash === last : last !== null;
-    const localMatchesLast = localHash === last;
-
-    if (remoteUnknown && localMatchesLast) {
-      out.clean.push({ ...base, class: "clean" });
-      continue;
-    }
-    if (remoteUnknown && !localMatchesLast) {
-      out.push_candidates.push({ ...base, class: "push" });
-      continue;
-    }
-
-    if (localMatchesLast && remoteMatchesLast) out.clean.push({ ...base, class: "clean" });
-    else if (!localMatchesLast && remoteMatchesLast)
-      out.push_candidates.push({ ...base, class: "push" });
-    else if (localMatchesLast && !remoteMatchesLast)
-      out.pull_candidates.push({ ...base, class: "pull" });
-    else out.conflicts.push({ ...base, class: "conflict" });
-  }
+  const rowResults = await mapWithConcurrency(
+    rowsRes.rows as unknown as Record<string, unknown>[],
+    STATUS_SCAN_CONCURRENCY,
+    (row) => scanRow(db, a, row, nodeInfoCache, mirrorCache),
+  );
+  for (const r of rowResults) out[r.bucket].push(r.entry);
 
   if (a.includeDiscovery !== false) {
     await runDiscovery(db, a, out);
