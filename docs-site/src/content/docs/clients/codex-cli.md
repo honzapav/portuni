@@ -13,7 +13,7 @@ Add Portuni to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.portuni]
-url = "http://localhost:3001/mcp"
+url = "http://localhost:4011/mcp"
 startup_timeout_sec = 10
 tool_timeout_sec = 60
 ```
@@ -100,7 +100,7 @@ If you're running several Portuni servers (say, personal and team), register eac
 
 ```toml
 [mcp_servers.portuni]
-url = "http://localhost:3001/mcp"
+url = "http://localhost:4011/mcp"
 
 [mcp_servers.portuni-alt]
 url = "http://localhost:3002/mcp"

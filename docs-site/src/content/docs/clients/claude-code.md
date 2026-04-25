@@ -14,7 +14,7 @@ Add Portuni to `~/.claude.json`:
   "mcpServers": {
     "portuni": {
       "type": "http",
-      "url": "http://localhost:3001/mcp"
+      "url": "http://localhost:4011/mcp"
     }
   }
 }
@@ -93,7 +93,7 @@ If you're running several Portuni servers side by side, register each as its own
   "mcpServers": {
     "portuni": {
       "type": "http",
-      "url": "http://localhost:3001/mcp"
+      "url": "http://localhost:4011/mcp"
     },
     "portuni-alt": {
       "type": "http",
@@ -108,10 +108,10 @@ The `SessionStart` hook script can route across all of them. It reads a space-se
 Export the variable in your shell startup file (e.g. `~/.zshrc`):
 
 ```bash
-export PORTUNI_URLS="http://localhost:3001 http://localhost:3002"
+export PORTUNI_URLS="http://localhost:4011 http://localhost:3002"
 ```
 
-If `PORTUNI_URLS` isn't set, the hook falls back to `PORTUNI_URL` (a single URL), and ultimately to `http://localhost:3001`. You only need one hook entry in `settings.json` – the script handles routing across instances.
+If `PORTUNI_URLS` isn't set, the hook falls back to `PORTUNI_URL` (a single URL), and ultimately to `http://localhost:4011`. You only need one hook entry in `settings.json` – the script handles routing across instances.
 
 ## Plan mode and bypass mode
 

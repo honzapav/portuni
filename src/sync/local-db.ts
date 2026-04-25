@@ -1,6 +1,7 @@
 import { createClient, type Client } from "@libsql/client";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { homedir } from "node:os";
 
 export interface FileStateRow {
   file_id: string;
@@ -31,7 +32,7 @@ let cachedPath: string | null = null;
 function workspaceRoot(): string {
   const root = process.env.PORTUNI_WORKSPACE_ROOT;
   if (!root) throw new Error("PORTUNI_WORKSPACE_ROOT must be set for local sync.db");
-  return root;
+  return root.replace(/^~(?=$|\/)/, homedir());
 }
 
 async function ensureSchema(db: Client): Promise<void> {

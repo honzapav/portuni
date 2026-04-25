@@ -30,7 +30,7 @@ npx varlock run -- npm start       # production (dist/)
 npx varlock run -- npm run dev     # development (tsx)
 ```
 
-Server: `http://localhost:3001` (override with `PORT` env var).
+Server: `http://localhost:4011` (override with `PORT` env var).
 
 Recommended: run in tmux session:
 
@@ -55,7 +55,7 @@ Global MCP (`~/.claude.json`):
   "mcpServers": {
     "portuni": {
       "type": "http",
-      "url": "http://localhost:3001/mcp"
+      "url": "http://localhost:4011/mcp"
     }
   }
 }

@@ -13,7 +13,7 @@ Add Portuni to `~/.gemini/settings.json`:
 {
   "mcpServers": {
     "portuni": {
-      "httpUrl": "http://localhost:3001/mcp",
+      "httpUrl": "http://localhost:4011/mcp",
       "timeout": 5000
     }
   }
@@ -98,7 +98,7 @@ Register each instance as its own MCP server in `~/.gemini/settings.json`:
 {
   "mcpServers": {
     "portuni": {
-      "httpUrl": "http://localhost:3001/mcp"
+      "httpUrl": "http://localhost:4011/mcp"
     },
     "portuni-alt": {
       "httpUrl": "http://localhost:3002/mcp"

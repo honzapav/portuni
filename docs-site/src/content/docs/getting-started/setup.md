@@ -32,7 +32,7 @@ Portuni uses Varlock for credentials. The authoritative list of variables lives 
 | `TURSO_AUTH_TOKEN` | team setup | Turso auth token. Set alongside `TURSO_URL` |
 | `PORTUNI_USER_EMAIL` | optional | Solo-user email in single-user mode. Defaults to `solo@localhost` |
 | `PORTUNI_USER_NAME` | optional | Solo-user display name. Defaults to `Solo User` |
-| `PORT` | optional | HTTP port for the MCP server. Default `3001` |
+| `PORT` | optional | HTTP port for the MCP server. Default `4011` |
 
 ### Two ways to run it
 
@@ -46,7 +46,7 @@ npx varlock run -- npm start       # production
 npx varlock run -- npm run dev     # development
 ```
 
-Portuni listens on `http://localhost:3001` by default. Set `PORT` to change it.
+Portuni listens on `http://localhost:4011` by default. Set `PORT` to change it.
 
 If you'd like it to stay running in the background (so it survives closing the terminal), drop it into a tmux session:
 
@@ -70,7 +70,7 @@ Each running instance is a separate MCP endpoint. See the [MCP Clients](/clients
 ## Check it's alive
 
 ```bash
-curl http://localhost:3001/health
+curl http://localhost:4011/health
 # {"status":"ok"}
 ```
 

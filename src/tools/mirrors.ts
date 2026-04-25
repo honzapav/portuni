@@ -10,6 +10,7 @@ import { resolveNodeInfo } from "../sync/engine.js";
 import { resolveRemote } from "../sync/routing.js";
 import { getAdapter } from "../sync/adapter-cache.js";
 import { buildNodeRoot } from "../sync/remote-path.js";
+import { ensureUnderRoot, PathTraversalError } from "../safe-path.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 // Per-type remote folder shape:
@@ -103,7 +104,17 @@ export function registerMirrorTools(server: McpServer): void {
 
       let localPath: string;
       if (args.custom_path) {
-        localPath = args.custom_path;
+        try {
+          localPath = ensureUnderRoot(root, args.custom_path);
+        } catch (e) {
+          if (e instanceof PathTraversalError) {
+            return {
+              content: [{ type: "text" as const, text: `Error: custom_path must be inside PORTUNI_WORKSPACE_ROOT (${root})` }],
+              isError: true,
+            };
+          }
+          throw e;
+        }
       } else if (node.type === "organization") {
         localPath = join(root, slug);
       } else {

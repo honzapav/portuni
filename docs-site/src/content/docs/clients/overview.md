@@ -35,4 +35,4 @@ For the full reasoning behind all this, head to [Concepts → Filesystem Permiss
 
 ## Before you start
 
-All pages in this section assume Portuni is already running on `http://localhost:3001/mcp`. If it isn't, pop over to [Getting Started → Setup](/getting-started/setup/) first – it's a few minutes of work and you can come back.
+All pages in this section assume Portuni is already running on `http://localhost:4011/mcp`. If it isn't, pop over to [Getting Started → Setup](/getting-started/setup/) first – it's a few minutes of work and you can come back.

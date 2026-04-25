@@ -14,9 +14,11 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { getDb } from "../src/db.js";
+import { compileIgnorePatterns } from "../src/portuniignore.js";
 import { statusScan, storeFile } from "../src/sync/engine.js";
 import { SOLO_USER } from "../src/schema.js";
 
@@ -45,41 +47,6 @@ function parseArgs(argv: string[]): Args {
   return out;
 }
 
-// Minimal gitignore-style matcher. Supports prefix dir patterns (foo/),
-// suffix wildcards (*.ext), and absolute root patterns (/foo).
-function compileIgnorePatterns(text: string): (path: string) => boolean {
-  const lines = text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0 && !l.startsWith("#"));
-  const matchers: Array<(p: string) => boolean> = [];
-  for (const raw of lines) {
-    let pat = raw;
-    const dirOnly = pat.endsWith("/");
-    if (dirOnly) pat = pat.slice(0, -1);
-    // Convert to a regex.
-    const re = pat
-      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-      .replace(/\*\*/g, "::DOUBLESTAR::")
-      .replace(/\*/g, "[^/]*")
-      .replace(/::DOUBLESTAR::/g, ".*");
-    if (pat.startsWith("/")) {
-      // Anchor at root.
-      const r = new RegExp(`^${re.slice(2)}(/|$)`);
-      matchers.push((p) => r.test(p));
-    } else if (pat.includes("/")) {
-      // Match anywhere as substring path.
-      const r = new RegExp(`(^|/)${re}(/|$)`);
-      matchers.push((p) => r.test(p));
-    } else {
-      // Match basename or any segment.
-      const r = new RegExp(`(^|/)${re}(/|$)`);
-      matchers.push((p) => r.test(p));
-    }
-  }
-  return (relativePath: string) => matchers.some((m) => m(relativePath));
-}
-
 async function loadIgnore(workspaceRoot: string): Promise<(p: string) => boolean> {
   try {
     const raw = await readFile(join(workspaceRoot, ".portuniignore"), "utf-8");
@@ -106,7 +73,7 @@ interface PendingFile {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const workspaceRoot = process.env.PORTUNI_WORKSPACE_ROOT;
+  const workspaceRoot = process.env.PORTUNI_WORKSPACE_ROOT?.replace(/^~(?=$|\/)/, homedir());
   if (!workspaceRoot) throw new Error("PORTUNI_WORKSPACE_ROOT must be set");
 
   const db = getDb();

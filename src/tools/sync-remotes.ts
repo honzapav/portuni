@@ -10,6 +10,7 @@ import {
   type RoutingRule,
 } from "../sync/routing.js";
 import { readDeviceTokens } from "../sync/device-tokens.js";
+import { invalidateAdapter } from "../sync/adapter-cache.js";
 
 export interface SetupRemoteArgs {
   userId: string;
@@ -45,6 +46,8 @@ export async function setupRemoteService(db: Client, a: SetupRemoteArgs): Promis
     config: a.config,
     created_by: a.userId,
   });
+  // Drop cached adapter so the next request rebuilds with fresh config/tokens.
+  invalidateAdapter(a.name);
 }
 
 export async function setRoutingPolicyService(

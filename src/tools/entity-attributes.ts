@@ -16,15 +16,27 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getDb } from "../db.js";
 import { SOLO_USER } from "../schema.js";
 import { DataSourceRow, ToolRow } from "../types.js";
+import { isSafeExternalLink } from "../safe-url.js";
 
 // --- Zod input schema (shared between data_sources and tools) ---
+
+const ExternalLinkSchema = z
+  .string()
+  .optional()
+  .refine(
+    (v) => v === undefined || v === "" || isSafeExternalLink(v),
+    {
+      message:
+        "external_link must be empty or an http://, https://, or mailto: URL (no javascript:, data:, file:, ...)",
+    },
+  );
 
 const AddEntityAttrInput = z.object({
   node_id: z.string().describe("Node ID (ULID). Must be a project/process/area."),
   name: z.string().describe("Short display name."),
   description: z.string().optional().describe("Optional detail."),
-  external_link: z.string().optional().describe(
-    "Optional plain URL or identifier. NEVER a connection string with credentials.",
+  external_link: ExternalLinkSchema.describe(
+    "Optional plain URL (http/https/mailto only). NEVER a connection string with credentials.",
   ),
 });
 type AddEntityAttrInput = z.infer<typeof AddEntityAttrInput>;
@@ -93,7 +105,16 @@ async function addRow<T>(
 const UpdateEntityAttrInput = z.object({
   name: z.string().optional(),
   description: z.union([z.string(), z.null()]).optional(),
-  external_link: z.union([z.string(), z.null()]).optional(),
+  external_link: z
+    .union([z.string(), z.null()])
+    .optional()
+    .refine(
+      (v) => v === undefined || v === null || v === "" || isSafeExternalLink(v),
+      {
+        message:
+          "external_link must be empty/null or an http://, https://, or mailto: URL",
+      },
+    ),
 });
 type UpdateEntityAttrInput = z.infer<typeof UpdateEntityAttrInput>;
 
@@ -261,7 +282,7 @@ export function registerEntityAttributeTools(server: McpServer): void {
       node_id: z.string().describe("Node ID (ULID). Must be a project/process/area."),
       name: z.string().describe("Short display name, e.g. 'CRM Airtable', 'Q3 revenue report'."),
       description: z.string().optional().describe("Optional detail."),
-      external_link: z.string().optional().describe("Optional plain URL or identifier. NEVER credentials."),
+      external_link: ExternalLinkSchema.describe("Optional plain URL (http/https/mailto only). NEVER credentials."),
     },
     async (args) => {
       try {
@@ -326,7 +347,7 @@ export function registerEntityAttributeTools(server: McpServer): void {
       node_id: z.string().describe("Node ID (ULID). Must be a project/process/area."),
       name: z.string().describe("Short display name, e.g. 'Asana', 'Figma', 'Slack'."),
       description: z.string().optional().describe("Optional detail."),
-      external_link: z.string().optional().describe("Optional plain URL. NEVER credentials."),
+      external_link: ExternalLinkSchema.describe("Optional plain URL (http/https/mailto only). NEVER credentials."),
     },
     async (args) => {
       try {

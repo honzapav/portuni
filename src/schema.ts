@@ -162,15 +162,17 @@ const DDL = [
 
 const SOLO_USER_ID = "01SOLO0000000000000000000";
 
-const soloEmail = process.env.PORTUNI_USER_EMAIL ?? "solo@localhost";
-const soloName = process.env.PORTUNI_USER_NAME ?? "Solo User";
-
-const SEED = [
-  `INSERT OR IGNORE INTO users (id, email, name, created_at)
-   VALUES ('${SOLO_USER_ID}', '${soloEmail}', '${soloName}', datetime('now'))`,
-];
-
 export const SOLO_USER = SOLO_USER_ID;
+
+async function seedSoloUser(db: import("@libsql/client").Client): Promise<void> {
+  const email = process.env.PORTUNI_USER_EMAIL ?? "solo@localhost";
+  const name = process.env.PORTUNI_USER_NAME ?? "Solo User";
+  await db.execute({
+    sql: `INSERT OR IGNORE INTO users (id, email, name, created_at)
+          VALUES (?, ?, ?, datetime('now'))`,
+    args: [SOLO_USER_ID, email, name],
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Migration system
@@ -1395,8 +1397,9 @@ export async function ensureSchema(): Promise<void> {
   // loop. Both the index and the triggers reference the sync_key column, which
   // on existing pre-013 DBs does not yet exist when ensureSchema runs. The
   // 013 migration handles them idempotently after the column is added.
-  for (const sql of [...DDL, ...DDL_MIGRATION_006, ...SEED]) {
+  for (const sql of [...DDL, ...DDL_MIGRATION_006]) {
     await db.execute(sql);
   }
+  await seedSoloUser(db);
   await runMigrations(db);
 }

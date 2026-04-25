@@ -1365,12 +1365,26 @@ export interface DeleteFileSuccess {
   file_id: string;
   mode: "complete" | "unregister_only";
   deleted_at: string;
+  status: "ok";
+}
+
+export interface DeleteFileRepairNeeded {
+  file_id: string;
+  mode: "complete";
+  status: "repair_needed";
+  detail: {
+    phase: "remote";
+    remote_name: string;
+    remote_path: string;
+    error: string;
+  };
+  repair_hint: string;
 }
 
 export async function deleteFile(
   db: Client,
   a: DeleteFileArgs,
-): Promise<DeleteFilePreview | DeleteFileSuccess> {
+): Promise<DeleteFilePreview | DeleteFileSuccess | DeleteFileRepairNeeded> {
   const r = await db.execute({
     sql: "SELECT id, node_id, filename, remote_name, remote_path FROM files WHERE id = ?",
     args: [a.fileId],
@@ -1426,11 +1440,46 @@ export async function deleteFile(
     try {
       const adapter = await getAdapter(db, remoteName);
       await adapter.delete(remotePath);
-    } catch {
-      // best-effort: continue
+    } catch (e) {
+      // Remote delete failed. Do NOT delete the DB row or the local file —
+      // that would silently desync state and leave an orphan on the remote
+      // with no Portuni record. Surface a repair_needed result instead.
+      await db.execute({
+        sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+              VALUES (?, ?, 'sync_delete_repair_needed', 'file', ?, ?, ?)`,
+        args: [
+          ulid(),
+          a.userId,
+          a.fileId,
+          JSON.stringify({
+            mode,
+            remote_name: remoteName,
+            remote_path: remotePath,
+            error: (e as Error).message,
+          }),
+          now,
+        ],
+      });
+      return {
+        file_id: a.fileId,
+        mode,
+        status: "repair_needed",
+        detail: {
+          phase: "remote",
+          remote_name: remoteName,
+          remote_path: remotePath,
+          error: (e as Error).message,
+        },
+        repair_hint:
+          "Remote delete failed; DB row and local file kept intact. Verify the remote is reachable / authorized, then retry portuni_delete_file.",
+      };
     }
     if (localPath) {
       const { rm } = await import("node:fs/promises");
+      // Local rm is best-effort: the file is just a cached copy. If this
+      // fails after the remote already accepted the delete, the DB row is
+      // still removed below (the source of truth is the remote, which is
+      // gone). The user can manually rm the orphan local file.
       await rm(localPath, { force: true }).catch(() => undefined);
     }
   }
@@ -1456,5 +1505,5 @@ export async function deleteFile(
     ],
   });
 
-  return { file_id: a.fileId, mode, deleted_at: now };
+  return { file_id: a.fileId, mode, deleted_at: now, status: "ok" };
 }

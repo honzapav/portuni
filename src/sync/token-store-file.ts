@@ -1,12 +1,14 @@
 import { mkdir, readFile, rename, writeFile, chmod } from "node:fs/promises";
 import { join, dirname } from "node:path";
+import { homedir } from "node:os";
 import type { TokenStore } from "./token-store.js";
 import type { DeviceToken } from "./types.js";
 
 function tokensPath(): string {
   const root = process.env.PORTUNI_WORKSPACE_ROOT;
   if (!root) throw new Error("PORTUNI_WORKSPACE_ROOT must be set for FileTokenStore");
-  return join(root, ".portuni", "tokens.json");
+  const expanded = root.replace(/^~(?=$|\/)/, homedir());
+  return join(expanded, ".portuni", "tokens.json");
 }
 
 async function readMap(): Promise<Record<string, DeviceToken>> {

@@ -2,17 +2,17 @@
 # Portuni SessionStart hook – injects graph context when cwd is a Portuni workspace.
 #
 # Supports multiple Portuni instances. Set PORTUNI_URLS to a space-separated list
-# of base URLs (e.g. "http://localhost:3001 http://localhost:3002"); the hook tries
+# of base URLs (e.g. "http://localhost:4011 http://localhost:3002"); the hook tries
 # each in order and uses the first server whose workspace matches the current
 # working directory. If PORTUNI_URLS is not set, the hook falls back to
-# PORTUNI_URL (single URL), and finally to http://localhost:3001 as the default.
+# PORTUNI_URL (single URL), and finally to http://localhost:4011 as the default.
 
 if [ -n "$PORTUNI_URLS" ]; then
   URLS="$PORTUNI_URLS"
 elif [ -n "$PORTUNI_URL" ]; then
   URLS="$PORTUNI_URL"
 else
-  URLS="http://localhost:3001"
+  URLS="http://localhost:4011"
 fi
 
 CWD="$(pwd)"

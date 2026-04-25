@@ -55,6 +55,38 @@ import { ulid } from "ulid";
 import { logAudit } from "./audit.js";
 
 const PORT = Number(process.env.PORT ?? 4011);
+const HOST = process.env.HOST ?? "127.0.0.1";
+const MAX_BODY_BYTES = Number(process.env.PORTUNI_MAX_BODY_BYTES ?? 5 * 1024 * 1024);
+const MAX_SESSIONS = Number(process.env.PORTUNI_MAX_SESSIONS ?? 100);
+const SESSION_TTL_MS = Number(process.env.PORTUNI_SESSION_TTL_MS ?? 30 * 60 * 1000);
+const SESSION_GC_INTERVAL_MS = Number(process.env.PORTUNI_SESSION_GC_INTERVAL_MS ?? 60 * 1000);
+
+const DEFAULT_ALLOWED_ORIGINS = [
+  `http://localhost:${PORT}`,
+  `http://127.0.0.1:${PORT}`,
+  "http://localhost:4010",
+  "http://127.0.0.1:4010",
+  "http://portuni.test",
+];
+const ALLOWED_ORIGINS = new Set(
+  (process.env.PORTUNI_ALLOWED_ORIGINS ?? DEFAULT_ALLOWED_ORIGINS.join(","))
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+
+const ALLOWED_HOSTS = new Set(
+  [
+    `localhost:${PORT}`,
+    `127.0.0.1:${PORT}`,
+    `[::1]:${PORT}`,
+    "api.portuni.test",
+    ...(process.env.PORTUNI_ALLOWED_HOSTS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  ].map((h) => h.toLowerCase()),
+);
 
 async function loadGraph(): Promise<GraphPayload> {
   const db = getDb();
@@ -506,12 +538,32 @@ function createMcpServer(): McpServer {
   return server;
 }
 
-function parseBody(req: import("node:http").IncomingMessage): Promise<unknown> {
+class RequestBodyTooLargeError extends Error {
+  constructor(public readonly limit: number) {
+    super(`Request body exceeds ${limit} bytes`);
+    this.name = "RequestBodyTooLargeError";
+  }
+}
+
+function parseBody(
+  req: import("node:http").IncomingMessage,
+  maxBytes: number = MAX_BODY_BYTES,
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    let data = "";
-    req.on("data", (chunk: Buffer) => { data += chunk; });
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(new RequestBodyTooLargeError(maxBytes));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => {
       try {
+        const data = Buffer.concat(chunks).toString("utf8");
         resolve(data ? JSON.parse(data) : undefined);
       } catch (e) {
         reject(e);
@@ -524,12 +576,48 @@ function parseBody(req: import("node:http").IncomingMessage): Promise<unknown> {
 async function main() {
   await ensureSchema();
 
-  const sessions = new Map<string, StreamableHTTPServerTransport>();
+  interface SessionEntry {
+    transport: StreamableHTTPServerTransport;
+    lastUsedAt: number;
+  }
+  const sessions = new Map<string, SessionEntry>();
+
+  const sessionGc = setInterval(() => {
+    const cutoff = Date.now() - SESSION_TTL_MS;
+    for (const [id, entry] of sessions) {
+      if (entry.lastUsedAt < cutoff) {
+        sessions.delete(id);
+        entry.transport.close().catch(() => {});
+      }
+    }
+  }, SESSION_GC_INTERVAL_MS);
+  sessionGc.unref?.();
 
   const httpServer = createServer(async (req, res) => {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+    const hostHeader = (req.headers.host ?? "").toLowerCase();
+    const url = new URL(req.url ?? "/", `http://${hostHeader || "localhost"}`);
+    const origin = (req.headers.origin as string | undefined) ?? null;
 
-    res.setHeader("Access-Control-Allow-Origin", "*");
+    // DNS-rebinding defense: reject requests whose Host header is not in the
+    // configured allowlist (loopback names + explicit dev hosts).
+    if (!ALLOWED_HOSTS.has(hostHeader)) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Host header not allowed" }));
+      return;
+    }
+
+    // Cross-origin defense: if a browser sets Origin, it must be allowlisted.
+    // Native MCP clients (Node fetch, curl) send no Origin and pass through.
+    if (origin !== null && !ALLOWED_ORIGINS.has(origin)) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Origin not allowed" }));
+      return;
+    }
+
+    if (origin !== null) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+    }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Mcp-Session-Id");
     res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
@@ -543,18 +631,37 @@ async function main() {
     if (url.pathname === "/mcp" || url.pathname === "/mcp/") {
       const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
-      const body = await parseBody(req);
+      let body: unknown;
+      try {
+        body = await parseBody(req);
+      } catch (err) {
+        if (err instanceof RequestBodyTooLargeError) {
+          res.writeHead(413, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Request body too large" }));
+          return;
+        }
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid JSON body" }));
+        return;
+      }
 
       try {
-        if (sessionId && sessions.has(sessionId)) {
-          const transport = sessions.get(sessionId)!;
-          await transport.handleRequest(req, res, body);
+        const existing = sessionId ? sessions.get(sessionId) : undefined;
+        if (existing) {
+          existing.lastUsedAt = Date.now();
+          await existing.transport.handleRequest(req, res, body);
           return;
         }
 
-        if (sessionId && !sessions.has(sessionId)) {
+        if (sessionId && !existing) {
           res.writeHead(404, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "Session not found" }));
+          return;
+        }
+
+        if (sessions.size >= MAX_SESSIONS) {
+          res.writeHead(503, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Session capacity reached" }));
           return;
         }
 
@@ -562,7 +669,7 @@ async function main() {
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
-            sessions.set(newSessionId, transport);
+            sessions.set(newSessionId, { transport, lastUsedAt: Date.now() });
           },
         });
 
@@ -1688,14 +1795,15 @@ async function main() {
     res.end("Not found");
   });
 
-  httpServer.listen(PORT, () => {
-    console.log(`Portuni MCP server listening on http://localhost:${PORT}`);
-    console.log(`Streamable HTTP endpoint: http://localhost:${PORT}/mcp`);
+  httpServer.listen(PORT, HOST, () => {
+    console.log(`Portuni MCP server listening on http://${HOST}:${PORT}`);
+    console.log(`Streamable HTTP endpoint: http://${HOST}:${PORT}/mcp`);
   });
 
   process.on("SIGINT", () => {
-    for (const transport of sessions.values()) {
-      transport.close().catch(() => {});
+    clearInterval(sessionGc);
+    for (const entry of sessions.values()) {
+      entry.transport.close().catch(() => {});
     }
     httpServer.close();
     process.exit(0);

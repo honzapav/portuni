@@ -43,6 +43,7 @@ import {
   NODE_VISIBILITIES,
 } from "../types";
 import { buildAgentCommand } from "../lib/prompt";
+import { safeHref } from "../lib/safe-url";
 import type { Actor } from "../api";
 import {
   updateNode,
@@ -2444,12 +2445,13 @@ function EntityAttributeItem<TItem extends EntityAttributeItem>({
     );
   }
 
+  const safeLink = safeHref(item.external_link);
   return (
     <li className="group flex items-start gap-2">
       <div className="flex-1">
-        {item.external_link ? (
+        {safeLink ? (
           <a
-            href={item.external_link}
+            href={safeLink}
             target="_blank"
             rel="noreferrer"
             className="text-[var(--color-accent)] hover:underline"
