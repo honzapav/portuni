@@ -66,6 +66,33 @@ export type DetailFile = {
   mime_type: string | null;
 };
 
+// Per-file sync state classified by the engine's statusScan. Untracked
+// discovery results (new_local / new_remote) are intentionally omitted
+// here -- the UI tab listing is built from tracked `files` rows, so a
+// flat lookup keyed by file_id is what the frontend needs.
+export type SyncClass =
+  | "clean"
+  | "push"
+  | "pull"
+  | "conflict"
+  | "orphan"
+  | "native";
+
+export type SyncStatusFile = {
+  file_id: string;
+  sync_class: SyncClass;
+  local_hash: string | null;
+  remote_hash: string | null;
+  last_synced_hash: string | null;
+  local_path: string | null;
+  remote_name: string | null;
+  remote_path: string | null;
+};
+
+export type SyncStatusResponse = {
+  files: SyncStatusFile[];
+};
+
 export type DetailEvent = {
   id: string;
   type: string;

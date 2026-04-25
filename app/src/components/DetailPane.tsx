@@ -28,6 +28,8 @@ import type {
   DetailDataSource,
   DetailTool,
   GraphPayload,
+  SyncClass,
+  SyncStatusFile,
 } from "../types";
 import {
   RELATION_TYPES,
@@ -58,6 +60,7 @@ import {
   addTool,
   updateTool,
   removeTool,
+  fetchNodeSyncStatus,
 } from "../api";
 
 function nodeTypeVar(type: string): string {
@@ -162,6 +165,11 @@ function DetailPaneBody({
   const [tab, setTab] = useState<
     "overview" | "events" | "files" | "connections"
   >("overview");
+  const [syncStatus, setSyncStatus] = useState<Map<string, SyncStatusFile>>(
+    () => new Map(),
+  );
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   // Reset edit drafts whenever we switch to a different node.
   const lastIdRef = useRef(node.id);
@@ -172,8 +180,42 @@ function DetailPaneBody({
       setDraftName(node.name);
       setErrorMsg(null);
       setTab("overview");
+      setSyncStatus(new Map());
+      setSyncError(null);
     }
   }, [node.id, node.name]);
+
+  // Lazy-load per-file sync classification when the user opens the Files
+  // tab. statusScan does I/O (file hashing + cached remote stat), so we
+  // keep it off the critical path of node detail rendering. Cached for the
+  // current node; re-runs after a mutation via onMutate -> the parent
+  // re-fetches, but the sync map stays valid until the user leaves and
+  // comes back. Errors fall back silently to "no badge".
+  useEffect(() => {
+    if (tab !== "files") return;
+    if (syncStatus.size > 0 || syncLoading) return;
+    let cancelled = false;
+    setSyncLoading(true);
+    setSyncError(null);
+    fetchNodeSyncStatus(node.id)
+      .then((res) => {
+        if (cancelled) return;
+        const m = new Map<string, SyncStatusFile>();
+        for (const f of res.files) m.set(f.file_id, f);
+        setSyncStatus(m);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setSyncError(String(e));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setSyncLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, node.id, syncStatus.size, syncLoading]);
 
   const startEdit = () => {
     setDraftName(node.name);
@@ -531,30 +573,44 @@ function DetailPaneBody({
           <div className="px-5 py-4">
             {node.files.length > 0 ? (
               <div className="space-y-1">
-                {node.files.map((f) => (
-                  <div
-                    key={f.id}
-                    className="flex items-start gap-2.5 rounded px-2 py-1.5 hover:bg-[var(--color-surface)]"
-                  >
-                    <FileText
-                      size={12}
-                      className="mt-0.5 shrink-0 text-[var(--color-text-dim)]"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="truncate text-[13.5px] text-[var(--color-text)]">
-                          {f.filename}
-                        </span>
-                        <FileStatusBadge status={f.status} />
-                      </div>
-                      {f.description && (
-                        <div className="mt-0.5 line-clamp-2 text-[13.5px] leading-relaxed text-[var(--color-text-dim)]">
-                          {f.description}
+                {node.files.map((f) => {
+                  const sync = syncStatus.get(f.id);
+                  return (
+                    <div
+                      key={f.id}
+                      className="flex items-start gap-2.5 rounded px-2 py-1.5 hover:bg-[var(--color-surface)]"
+                    >
+                      <FileText
+                        size={12}
+                        className="mt-0.5 shrink-0 text-[var(--color-text-dim)]"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-[13.5px] text-[var(--color-text)]">
+                            {f.filename}
+                          </span>
+                          <FileStatusBadge status={f.status} />
+                          {sync && <SyncStatusBadge sync={sync} />}
+                          {!sync && syncLoading && (
+                            <span className="font-mono text-[8.5px] uppercase tracking-wider text-[var(--color-text-dim)]">
+                              ...
+                            </span>
+                          )}
                         </div>
-                      )}
+                        {f.description && (
+                          <div className="mt-0.5 line-clamp-2 text-[13.5px] leading-relaxed text-[var(--color-text-dim)]">
+                            {f.description}
+                          </div>
+                        )}
+                      </div>
                     </div>
+                  );
+                })}
+                {syncError && (
+                  <div className="mt-2 px-2 text-[12px] text-[var(--color-text-dim)]">
+                    Sync status nedostupný: {syncError}
                   </div>
-                ))}
+                )}
               </div>
             ) : (
               <div className="text-[14px] text-[var(--color-text-dim)]">
@@ -2694,6 +2750,58 @@ function FileStatusBadge({ status }: { status: string }) {
       }}
     >
       {status}
+    </span>
+  );
+}
+
+const SYNC_LABEL: Record<SyncClass, string> = {
+  clean: "synced",
+  push: "push",
+  pull: "pull",
+  conflict: "conflict",
+  orphan: "orphan",
+  native: "native",
+};
+
+function syncCssVar(c: SyncClass): string {
+  switch (c) {
+    case "clean":
+      return "var(--color-status-active)";
+    case "push":
+    case "pull":
+      return "var(--color-node-process)";
+    case "conflict":
+      return "var(--color-danger)";
+    case "orphan":
+      return "var(--color-status-archived)";
+    case "native":
+      return "var(--color-accent)";
+  }
+}
+
+function SyncStatusBadge({ sync }: { sync: SyncStatusFile }) {
+  const cssVar = syncCssVar(sync.sync_class);
+  const tip = [
+    `class: ${sync.sync_class}`,
+    sync.local_hash ? `local: ${sync.local_hash.slice(0, 8)}` : null,
+    sync.remote_hash ? `remote: ${sync.remote_hash.slice(0, 8)}` : null,
+    sync.last_synced_hash
+      ? `synced: ${sync.last_synced_hash.slice(0, 8)}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return (
+    <span
+      title={tip}
+      className="rounded px-1.5 py-0.5 font-mono text-[8.5px] uppercase tracking-wider"
+      style={{
+        color: cssVar,
+        background: `color-mix(in srgb, ${cssVar} 12%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${cssVar} 25%, transparent)`,
+      }}
+    >
+      {SYNC_LABEL[sync.sync_class]}
     </span>
   );
 }

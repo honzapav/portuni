@@ -4,6 +4,7 @@ import type {
   DetailResponsibility,
   DetailDataSource,
   DetailTool,
+  SyncStatusResponse,
 } from "./types";
 
 // User shape returned by GET /users. Used by the Actors page to pick a
@@ -46,6 +47,16 @@ export async function fetchGraph(): Promise<GraphPayload> {
 export async function fetchNode(id: string): Promise<NodeDetail> {
   const res = await fetch(`${BASE}/nodes/${encodeURIComponent(id)}`);
   if (!res.ok) throw new Error(`node: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchNodeSyncStatus(
+  id: string,
+): Promise<SyncStatusResponse> {
+  const res = await fetch(
+    `${BASE}/nodes/${encodeURIComponent(id)}/sync-status`,
+  );
+  if (!res.ok) throw new Error(`sync-status: ${res.status}`);
   return res.json();
 }
 

@@ -40,11 +40,12 @@ import { generateSyncKey } from "./sync/sync-key.js";
 import { listUserMirrors, unregisterMirror } from "./sync/mirror-registry.js";
 import { getLocalMirror } from "./sync/local-db.js";
 import { deriveLocalPath, buildNodeRoot } from "./sync/remote-path.js";
+import { statusScan } from "./sync/engine.js";
 
 import { getDb } from "./db.js";
 import { SOLO_USER, NODE_TYPES, NODE_VISIBILITIES, EDGE_RELATIONS, EVENT_TYPES } from "./schema.js";
 import { NodeRow, NodeSummaryRow } from "./types.js";
-import type { GraphPayload, NodeDetail } from "./api-types.js";
+import type { GraphPayload, NodeDetail, SyncStatusResponse } from "./api-types.js";
 import { ulid } from "ulid";
 import { logAudit } from "./audit.js";
 
@@ -1009,6 +1010,50 @@ async function main() {
         const e = err as Error;
         const status = e?.name === "ZodError" ? 400 : 500;
         res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    // Per-node sync status. Wraps engine.statusScan so the UI can show a
+    // class (clean / push / pull / conflict / orphan / native) per tracked
+    // file. Discovery is disabled: untracked files are not listed in the
+    // detail pane and discovery does costly remote-list calls.
+    const syncStatusMatch = url.pathname.match(
+      /^\/nodes\/([^/]+)\/sync-status$/,
+    );
+    if (syncStatusMatch && req.method === "GET") {
+      const nodeId = decodeURIComponent(syncStatusMatch[1]);
+      try {
+        const result = await statusScan(getDb(), {
+          userId: SOLO_USER,
+          nodeId,
+          includeDiscovery: false,
+        });
+        const all = [
+          ...result.clean,
+          ...result.push_candidates,
+          ...result.pull_candidates,
+          ...result.conflicts,
+          ...result.orphan,
+          ...result.native,
+        ];
+        const payload: SyncStatusResponse = {
+          files: all.map((e) => ({
+            file_id: e.file_id,
+            sync_class: e.class,
+            local_hash: e.local_hash,
+            remote_hash: e.remote_hash,
+            last_synced_hash: e.last_synced_hash,
+            local_path: e.local_path,
+            remote_name: e.remote_name,
+            remote_path: e.remote_path,
+          })),
+        };
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(payload));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: String(err) }));
       }
       return;

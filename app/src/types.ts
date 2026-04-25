@@ -14,6 +14,9 @@ export type {
   DetailResponsibilityAssignee,
   DetailDataSource,
   DetailTool,
+  SyncClass,
+  SyncStatusFile,
+  SyncStatusResponse,
 } from "../../src/api-types";
 
 // Lifecycle state -> UI color bucket. Any state not listed falls through to "gray".
