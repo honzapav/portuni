@@ -173,12 +173,20 @@ async function loadNodeDetail(nodeId: string): Promise<NodeDetail | null> {
         derivedLocal = null;
       }
     }
+    // Strip the mirror root to get the in-mirror path (section + subpath
+    // + filename). Falls back to null when the node has no mirror or
+    // remote_path was unresolvable above.
+    const relative_path =
+      mirrorPath && derivedLocal && derivedLocal.startsWith(mirrorPath + "/")
+        ? derivedLocal.slice(mirrorPath.length + 1)
+        : null;
     return {
       id: f.id as string,
       filename: f.filename as string,
       status: f.status as string,
       description: (f.description as string | null) ?? null,
       local_path: derivedLocal,
+      relative_path,
       mime_type: (f.mime_type as string | null) ?? null,
     };
   });

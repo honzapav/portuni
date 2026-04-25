@@ -63,6 +63,10 @@ export type DetailFile = {
   // Null when the node has no mirror on this device or remote_path is
   // unset (e.g. legacy file rows that pre-date the file-sync foundation).
   local_path: string | null;
+  // Path within the node mirror, with section as the first segment
+  // (e.g. "wip/docs/plans/x.md"). Used by the UI to lay files out as a
+  // tree. Null when no local_path could be derived.
+  relative_path: string | null;
   mime_type: string | null;
 };
 
