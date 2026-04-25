@@ -2,7 +2,7 @@ import { copyFile, mkdir, readFile, readdir, rename as fsRename, stat as fsStat,
 import { basename, dirname, join } from "node:path";
 import type { Client } from "@libsql/client";
 import { ulid } from "ulid";
-import { sha256Buffer, sha256File, statForCache } from "./hash.js";
+import { md5Buffer, sha256Buffer, sha256File, statForCache } from "./hash.js";
 import { getAdapter } from "./adapter-cache.js";
 import { resolveRemote } from "./routing.js";
 import {
@@ -125,8 +125,6 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
     await copyFile(a.localPath, mirroredAbs);
   }
 
-  // Compute hash from the mirror copy (which is the canonical path).
-  const hash = await sha256File(mirroredAbs);
   const content = await readFile(mirroredAbs);
 
   // Remote path.
@@ -137,13 +135,21 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
   const mt = mimeFor(filename);
   await adapter.put(remotePath, content, mt ? { mimeType: mt } : undefined);
 
-  // Post-upload verification.
+  // Post-upload verification + canonical hash selection. Backends report
+  // different hash algorithms: Drive returns md5Checksum (32 hex), fs returns
+  // no hash, future S3/Dropbox vary. We use whichever the backend reports as
+  // the canonical "what I last saw" so that statusScan compares like-for-like.
+  let hash = sha256Buffer(content);
   try {
     const stat = await adapter.stat(remotePath);
-    if (stat && stat.hash && stat.hash !== hash) {
-      throw new Error(
-        `Post-upload hash verification failed: expected ${hash}, adapter reported ${stat.hash}`,
-      );
+    if (stat && stat.hash) {
+      const expected = stat.hash.length === 32 ? md5Buffer(content) : hash;
+      if (stat.hash.toLowerCase() !== expected.toLowerCase()) {
+        throw new Error(
+          `Post-upload hash verification failed: expected ${expected}, adapter reported ${stat.hash}`,
+        );
+      }
+      hash = stat.hash.toLowerCase();
     }
   } catch (e) {
     if (e instanceof Error && e.message.startsWith("Post-upload hash")) throw e;
@@ -250,7 +256,7 @@ export interface PullFileResult {
 
 export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileResult> {
   const row = await db.execute({
-    sql: "SELECT id, node_id, filename, remote_name, remote_path FROM files WHERE id = ?",
+    sql: "SELECT id, node_id, filename, remote_name, remote_path, current_remote_hash FROM files WHERE id = ?",
     args: [a.fileId],
   });
   if (row.rows.length === 0) throw new Error(`File ${a.fileId} not found`);
@@ -258,6 +264,7 @@ export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileRes
   const nodeId = f.node_id as string;
   const remoteName = f.remote_name as string | null;
   const remotePath = f.remote_path as string | null;
+  const knownRemoteHash = (f.current_remote_hash as string | null) ?? null;
   if (!remoteName || !remotePath) {
     throw new Error(`File ${a.fileId} has no remote binding`);
   }
@@ -278,7 +285,10 @@ export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileRes
   await mkdir(dirname(localPath), { recursive: true });
   await writeFile(localPath, content);
 
-  const hash = sha256Buffer(content);
+  // Use the same hash algorithm the backend reports, so file_state stays
+  // comparable with adapter.stat() in subsequent statusScans.
+  const useMd5 = knownRemoteHash !== null && knownRemoteHash.length === 32;
+  const hash = useMd5 ? md5Buffer(content) : sha256Buffer(content);
   const fsInfo = await statForCache(localPath);
   const now = new Date().toISOString();
   await upsertFileState({
@@ -377,7 +387,11 @@ async function fileExistsAt(path: string): Promise<boolean> {
   }
 }
 
-async function localHashFor(path: string, fileId: string): Promise<string | null> {
+async function localHashFor(
+  path: string,
+  fileId: string,
+  remoteHashRef: string | null = null,
+): Promise<string | null> {
   if (!(await fileExistsAt(path))) return null;
   const cached = await getFileState(fileId);
   const now = await statForCache(path);
@@ -389,7 +403,14 @@ async function localHashFor(path: string, fileId: string): Promise<string | null
   ) {
     return cached.cached_local_hash;
   }
-  const h = await sha256File(path);
+  // Pick algo based on what the backend reports for this file. If we already
+  // have a remote hash (length 32 = md5, 64 = sha256), match it. Otherwise
+  // default to sha256.
+  const algoRef = remoteHashRef ?? cached?.last_synced_hash ?? null;
+  const useMd5 = algoRef !== null && algoRef.length === 32;
+  const h = useMd5
+    ? md5Buffer(await readFile(path))
+    : await sha256File(path);
   await upsertFileState({
     file_id: fileId,
     last_synced_hash: cached?.last_synced_hash ?? h,
@@ -529,7 +550,10 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
 
     const state = await getFileState(fileId);
     base.last_synced_hash = state?.last_synced_hash ?? null;
-    const localHash = localPath ? await localHashFor(localPath, fileId) : null;
+    const currentRemoteHash = (row.current_remote_hash as string | null) ?? null;
+    const localHash = localPath
+      ? await localHashFor(localPath, fileId, currentRemoteHash)
+      : null;
     base.local_hash = localHash;
     const rs = await cachedRemoteStat(db, fileId, remoteName, remotePath);
     if (rs === null) {
