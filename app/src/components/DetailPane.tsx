@@ -171,11 +171,10 @@ function DetailPaneBody({
   const [syncStatus, setSyncStatus] = useState<Map<string, SyncStatusFile>>(
     () => new Map(),
   );
-  const [syncLoading, setSyncLoading] = useState(false);
-  // Tracks whether the read-only fetch finished for the current node, so
-  // the effect doesn't refetch when a node legitimately has no tracked
-  // files (empty response would otherwise loop because syncStatus.size
-  // stays at 0). Reset on node change alongside the other sync state.
+  // Flips to true after the read-only fetch finishes (success or error).
+  // Used to gate the SyncBar button label and the Files-tab dot indicator
+  // -- both should stay neutral until we actually know the per-file
+  // classification.
   const [syncLoaded, setSyncLoaded] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncRunning, setSyncRunning] = useState(false);
@@ -193,7 +192,6 @@ function DetailPaneBody({
       setErrorMsg(null);
       setTab("overview");
       setSyncStatus(new Map());
-      setSyncLoading(false);
       setSyncLoaded(false);
       setSyncError(null);
       setSyncRunning(false);
@@ -237,15 +235,16 @@ function DetailPaneBody({
   };
 
   // Auto-load per-file sync classification as soon as the node is
-  // selected, so the Files tab badges (and the eventual count indicator)
-  // are ready when the user looks at them. statusScan does I/O (file
-  // hashing + 30s-cached remote stat) but it runs in parallel with the
-  // detail fetch and never blocks rendering. Errors fall back silently
-  // to "no badge".
+  // selected, so the Files tab badges are ready when the user looks at
+  // them. statusScan does I/O (file hashing + 30s-cached remote stat)
+  // but it runs in parallel with the detail fetch and never blocks
+  // rendering. Errors fall back silently to "no badge".
+  //
+  // Only node.id is in the deps. Adding syncLoading would re-fire the
+  // effect on the very setState below, the previous run's cleanup would
+  // mark its own response cancelled, and nothing would ever land.
   useEffect(() => {
-    if (syncLoaded || syncLoading) return;
     let cancelled = false;
-    setSyncLoading(true);
     setSyncError(null);
     fetchNodeSyncStatus(node.id)
       .then((res) => {
@@ -259,15 +258,11 @@ function DetailPaneBody({
         if (cancelled) return;
         setSyncError(String(e));
         setSyncLoaded(true);
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setSyncLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [node.id, syncLoaded, syncLoading]);
+  }, [node.id]);
 
   const startEdit = () => {
     setDraftName(node.name);
@@ -357,6 +352,48 @@ function DetailPaneBody({
     grouped.get(edge.relation)!.push(edge);
   }
 
+  // Aggregate sync state across all files for the Files-tab indicator.
+  // Worst-class wins: conflict > pending (push/pull/missing) > orphan >
+  // clean. Native is treated as benign (no dot needed). Returns null
+  // until the read-only fetch finishes, so the user does not see a
+  // misleading green before the data arrives.
+  const syncDot: { color: string; title: string } | null = (() => {
+    if (!syncLoaded || node.files.length === 0) return null;
+    let hasConflict = false;
+    let hasPending = false;
+    let hasOrphan = false;
+    let hasClean = false;
+    for (const f of syncStatus.values()) {
+      if (f.sync_class === "conflict") hasConflict = true;
+      else if (
+        f.sync_class === "push" ||
+        f.sync_class === "pull" ||
+        f.sync_class === "deleted_local"
+      ) {
+        hasPending = true;
+      } else if (f.sync_class === "orphan") hasOrphan = true;
+      else if (f.sync_class === "clean") hasClean = true;
+    }
+    if (hasConflict)
+      return { color: "var(--color-danger)", title: "Konflikt v souborech" };
+    if (hasPending)
+      return {
+        color: "var(--color-node-process)",
+        title: "Soubory čekají na synchronizaci",
+      };
+    if (hasOrphan)
+      return {
+        color: "var(--color-status-archived)",
+        title: "Některé soubory jsou orphan (chybí remote vazba)",
+      };
+    if (hasClean)
+      return {
+        color: "var(--color-status-active)",
+        title: "Vše synchronizováno",
+      };
+    return null;
+  })();
+
   return (
     <PaneShell
       canGoBack={canGoBack}
@@ -437,6 +474,8 @@ function DetailPaneBody({
           onClick={() => setTab("files")}
           label="Soubory"
           count={node.files.length}
+          dotColor={syncDot?.color}
+          dotTitle={syncDot?.title}
         />
         <TabButton
           active={tab === "connections"}
@@ -2735,11 +2774,15 @@ function TabButton({
   onClick,
   label,
   count,
+  dotColor,
+  dotTitle,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
   count?: number;
+  dotColor?: string;
+  dotTitle?: string;
 }) {
   return (
     <button
@@ -2761,6 +2804,16 @@ function TabButton({
         >
           {count}
         </span>
+      )}
+      {dotColor && (
+        <span
+          title={dotTitle}
+          className="h-1.5 w-1.5 rounded-full"
+          style={{
+            background: dotColor,
+            boxShadow: `0 0 6px color-mix(in srgb, ${dotColor} 70%, transparent)`,
+          }}
+        />
       )}
       {active && (
         <span
