@@ -17,6 +17,10 @@ export type {
   SyncClass,
   SyncStatusFile,
   SyncStatusResponse,
+  SyncRunResponse,
+  SyncRunFile,
+  SyncRunErrorFile,
+  SyncRunSkippedFile,
 } from "../../src/api-types";
 
 // Lifecycle state -> UI color bucket. Any state not listed falls through to "gray".

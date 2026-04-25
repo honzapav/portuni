@@ -19,6 +19,7 @@ import {
   Lock,
   ChevronUp,
   ChevronDown,
+  RefreshCw,
 } from "lucide-react";
 import type {
   NodeDetail,
@@ -30,6 +31,7 @@ import type {
   GraphPayload,
   SyncClass,
   SyncStatusFile,
+  SyncRunResponse,
 } from "../types";
 import {
   RELATION_TYPES,
@@ -61,6 +63,7 @@ import {
   updateTool,
   removeTool,
   fetchNodeSyncStatus,
+  runNodeSync,
 } from "../api";
 
 function nodeTypeVar(type: string): string {
@@ -170,6 +173,10 @@ function DetailPaneBody({
   );
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncRunning, setSyncRunning] = useState(false);
+  const [syncRunResult, setSyncRunResult] = useState<SyncRunResponse | null>(
+    null,
+  );
 
   // Reset edit drafts whenever we switch to a different node.
   const lastIdRef = useRef(node.id);
@@ -182,8 +189,37 @@ function DetailPaneBody({
       setTab("overview");
       setSyncStatus(new Map());
       setSyncError(null);
+      setSyncRunResult(null);
     }
   }, [node.id, node.name]);
+
+  // Trigger node-wide sync. Pushes push_candidates, pulls pull_candidates,
+  // surfaces conflicts/errors. Refreshes the per-file status map after.
+  const handleRunSync = async () => {
+    setSyncRunning(true);
+    setSyncError(null);
+    setSyncRunResult(null);
+    try {
+      const result = await runNodeSync(node.id);
+      setSyncRunResult(result);
+      // Re-fetch sync status and node detail so badges + file list reflect
+      // the new state. Errors here are non-fatal; the result summary is
+      // still shown.
+      try {
+        const fresh = await fetchNodeSyncStatus(node.id);
+        const m = new Map<string, SyncStatusFile>();
+        for (const f of fresh.files) m.set(f.file_id, f);
+        setSyncStatus(m);
+      } catch {
+        /* keep stale badges */
+      }
+      void onMutate();
+    } catch (e) {
+      setSyncError(String(e));
+    } finally {
+      setSyncRunning(false);
+    }
+  };
 
   // Lazy-load per-file sync classification when the user opens the Files
   // tab. statusScan does I/O (file hashing + cached remote stat), so we
@@ -571,6 +607,16 @@ function DetailPaneBody({
 
         {tab === "files" && (
           <div className="px-5 py-4">
+            {node.files.length > 0 && (
+              <SyncBar
+                running={syncRunning}
+                result={syncRunResult}
+                error={syncError}
+                statusLoading={syncLoading}
+                statusMap={syncStatus}
+                onRun={handleRunSync}
+              />
+            )}
             {node.files.length > 0 ? (
               <div className="space-y-1">
                 {node.files.map((f) => {
@@ -606,11 +652,6 @@ function DetailPaneBody({
                     </div>
                   );
                 })}
-                {syncError && (
-                  <div className="mt-2 px-2 text-[12px] text-[var(--color-text-dim)]">
-                    Sync status nedostupný: {syncError}
-                  </div>
-                )}
               </div>
             ) : (
               <div className="text-[14px] text-[var(--color-text-dim)]">
@@ -2777,6 +2818,115 @@ function syncCssVar(c: SyncClass): string {
     case "native":
       return "var(--color-accent)";
   }
+}
+
+// Pluralization for the work-pending counter ("3 soubory ke synchronizaci"
+// vs. "1 soubor ke synchronizaci"). Czech grammar: 1 -> singular,
+// 2-4 -> few, 5+ -> many. Used to label the action button.
+function syncPendingLabel(count: number): string {
+  if (count === 1) return "1 soubor ke synchronizaci";
+  if (count >= 2 && count <= 4) return `${count} soubory ke synchronizaci`;
+  return `${count} souborů ke synchronizaci`;
+}
+
+function SyncBar({
+  running,
+  result,
+  error,
+  statusLoading,
+  statusMap,
+  onRun,
+}: {
+  running: boolean;
+  result: SyncRunResponse | null;
+  error: string | null;
+  statusLoading: boolean;
+  statusMap: Map<string, SyncStatusFile>;
+  onRun: () => void;
+}) {
+  // Count work-to-do straight from the badge map, so the button label
+  // matches what the user sees.
+  let pending = 0;
+  let conflicts = 0;
+  for (const f of statusMap.values()) {
+    if (f.sync_class === "push" || f.sync_class === "pull") pending++;
+    else if (f.sync_class === "conflict") conflicts++;
+  }
+  const ready = !statusLoading && statusMap.size > 0;
+  const noWork = ready && pending === 0 && conflicts === 0;
+
+  const label = running
+    ? "Synchronizuji..."
+    : !ready
+    ? "Synchronizovat soubory"
+    : noWork
+    ? "Vše synchronizováno"
+    : pending > 0
+    ? `Synchronizovat (${syncPendingLabel(pending)})`
+    : "Synchronizovat soubory";
+
+  return (
+    <div className="mb-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <button
+          onClick={onRun}
+          disabled={running || noWork}
+          className="inline-flex items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[12.5px] text-[var(--color-text)] transition-colors hover:border-[var(--color-border-strong)] disabled:cursor-default disabled:opacity-60"
+        >
+          <RefreshCw
+            size={12}
+            className={running ? "animate-spin" : undefined}
+          />
+          {label}
+        </button>
+        {conflicts > 0 && (
+          <span
+            className="rounded px-1.5 py-0.5 font-mono text-[8.5px] uppercase tracking-wider"
+            style={{
+              color: "var(--color-danger)",
+              background:
+                "color-mix(in srgb, var(--color-danger) 12%, transparent)",
+              border:
+                "1px solid color-mix(in srgb, var(--color-danger) 25%, transparent)",
+            }}
+            title="Konflikty se neresolvují automaticky -- vyřešte ručně přes shell."
+          >
+            {conflicts} konflikt{conflicts === 1 ? "" : "y"}
+          </span>
+        )}
+      </div>
+      {result && (
+        <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px] text-[var(--color-text-dim)]">
+          {result.pushed.length > 0 && (
+            <div>Push: {result.pushed.length} souborů</div>
+          )}
+          {result.pulled.length > 0 && (
+            <div>Pull: {result.pulled.length} souborů</div>
+          )}
+          {result.conflicts.length > 0 && (
+            <div style={{ color: "var(--color-danger)" }}>
+              Konflikty (přeskočeno): {result.conflicts.length}
+            </div>
+          )}
+          {result.errors.length > 0 && (
+            <div style={{ color: "var(--color-danger)" }}>
+              Chyby: {result.errors.length} (
+              {result.errors.map((e) => e.filename).join(", ")})
+            </div>
+          )}
+          {result.pushed.length === 0 &&
+            result.pulled.length === 0 &&
+            result.conflicts.length === 0 &&
+            result.errors.length === 0 && <div>Nic k synchronizaci.</div>}
+        </div>
+      )}
+      {error && (
+        <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px]">
+          <span style={{ color: "var(--color-danger)" }}>Chyba: {error}</span>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function SyncStatusBadge({ sync }: { sync: SyncStatusFile }) {

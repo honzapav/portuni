@@ -93,6 +93,27 @@ export type SyncStatusResponse = {
   files: SyncStatusFile[];
 };
 
+// Result of triggering a node-wide sync. The endpoint runs storeFile for
+// every push candidate and pullFile for every pull candidate; conflicts
+// and other classes are reported but not auto-resolved (Portuni never
+// auto-merges).
+export type SyncRunFile = {
+  file_id: string;
+  filename: string;
+};
+
+export type SyncRunErrorFile = SyncRunFile & { error: string };
+
+export type SyncRunSkippedFile = SyncRunFile & { sync_class: SyncClass };
+
+export type SyncRunResponse = {
+  pushed: SyncRunFile[];
+  pulled: SyncRunFile[];
+  conflicts: SyncRunFile[];
+  errors: SyncRunErrorFile[];
+  skipped: SyncRunSkippedFile[];
+};
+
 export type DetailEvent = {
   id: string;
   type: string;

@@ -40,12 +40,17 @@ import { generateSyncKey } from "./sync/sync-key.js";
 import { listUserMirrors, unregisterMirror } from "./sync/mirror-registry.js";
 import { getLocalMirror } from "./sync/local-db.js";
 import { deriveLocalPath, buildNodeRoot } from "./sync/remote-path.js";
-import { statusScan } from "./sync/engine.js";
+import { statusScan, storeFile, pullFile } from "./sync/engine.js";
 
 import { getDb } from "./db.js";
 import { SOLO_USER, NODE_TYPES, NODE_VISIBILITIES, EDGE_RELATIONS, EVENT_TYPES } from "./schema.js";
 import { NodeRow, NodeSummaryRow } from "./types.js";
-import type { GraphPayload, NodeDetail, SyncStatusResponse } from "./api-types.js";
+import type {
+  GraphPayload,
+  NodeDetail,
+  SyncStatusResponse,
+  SyncRunResponse,
+} from "./api-types.js";
 import { ulid } from "ulid";
 import { logAudit } from "./audit.js";
 
@@ -1052,6 +1057,83 @@ async function main() {
         };
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(payload));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(err) }));
+      }
+      return;
+    }
+
+    // Per-node sync trigger. Re-runs statusScan and acts on it: push
+    // candidates are uploaded via storeFile, pull candidates downloaded
+    // via pullFile. Conflicts are surfaced but never auto-resolved --
+    // the data-safety default ("Portuni never auto-merges") applies. The
+    // sequential loop avoids racing on the per-device file_state cache.
+    const syncRunMatch = url.pathname.match(/^\/nodes\/([^/]+)\/sync$/);
+    if (syncRunMatch && req.method === "POST") {
+      const nodeId = decodeURIComponent(syncRunMatch[1]);
+      try {
+        const db = getDb();
+        const scan = await statusScan(db, {
+          userId: SOLO_USER,
+          nodeId,
+          includeDiscovery: false,
+        });
+        const result: SyncRunResponse = {
+          pushed: [],
+          pulled: [],
+          conflicts: [],
+          errors: [],
+          skipped: [],
+        };
+        for (const e of scan.push_candidates) {
+          if (!e.local_path) {
+            result.errors.push({
+              file_id: e.file_id,
+              filename: e.filename,
+              error: "no local path -- node has no mirror on this device",
+            });
+            continue;
+          }
+          try {
+            await storeFile(db, {
+              userId: SOLO_USER,
+              nodeId: e.node_id,
+              localPath: e.local_path,
+            });
+            result.pushed.push({ file_id: e.file_id, filename: e.filename });
+          } catch (err) {
+            result.errors.push({
+              file_id: e.file_id,
+              filename: e.filename,
+              error: String(err),
+            });
+          }
+        }
+        for (const e of scan.pull_candidates) {
+          try {
+            await pullFile(db, { userId: SOLO_USER, fileId: e.file_id });
+            result.pulled.push({ file_id: e.file_id, filename: e.filename });
+          } catch (err) {
+            result.errors.push({
+              file_id: e.file_id,
+              filename: e.filename,
+              error: String(err),
+            });
+          }
+        }
+        for (const e of scan.conflicts) {
+          result.conflicts.push({ file_id: e.file_id, filename: e.filename });
+        }
+        for (const e of [...scan.clean, ...scan.orphan, ...scan.native]) {
+          result.skipped.push({
+            file_id: e.file_id,
+            filename: e.filename,
+            sync_class: e.class,
+          });
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
       } catch (err) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: String(err) }));

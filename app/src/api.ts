@@ -5,6 +5,7 @@ import type {
   DetailDataSource,
   DetailTool,
   SyncStatusResponse,
+  SyncRunResponse,
 } from "./types";
 
 // User shape returned by GET /users. Used by the Actors page to pick a
@@ -58,6 +59,13 @@ export async function fetchNodeSyncStatus(
   );
   if (!res.ok) throw new Error(`sync-status: ${res.status}`);
   return res.json();
+}
+
+export async function runNodeSync(id: string): Promise<SyncRunResponse> {
+  return jsonRequest<SyncRunResponse>(
+    "POST",
+    `/nodes/${encodeURIComponent(id)}/sync`,
+  );
 }
 
 async function jsonRequest<T>(
