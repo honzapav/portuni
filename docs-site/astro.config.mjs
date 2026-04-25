@@ -30,9 +30,22 @@ export default defineConfig({
 					label: 'Concepts',
 					items: [
 						{ label: 'POPP Framework', slug: 'concepts/popp' },
+						{ label: 'Design Principles', slug: 'concepts/design-principles' },
+						{ label: 'Organization Invariant', slug: 'concepts/organization-invariant' },
+						{ label: 'Actors & Responsibilities', slug: 'concepts/actors-responsibilities' },
+						{ label: 'Lifecycle States', slug: 'concepts/lifecycle-states' },
 						{ label: 'Events', slug: 'concepts/events' },
 						{ label: 'Local Mirrors', slug: 'concepts/mirrors' },
+						{ label: 'Audit Trail', slug: 'concepts/audit-trail' },
+						{ label: 'Scope Enforcement', slug: 'concepts/scope-enforcement', badge: { text: 'in design', variant: 'caution' } },
 						{ label: 'Filesystem Permissions', slug: 'concepts/permissions' },
+					],
+				},
+				{
+					label: 'Guides',
+					items: [
+						{ label: 'Setting Up Remotes', slug: 'guides/setting-up-remotes' },
+						{ label: 'Symbiotic Workflows', slug: 'guides/symbiotic-workflows' },
 					],
 				},
 				{
