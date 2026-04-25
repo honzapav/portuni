@@ -50,7 +50,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
 export function loadAgentCommand(): string {
   if (typeof window === "undefined") return DEFAULT_AGENT_COMMAND;
   const stored = window.localStorage.getItem(AGENT_COMMAND_KEY);
-  return stored && stored.trim() ? stored : DEFAULT_AGENT_COMMAND;
+  return stored?.trim() ? stored : DEFAULT_AGENT_COMMAND;
 }
 
 export function saveAgentCommand(template: string): void {

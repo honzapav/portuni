@@ -44,7 +44,7 @@ describe("data_sources CRUD", () => {
   });
 
   it("rejects adding data_source to principle node", async () => {
-    const { db, orgId } = await freshEnv();
+    const { db } = await freshEnv();
     const principleId = ulid();
     await db.execute({ sql: `INSERT INTO nodes (id, type, name, created_by) VALUES (?, 'principle', 'Pr', 'U1')`, args: [principleId] });
     await assert.rejects(

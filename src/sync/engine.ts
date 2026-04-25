@@ -17,6 +17,9 @@ import {
   buildNodeRoot,
   buildRemotePath,
   deriveLocalPath,
+  safeMirrorJoin,
+  assertSafeRelativePath,
+  RemotePathError,
   subpathFromMirror,
   type Section,
   type NodeInfo,
@@ -110,8 +113,16 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
     filename = basename(a.localPath);
   }
 
-  // Compute mirror destination.
-  const mirroredAbs = join(mirrorRoot, section, ...(subpath ? [subpath] : []), filename);
+  // Compute mirror destination via the safe joiner — the inner segments
+  // are individually validated and the result is asserted to live under
+  // mirrorRoot. Without this, a caller-supplied subpath like "../.."
+  // would silently relocate files outside the mirror after posix.join.
+  const mirroredAbs = safeMirrorJoin(
+    mirrorRoot,
+    section,
+    ...(subpath ? [subpath] : []),
+    filename,
+  );
 
   // If source file is not already at the mirror path, copy it in.
   const sourceStat = await fsStat(a.localPath);
@@ -142,7 +153,7 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
   let hash = sha256Buffer(content);
   try {
     const stat = await adapter.stat(remotePath);
-    if (stat && stat.hash) {
+    if (stat?.hash) {
       const expected = stat.hash.length === 32 ? md5Buffer(content) : hash;
       if (stat.hash.toLowerCase() !== expected.toLowerCase()) {
         throw new Error(
@@ -1166,6 +1177,11 @@ export async function renameFolder(
 ): Promise<RenameFolderResult> {
   const info = await resolveNodeInfo(db, a.nodeId);
   const nodeRoot = buildNodeRoot(info);
+  // Both prefixes are caller-supplied and end up concatenated into LIKE
+  // queries plus path replacements — reject "../"/absolute segments here
+  // so a malicious rename can't reach files outside this node subtree.
+  assertSafeRelativePath(a.oldPrefix, "renameFolder.oldPrefix");
+  assertSafeRelativePath(a.newPrefix, "renameFolder.newPrefix");
   const oldAbs = `${nodeRoot}/${a.oldPrefix}`;
   const newAbs = `${nodeRoot}/${a.newPrefix}`;
   const mirrorRoot = await getMirrorPath(a.userId, a.nodeId);
@@ -1324,9 +1340,28 @@ export async function adoptFiles(
   const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
   if (!remoteName) throw new Error(`No remote for node ${a.nodeId}`);
   const adapter = await getAdapter(db, remoteName);
+  const nodeRoot = buildNodeRoot(info);
+  const nodeRootPrefix = `${nodeRoot}/`;
   const adopted: AdoptFilesResult["adopted"] = [];
   const skipped: AdoptFilesResult["skipped"] = [];
   for (const p of a.paths) {
+    // Reject paths that would point outside the node's own subtree, or
+    // that contain "../" / absolute / control segments. Without this an
+    // adopted "remote_path" could later resolve to a local file outside
+    // the mirror via deriveLocalPath.
+    if (!p.startsWith(nodeRootPrefix)) {
+      skipped.push({ remote_path: p, reason: `path is outside node root ${nodeRoot}` });
+      continue;
+    }
+    try {
+      assertSafeRelativePath(p.slice(nodeRootPrefix.length), "adoptFiles.path");
+    } catch (e) {
+      skipped.push({
+        remote_path: p,
+        reason: e instanceof RemotePathError ? e.message : "invalid path",
+      });
+      continue;
+    }
     const existing = await db.execute({
       sql: "SELECT id FROM files WHERE node_id = ? AND remote_name = ? AND remote_path = ? LIMIT 1",
       args: [a.nodeId, remoteName, p],

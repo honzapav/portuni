@@ -1,6 +1,6 @@
 import "varlock/auto-load";
 import { createServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ensureSchema } from "./schema.js";
@@ -87,6 +87,20 @@ const ALLOWED_HOSTS = new Set(
       .filter(Boolean),
   ].map((h) => h.toLowerCase()),
 );
+
+// Bearer-token auth. When PORTUNI_AUTH_TOKEN is set, every route except
+// /health (and CORS preflight) must present a matching Authorization
+// header — protects against malicious local processes that can reach
+// loopback ports on the same machine. Empty / unset token means auth is
+// disabled (single-user, single-process loopback dev mode).
+const AUTH_TOKEN = (process.env.PORTUNI_AUTH_TOKEN ?? "").trim();
+const AUTH_ENABLED = AUTH_TOKEN.length > 0;
+const AUTH_PUBLIC_PATHS = new Set(["/health"]);
+
+function timingSafeStringEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
 
 async function loadGraph(): Promise<GraphPayload> {
   const db = getDb();
@@ -209,7 +223,7 @@ async function loadNodeDetail(nodeId: string): Promise<NodeDetail | null> {
     // + filename). Falls back to null when the node has no mirror or
     // remote_path was unresolvable above.
     const relative_path =
-      mirrorPath && derivedLocal && derivedLocal.startsWith(mirrorPath + "/")
+      mirrorPath && derivedLocal?.startsWith(mirrorPath + "/")
         ? derivedLocal.slice(mirrorPath.length + 1)
         : null;
     return {
@@ -414,7 +428,7 @@ async function resolveContext(path: string): Promise<unknown> {
   // Get local mirrors for related nodes (per-device sync.db, with stale
   // tolerance like the parent scan above).
   const relatedIds = edges.rows.map((r) => r.related_id as string);
-  let relatedMirrors: Record<string, string> = {};
+  const relatedMirrors: Record<string, string> = {};
   if (relatedIds.length > 0) {
     const allMirrors = await listUserMirrors(SOLO_USER);
     for (const m of allMirrors) {
@@ -629,7 +643,7 @@ async function main() {
     for (const [id, entry] of sessions) {
       if (entry.lastUsedAt < cutoff) {
         sessions.delete(id);
-        entry.transport.close().catch(() => {});
+        entry.transport.close().catch(() => undefined);
       }
     }
   }, SESSION_GC_INTERVAL_MS);
@@ -668,6 +682,23 @@ async function main() {
       res.writeHead(204);
       res.end();
       return;
+    }
+
+    // Bearer-token auth. /health stays public so liveness probes (the
+    // SessionStart hook, dashboards, monitoring) work without a secret.
+    // When PORTUNI_AUTH_TOKEN is unset auth is disabled — single-user
+    // loopback dev mode keeps the prior frictionless behaviour.
+    if (AUTH_ENABLED && !AUTH_PUBLIC_PATHS.has(url.pathname)) {
+      const header = (req.headers.authorization as string | undefined) ?? "";
+      const presented = header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
+      if (presented === "" || !timingSafeStringEqual(presented, AUTH_TOKEN)) {
+        res.writeHead(401, {
+          "Content-Type": "application/json",
+          "WWW-Authenticate": 'Bearer realm="portuni"',
+        });
+        res.end(JSON.stringify({ error: "Unauthorized" }));
+        return;
+      }
     }
 
     if (url.pathname === "/mcp" || url.pathname === "/mcp/") {
@@ -879,7 +910,7 @@ async function main() {
       if (req.method === "POST" && !actorIdFromPath) {
         try {
           const body = (await parseBody(req)) as { actor_id?: string } | undefined;
-          if (!body || !body.actor_id) {
+          if (!body?.actor_id) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "actor_id required" }));
             return;
@@ -1427,7 +1458,7 @@ async function main() {
         const body = (await parseBody(req)) as
           | { type?: string; name?: string; description?: string | null }
           | undefined;
-        if (!body || !body.type || !body.name) {
+        if (!body?.type || !body.name) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "type and name required" }));
           return;
@@ -1509,7 +1540,7 @@ async function main() {
         const body = (await parseBody(req)) as
           | { source_id?: string; target_id?: string; relation?: string }
           | undefined;
-        if (!body || !body.source_id || !body.target_id || !body.relation) {
+        if (!body?.source_id || !body.target_id || !body.relation) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(
             JSON.stringify({
@@ -1619,7 +1650,7 @@ async function main() {
         const body = (await parseBody(req)) as
           | { node_id?: string; type?: string; content?: string }
           | undefined;
-        if (!body || !body.node_id || !body.type || !body.content) {
+        if (!body?.node_id || !body.type || !body.content) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "node_id, type, content required" }));
           return;
@@ -1775,12 +1806,17 @@ async function main() {
   httpServer.listen(PORT, HOST, () => {
     console.log(`Portuni MCP server listening on http://${HOST}:${PORT}`);
     console.log(`Streamable HTTP endpoint: http://${HOST}:${PORT}/mcp`);
+    console.log(
+      AUTH_ENABLED
+        ? "Auth: bearer token required (Authorization: Bearer <PORTUNI_AUTH_TOKEN>)"
+        : "Auth: DISABLED (PORTUNI_AUTH_TOKEN unset). Loopback-only access trusted.",
+    );
   });
 
   process.on("SIGINT", () => {
     clearInterval(sessionGc);
     for (const entry of sessions.values()) {
-      entry.transport.close().catch(() => {});
+      entry.transport.close().catch(() => undefined);
     }
     httpServer.close();
     process.exit(0);

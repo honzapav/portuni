@@ -2,7 +2,8 @@
   "mcpServers": {
     "portuni": {
       "type": "http",
-      "url": "http://localhost:4011/mcp"
+      "url": "http://localhost:4011/mcp",
+      "_comment_auth": "If PORTUNI_AUTH_TOKEN is set on the server, add: \"headers\": { \"Authorization\": \"Bearer <token>\" }"
     }
   }
 }

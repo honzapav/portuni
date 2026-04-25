@@ -8,6 +8,7 @@
     "dev": "tsx src/server.ts",
     "test": "node --import tsx --test test/*.test.ts",
     "lint": "biome check",
+    "lint:strict": "biome check --error-on-warnings",
     "lint:fix": "biome check --write",
     "format": "biome format --write"
   },

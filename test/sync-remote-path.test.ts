@@ -1,6 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildRemotePath, buildNodeRoot, subpathFromMirror, deriveLocalPath } from "../src/sync/remote-path.js";
+import {
+  buildRemotePath,
+  buildNodeRoot,
+  subpathFromMirror,
+  deriveLocalPath,
+  safeMirrorJoin,
+  assertSafeRelativePath,
+  RemotePathError,
+} from "../src/sync/remote-path.js";
 
 describe("buildNodeRoot", () => {
   it("uses sync_key for non-org nodes", () => {
@@ -65,5 +73,115 @@ describe("deriveLocalPath", () => {
       }),
       "/ws/workflow/projects/stan-gws/wip/research/i.md",
     );
+  });
+});
+
+describe("path traversal defences", () => {
+  it("buildRemotePath rejects ../ in subpath", () => {
+    assert.throws(
+      () =>
+        buildRemotePath({
+          orgSyncKey: "org",
+          nodeType: "project",
+          nodeSyncKey: "node",
+          section: "wip",
+          subpath: "../../outside",
+          filename: "x.txt",
+        }),
+      RemotePathError,
+    );
+  });
+
+  it("buildRemotePath rejects slash in filename", () => {
+    assert.throws(
+      () =>
+        buildRemotePath({
+          orgSyncKey: "org",
+          nodeType: "project",
+          nodeSyncKey: "node",
+          section: "wip",
+          subpath: null,
+          filename: "../escape",
+        }),
+      RemotePathError,
+    );
+  });
+
+  it("buildRemotePath rejects empty subpath segments", () => {
+    assert.throws(
+      () =>
+        buildRemotePath({
+          orgSyncKey: "org",
+          nodeType: "project",
+          nodeSyncKey: "node",
+          section: "wip",
+          subpath: "a//b",
+          filename: "x.txt",
+        }),
+      RemotePathError,
+    );
+  });
+
+  it("buildRemotePath rejects null bytes in filename", () => {
+    assert.throws(
+      () =>
+        buildRemotePath({
+          orgSyncKey: "org",
+          nodeType: "project",
+          nodeSyncKey: "node",
+          section: "wip",
+          subpath: null,
+          filename: "x\0.txt",
+        }),
+      RemotePathError,
+    );
+  });
+
+  it("deriveLocalPath rejects ../ inside remotePath remainder", () => {
+    assert.throws(
+      () =>
+        deriveLocalPath({
+          mirrorRoot: "/tmp/mirror",
+          nodeRoot: "org/projects/node",
+          remotePath: "org/projects/node/../../outside.txt",
+        }),
+      RemotePathError,
+    );
+  });
+
+  it("deriveLocalPath rejects path that escapes mirror after composition", () => {
+    assert.throws(
+      () =>
+        deriveLocalPath({
+          mirrorRoot: "/tmp/mirror",
+          nodeRoot: "org/projects/node",
+          remotePath: "org/projects/node/../etc/passwd",
+        }),
+      RemotePathError,
+    );
+  });
+
+  it("subpathFromMirror returns null when mirror is escaped via symlink-shaped path", () => {
+    assert.equal(subpathFromMirror("/ws/mirror", "/ws/mirror/../outside.txt"), null);
+  });
+
+  it("safeMirrorJoin allows nested safe segments", () => {
+    assert.equal(safeMirrorJoin("/ws/mirror", "wip", "research", "x.md"), "/ws/mirror/wip/research/x.md");
+  });
+
+  it("safeMirrorJoin rejects ../ across segments", () => {
+    assert.throws(() => safeMirrorJoin("/ws/mirror", "wip", "..", "etc"), RemotePathError);
+  });
+
+  it("safeMirrorJoin rejects multi-segment subpath that contains ../", () => {
+    assert.throws(() => safeMirrorJoin("/ws/mirror", "wip", "a/../../etc"), RemotePathError);
+  });
+
+  it("assertSafeRelativePath rejects absolute paths", () => {
+    assert.throws(() => assertSafeRelativePath("/etc/passwd", "test"), RemotePathError);
+  });
+
+  it("assertSafeRelativePath accepts deep nested safe paths", () => {
+    assert.doesNotThrow(() => assertSafeRelativePath("a/b/c/d.txt", "test"));
   });
 });

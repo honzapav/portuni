@@ -74,7 +74,9 @@ describe("buildContextPayload at depth 0", () => {
     assert.ok(payload.root.owner);
     assert.equal(payload.root.owner!.name, "Honza");
     assert.equal(payload.root.responsibilities.length, 2);
-    const r1 = payload.root.responsibilities.find((r: any) => r.title === "R1");
+    const r1 = payload.root.responsibilities.find(
+      (r: { title: string; assignees: { name: string }[] }) => r.title === "R1",
+    );
     assert.equal(r1.assignees.length, 1);
     assert.equal(r1.assignees[0].name, "Honza");
     assert.equal(payload.root.data_sources.length, 1);

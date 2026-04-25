@@ -50,6 +50,14 @@ export const NODE_STATUSES = ["active", "completed", "archived"] as const;
 export type NodeStatus = (typeof NODE_STATUSES)[number];
 
 // Canonical node visibilities. "group" is planned but not yet implemented.
+//
+// IMPORTANT — visibility is currently a UI/metadata hint, NOT an access
+// control list. Phase 1 has no per-user identity (all routes share a
+// single bearer token, all data belongs to SOLO_USER), so there is no
+// "other user" to hide a private node from. The graph and detail
+// queries do not filter on this column. Treat `private` as a label
+// meaning "I do not want this in shared exports", not as a security
+// guarantee. Real ACL enforcement is gated on multi-user auth.
 export const NODE_VISIBILITIES = ["team", "private"] as const;
 export type NodeVisibility = (typeof NODE_VISIBILITIES)[number];
 

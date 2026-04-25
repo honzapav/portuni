@@ -47,9 +47,29 @@ describe("adoptFiles", () => {
     assert.equal(r2.skipped[0].reason, "already tracked");
   });
   it("skips non-existent remote paths", async () => {
-    const { db, nodeId } = await makeSharedDb();
-    const r = await adoptFiles(db, { userId: "U1", nodeId, paths: ["does/not/exist.md"] });
+    const { db, nodeId, orgSyncKey, nodeSyncKey } = await makeSharedDb();
+    const insideButMissing = `${orgSyncKey}/projects/${nodeSyncKey}/wip/missing.md`;
+    const r = await adoptFiles(db, { userId: "U1", nodeId, paths: [insideButMissing] });
     assert.equal(r.adopted.length, 0);
     assert.equal(r.skipped[0].reason, "remote file not found");
+  });
+
+  it("rejects paths outside the node subtree (path traversal defence)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const r = await adoptFiles(db, {
+      userId: "U1",
+      nodeId,
+      paths: ["other/projects/foo/wip/x.md"],
+    });
+    assert.equal(r.adopted.length, 0);
+    assert.match(r.skipped[0].reason, /outside node root/);
+  });
+
+  it("rejects ../ traversal inside the node subtree", async () => {
+    const { db, nodeId, orgSyncKey, nodeSyncKey } = await makeSharedDb();
+    const evil = `${orgSyncKey}/projects/${nodeSyncKey}/../escape.md`;
+    const r = await adoptFiles(db, { userId: "U1", nodeId, paths: [evil] });
+    assert.equal(r.adopted.length, 0);
+    assert.match(r.skipped[0].reason, /dot segment|outside node root/);
   });
 });

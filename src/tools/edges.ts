@@ -3,7 +3,6 @@ import { ulid } from "ulid";
 import { getDb } from "../db.js";
 import { logAudit } from "../audit.js";
 import { EDGE_RELATIONS, SOLO_USER } from "../schema.js";
-import { NodeIdRow } from "../types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export function registerEdgeTools(server: McpServer): void {

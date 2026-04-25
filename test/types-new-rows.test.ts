@@ -3,9 +3,6 @@ import assert from "node:assert/strict";
 import {
   ActorRow,
   ResponsibilityRow,
-  ResponsibilityAssignmentRow,
-  DataSourceRow,
-  ToolRow,
 } from "../src/types.js";
 
 describe("ActorRow schema", () => {

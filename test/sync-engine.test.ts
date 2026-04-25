@@ -1,12 +1,12 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, readFile, stat as fsStat, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
 import { storeFile, resolveNodeInfo, pullFile, statusScan, previewNode } from "../src/sync/engine.js";
 import { registerMirror } from "../src/sync/mirror-registry.js";
-import { sha256Buffer, sha256File } from "../src/sync/hash.js";
+import { sha256Buffer, } from "../src/sync/hash.js";
 import { getFileState, resetLocalDbForTests } from "../src/sync/local-db.js";
 import { resetAdapterCacheForTests } from "../src/sync/adapter-cache.js";
 

@@ -43,7 +43,7 @@ describe("createResponsibility", () => {
   it("creates with initial assignees", async () => {
     const { db, projectId } = await freshEnv();
     const eva = await createActor(db, "U1", { type: "person", name: "Eva", user_id: "U1" });
-    const r = await createResponsibility(db, "U1", { node_id: projectId, title: "X", assignees: [eva.id] });
+    const _r = await createResponsibility(db, "U1", { node_id: projectId, title: "X", assignees: [eva.id] });
     const list = await listResponsibilities(db, { node_id: projectId });
     assert.equal(list[0].assignees.length, 1);
     assert.equal(list[0].assignees[0].id, eva.id);
@@ -91,8 +91,8 @@ describe("listResponsibilities filter by actor", () => {
     await db.execute({ sql: `INSERT INTO nodes (id, type, name, created_by) VALUES (?, 'process', 'P2', 'U1')`, args: [processId] });
 
     const eva = await createActor(db, "U1", { type: "person", name: "Eva", user_id: "U1" });
-    const r1 = await createResponsibility(db, "U1", { node_id: projectId, title: "R1", assignees: [eva.id] });
-    const r2 = await createResponsibility(db, "U1", { node_id: processId, title: "R2", assignees: [eva.id] });
+    const _r1 = await createResponsibility(db, "U1", { node_id: projectId, title: "R1", assignees: [eva.id] });
+    const _r2 = await createResponsibility(db, "U1", { node_id: processId, title: "R2", assignees: [eva.id] });
 
     const evaResps = await listResponsibilities(db, { actor_id: eva.id });
     assert.equal(evaResps.length, 2);

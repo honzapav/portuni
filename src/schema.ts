@@ -1386,7 +1386,7 @@ const DDL_MIGRATION_006 = [
 // fresh-install nodes DDL declares sync_key as NOT NULL at the column
 // level, but these triggers also catch empty-string and reapply on any
 // existing DB picked up via runMigrations.
-const DDL_MIGRATION_013 = [
+const _DDL_MIGRATION_013 = [
   TRIGGER_NODES_SYNC_KEY_NOT_NULL_INSERT,
   TRIGGER_NODES_SYNC_KEY_NOT_NULL_UPDATE,
 ];

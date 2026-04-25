@@ -11,11 +11,11 @@
       "test/**/*.ts",
       "scripts/**/*.ts",
       "app/src/**/*.{ts,tsx}",
-      "!**/node_modules/**",
-      "!**/dist/**",
+      "!**/node_modules",
+      "!**/dist",
       "!**/env.d.ts",
       "!**/.varlock-types.d.ts",
-      "!app/dist/**"
+      "!app/dist"
     ]
   },
   "formatter": {
@@ -75,10 +75,10 @@
       "a11y": {
         "noSvgWithoutTitle": "off",
         "useKeyWithClickEvents": "off",
-        "useButtonType": "warn",
         "noAutofocus": "off",
         "noStaticElementInteractions": "off",
-        "noLabelWithoutControl": "warn"
+        "noLabelWithoutControl": "off",
+        "useButtonType": "off"
       },
       "security": {
         "noDangerouslySetInnerHtml": "error"

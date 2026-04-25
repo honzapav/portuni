@@ -6,7 +6,7 @@ import {
 } from "../src/sync/drive-sa-auth.js";
 import type { ServiceAccountKey } from "../src/sync/drive-config.js";
 
-const { privateKey: pk, publicKey: pub } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const { privateKey: pk } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const PRIVATE_KEY_PEM = pk.export({ type: "pkcs8", format: "pem" }) as string;
 
 const sa: ServiceAccountKey = {
