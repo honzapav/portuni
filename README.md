@@ -73,12 +73,14 @@ SessionStart hook (`~/.claude/settings.json`): `scripts/portuni-context.sh` -- i
 
 ## MCP tools
 
-**Graph (15)**
+**Graph (17)**
 
 | Tool | Description |
 |------|-------------|
 | `portuni_create_node` | Create node (accepts optional `goal`, `lifecycle_state`) |
 | `portuni_update_node` | Update node (accepts `goal`, `lifecycle_state`, `owner_id`) |
+| `portuni_move_node` | Reparent a node under a different parent |
+| `portuni_delete_node` | Soft-delete or purge a node (purge cascades file removal) |
 | `portuni_list_nodes` | List/filter nodes |
 | `portuni_get_node` | Node detail with edges, files, events, owner, responsibilities, data sources, tools, mirror |
 | `portuni_connect` | Create edge |
@@ -88,10 +90,24 @@ SessionStart hook (`~/.claude/settings.json`): `scripts/portuni-context.sh` -- i
 | `portuni_resolve` | Resolve event |
 | `portuni_supersede` | Replace event |
 | `portuni_list_events` | Query events |
-| `portuni_store` | Store file in node mirror |
-| `portuni_pull` | List node files |
-| `portuni_list_files` | List files across nodes |
-| `portuni_mirror` | Create local folder for node |
+| `portuni_mirror` | Create local folder for node and auto-scaffold the matching remote folder |
+| `portuni_store` | Push a local file to the node's remote and register it |
+| `portuni_pull` | Download a tracked file from the remote into the local mirror |
+| `portuni_list_files` | List tracked files across nodes |
+
+**File sync (10)** -- pluggable remote storage backed by hash identity and per-device state. See "File sync" section below.
+
+| Tool | Description |
+|------|-------------|
+| `portuni_status` | Show sync state for a node: tracked + new local + new remote, with conflict classification |
+| `portuni_snapshot` | Capture a point-in-time view of remote state for diagnostics |
+| `portuni_setup_remote` | Register a remote (gdrive / dropbox / s3 / fs / webdav / sftp) with its config |
+| `portuni_set_routing_policy` | Map (`node_type`, `org_slug`) -> remote with priority ordering |
+| `portuni_list_remotes` | List configured remotes and their routing rules |
+| `portuni_move_file` | Move a tracked file to a different node and/or path (confirm-first) |
+| `portuni_rename_folder` | Rename a node's remote folder; updates `sync_key`-anchored paths atomically |
+| `portuni_delete_file` | Delete a tracked file locally + remotely (confirm-first) |
+| `portuni_adopt_files` | Adopt untracked files already present in the remote into the graph |
 
 **Actors, responsibilities, tools (17)** -- distribution of work across people and automations.
 
@@ -125,36 +141,75 @@ Portuni mapuje nejen strukturu organizace, ale také distribuci odpovědností:
 - **Lifecycle_state** (type-specific) -- primární viditelný stav entity, color-coded ve frontendu. Coarse `status` (active/completed/archived) je derivovaný triggerem.
 - **Účel** entity, **datové zdroje**, **nástroje** -- kontext, co entita dělá a s čím pracuje. `external_link` je plain URL, nikdy connection string s credentials.
 
-Design spec: `docs/superpowers/specs/2026-04-21-people-responsibilities-design.md`.
+## File sync
+
+Files attached to graph nodes (reports, transcripts, code, notes) travel with the graph through a pluggable sync layer. Phase 1 ships with a Google Drive (Service Account) adapter; the adapter interface (`src/sync/`) is backend-agnostic and designed for Dropbox, S3, WebDAV, SFTP, or local filesystem implementations.
+
+**Core concepts**
+
+- **Hash is identity.** Files are identified by content hash (SHA-256 local, MD5 from remote metadata where available). Paths and names are labels; conflicts are deterministic, moves are free.
+- **Two-layer state.** Shared canonical state lives in Turso (`files.current_remote_hash`). Per-device memory of "what I last saw" lives in a local SQLite at `~/.portuni/sync.db`. No `device_id` columns; each machine owns its cache.
+- **`sync_key` anchors paths.** Every node has an immutable, slugified `sync_key` (migration 013). All filesystem and remote paths are derived from it, so renaming a node never breaks the mirror.
+- **Routing policy.** Remote selection is data-driven via `remotes` and `remote_routing` tables. Priority-ordered rules map (`node_type`, `org_slug`) -> remote name with `NULL` wildcards.
+- **TokenStore tiers.** Per-device credentials use a pluggable store: `file` (default, mode 0600), `keychain` (OS-level), or `varlock` (PM integration). Service Account JSON never lives in Turso.
+- **Confirm-first ops.** Destructive tools (`portuni_delete_file`, `portuni_move_file`, `portuni_rename_folder`) require explicit confirmation and report `repair_needed` semantics for partial failures.
+
+**Phase 1 limitations**
+
+- Service Account auth only (no OAuth user flow yet). Drive remotes must be **Shared Drives** -- "My Drive" is not supported because Service Accounts cannot own files there.
+- One user across N devices is the validated topology. Small-team multi-user works through shared SA, but per-user OAuth and domain-wide delegation are roadmap.
+
+The user-facing summary lives at `src/sync/README.md`.
 
 ## Project structure
 
 ```
 src/
   server.ts          HTTP server, MCP setup, /context, /health
-  schema.ts          DDL, ensureSchema(), SOLO_USER
+  schema.ts          DDL, ensureSchema(), SOLO_USER, migrations
   db.ts              libsql client (Turso for team, local SQLite fallback for solo)
   audit.ts           Audit logging helper
   types.ts           Zod row schemas for all DB tables
+  sync/              Pluggable file-sync layer (see src/sync/README.md)
+    engine.ts          hash diff, status scan, store/pull, conflict classification
+    adapter-cache.ts   per-remote FileAdapter instance cache
+    drive-adapter.ts   Google Drive backend (Service Account)
+    drive-sa-auth.ts   SA JSON loader + token mint
+    drive-config.ts    shared-drive resolution
+    opendal-adapter.ts OpenDAL-backed adapter (future-facing)
+    routing.ts         remote selection from remote_routing table
+    sync-key.ts        immutable node identifier helpers
+    remote-path.ts     sync_key + org_slug -> remote path
+    mirror-registry.ts per-device local_mirrors (sync.db) wrapper
+    local-db.ts        per-device SQLite at ~/.portuni/sync.db
+    hash.ts            SHA-256 / MD5 normalization
+    native-format.ts   Drive native-format (Docs/Sheets) detection
+    token-store-{file,keychain,varlock}.ts  per-device credential tiers
+    device-tokens.ts   TokenStore facade for the engine
   tools/
-    nodes.ts         create, update, list
-    get-node.ts      get (with edges, files, events, mirror)
-    edges.ts         connect, disconnect
-    context.ts       get_context (recursive CTE)
-    mirrors.ts       mirror
-    files.ts         store, pull, list_files
-    events.ts        log, resolve, supersede, list_events
+    nodes.ts           create, update, move, delete, list
+    get-node.ts        get (with edges, files, events, mirror)
+    edges.ts           connect, disconnect
+    context.ts         get_context (recursive CTE)
+    mirrors.ts         portuni_mirror (auto-scaffold remote folder)
+    files.ts           store, pull, list_files, move_file, delete_file, rename_folder, adopt_files
+    sync-status.ts     portuni_status
+    sync-snapshot.ts   portuni_snapshot
+    sync-remotes.ts    setup_remote, set_routing_policy, list_remotes
+    actors.ts          actor + responsibility tools
+    responsibilities.ts
+    entity-attributes.ts data_sources, tools
+    events.ts          log, resolve, supersede, list_events
 scripts/
-  portuni-context.sh SessionStart hook
+  portuni-context.sh   SessionStart hook
+  bulk-promote.ts      Promote untracked local files into tracked files
+  cleanup-ignored-files.ts  Remove .portuniignore-matched files from remote + DB
+  move-rogue-files.ts  Reorganize mirror tree (root files -> wip/, custom dirs -> resources/)
 test/
-  schema-types.test.ts  DDL vs Zod schema validation
-  events.test.ts        Event lifecycle tests
-docs/
-  specs.md              Full specification
-  conceptual-map.md     Mental model
-  implementation-plan.md Status and roadmap
-  lessons-learned.md    Decisions and patterns
-  artifacts-hosting.md  Artifact hosting spec (Later)
+  schema-types.test.ts    DDL vs Zod schema validation
+  events.test.ts          Event lifecycle tests
+  migration-*.test.ts     Per-migration invariants (006, 009, 010, 011, 012, 013)
+  sync-*.test.ts          Sync engine, Drive adapter, two-device regressions
 ```
 
 ## Database

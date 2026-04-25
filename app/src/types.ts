@@ -16,9 +16,7 @@ export type {
   DetailTool,
 } from "../../src/api-types";
 
-// Lifecycle state -> UI color bucket. Mirrors the color policy documented
-// in docs/superpowers/specs/2026-04-21-people-responsibilities-design.md
-// section 3.4. Any state not listed falls through to "gray".
+// Lifecycle state -> UI color bucket. Any state not listed falls through to "gray".
 export const LIFECYCLE_COLORS: Record<string, "green" | "yellow" | "red" | "gray"> = {
   // green: live, operational, moving forward
   active: "green",

@@ -1,6 +1,8 @@
-# src/sync -- file sync foundation
+# src/sync -- pluggable file sync layer
 
-Plumbing for the pluggable file-sync layer. No MCP tools yet -- later plans add store/pull/status (plan 2), the custom Drive adapter with service-account auth (plan 3), and move/rename/delete with confirm-first (plan 4).
+> **Status:** Phase 1 complete (April 2026). Foundation, MCP tools, Google Drive (Service Account) adapter, and confirm-first move/rename/delete are all live. Two-device regression tests gate the engine.
+
+User-facing MCP tools are wired in `src/tools/`: `portuni_store`, `portuni_pull`, `portuni_status`, `portuni_snapshot`, `portuni_mirror`, `portuni_move_file`, `portuni_rename_folder`, `portuni_delete_file`, `portuni_adopt_files`, `portuni_setup_remote`, `portuni_set_routing_policy`, `portuni_list_remotes`. See the top-level `README.md` for the full tool table.
 
 ## Modules
 
@@ -8,7 +10,13 @@ Plumbing for the pluggable file-sync layer. No MCP tools yet -- later plans add 
 - `hash.ts` -- SHA-256 / MD5 utilities.
 - `sync-key.ts` -- immutable storage-key generator for nodes, with collision handling.
 - `remote-path.ts` -- `buildNodeRoot`, `buildRemotePath`, `subpathFromMirror`, `deriveLocalPath`. Uses `sync_key`, never mutable display names.
-- `opendal-adapter.ts` -- FS + memory backends via OpenDAL. Drive is NOT here (plan 3).
+- `engine.ts` -- `resolveNodeInfo`, `storeFile`, `pullFile`, `statusScan`, conflict classification. Composes hash + routing + adapter + per-device state.
+- `adapter-cache.ts` -- caches `FileAdapter` instances per remote name.
+- `mirror-registry.ts` -- wrapper over per-device `local_mirrors`; tolerates stale rows.
+- `drive-adapter.ts`, `drive-sa-auth.ts`, `drive-config.ts` -- Google Drive backend (Service Account against Shared Drives).
+- `opendal-adapter.ts` -- FS + memory backends via OpenDAL.
+- `native-format.ts` -- detects Google Docs/Sheets/Slides; gates `portuni_snapshot` export behavior.
+- `device-tokens.ts`, `token-store-{file,keychain,varlock}.ts` -- per-device credential storage tiers.
 - `local-db.ts` -- per-device libSQL at `$PORTUNI_WORKSPACE_ROOT/.portuni/sync.db`: `file_state`, `remote_stat_cache`, `local_mirrors`.
 - `routing.ts` -- `remotes` CRUD, `remote_routing` CRUD, `resolveRemote`.
 
