@@ -27,18 +27,28 @@ export default defineConfig({
 					],
 				},
 				{
-					label: 'Concepts',
+					label: 'Foundations',
 					items: [
-						{ label: 'POPP Framework', slug: 'concepts/popp' },
 						{ label: 'Design Principles', slug: 'concepts/design-principles' },
+						{ label: 'POPP Framework', slug: 'concepts/popp' },
 						{ label: 'Organization Invariant', slug: 'concepts/organization-invariant' },
+					],
+				},
+				{
+					label: 'The Graph',
+					items: [
 						{ label: 'Actors & Responsibilities', slug: 'concepts/actors-responsibilities' },
 						{ label: 'Lifecycle States', slug: 'concepts/lifecycle-states' },
 						{ label: 'Events', slug: 'concepts/events' },
-						{ label: 'Local Mirrors', slug: 'concepts/mirrors' },
 						{ label: 'Audit Trail', slug: 'concepts/audit-trail' },
-						{ label: 'Scope Enforcement', slug: 'concepts/scope-enforcement', badge: { text: 'in design', variant: 'caution' } },
+					],
+				},
+				{
+					label: 'Files & Sync',
+					items: [
+						{ label: 'Local Mirrors', slug: 'concepts/mirrors' },
 						{ label: 'Filesystem Permissions', slug: 'concepts/permissions' },
+						{ label: 'Scope Enforcement', slug: 'concepts/scope-enforcement', badge: { text: 'in design', variant: 'caution' } },
 					],
 				},
 				{
