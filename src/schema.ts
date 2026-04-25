@@ -72,7 +72,10 @@ const DDL = [
     updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
     CHECK(updated_at >= created_at)
   )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_sync_key ON nodes(sync_key) WHERE sync_key IS NOT NULL`,
+  // The unique partial index on sync_key is intentionally created by
+  // runMigration013 (not here), because on existing DBs the nodes table
+  // pre-dates the sync_key column and this DDL would fail. The migration
+  // is idempotent and creates the index on both fresh installs and upgrades.
   `CREATE TABLE IF NOT EXISTS edges (
     id TEXT PRIMARY KEY CHECK(length(id) = 26),
     source_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
@@ -1388,7 +1391,11 @@ const DDL_MIGRATION_013 = [
 
 export async function ensureSchema(): Promise<void> {
   const db = getDb();
-  for (const sql of [...DDL, ...DDL_MIGRATION_006, ...DDL_MIGRATION_013, ...SEED]) {
+  // DDL_MIGRATION_013 (sync_key NOT-NULL triggers) is intentionally NOT in this
+  // loop. Both the index and the triggers reference the sync_key column, which
+  // on existing pre-013 DBs does not yet exist when ensureSchema runs. The
+  // 013 migration handles them idempotently after the column is added.
+  for (const sql of [...DDL, ...DDL_MIGRATION_006, ...SEED]) {
     await db.execute(sql);
   }
   await runMigrations(db);
