@@ -172,6 +172,11 @@ function DetailPaneBody({
     () => new Map(),
   );
   const [syncLoading, setSyncLoading] = useState(false);
+  // Tracks whether the read-only fetch finished for the current node, so
+  // the effect doesn't refetch when a node legitimately has no tracked
+  // files (empty response would otherwise loop because syncStatus.size
+  // stays at 0). Reset on node change alongside the other sync state.
+  const [syncLoaded, setSyncLoaded] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncRunning, setSyncRunning] = useState(false);
   const [syncRunResult, setSyncRunResult] = useState<SyncRunResponse | null>(
@@ -188,36 +193,46 @@ function DetailPaneBody({
       setErrorMsg(null);
       setTab("overview");
       setSyncStatus(new Map());
+      setSyncLoading(false);
+      setSyncLoaded(false);
       setSyncError(null);
+      setSyncRunning(false);
       setSyncRunResult(null);
     }
   }, [node.id, node.name]);
 
   // Trigger node-wide sync. Pushes push_candidates, pulls pull_candidates,
   // surfaces conflicts/errors. Refreshes the per-file status map after.
+  // The lastIdRef gate ignores responses that arrive after the user has
+  // already navigated away, so a slow sync on node A does not paint
+  // results into node B's pane.
   const handleRunSync = async () => {
     setSyncRunning(true);
     setSyncError(null);
     setSyncRunResult(null);
+    const requestNodeId = node.id;
     try {
-      const result = await runNodeSync(node.id);
+      const result = await runNodeSync(requestNodeId);
+      if (lastIdRef.current !== requestNodeId) return;
       setSyncRunResult(result);
-      // Re-fetch sync status and node detail so badges + file list reflect
-      // the new state. Errors here are non-fatal; the result summary is
-      // still shown.
       try {
-        const fresh = await fetchNodeSyncStatus(node.id);
+        const fresh = await fetchNodeSyncStatus(requestNodeId);
+        if (lastIdRef.current !== requestNodeId) return;
         const m = new Map<string, SyncStatusFile>();
         for (const f of fresh.files) m.set(f.file_id, f);
         setSyncStatus(m);
+        setSyncLoaded(true);
       } catch {
         /* keep stale badges */
       }
       void onMutate();
     } catch (e) {
+      if (lastIdRef.current !== requestNodeId) return;
       setSyncError(String(e));
     } finally {
-      setSyncRunning(false);
+      if (lastIdRef.current === requestNodeId) {
+        setSyncRunning(false);
+      }
     }
   };
 
@@ -229,7 +244,7 @@ function DetailPaneBody({
   // comes back. Errors fall back silently to "no badge".
   useEffect(() => {
     if (tab !== "files") return;
-    if (syncStatus.size > 0 || syncLoading) return;
+    if (syncLoaded || syncLoading) return;
     let cancelled = false;
     setSyncLoading(true);
     setSyncError(null);
@@ -239,10 +254,12 @@ function DetailPaneBody({
         const m = new Map<string, SyncStatusFile>();
         for (const f of res.files) m.set(f.file_id, f);
         setSyncStatus(m);
+        setSyncLoaded(true);
       })
       .catch((e) => {
         if (cancelled) return;
         setSyncError(String(e));
+        setSyncLoaded(true);
       })
       .finally(() => {
         if (cancelled) return;
@@ -251,7 +268,7 @@ function DetailPaneBody({
     return () => {
       cancelled = true;
     };
-  }, [tab, node.id, syncStatus.size, syncLoading]);
+  }, [tab, node.id, syncLoaded, syncLoading]);
 
   const startEdit = () => {
     setDraftName(node.name);
@@ -612,7 +629,7 @@ function DetailPaneBody({
                 running={syncRunning}
                 result={syncRunResult}
                 error={syncError}
-                statusLoading={syncLoading}
+                statusLoaded={syncLoaded}
                 statusMap={syncStatus}
                 onRun={handleRunSync}
               />
@@ -637,7 +654,7 @@ function DetailPaneBody({
                           </span>
                           <FileStatusBadge status={f.status} />
                           {sync && <SyncStatusBadge sync={sync} />}
-                          {!sync && syncLoading && (
+                          {!sync && !syncLoaded && (
                             <span className="font-mono text-[8.5px] uppercase tracking-wider text-[var(--color-text-dim)]">
                               ...
                             </span>
@@ -2802,6 +2819,7 @@ const SYNC_LABEL: Record<SyncClass, string> = {
   conflict: "conflict",
   orphan: "orphan",
   native: "native",
+  deleted_local: "missing",
 };
 
 function syncCssVar(c: SyncClass): string {
@@ -2810,6 +2828,7 @@ function syncCssVar(c: SyncClass): string {
       return "var(--color-status-active)";
     case "push":
     case "pull":
+    case "deleted_local":
       return "var(--color-node-process)";
     case "conflict":
       return "var(--color-danger)";
@@ -2833,27 +2852,36 @@ function SyncBar({
   running,
   result,
   error,
-  statusLoading,
+  statusLoaded,
   statusMap,
   onRun,
 }: {
   running: boolean;
   result: SyncRunResponse | null;
   error: string | null;
-  statusLoading: boolean;
+  statusLoaded: boolean;
   statusMap: Map<string, SyncStatusFile>;
   onRun: () => void;
 }) {
   // Count work-to-do straight from the badge map, so the button label
-  // matches what the user sees.
+  // matches what the user sees. deleted_local is pull-restorable, so it
+  // counts as pending work; conflicts are reported separately because
+  // they need manual resolve.
   let pending = 0;
   let conflicts = 0;
   for (const f of statusMap.values()) {
-    if (f.sync_class === "push" || f.sync_class === "pull") pending++;
-    else if (f.sync_class === "conflict") conflicts++;
+    if (
+      f.sync_class === "push" ||
+      f.sync_class === "pull" ||
+      f.sync_class === "deleted_local"
+    ) {
+      pending++;
+    } else if (f.sync_class === "conflict") {
+      conflicts++;
+    }
   }
-  const ready = !statusLoading && statusMap.size > 0;
-  const noWork = ready && pending === 0 && conflicts === 0;
+  const noWork = statusLoaded && pending === 0 && conflicts === 0;
+  const ready = statusLoaded;
 
   const label = running
     ? "Synchronizuji..."

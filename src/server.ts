@@ -1035,26 +1035,44 @@ async function main() {
           nodeId,
           includeDiscovery: false,
         });
-        const all = [
-          ...result.clean,
-          ...result.push_candidates,
-          ...result.pull_candidates,
-          ...result.conflicts,
-          ...result.orphan,
-          ...result.native,
-        ];
-        const payload: SyncStatusResponse = {
-          files: all.map((e) => ({
-            file_id: e.file_id,
-            sync_class: e.class,
-            local_hash: e.local_hash,
-            remote_hash: e.remote_hash,
-            last_synced_hash: e.last_synced_hash,
-            local_path: e.local_path,
-            remote_name: e.remote_name,
-            remote_path: e.remote_path,
-          })),
+        // engine.statusScan tags deleted_local entries with class:"clean"
+        // (legacy of the helper that stamps the cluster). Re-tag here from
+        // the bucket the engine put them in, so the UI sees the real class.
+        const tagged: Array<{
+          file_id: string;
+          sync_class: SyncStatusResponse["files"][number]["sync_class"];
+          local_hash: string | null;
+          remote_hash: string | null;
+          last_synced_hash: string | null;
+          local_path: string | null;
+          remote_name: string | null;
+          remote_path: string | null;
+        }> = [];
+        const push = (
+          arr: typeof result.clean,
+          cls: SyncStatusResponse["files"][number]["sync_class"],
+        ) => {
+          for (const e of arr) {
+            tagged.push({
+              file_id: e.file_id,
+              sync_class: cls,
+              local_hash: e.local_hash,
+              remote_hash: e.remote_hash,
+              last_synced_hash: e.last_synced_hash,
+              local_path: e.local_path,
+              remote_name: e.remote_name,
+              remote_path: e.remote_path,
+            });
+          }
         };
+        push(result.clean, "clean");
+        push(result.push_candidates, "push");
+        push(result.pull_candidates, "pull");
+        push(result.conflicts, "conflict");
+        push(result.orphan, "orphan");
+        push(result.native, "native");
+        push(result.deleted_local, "deleted_local");
+        const payload: SyncStatusResponse = { files: tagged };
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(payload));
       } catch (err) {
@@ -1110,7 +1128,10 @@ async function main() {
             });
           }
         }
-        for (const e of scan.pull_candidates) {
+        // pull_candidates: remote moved forward, local at last-synced.
+        // deleted_local: local file is gone but remote + last_synced_hash
+        // are intact -- pull restores it. Both go through pullFile.
+        for (const e of [...scan.pull_candidates, ...scan.deleted_local]) {
           try {
             await pullFile(db, { userId: SOLO_USER, fileId: e.file_id });
             result.pulled.push({ file_id: e.file_id, filename: e.filename });

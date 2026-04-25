@@ -76,7 +76,8 @@ export type SyncClass =
   | "pull"
   | "conflict"
   | "orphan"
-  | "native";
+  | "native"
+  | "deleted_local";
 
 export type SyncStatusFile = {
   file_id: string;
