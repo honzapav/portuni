@@ -5,13 +5,19 @@ import { homedir } from "node:os";
 import { getDb } from "../db.js";
 import { logAudit } from "../audit.js";
 import { SOLO_USER } from "../schema.js";
-import { registerMirror } from "../sync/mirror-registry.js";
+import { registerMirror, listUserMirrors } from "../sync/mirror-registry.js";
 import { resolveNodeInfo } from "../sync/engine.js";
 import { resolveRemote } from "../sync/routing.js";
 import { getAdapter } from "../sync/adapter-cache.js";
 import { buildNodeRoot } from "../sync/remote-path.js";
 import { ensureUnderRoot, PathTraversalError } from "../safe-path.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+  resolvePortuniRoot,
+  resolveGuardScriptPath,
+  resolvePortuniMcpUrl,
+} from "../write-scope.js";
+import { materializeScopeConfig } from "../scope-materialize.js";
 
 // Per-type remote folder shape:
 // - organizations get the parent type plurals (projects/processes/areas/principles)
@@ -49,6 +55,77 @@ const NodeMinimalRow = z.object({
   name: z.string(),
   type: z.string(),
 });
+
+// Materialize the new mirror's scope config and refresh every sibling's
+// .claude/settings.json + .codex/config.toml + soft hints so the deny lists
+// stay in sync with the current mirror set on this device. Best-effort;
+// errors are captured but don't fail the calling tool.
+async function materializeAndRegen(
+  newMirrorPath: string,
+  newNodeId: string,
+): Promise<{
+  written: string[];
+  errors: { path: string; message: string }[];
+  portuni_root: string | null;
+}> {
+  const allMirrors = await listUserMirrors(SOLO_USER);
+  // Make sure the new mirror is included if it isn't yet (timing: caller
+  // should have just written it, but registerMirror is idempotent).
+  const paths = allMirrors.map((m) => m.local_path);
+  if (!paths.includes(newMirrorPath)) paths.push(newMirrorPath);
+
+  const portuniRoot =
+    resolvePortuniRoot({
+      envValue: process.env.PORTUNI_ROOT ?? null,
+      knownMirrors: paths,
+    }) ?? null;
+
+  if (!portuniRoot) {
+    return { written: [], errors: [], portuni_root: null };
+  }
+
+  // Resolve the agent-harness wiring inputs once for the whole regen sweep.
+  // Each derives from env / install layout, not from the mirror under
+  // regeneration, so they're identical for every mirror.
+  const guardScriptPath = resolveGuardScriptPath();
+  const mcpUrl = resolvePortuniMcpUrl();
+  const mcpAuthToken = (process.env.PORTUNI_AUTH_TOKEN ?? "").trim() || null;
+
+  const aggregated: { written: string[]; errors: { path: string; message: string }[] } = {
+    written: [],
+    errors: [],
+  };
+
+  for (const m of allMirrors) {
+    const others = paths.filter((p) => p !== m.local_path);
+    const r = await materializeScopeConfig({
+      currentMirror: m.local_path,
+      otherMirrors: others,
+      portuniRoot,
+      guardScriptPath,
+      mcpUrl,
+      mcpAuthToken,
+    });
+    aggregated.written.push(...r.written);
+    aggregated.errors.push(...r.errors);
+  }
+  // The new mirror itself, if not yet in allMirrors (it should be).
+  if (!allMirrors.find((m) => m.node_id === newNodeId)) {
+    const others = paths.filter((p) => p !== newMirrorPath);
+    const r = await materializeScopeConfig({
+      currentMirror: newMirrorPath,
+      otherMirrors: others,
+      portuniRoot,
+      guardScriptPath,
+      mcpUrl,
+      mcpAuthToken,
+    });
+    aggregated.written.push(...r.written);
+    aggregated.errors.push(...r.errors);
+  }
+
+  return { ...aggregated, portuni_root: portuniRoot };
+}
 
 function slugify(name: string): string {
   return name
@@ -154,13 +231,20 @@ export function registerMirrorTools(server: McpServer): void {
       // local mirror still succeeds.
       const remoteScaffold = await scaffoldRemoteStructure(db, args.node_id);
 
-      // 6. Log audit
+      // 6. Materialize per-harness scope config. Best-effort: failures are
+      //    captured in the response but don't fail the registration. After
+      //    we wrote the new mirror's row, regenerate every sibling's deny
+      //    list so it includes this fresh mirror.
+      const scopeConfig = await materializeAndRegen(localPath, args.node_id);
+
+      // 7. Log audit
       await logAudit(SOLO_USER, "mirror_local", "node", args.node_id, {
         local_path: localPath,
         remote_scaffold: remoteScaffold,
+        scope_config: { written: scopeConfig.written, errors: scopeConfig.errors },
       });
 
-      // 7. Return result
+      // 8. Return result
       return {
         content: [
           {
@@ -170,6 +254,7 @@ export function registerMirrorTools(server: McpServer): void {
               local_path: localPath,
               subdirs: ["outputs/", "wip/", "resources/"],
               remote_scaffold: remoteScaffold,
+              scope_config: scopeConfig,
             }),
           },
         ],
