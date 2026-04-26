@@ -13,6 +13,11 @@ import type { NodeType, EdgeRelation } from "./popp.js";
 
 // -- Graph (list) endpoint --------------------------------------------
 
+export type GraphNodeOwner = {
+  id: string;
+  name: string;
+};
+
 export type GraphNode = {
   id: string;
   type: NodeType | string; // NodeType at runtime, widened for safety
@@ -20,6 +25,10 @@ export type GraphNode = {
   description: string | null;
   status: string;
   lifecycle_state: string | null;
+  // Owner is rendered as a small initials pip on the node disc. Joined
+  // from the actors table via nodes.owner_id; null when the node has no
+  // assigned owner.
+  owner: GraphNodeOwner | null;
   // Persisted layout. Null means "no saved position yet" -- the frontend
   // will compute one on first layout and POST it back via /positions.
   // Only leaf (non-organization) nodes actually persist here; org

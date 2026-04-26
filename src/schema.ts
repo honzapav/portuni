@@ -258,9 +258,12 @@ export const TRIGGER_TOOLS_VALID_NODE_TYPE = `
   END
 `;
 
-// Validate owner_id references a real, user-linked person. Actors are
-// global (cross-organizational), so there is no same-org constraint --
-// any real person can own any node.
+// Legacy: previously restricted owner_id to real, user-linked persons.
+// Dropped by migration 014 -- ownership now accepts any actor (real
+// person, placeholder, or automation). The FK constraint on owner_id
+// already guarantees the referenced actor exists. Kept here only because
+// migrations 007/008 reference it when rebuilding the actors table on
+// pre-014 databases; migration 014 immediately drops it again.
 export const TRIGGER_NODES_OWNER_MUST_BE_REAL_PERSON = `
   CREATE TRIGGER IF NOT EXISTS nodes_owner_must_be_real_person
   BEFORE UPDATE OF owner_id ON nodes
@@ -599,8 +602,8 @@ export async function runMigration006(db: Client): Promise<void> {
     await db.execute("ALTER TABLE nodes ADD COLUMN goal TEXT");
   }
 
-  // 7. Owner validation trigger
-  await db.execute(TRIGGER_NODES_OWNER_MUST_BE_REAL_PERSON);
+  // 7. (legacy) Owner validation trigger -- dropped by migration 014.
+  // Owners may now be any actor; FK already enforces existence.
 
   // 8. Status derivation trigger (AFTER UPDATE OF lifecycle_state)
   await db.execute(TRIGGER_NODES_DERIVE_STATUS_FROM_LIFECYCLE);
@@ -1301,6 +1304,24 @@ const MIGRATIONS: Migration[] = [
     },
     up: runMigration013,
   },
+
+  // Migration 014: drop the "owner must be a real registered person"
+  // trigger. Owners may now be any actor -- registered persons,
+  // placeholder persons, or automations. The FK on owner_id already
+  // guarantees the referenced actor exists; semantic restriction is
+  // unwanted (real-world ownership exists before someone has an account).
+  {
+    id: "014_drop_owner_real_person_trigger",
+    isApplied: async (db) => {
+      const r = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND name='nodes_owner_must_be_real_person'",
+      );
+      return r.rows.length === 0;
+    },
+    up: async (db) => {
+      await db.execute("DROP TRIGGER IF EXISTS nodes_owner_must_be_real_person");
+    },
+  },
 ];
 
 async function runMigrations(db: Client): Promise<void> {
@@ -1376,7 +1397,8 @@ const DDL_MIGRATION_006 = [
   DDL_TOOLS_TABLE,
   "CREATE INDEX IF NOT EXISTS idx_tools_node ON tools(node_id)",
   TRIGGER_TOOLS_VALID_NODE_TYPE,
-  TRIGGER_NODES_OWNER_MUST_BE_REAL_PERSON,
+  // owner-validation trigger intentionally omitted -- migration 014
+  // dropped the "owner must be real registered person" restriction.
   TRIGGER_NODES_DERIVE_STATUS_FROM_LIFECYCLE,
   TRIGGER_NODES_VALIDATE_LIFECYCLE_STATE,
 ];

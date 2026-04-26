@@ -14,6 +14,7 @@ import {
   Plus,
   Archive,
   Save,
+  Search,
   User,
   Users,
   Lock,
@@ -1690,10 +1691,18 @@ function OrganizationPicker({
   );
 }
 
-// Owner picker for a node. Fetches all real registered people from the
-// global actor registry on open (actors are cross-organizational), filters
-// down to non-placeholder persons with a user_id, and PATCHes owner_id on
-// selection. "— Žádný —" unsets the owner.
+// Strip diacritics + lowercase so the picker's search matches "Dasa"
+// against "Dáša", "Petr" against "Petřík", etc.
+function normalizeForSearch(s: string): string {
+  return s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+}
+
+// Owner picker for a node. Fetches every actor from the global registry
+// (registered persons, placeholders, and automations) and PATCHes
+// owner_id on selection. Actors are cross-organizational. The popover
+// is a search field: type to filter, ArrowUp/Down to move, Enter to
+// pick, Escape to close. Default sort: registered persons → placeholders
+// → automations. "— Žádný —" unsets the owner.
 function OwnerPicker({
   node,
   onMutate,
@@ -1708,7 +1717,11 @@ function OwnerPicker({
   const [actors, setActors] = useState<Actor[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [highlight, setHighlight] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -1724,14 +1737,31 @@ function OwnerPicker({
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
+  // Auto-focus the search input as soon as the popover renders.
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+
   const openPicker = async () => {
     setOpen(true);
+    setQuery("");
+    setHighlight(0);
     if (actors !== null) return;
     setLoading(true);
     setFetchError(null);
     try {
-      const list = await fetchActors({ type: "person" });
-      setActors(list.filter((a) => a.user_id !== null && a.is_placeholder === 0));
+      const list = await fetchActors();
+      const rank = (a: Actor) => {
+        if (a.type === "automation") return 2;
+        if (a.is_placeholder === 1 || a.user_id === null) return 1;
+        return 0;
+      };
+      setActors(
+        [...list].sort((a, b) => {
+          const r = rank(a) - rank(b);
+          return r !== 0 ? r : a.name.localeCompare(b.name);
+        }),
+      );
     } catch (e) {
       setFetchError(String(e));
     } finally {
@@ -1751,6 +1781,59 @@ function OwnerPicker({
       onError(String(e));
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Build the rendered list: "— Žádný —" sentinel followed by actors
+  // matching the current query. Highlight indexes into this combined
+  // list, so index 0 is always the unset option.
+  const filtered = useMemo(() => {
+    if (!actors) return [];
+    const q = normalizeForSearch(query.trim());
+    if (!q) return actors;
+    return actors.filter((a) => normalizeForSearch(a.name).includes(q));
+  }, [actors, query]);
+  const rows: Array<{ kind: "unset" } | { kind: "actor"; actor: Actor }> = [
+    { kind: "unset" },
+    ...filtered.map((actor) => ({ kind: "actor" as const, actor })),
+  ];
+
+  // Keep the highlighted row in view when the user navigates with the
+  // arrow keys; without this, long lists scroll past the active item.
+  useEffect(() => {
+    const el = listRef.current?.querySelector<HTMLElement>(
+      `[data-row-index="${highlight}"]`,
+    );
+    el?.scrollIntoView({ block: "nearest" });
+  }, [highlight]);
+
+  // Reset the highlight to the first row whenever the filter changes,
+  // so "type then Enter" picks the top match.
+  useEffect(() => {
+    setHighlight(0);
+  }, [query]);
+
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setOpen(false);
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlight((h) => Math.min(h + 1, rows.length - 1));
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlight((h) => Math.max(h - 1, 0));
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const row = rows[highlight];
+      if (!row) return;
+      void pick(row.kind === "unset" ? null : row.actor.id);
     }
   };
 
@@ -1775,54 +1858,115 @@ function OwnerPicker({
         <Pencil size={11} className="shrink-0 text-[var(--color-text-dim)]" />
       </button>
       {open && (
-        <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
-          {loading ? (
-            <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
-              Načítám lidi...
-            </div>
-          ) : fetchError ? (
-            <div
-              className="px-3 py-2 text-[14px]"
-              style={{ color: "var(--color-danger)" }}
-            >
-              {fetchError}
-            </div>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={() => pick(null)}
-                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
-                  !node.owner ? "bg-[var(--color-surface-2)]" : ""
-                }`}
+        <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] shadow-lg">
+          <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-2.5 py-1.5">
+            <Search
+              size={12}
+              className="shrink-0 text-[var(--color-text-dim)]"
+            />
+            <input
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={onKeyDown}
+              placeholder="Hledat aktéra..."
+              className="flex-1 bg-transparent text-[11.5px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)]"
+            />
+          </div>
+          <div ref={listRef} className="max-h-64 overflow-y-auto py-1">
+            {loading ? (
+              <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
+                Načítám aktéry...
+              </div>
+            ) : fetchError ? (
+              <div
+                className="px-3 py-2 text-[14px]"
+                style={{ color: "var(--color-danger)" }}
               >
-                <span className="text-[var(--color-text-dim)]">— Žádný —</span>
-              </button>
-              {actors && actors.length === 0 ? (
-                <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
-                  Žádní registrovaní lidé nejsou k dispozici.
-                </div>
-              ) : (
-                actors?.map((a) => (
-                  <button
-                    key={a.id}
-                    type="button"
-                    onClick={() => pick(a.id)}
-                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
-                      node.owner?.id === a.id
-                        ? "bg-[var(--color-surface-2)]"
-                        : ""
-                    }`}
-                  >
-                    <span className="flex flex-1 items-center gap-1.5 truncate text-[var(--color-text)]">
-                      <User size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-                      <span className="truncate">{a.name}</span>
-                    </span>
-                  </button>
-                ))
-              )}
-            </>
-          )}
+                {fetchError}
+              </div>
+            ) : (
+              <>
+                {rows.map((row, idx) => {
+                  const isHighlight = idx === highlight;
+                  if (row.kind === "unset") {
+                    const isCurrent = !node.owner;
+                    return (
+                      <button
+                        key="__unset__"
+                        type="button"
+                        data-row-index={idx}
+                        onMouseEnter={() => setHighlight(idx)}
+                        onClick={() => pick(null)}
+                        className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors ${
+                          isHighlight ? "bg-[var(--color-surface)]" : ""
+                        } ${
+                          isCurrent && !isHighlight
+                            ? "bg-[var(--color-surface-2)]"
+                            : ""
+                        }`}
+                      >
+                        <span className="text-[var(--color-text-dim)]">
+                          — Žádný —
+                        </span>
+                      </button>
+                    );
+                  }
+                  const a = row.actor;
+                  const isPlaceholder =
+                    a.is_placeholder === 1 || a.user_id === null;
+                  const isCurrent = node.owner?.id === a.id;
+                  return (
+                    <button
+                      key={a.id}
+                      type="button"
+                      data-row-index={idx}
+                      onMouseEnter={() => setHighlight(idx)}
+                      onClick={() => pick(a.id)}
+                      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors ${
+                        isHighlight ? "bg-[var(--color-surface)]" : ""
+                      } ${
+                        isCurrent && !isHighlight
+                          ? "bg-[var(--color-surface-2)]"
+                          : ""
+                      }`}
+                    >
+                      <span className="flex flex-1 items-center gap-1.5 truncate text-[var(--color-text)]">
+                        <User
+                          size={12}
+                          className="shrink-0 text-[var(--color-text-dim)]"
+                        />
+                        <span
+                          className={`truncate ${
+                            a.type === "person" && isPlaceholder
+                              ? "italic text-[var(--color-text-dim)]"
+                              : ""
+                          }`}
+                        >
+                          {a.name}
+                        </span>
+                        <ActorBadge
+                          type={a.type}
+                          placeholder={isPlaceholder}
+                        />
+                      </span>
+                    </button>
+                  );
+                })}
+                {actors && filtered.length === 0 && query.trim() !== "" && (
+                  <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
+                    Nic neodpovídá „{query}".
+                  </div>
+                )}
+                {actors && actors.length === 0 && (
+                  <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
+                    Žádní aktéři nejsou k dispozici.
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

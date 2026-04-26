@@ -79,6 +79,89 @@ function safeSvgId(s: string): string {
   return "n_" + s.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
+// "Jan Pavl" -> "JP". Single-word names take their first two letters.
+// Diacritics are kept as-is — uppercase Czech letters render fine in
+// the pip; stripping them risks collisions ("Štěpán" and "Šimon" both
+// becoming "S").
+function ownerInitials(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return "?";
+  const parts = trimmed.split(/\s+/);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
+  return parts[0].slice(0, 2).toUpperCase();
+}
+
+// Pattern overlays for lifecycle state. Cytoscape applies these via
+// `background-image`; the data URI is clipped to the node's ellipse,
+// so we draw the pattern over the full square and let Cytoscape mask
+// it. Built once at module load, not per-node.
+const HATCH_OVERLAY_URI =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60">` +
+      `<defs>` +
+      `<pattern id="h" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
+      `<line x1="0" y1="0" x2="0" y2="6" stroke="#0a0b0d" stroke-width="2.6"/>` +
+      `</pattern>` +
+      `</defs>` +
+      `<rect width="60" height="60" fill="url(#h)" opacity="0.55"/>` +
+      `</svg>`,
+  );
+
+const STRIKE_OVERLAY_URI =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60">` +
+      `<line x1="14" y1="14" x2="46" y2="46" stroke="#f87171" stroke-width="7" stroke-linecap="round"/>` +
+      `<line x1="46" y1="14" x2="14" y2="46" stroke="#f87171" stroke-width="7" stroke-linecap="round"/>` +
+      `</svg>`,
+  );
+
+// Evenly-spaced dark dots for `implementing` -- "in the works but not
+// yet running". Sits over the type-coloured disc.
+const DOT_OVERLAY_URI =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60">` +
+      `<defs>` +
+      `<pattern id="dt" width="7" height="7" patternUnits="userSpaceOnUse">` +
+      `<circle cx="3.5" cy="3.5" r="1.5" fill="#0a0b0d"/>` +
+      `</pattern>` +
+      `</defs>` +
+      `<rect width="60" height="60" fill="url(#dt)" opacity="0.78"/>` +
+      `</svg>`,
+  );
+
+// Bold checkmark for `done`. The path is centred in the viewBox so
+// `background-fit: cover` keeps it positioned over the disc.
+const CHECK_OVERLAY_URI =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60">` +
+      `<path d="M 18 32 L 26 40 L 42 21" fill="none" stroke="#0a0b0d" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>` +
+      `</svg>`,
+  );
+
+// Half-fill mask for project/in_progress. The disc's own
+// `background-color` paints the entire ellipse type-coloured; this
+// overlay then covers the BOTTOM half with the page background colour,
+// which Cytoscape's ellipse mask clips to a semicircle. The result:
+// only the top half reads as filled, the bottom reads as empty
+// (matching the design dictionary). Built per-theme since the bottom
+// half must equal the canvas bg.
+function buildHalfFillUri(bgColor: string): string {
+  return (
+    "data:image/svg+xml;utf8," +
+    encodeURIComponent(
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60">` +
+        `<rect x="0" y="30" width="60" height="30" fill="${bgColor}"/>` +
+        `</svg>`,
+    )
+  );
+}
+
 function buildElements(graph: GraphPayload): cytoscape.ElementDefinition[] {
   const nodesById = new Map(graph.nodes.map((n) => [n.id, n]));
   const parentOfChild = new Map<string, string>();
@@ -138,6 +221,9 @@ function buildElements(graph: GraphPayload): cytoscape.ElementDefinition[] {
       description: node.description ?? "",
       status: node.status,
       lifecycle_state: node.lifecycle_state ?? "",
+      owner_id: node.owner?.id ?? "",
+      owner_name: node.owner?.name ?? "",
+      owner_initials: node.owner ? ownerInitials(node.owner.name) : "",
       degree: d,
       size: node.type === "organization" ? 0 : sizeFor(d),
       childCount:
@@ -183,6 +269,7 @@ function buildElements(graph: GraphPayload): cytoscape.ElementDefinition[] {
 function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
   const nodeColor = (ele: NodeSingular) =>
     theme.nodeColors[ele.data("type") as string] ?? theme.nodeColorDefault;
+  const halfFillUri = buildHalfFillUri(theme.bg);
 
   return [
     // Compound parents (organizations). The body of the rectangle is hidden;
@@ -308,43 +395,110 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
       selector: "node:active",
       style: { "overlay-opacity": 0 },
     },
-    // Selected: color change only. border-width, width, height, padding stay
-    // constant so the compound parent never refits.
-    // Lifecycle signal — only for abnormal states. "Healthy" states
-    // (active/operating/in_progress/done/planned/...) keep the default
-    // type color; abnormal states get a subtle treatment so they stand
-    // out without repainting the whole graph.
+    // Lifecycle dictionary. Every state from the design proposal
+    // (graph-node-constellation-pip.html) gets a distinct silhouette
+    // or pattern; type colour stays the encoder of *what* the node is,
+    // lifecycle encodes *how it's going*. Order matters in cytoscape
+    // -- later rules win on conflicting properties for matching nodes.
     //
-    // Problem states get a red/amber border overlay without changing fill.
+    // HOLLOW: backlog (project) -- empty type-coloured ring.
+    {
+      selector: "node[lifecycle_state = 'backlog'][type != 'organization']",
+      style: {
+        "background-opacity": 0,
+        "border-width": 2.5,
+      },
+    },
+    // DASHED-COLOURED: planned, inactive, not_implemented -- dashed
+    // type-coloured ring, no fill. "Drawn but not yet built."
+    {
+      selector:
+        "node[lifecycle_state = 'planned'][type != 'organization']," +
+        "node[lifecycle_state = 'inactive'][type != 'organization']," +
+        "node[lifecycle_state = 'not_implemented'][type != 'organization']",
+      style: {
+        "background-opacity": 0,
+        "border-width": 2,
+        "border-style": "dashed",
+      },
+    },
+    // DASHED-GRAY: on_hold -- explicitly *paused*, not in-progress; gray
+    // dashed ring deliberately drops type colour to read as inert.
+    {
+      selector: "node[lifecycle_state = 'on_hold'][type != 'organization']",
+      style: {
+        "background-opacity": 0,
+        "border-width": 2,
+        "border-style": "dashed",
+        "border-color": theme.textMuted,
+      },
+    },
+    // HALF-FILL: in_progress (project) -- top half of the disc keeps
+    // its type colour, bottom half is masked by the bg-coloured
+    // overlay. The thin border traces the full ellipse.
+    {
+      selector:
+        "node[lifecycle_state = 'in_progress'][type != 'organization']",
+      style: {
+        "background-image": halfFillUri,
+        "background-fit": "cover",
+        "background-image-opacity": 1,
+        "border-width": 1.5,
+      },
+    },
+    // CHECK: done (project) -- solid disc with bold checkmark overlay.
+    {
+      selector: "node[lifecycle_state = 'done'][type != 'organization']",
+      style: {
+        "background-image": CHECK_OVERLAY_URI,
+        "background-fit": "cover",
+        "background-image-opacity": 1,
+      },
+    },
+    // DOT: implementing (process) -- solid disc + dotted overlay.
+    {
+      selector:
+        "node[lifecycle_state = 'implementing'][type != 'organization']",
+      style: {
+        "background-image": DOT_OVERLAY_URI,
+        "background-fit": "cover",
+        "background-image-opacity": 1,
+      },
+    },
+    // HATCH: at_risk (process), needs_attention (area) -- diagonal hatch.
+    {
+      selector:
+        "node[lifecycle_state = 'at_risk'][type != 'organization']," +
+        "node[lifecycle_state = 'needs_attention'][type != 'organization']",
+      style: {
+        "background-image": HATCH_OVERLAY_URI,
+        "background-fit": "cover",
+        "background-image-opacity": 1,
+      },
+    },
+    // STRIKE: broken (process) -- red X over the disc plus red border.
     {
       selector: "node[lifecycle_state = 'broken'][type != 'organization']",
-      style: { "border-color": "#dc2626", "border-width": 2.5 },
+      style: {
+        "background-image": STRIKE_OVERLAY_URI,
+        "background-fit": "cover",
+        "background-image-opacity": 1,
+        "border-color": "#f87171",
+        "border-width": 1.5,
+      },
     },
-    {
-      selector: "node[lifecycle_state = 'at_risk'][type != 'organization']",
-      style: { "border-color": "#eab308", "border-width": 2.5 },
-    },
-    {
-      selector: "node[lifecycle_state = 'needs_attention'][type != 'organization']",
-      style: { "border-color": "#eab308", "border-width": 2.5 },
-    },
-    // Dormant/terminal states dim the node so it recedes visually.
+    // FADED: archived, retired, cancelled -- terminal states that should
+    // recede visually so the live graph stands out.
     {
       selector:
         "node[lifecycle_state = 'archived'][type != 'organization']," +
         "node[lifecycle_state = 'retired'][type != 'organization']," +
-        "node[lifecycle_state = 'cancelled'][type != 'organization']," +
-        "node[lifecycle_state = 'inactive'][type != 'organization']",
+        "node[lifecycle_state = 'cancelled'][type != 'organization']",
       style: {
         "background-opacity": 0.35,
         "border-opacity": 0.35,
         "text-opacity": 0.55,
       },
-    },
-    // On-hold: dashed border, same fill.
-    {
-      selector: "node[lifecycle_state = 'on_hold'][type != 'organization']",
-      style: { "border-style": "dashed", "border-width": 1.5 },
     },
     // Selected wins over lifecycle signaling.
     {
@@ -688,6 +842,15 @@ export default function GraphView({
   // "jumping back and forth" effect.
   const focusAnimTimerRef = useRef<number | null>(null);
 
+  // The render listener bound in the init effect captures `theme` in a
+  // closure. Reading the latest theme through a ref means we don't need
+  // to rebind the listener on every theme flip — the pip colour just
+  // tracks the current theme on the next render tick.
+  const themeRef = useRef<Theme>(theme);
+  useEffect(() => {
+    themeRef.current = theme;
+  }, [theme]);
+
   // Org "circles" rendered as an SVG overlay synced to cytoscape's render
   // loop. Cytoscape compound parents are hard-wired to rectangles, so we
   // hide the rectangle body and draw a circle ourselves around each org's
@@ -696,6 +859,23 @@ export default function GraphView({
   // gradients can reference it without recomputing the hash mid-render.
   const [orgCircles, setOrgCircles] = useState<
     Array<{ id: string; cx: number; cy: number; r: number; color: string }>
+  >([]);
+
+  // Owner pips. One per leaf node that has an assigned owner. Synced to
+  // cytoscape's render loop so the pip stays glued to the lower-right of
+  // its disc as the user pans, zooms, and drags. Rendered as absolutely
+  // positioned divs in a pointer-events:none overlay so cytoscape clicks
+  // continue to land on the underlying node.
+  const [ownerPips, setOwnerPips] = useState<
+    Array<{
+      id: string;
+      cx: number;
+      cy: number;
+      pipR: number;
+      initials: string;
+      color: string;
+      dimmed: boolean;
+    }>
   >([]);
 
   // Debounced queue of position changes. Node drags and layout settles
@@ -832,7 +1012,66 @@ export default function GraphView({
       });
       setOrgCircles(next);
     };
+
+    // Only render pips when the rendered disc is big enough to host
+    // one without swamping the node. Threshold is on the *rendered*
+    // radius (already factors in zoom + node-degree size), so a
+    // low-degree node needs more zoom-in than a hub to show its pip.
+    // The constellation reads as coloured stars at flyover, then the
+    // ownership layer appears when the user zooms in to make
+    // decisions.
+    const PIP_MIN_DISC_R = 16;
+    const updateOwnerPips = () => {
+      const themeColors = THEMES[themeRef.current];
+      const pips: Array<{
+        id: string;
+        cx: number;
+        cy: number;
+        pipR: number;
+        initials: string;
+        color: string;
+        dimmed: boolean;
+      }> = [];
+      cy.nodes().forEach((n) => {
+        if (n.data("type") === "organization") return;
+        const initials = n.data("owner_initials") as string;
+        if (!initials) return;
+        // Cytoscape renders the disc inside a square bbox; the disc
+        // radius equals half the bbox width.
+        const bb = n.renderedBoundingBox({ includeLabels: false });
+        const r = Math.min(bb.w, bb.h) / 2;
+        if (r < PIP_MIN_DISC_R) return;
+        const cx = (bb.x1 + bb.x2) / 2;
+        const cy0 = (bb.y1 + bb.y2) / 2;
+        // Pip scales with the disc — 42 % of the rendered radius —
+        // so it always sits in proportion. No floor: when r drops
+        // below the threshold above we hide the pip entirely
+        // instead of clamping it to a size that overwhelms the node.
+        const pipR = r * 0.42;
+        // Offset along the 45° vector. r * 0.72 puts the pip centre
+        // outside the disc's middle ring; combined with pipR it tucks
+        // the lower edge of the pip just inside the disc boundary.
+        const offset = r * 0.72;
+        const px = cx + offset;
+        const py = cy0 + offset;
+        const typeColor =
+          themeColors.nodeColors[n.data("type") as string] ??
+          themeColors.nodeColorDefault;
+        pips.push({
+          id: n.id(),
+          cx: px,
+          cy: py,
+          pipR,
+          initials,
+          color: typeColor,
+          dimmed: n.hasClass("dim") || n.hasClass("dim-soft"),
+        });
+      });
+      setOwnerPips(pips);
+    };
+
     cy.on("render", updateOrgCircles);
+    cy.on("render", updateOwnerPips);
 
     return () => {
       ro.disconnect();
@@ -937,11 +1176,17 @@ export default function GraphView({
             continue;
           }
           // Node is already in the graph. Update its mutable data
-          // fields in place; do NOT touch position.
+          // fields in place; do NOT touch position. Owner + lifecycle
+          // are mutated via the detail pane and must propagate so the
+          // owner pip and any lifecycle-driven styles stay current.
           for (const key of [
             "label",
             "description",
             "status",
+            "lifecycle_state",
+            "owner_id",
+            "owner_name",
+            "owner_initials",
             "degree",
             "size",
           ] as const) {
@@ -1146,8 +1391,13 @@ export default function GraphView({
     }
   }, [deferredQuery, disabledRelations, disabledOrgs, disabledTypes, disabledStatuses]);
 
-  // Apply selection highlight. Camera refits happen in the ResizeObserver
-  // (triggered by the pane open/close) so no camera logic is needed here.
+  // Apply selection highlight AND focus the camera on the selected node
+  // + its 1st-level neighbours so clicking an entity reveals its
+  // immediate context. Without this, opening the detail pane just
+  // refitted the whole graph (a visible "zoom out" because the
+  // container shrinks) and the user lost sight of the very thing they
+  // tapped on. Search-driven focus still wins: if a query is active,
+  // the search effect owns focusElesRef and we don't fight it here.
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
@@ -1163,6 +1413,41 @@ export default function GraphView({
         }
       }
     });
+
+    const hasSearch = query.trim().length > 0;
+    if (selectedId) {
+      const node = cy.getElementById(selectedId);
+      if (node.length === 0) return;
+      // Focus = the clicked node + everything it connects to, including
+      // the parent org if it's a leaf inside one. Keeps the relevant
+      // cluster framed without dragging in distant noise.
+      const focus = node.union(node.neighborhood().nodes());
+      // Only seize focus from the search effect when there's no active
+      // query. With a query, the user is hunting in search space; their
+      // selection is by definition already a search match.
+      if (!hasSearch) {
+        focusElesRef.current = focus;
+      }
+      // Animate immediately. The ResizeObserver will also fire when the
+      // detail pane opens, but it reads focusElesRef and re-runs the
+      // same fit, so a double-fire is harmless (the second one
+      // converges on the already-correct framing).
+      cy.stop();
+      animateFit(cy, focus, 120, 1.6, 360);
+    } else if (!hasSearch) {
+      // Deselect with no search: refit to the whole graph.
+      focusElesRef.current = null;
+      cy.stop();
+      cy.animate(
+        { fit: { eles: cy.elements(), padding: 80 } },
+        { duration: 360, easing: "ease-in-out-cubic" },
+      );
+    }
+    // Reading `query` from the closure (not deps) keeps this effect
+    // anchored to selection events; React rebinds the closure on every
+    // render so we always see the latest query value when a click
+    // actually fires this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
   // Re-run fcose from scratch, clearing all saved positions. Useful when
@@ -1348,10 +1633,47 @@ export default function GraphView({
         })}
       </svg>
       <div ref={containerRef} className="relative z-10 h-full w-full" />
+      {/* Owner pips. SVG overlay above cytoscape so the chips appear
+          on top of every node disc. Pointer-events disabled so taps
+          continue to land on the underlying cytoscape node. Synced
+          to cytoscape's render loop in the init effect above. */}
+      <svg className="pointer-events-none absolute inset-0 z-20 h-full w-full">
+        {ownerPips.map((p) => {
+          const opacity = p.dimmed ? 0.35 : 1;
+          return (
+            <g
+              key={`pip-${p.id}`}
+              transform={`translate(${p.cx} ${p.cy})`}
+              opacity={opacity}
+            >
+              <circle r={p.pipR} fill={THEMES[theme].bg} />
+              <circle
+                r={p.pipR}
+                fill="none"
+                stroke={p.color}
+                strokeWidth={1.2}
+                opacity={0.95}
+              />
+              <text
+                x={0}
+                y={0.5}
+                textAnchor="middle"
+                dominantBaseline="central"
+                fontFamily="Inter, sans-serif"
+                fontSize={Math.max(8, p.pipR * 0.85)}
+                fontWeight={600}
+                fill={THEMES[theme].text}
+              >
+                {p.initials}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
       <button
         onClick={handleAutoLayout}
         title="Znovu spustit automatické rozložení"
-        className="absolute bottom-4 right-4 z-20 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[14px] font-medium text-[var(--color-text-muted)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+        className="absolute bottom-4 right-4 z-30 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[14px] font-medium text-[var(--color-text-muted)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
       >
         Auto-rozložení
       </button>
