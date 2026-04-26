@@ -3472,7 +3472,6 @@ function FileTreeNode({
             <span className="truncate text-[13.5px] text-[var(--color-text)]">
               {f.filename}
             </span>
-            <FileStatusBadge status={f.status} />
             {sync && <SyncStatusBadge sync={sync} />}
             {!sync && !syncLoaded && (
               <span className="font-mono text-[8.5px] uppercase tracking-wider text-[var(--color-text-dim)]">
@@ -3539,27 +3538,6 @@ function FileTreeNode({
         </div>
       )}
     </div>
-  );
-}
-
-function FileStatusBadge({ status }: { status: string }) {
-  const cssVar =
-    status === "output" || status === "final"
-      ? "var(--color-status-active)"
-      : status === "wip"
-      ? "var(--color-node-process)"
-      : "var(--color-status-archived)";
-  return (
-    <span
-      className="rounded px-1.5 py-0.5 font-mono text-[8.5px] uppercase tracking-wider"
-      style={{
-        color: cssVar,
-        background: `color-mix(in srgb, ${cssVar} 12%, transparent)`,
-        border: `1px solid color-mix(in srgb, ${cssVar} 25%, transparent)`,
-      }}
-    >
-      {status}
-    </span>
   );
 }
 
