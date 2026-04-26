@@ -6,8 +6,9 @@ import { SOLO_USER, EVENT_TYPES, EVENT_STATUSES } from "../schema.js";
 import { EventRow } from "../types.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { decideGlobalQuery, guardNodeRead, type SessionScope } from "../scope.js";
 
-export function registerEventTools(server: McpServer): void {
+export function registerEventTools(server: McpServer, scope: SessionScope): void {
   server.tool(
     "portuni_log",
     "Log a time-ordered knowledge event to a node. ONLY log events that capture substantive knowledge: real decisions, discoveries, blockers, milestones. NEVER log technical operations (mirror moves, file renames, tool actions) or narrate what you just did. Events are organizational memory, not an activity log.",
@@ -223,7 +224,7 @@ export function registerEventTools(server: McpServer): void {
 
   server.tool(
     "portuni_list_events",
-    "List events from the knowledge graph, optionally filtered by node, type, status, or time range.",
+    "List events from the knowledge graph, optionally filtered by node, type, status, or time range. Subject to session scope: with node_id the node must be in scope; without node_id the call is treated as a global query (strict refuses, balanced first-time refuses, permissive auto-allow + audit).",
     {
       node_id: z.string().optional().describe("Filter by node ID"),
       type: z.enum(EVENT_TYPES).optional().describe("Filter by event type"),
@@ -233,12 +234,82 @@ export function registerEventTools(server: McpServer): void {
     async (args) => {
       const db = getDb();
 
+      // Scope gate. With node_id, run the standard read guard. Without it,
+      // this is a cross-graph listing -- subject to the global-query gate.
+      if (args.node_id !== undefined) {
+        const guard = await guardNodeRead(
+          db,
+          scope,
+          args.node_id,
+          SOLO_USER,
+          async (action, targetId, detail) => {
+            await logAudit(SOLO_USER, action, "scope", targetId, detail);
+          },
+        );
+        if (guard.kind === "not_found") {
+          return {
+            content: [
+              { type: "text" as const, text: `Error: node ${args.node_id} not found` },
+            ],
+            isError: true,
+          };
+        }
+        if (guard.kind === "elicit") {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(guard.error) }],
+            isError: true,
+          };
+        }
+      } else {
+        const g = decideGlobalQuery(scope);
+        if (g.kind === "elicit") {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: "scope_expansion_required",
+                  tool: "portuni_list_events",
+                  hint: g.message,
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+        scope.globalQuerySeen = true;
+        await logAudit(SOLO_USER, "scope_global_query", "scope", "list_events", {
+          tool: "portuni_list_events",
+          filters: {
+            type: args.type ?? null,
+            status: args.status ?? null,
+            since: args.since ?? null,
+          },
+          mode: scope.mode,
+        });
+      }
+
       const conditions: string[] = [];
       const values: InValue[] = [];
 
       if (args.node_id !== undefined) {
         conditions.push("e.node_id = ?");
         values.push(args.node_id);
+      } else {
+        // No node filter: when not yet permissive-mode auto-allowed, restrict
+        // to the in-memory scope set so unrelated nodes aren't surfaced as
+        // a side channel through cross-cutting filters.
+        const inScope = scope.list();
+        if (scope.mode !== "permissive") {
+          if (inScope.length === 0) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }],
+            };
+          }
+          const placeholders = inScope.map(() => "?").join(",");
+          conditions.push(`e.node_id IN (${placeholders})`);
+          values.push(...inScope);
+        }
       }
       if (args.type !== undefined) {
         conditions.push("e.type = ?");

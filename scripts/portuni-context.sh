@@ -18,11 +18,18 @@ fi
 CWD="$(pwd)"
 ENCODED_PATH=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$CWD")
 
+# Bearer auth for the optional PORTUNI_AUTH_TOKEN. /health stays public so
+# the liveness probe below works without a secret. /context is protected.
+AUTH_HEADER=()
+if [ -n "${PORTUNI_AUTH_TOKEN:-}" ]; then
+  AUTH_HEADER=(-H "Authorization: Bearer $PORTUNI_AUTH_TOKEN")
+fi
+
 for URL in $URLS; do
   # Quick health check – skip unreachable instances silently
   curl -s -m 0.2 "$URL/health" > /dev/null 2>&1 || continue
 
-  OUTPUT=$(curl -s -m 1 "$URL/context?path=$ENCODED_PATH" | python3 -c "
+  OUTPUT=$(curl -s -m 1 "${AUTH_HEADER[@]}" "$URL/context?path=$ENCODED_PATH" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -40,6 +47,9 @@ print(f\"Portuni: You are working in {node['type']} '{node['name']}' ({node['sta
 if node.get('description'):
     print(f\"  {node['description']}\")
 print(f\"  Local path: {node['local_path']}\")
+print()
+print(f\"Initialize the read scope for this session by calling: portuni_session_init(home_node_id='{node['id']}')\")
+print('  (Seeds the scope set with this home node + its depth-1 neighbors. Reads beyond that need explicit expansion.)')
 print()
 
 if edges:

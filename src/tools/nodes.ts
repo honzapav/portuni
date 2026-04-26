@@ -15,6 +15,7 @@ import type { NodeType } from "../popp.js";
 import { NodeRow, NodeSummaryRow } from "../types.js";
 import type { Client, InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { decideGlobalQuery, type SessionScope } from "../scope.js";
 
 // Cleanup hook for portuni_delete_node purge: removes the per-device local
 // mirror row for the node being purged. Best-effort -- never fails the tool
@@ -287,7 +288,7 @@ export async function createNodeInternal(
   return id;
 }
 
-export function registerNodeTools(server: McpServer): void {
+export function registerNodeTools(server: McpServer, scope: SessionScope): void {
   server.tool(
     "portuni_create_node",
     "Create a new node in the Portuni knowledge graph. ONLY create nodes when the user explicitly asks. Never create nodes as a side effect of other work or to organize things on your own initiative. Node types (strictly enforced): organization, project, process, area, principle. Every non-organization node MUST specify organization_id -- it will be atomically connected to that organization via a belongs_to edge. Every non-organization node belongs to exactly one organization. Optionally set goal (textual purpose) and lifecycle_state (type-specific primary state -- status is then derived automatically).",
@@ -429,10 +430,17 @@ export function registerNodeTools(server: McpServer): void {
 
   server.tool(
     "portuni_list_nodes",
-    "List nodes from the Portuni knowledge graph, optionally filtered by type and/or status.",
+    "List nodes from the Portuni knowledge graph, optionally filtered by type and/or status. Returns only nodes already in the session scope set unless scope='global' is set, which returns the full graph (and is logged as a broad listing). Empty results in default scope mean the agent must call portuni_expand_scope or ask the user.",
     {
       type: z.enum(NODE_TYPES).optional().describe("Filter by node type"),
       status: z.enum(NODE_STATUSES).optional().describe("Filter by status"),
+      scope: z
+        .enum(["session", "global"])
+        .optional()
+        .default("session")
+        .describe(
+          "session (default): only nodes in the session scope set. global: full graph; subject to scope mode (elicits in strict, audited in permissive).",
+        ),
     },
     async (args) => {
       const db = getDb();
@@ -447,6 +455,49 @@ export function registerNodeTools(server: McpServer): void {
       if (args.status !== undefined) {
         conditions.push("status = ?");
         values.push(args.status);
+      }
+
+      // Scope filter. Session-scoped listing intersects with the in-memory
+      // scope set. Global listing is mode-gated -- strict always refuses,
+      // balanced refuses only on the first call this session.
+      const inScope = scope.list();
+      if (args.scope === "global") {
+        const guard = decideGlobalQuery(scope);
+        if (guard.kind === "elicit") {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: "scope_expansion_required",
+                  tool: "portuni_list_nodes",
+                  hint: guard.message,
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+        scope.globalQuerySeen = true;
+        await logAudit(SOLO_USER, "scope_global_query", "scope", "list_nodes", {
+          tool: "portuni_list_nodes",
+          filters: { type: args.type ?? null, status: args.status ?? null },
+          mode: scope.mode,
+        });
+      } else {
+        if (inScope.length === 0) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify([], null, 2),
+              },
+            ],
+          };
+        }
+        const placeholders = inScope.map(() => "?").join(",");
+        conditions.push(`id IN (${placeholders})`);
+        values.push(...inScope);
       }
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";

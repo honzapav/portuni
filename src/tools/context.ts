@@ -4,6 +4,8 @@ import { SOLO_USER } from "../schema.js";
 import { listUserMirrors, unregisterMirror } from "../sync/mirror-registry.js";
 import type { Client, InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { guardNodeRead, type SessionScope } from "../scope.js";
+import { logAudit } from "../audit.js";
 
 // --- Task E3: enriched context payload shape ---
 //
@@ -396,10 +398,10 @@ function serializeForMcp(payload: ContextPayload): unknown[] {
   return [payload.root, ...payload.connected];
 }
 
-export function registerContextTools(server: McpServer): void {
+export function registerContextTools(server: McpServer, scope: SessionScope): void {
   server.tool(
     "portuni_get_context",
-    "Traverse the graph from a node. Returns the starting node (depth 0) with full detail (owner, responsibilities with assignees, data_sources, tools, goal, lifecycle_state, events, files, edges) and connected nodes (depth 1+) with lighter detail (lifecycle_state, owner_name, responsibilities_count, edges, recent events at depth 1).",
+    "Traverse the graph from a node. Returns the starting node (depth 0) with full detail (owner, responsibilities with assignees, data_sources, tools, goal, lifecycle_state, events, files, edges) and connected nodes (depth 1+) with lighter detail (lifecycle_state, owner_name, responsibilities_count, edges, recent events at depth 1). Subject to the session's read scope: the starting node must be in scope; nodes revealed by traversal are added to scope implicitly.",
     {
       node_id: z.string().describe("Starting node ID (ULID)"),
       depth: z
@@ -414,20 +416,73 @@ export function registerContextTools(server: McpServer): void {
     async (args) => {
       const db = getDb();
 
-      // Verify starting node exists before running the traversal.
-      const startCheck = await db.execute({
-        sql: "SELECT id FROM nodes WHERE id = ?",
-        args: [args.node_id],
+      // Scope gate on the start node via the central helper.
+      const guard = await guardNodeRead(db, scope, args.node_id, SOLO_USER, async (action, targetId, detail) => {
+        await logAudit(SOLO_USER, action, "scope", targetId, detail);
       });
-      if (startCheck.rows.length === 0) {
+      if (guard.kind === "not_found") {
         return {
           content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
+          isError: true,
+        };
+      }
+      if (guard.kind === "elicit") {
+        return {
+          content: [
+            { type: "text" as const, text: JSON.stringify(guard.error) },
+          ],
+          isError: true,
+        };
+      }
+
+      // Depth gate. depth=0/1 is the natural "this node + its immediate
+      // neighbors" read; depth>=2 walks out beyond what session_init seeded
+      // and is treated as breadth expansion. strict/balanced refuse without
+      // explicit confirmation; permissive auto-allows + audits.
+      if (args.depth >= 2 && scope.mode !== "permissive") {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                error: "scope_expansion_required",
+                node_id: args.node_id,
+                hint:
+                  `Traversal depth ${args.depth} from ${args.node_id} reaches beyond the session scope's depth-1 horizon. ` +
+                  "Ask the user to confirm the breadth, then either call portuni_get_context with depth=1 (and walk further with explicit portuni_expand_scope), or run under PORTUNI_SCOPE_MODE=permissive.",
+              }),
+            },
+          ],
           isError: true,
         };
       }
 
       try {
         const payload = await buildContextPayload(db, args.node_id, args.depth);
+        // depth=0/1 reads everything within one hop of an in-scope start
+        // node, which is consistent with the "home + depth-1" seed rule.
+        // permissive mode also auto-adds depth>=2 results. We never auto-add
+        // beyond what the gate above lets through.
+        const added: string[] = [];
+        for (const n of [payload.root, ...payload.connected]) {
+          if (scope.add(n.id)) added.push(n.id);
+        }
+        if (added.length > 0) {
+          scope.recordExpansion({
+            at: new Date().toISOString(),
+            node_ids: added,
+            reason: `traversal from ${args.node_id} depth ${args.depth}`,
+            triggered_by: "traversal",
+          });
+          await logAudit(SOLO_USER, "expand_scope", "scope", added.join(","), {
+            node_ids: added,
+            reason: "traversal",
+            triggered_by: "traversal",
+            start: args.node_id,
+            depth: args.depth,
+            mode: scope.mode,
+          });
+        }
         return {
           content: [
             {

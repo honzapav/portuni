@@ -54,6 +54,8 @@ import type {
 import { ulid } from "ulid";
 import { logAudit } from "./audit.js";
 import { checkAuthRequiredForConfig } from "./server-config.js";
+import { SessionScope, parseScopeMode } from "./scope.js";
+import { registerScopeTools } from "./tools/scope.js";
 
 const PORT = Number(process.env.PORT ?? 4011);
 const HOST = process.env.HOST ?? "127.0.0.1";
@@ -555,29 +557,41 @@ FILE STATUSES: wip (work in progress, default), output (final deliverable). Stri
 
 NODE VISIBILITY: team (default), private. "group" is planned but not yet implemented.
 
-EVENTS: Time-ordered knowledge attached to nodes. Log decisions, discoveries, blockers, references, milestones, notes, changes. Use portuni_log to record, portuni_list_events to query. Events appear in portuni_get_node and portuni_get_context responses.`;
+EVENTS: Time-ordered knowledge attached to nodes. Log decisions, discoveries, blockers, references, milestones, notes, changes. Use portuni_log to record, portuni_list_events to query. Events appear in portuni_get_node and portuni_get_context responses.
 
-function createMcpServer(): McpServer {
+READ SCOPE: Reads are bounded by a session scope set – the set of node IDs you may fetch in this session. The set is seeded by the SessionStart hook (home node + depth-1 neighbors) and grows through explicit, audited expansions.
+- portuni_session_init(home_node_id): seed the scope set. Called by the SessionStart hook; you don't usually call this manually.
+- portuni_expand_scope(node_ids, reason, triggered_by, confirmed_hard_floor?): widen scope. Call this when the user names a node in the prompt (reason: "user-requested: <quoted prompt fragment>") or after the user confirms an out-of-scope reach in chat (reason: "user-confirmed-in-chat"). Hard-floor nodes (visibility=private owned by another user, or meta.scope_sensitive=true) require confirmed_hard_floor=true AND a real user confirmation; do NOT pass that flag on your own initiative.
+- portuni_session_log(): inspect the current scope set, scope mode, and ordered expansion history.
+Refusal contract: when a read tool returns {"error":"scope_expansion_required",...}, surface the request to the user, get explicit confirmation, then call portuni_expand_scope before retrying. Do NOT fabricate confirmation.
+Tool defaults:
+- portuni_get_node(node_id|name): name lookups are filtered to in-scope candidates first, so unscoped name probing never surfaces neighbouring metadata.
+- portuni_get_context(node_id, depth): depth ≤ 1 with an in-scope start is allowed; depth ≥ 2 is treated as breadth expansion and refused in strict/balanced (use depth=1 then expand explicitly, or run under PORTUNI_SCOPE_MODE=permissive).
+- portuni_list_nodes/portuni_list_events/portuni_list_files: default to session-scope filtering. Pass scope: "global" (or omit node_id on list_events/list_files) only when the user asked for a broad listing; that path is mode-gated and audited.`;
+
+function createMcpServer(): { server: McpServer; scope: SessionScope } {
+  const scope = new SessionScope(parseScopeMode(process.env.PORTUNI_SCOPE_MODE));
   const server = new McpServer({
     name: "portuni",
     version: "0.1.0",
   }, {
     instructions: INSTRUCTIONS,
   });
-  registerNodeTools(server);
-  registerGetNodeTool(server);
+  registerScopeTools(server, scope);
+  registerNodeTools(server, scope);
+  registerGetNodeTool(server, scope);
   registerEdgeTools(server);
-  registerContextTools(server);
+  registerContextTools(server, scope);
   registerMirrorTools(server);
-  registerFileTools(server);
+  registerFileTools(server, scope);
   registerSyncStatusTools(server);
   registerSyncRemoteTools(server);
   registerSyncSnapshotTools(server);
-  registerEventTools(server);
+  registerEventTools(server, scope);
   registerActorTools(server);
   registerResponsibilityTools(server);
   registerEntityAttributeTools(server);
-  return server;
+  return { server, scope };
 }
 
 class RequestBodyTooLargeError extends Error {
@@ -763,7 +777,7 @@ async function main() {
           }
         };
 
-        const mcpServer = createMcpServer();
+        const { server: mcpServer } = createMcpServer();
         await mcpServer.connect(transport);
         await transport.handleRequest(req, res, body);
       } catch (error) {

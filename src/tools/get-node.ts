@@ -6,11 +6,13 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { buildContextPayload } from "./context.js";
 import { getLocalMirror } from "../sync/local-db.js";
 import { deriveLocalPath, buildNodeRoot } from "../sync/remote-path.js";
+import { guardNodeRead, scopeExpansionError, type SessionScope } from "../scope.js";
+import { logAudit } from "../audit.js";
 
-export function registerGetNodeTool(server: McpServer): void {
+export function registerGetNodeTool(server: McpServer, scope: SessionScope): void {
   server.tool(
     "portuni_get_node",
-    "Get a single node from the Portuni knowledge graph by ID or name. Returns the node's core fields plus owner, responsibilities (with assignees), data_sources, tools, goal, lifecycle_state, direct edges (both directions), files, events, and local mirror path.",
+    "Get a single node from the Portuni knowledge graph by ID or name. Returns the node's core fields plus owner, responsibilities (with assignees), data_sources, tools, goal, lifecycle_state, direct edges (both directions), files, events, and local mirror path. Subject to the session's read scope: if the target is outside scope and not user-confirmed, the call returns scope_expansion_required and the agent must call portuni_expand_scope first. Name-based lookups are filtered to in-scope candidates so unscoped name probing cannot surface neighbouring node metadata.",
     {
       node_id: z.string().optional().describe("Node ID (ULID)"),
       name: z.string().optional().describe("Node name (case-insensitive match)"),
@@ -44,21 +46,63 @@ export function registerGetNodeTool(server: McpServer): void {
         };
       }
 
-      // B2: Name-based lookups may be ambiguous if duplicate names exist.
+      // Name-based lookup: filter ambiguity to in-scope candidates BEFORE
+      // surfacing match metadata. Unscoped name probing should not return
+      // type/id pairs for nodes the agent isn't allowed to see.
       if (args.name && result.rows.length > 1) {
-        const matches = result.rows.map((r) => `${r.type}:${r.name} (${r.id})`).join("; ");
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Ambiguous: ${result.rows.length} nodes match name '${args.name}'. Use node_id instead. Matches: ${matches}`,
-            },
-          ],
-          isError: true,
-        };
+        const inScopeRows = result.rows.filter((r) => scope.has(r.id as string));
+        if (inScopeRows.length === 0) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(
+                  scopeExpansionError(
+                    "<name:" + args.name + ">",
+                    `Multiple nodes match name '${args.name}' but none are in session scope. Ask the user which one, then call portuni_expand_scope.`,
+                  ),
+                ),
+              },
+            ],
+            isError: true,
+          };
+        }
+        if (inScopeRows.length > 1) {
+          const matches = inScopeRows
+            .map((r) => `${r.type}:${r.name} (${r.id})`)
+            .join("; ");
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Ambiguous: ${inScopeRows.length} in-scope nodes match name '${args.name}'. Use node_id instead. Matches: ${matches}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        // Exactly one in-scope row remains -- proceed with it.
+        result.rows = inScopeRows;
       }
 
       const row = NodeRow.parse(result.rows[0]);
+
+      // Scope gate via central helper.
+      const guard = await guardNodeRead(db, scope, row.id, SOLO_USER, async (action, targetId, detail) => {
+        await logAudit(SOLO_USER, action, "scope", targetId, detail);
+      });
+      if (guard.kind === "not_found") {
+        return {
+          content: [{ type: "text" as const, text: "Node not found" }],
+          isError: true,
+        };
+      }
+      if (guard.kind === "elicit") {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(guard.error) }],
+          isError: true,
+        };
+      }
 
       // 2. Delegate depth-0 enrichment to buildContextPayload so the
       //    owner/responsibilities/data_sources/tools/goal/lifecycle_state

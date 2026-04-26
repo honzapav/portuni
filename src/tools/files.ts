@@ -15,8 +15,9 @@ import { getMirrorPath } from "../sync/mirror-registry.js";
 import { buildNodeRoot, deriveLocalPath } from "../sync/remote-path.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { decideGlobalQuery, guardNodeRead, type SessionScope } from "../scope.js";
 
-export function registerFileTools(server: McpServer): void {
+export function registerFileTools(server: McpServer, scope: SessionScope): void {
   server.tool(
     "portuni_store",
     "Store a file for a node: copies into the node's local mirror, uploads to the routed remote, and tracks it for sync. Uses sync_key-based paths so renaming nodes does not break remote storage.",
@@ -80,18 +81,84 @@ export function registerFileTools(server: McpServer): void {
 
   server.tool(
     "portuni_list_files",
-    "List files across all nodes, optionally filtered by node and/or status. Each file includes a derived local_path built from the current mirror + remote_path + sync_key (null when the node has no mirror on this device).",
+    "List files across nodes, optionally filtered by node and/or status. Each file includes a derived local_path built from the current mirror + remote_path + sync_key (null when the node has no mirror on this device). Subject to session scope: with node_id the node must be in scope; without node_id the call is treated as a global query and is mode-gated.",
     {
       node_id: z.string().optional(),
       status: z.enum(FILE_STATUSES).optional(),
     },
     async (args) => {
       const db = getDb();
+
+      // Scope gate. With node_id, ensure the node is in scope. Without it,
+      // treat as global query.
+      if (args.node_id !== undefined) {
+        const guard = await guardNodeRead(
+          db,
+          scope,
+          args.node_id,
+          SOLO_USER,
+          async (action, targetId, detail) => {
+            await logAudit(SOLO_USER, action, "scope", targetId, detail);
+          },
+        );
+        if (guard.kind === "not_found") {
+          return {
+            content: [
+              { type: "text" as const, text: `Error: node ${args.node_id} not found` },
+            ],
+            isError: true,
+          };
+        }
+        if (guard.kind === "elicit") {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(guard.error) }],
+            isError: true,
+          };
+        }
+      } else {
+        const g = decideGlobalQuery(scope);
+        if (g.kind === "elicit") {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: "scope_expansion_required",
+                  tool: "portuni_list_files",
+                  hint: g.message,
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+        scope.globalQuerySeen = true;
+        await logAudit(SOLO_USER, "scope_global_query", "scope", "list_files", {
+          tool: "portuni_list_files",
+          filters: { status: args.status ?? null },
+          mode: scope.mode,
+        });
+      }
+
       const conds: string[] = [];
       const params: InValue[] = [];
       if (args.node_id !== undefined) {
         conds.push("f.node_id = ?");
         params.push(args.node_id);
+      } else {
+        // No node filter: when not yet permissive-mode auto-allowed, restrict
+        // to the in-memory scope set so unrelated nodes aren't surfaced.
+        const inScope = scope.list();
+        if (scope.mode !== "permissive") {
+          if (inScope.length === 0) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }],
+            };
+          }
+          const placeholders = inScope.map(() => "?").join(",");
+          conds.push(`f.node_id IN (${placeholders})`);
+          params.push(...inScope);
+        }
       }
       if (args.status !== undefined) {
         conds.push("f.status = ?");
