@@ -371,6 +371,36 @@ function DetailPaneBody({
     }
   };
 
+  // Change an edge's relation type. The schema treats (source, target,
+  // relation) as the identity of an edge, so "edit" is really POST new +
+  // DELETE old. We POST first so a failed insert (duplicate-with-different-
+  // relation, missing node, trigger rejection) leaves the original edge
+  // intact; if the DELETE then fails the user sees both edges and can
+  // reconcile. Reverse order would risk losing the edge entirely.
+  const handleChangeEdgeRelation = async (
+    edge: DetailEdge,
+    newRelation: string,
+  ) => {
+    if (newRelation === edge.relation) return;
+    setBusy(true);
+    setErrorMsg(null);
+    try {
+      const sourceId = edge.direction === "outgoing" ? node.id : edge.peer_id;
+      const targetId = edge.direction === "outgoing" ? edge.peer_id : node.id;
+      await createEdge({
+        source_id: sourceId,
+        target_id: targetId,
+        relation: newRelation,
+      });
+      await deleteEdge(edge.id);
+      await onMutate();
+    } catch (e) {
+      setErrorMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const grouped = new Map<string, DetailEdge[]>();
   for (const edge of node.edges) {
     if (!grouped.has(edge.relation)) grouped.set(edge.relation, []);
@@ -743,6 +773,9 @@ function DetailPaneBody({
                           edge={edge}
                           onSelect={onSelect}
                           onRemove={() => handleRemoveEdge(edge.id)}
+                          onChangeRelation={(next) =>
+                            handleChangeEdgeRelation(edge, next)
+                          }
                           disabled={busy}
                         />
                       ))}
@@ -870,13 +903,74 @@ function ConnectionLink({
   edge,
   onSelect,
   onRemove,
+  onChangeRelation,
   disabled,
 }: {
   edge: DetailEdge;
   onSelect: (id: string) => void;
   onRemove: () => void;
+  onChangeRelation: (newRelation: string) => Promise<void>;
   disabled: boolean;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draftRelation, setDraftRelation] = useState<string>(edge.relation);
+
+  // belongs_to has its own invariants and a dedicated UX (OrganizationPicker
+  // for the org case, plus DB triggers for the rest). Keep this row read-only
+  // for relation changes to avoid trigger-error surprises.
+  const editable = edge.relation !== "belongs_to";
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1 rounded bg-[var(--color-surface)] px-2 py-1.5">
+        <span
+          className="h-2 w-2 shrink-0 rounded-full"
+          style={{
+            background: nodeTypeVar(edge.peer_type),
+            boxShadow: `0 0 8px ${nodeTypeGlow(edge.peer_type, 0.4)}`,
+          }}
+        />
+        <span className="flex-1 truncate text-[13.5px] text-[var(--color-text)]">
+          {edge.peer_name}
+        </span>
+        <select
+          value={draftRelation}
+          onChange={(e) => setDraftRelation(e.target.value)}
+          disabled={disabled}
+          className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[13px] text-[var(--color-text)]"
+        >
+          {RELATION_TYPES.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={async () => {
+            await onChangeRelation(draftRelation);
+            setEditing(false);
+          }}
+          disabled={disabled || draftRelation === edge.relation}
+          title="Uložit relaci"
+          className="ml-0.5 flex h-6 w-6 items-center justify-center rounded text-[var(--color-accent)] hover:bg-[var(--color-accent-dim)]/15 disabled:pointer-events-none disabled:opacity-40"
+        >
+          <Check size={12} />
+        </button>
+        <button
+          onClick={() => {
+            setDraftRelation(edge.relation);
+            setEditing(false);
+          }}
+          disabled={disabled}
+          title="Zrušit"
+          className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
+        >
+          <X size={12} />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="group flex items-center gap-1 rounded px-2 py-1.5 transition-colors hover:bg-[var(--color-surface)]">
       <button
@@ -901,6 +995,20 @@ function ConnectionLink({
           className="text-[var(--color-text-dim)] opacity-0 transition-opacity group-hover:opacity-100"
         />
       </button>
+      {editable && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setDraftRelation(edge.relation);
+            setEditing(true);
+          }}
+          disabled={disabled}
+          title="Změnit typ vazby"
+          className="ml-0.5 flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] opacity-0 transition-all hover:bg-[var(--color-surface)] hover:text-[var(--color-text)] group-hover:opacity-100 disabled:pointer-events-none"
+        >
+          <Pencil size={11} />
+        </button>
+      )}
       <button
         onClick={(e) => {
           e.stopPropagation();
