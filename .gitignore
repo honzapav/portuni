@@ -10,3 +10,6 @@ portuni.db
 
 # Local Netlify folder
 .netlify
+
+# One-shot/throwaway scripts (delete after use)
+scripts/oneshot/
