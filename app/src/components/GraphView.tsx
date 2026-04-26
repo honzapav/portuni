@@ -1,4 +1,10 @@
-import { useCallback, useDeferredValue, useEffect, useRef } from "react";
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import cytoscape from "cytoscape";
 import type {
   Core,
@@ -49,6 +55,14 @@ function buildElements(graph: GraphPayload): cytoscape.ElementDefinition[] {
     }
   }
 
+  // Per-org child count drives label placement: orgs with 0–1 children
+  // can't carry a centred watermark label without overlapping the lone
+  // child, so we float their label above the galaxy instead.
+  const childCount = new Map<string, number>();
+  for (const parentId of parentOfChild.values()) {
+    childCount.set(parentId, (childCount.get(parentId) ?? 0) + 1);
+  }
+
   // Degree = count of edges touching this node. Orgs are excluded from the
   // scale because they're compound parents, not leaf nodes. belongs_to edges
   // that get compounded out are NOT counted (they're visually represented by
@@ -89,6 +103,8 @@ function buildElements(graph: GraphPayload): cytoscape.ElementDefinition[] {
       lifecycle_state: node.lifecycle_state ?? "",
       degree: d,
       size: node.type === "organization" ? 0 : sizeFor(d),
+      childCount:
+        node.type === "organization" ? (childCount.get(node.id) ?? 0) : 0,
     };
     const parent = parentOfChild.get(node.id);
     if (parent) data.parent = parent;
@@ -132,32 +148,53 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
     theme.nodeColors[ele.data("type") as string] ?? theme.nodeColorDefault;
 
   return [
-    // Compound parents (organizations).
-    // IMPORTANT: border-width and padding are FIXED. Nothing on hover/select
-    // may change them, or the compound parent visibly refits.
+    // Compound parents (organizations). The body of the rectangle is hidden;
+    // an SVG overlay (see GraphView JSX) paints a soft galaxy-like cloud
+    // around each org — a radial gradient with no hard edge — so orgs read
+    // as gravitational groupings rather than bordered containers, even
+    // though cytoscape's compound layout still uses an axis-aligned
+    // rectangle internally for hit-testing and child positioning.
+    // padding stays FIXED so the compound parent never refits.
     {
       selector: 'node[type = "organization"]',
       style: {
         shape: "roundrectangle",
-        "background-color": theme.orgFill,
-        "background-opacity": theme.orgFillOpacity,
-        "border-color": theme.edgeStructural,
-        "border-width": 1.5,
-        "border-opacity": 0.6,
+        "background-opacity": 0,
+        "border-width": 0,
+        "border-opacity": 0,
         "border-style": "solid",
         label: "data(label)",
-        "text-valign": "top",
+        "text-valign": "center",
         "text-halign": "center",
-        "text-margin-y": -6,
+        "text-margin-y": 0,
         color: theme.textMuted,
-        "font-size": 15,
-        "font-weight": 600,
+        "text-opacity": 0.55,
+        "font-size": 22,
+        "font-weight": 500,
         "font-family": "Inter, sans-serif",
-        padding: "32px",
+        // Cytoscape renders compound parents BEFORE their children, so the
+        // centred label sits behind the leaf nodes — like a galaxy's name
+        // labelled across its core, with the brighter "stars" on top.
+        "z-index": 0,
+        padding: "12px",
         "min-width": "120px",
         "min-height": "60px",
         "transition-property": "border-opacity, background-opacity",
         "transition-duration": 120,
+      },
+    },
+    // Single-child (or empty) orgs can't host a centred watermark label
+    // without it landing on top of the only leaf node. Float the label
+    // above the galaxy instead, smaller and more solid so it reads as
+    // a caption rather than a watermark.
+    {
+      selector: 'node[type = "organization"][childCount <= 1]',
+      style: {
+        "text-valign": "top",
+        "text-margin-y": -10,
+        "text-opacity": 0.75,
+        "font-size": 14,
+        "font-weight": 600,
       },
     },
     // Leaf nodes. Dimensions, border-width, text-max-width, and text-* are
@@ -428,6 +465,33 @@ function animateFit(
   );
 }
 
+// Expand each organization's compound-parent body into a square that
+// CIRCUMSCRIBES its children's bounding box. The SVG overlay then draws a
+// circle INSCRIBED in that square (radius = side/2 = sqrt(w²+h²)/2 of the
+// children's bbox), so:
+//   - the visible circle still contains every child of the org,
+//   - the cytoscape rectangle drag-area covers the same circle area, so
+//     the user can grab the org anywhere inside the visible circle, and
+//   - the rectangle-based non-overlap pass keeps circles apart too.
+function expandOrgsToCircleSquares(cy: Core): void {
+  cy.nodes().forEach((n) => {
+    if (n.data("type") !== "organization") return;
+    const children = n.children();
+    if (children.length === 0) return;
+    // Include child labels so min-w/h is big enough to dominate all the
+    // natural sizing factors (children + their labels + padding); without
+    // this, the parent's body comes out a few px taller than wide and the
+    // inscribed-circle radius (= half the SHORTER side) ends up smaller
+    // than half the longer side, leaving the top/bottom labels poking out.
+    const bb = children.boundingBox({});
+    // Floor on the radius keeps single-child orgs (Nautie, Evoluce) from
+    // collapsing to a circle so small that the child's label hangs out.
+    const r = Math.max(Math.sqrt(bb.w * bb.w + bb.h * bb.h) / 2 + 4, 56);
+    const side = 2 * r;
+    n.style({ "min-width": side, "min-height": side });
+  });
+}
+
 function separateOverlappingOrgs(cy: Core): void {
   const orgs = cy.nodes().filter((n) => n.data("type") === "organization");
   if (orgs.length < 2) return;
@@ -495,7 +559,9 @@ function applyInitialLayout(
       padding: 80,
     } as cytoscape.LayoutOptions);
     layout.run();
+    expandOrgsToCircleSquares(cy);
     separateOverlappingOrgs(cy);
+    cy.fit(undefined, 80);
     saveAll();
     return;
   }
@@ -541,7 +607,9 @@ function applyInitialLayout(
   (layout as unknown as { one: (event: string, cb: () => void) => void }).one(
     "layoutstop",
     () => {
+      expandOrgsToCircleSquares(cy);
       separateOverlappingOrgs(cy);
+      cy.fit(undefined, 80);
       saveAll();
     },
   );
@@ -580,6 +648,14 @@ export default function GraphView({
   // animation queue plays them back-to-back, producing a visible
   // "jumping back and forth" effect.
   const focusAnimTimerRef = useRef<number | null>(null);
+
+  // Org "circles" rendered as an SVG overlay synced to cytoscape's render
+  // loop. Cytoscape compound parents are hard-wired to rectangles, so we
+  // hide the rectangle body and draw a circle ourselves around each org's
+  // bounding box. Updated on every cytoscape render frame (pan/zoom/drag).
+  const [orgCircles, setOrgCircles] = useState<
+    Array<{ id: string; cx: number; cy: number; r: number }>
+  >([]);
 
   // Debounced queue of position changes. Node drags and layout settles
   // both funnel through this so we coalesce a flurry of updates into one
@@ -678,6 +754,11 @@ export default function GraphView({
     // moves all its children).
     cy.on("dragfree", "node", (evt) => {
       const n = evt.target as NodeSingular;
+      // If a leaf moved, its parent org's bounding box may have changed,
+      // so rebuild the circumscribed-square sizing before persisting.
+      if (n.data("type") !== "organization") {
+        expandOrgsToCircleSquares(cy);
+      }
       const p = n.position();
       queuePositionSave(n.id(), p.x, p.y);
       if (n.data("type") === "organization") {
@@ -691,6 +772,24 @@ export default function GraphView({
     // Hover is intentionally NOT wired up. Any visual change on hover forces
     // the compound parent to refit its children, which looks like nodes
     // jumping. Keep the base style constant and only react to click.
+
+    // Sync the SVG circle overlay with cytoscape's render loop. We read
+    // each org's *rendered* bounding box (post pan/zoom transform) and
+    // emit a circumscribing circle: r = half the bbox diagonal so the
+    // circle visually contains every child the compound parent contains.
+    const updateOrgCircles = () => {
+      const next = cy.nodes('[type = "organization"]').map((n) => {
+        const bb = n.renderedBoundingBox({ includeLabels: false });
+        return {
+          id: n.id(),
+          cx: (bb.x1 + bb.x2) / 2,
+          cy: (bb.y1 + bb.y2) / 2,
+          r: Math.min(bb.w, bb.h) / 2,
+        };
+      });
+      setOrgCircles(next);
+    };
+    cy.on("render", updateOrgCircles);
 
     return () => {
       ro.disconnect();
@@ -715,9 +814,6 @@ export default function GraphView({
     const cy = cyRef.current;
     if (!cy) return;
     cy.style(stylesheet(THEMES[theme]));
-    if (containerRef.current) {
-      containerRef.current.style.background = THEMES[theme].bg;
-    }
   }, [theme]);
 
   // Sync cytoscape with incoming graph data. This effect deliberately
@@ -1057,7 +1153,9 @@ export default function GraphView({
     (layout as unknown as { one: (e: string, cb: () => void) => void }).one(
       "layoutstop",
       () => {
+        expandOrgsToCircleSquares(cy);
         separateOverlappingOrgs(cy);
+        cy.fit(undefined, 80);
         cy.nodes().forEach((n) => {
           const p = n.position();
           queuePositionSave(n.id(), p.x, p.y);
@@ -1068,16 +1166,142 @@ export default function GraphView({
   }, [queuePositionSave]);
 
   return (
-    <div className="relative h-full w-full">
-      <div
-        ref={containerRef}
-        className="h-full w-full"
-        style={{ background: THEMES[theme].bg }}
-      />
+    <div
+      className="relative isolate h-full w-full"
+      style={{ background: THEMES[theme].bg }}
+    >
+      <svg className="pointer-events-none absolute inset-0 z-0 h-full w-full">
+        <defs>
+          {/* Nebula stack: four layered radial gradients give each cluster
+              soft, asymmetric atmosphere with no hard edges. Off-centre
+              gradient origins (cx/cy) make the mist read as a cloud rather
+              than a perfect disc; mixing textMuted (neutral pigment) with
+              the theme's accent (cool tint) gives it just enough colour to
+              feel cosmic without competing with the leaf nodes for
+              attention. A coarse fractal-noise filter applied to one layer
+              breaks the gradients up into clumps, like dust lit by a
+              distant star. */}
+          <filter
+            id="nebulaGrain"
+            x="-20%"
+            y="-20%"
+            width="140%"
+            height="140%"
+          >
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.65"
+              numOctaves="2"
+              seed="3"
+              stitchTiles="stitch"
+            />
+            <feColorMatrix
+              values="0 0 0 0 0
+                      0 0 0 0 0
+                      0 0 0 0 0
+                      0 0 0 0.55 0"
+            />
+            <feComposite in2="SourceGraphic" operator="in" />
+          </filter>
+          <radialGradient id="nebulaHalo" cx="50%" cy="50%" r="50%">
+            <stop
+              offset="0%"
+              stopColor={THEMES[theme].textMuted}
+              stopOpacity={theme === "dark" ? 0.06 : 0.05}
+            />
+            <stop
+              offset="65%"
+              stopColor={THEMES[theme].textMuted}
+              stopOpacity={theme === "dark" ? 0.02 : 0.015}
+            />
+            <stop
+              offset="100%"
+              stopColor={THEMES[theme].textMuted}
+              stopOpacity={0}
+            />
+          </radialGradient>
+          <radialGradient id="nebulaTint" cx="38%" cy="42%" r="58%">
+            <stop
+              offset="0%"
+              stopColor={THEMES[theme].accent}
+              stopOpacity={theme === "dark" ? 0.08 : 0.06}
+            />
+            <stop
+              offset="55%"
+              stopColor={THEMES[theme].accent}
+              stopOpacity={theme === "dark" ? 0.025 : 0.02}
+            />
+            <stop
+              offset="100%"
+              stopColor={THEMES[theme].accent}
+              stopOpacity={0}
+            />
+          </radialGradient>
+          <radialGradient id="nebulaCore" cx="55%" cy="58%" r="50%">
+            <stop
+              offset="0%"
+              stopColor={THEMES[theme].textMuted}
+              stopOpacity={theme === "dark" ? 0.16 : 0.13}
+            />
+            <stop
+              offset="45%"
+              stopColor={THEMES[theme].textMuted}
+              stopOpacity={theme === "dark" ? 0.06 : 0.05}
+            />
+            <stop
+              offset="100%"
+              stopColor={THEMES[theme].textMuted}
+              stopOpacity={0}
+            />
+          </radialGradient>
+          <radialGradient id="nebulaGrainFill" cx="50%" cy="50%" r="50%">
+            <stop
+              offset="0%"
+              stopColor={THEMES[theme].textMuted}
+              stopOpacity={theme === "dark" ? 0.18 : 0.12}
+            />
+            <stop
+              offset="100%"
+              stopColor={THEMES[theme].textMuted}
+              stopOpacity={0}
+            />
+          </radialGradient>
+        </defs>
+        {orgCircles.map((c) => (
+          <g key={c.id}>
+            <circle
+              cx={c.cx}
+              cy={c.cy}
+              r={c.r * 1.35}
+              fill="url(#nebulaHalo)"
+            />
+            <circle
+              cx={c.cx}
+              cy={c.cy}
+              r={c.r * 1.15}
+              fill="url(#nebulaTint)"
+            />
+            <circle
+              cx={c.cx}
+              cy={c.cy}
+              r={c.r * 1.05}
+              fill="url(#nebulaGrainFill)"
+              filter="url(#nebulaGrain)"
+            />
+            <circle
+              cx={c.cx}
+              cy={c.cy}
+              r={c.r}
+              fill="url(#nebulaCore)"
+            />
+          </g>
+        ))}
+      </svg>
+      <div ref={containerRef} className="relative z-10 h-full w-full" />
       <button
         onClick={handleAutoLayout}
         title="Znovu spustit automatické rozložení"
-        className="absolute bottom-4 right-4 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[14px] font-medium text-[var(--color-text-muted)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+        className="absolute bottom-4 right-4 z-20 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[14px] font-medium text-[var(--color-text-muted)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
       >
         Auto-rozložení
       </button>
