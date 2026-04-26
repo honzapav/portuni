@@ -42,6 +42,43 @@ type Props = {
 const MIN_NODE_SIZE = 18;
 const MAX_NODE_SIZE = 44;
 
+// Each organization gets a deterministic colour from this palette so its
+// nebula stays the same across renders and reloads. Soft jewel tones —
+// not the same hues as the leaf-node type colours, so a violet "project"
+// inside an amber org reads as a contrast rather than a clash.
+const NEBULA_HUES = [
+  "#a78bfa", // violet
+  "#60a5fa", // cerulean
+  "#fbbf24", // amber
+  "#fb7185", // coral
+  "#2dd4bf", // teal
+  "#c084fc", // lavender
+  "#fdba74", // peach
+  "#67e8f9", // cyan
+  "#f0abfc", // orchid
+  "#6ee7b7", // mint
+];
+
+function fnv1aHash(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function colorForOrg(id: string): string {
+  return NEBULA_HUES[fnv1aHash(id) % NEBULA_HUES.length];
+}
+
+// Org ids come from the backend as slugs/uuids. SVG ids must start with
+// a letter or underscore and only contain a restricted character set,
+// so prefix and scrub anything risky before using one as a fragment id.
+function safeSvgId(s: string): string {
+  return "n_" + s.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
 function buildElements(graph: GraphPayload): cytoscape.ElementDefinition[] {
   const nodesById = new Map(graph.nodes.map((n) => [n.id, n]));
   const parentOfChild = new Map<string, string>();
@@ -168,10 +205,12 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
         "text-halign": "center",
         "text-margin-y": 0,
         color: theme.textMuted,
-        "text-opacity": 0.55,
-        "font-size": 22,
-        "font-weight": 500,
+        "text-opacity": 0.6,
+        "font-size": 30,
+        "font-weight": 600,
         "font-family": "Inter, sans-serif",
+        "text-wrap": "wrap",
+        "text-max-width": "240px",
         // Cytoscape renders compound parents BEFORE their children, so the
         // centred label sits behind the leaf nodes — like a galaxy's name
         // labelled across its core, with the brighter "stars" on top.
@@ -191,9 +230,9 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
       selector: 'node[type = "organization"][childCount <= 1]',
       style: {
         "text-valign": "top",
-        "text-margin-y": -10,
-        "text-opacity": 0.75,
-        "font-size": 14,
+        "text-margin-y": -14,
+        "text-opacity": 0.85,
+        "font-size": 18,
         "font-weight": 600,
       },
     },
@@ -653,8 +692,10 @@ export default function GraphView({
   // loop. Cytoscape compound parents are hard-wired to rectangles, so we
   // hide the rectangle body and draw a circle ourselves around each org's
   // bounding box. Updated on every cytoscape render frame (pan/zoom/drag).
+  // Each org carries its deterministic nebula colour so per-instance
+  // gradients can reference it without recomputing the hash mid-render.
   const [orgCircles, setOrgCircles] = useState<
-    Array<{ id: string; cx: number; cy: number; r: number }>
+    Array<{ id: string; cx: number; cy: number; r: number; color: string }>
   >([]);
 
   // Debounced queue of position changes. Node drags and layout settles
@@ -780,11 +821,13 @@ export default function GraphView({
     const updateOrgCircles = () => {
       const next = cy.nodes('[type = "organization"]').map((n) => {
         const bb = n.renderedBoundingBox({ includeLabels: false });
+        const id = n.id();
         return {
-          id: n.id(),
+          id,
           cx: (bb.x1 + bb.x2) / 2,
           cy: (bb.y1 + bb.y2) / 2,
           r: Math.min(bb.w, bb.h) / 2,
+          color: colorForOrg(id),
         };
       });
       setOrgCircles(next);
@@ -1172,130 +1215,137 @@ export default function GraphView({
     >
       <svg className="pointer-events-none absolute inset-0 z-0 h-full w-full">
         <defs>
-          {/* Nebula stack: four layered radial gradients give each cluster
-              soft, asymmetric atmosphere with no hard edges. Off-centre
-              gradient origins (cx/cy) make the mist read as a cloud rather
-              than a perfect disc; mixing textMuted (neutral pigment) with
-              the theme's accent (cool tint) gives it just enough colour to
-              feel cosmic without competing with the leaf nodes for
-              attention. A coarse fractal-noise filter applied to one layer
-              breaks the gradients up into clumps, like dust lit by a
-              distant star. */}
+          {/* Grain filter: fractal noise as varying alpha, clipped to
+              the source gradient. Lower alpha multiplier (0.45) makes
+              the dust subtle enough to feel like atmosphere rather than
+              a textured disc. */}
           <filter
-            id="nebulaGrain"
-            x="-20%"
-            y="-20%"
-            width="140%"
-            height="140%"
+            id="nebulaNoise"
+            x="-30%"
+            y="-30%"
+            width="160%"
+            height="160%"
           >
             <feTurbulence
               type="fractalNoise"
-              baseFrequency="0.65"
+              baseFrequency="0.9"
               numOctaves="2"
-              seed="3"
+              seed="7"
               stitchTiles="stitch"
             />
             <feColorMatrix
               values="0 0 0 0 0
                       0 0 0 0 0
                       0 0 0 0 0
-                      0 0 0 0.55 0"
+                      0 0 0 0.45 0"
             />
             <feComposite in2="SourceGraphic" operator="in" />
           </filter>
-          <radialGradient id="nebulaHalo" cx="50%" cy="50%" r="50%">
-            <stop
-              offset="0%"
-              stopColor={THEMES[theme].textMuted}
-              stopOpacity={theme === "dark" ? 0.06 : 0.05}
-            />
-            <stop
-              offset="65%"
-              stopColor={THEMES[theme].textMuted}
-              stopOpacity={theme === "dark" ? 0.02 : 0.015}
-            />
-            <stop
-              offset="100%"
-              stopColor={THEMES[theme].textMuted}
-              stopOpacity={0}
-            />
-          </radialGradient>
-          <radialGradient id="nebulaTint" cx="38%" cy="42%" r="58%">
-            <stop
-              offset="0%"
-              stopColor={THEMES[theme].accent}
-              stopOpacity={theme === "dark" ? 0.08 : 0.06}
-            />
-            <stop
-              offset="55%"
-              stopColor={THEMES[theme].accent}
-              stopOpacity={theme === "dark" ? 0.025 : 0.02}
-            />
-            <stop
-              offset="100%"
-              stopColor={THEMES[theme].accent}
-              stopOpacity={0}
-            />
-          </radialGradient>
-          <radialGradient id="nebulaCore" cx="55%" cy="58%" r="50%">
-            <stop
-              offset="0%"
-              stopColor={THEMES[theme].textMuted}
-              stopOpacity={theme === "dark" ? 0.16 : 0.13}
-            />
-            <stop
-              offset="45%"
-              stopColor={THEMES[theme].textMuted}
-              stopOpacity={theme === "dark" ? 0.06 : 0.05}
-            />
-            <stop
-              offset="100%"
-              stopColor={THEMES[theme].textMuted}
-              stopOpacity={0}
-            />
-          </radialGradient>
-          <radialGradient id="nebulaGrainFill" cx="50%" cy="50%" r="50%">
-            <stop
-              offset="0%"
-              stopColor={THEMES[theme].textMuted}
-              stopOpacity={theme === "dark" ? 0.18 : 0.12}
-            />
-            <stop
-              offset="100%"
-              stopColor={THEMES[theme].textMuted}
-              stopOpacity={0}
-            />
-          </radialGradient>
+          {/* Two gradients per org — colour and grain mask — sharing
+              the same outer radius and matching fade curves so they
+              taper out together. Previous versions stacked four layers
+              at different radii, which produced visible "rings" where
+              one layer ended and another carried on. With one fade
+              shape, there is only one perceptual edge: the imperceptible
+              one at 100% (alpha 0). */}
+          {orgCircles.map((c) => {
+            const sid = safeSvgId(c.id);
+            const isDark = theme === "dark";
+            return (
+              <g key={`grad-${c.id}`}>
+                <radialGradient
+                  id={`nebulaGlow-${sid}`}
+                  cx="50%"
+                  cy="50%"
+                  r="50%"
+                >
+                  <stop
+                    offset="0%"
+                    stopColor={c.color}
+                    stopOpacity={isDark ? 0.2 : 0.13}
+                  />
+                  <stop
+                    offset="30%"
+                    stopColor={c.color}
+                    stopOpacity={isDark ? 0.1 : 0.065}
+                  />
+                  <stop
+                    offset="60%"
+                    stopColor={c.color}
+                    stopOpacity={isDark ? 0.035 : 0.022}
+                  />
+                  <stop
+                    offset="85%"
+                    stopColor={c.color}
+                    stopOpacity={isDark ? 0.008 : 0.005}
+                  />
+                  <stop
+                    offset="100%"
+                    stopColor={c.color}
+                    stopOpacity={0}
+                  />
+                </radialGradient>
+                <radialGradient
+                  id={`nebulaGrainMask-${sid}`}
+                  cx="50%"
+                  cy="50%"
+                  r="50%"
+                >
+                  <stop
+                    offset="0%"
+                    stopColor={c.color}
+                    stopOpacity={isDark ? 0.32 : 0.2}
+                  />
+                  <stop
+                    offset="35%"
+                    stopColor={c.color}
+                    stopOpacity={isDark ? 0.16 : 0.1}
+                  />
+                  <stop
+                    offset="65%"
+                    stopColor={c.color}
+                    stopOpacity={isDark ? 0.05 : 0.03}
+                  />
+                  <stop
+                    offset="90%"
+                    stopColor={c.color}
+                    stopOpacity={isDark ? 0.01 : 0.006}
+                  />
+                  <stop
+                    offset="100%"
+                    stopColor={c.color}
+                    stopOpacity={0}
+                  />
+                </radialGradient>
+              </g>
+            );
+          })}
         </defs>
-        {orgCircles.map((c) => (
-          <g key={c.id}>
-            <circle
-              cx={c.cx}
-              cy={c.cy}
-              r={c.r * 1.35}
-              fill="url(#nebulaHalo)"
-            />
-            <circle
-              cx={c.cx}
-              cy={c.cy}
-              r={c.r * 1.15}
-              fill="url(#nebulaTint)"
-            />
-            <circle
-              cx={c.cx}
-              cy={c.cy}
-              r={c.r * 1.05}
-              fill="url(#nebulaGrainFill)"
-              filter="url(#nebulaGrain)"
-            />
-            <circle
-              cx={c.cx}
-              cy={c.cy}
-              r={c.r}
-              fill="url(#nebulaCore)"
-            />
-          </g>
-        ))}
+        {orgCircles.map((c) => {
+          const sid = safeSvgId(c.id);
+          return (
+            <g key={c.id}>
+              {/* Single colour cloud — same radius as the grain so
+                  there is no second disc effect. */}
+              <circle
+                cx={c.cx}
+                cy={c.cy}
+                r={c.r * 1.6}
+                fill={`url(#nebulaGlow-${sid})`}
+              />
+              {/* Subtle dust drawn over the same area, the noise is
+                  modulated by a matching fade so the grain dies out at
+                  the same rate as the colour. */}
+              <circle
+                cx={c.cx}
+                cy={c.cy}
+                r={c.r * 1.6}
+                fill={`url(#nebulaGrainMask-${sid})`}
+                filter="url(#nebulaNoise)"
+              />
+            </g>
+          );
+        })}
       </svg>
       <div ref={containerRef} className="relative z-10 h-full w-full" />
       <button
