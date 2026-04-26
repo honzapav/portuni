@@ -69,7 +69,10 @@ const DEFAULT_ALLOWED_ORIGINS = [
   `http://127.0.0.1:${PORT}`,
   "http://localhost:4010",
   "http://127.0.0.1:4010",
+  // localias (Caddy) serves *.test over HTTPS by default, but also responds
+  // on plain HTTP if the user disables TLS. Allow both.
   "http://portuni.test",
+  "https://portuni.test",
 ];
 const ALLOWED_ORIGINS = new Set(
   (process.env.PORTUNI_ALLOWED_ORIGINS ?? DEFAULT_ALLOWED_ORIGINS.join(","))
