@@ -93,29 +93,38 @@ function ownerInitials(name: string): string {
   return parts[0].slice(0, 2).toUpperCase();
 }
 
-// Pattern overlays for lifecycle state. Cytoscape applies these via
-// `background-image`; the data URI is clipped to the node's ellipse,
-// so we draw the pattern over the full square and let Cytoscape mask
-// it. Built once at module load, not per-node.
+// Pattern overlays for lifecycle state. Cytoscape rasterises these
+// via Image() on first paint and uses the SVG's *natural* pixel size
+// to position the bg image. We set explicit width/height attributes
+// on every SVG (not just viewBox) so the natural size is well-defined,
+// and we drive the lifecycle rules with `background-width: 100%` /
+// `background-height: 100%` plus centred position so the overlay
+// always fills the disc, regardless of the disc's rendered size.
+//
+// Without explicit width/height, browsers fall back to their default
+// SVG box (often 300x150), which causes the pattern to render at the
+// wrong size and shift to a corner of the node bounding box.
+const PATTERN_BOX = 120;
+
 const HATCH_OVERLAY_URI =
   "data:image/svg+xml;utf8," +
   encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60">` +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${PATTERN_BOX}" height="${PATTERN_BOX}" viewBox="0 0 ${PATTERN_BOX} ${PATTERN_BOX}">` +
       `<defs>` +
-      `<pattern id="h" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
-      `<line x1="0" y1="0" x2="0" y2="6" stroke="#0a0b0d" stroke-width="2.6"/>` +
+      `<pattern id="h" width="11" height="11" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
+      `<line x1="0" y1="0" x2="0" y2="11" stroke="#0a0b0d" stroke-width="4.6"/>` +
       `</pattern>` +
       `</defs>` +
-      `<rect width="60" height="60" fill="url(#h)" opacity="0.55"/>` +
+      `<rect width="${PATTERN_BOX}" height="${PATTERN_BOX}" fill="url(#h)" opacity="0.6"/>` +
       `</svg>`,
   );
 
 const STRIKE_OVERLAY_URI =
   "data:image/svg+xml;utf8," +
   encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60">` +
-      `<line x1="14" y1="14" x2="46" y2="46" stroke="#f87171" stroke-width="7" stroke-linecap="round"/>` +
-      `<line x1="46" y1="14" x2="14" y2="46" stroke="#f87171" stroke-width="7" stroke-linecap="round"/>` +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${PATTERN_BOX}" height="${PATTERN_BOX}" viewBox="0 0 ${PATTERN_BOX} ${PATTERN_BOX}">` +
+      `<line x1="28" y1="28" x2="92" y2="92" stroke="#f87171" stroke-width="14" stroke-linecap="round"/>` +
+      `<line x1="92" y1="28" x2="28" y2="92" stroke="#f87171" stroke-width="14" stroke-linecap="round"/>` +
       `</svg>`,
   );
 
@@ -124,23 +133,23 @@ const STRIKE_OVERLAY_URI =
 const DOT_OVERLAY_URI =
   "data:image/svg+xml;utf8," +
   encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60">` +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${PATTERN_BOX}" height="${PATTERN_BOX}" viewBox="0 0 ${PATTERN_BOX} ${PATTERN_BOX}">` +
       `<defs>` +
-      `<pattern id="dt" width="7" height="7" patternUnits="userSpaceOnUse">` +
-      `<circle cx="3.5" cy="3.5" r="1.5" fill="#0a0b0d"/>` +
+      `<pattern id="dt" width="14" height="14" patternUnits="userSpaceOnUse">` +
+      `<circle cx="7" cy="7" r="3" fill="#0a0b0d"/>` +
       `</pattern>` +
       `</defs>` +
-      `<rect width="60" height="60" fill="url(#dt)" opacity="0.78"/>` +
+      `<rect width="${PATTERN_BOX}" height="${PATTERN_BOX}" fill="url(#dt)" opacity="0.78"/>` +
       `</svg>`,
   );
 
-// Bold checkmark for `done`. The path is centred in the viewBox so
-// `background-fit: cover` keeps it positioned over the disc.
+// Bold checkmark for `done`. Centred in the viewBox so a centred,
+// scaled-to-fill bg-image lands the check in the middle of the disc.
 const CHECK_OVERLAY_URI =
   "data:image/svg+xml;utf8," +
   encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60">` +
-      `<path d="M 18 32 L 26 40 L 42 21" fill="none" stroke="#0a0b0d" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>` +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${PATTERN_BOX}" height="${PATTERN_BOX}" viewBox="0 0 ${PATTERN_BOX} ${PATTERN_BOX}">` +
+      `<path d="M 36 64 L 52 80 L 84 42" fill="none" stroke="#0a0b0d" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>` +
       `</svg>`,
   );
 
@@ -155,8 +164,8 @@ function buildHalfFillUri(bgColor: string): string {
   return (
     "data:image/svg+xml;utf8," +
     encodeURIComponent(
-      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60">` +
-        `<rect x="0" y="30" width="60" height="30" fill="${bgColor}"/>` +
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${PATTERN_BOX}" height="${PATTERN_BOX}" viewBox="0 0 ${PATTERN_BOX} ${PATTERN_BOX}">` +
+        `<rect x="0" y="${PATTERN_BOX / 2}" width="${PATTERN_BOX}" height="${PATTERN_BOX / 2}" fill="${bgColor}"/>` +
         `</svg>`,
     )
   );
@@ -241,6 +250,14 @@ function buildElements(graph: GraphPayload): cytoscape.ElementDefinition[] {
     ) {
       el.position = { x: node.pos_x, y: node.pos_y };
     }
+    // Orgs are never directly grabbable in cytoscape -- the only drag
+    // handle is the SVG label overlay (see GraphView JSX). Leaving the
+    // body `pannable` means clicking and dragging on the empty galaxy
+    // pans the canvas, which is what the user expects for empty space.
+    if (node.type === "organization") {
+      el.grabbable = false;
+      el.pannable = true;
+    }
     elements.push(el);
   }
 
@@ -287,40 +304,23 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
         "border-width": 0,
         "border-opacity": 0,
         "border-style": "solid",
-        label: "data(label)",
-        "text-valign": "center",
-        "text-halign": "center",
-        "text-margin-y": 0,
-        color: theme.textMuted,
-        "text-opacity": 0.6,
-        "font-size": 30,
-        "font-weight": 600,
+        // Cytoscape's native org label is hidden -- a DOM/SVG overlay
+        // (see GraphView JSX) renders the label instead so it can act
+        // as the *only* drag handle for the org. Empty `label` prevents
+        // hit-testing on the label region too, and `text-opacity: 0`
+        // belt-and-braces hides anything cytoscape might still draw.
+        label: "",
+        "text-opacity": 0,
         "font-family": "Inter, sans-serif",
-        "text-wrap": "wrap",
-        "text-max-width": "240px",
-        // Cytoscape renders compound parents BEFORE their children, so the
-        // centred label sits behind the leaf nodes — like a galaxy's name
-        // labelled across its core, with the brighter "stars" on top.
+        // Cytoscape renders compound parents BEFORE their children, so
+        // the org body sits behind the leaf nodes -- the SVG nebula
+        // overlay carries the visible "galaxy" effect.
         "z-index": 0,
         padding: "12px",
         "min-width": "120px",
         "min-height": "60px",
         "transition-property": "border-opacity, background-opacity",
         "transition-duration": 120,
-      },
-    },
-    // Single-child (or empty) orgs can't host a centred watermark label
-    // without it landing on top of the only leaf node. Float the label
-    // above the galaxy instead, smaller and more solid so it reads as
-    // a caption rather than a watermark.
-    {
-      selector: 'node[type = "organization"][childCount <= 1]',
-      style: {
-        "text-valign": "top",
-        "text-margin-y": -14,
-        "text-opacity": 0.85,
-        "font-size": 18,
-        "font-weight": 600,
       },
     },
     // Leaf nodes. Dimensions, border-width, text-max-width, and text-* are
@@ -396,7 +396,7 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
       style: { "overlay-opacity": 0 },
     },
     // Lifecycle dictionary. Every state from the design proposal
-    // (graph-node-constellation-pip.html) gets a distinct silhouette
+    // (docs/design/graph-node-design.html) gets a distinct silhouette
     // or pattern; type colour stays the encoder of *what* the node is,
     // lifecycle encodes *how it's going*. Order matters in cytoscape
     // -- later rules win on conflicting properties for matching nodes.
@@ -443,6 +443,11 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
         "background-image": halfFillUri,
         "background-fit": "cover",
         "background-image-opacity": 1,
+        "background-width": "100%",
+        "background-height": "100%",
+        "background-position-x": "50%",
+        "background-position-y": "50%",
+        "background-clip": "node",
         "border-width": 1.5,
       },
     },
@@ -453,6 +458,11 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
         "background-image": CHECK_OVERLAY_URI,
         "background-fit": "cover",
         "background-image-opacity": 1,
+        "background-width": "100%",
+        "background-height": "100%",
+        "background-position-x": "50%",
+        "background-position-y": "50%",
+        "background-clip": "node",
       },
     },
     // DOT: implementing (process) -- solid disc + dotted overlay.
@@ -463,6 +473,11 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
         "background-image": DOT_OVERLAY_URI,
         "background-fit": "cover",
         "background-image-opacity": 1,
+        "background-width": "100%",
+        "background-height": "100%",
+        "background-position-x": "50%",
+        "background-position-y": "50%",
+        "background-clip": "node",
       },
     },
     // HATCH: at_risk (process), needs_attention (area) -- diagonal hatch.
@@ -474,6 +489,11 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
         "background-image": HATCH_OVERLAY_URI,
         "background-fit": "cover",
         "background-image-opacity": 1,
+        "background-width": "100%",
+        "background-height": "100%",
+        "background-position-x": "50%",
+        "background-position-y": "50%",
+        "background-clip": "node",
       },
     },
     // STRIKE: broken (process) -- red X over the disc plus red border.
@@ -483,6 +503,11 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
         "background-image": STRIKE_OVERLAY_URI,
         "background-fit": "cover",
         "background-image-opacity": 1,
+        "background-width": "100%",
+        "background-height": "100%",
+        "background-position-x": "50%",
+        "background-position-y": "50%",
+        "background-clip": "node",
         "border-color": "#f87171",
         "border-width": 1.5,
       },
@@ -546,6 +571,13 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
       style: {
         opacity: 0.08,
       },
+    },
+    // Filter-driven hide: nodes/edges removed by org / type / status /
+    // relation filters disappear entirely. Search-driven dimming uses
+    // `dim` / `dim-soft` above so matches stay legible in context.
+    {
+      selector: "node.hidden, edge.hidden",
+      style: { display: "none" },
     },
     {
       selector: "edge.highlight",
@@ -621,6 +653,42 @@ function placeNewNode(
 // fcose has no inter-compound repulsion, so we fix overlaps in a
 // simple iterative pass: for each pair of orgs that overlap, shift
 // them apart along the vector between their centers.
+// Pick a sensible spawn position for a leaf that has just been
+// reparented into the given org. Lands the leaf at the centroid of
+// the org's existing siblings (so it visually joins the cluster) plus
+// a small jitter so it doesn't land on top of another sibling. Falls
+// back to the org's own position when the org has no children yet.
+function placeNodeInOrg(
+  cy: Core,
+  orgId: string,
+): { x: number; y: number } {
+  const org = cy.getElementById(orgId);
+  if (org.length === 0) {
+    const ext = cy.extent();
+    return { x: (ext.x1 + ext.x2) / 2, y: (ext.y1 + ext.y2) / 2 };
+  }
+  const children = org.children();
+  if (children.length === 0) {
+    const p = org.position();
+    return { x: p.x, y: p.y };
+  }
+  let sx = 0;
+  let sy = 0;
+  children.forEach((c) => {
+    const p = c.position();
+    sx += p.x;
+    sy += p.y;
+  });
+  const cx = sx / children.length;
+  const cy0 = sy / children.length;
+  // 80px of jitter is roughly one leaf radius -- enough to avoid
+  // landing on another node, small enough to stay within the cluster.
+  return {
+    x: cx + (Math.random() - 0.5) * 80,
+    y: cy0 + (Math.random() - 0.5) * 80,
+  };
+}
+
 function shiftOrgChildren(org: NodeSingular, dx: number, dy: number): void {
   const children = org.children();
   if (children.length === 0) {
@@ -682,6 +750,50 @@ function expandOrgsToCircleSquares(cy: Core): void {
     const r = Math.max(Math.sqrt(bb.w * bb.w + bb.h * bb.h) / 2 + 4, 56);
     const side = 2 * r;
     n.style({ "min-width": side, "min-height": side });
+  });
+}
+
+// Pull same-type leaf nodes within each org closer to the centroid of
+// their type group. fcose treats every node-pair the same so siblings
+// of one type can end up scattered between siblings of another type;
+// this post-process pass shrinks each type-group towards its own
+// centroid by a fixed fraction (the rest of the spread is preserved
+// so the org doesn't collapse to overlapping points). Only orgs with
+// >=3 children and >=2 distinct types benefit; everything else is a
+// no-op.
+function clusterByTypeWithinOrg(cy: Core): void {
+  // Mild pull: 0.35 was strong enough to overlap labels when fcose
+  // had already packed nodes tightly. 0.18 still produces visible
+  // type-grouping (same-colour discs gravitate towards each other)
+  // without bunching their bboxes into one another.
+  const PULL = 0.18;
+  cy.nodes().forEach((org) => {
+    if (org.data("type") !== "organization") return;
+    const children = org.children();
+    if (children.length < 3) return;
+
+    const byType = new Map<string, NodeSingular[]>();
+    children.forEach((c) => {
+      const t = c.data("type") as string;
+      if (!byType.has(t)) byType.set(t, []);
+      byType.get(t)!.push(c);
+    });
+    if (byType.size < 2) return;
+
+    for (const group of byType.values()) {
+      if (group.length < 2) continue;
+      const cx =
+        group.reduce((s, n) => s + n.position().x, 0) / group.length;
+      const cy0 =
+        group.reduce((s, n) => s + n.position().y, 0) / group.length;
+      group.forEach((n) => {
+        const p = n.position();
+        n.position({
+          x: p.x + (cx - p.x) * PULL,
+          y: p.y + (cy0 - p.y) * PULL,
+        });
+      });
+    }
   });
 }
 
@@ -752,10 +864,15 @@ function applyInitialLayout(
       padding: 80,
     } as cytoscape.LayoutOptions);
     layout.run();
+    // Persisted positions are authoritative on reload. Resize the
+    // compound parent's bbox to circumscribe its children (style-only,
+    // doesn't move anything) so click-targets and the nebula radius
+    // are sensible. Do NOT run separateOverlappingOrgs here -- that
+    // would shift saved positions on every reload and undo the user's
+    // manual placements. Skipping saveAll() too: nothing changed, no
+    // POST needed.
     expandOrgsToCircleSquares(cy);
-    separateOverlappingOrgs(cy);
     cy.fit(undefined, 80);
-    saveAll();
     return;
   }
 
@@ -777,17 +894,25 @@ function applyInitialLayout(
     fit: true,
     padding: 80,
     nodeDimensionsIncludeLabels: true,
-    nodeRepulsion: 14000,
-    idealEdgeLength: 110,
-    edgeElasticity: 0.2,
+    nodeRepulsion: 45000,
+    // Per-edge ideal length: structural edges (belongs_to/applies/
+    // informed_by) get a shorter target, so structurally-tied nodes
+    // visibly cluster; informational edges (related_to) get a longer
+    // target so they don't drag everything together. fcose accepts a
+    // function returning the desired length per edge.
+    idealEdgeLength: (edge: EdgeSingular) =>
+      edge.data("structural") === "1" ? 150 : 240,
+    // Spring stiffness. fcose default is 0.45; we boost it so edges
+    // visibly compete with the high node-repulsion force.
+    edgeElasticity: 0.65,
     gravity: 0.22,
     gravityRangeCompound: 1.4,
     gravityCompound: 1.0,
     nestingFactor: 0.15,
     numIter: 4500,
     tile: true,
-    tilingPaddingVertical: 80,
-    tilingPaddingHorizontal: 80,
+    tilingPaddingVertical: 140,
+    tilingPaddingHorizontal: 140,
     packComponents: true,
     randomize: !hasAnchors,
     quality: hasAnchors ? "proof" : "default",
@@ -800,6 +925,7 @@ function applyInitialLayout(
   (layout as unknown as { one: (event: string, cb: () => void) => void }).one(
     "layoutstop",
     () => {
+      clusterByTypeWithinOrg(cy);
       expandOrgsToCircleSquares(cy);
       separateOverlappingOrgs(cy);
       cy.fit(undefined, 80);
@@ -859,6 +985,33 @@ export default function GraphView({
   // gradients can reference it without recomputing the hash mid-render.
   const [orgCircles, setOrgCircles] = useState<
     Array<{ id: string; cx: number; cy: number; r: number; color: string }>
+  >([]);
+
+  // Canonical org position in cytoscape WORLD coords. The org's
+  // visible nebula and label render at this anchor instead of the
+  // compound parent's bbox centre, so that dragging a leaf node
+  // inside the org doesn't drag the cluster's identity along with
+  // it. Lazily initialised on first sight of an org. Updated only
+  // when the user drags the org's label or runs Auto-rozložení.
+  const orgAnchorsRef = useRef<Map<string, { x: number; y: number }>>(
+    new Map(),
+  );
+
+  // Org labels rendered as a DOM overlay -- this is the *only* drag
+  // handle for an org. Cytoscape's native compound parent label is
+  // hidden in the stylesheet so it cannot be tap-tested or grabbed.
+  // Multi-child orgs get a centred watermark; single-child orgs get
+  // a smaller caption above the galaxy so it doesn't sit on top of
+  // the lone leaf node.
+  const [orgLabels, setOrgLabels] = useState<
+    Array<{
+      id: string;
+      cx: number;
+      cy: number;
+      label: string;
+      childCount: number;
+      hidden: boolean;
+    }>
   >([]);
 
   // Owner pips. One per leaf node that has an assigned owner. Synced to
@@ -999,18 +1152,59 @@ export default function GraphView({
     // emit a circumscribing circle: r = half the bbox diagonal so the
     // circle visually contains every child the compound parent contains.
     const updateOrgCircles = () => {
-      const next = cy.nodes('[type = "organization"]').map((n) => {
-        const bb = n.renderedBoundingBox({ includeLabels: false });
+      const orgs = cy.nodes('[type = "organization"]');
+      const pan = cy.pan();
+      const zoom = cy.zoom();
+      const circles = orgs.map((n) => {
         const id = n.id();
+        // Lazy-init the anchor on first sight from the current world
+        // bbox centre. Subsequent leaf drags don't update the anchor,
+        // so the visible cluster identity stays put even as children
+        // shift around inside it.
+        if (!orgAnchorsRef.current.has(id)) {
+          const wbb = n.boundingBox({ includeLabels: false });
+          orgAnchorsRef.current.set(id, {
+            x: (wbb.x1 + wbb.x2) / 2,
+            y: (wbb.y1 + wbb.y2) / 2,
+          });
+        }
+        const anchor = orgAnchorsRef.current.get(id)!;
+        const rbb = n.renderedBoundingBox({ includeLabels: false });
         return {
           id,
-          cx: (bb.x1 + bb.x2) / 2,
-          cy: (bb.y1 + bb.y2) / 2,
-          r: Math.min(bb.w, bb.h) / 2,
+          cx: anchor.x * zoom + pan.x,
+          cy: anchor.y * zoom + pan.y,
+          // Radius still tracks the children's rendered bbox so a
+          // disconnected leaf gets visually nudged out of the nebula
+          // when dragged far away, instead of being silently included.
+          r: Math.min(rbb.w, rbb.h) / 2,
           color: colorForOrg(id),
         };
       });
-      setOrgCircles(next);
+      setOrgCircles(circles);
+      const labels = orgs.map((n) => {
+        const id = n.id();
+        const anchor = orgAnchorsRef.current.get(id) ?? { x: 0, y: 0 };
+        const childCount = n.children().length;
+        const screenCx = anchor.x * zoom + pan.x;
+        const screenCy = anchor.y * zoom + pan.y;
+        // Single-child orgs float their label above the galaxy so it
+        // doesn't land on top of the only leaf. Multi-child orgs carry
+        // a centred watermark across the galaxy core (anchor centre).
+        const cy0 =
+          childCount <= 1
+            ? n.renderedBoundingBox({ includeLabels: false }).y1 - 14
+            : screenCy;
+        return {
+          id,
+          cx: screenCx,
+          cy: cy0,
+          label: (n.data("label") as string) ?? "",
+          childCount,
+          hidden: n.hasClass("hidden") || n.hasClass("dim"),
+        };
+      });
+      setOrgLabels(labels);
     };
 
     // Only render pips when the rendered disc is big enough to host
@@ -1170,9 +1364,21 @@ export default function GraphView({
           // loop reaches them.
           const newParent = (el.data as Record<string, unknown>).parent;
           if (existing.data("parent") !== newParent) {
-            const pos = existing.position();
+            // Reparenting also relocates: keeping the old position
+            // would leave the node visually orphaned far from its
+            // new org cluster. Land it at the new org's child
+            // centroid (with jitter) so it visibly joins the cluster.
+            // When moving OUT of an org (new parent is undefined),
+            // fall back to the leaf's old position.
+            let pos: { x: number; y: number };
+            if (typeof newParent === "string" && newParent.length > 0) {
+              pos = placeNodeInOrg(cy, newParent);
+            } else {
+              pos = existing.position();
+            }
             existing.remove();
             cy.add({ ...el, position: pos });
+            queuePositionSave(id, pos.x, pos.y);
             continue;
           }
           // Node is already in the graph. Update its mutable data
@@ -1251,21 +1457,23 @@ export default function GraphView({
     }
 
     cy.batch(() => {
-      cy.nodes().removeClass("dim dim-soft");
-      cy.edges().removeClass("dim dim-soft");
+      cy.nodes().removeClass("dim dim-soft hidden");
+      cy.edges().removeClass("dim dim-soft hidden");
 
-      // Organization filter: dim the compound parent and every child
-      // inside it, plus all edges connected to those children.
+      // Filter-driven hide: org / type / status / relation filters
+      // remove items from view entirely. Search-driven dimming below
+      // uses the soft `dim` / `dim-soft` classes so matches stay
+      // legible in their context.
       if (hasOrgFilter) {
         cy.nodes().forEach((n: NodeSingular) => {
           if (
             n.data("type") === "organization" &&
             disabledOrgs.has(n.id())
           ) {
-            n.addClass("dim");
+            n.addClass("hidden");
             n.descendants().forEach((child: NodeSingular) => {
-              child.addClass("dim");
-              child.connectedEdges().addClass("dim");
+              child.addClass("hidden");
+              child.connectedEdges().addClass("hidden");
             });
           }
         });
@@ -1277,7 +1485,7 @@ export default function GraphView({
         const neighborEdgeSet = neighborEdges;
 
         cy.nodes().forEach((n: NodeSingular) => {
-          if (n.hasClass("dim")) return;
+          if (n.hasClass("hidden")) return;
           if (n.data("type") === "organization") {
             // Org is visible if any of its children are match or neighbour.
             const anyVisibleChild = n
@@ -1295,7 +1503,7 @@ export default function GraphView({
         });
 
         cy.edges().forEach((e: EdgeSingular) => {
-          if (e.hasClass("dim")) return;
+          if (e.hasClass("hidden")) return;
           const srcMatch = matchSet.contains(e.source());
           const tgtMatch = matchSet.contains(e.target());
           if (srcMatch && tgtMatch) return;
@@ -1310,38 +1518,38 @@ export default function GraphView({
       if (hasRelFilter) {
         cy.edges().forEach((e: EdgeSingular) => {
           if (disabledRelations.has(e.data("relation") as string)) {
-            e.removeClass("dim-soft");
-            e.addClass("dim");
+            e.removeClass("dim-soft dim");
+            e.addClass("hidden");
           }
         });
       }
 
-      // Node type filter: dim nodes of any disabled type and every edge
-      // touching them. Works orthogonally to the org/query filters.
+      // Node type filter: hide nodes of any disabled type and every
+      // edge touching them. Works orthogonally to the org/query filters.
       if (hasTypeFilter) {
         cy.nodes().forEach((n: NodeSingular) => {
           if (disabledTypes.has(n.data("type") as string)) {
-            n.removeClass("dim-soft");
-            n.addClass("dim");
+            n.removeClass("dim-soft dim");
+            n.addClass("hidden");
             n.connectedEdges().forEach((e: EdgeSingular) => {
-              e.removeClass("dim-soft");
-              e.addClass("dim");
+              e.removeClass("dim-soft dim");
+              e.addClass("hidden");
             });
           }
         });
       }
 
-      // Status filter: dim nodes whose current status is toggled off
-      // (typically: archived, optionally completed). Edges touching a
-      // filtered node also dim so the graph doesn't show dangling lines.
+      // Status filter: hide nodes whose current status is toggled off
+      // (archived by default). Edges touching a filtered node also
+      // hide so the graph doesn't leave dangling lines.
       if (hasStatusFilter) {
         cy.nodes().forEach((n: NodeSingular) => {
           if (disabledStatuses.has(n.data("status") as string)) {
-            n.removeClass("dim-soft");
-            n.addClass("dim");
+            n.removeClass("dim-soft dim");
+            n.addClass("hidden");
             n.connectedEdges().forEach((e: EdgeSingular) => {
-              e.removeClass("dim-soft");
-              e.addClass("dim");
+              e.removeClass("dim-soft dim");
+              e.addClass("hidden");
             });
           }
         });
@@ -1450,6 +1658,79 @@ export default function GraphView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
+  // The org label is the *only* drag handle for an organization. A
+  // tiny mouse movement (< 4px) before mouseup is treated as a click
+  // (selects the org); anything larger is a drag that shifts every
+  // child of the org by the cursor delta. Position persistence runs
+  // once on mouseup so we don't spam /positions during the drag.
+  const handleOrgLabelMouseDown = useCallback(
+    (e: React.MouseEvent, orgId: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const cy = cyRef.current;
+      if (!cy) return;
+      const org = cy.getElementById(orgId);
+      if (org.length === 0) return;
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let lastX = startX;
+      let lastY = startY;
+      let dragged = false;
+      const zoom = cy.zoom();
+
+      const onMove = (ev: MouseEvent) => {
+        if (!dragged) {
+          const dist = Math.hypot(ev.clientX - startX, ev.clientY - startY);
+          if (dist < 4) return;
+          dragged = true;
+        }
+        const dx = (ev.clientX - lastX) / zoom;
+        const dy = (ev.clientY - lastY) / zoom;
+        lastX = ev.clientX;
+        lastY = ev.clientY;
+        const children = org.children();
+        if (children.length > 0) {
+          children.forEach((c) => {
+            c.shift({ x: dx, y: dy });
+          });
+        } else {
+          org.shift({ x: dx, y: dy });
+        }
+        // Label drags carry the anchor along with the cluster; leaf
+        // drags don't touch this Map, which is why the nebula stays
+        // visually anchored when a single child is moved.
+        const anchor = orgAnchorsRef.current.get(orgId);
+        if (anchor) {
+          anchor.x += dx;
+          anchor.y += dy;
+        }
+      };
+
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        if (dragged) {
+          expandOrgsToCircleSquares(cy);
+          org.descendants().forEach((c) => {
+            const p = c.position();
+            queuePositionSave(c.id(), p.x, p.y);
+          });
+          if (org.children().length === 0) {
+            const p = org.position();
+            queuePositionSave(org.id(), p.x, p.y);
+          }
+        } else {
+          onSelect(orgId);
+        }
+      };
+
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [onSelect, queuePositionSave],
+  );
+
   // Re-run fcose from scratch, clearing all saved positions. Useful when
   // the graph looks cluttered or orgs overlap after incremental edits.
   const handleAutoLayout = useCallback(() => {
@@ -1463,26 +1744,87 @@ export default function GraphView({
       fit: true,
       padding: 80,
       nodeDimensionsIncludeLabels: true,
-      nodeRepulsion: 14000,
-      idealEdgeLength: 110,
-      edgeElasticity: 0.2,
+      nodeRepulsion: 45000,
+      // Per-edge ideal length: structural edges (belongs_to, applies,
+      // informed_by) pull tighter so structurally-tied nodes visibly
+      // cluster; informational related_to edges get a longer target
+      // so they don't drag everything together.
+      idealEdgeLength: (edge: EdgeSingular) =>
+        edge.data("structural") === "1" ? 150 : 240,
+      // fcose default elasticity is 0.45; we go higher so edges
+      // visibly compete with the strong node-repulsion force.
+      edgeElasticity: 0.65,
       gravity: 0.22,
       gravityRangeCompound: 1.4,
       gravityCompound: 1.0,
       nestingFactor: 0.15,
       numIter: 4500,
       tile: true,
-      tilingPaddingVertical: 80,
-      tilingPaddingHorizontal: 80,
+      tilingPaddingVertical: 140,
+      tilingPaddingHorizontal: 140,
       packComponents: true,
+      // Manual org placements are sticky: snapshot below preserves
+      // each org's pre-layout centre, so fcose can re-tile leaves
+      // *within* the cluster without dragging the cluster itself
+      // away from where the user dropped it.
       randomize: true,
+      // Slower but more thorough optimisation when the user
+      // explicitly clicks Auto-rozložení.
+      quality: "proof",
     } as unknown as cytoscape.LayoutOptions);
+
+    // Snapshot every org's canonical anchor (the visible cluster
+    // identity) BEFORE running fcose. The post-layout restore aligns
+    // each org's bounding-box centre with this anchor, which has two
+    // effects: (a) the user-arranged top-level constellation survives
+    // the auto-layout, only the leaves re-tile; and (b) any drift
+    // accumulated from individual leaf drags (which never moved the
+    // anchor) is reset, snapping the cluster back under its nebula.
+    const orgCenters = new Map<string, { x: number; y: number }>();
+    cy.nodes().forEach((n) => {
+      if (n.data("type") !== "organization") return;
+      const anchor = orgAnchorsRef.current.get(n.id());
+      if (anchor) {
+        orgCenters.set(n.id(), { x: anchor.x, y: anchor.y });
+      } else {
+        const bb = n.boundingBox({ includeLabels: false });
+        orgCenters.set(n.id(), {
+          x: (bb.x1 + bb.x2) / 2,
+          y: (bb.y1 + bb.y2) / 2,
+        });
+      }
+    });
 
     (layout as unknown as { one: (e: string, cb: () => void) => void }).one(
       "layoutstop",
       () => {
+        clusterByTypeWithinOrg(cy);
+        // Restore each org's centre to its pre-layout position by
+        // translating all of its children by the (saved - current)
+        // delta. Empty orgs (no children) shift the parent itself.
+        cy.nodes().forEach((n) => {
+          if (n.data("type") !== "organization") return;
+          const saved = orgCenters.get(n.id());
+          if (!saved) return;
+          const bb = n.boundingBox({ includeLabels: false });
+          const cx = (bb.x1 + bb.x2) / 2;
+          const cy0 = (bb.y1 + bb.y2) / 2;
+          const dx = saved.x - cx;
+          const dy = saved.y - cy0;
+          if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+          const children = n.children();
+          if (children.length > 0) {
+            children.forEach((c) => {
+              c.shift({ x: dx, y: dy });
+            });
+          } else {
+            n.shift({ x: dx, y: dy });
+          }
+        });
         expandOrgsToCircleSquares(cy);
-        separateOverlappingOrgs(cy);
+        // Skip separateOverlappingOrgs here: the user's manual org
+        // placements are authoritative now. If they dropped two orgs
+        // close together, that was deliberate.
         cy.fit(undefined, 80);
         cy.nodes().forEach((n) => {
           const p = n.position();
@@ -1633,6 +1975,46 @@ export default function GraphView({
         })}
       </svg>
       <div ref={containerRef} className="relative z-10 h-full w-full" />
+      {/* Org label overlay -- the single drag handle for an org. The
+          layer itself is pointer-events:none so clicks fall through
+          to the cytoscape canvas everywhere except the label box,
+          which re-enables pointer-events:auto so mousedown lands on
+          our React handler. Synced to cytoscape's render loop. */}
+      <svg
+        className="pointer-events-none absolute inset-0 z-20 h-full w-full"
+      >
+        {orgLabels.map((l) => {
+          if (l.hidden) return null;
+          const fontSize = l.childCount <= 1 ? 18 : 30;
+          const opacity = l.childCount <= 1 ? 0.85 : 0.6;
+          return (
+            <g
+              key={`org-label-${l.id}`}
+              transform={`translate(${l.cx} ${l.cy})`}
+              style={{
+                cursor: "move",
+                pointerEvents: "auto",
+                userSelect: "none",
+              }}
+              onMouseDown={(e) => handleOrgLabelMouseDown(e, l.id)}
+            >
+              <text
+                x={0}
+                y={0}
+                textAnchor="middle"
+                dominantBaseline="central"
+                fontFamily="Inter, sans-serif"
+                fontSize={fontSize}
+                fontWeight={600}
+                fill={THEMES[theme].textMuted}
+                opacity={opacity}
+              >
+                {l.label}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
       {/* Owner pips. SVG overlay above cytoscape so the chips appear
           on top of every node disc. Pointer-events disabled so taps
           continue to land on the underlying cytoscape node. Synced
