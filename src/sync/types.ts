@@ -18,6 +18,11 @@ export interface FileAdapter {
   delete(path: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
   url(path: string): Promise<string>;
+  // Browser-openable URL for a *folder* path (not a file). Returns null if
+  // the folder doesn't exist yet on the remote (e.g. node has no synced
+  // files). Optional: backends without a meaningful web URL (s3, sftp, fs)
+  // should omit it.
+  folderUrl?(path: string): Promise<string | null>;
   export?(pathOrId: string, format: "pdf" | "markdown" | "docx"): Promise<Buffer>;
   // Idempotently create a directory (and its ancestors) on the backend.
   // Optional because not every backend has a meaningful concept of empty

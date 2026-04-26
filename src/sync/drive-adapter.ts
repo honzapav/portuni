@@ -255,6 +255,14 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
       return `https://drive.google.com/file/d/${id}/view`;
     },
 
+    async folderUrl(path) {
+      // Lookup-only: do NOT create the folder if it doesn't exist yet
+      // (the UI just wants to link to it if it's there).
+      const id = await resolvePathToFileId(path);
+      if (!id) return null;
+      return `https://drive.google.com/drive/folders/${id}`;
+    },
+
     async export(pathOrId, format) {
       const looksLikeId = /^[A-Za-z0-9_-]{20,}$/.test(pathOrId);
       const id = looksLikeId ? pathOrId : await resolvePathToFileId(pathOrId);
