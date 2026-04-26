@@ -74,6 +74,21 @@ describe("updateResponsibility and deleteResponsibility", () => {
     assert.equal(updated.title, "New");
   });
 
+  it("clears description when null is passed", async () => {
+    const { db, projectId } = await freshEnv();
+    const r = await createResponsibility(db, "U1", {
+      node_id: projectId,
+      title: "X",
+      description: "old detail",
+    });
+    assert.equal(r.description, "old detail");
+    const updated = await updateResponsibility(db, "U1", {
+      responsibility_id: r.id,
+      description: null,
+    });
+    assert.equal(updated.description, null);
+  });
+
   it("deletes and cascades assignments", async () => {
     const { db, projectId } = await freshEnv();
     const eva = await createActor(db, "U1", { type: "person", name: "Eva", user_id: "U1" });

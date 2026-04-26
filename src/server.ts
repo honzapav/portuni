@@ -6,7 +6,11 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { ensureSchema } from "./schema.js";
 import { registerNodeTools } from "./tools/nodes.js";
 import { registerGetNodeTool } from "./tools/get-node.js";
-import { registerEdgeTools } from "./tools/edges.js";
+import {
+  registerEdgeTools,
+  moveNodeToOrganization,
+  disconnectEdgeById,
+} from "./tools/edges.js";
 import { registerContextTools } from "./tools/context.js";
 import { registerMirrorTools } from "./tools/mirrors.js";
 import { registerFileTools } from "./tools/files.js";
@@ -41,6 +45,8 @@ import { listUserMirrors, unregisterMirror } from "./sync/mirror-registry.js";
 import { getLocalMirror } from "./sync/local-db.js";
 import { deriveLocalPath, buildNodeRoot } from "./sync/remote-path.js";
 import { statusScan, storeFile, pullFile } from "./sync/engine.js";
+import { resolveRemote } from "./sync/routing.js";
+import { getAdapter } from "./sync/adapter-cache.js";
 
 import { getDb } from "./db.js";
 import { SOLO_USER, NODE_TYPES, NODE_VISIBILITIES, EDGE_RELATIONS, EVENT_TYPES } from "./schema.js";
@@ -123,10 +129,16 @@ async function loadGraph(): Promise<GraphPayload> {
   // Return all nodes regardless of status. The frontend filters by
   // completed/archived on the client so toggles are instantaneous and
   // completed work stays visible by default.
+  // LEFT JOIN actors so we can render the owner pip on the graph
+  // without an extra round-trip per node.
   const nodesRes = await db.execute({
-    sql: `SELECT id, type, name, description, status, lifecycle_state, pos_x, pos_y
-          FROM nodes
-          ORDER BY type, name`,
+    sql: `SELECT n.id, n.type, n.name, n.description, n.status,
+                 n.lifecycle_state, n.pos_x, n.pos_y,
+                 a.id   AS owner_id,
+                 a.name AS owner_name
+          FROM nodes n
+          LEFT JOIN actors a ON a.id = n.owner_id
+          ORDER BY n.type, n.name`,
   });
 
   const edgesRes = await db.execute({
@@ -142,6 +154,13 @@ async function loadGraph(): Promise<GraphPayload> {
       description: (row.description as string | null) ?? null,
       status: row.status as string,
       lifecycle_state: (row.lifecycle_state as string | null) ?? null,
+      owner:
+        row.owner_id != null
+          ? {
+              id: row.owner_id as string,
+              name: row.owner_name as string,
+            }
+          : null,
       pos_x: row.pos_x as number | null,
       pos_y: row.pos_y as number | null,
     })),
@@ -622,6 +641,19 @@ function respondError(
   if (err instanceof Error && err.name === "ZodError") {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: err.message, request_id: id }));
+    return;
+  }
+  // SQLite trigger / check constraint violations carry a human-readable
+  // message inside the LibsqlError text (we use RAISE(ABORT, '...') in
+  // schema.ts for every domain invariant). Surface it as a 409 so the UI
+  // can show the actual reason instead of an opaque 500. Without this,
+  // legitimate domain errors like "cannot remove last belongs_to ->
+  // organization edge" look like server bugs to the user.
+  if (err instanceof Error && err.message.includes("SQLITE_CONSTRAINT")) {
+    const m = err.message.match(/SQLite error:\s*([^\n]+)/);
+    const friendly = m ? m[1].trim() : "constraint violation";
+    res.writeHead(409, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: friendly, request_id: id }));
     return;
   }
   res.writeHead(500, { "Content-Type": "application/json" });
@@ -1291,6 +1323,80 @@ async function main() {
       return;
     }
 
+    // Browser-openable URL of the node's folder on its routed remote.
+    // Returns { url, remote_name } when the routed adapter exposes
+    // folderUrl AND the folder already exists on the remote; { url: null }
+    // otherwise (no remote routed, backend can't produce a web URL, or
+    // node has never been synced so the folder isn't there yet).
+    const folderUrlMatch = url.pathname.match(/^\/nodes\/([^/]+)\/folder-url$/);
+    if (folderUrlMatch && req.method === "GET") {
+      const nodeId = decodeURIComponent(folderUrlMatch[1]);
+      try {
+        const db = getDb();
+        const nodeRow = await db.execute({
+          sql: "SELECT id, type, sync_key FROM nodes WHERE id = ?",
+          args: [nodeId],
+        });
+        if (nodeRow.rows.length === 0) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "node not found" }));
+          return;
+        }
+        const n = nodeRow.rows[0];
+        const nodeType = n.type as string;
+        const nodeSyncKey = n.sync_key as string;
+        let orgSyncKey: string | null = null;
+        if (nodeType !== "organization") {
+          const orgRow = await db.execute({
+            sql: `SELECT o.sync_key FROM edges e
+                  JOIN nodes o ON o.id = e.target_id
+                  WHERE e.source_id = ? AND e.relation = 'belongs_to'
+                  LIMIT 1`,
+            args: [nodeId],
+          });
+          if (orgRow.rows.length === 0) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ url: null, reason: "no organization" }));
+            return;
+          }
+          orgSyncKey = orgRow.rows[0].sync_key as string;
+        } else {
+          orgSyncKey = nodeSyncKey;
+        }
+        const remoteName = await resolveRemote(db, nodeType, orgSyncKey);
+        if (!remoteName) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ url: null, reason: "no remote routed" }));
+          return;
+        }
+        const adapter = await getAdapter(db, remoteName);
+        if (!adapter.folderUrl) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            url: null,
+            remote_name: remoteName,
+            reason: "remote backend has no web URL",
+          }));
+          return;
+        }
+        const folderPath = buildNodeRoot({
+          orgSyncKey: nodeType === "organization" ? null : orgSyncKey,
+          nodeType,
+          nodeSyncKey,
+        });
+        const folderUrl = await adapter.folderUrl(folderPath);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          url: folderUrl,
+          remote_name: remoteName,
+          ...(folderUrl === null ? { reason: "folder not synced yet" } : {}),
+        }));
+      } catch (err) {
+        respondError(res, `${req.method} ${url.pathname}`, err);
+      }
+      return;
+    }
+
     // Per-node sync trigger. Re-runs statusScan and acts on it: push
     // candidates are uploaded via storeFile, pull candidates downloaded
     // via pullFile. Conflicts are surfaced but never auto-resolved --
@@ -1471,6 +1577,48 @@ async function main() {
         }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(node));
+      } catch (err) {
+        respondError(res, `${req.method} ${url.pathname}`, err);
+      }
+      return;
+    }
+
+    // Move a node to a different organization. Atomic rebind of the
+    // existing belongs_to -> organization edge -- see
+    // moveNodeToOrganization() for why neither disconnect+connect nor
+    // connect+disconnect can satisfy the org-invariant triggers, and why
+    // an in-place UPDATE legally bypasses both.
+    if (
+      url.pathname.startsWith("/nodes/") &&
+      url.pathname.endsWith("/move") &&
+      req.method === "POST"
+    ) {
+      const nodeId = decodeURIComponent(
+        url.pathname.slice("/nodes/".length, url.pathname.length - "/move".length),
+      );
+      try {
+        const body = (await parseBody(req)) as
+          | { new_org_id?: string }
+          | undefined;
+        if (!body?.new_org_id || typeof body.new_org_id !== "string") {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "new_org_id required" }));
+          return;
+        }
+        const result = await moveNodeToOrganization(
+          getDb(),
+          SOLO_USER,
+          nodeId,
+          body.new_org_id,
+        );
+        const node = await loadNodeDetail(nodeId);
+        if (!node) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "node not found" }));
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ...result, node }));
       } catch (err) {
         respondError(res, `${req.method} ${url.pathname}`, err);
       }
@@ -1690,24 +1838,28 @@ async function main() {
       return;
     }
 
-    // Delete an edge by ID.
+    // Delete an edge by ID. Routes through the tool layer so the
+    // org-invariant precheck runs before SQLite's trigger; callers get
+    // a 404 for missing, 409 for invariant violations, and a clean
+    // success otherwise.
     if (url.pathname.startsWith("/edges/") && req.method === "DELETE") {
       const edgeId = decodeURIComponent(url.pathname.slice("/edges/".length));
       try {
-        const db = getDb();
-        const result = await db.execute({
-          sql: "DELETE FROM edges WHERE id = ?",
-          args: [edgeId],
-        });
-        if (result.rowsAffected === 0) {
+        const result = await disconnectEdgeById(getDb(), SOLO_USER, edgeId);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        const code = (err as Error & { code?: string }).code;
+        if (code === "EDGE_NOT_FOUND") {
           res.writeHead(404, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "edge not found" }));
+          res.end(JSON.stringify({ error: (err as Error).message }));
           return;
         }
-        await logAudit(SOLO_USER, "disconnect", "edge", edgeId, {});
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ deleted: edgeId }));
-      } catch (err) {
+        if (code === "ORG_INVARIANT") {
+          res.writeHead(409, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: (err as Error).message }));
+          return;
+        }
         respondError(res, `${req.method} ${url.pathname}`, err);
       }
       return;

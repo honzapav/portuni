@@ -61,6 +61,25 @@ export async function fetchNodeSyncStatus(
   return res.json();
 }
 
+// Browser-openable folder URL for a node on its routed remote. Returns
+// { url: null, ... } when the node has no remote, the backend doesn't
+// support web URLs (s3, sftp, ...), or the folder hasn't been synced yet.
+export type FolderUrlResponse = {
+  url: string | null;
+  remote_name?: string;
+  reason?: string;
+};
+
+export async function fetchNodeFolderUrl(
+  id: string,
+): Promise<FolderUrlResponse> {
+  const res = await fetch(
+    `${BASE}/nodes/${encodeURIComponent(id)}/folder-url`,
+  );
+  if (!res.ok) throw new Error(`folder-url: ${res.status}`);
+  return res.json();
+}
+
 export async function runNodeSync(id: string): Promise<SyncRunResponse> {
   return jsonRequest<SyncRunResponse>(
     "POST",
@@ -116,6 +135,19 @@ export function archiveNode(id: string): Promise<{ archived: string }> {
     "DELETE",
     `/nodes/${encodeURIComponent(id)}`,
   );
+}
+
+// Move a non-organization node to a different organization. Atomic
+// rebind of the belongs_to edge -- see moveNodeToOrganization() in
+// src/tools/edges.ts for why disconnect+connect cannot satisfy the
+// org-invariant triggers and why an UPDATE legally bypasses both.
+export function moveNode(
+  id: string,
+  newOrgId: string,
+): Promise<{ moved: boolean; from_org_id: string; to_org_id: string; node: NodeDetail }> {
+  return jsonRequest("POST", `/nodes/${encodeURIComponent(id)}/move`, {
+    new_org_id: newOrgId,
+  });
 }
 
 export function createEdge(input: {

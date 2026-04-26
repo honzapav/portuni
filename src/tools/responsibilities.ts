@@ -37,7 +37,7 @@ type CreateResponsibilityInput = z.infer<typeof CreateResponsibilityInput>;
 const UpdateResponsibilityInput = z.object({
   responsibility_id: z.string().describe("Responsibility ID (ULID) to update."),
   title: z.string().optional().describe("New title."),
-  description: z.string().optional().describe("New description."),
+  description: z.union([z.string(), z.null()]).optional().describe("New description. Pass null to clear."),
   sort_order: z.number().int().optional().describe("New sort order."),
 });
 type UpdateResponsibilityInput = z.infer<typeof UpdateResponsibilityInput>;
@@ -341,7 +341,7 @@ export function registerResponsibilityTools(server: McpServer): void {
     {
       responsibility_id: z.string().describe("Responsibility ID (ULID)."),
       title: z.string().optional().describe("New title."),
-      description: z.string().optional().describe("New description."),
+      description: z.union([z.string(), z.null()]).optional().describe("New description. Pass null to clear."),
       sort_order: z.number().int().optional().describe("New sort order."),
     },
     async (args) => {

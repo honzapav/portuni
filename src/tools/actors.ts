@@ -33,7 +33,7 @@ const UpdateActorInput = z.object({
   name: z.string().optional().describe("New display name."),
   is_placeholder: z.boolean().optional().describe("Person-only. Flip between real person and placeholder role."),
   user_id: z.union([z.string(), z.null()]).optional().describe("Person-only. Link/unlink a users.id row."),
-  notes: z.string().optional().describe("New internal notes."),
+  notes: z.union([z.string(), z.null()]).optional().describe("New internal notes. Pass null to clear."),
   external_id: z.string().optional().describe("New external id."),
 });
 type UpdateActorInput = z.infer<typeof UpdateActorInput>;
@@ -317,7 +317,7 @@ export function registerActorTools(server: McpServer): void {
       name: z.string().optional().describe("New display name."),
       is_placeholder: z.boolean().optional().describe("Person-only. Flip between real person and placeholder role."),
       user_id: z.union([z.string(), z.null()]).optional().describe("Person-only. Link or unlink a users.id row."),
-      notes: z.string().optional().describe("New internal notes."),
+      notes: z.union([z.string(), z.null()]).optional().describe("New internal notes. Pass null to clear."),
       external_id: z.string().optional().describe("New external id."),
     },
     async (args) => {

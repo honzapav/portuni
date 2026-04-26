@@ -21,6 +21,9 @@ import {
   ChevronDown,
   ChevronRight,
   RefreshCw,
+  Building2,
+  Info,
+  ExternalLink,
 } from "lucide-react";
 import type {
   NodeDetail,
@@ -48,6 +51,7 @@ import type { Actor } from "../api";
 import {
   updateNode,
   archiveNode,
+  moveNode,
   createEdge,
   deleteEdge,
   createEvent,
@@ -67,6 +71,7 @@ import {
   removeTool,
   fetchNodeSyncStatus,
   runNodeSync,
+  fetchNodeFolderUrl,
 } from "../api";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
@@ -466,6 +471,8 @@ function DetailPaneBody({
         )}
         <div className="flex items-center gap-3 min-w-0">
           <IdCopy id={node.id} />
+          <MetaInfo meta={node.meta} />
+          <FolderLink nodeId={node.id} />
           {node.local_mirror && (
             <>
               <span className="text-[var(--color-border-strong)]">·</span>
@@ -529,6 +536,20 @@ function DetailPaneBody({
             onError={setErrorMsg}
           />
         </Section>
+
+        {/* Organization (Organizace) — every non-organization node belongs
+            to exactly one organization. Picker rebinds the membership
+            atomically via POST /nodes/:id/move. */}
+        {node.type !== "organization" && (
+          <Section title="Organizace">
+            <OrganizationPicker
+              node={node}
+              graph={graph}
+              onMutate={onMutate}
+              onError={setErrorMsg}
+            />
+          </Section>
+        )}
 
         {/* Goal (Účel) — editable, only for project/process/area */}
         {(node.type === "project" ||
@@ -1554,6 +1575,117 @@ function EditableGoal({
           Zrušit
         </button>
       </div>
+    </div>
+  );
+}
+
+// Organization picker for a non-organization node. Reads the current
+// organization from node.edges (the outgoing belongs_to -> organization
+// edge), lists all organizations from the loaded graph, and POSTs to
+// /nodes/:id/move on selection. The endpoint atomically rebinds the
+// existing belongs_to edge -- see moveNodeToOrganization() for why
+// disconnect+connect cannot satisfy the org-invariant triggers.
+function OrganizationPicker({
+  node,
+  graph,
+  onMutate,
+  onError,
+}: {
+  node: NodeDetail;
+  graph: GraphPayload | null;
+  onMutate: () => Promise<void>;
+  onError: (msg: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const currentOrgEdge = node.edges.find(
+    (e) =>
+      e.relation === "belongs_to" &&
+      e.direction === "outgoing" &&
+      e.peer_type === "organization",
+  );
+  const orgs = (graph?.nodes ?? [])
+    .filter((n) => n.type === "organization")
+    .sort((a, b) => a.name.localeCompare(b.name, "cs"));
+
+  const pick = async (orgId: string) => {
+    setOpen(false);
+    if (orgId === currentOrgEdge?.peer_id) return;
+    setSaving(true);
+    onError(null);
+    try {
+      await moveNode(node.id, orgId);
+      await onMutate();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        disabled={saving || orgs.length === 0}
+        className="flex w-full items-center gap-2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-left text-[11.5px] transition-colors hover:border-[var(--color-border-strong)] disabled:opacity-50"
+      >
+        {currentOrgEdge ? (
+          <span className="flex flex-1 items-center gap-1.5 truncate text-[var(--color-text)]">
+            <Building2 size={12} className="shrink-0 text-[var(--color-text-dim)]" />
+            <span className="truncate">{currentOrgEdge.peer_name}</span>
+          </span>
+        ) : (
+          <span className="flex-1 text-[var(--color-text-dim)]">
+            — Bez organizace —
+          </span>
+        )}
+        <Pencil size={11} className="shrink-0 text-[var(--color-text-dim)]" />
+      </button>
+      {open && (
+        <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-72 overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
+          {orgs.length === 0 ? (
+            <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
+              Žádné organizace nejsou k dispozici.
+            </div>
+          ) : (
+            orgs.map((o) => (
+              <button
+                key={o.id}
+                type="button"
+                onClick={() => pick(o.id)}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
+                  currentOrgEdge?.peer_id === o.id
+                    ? "bg-[var(--color-surface-2)]"
+                    : ""
+                }`}
+              >
+                <span className="flex flex-1 items-center gap-1.5 truncate text-[var(--color-text)]">
+                  <Building2 size={12} className="shrink-0 text-[var(--color-text-dim)]" />
+                  <span className="truncate">{o.name}</span>
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -2725,6 +2857,70 @@ function IdCopy({ id }: { id: string }) {
         />
       )}
     </button>
+  );
+}
+
+// (i) icon that toggles a small popover with a raw JSON dump of node.meta.
+// Debug-only: meta is dev/import bookkeeping (e.g. source: "evoluce",
+// evoluce_entity_id, ...), not user-facing labels. Hidden entirely when
+// meta is empty/null so it adds no visual noise to nodes without meta.
+function MetaInfo({ meta }: { meta: unknown }) {
+  const [open, setOpen] = useState(false);
+  if (!meta || typeof meta !== "object" || Object.keys(meta as object).length === 0) {
+    return null;
+  }
+  return (
+    <div className="relative">
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        title="Meta (debug)"
+        className="inline-flex items-center justify-center rounded text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text-muted)]"
+      >
+        <Info size={11} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 top-full z-50 mt-1 max-h-80 min-w-[280px] max-w-md overflow-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-2 shadow-lg">
+            <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-[var(--color-text-muted)]">
+              {JSON.stringify(meta, null, 2)}
+            </pre>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Folder-link icon: fetches the routed remote's web URL for the node folder
+// and shows a click-to-open external-link icon when one is available. The
+// fetch is best-effort: hidden silently when there is no routed remote, the
+// backend has no web URL (s3, sftp), or the folder isn't synced yet.
+function FolderLink({ nodeId }: { nodeId: string }) {
+  const [info, setInfo] = useState<{ url: string; remote_name?: string } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setInfo(null);
+    fetchNodeFolderUrl(nodeId)
+      .then((r) => {
+        if (cancelled) return;
+        if (r.url) setInfo({ url: r.url, remote_name: r.remote_name });
+      })
+      .catch(() => { /* best-effort -- absence is fine */ });
+    return () => { cancelled = true; };
+  }, [nodeId]);
+  if (!info) return null;
+  return (
+    <a
+      href={info.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={(e) => e.stopPropagation()}
+      title={`Otevřít na ${info.remote_name ?? "remote"}`}
+      className="inline-flex items-center justify-center rounded text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text-muted)]"
+    >
+      <ExternalLink size={11} />
+    </a>
   );
 }
 
