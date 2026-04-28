@@ -701,6 +701,54 @@ function shiftOrgChildren(org: NodeSingular, dx: number, dy: number): void {
   }
 }
 
+// Robust fit: guarantees nothing ends up outside the viewport after
+// the initial layout settles. Failure modes this guards against:
+//   1) Compound parents recompute their bbox lazily after style
+//      mutations (we call expandOrgsToCircleSquares which sets
+//      min-width/min-height on every org). A fit() called immediately
+//      after may read stale bboxes and leave orgs poking outside.
+//   2) The cytoscape container size at cy-init time can differ from
+//      the final flex-computed size (detail pane mounting, font
+//      loading, ResizeObserver's first-skip). cy.resize() resyncs.
+//   3) Hidden elements (status-filtered, search-dimmed with display:
+//      none) report bbox = (0,0,0,0). cy.fit() with default selector
+//      includes them, so the fit bbox spans from (0,0) to wherever
+//      the visible cluster sits — leaving the visible cluster mostly
+//      offscreen. Fit only `:visible` to avoid this.
+//   4) Persisted positions can spread beyond what minZoom allows the
+//      camera to zoom out to. Without lowering minZoom, fit() snaps
+//      to the camera's hard limit and silently leaves nodes outside.
+//      We lower minZoom dynamically to whatever the visible bbox
+//      actually requires (with headroom), so fit can always succeed.
+function fitAllInView(cy: Core, padding: number): void {
+  const doFit = () => {
+    cy.resize();
+    const visible = cy.elements(":visible");
+    if (visible.length === 0) {
+      cy.fit(undefined, padding);
+      return;
+    }
+    const bb = visible.boundingBox({});
+    const availW = Math.max(cy.width() - 2 * padding, 50);
+    const availH = Math.max(cy.height() - 2 * padding, 50);
+    const requiredZoom = Math.min(
+      availW / Math.max(bb.w, 1),
+      availH / Math.max(bb.h, 1),
+    );
+    // Headroom (×0.9) so the user can still pinch-zoom out a touch
+    // beyond the initial fit before hitting the floor.
+    if (requiredZoom < cy.minZoom()) {
+      cy.minZoom(Math.max(requiredZoom * 0.9, 0.01));
+    }
+    cy.fit(visible, padding);
+  };
+  doFit();
+  requestAnimationFrame(() => {
+    doFit();
+    requestAnimationFrame(doFit);
+  });
+}
+
 // Animate to fit a collection, but cap the resulting zoom so tiny
 // clusters (a single match with one neighbour) don't slam into
 // maxZoom and leave the user staring at two huge dots. Uses
@@ -872,7 +920,7 @@ function applyInitialLayout(
     // manual placements. Skipping saveAll() too: nothing changed, no
     // POST needed.
     expandOrgsToCircleSquares(cy);
-    cy.fit(undefined, 80);
+    fitAllInView(cy, 80);
     return;
   }
 
@@ -928,7 +976,7 @@ function applyInitialLayout(
       clusterByTypeWithinOrg(cy);
       expandOrgsToCircleSquares(cy);
       separateOverlappingOrgs(cy);
-      cy.fit(undefined, 80);
+      fitAllInView(cy, 80);
       saveAll();
     },
   );
@@ -1079,16 +1127,27 @@ export default function GraphView({
     // smoothly recentres instead of snapping — the snap is what the user
     // perceives as a "jump". A short debounce coalesces multi-frame resizes
     // (window drag) into a single animation.
-    let firstResize = true;
+    //
+    // We compare against the last fitted container size instead of skipping
+    // the first callback unconditionally. The old "skip first" logic was
+    // there to avoid undoing fcose's own fit, but if the container actually
+    // resized between cy-init and the first RO callback (DetailPane mount,
+    // fonts loading) the skip would freeze the fit at a stale size and
+    // leave nodes outside the viewport on page load.
     let fitTimer: number | null = null;
-    const ro = new ResizeObserver(() => {
+    let lastFitW = containerRef.current.clientWidth;
+    let lastFitH = containerRef.current.clientHeight;
+    const ro = new ResizeObserver((entries) => {
       cy.resize();
-      if (firstResize) {
-        // Skip the first ResizeObserver callback — fcose has already fit the
-        // graph during layout, and a redundant fit() would undo that.
-        firstResize = false;
-        return;
-      }
+      const entry = entries[0];
+      const w = entry ? entry.contentRect.width : cy.width();
+      const h = entry ? entry.contentRect.height : cy.height();
+      // No size change -> no fit. This guards against the redundant
+      // initial-observation callback while still recovering when the
+      // container truly grew or shrank since the last fit.
+      if (Math.abs(w - lastFitW) < 1 && Math.abs(h - lastFitH) < 1) return;
+      lastFitW = w;
+      lastFitH = h;
       if (fitTimer !== null) window.clearTimeout(fitTimer);
       fitTimer = window.setTimeout(() => {
         const focus = focusElesRef.current;
@@ -1098,8 +1157,12 @@ export default function GraphView({
         if (focus && focus.length > 0) {
           animateFit(cy, focus, 120, 1.6, 360);
         } else {
+          // `:visible` only: status-filtered or hidden nodes report
+          // bbox=(0,0,0,0), which would otherwise stretch the fit
+          // rectangle from (0,0) to the visible cluster and leave most
+          // of the graph offscreen.
           cy.animate(
-            { fit: { eles: cy.elements(), padding: 80 } },
+            { fit: { eles: cy.elements(":visible"), padding: 80 } },
             { duration: 360, easing: "ease-in-out-cubic" },
           );
         }
