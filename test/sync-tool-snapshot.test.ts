@@ -4,14 +4,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { registerMirror } from "../src/sync/mirror-registry.js";
-import { resetAdapterCacheForTests } from "../src/sync/adapter-cache.js";
-import { resetLocalDbForTests } from "../src/sync/local-db.js";
+import { registerMirror } from "../src/domain/sync/mirror-registry.js";
+import { resetAdapterCacheForTests } from "../src/domain/sync/adapter-cache.js";
+import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
 import {
   snapshotService,
   __setSnapshotExporterForTests,
   __resetSnapshotExporterForTests,
-} from "../src/tools/sync-snapshot.js";
+} from "../src/mcp/tools/sync-snapshot.js";
 
 let workspace: string;
 let originalEnv: string | undefined;

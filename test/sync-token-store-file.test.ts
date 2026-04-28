@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir, platform } from "node:os";
-import { createFileTokenStore } from "../src/sync/token-store-file.js";
+import { createFileTokenStore } from "../src/domain/sync/token-store-file.js";
 
 let workspace: string;
 let originalEnv: string | undefined;

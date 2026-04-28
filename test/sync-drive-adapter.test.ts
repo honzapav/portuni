@@ -1,9 +1,9 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { createDriveAdapter, __setDriveFetchForTests } from "../src/sync/drive-adapter.js";
-import type { RemoteConfig, DeviceTokens } from "../src/sync/types.js";
+import { createDriveAdapter, __setDriveFetchForTests } from "../src/domain/sync/drive-adapter.js";
+import type { RemoteConfig, DeviceTokens } from "../src/domain/sync/types.js";
 import { generateKeyPairSync } from "node:crypto";
-import { resetSaTokenCacheForTests } from "../src/sync/drive-sa-auth.js";
+import { resetSaTokenCacheForTests } from "../src/domain/sync/drive-sa-auth.js";
 
 const { privateKey: pk } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const PRIVATE_KEY_PEM = pk.export({ type: "pkcs8", format: "pem" }) as string;

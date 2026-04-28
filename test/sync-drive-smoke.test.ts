@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createDriveAdapter } from "../src/sync/drive-adapter.js";
-import type { RemoteConfig, DeviceTokens } from "../src/sync/types.js";
+import { createDriveAdapter } from "../src/domain/sync/drive-adapter.js";
+import type { RemoteConfig, DeviceTokens } from "../src/domain/sync/types.js";
 
 const enabled = process.env.PORTUNI_DRIVE_TEST === "1";
 function req(n: string): string {

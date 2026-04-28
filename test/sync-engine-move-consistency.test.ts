@@ -4,10 +4,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { storeFile, moveFile, pullFile } from "../src/sync/engine.js";
-import { registerMirror } from "../src/sync/mirror-registry.js";
-import { resetAdapterCacheForTests } from "../src/sync/adapter-cache.js";
-import { resetLocalDbForTests } from "../src/sync/local-db.js";
+import { storeFile, moveFile, pullFile } from "../src/domain/sync/engine.js";
+import { registerMirror } from "../src/domain/sync/mirror-registry.js";
+import { resetAdapterCacheForTests } from "../src/domain/sync/adapter-cache.js";
+import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
 
 let workspace: string;
 let originalEnv: string | undefined;

@@ -5,7 +5,7 @@ import {
   DDL_REMOTES_TABLE,
   DDL_REMOTE_ROUTING_TABLE,
   INDEX_REMOTE_ROUTING_PRIORITY,
-} from "../src/schema.js";
+} from "../src/infra/schema.js";
 import {
   upsertRemote,
   getRemote,
@@ -15,7 +15,7 @@ import {
   listRules,
   replaceRules,
   resolveRemote,
-} from "../src/sync/routing.js";
+} from "../src/domain/sync/routing.js";
 
 async function freshDb(): Promise<Client> {
   const db = createClient({ url: ":memory:" });

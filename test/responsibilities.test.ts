@@ -6,8 +6,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
 import { ulid } from "ulid";
-import { runMigration006 } from "../src/schema.js";
-import { createActor } from "../src/tools/actors.js";
+import { runMigration006 } from "../src/infra/schema.js";
+import { createActor } from "../src/domain/actors.js";
 import {
   createResponsibility,
   listResponsibilities,
@@ -15,7 +15,7 @@ import {
   unassignResponsibility,
   updateResponsibility,
   deleteResponsibility,
-} from "../src/tools/responsibilities.js";
+} from "../src/domain/responsibilities.js";
 
 async function freshEnv() {
   const db = createClient({ url: ":memory:" });

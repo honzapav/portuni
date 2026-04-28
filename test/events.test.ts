@@ -5,7 +5,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
-import { EventRow } from "../src/types.js";
+import { EventRow } from "../src/shared/types.js";
 
 const SOLO_USER = "U1";
 

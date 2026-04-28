@@ -4,8 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { registerMirror, getMirrorPath } from "../src/sync/mirror-registry.js";
-import { resetLocalDbForTests } from "../src/sync/local-db.js";
+import { registerMirror, getMirrorPath } from "../src/domain/sync/mirror-registry.js";
+import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
 
 let workspace: string;
 let originalEnv: string | undefined;
@@ -28,7 +28,7 @@ describe("portuni_delete_node purge cleanup", () => {
     const { db, nodeId } = await makeSharedDb();
     await registerMirror("U1", nodeId, join(workspace, "mirror"));
     assert.ok(await getMirrorPath("U1", nodeId));
-    const { purgeNodeLocalCleanup } = await import("../src/tools/nodes.js");
+    const { purgeNodeLocalCleanup } = await import("../src/domain/nodes.js");
     await purgeNodeLocalCleanup(db, "U1", nodeId);
     assert.equal(await getMirrorPath("U1", nodeId), null);
   });

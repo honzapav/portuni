@@ -9,9 +9,9 @@ import {
   unregisterMirror,
   listUserMirrors,
   tryCleanStaleMirrors,
-} from "../src/sync/mirror-registry.js";
+} from "../src/domain/sync/mirror-registry.js";
 import { createClient } from "@libsql/client";
-import { resetLocalDbForTests } from "../src/sync/local-db.js";
+import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
 
 let workspace: string;
 let originalEnv: string | undefined;

@@ -13,8 +13,8 @@ import { ulid } from "ulid";
 import {
   TRIGGER_PREVENT_MULTI_PARENT_ORG,
   TRIGGER_PREVENT_ORPHAN_ON_EDGE_DELETE,
-} from "../src/schema.js";
-import { moveNodeToOrganization, disconnectEdgeById } from "../src/tools/edges.js";
+} from "../src/infra/schema.js";
+import { moveNodeToOrganization, disconnectEdgeById } from "../src/domain/edges.js";
 
 async function freshEnv() {
   const db = createClient({ url: ":memory:" });

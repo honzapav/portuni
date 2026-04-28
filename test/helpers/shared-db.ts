@@ -7,8 +7,8 @@ import {
   DDL_REMOTE_ROUTING_TABLE,
   INDEX_REMOTE_ROUTING_PRIORITY,
   runMigration010,
-} from "../../src/schema.js";
-import { upsertRemote, addRule } from "../../src/sync/routing.js";
+} from "../../src/infra/schema.js";
+import { upsertRemote, addRule } from "../../src/domain/sync/routing.js";
 
 export interface SharedDb {
   db: Client;

@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
 import { ulid } from "ulid";
-import { runMigration006 } from "../src/schema.js";
+import { runMigration006 } from "../src/infra/schema.js";
 
 async function freshPre006Db() {
   const db = createClient({ url: ":memory:" });

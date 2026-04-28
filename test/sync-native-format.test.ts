@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { detectNativeFormat, EXPORT_MIME } from "../src/sync/native-format.js";
+import { detectNativeFormat, EXPORT_MIME } from "../src/domain/sync/native-format.js";
 
 describe("native-format", () => {
   it("identifies Google Docs as native gdoc", () => {

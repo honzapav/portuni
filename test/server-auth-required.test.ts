@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { checkAuthRequiredForConfig } from "../src/server-config.js";
+import { checkAuthRequiredForConfig } from "../src/infra/server-config.js";
 
 describe("checkAuthRequiredForConfig", () => {
   it("ok when auth enabled, regardless of host or Turso", () => {

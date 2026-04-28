@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { isSafeExternalLink, sanitizeExternalLink } from "../src/safe-url.js";
+import { isSafeExternalLink, sanitizeExternalLink } from "../src/shared/safe-url.js";
 
 describe("isSafeExternalLink", () => {
   it("accepts https", () => {

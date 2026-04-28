@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { platform } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { createKeychainTokenStore } from "../src/sync/token-store-keychain.js";
+import { createKeychainTokenStore } from "../src/domain/sync/token-store-keychain.js";
 
 const execFileP = promisify(execFile);
 

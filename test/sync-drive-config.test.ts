@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseDriveConfig, isDriveRemote, parseServiceAccountJson } from "../src/sync/drive-config.js";
+import { parseDriveConfig, isDriveRemote, parseServiceAccountJson } from "../src/domain/sync/drive-config.js";
 
 const sampleSA = JSON.stringify({
   type: "service_account",

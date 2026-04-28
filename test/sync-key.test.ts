@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient, type Client } from "@libsql/client";
-import { generateSyncKey, slugifyForSyncKey } from "../src/sync/sync-key.js";
+import { generateSyncKey, slugifyForSyncKey } from "../src/domain/sync/sync-key.js";
 
 async function freshDb(): Promise<Client> {
   const db = createClient({ url: ":memory:" });

@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/server.js",
-    "dev": "tsx src/server.ts",
+    "build": "tsc && node -e \"const fs=require('node:fs'),path=require('node:path');const src='src/mcp/resources',dst='dist/mcp/resources';fs.mkdirSync(dst,{recursive:true});for(const f of fs.readdirSync(src))if(f.endsWith('.md'))fs.copyFileSync(path.join(src,f),path.join(dst,f));\"",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
     "test": "node --import tsx --test test/*.test.ts",
     "lint": "biome check",
     "lint:strict": "biome check --error-on-warnings",

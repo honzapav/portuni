@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient, type Client } from "@libsql/client";
-import { buildNodeRoot, buildRemotePath } from "../src/sync/remote-path.js";
+import { buildNodeRoot, buildRemotePath } from "../src/domain/sync/remote-path.js";
 
 async function setup(): Promise<Client> {
   const db = createClient({ url: ":memory:" });

@@ -10,7 +10,7 @@ import {
   STATUS_FROM_LIFECYCLE,
   getLifecycleStatesForType,
   deriveStatusFromLifecycle,
-} from "../src/popp.js";
+} from "../src/shared/popp.js";
 
 describe("LIFECYCLE_STATES_BY_TYPE", () => {
   it("covers all five node types", () => {

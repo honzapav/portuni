@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import {
   signJwt, getDriveAccessToken, __setTokenFetchForTests, resetSaTokenCacheForTests,
-} from "../src/sync/drive-sa-auth.js";
-import type { ServiceAccountKey } from "../src/sync/drive-config.js";
+} from "../src/domain/sync/drive-sa-auth.js";
+import type { ServiceAccountKey } from "../src/domain/sync/drive-config.js";
 
 const { privateKey: pk } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const PRIVATE_KEY_PEM = pk.export({ type: "pkcs8", format: "pem" }) as string;

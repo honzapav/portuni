@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   ActorRow,
   ResponsibilityRow,
-} from "../src/types.js";
+} from "../src/shared/types.js";
 
 describe("ActorRow schema", () => {
   it("accepts a valid person row", () => {

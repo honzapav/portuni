@@ -2,11 +2,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
 import { ulid } from "ulid";
-import { runMigration006 } from "../src/schema.js";
+import { runMigration006 } from "../src/infra/schema.js";
 import {
   addDataSource, removeDataSource, listDataSources,
   addTool, removeTool, listTools,
-} from "../src/tools/entity-attributes.js";
+} from "../src/domain/entity-attributes.js";
 
 async function freshEnv() {
   const db = createClient({ url: ":memory:" });

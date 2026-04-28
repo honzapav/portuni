@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
-import { runMigration011 } from "../src/schema.js";
+import { runMigration011 } from "../src/infra/schema.js";
 
 describe("migration 011", () => {
   it("drops existing Turso local_mirrors table", async () => {

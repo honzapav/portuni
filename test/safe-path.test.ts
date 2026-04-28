@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { safeJoin, isInside, ensureUnderRoot, PathTraversalError } from "../src/safe-path.js";
+import { safeJoin, isInside, ensureUnderRoot, PathTraversalError } from "../src/shared/safe-path.js";
 
 describe("safeJoin", () => {
   it("joins normal segments", () => {

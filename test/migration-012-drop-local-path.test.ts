@@ -6,7 +6,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
-import { runMigration012 } from "../src/schema.js";
+import { runMigration012 } from "../src/infra/schema.js";
 
 describe("migration 012 -- drop files.local_path", () => {
   it("drops files.local_path when present", async () => {

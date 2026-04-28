@@ -8,9 +8,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
 import { ulid } from "ulid";
-import { runMigration006 } from "../src/schema.js";
-import { createActor } from "../src/tools/actors.js";
-import { updateNodeInternal } from "../src/tools/nodes.js";
+import { runMigration006 } from "../src/infra/schema.js";
+import { createActor } from "../src/domain/actors.js";
+import { updateNodeInternal } from "../src/domain/nodes.js";
 
 async function freshEnv() {
   const db = createClient({ url: ":memory:" });
@@ -81,7 +81,7 @@ describe("updateNodeInternal: goal, lifecycle_state, owner_id", () => {
 describe("createNodeInternal with goal and lifecycle_state", () => {
   it("accepts goal at create time", async () => {
     const { db, orgId } = await freshEnv();
-    const { createNodeInternal } = await import("../src/tools/nodes.js");
+    const { createNodeInternal } = await import("../src/domain/nodes.js");
     const id = await createNodeInternal(db, "U1", {
       type: "project",
       name: "Nový projekt",
@@ -98,7 +98,7 @@ describe("createNodeInternal with goal and lifecycle_state", () => {
 
   it("rejects invalid lifecycle_state at create time", async () => {
     const { db, orgId } = await freshEnv();
-    const { createNodeInternal } = await import("../src/tools/nodes.js");
+    const { createNodeInternal } = await import("../src/domain/nodes.js");
     await assert.rejects(
       createNodeInternal(db, "U1", {
         type: "project",
@@ -112,7 +112,7 @@ describe("createNodeInternal with goal and lifecycle_state", () => {
 
   it("default lifecycle_state null when not provided", async () => {
     const { db, orgId } = await freshEnv();
-    const { createNodeInternal } = await import("../src/tools/nodes.js");
+    const { createNodeInternal } = await import("../src/domain/nodes.js");
     const id = await createNodeInternal(db, "U1", {
       type: "project",
       name: "X",

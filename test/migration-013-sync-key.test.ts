@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
-import { runMigration013 } from "../src/schema.js";
+import { runMigration013 } from "../src/infra/schema.js";
 
 const N1_ID = "01J7N100000000000000000001";
 const N2_ID = "01J7N100000000000000000002";
