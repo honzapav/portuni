@@ -7,7 +7,7 @@ import { statusScan } from "../sync/engine.js";
 export function registerSyncStatusTools(server: McpServer): void {
   server.tool(
     "portuni_status",
-    "Scan tracked files (and optionally new local / new remote) for one node or across all mirrors. Classifies each tracked file as clean/push/pull/conflict/orphan/native and, with includeDiscovery, reports new_local + new_remote + deleted_local.",
+    "Scan tracked files (and optionally new local / new remote) for one node or across all mirrors. Classifies each tracked file as clean/push/pull/conflict/orphan/native and, with includeDiscovery (default true), reports new_local + new_remote + deleted_local. Call after any local file modification (git mv, git rm, edits, plain mv) in a Portuni-mirrored repo and before ending the turn -- the report tells you what to reconcile via portuni_store, portuni_delete_file, or portuni_adopt_files. See portuni://sync-model.",
     {
       node_id: z.string().optional(),
       remote_name: z.string().optional(),

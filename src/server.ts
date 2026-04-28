@@ -62,6 +62,7 @@ import { logAudit } from "./audit.js";
 import { checkAuthRequiredForConfig } from "./server-config.js";
 import { SessionScope, parseScopeMode } from "./scope.js";
 import { registerScopeTools } from "./tools/scope.js";
+import { registerResources } from "./resources/index.js";
 
 const PORT = Number(process.env.PORT ?? 4011);
 const HOST = process.env.HOST ?? "127.0.0.1";
@@ -503,93 +504,13 @@ async function resolveContext(path: string): Promise<unknown> {
   };
 }
 
-const INSTRUCTIONS = `Portuni is the organizational knowledge graph. It holds the POPP structure (Projects, Organizations, Processes, Principles, Areas) and connects them via edges.
-
-WHEN TO USE: Always check Portuni when working on a task related to an organization, project, process, or area. Before starting work, call portuni_get_context to find relevant nodes and their connections. Use portuni_get_node to get details, files, and local mirror paths for a specific node.
-
-TOOLS:
-- portuni_list_nodes: Browse all nodes, filter by type
-- portuni_get_node: Get node details with edges, files, and local mirror path
-- portuni_get_context: Find related nodes by traversing the graph (use this first)
-- portuni_create_node: Create a new node (organization, project, process, area, principle)
-- portuni_delete_node: Delete a node (archive=soft delete, purge=hard delete with cascade). Organizations with children cannot be purged.
-- portuni_connect / portuni_disconnect: Manage edges between nodes
-- portuni_mirror: Create a local folder for a node
-- portuni_store: Publish a file to a node (like git commit)
-- portuni_pull: Pull files from a node (like git pull)
-- portuni_list_files: List files attached to a node
-- portuni_log: Log a decision, discovery, blocker, or other knowledge event on a node
-- portuni_resolve: Mark an event as resolved
-- portuni_supersede: Replace an event with an updated version
-- portuni_list_events: Query events with filters (node_id, type, status, since)
-
-NODE TYPES (strictly enforced, five POPP entities): organization, project, process, area, principle. No other types exist. Do not invent new types.
-
-EDGE TYPES (strictly enforced, four flat relations): related_to (near-default, lateral semantic connection), belongs_to (scope -- see organization invariant below), applies (concrete work uses a pattern, e.g. project applies process), informed_by (knowledge transfer). No edge type is privileged. The graph is rhizomatic: any node can connect to any other node. When unsure which relation fits, default to related_to.
-
-ORGANIZATION INVARIANT: Every non-organization node MUST have exactly one belongs_to edge pointing to an organization. No orphans, no multi-parent. When creating a node, portuni_create_node requires the organization_id parameter for every non-organization type -- the tool atomically creates the node and its belongs_to edge. When moving a node to a different organization, do NOT disconnect first: use a single agent turn that disconnects and immediately reconnects to the new organization. Attempting to create a second belongs_to to an organization, or to remove the only one, is rejected both at the tool layer and by a database trigger.
-
-PRINCIPLES AS CULTURE: Principles are not linked to their subjects via an explicit edge. They function as cultural defaults applied to everything in scope. When unsure how to act, look at the principles in the relevant organization. Principles do still belong to an organization via belongs_to (the invariant applies to principles too) -- they are cultural defaults for that organization.
-
-LOCAL MIRRORS: Each node can have a local folder. Use portuni_get_node to find the local_path. The workspace root is configured via PORTUNI_WORKSPACE_ROOT env var. Each mirror has subdirectories: outputs/ (final files), wip/ (work in progress), resources/. Organization workspace folders additionally contain projects/, processes/, areas/, principles/ for organizing child nodes.
-
-FILE SYNC TOOLS (portuni_store / portuni_pull / portuni_status / portuni_list_files / portuni_list_remotes / portuni_setup_remote / portuni_set_routing_policy):
-- portuni_store copies a file into the node's mirror and uploads it via the configured remote. Call with node_id + local_path; optional status (wip | output) and subpath.
-- portuni_pull with file_id downloads the remote version into the mirror. portuni_pull with node_id returns a preview of each file's status (unchanged/updated/conflict/orphan/native) without modifying anything.
-- portuni_status scans tracked files and optionally discovers new local / new remote files. Call at session end when files were touched, before major migrations, or whenever the user asks about sync state.
-- Node paths are built from immutable sync_key identifiers, so renaming a node does NOT break remote folder structure.
-- Each device has its own mirror registry in .portuni/sync.db. Stale rows (node deleted on another device) are skipped and cleaned up lazily.
-
-Destructive sync operations (confirm-first):
-- portuni_delete_file and portuni_move_file return a preview when called without
-  confirmed: true. Present the preview to the user, get explicit confirmation,
-  then call again with confirmed: true. Do not skip.
-- portuni_rename_folder defaults to dry_run: true. Show the affected file list;
-  call again with dry_run: false to apply.
-- portuni_adopt_files is not destructive. Safe to run after portuni_status
-  surfaces new_remote entries.
-
-Operation semantics:
-- Operations are best-effort ordered (remote, then local, then DB). On partial
-  failure the service returns a structured status "repair_needed" with a
-  repair_hint describing the next step. The operator (you, agent) surfaces it
-  to the user and follows the hint.
-
-Session discipline:
-- Call portuni_status before ending a session if files were touched. It
-  classifies tracked files and surfaces untracked local / remote files.
-  Move detection flags files where a deleted_local + new_local pair share
-  the same last-synced hash.
-
-Data-safety defaults:
-- Portuni never auto-deletes and never auto-merges conflicts.
-- Hash (not timestamp) is file identity.
-- Drive delete is soft (trash, 30-day recovery). Drive versioning is not
-  disabled by Portuni.
-- Node display names can be renamed freely; sync paths use an immutable
-  sync_key, so remote folders stay stable.
-
-EVENT TYPES (strictly enforced): decision, discovery, blocker, reference, milestone, note, change. No other event types are accepted by portuni_log.
-
-NODE STATUSES: active (default), completed, archived. Strictly enforced.
-
-EVENT STATUSES: active (default), resolved, superseded, archived. Use portuni_resolve to mark resolved, portuni_supersede to replace with updated version.
-
-FILE STATUSES: wip (work in progress, default), output (final deliverable). Strictly enforced by portuni_store.
-
-NODE VISIBILITY: team (default), private. "group" is planned but not yet implemented.
-
-EVENTS: Time-ordered knowledge attached to nodes. Log decisions, discoveries, blockers, references, milestones, notes, changes. Use portuni_log to record, portuni_list_events to query. Events appear in portuni_get_node and portuni_get_context responses.
-
-READ SCOPE: Reads are bounded by a session scope set – the set of node IDs you may fetch in this session. The set is seeded by the SessionStart hook (home node + depth-1 neighbors) and grows through explicit, audited expansions.
-- portuni_session_init(home_node_id): seed the scope set. Called by the SessionStart hook; you don't usually call this manually.
-- portuni_expand_scope(node_ids, reason, triggered_by, confirmed_hard_floor?): widen scope. Call this when the user names a node in the prompt (reason: "user-requested: <quoted prompt fragment>") or after the user confirms an out-of-scope reach in chat (reason: "user-confirmed-in-chat"). Hard-floor nodes (visibility=private owned by another user, or meta.scope_sensitive=true) require confirmed_hard_floor=true AND a real user confirmation; do NOT pass that flag on your own initiative.
-- portuni_session_log(): inspect the current scope set, scope mode, and ordered expansion history.
-Refusal contract: when a read tool returns {"error":"scope_expansion_required",...}, surface the request to the user, get explicit confirmation, then call portuni_expand_scope before retrying. Do NOT fabricate confirmation.
-Tool defaults:
-- portuni_get_node(node_id|name): name lookups are filtered to in-scope candidates first, so unscoped name probing never surfaces neighbouring metadata.
-- portuni_get_context(node_id, depth): depth ≤ 1 with an in-scope start is allowed; depth ≥ 2 is treated as breadth expansion and refused in strict/balanced (use depth=1 then expand explicitly, or run under PORTUNI_SCOPE_MODE=permissive).
-- portuni_list_nodes/portuni_list_events/portuni_list_files: default to session-scope filtering. Pass scope: "global" (or omit node_id on list_events/list_files) only when the user asked for a broad listing; that path is mode-gated and audited.`;
+// Top-level server brief. Kept short -- many MCP clients truncate this
+// field at ~2 KB. Anything load-bearing for an individual tool lives in
+// that tool's description; deeper reference material lives in the
+// portuni:// resources, which the agent pulls on demand.
+const INSTRUCTIONS = `Portuni is the organizational knowledge graph (POPP: organizations, projects, processes, areas, principles).
+Call portuni_get_context before starting work on a node; portuni_get_node for details and the local mirror path.
+For semantics, contracts, and enums fetch resources: portuni://architecture, portuni://sync-model, portuni://scope-rules, portuni://enums.`;
 
 function createMcpServer(): { server: McpServer; scope: SessionScope } {
   const scope = new SessionScope(parseScopeMode(process.env.PORTUNI_SCOPE_MODE));
@@ -599,6 +520,7 @@ function createMcpServer(): { server: McpServer; scope: SessionScope } {
   }, {
     instructions: INSTRUCTIONS,
   });
+  registerResources(server);
   registerScopeTools(server, scope);
   registerNodeTools(server, scope);
   registerGetNodeTool(server, scope);

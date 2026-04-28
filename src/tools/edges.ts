@@ -169,7 +169,7 @@ export async function moveNodeToOrganization(
 export function registerEdgeTools(server: McpServer): void {
   server.tool(
     "portuni_connect",
-    "Create a directed edge between two nodes. ONLY create edges when the user explicitly asks or when creating a node that requires a belongs_to edge. Never speculatively connect nodes because they seem related. Relation types (strictly enforced): related_to (near-default, lateral connection), belongs_to (scope, EXACTLY ONE per non-organization node), applies (concrete work uses a pattern, e.g. project applies process), informed_by (knowledge transfer). Every non-organization node must belong to exactly one organization -- belongs_to is single-parent and strictly enforced.",
+    "Create a directed edge between two nodes. ONLY create edges when the user explicitly asks or when creating a node that requires a belongs_to edge. Never speculatively connect nodes because they seem related. Relations (strictly enforced): related_to (near-default lateral connection), belongs_to (scope; EXACTLY ONE per non-organization node), applies (concrete work uses a pattern, e.g. project applies process), informed_by (knowledge transfer). To move a node between organizations, prefer portuni_move_node -- it rebinds the existing belongs_to atomically. Do NOT disconnect-then-connect across organizations: the disconnect of the only belongs_to is rejected to preserve the invariant. See portuni://architecture.",
     {
       source_id: z.string().describe("Source node ID (ULID)"),
       target_id: z.string().describe("Target node ID (ULID)"),
@@ -306,7 +306,7 @@ export function registerEdgeTools(server: McpServer): void {
 
   server.tool(
     "portuni_disconnect",
-    "Remove an edge between two nodes. If relation is omitted, removes all edges between the two nodes. Cannot remove the last belongs_to -> organization edge of a non-organization node -- that would orphan the node. To move a node to a different organization, disconnect and reconnect to the new organization in a single agent turn.",
+    "Remove an edge between two nodes. If relation is omitted, removes all edges between the two nodes. Cannot remove the last belongs_to -> organization edge of a non-organization node -- that would orphan the node. To move a node to a different organization, call portuni_move_node({ node_id, new_org_id }) instead: it rebinds the existing belongs_to atomically (single agent turn, single audit row, no transient invariant break). See portuni://architecture.",
     {
       source_id: z.string().describe("Source node ID (ULID)"),
       target_id: z.string().describe("Target node ID (ULID)"),

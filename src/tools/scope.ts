@@ -121,7 +121,7 @@ export function registerScopeTools(server: McpServer, scope: SessionScope): void
 
   server.tool(
     "portuni_expand_scope",
-    "Add one or more nodes to the current MCP session's read-scope set. Use this when (a) the user names a node in the prompt, in which case set reason='user-requested: <quoted prompt fragment>', or (b) the user has confirmed in chat that the agent may reach for a node, in which case set reason='user-confirmed-in-chat'. Hard-floor nodes (visibility=private owned by another user, or meta.scope_sensitive=true) are refused unless confirmed_hard_floor=true is also set; that flag must be backed by an explicit user confirmation, not an agent assumption. Every expansion is audited and surfaced in portuni_session_log.",
+    "Add one or more nodes to the current MCP session's read-scope set. Required when a read tool returned {error: scope_expansion_required, ...}: surface the request to the user, get confirmation, then call this. reason: 'user-requested: <quoted prompt fragment>' when the user named the node in the prompt; 'user-confirmed-in-chat' after a chat confirmation. Hard-floor nodes (visibility=private owned by another user, or meta.scope_sensitive=true) require confirmed_hard_floor=true backed by an explicit user confirmation -- never set this on agent initiative. Every expansion is audited and surfaced in portuni_session_log. See portuni://scope-rules.",
     {
       node_ids: z
         .array(z.string())

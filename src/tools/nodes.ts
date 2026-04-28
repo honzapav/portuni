@@ -291,7 +291,7 @@ export async function createNodeInternal(
 export function registerNodeTools(server: McpServer, scope: SessionScope): void {
   server.tool(
     "portuni_create_node",
-    "Create a new node in the Portuni knowledge graph. ONLY create nodes when the user explicitly asks. Never create nodes as a side effect of other work or to organize things on your own initiative. Node types (strictly enforced): organization, project, process, area, principle. Every non-organization node MUST specify organization_id -- it will be atomically connected to that organization via a belongs_to edge. Every non-organization node belongs to exactly one organization. Optionally set goal (textual purpose) and lifecycle_state (type-specific primary state -- status is then derived automatically).",
+    "Create a new node in the Portuni knowledge graph. ONLY create nodes when the user explicitly asks. Never create nodes as a side effect of other work or to organize things on your own initiative. Node types (strictly enforced): organization, project, process, area, principle. Organization invariant: every non-organization node MUST specify organization_id -- it will be atomically connected to that organization via a belongs_to edge. Optionally set goal (textual purpose) and lifecycle_state (type-specific primary state -- status is derived automatically). See portuni://architecture for the invariant and portuni://enums for the closed type / lifecycle sets.",
     {
       type: z.enum(NODE_TYPES).describe("Node type: organization, project, process, area, or principle"),
       name: z.string().describe("Human-readable name"),

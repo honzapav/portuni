@@ -20,7 +20,7 @@ import { decideGlobalQuery, guardNodeRead, type SessionScope } from "../scope.js
 export function registerFileTools(server: McpServer, scope: SessionScope): void {
   server.tool(
     "portuni_store",
-    "Store a file for a node: copies into the node's local mirror, uploads to the routed remote, and tracks it for sync. Uses sync_key-based paths so renaming nodes does not break remote storage.",
+    "Store a file for a node: copies into the node's local mirror, uploads to the routed remote, and tracks it for sync. Uses sync_key-based paths so renaming nodes does not break remote storage. MUST: after this returns, call portuni_status before ending the turn to detect drift between local files, the Portuni DB, and the remote. See portuni://sync-model.",
     {
       node_id: z.string().describe("Target node ID"),
       local_path: z.string().describe("Absolute path of the source file on this device"),
@@ -229,7 +229,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
 
   server.tool(
     "portuni_move_file",
-    "Move a file within its node (new subpath or section) or across nodes. First call returns a preview; pass confirmed: true on the second call to execute. Best-effort ordered: remote, then local, then DB. Partial failure returns repair_needed with a hint.",
+    "Move a file within its node (new subpath or section) or across nodes. Confirm-first: first call returns a preview; surface it to the user, get explicit confirmation, then call again with confirmed: true to execute. Best-effort ordered: remote, then local, then DB. Partial failure returns repair_needed with a hint. See portuni://sync-model.",
     {
       file_id: z.string(),
       new_subpath: z.string().nullable().optional(),
@@ -253,7 +253,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
 
   server.tool(
     "portuni_rename_folder",
-    "Rename a subpath within a node's sync layout. Default dry_run: true returns preview of affected files. Pass dry_run: false to apply.",
+    "Rename a subpath within a node's sync layout. Defaults to dry_run: true and returns a preview of affected files. Show the affected file list to the user; call again with dry_run: false to apply. See portuni://sync-model.",
     {
       node_id: z.string(),
       old_prefix: z.string(),
@@ -275,7 +275,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
 
   server.tool(
     "portuni_adopt_files",
-    "Register existing remote files (not currently tracked) as files rows for the given node. Safe, non-destructive.",
+    "Register existing remote files (not currently tracked) as files rows for the given node. Non-destructive. Use after portuni_status surfaces new_remote entries to bring them under tracking. See portuni://sync-model.",
     {
       node_id: z.string(),
       paths: z.array(z.string()),
@@ -295,7 +295,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
 
   server.tool(
     "portuni_delete_file",
-    "Delete a file. Modes: complete (remote + local + portuni) or unregister_only (only portuni row). First call returns preview; second call with confirmed: true executes.",
+    "Delete a file. Confirm-first: first call returns a preview; surface it to the user, get explicit confirmation, then call again with confirmed: true to execute. Modes: complete (remote + local + portuni DB row) or unregister_only (only the DB row -- use when the file is already gone from disk and remote). See portuni://sync-model.",
     {
       file_id: z.string(),
       mode: z.enum(["complete", "unregister_only"]).optional(),
