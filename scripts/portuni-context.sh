@@ -29,7 +29,7 @@ for URL in $URLS; do
   # Quick health check – skip unreachable instances silently
   curl -s -m 0.2 "$URL/health" > /dev/null 2>&1 || continue
 
-  OUTPUT=$(curl -s -m 1 "${AUTH_HEADER[@]}" "$URL/context?path=$ENCODED_PATH" | python3 -c "
+  OUTPUT=$(curl -s -m 5 "${AUTH_HEADER[@]}" "$URL/context?path=$ENCODED_PATH" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -53,11 +53,20 @@ print('  (Seeds the scope set with this home node + its depth-1 neighbors. Reads
 print()
 
 if edges:
-    print('Connected nodes:')
+    # Summarize edges by type (depth-1 neighbor counts). Names are intentionally
+    # omitted here -- portuni_session_init returns the full list as a tool
+    # result, which keeps the SessionStart prompt small even when an org has
+    # dozens or hundreds of children.
+    plural = {
+        'organization': 'organizations', 'project': 'projects',
+        'process': 'processes', 'area': 'areas', 'principle': 'principles',
+    }
+    counts = {}
     for e in edges:
-        r = e['related']
-        path_info = f\" -> {r['local_path']}\" if r.get('local_path') else ''
-        print(f\"  --{e['relation']}--> {r['type']}: {r['name']}{path_info}\")
+        t = e['related']['type']
+        counts[t] = counts.get(t, 0) + 1
+    summary = ', '.join(f\"{c} {plural.get(t, t) if c != 1 else t}\" for t, c in sorted(counts.items(), key=lambda x: -x[1]))
+    print(f'Connected: {summary} (call portuni_session_init for the full list)')
 
 if events:
     print()

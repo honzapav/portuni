@@ -59,19 +59,16 @@ export function buildAgentPrompt(node: NodeDetail): string {
   if (node.events.length > 0) {
     lines.push("### Recent events");
     lines.push("");
-    for (const e of node.events.slice(0, 10)) {
+    const shown = node.events.slice(0, 10);
+    for (const e of shown) {
       const date = e.created_at.slice(0, 10);
       lines.push(`- \`[${e.type}]\` ${date} — ${e.content}`);
     }
-    lines.push("");
-  }
-
-  if (node.files.length > 0) {
-    lines.push("### Files");
-    lines.push("");
-    for (const f of node.files) {
-      const path = f.local_path ? ` \`${f.local_path}\`` : "";
-      lines.push(`- ${f.filename} _(${f.status})_${path}`);
+    if (node.events.length > shown.length) {
+      const more = node.events.length - shown.length;
+      lines.push(
+        `- _…and at least ${more} older — use \`portuni_list_events({ node_id: "${node.id}" })\` for full history_`,
+      );
     }
     lines.push("");
   }

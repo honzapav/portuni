@@ -3722,6 +3722,10 @@ function ActionButtons({
 }) {
   const [copiedLaunch, setCopiedLaunch] = useState(false);
 
+  // Organizations are workspace roots, not work locations -- nobody runs an
+  // agent at org scope, so the launch command is pointless here.
+  if (node.type === "organization") return null;
+
   const handleCopyLaunch = async () => {
     const cmd = buildAgentCommand(node, agentCommand);
     await navigator.clipboard.writeText(cmd);

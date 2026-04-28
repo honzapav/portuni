@@ -224,12 +224,13 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
 
   server.tool(
     "portuni_list_events",
-    "List events from the knowledge graph, optionally filtered by node, type, status, or time range. Subject to session scope: with node_id the node must be in scope; without node_id the call is treated as a global query (strict refuses, balanced first-time refuses, permissive auto-allow + audit).",
+    "List events from the knowledge graph, optionally filtered by node, type, status, or time range. Returns up to 100 events by default (newest first); pass `limit` to override. Subject to session scope: with node_id the node must be in scope; without node_id the call is treated as a global query (strict refuses, balanced first-time refuses, permissive auto-allow + audit).",
     {
       node_id: z.string().optional().describe("Filter by node ID"),
       type: z.enum(EVENT_TYPES).optional().describe("Filter by event type"),
       status: z.enum(EVENT_STATUSES).optional().describe("Filter by status (active, resolved, superseded, archived)"),
       since: z.string().optional().describe("Filter events created after this ISO datetime"),
+      limit: z.number().int().min(1).max(500).optional().describe("Max rows to return (default 100, hard cap 500)"),
     },
     async (args) => {
       const db = getDb();
@@ -325,14 +326,16 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
       }
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+      const limit = args.limit ?? 100;
 
       const result = await db.execute({
         sql: `SELECT e.id, e.node_id, n.name as node_name, e.type, e.content, e.meta, e.status, e.refs, e.task_ref, e.created_at
               FROM events e
               JOIN nodes n ON e.node_id = n.id
               ${where}
-              ORDER BY e.created_at DESC`,
-        args: values,
+              ORDER BY e.created_at DESC
+              LIMIT ?`,
+        args: [...values, limit],
       });
 
       const events = result.rows.map((row) => ({
