@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import cytoscape from "cytoscape";
+import { LayoutGrid, Shuffle } from "lucide-react";
 import type {
   Core,
   EdgeCollection,
@@ -774,6 +775,33 @@ function animateFit(
   );
 }
 
+// Zoom in on a single node and pin it to the centre of the viewport.
+// Picks a zoom that comfortably frames the node + its 1st-level
+// neighbours (so the user sees context), but the camera centre stays
+// on the clicked node itself rather than the cluster's geometric
+// centre -- otherwise an asymmetric neighbourhood drags the node
+// visibly off-centre. Capped at `maxZoom` so isolated nodes (no
+// neighbours, tiny bbox) don't slam into core maxZoom.
+function focusOnNode(
+  cy: Core,
+  node: NodeSingular,
+  padding: number,
+  maxZoom: number,
+  duration: number,
+): void {
+  const cluster = node.union(node.neighborhood().nodes());
+  const bb = cluster.boundingBox({});
+  const availW = Math.max(cy.width() - 2 * padding, 50);
+  const availH = Math.max(cy.height() - 2 * padding, 50);
+  const zoomX = availW / Math.max(bb.w, 50);
+  const zoomY = availH / Math.max(bb.h, 50);
+  const zoom = Math.min(Math.min(zoomX, zoomY), maxZoom);
+  cy.animate(
+    { zoom, center: { eles: node } },
+    { duration, easing: "ease-in-out-cubic" },
+  );
+}
+
 // Expand each organization's compound-parent body into a square that
 // CIRCUMSCRIBES its children's bounding box. The SVG overlay then draws a
 // circle INSCRIBED in that square (radius = side/2 = sqrt(w²+h²)/2 of the
@@ -849,7 +877,10 @@ function separateOverlappingOrgs(cy: Core): void {
   const orgs = cy.nodes().filter((n) => n.data("type") === "organization");
   if (orgs.length < 2) return;
 
-  const PAD = 60;
+  // Just enough to keep org-circle outlines from kissing -- the labels
+  // sit inside the circles, so a tight gap is fine and lets the orgs
+  // fill the canvas instead of fanning out.
+  const PAD = 16;
   const MAX_ITER = 30;
 
   for (let iter = 0; iter < MAX_ITER; iter++) {
@@ -942,25 +973,32 @@ function applyInitialLayout(
     fit: true,
     padding: 80,
     nodeDimensionsIncludeLabels: true,
-    nodeRepulsion: 45000,
+    // Lower repulsion + higher gravity keeps the constellation compact
+    // so it fills the visible canvas instead of fanning organisations
+    // off into the void. Previous values (45000/0.22) left huge dead
+    // space between every cluster on first load.
+    nodeRepulsion: 22000,
     // Per-edge ideal length: structural edges (belongs_to/applies/
     // informed_by) get a shorter target, so structurally-tied nodes
     // visibly cluster; informational edges (related_to) get a longer
     // target so they don't drag everything together. fcose accepts a
     // function returning the desired length per edge.
     idealEdgeLength: (edge: EdgeSingular) =>
-      edge.data("structural") === "1" ? 150 : 240,
+      edge.data("structural") === "1" ? 110 : 180,
     // Spring stiffness. fcose default is 0.45; we boost it so edges
     // visibly compete with the high node-repulsion force.
     edgeElasticity: 0.65,
-    gravity: 0.22,
+    gravity: 0.45,
     gravityRangeCompound: 1.4,
     gravityCompound: 1.0,
     nestingFactor: 0.15,
     numIter: 4500,
     tile: true,
-    tilingPaddingVertical: 140,
-    tilingPaddingHorizontal: 140,
+    // Tile padding governs how much air sits between sibling
+    // components when fcose packs them. Cut from 140 to 50 -- still
+    // enough that orgs don't touch, but no longer a crater.
+    tilingPaddingVertical: 50,
+    tilingPaddingHorizontal: 50,
     packComponents: true,
     randomize: !hasAnchors,
     quality: hasAnchors ? "proof" : "default",
@@ -1009,6 +1047,14 @@ export default function GraphView({
   // DetailPane on a search hit doesn't snap the camera back to the
   // whole graph and undo the centring.
   const focusElesRef = useRef<NodeCollection | null>(null);
+  // Currently selected node id, mirrored from the selectedId prop into a
+  // ref. The ResizeObserver reads this so that opening/closing the
+  // DetailPane keeps the clicked node pinned to the centre of the
+  // viewport instead of drifting toward the cluster's geometric centre.
+  // Initialised from the prop so a deep-link (?node=X on first load)
+  // gets centred on the right node even if the prop-effect hasn't run
+  // by the first RO callback.
+  const selectedNodeIdRef = useRef<string | null>(selectedId);
   // Debounce the focus fit so fast typing ("A" -> "As" -> "Asa" -> ...)
   // coalesces into a single camera move once the user pauses. Without
   // this, every keystroke fires a new animation and cytoscape's default
@@ -1150,10 +1196,25 @@ export default function GraphView({
       lastFitH = h;
       if (fitTimer !== null) window.clearTimeout(fitTimer);
       fitTimer = window.setTimeout(() => {
-        const focus = focusElesRef.current;
         // Cancel any running animation so this fit replaces it cleanly
         // instead of queueing behind it.
         cy.stop();
+        // Priority: explicit selection > search cluster > fit-all.
+        // Selection wins because clicking a node is the user saying
+        // "I care about THIS node" -- the camera has to keep it
+        // centred even after the DetailPane opens and the container
+        // narrows. Centering preserves the current zoom so we don't
+        // slam to maxZoom on a single 60px node.
+        const selId = selectedNodeIdRef.current;
+        if (selId) {
+          const node = cy.getElementById(selId);
+          if (node.length > 0) {
+            focusOnNode(cy, node, 120, 1.6, 360);
+            fitTimer = null;
+            return;
+          }
+        }
+        const focus = focusElesRef.current;
         if (focus && focus.length > 0) {
           animateFit(cy, focus, 120, 1.6, 360);
         } else {
@@ -1662,17 +1723,21 @@ export default function GraphView({
     }
   }, [deferredQuery, disabledRelations, disabledOrgs, disabledTypes, disabledStatuses]);
 
-  // Apply selection highlight AND focus the camera on the selected node
-  // + its 1st-level neighbours so clicking an entity reveals its
-  // immediate context. Without this, opening the detail pane just
-  // refitted the whole graph (a visible "zoom out" because the
-  // container shrinks) and the user lost sight of the very thing they
-  // tapped on. Search-driven focus still wins: if a query is active,
-  // the search effect owns focusElesRef and we don't fight it here.
+  // Apply selection highlight AND pan the camera so the clicked node
+  // sits at the centre of the viewport. We center on the SINGLE node
+  // (not the cluster of neighbours) so the node the user actually
+  // tapped on is exactly where they expect it -- previously we framed
+  // node.union(neighbourhood), and the cluster's geometric centre is
+  // biased toward whichever side has more neighbours, leaving the
+  // clicked node visibly off-centre. Zoom is preserved: refitting on a
+  // single node would slam the camera to maxZoom and lose every other
+  // node from view, while the user's existing zoom level is already
+  // the one they chose.
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
     prevSelectedRef.current = selectedId;
+    selectedNodeIdRef.current = selectedId;
     cy.batch(() => {
       cy.nodes().removeClass("selected");
       cy.edges().removeClass("highlight");
@@ -1689,28 +1754,22 @@ export default function GraphView({
     if (selectedId) {
       const node = cy.getElementById(selectedId);
       if (node.length === 0) return;
-      // Focus = the clicked node + everything it connects to, including
-      // the parent org if it's a leaf inside one. Keeps the relevant
-      // cluster framed without dragging in distant noise.
-      const focus = node.union(node.neighborhood().nodes());
-      // Only seize focus from the search effect when there's no active
-      // query. With a query, the user is hunting in search space; their
-      // selection is by definition already a search match.
-      if (!hasSearch) {
-        focusElesRef.current = focus;
-      }
-      // Animate immediately. The ResizeObserver will also fire when the
-      // detail pane opens, but it reads focusElesRef and re-runs the
-      // same fit, so a double-fire is harmless (the second one
-      // converges on the already-correct framing).
+      // Animate immediately so the click feels responsive. The
+      // ResizeObserver fires shortly after when the DetailPane mounts
+      // and the container shrinks; it re-centres on the same node, so
+      // the node ends up exactly at the new screen centre rather than
+      // drifting off-centre with the cluster bbox. focusOnNode picks
+      // a zoom that frames the node + immediate neighbours so the
+      // clicked node is visibly enlarged, not just nudged sideways.
       cy.stop();
-      animateFit(cy, focus, 120, 1.6, 360);
+      focusOnNode(cy, node, 120, 1.6, 360);
     } else if (!hasSearch) {
-      // Deselect with no search: refit to the whole graph.
+      // Deselect with no search: refit to all visible nodes so the
+      // whole graph is back in view (matches the initial-load framing).
       focusElesRef.current = null;
       cy.stop();
       cy.animate(
-        { fit: { eles: cy.elements(), padding: 80 } },
+        { fit: { eles: cy.elements(":visible"), padding: 80 } },
         { duration: 360, easing: "ease-in-out-cubic" },
       );
     }
@@ -1794,55 +1853,61 @@ export default function GraphView({
     [onSelect, queuePositionSave],
   );
 
-  // Re-run fcose from scratch, clearing all saved positions. Useful when
-  // the graph looks cluttered or orgs overlap after incremental edits.
-  const handleAutoLayout = useCallback(() => {
-    const cy = cyRef.current;
-    if (!cy || cy.nodes().length === 0) return;
-
-    const layout = cy.layout({
+  // Build the fcose options shared by both relayout buttons. Pulled
+  // out so the two handlers can't drift apart -- the same physics
+  // governs "re-tile leaves" and "rebuild from scratch", they only
+  // differ in whether org positions are restored after layoutstop.
+  const buildRelayoutOptions = useCallback(() => {
+    return {
       name: "fcose",
       animate: true,
       animationDuration: 700,
       fit: true,
       padding: 80,
       nodeDimensionsIncludeLabels: true,
-      nodeRepulsion: 45000,
-      // Per-edge ideal length: structural edges (belongs_to, applies,
-      // informed_by) pull tighter so structurally-tied nodes visibly
-      // cluster; informational related_to edges get a longer target
-      // so they don't drag everything together.
+      nodeRepulsion: 22000,
       idealEdgeLength: (edge: EdgeSingular) =>
-        edge.data("structural") === "1" ? 150 : 240,
-      // fcose default elasticity is 0.45; we go higher so edges
-      // visibly compete with the strong node-repulsion force.
+        edge.data("structural") === "1" ? 110 : 180,
       edgeElasticity: 0.65,
-      gravity: 0.22,
+      gravity: 0.45,
       gravityRangeCompound: 1.4,
       gravityCompound: 1.0,
       nestingFactor: 0.15,
       numIter: 4500,
       tile: true,
-      tilingPaddingVertical: 140,
-      tilingPaddingHorizontal: 140,
+      tilingPaddingVertical: 50,
+      tilingPaddingHorizontal: 50,
       packComponents: true,
-      // Manual org placements are sticky: snapshot below preserves
-      // each org's pre-layout centre, so fcose can re-tile leaves
-      // *within* the cluster without dragging the cluster itself
-      // away from where the user dropped it.
       randomize: true,
-      // Slower but more thorough optimisation when the user
-      // explicitly clicks Auto-rozložení.
       quality: "proof",
-    } as unknown as cytoscape.LayoutOptions);
+    } as unknown as cytoscape.LayoutOptions;
+  }, []);
 
-    // Snapshot every org's canonical anchor (the visible cluster
-    // identity) BEFORE running fcose. The post-layout restore aligns
-    // each org's bounding-box centre with this anchor, which has two
-    // effects: (a) the user-arranged top-level constellation survives
-    // the auto-layout, only the leaves re-tile; and (b) any drift
-    // accumulated from individual leaf drags (which never moved the
-    // anchor) is reset, snapping the cluster back under its nebula.
+  // "Uspořádat uzly": re-tile the leaves *within* each org but keep
+  // each org sitting under its existing nebula. Animation flow:
+  //   1. Snapshot each leaf's start position.
+  //   2. Run fcose with `animate: false` so positions are computed
+  //      synchronously (no fcose-driven motion to fight with).
+  //   3. Apply the anchor restore + expand passes. The leaves are
+  //      now where they should END UP.
+  //   4. Snap them back to their start positions inside cy.batch so
+  //      cytoscape doesn't render the snap.
+  //   5. Animate each leaf from start to target with a single tween,
+  //      so the user sees one continuous motion ending at the leaf's
+  //      final spot near its org -- not "fly away then jump back".
+  const handleRetileNodes = useCallback(() => {
+    const cy = cyRef.current;
+    if (!cy || cy.nodes().length === 0) return;
+
+    // Capture leaf start positions for the manual animation.
+    const startPositions = new Map<string, { x: number; y: number }>();
+    cy.nodes().forEach((n) => {
+      if (n.data("type") === "organization") return;
+      const p = n.position();
+      startPositions.set(n.id(), { x: p.x, y: p.y });
+    });
+
+    // Snapshot every org's canonical anchor.
     const orgCenters = new Map<string, { x: number; y: number }>();
     cy.nodes().forEach((n) => {
       if (n.data("type") !== "organization") return;
@@ -1858,13 +1923,24 @@ export default function GraphView({
       }
     });
 
+    // animate:false -> fcose computes positions synchronously, so
+    // layoutstop fires with the new positions in place but no
+    // intermediate motion has been rendered.
+    // fit:false -> we'll handle the camera ourselves once the manual
+    // animation completes (otherwise the camera snaps to the new bbox
+    // before the leaves visually arrive there).
+    const layout = cy.layout({
+      ...buildRelayoutOptions(),
+      animate: false,
+      fit: false,
+    } as cytoscape.LayoutOptions);
+
     (layout as unknown as { one: (e: string, cb: () => void) => void }).one(
       "layoutstop",
       () => {
         clusterByTypeWithinOrg(cy);
-        // Restore each org's centre to its pre-layout position by
-        // translating all of its children by the (saved - current)
-        // delta. Empty orgs (no children) shift the parent itself.
+        // Anchor restore: shift each org's children so the cluster
+        // centre lands back on the saved anchor.
         cy.nodes().forEach((n) => {
           if (n.data("type") !== "organization") return;
           const saved = orgCenters.get(n.id());
@@ -1885,18 +1961,133 @@ export default function GraphView({
           }
         });
         expandOrgsToCircleSquares(cy);
-        // Skip separateOverlappingOrgs here: the user's manual org
-        // placements are authoritative now. If they dropped two orgs
-        // close together, that was deliberate.
-        cy.fit(undefined, 80);
+
+        // Capture the final per-leaf target positions.
+        const targetPositions = new Map<string, { x: number; y: number }>();
         cy.nodes().forEach((n) => {
+          if (n.data("type") === "organization") return;
           const p = n.position();
-          queuePositionSave(n.id(), p.x, p.y);
+          targetPositions.set(n.id(), { x: p.x, y: p.y });
         });
+
+        // Snap leaves back to their start positions inside a batch
+        // so cytoscape doesn't render the rewind; the animate calls
+        // below will then play start -> target as one motion.
+        cy.batch(() => {
+          cy.nodes().forEach((n) => {
+            const s = startPositions.get(n.id());
+            if (s) n.position(s);
+          });
+        });
+
+        const ANIM_MS = 700;
+        cy.nodes().forEach((n) => {
+          const t = targetPositions.get(n.id());
+          if (!t) return;
+          n.animate(
+            { position: t },
+            { duration: ANIM_MS, easing: "ease-out-cubic" },
+          );
+        });
+
+        // After the leaves finish animating, fit the camera and
+        // persist the new positions. fitAllInView ignores in-flight
+        // animations so we wait until they've settled.
+        window.setTimeout(() => {
+          fitAllInView(cy, 80);
+          cy.nodes().forEach((n) => {
+            const p = n.position();
+            queuePositionSave(n.id(), p.x, p.y);
+          });
+        }, ANIM_MS + 50);
       },
     );
     layout.run();
-  }, [queuePositionSave]);
+  }, [buildRelayoutOptions, queuePositionSave]);
+
+  // "Přegenerovat layout": full re-pack including the top-level org
+  // constellation. Same animation strategy as handleRetileNodes --
+  // fcose runs synchronously, all post-processing (including
+  // separateOverlappingOrgs) runs against the final positions, and a
+  // single manual tween animates leaves from their start spots to
+  // those finals. Without this, fcose animated to its raw output and
+  // separateOverlappingOrgs then snapped overlapping orgs apart on
+  // top of that, producing the exact "animate then jump" the user
+  // complained about.
+  const handleFullRelayout = useCallback(() => {
+    const cy = cyRef.current;
+    if (!cy || cy.nodes().length === 0) return;
+
+    const startPositions = new Map<string, { x: number; y: number }>();
+    cy.nodes().forEach((n) => {
+      if (n.data("type") === "organization") return;
+      const p = n.position();
+      startPositions.set(n.id(), { x: p.x, y: p.y });
+    });
+
+    const layout = cy.layout({
+      ...buildRelayoutOptions(),
+      animate: false,
+      fit: false,
+    } as cytoscape.LayoutOptions);
+
+    (layout as unknown as { one: (e: string, cb: () => void) => void }).one(
+      "layoutstop",
+      () => {
+        clusterByTypeWithinOrg(cy);
+        expandOrgsToCircleSquares(cy);
+        separateOverlappingOrgs(cy);
+        // Re-seat anchors so org labels follow the new centroids.
+        cy.nodes().forEach((n) => {
+          if (n.data("type") !== "organization") return;
+          const children = n.children();
+          if (children.length === 0) {
+            const p = n.position();
+            orgAnchorsRef.current.set(n.id(), { x: p.x, y: p.y });
+            return;
+          }
+          const bb = children.boundingBox({});
+          orgAnchorsRef.current.set(n.id(), {
+            x: (bb.x1 + bb.x2) / 2,
+            y: (bb.y1 + bb.y2) / 2,
+          });
+        });
+
+        const targetPositions = new Map<string, { x: number; y: number }>();
+        cy.nodes().forEach((n) => {
+          if (n.data("type") === "organization") return;
+          const p = n.position();
+          targetPositions.set(n.id(), { x: p.x, y: p.y });
+        });
+
+        cy.batch(() => {
+          cy.nodes().forEach((n) => {
+            const s = startPositions.get(n.id());
+            if (s) n.position(s);
+          });
+        });
+
+        const ANIM_MS = 700;
+        cy.nodes().forEach((n) => {
+          const t = targetPositions.get(n.id());
+          if (!t) return;
+          n.animate(
+            { position: t },
+            { duration: ANIM_MS, easing: "ease-out-cubic" },
+          );
+        });
+
+        window.setTimeout(() => {
+          fitAllInView(cy, 80);
+          cy.nodes().forEach((n) => {
+            const p = n.position();
+            queuePositionSave(n.id(), p.x, p.y);
+          });
+        }, ANIM_MS + 50);
+      },
+    );
+    layout.run();
+  }, [buildRelayoutOptions, queuePositionSave]);
 
   return (
     <div
@@ -2115,13 +2306,26 @@ export default function GraphView({
           );
         })}
       </svg>
-      <button
-        onClick={handleAutoLayout}
-        title="Znovu spustit automatické rozložení"
-        className="absolute bottom-4 right-4 z-30 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[14px] font-medium text-[var(--color-text-muted)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
-      >
-        Auto-rozložení
-      </button>
+      <div className="absolute bottom-4 right-4 z-30 flex gap-2">
+        <button
+          type="button"
+          onClick={handleRetileNodes}
+          title="Uspořádat uzly uvnitř organizací (organizace zůstanou na místě)"
+          aria-label="Uspořádat uzly"
+          className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+        >
+          <LayoutGrid size={16} />
+        </button>
+        <button
+          type="button"
+          onClick={handleFullRelayout}
+          title="Kompletně přegenerovat layout včetně rozmístění organizací"
+          aria-label="Přegenerovat layout"
+          className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+        >
+          <Shuffle size={16} />
+        </button>
+      </div>
     </div>
   );
 }
