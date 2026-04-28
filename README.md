@@ -35,6 +35,12 @@ Server listens on `http://localhost:4011`. Health check: `curl http://localhost:
 
 The full setup guide – environment variables, Turso vs local SQLite, running multiple instances, connecting MCP clients – lives at [docs.portuni.com/getting-started/setup](https://docs.portuni.com/getting-started/setup/).
 
+## Project status
+
+Portuni is alpha software in active development. The graph model, MCP tools, events, and file sync are stable enough to build on. Multi-user auth, search, additional file backends, and a proper migration framework are not built yet – manage expectations accordingly.
+
+For the full picture and what's coming next, see [Project status & roadmap](https://docs.portuni.com/getting-started/roadmap/).
+
 ## Tests
 
 ```bash
