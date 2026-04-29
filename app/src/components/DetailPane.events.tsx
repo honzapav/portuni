@@ -8,6 +8,7 @@ import { Check, Clock, Pencil, Plus, Trash2, X } from "lucide-react";
 import type { DetailEvent } from "../types";
 import { EVENT_TYPES } from "../types";
 import { archiveEvent, createEvent, updateEvent } from "../api";
+import { DatePicker } from "./DatePicker";
 
 export function EventCard({
   event: evt,
@@ -21,6 +22,7 @@ export function EventCard({
   const [editing, setEditing] = useState(false);
   const [content, setContent] = useState(evt.content);
   const [type, setType] = useState(evt.type);
+  const [date, setDate] = useState(evt.created_at.slice(0, 10));
   const [saving, setSaving] = useState(false);
 
   const save = async () => {
@@ -29,6 +31,9 @@ export function EventCard({
       const patch: Record<string, string> = {};
       if (content.trim() !== evt.content) patch.content = content.trim();
       if (type !== evt.type) patch.type = type;
+      if (date !== evt.created_at.slice(0, 10)) {
+        patch.created_at = date + evt.created_at.slice(10);
+      }
       if (Object.keys(patch).length > 0) {
         await updateEvent(evt.id, patch);
         await onMutate();
@@ -72,12 +77,14 @@ export function EventCard({
               <option key={t} value={t}>{t}</option>
             ))}
           </select>
+          <DatePicker value={date} onChange={setDate} />
           <span className="flex-1" />
           <button
             onClick={() => {
               setEditing(false);
               setContent(evt.content);
               setType(evt.type);
+              setDate(evt.created_at.slice(0, 10));
             }}
             className="text-[12.5px] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
           >

@@ -61,7 +61,7 @@ export async function handleUpdateEvent(
 ): Promise<void> {
   try {
     const body = (await parseBody(req)) as
-      | { content?: string; type?: string; status?: string }
+      | { content?: string; type?: string; status?: string; created_at?: string }
       | undefined;
     if (!body) {
       respondJson(res, 400, { error: "body required" });
@@ -95,6 +95,15 @@ export async function handleUpdateEvent(
     if (typeof body.status === "string") {
       updates.push("status = ?");
       values.push(body.status);
+    }
+    if (typeof body.created_at === "string") {
+      const parsed = new Date(body.created_at);
+      if (Number.isNaN(parsed.getTime())) {
+        respondJson(res, 400, { error: "invalid created_at; expected ISO datetime" });
+        return;
+      }
+      updates.push("created_at = ?");
+      values.push(body.created_at);
     }
     if (updates.length === 0) {
       respondJson(res, 400, { error: "no fields to update" });

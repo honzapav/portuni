@@ -167,7 +167,7 @@ export function createEvent(input: {
 
 export function updateEvent(
   id: string,
-  patch: { content?: string; type?: string; status?: string },
+  patch: { content?: string; type?: string; status?: string; created_at?: string },
 ): Promise<unknown> {
   return jsonRequest("PATCH", `/events/${encodeURIComponent(id)}`, patch);
 }
