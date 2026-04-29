@@ -13,6 +13,7 @@
     "format": "biome format --write",
     "typecheck": "tsc --noEmit",
     "qa": "npm run lint:strict && npm run typecheck && npm test && npm run build",
+    "build:sidecar": "node scripts/build-sidecar.mjs",
     "prepare": "simple-git-hooks || true"
   },
   "simple-git-hooks": {

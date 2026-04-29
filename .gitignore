@@ -13,3 +13,4 @@ portuni.db
 
 # One-shot/throwaway scripts (delete after use)
 scripts/oneshot/
+src-tauri/binaries/
