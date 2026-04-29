@@ -35,5 +35,5 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
       - run: npm ci --prefix app
-      - run: npx --prefix app tsc -b --noEmit
+      - run: npx --prefix app tsc -b app --noEmit
       - run: npm --prefix app run build
