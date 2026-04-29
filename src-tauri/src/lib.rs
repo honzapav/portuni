@@ -17,18 +17,32 @@ struct BackendPort(Mutex<Option<u16>>);
 
 #[tauri::command]
 fn get_backend_port(state: tauri::State<BackendPort>) -> Option<u16> {
-    *state.0.lock().unwrap()
+    let port = *state.0.lock().unwrap();
+    eprintln!("[tauri] get_backend_port -> {port:?}");
+    port
 }
 
 fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&data_dir).ok();
     let data_dir_str = data_dir.to_string_lossy().to_string();
+    eprintln!("[tauri] spawn_sidecar: data_dir={data_dir_str}");
 
     // tauri-plugin-shell 2.x's env_clear() does not reliably scrub the
     // parent env on macOS — so we additionally force-empty the variables
     // we don't want leaking from a developer's varlock-loaded shell.
     // Desktop mode runs auth-free on loopback by design.
+    //
+    // Tauri's webview ships requests from a non-loopback origin that the
+    // backend's default allowlist doesn't know about. Pass the Tauri
+    // origins (and the wildcard variant for older builds) explicitly so
+    // the middleware admits them.
+    let allowed_origins = [
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+        "tauri://localhost",
+    ]
+    .join(",");
     let (mut rx, child) = app
         .shell()
         .sidecar("portuni-sidecar")?
@@ -38,6 +52,7 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .env("PORTUNI_AUTH_TOKEN", "")
         .env("TURSO_URL", "")
         .env("TURSO_AUTH_TOKEN", "")
+        .env("PORTUNI_ALLOWED_ORIGINS", allowed_origins)
         .env("HOME", std::env::var("HOME").unwrap_or_default())
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .spawn()?;
