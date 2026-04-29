@@ -132,7 +132,8 @@ export function DatePicker({
                 {w}
               </div>
             ))}
-            {cells.map(({ date, inMonth }, i) => {
+            {cells.map(({ date, inMonth }) => {
+              const iso = formatIso(date);
               const isSelected = isoEq(date, selected);
               const isToday = isoEq(date, today);
               const base = "h-6 rounded text-[12px] font-mono transition-colors";
@@ -146,9 +147,9 @@ export function DatePicker({
               return (
                 <button
                   type="button"
-                  key={i}
+                  key={iso}
                   onClick={() => {
-                    onChange(formatIso(date));
+                    onChange(iso);
                     setOpen(false);
                   }}
                   className={`${base} ${tone}`}
