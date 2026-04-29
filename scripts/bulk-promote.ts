@@ -17,10 +17,10 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { getDb } from "../src/db.js";
-import { compileIgnorePatterns } from "../src/portuniignore.js";
-import { statusScan, storeFile } from "../src/sync/engine.js";
-import { SOLO_USER } from "../src/schema.js";
+import { getDb } from "../src/infra/db.js";
+import { compileIgnorePatterns } from "../src/shared/portuniignore.js";
+import { statusScan, storeFile } from "../src/domain/sync/engine.js";
+import { SOLO_USER } from "../src/infra/schema.js";
 
 interface Args {
   node?: string;

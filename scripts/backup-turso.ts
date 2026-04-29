@@ -7,7 +7,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getDb } from "../src/db.js";
+import { getDb } from "../src/infra/db.js";
 
 function quoteValue(v: unknown): string {
   if (v === null || v === undefined) return "NULL";
