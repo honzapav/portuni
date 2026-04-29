@@ -1,15 +1,17 @@
-// Resolves the base URL for backend HTTP calls.
+// Resolves the base URL for backend HTTP calls and (in Tauri mode) the
+// per-launch auth token the sidecar requires.
 //
 // In Tauri (desktop) mode the Rust host spawns the Node sidecar on an
-// OS-assigned loopback port. Two channels expose the port to the
-// frontend:
+// OS-assigned loopback port and generates a random auth token per
+// launch. Two channels expose the port to the frontend:
 //   - `get_backend_port` Tauri command (preferred — works even if the
 //     event fired before the React app could listen)
 //   - `backend-ready` event (cheap fallback for the rare case the
 //     command returns null because the sidecar is still booting)
 //
 // In a plain browser (Vite dev or static preview) we keep the existing
-// `/api` prefix so Vite's dev proxy forwards it to localhost:4011.
+// `/api` prefix so Vite's dev proxy forwards it to localhost:4011 and
+// no Authorization header is needed (the proxy injects one).
 
 declare global {
   interface Window {
@@ -22,7 +24,9 @@ const POLL_INTERVAL_MS = 150;
 const POLL_TIMEOUT_MS = 30_000;
 
 let cachedBase: string | null = null;
-let pending: Promise<string> | null = null;
+let cachedToken: string | null = null;
+let pendingBase: Promise<string> | null = null;
+let pendingToken: Promise<string> | null = null;
 
 export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -34,7 +38,6 @@ async function pollBackendPort(): Promise<string> {
 
   let unlistenFn: (() => void) | null = null;
 
-  // Race the polling loop against the event so whichever lands first wins.
   const eventPromise = new Promise<number>((resolve) => {
     void listen<number>("backend-ready", (event) => {
       resolve(event.payload);
@@ -61,22 +64,41 @@ async function pollBackendPort(): Promise<string> {
   }
 }
 
+async function fetchAuthToken(): Promise<string> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string>("get_auth_token");
+}
+
 export function getBackendBase(): Promise<string> {
   if (cachedBase !== null) return Promise.resolve(cachedBase);
   if (!isTauri()) {
     cachedBase = BROWSER_BASE;
     return Promise.resolve(cachedBase);
   }
-  if (!pending) {
-    pending = pollBackendPort().then((url) => {
+  if (!pendingBase) {
+    pendingBase = pollBackendPort().then((url) => {
       cachedBase = url;
       return url;
     });
   }
-  return pending;
+  return pendingBase;
+}
+
+function getAuthToken(): Promise<string> {
+  if (cachedToken !== null) return Promise.resolve(cachedToken);
+  if (!isTauri()) return Promise.resolve("");
+  if (!pendingToken) {
+    pendingToken = fetchAuthToken().then((token) => {
+      cachedToken = token;
+      return token;
+    });
+  }
+  return pendingToken;
 }
 
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
-  const base = await getBackendBase();
-  return fetch(`${base}${path}`, init);
+  const [base, token] = await Promise.all([getBackendBase(), getAuthToken()]);
+  const headers = new Headers(init?.headers ?? {});
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return fetch(`${base}${path}`, { ...init, headers });
 }
