@@ -35,7 +35,7 @@ export async function purgeNodeLocalCleanup(
   }
 }
 
-export const CreateNodeInput = z.object({
+const CreateNodeInput = z.object({
   type: z.enum(NODE_TYPES),
   name: z.string(),
   description: z.string().optional(),
@@ -46,9 +46,9 @@ export const CreateNodeInput = z.object({
   goal: z.string().optional(),
   lifecycle_state: z.string().optional(),
 });
-export type CreateNodeInput = z.infer<typeof CreateNodeInput>;
+type CreateNodeInput = z.infer<typeof CreateNodeInput>;
 
-export const UpdateNodeInput = z.object({
+const UpdateNodeInput = z.object({
   node_id: z.string(),
   name: z.string().optional(),
   description: z.string().nullable().optional(),
@@ -59,7 +59,7 @@ export const UpdateNodeInput = z.object({
   lifecycle_state: z.string().nullable().optional(),
   owner_id: z.string().nullable().optional(),
 });
-export type UpdateNodeInput = z.infer<typeof UpdateNodeInput>;
+type UpdateNodeInput = z.infer<typeof UpdateNodeInput>;
 
 async function writeAudit(
   db: Client,

@@ -114,9 +114,6 @@ export const NodeSummaryRow = NodeRow.pick({
 });
 export type NodeSummaryRow = z.infer<typeof NodeSummaryRow>;
 
-export const NodeIdRow = NodeRow.pick({ id: true });
-export type NodeIdRow = z.infer<typeof NodeIdRow>;
-
 export const ActorRow = z.object({
   id: z.string(),
   type: z.string(),
@@ -140,13 +137,6 @@ export const ResponsibilityRow = z.object({
   updated_at: z.string(),
 });
 export type ResponsibilityRow = z.infer<typeof ResponsibilityRow>;
-
-export const ResponsibilityAssignmentRow = z.object({
-  responsibility_id: z.string(),
-  actor_id: z.string(),
-  created_at: z.string(),
-});
-export type ResponsibilityAssignmentRow = z.infer<typeof ResponsibilityAssignmentRow>;
 
 export const DataSourceRow = z.object({
   id: z.string(),

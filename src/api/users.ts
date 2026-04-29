@@ -2,7 +2,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getDb } from "../infra/db.js";
-import { respondError } from "../http/middleware.js";
+import { respondError , respondJson} from "../http/middleware.js";
 
 export async function handleListUsers(
   req: IncomingMessage,
@@ -12,8 +12,7 @@ export async function handleListUsers(
     const rows = await getDb().execute(
       "SELECT id, email, name FROM users ORDER BY name",
     );
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(rows.rows));
+    respondJson(res, 200, rows.rows);
   } catch (err) {
     respondError(res, `${req.method} /users`, err);
   }

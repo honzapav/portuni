@@ -2,7 +2,6 @@
 // /nodes/:id/folder-url, /nodes/:id/sync, /nodes/:id/move, /positions.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { ulid } from "ulid";
 import { getDb } from "../infra/db.js";
 import { logAudit } from "../infra/audit.js";
 import {
@@ -10,16 +9,16 @@ import {
   NODE_VISIBILITIES,
   SOLO_USER,
 } from "../infra/schema.js";
-import { generateSyncKey } from "../domain/sync/sync-key.js";
 import { buildNodeRoot } from "../domain/sync/remote-path.js";
 import { resolveRemote } from "../domain/sync/routing.js";
 import { getAdapter } from "../domain/sync/adapter-cache.js";
 import { statusScan, storeFile, pullFile } from "../domain/sync/engine.js";
-import { updateNodeInternal } from "../domain/nodes.js";
+import { createNodeInternal, updateNodeInternal } from "../domain/nodes.js";
 import { moveNodeToOrganization } from "../domain/edges.js";
 import { loadNodeDetail } from "../domain/queries/node-detail.js";
 import type { SyncStatusResponse, SyncRunResponse } from "../shared/api-types.js";
-import { parseBody, respondError } from "../http/middleware.js";
+import { parseBody, parseJsonBody, respondError , respondJson} from "../http/middleware.js";
+import { z } from "zod";
 
 export async function handleGetNode(
   req: IncomingMessage,
@@ -27,19 +26,16 @@ export async function handleGetNode(
   nodeId: string,
 ): Promise<void> {
   if (!nodeId) {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "node id required" }));
+    respondJson(res, 400, { error: "node id required" });
     return;
   }
   try {
     const node = await loadNodeDetail(getDb(), SOLO_USER, nodeId);
     if (!node) {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "node not found" }));
+      respondJson(res, 404, { error: "node not found" });
       return;
     }
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(node));
+    respondJson(res, 200, node);
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}`, err);
   }
@@ -65,8 +61,7 @@ export async function handlePatchNode(
         }
       | undefined;
     if (!body) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "body required" }));
+      respondJson(res, 400, { error: "body required" });
       return;
     }
     const update: {
@@ -96,12 +91,9 @@ export async function handlePatchNode(
     }
     if (body.visibility !== undefined) {
       if (!(NODE_VISIBILITIES as readonly string[]).includes(body.visibility)) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            error: `invalid visibility '${body.visibility}'. Valid: ${NODE_VISIBILITIES.join(", ")}`,
-          }),
-        );
+        respondJson(res, 400, {
+          error: `invalid visibility '${body.visibility}'. Valid: ${NODE_VISIBILITIES.join(", ")}`,
+        });
         return;
       }
       update.visibility = body.visibility as (typeof NODE_VISIBILITIES)[number];
@@ -114,19 +106,16 @@ export async function handlePatchNode(
       update.owner_id !== undefined ||
       update.visibility !== undefined;
     if (!hasUpdate) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "no fields to update" }));
+      respondJson(res, 400, { error: "no fields to update" });
       return;
     }
     await updateNodeInternal(getDb(), SOLO_USER, update);
     const node = await loadNodeDetail(getDb(), SOLO_USER, nodeId);
     if (!node) {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "node not found" }));
+      respondJson(res, 404, { error: "node not found" });
       return;
     }
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(node));
+    respondJson(res, 200, node);
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}`, err);
   }
@@ -144,8 +133,7 @@ export async function handleMoveNode(
   try {
     const body = (await parseBody(req)) as { new_org_id?: string } | undefined;
     if (!body?.new_org_id || typeof body.new_org_id !== "string") {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "new_org_id required" }));
+      respondJson(res, 400, { error: "new_org_id required" });
       return;
     }
     const result = await moveNodeToOrganization(
@@ -156,71 +144,49 @@ export async function handleMoveNode(
     );
     const node = await loadNodeDetail(getDb(), SOLO_USER, nodeId);
     if (!node) {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "node not found" }));
+      respondJson(res, 404, { error: "node not found" });
       return;
     }
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ...result, node }));
+    respondJson(res, 200, { ...result, node });
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/move`, err);
   }
 }
 
-// Create a node. Note: this REST endpoint stays minimal (no
-// organization_id, lifecycle_state, etc.) because the frontend's "new
-// node" dialog only collects type + name + description. MCP's
-// portuni_create_node is the rich path.
+const CreateNodeBody = z
+  .object({
+    type: z.enum(NODE_TYPES),
+    name: z.string().trim().min(1),
+    description: z.string().nullable().optional(),
+    organization_id: z.string().optional(),
+    goal: z.string().nullable().optional(),
+    lifecycle_state: z.string().nullable().optional(),
+  })
+  .refine(
+    (b) => b.type === "organization" || typeof b.organization_id === "string",
+    { message: "organization_id is required for non-organization types", path: ["organization_id"] },
+  );
+
+// Create a node. Routes through createNodeInternal so the org-invariant
+// (every non-organization node belongs to exactly one organization via
+// belongs_to) is enforced atomically — same as the MCP path.
 export async function handleCreateNode(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
+  const body = await parseJsonBody(req, res, CreateNodeBody);
+  if (!body) return;
   try {
-    const body = (await parseBody(req)) as
-      | { type?: string; name?: string; description?: string | null }
-      | undefined;
-    if (!body?.type || !body.name) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "type and name required" }));
-      return;
-    }
-    if (!(NODE_TYPES as readonly string[]).includes(body.type)) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          error: `invalid type; must be one of ${NODE_TYPES.join(", ")}`,
-        }),
-      );
-      return;
-    }
-    const db = getDb();
-    const id = ulid();
-    const now = new Date().toISOString();
-    const syncKey = await generateSyncKey(db, body.name.trim());
-    await db.execute({
-      sql: `INSERT INTO nodes (id, type, name, description, meta, status, visibility, sync_key, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [
-        id,
-        body.type,
-        body.name.trim(),
-        body.description ?? null,
-        null,
-        "active",
-        "team",
-        syncKey,
-        SOLO_USER,
-        now,
-        now,
-      ],
-    });
-    await logAudit(SOLO_USER, "create_node", "node", id, {
+    const id = await createNodeInternal(getDb(), SOLO_USER, {
       type: body.type,
       name: body.name,
+      description: body.description ?? undefined,
+      organization_id: body.organization_id,
+      goal: body.goal ?? undefined,
+      lifecycle_state: body.lifecycle_state ?? undefined,
     });
-    const node = await loadNodeDetail(db, SOLO_USER, id);
-    res.writeHead(201, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(node));
+    const node = await loadNodeDetail(getDb(), SOLO_USER, id);
+    respondJson(res, 201, node);
   } catch (err) {
     respondError(res, `${req.method} /nodes`, err);
   }
@@ -239,8 +205,7 @@ export async function handleDeleteNode(
       args: [nodeId],
     });
     if (existing.rows.length === 0) {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "node not found" }));
+      respondJson(res, 404, { error: "node not found" });
       return;
     }
     await db.execute({
@@ -248,8 +213,7 @@ export async function handleDeleteNode(
       args: [new Date().toISOString(), nodeId],
     });
     await logAudit(SOLO_USER, "archive_node", "node", nodeId, {});
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ archived: nodeId }));
+    respondJson(res, 200, { archived: nodeId });
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}`, err);
   }
@@ -309,8 +273,7 @@ export async function handleSyncStatus(
     push(result.native, "native");
     push(result.deleted_local, "deleted_local");
     const payload: SyncStatusResponse = { files: tagged };
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(payload));
+    respondJson(res, 200, payload);
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sync-status`, err);
   }
@@ -332,8 +295,7 @@ export async function handleFolderUrl(
       args: [nodeId],
     });
     if (nodeRow.rows.length === 0) {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "node not found" }));
+      respondJson(res, 404, { error: "node not found" });
       return;
     }
     const n = nodeRow.rows[0];
@@ -349,8 +311,7 @@ export async function handleFolderUrl(
         args: [nodeId],
       });
       if (orgRow.rows.length === 0) {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ url: null, reason: "no organization" }));
+        respondJson(res, 200, { url: null, reason: "no organization" });
         return;
       }
       orgSyncKey = orgRow.rows[0].sync_key as string;
@@ -359,20 +320,16 @@ export async function handleFolderUrl(
     }
     const remoteName = await resolveRemote(db, nodeType, orgSyncKey);
     if (!remoteName) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ url: null, reason: "no remote routed" }));
+      respondJson(res, 200, { url: null, reason: "no remote routed" });
       return;
     }
     const adapter = await getAdapter(db, remoteName);
     if (!adapter.folderUrl) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          url: null,
-          remote_name: remoteName,
-          reason: "remote backend has no web URL",
-        }),
-      );
+      respondJson(res, 200, {
+        url: null,
+        remote_name: remoteName,
+        reason: "remote backend has no web URL",
+      });
       return;
     }
     const folderPath = buildNodeRoot({
@@ -381,14 +338,11 @@ export async function handleFolderUrl(
       nodeSyncKey,
     });
     const folderUrl = await adapter.folderUrl(folderPath);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        url: folderUrl,
-        remote_name: remoteName,
-        ...(folderUrl === null ? { reason: "folder not synced yet" } : {}),
-      }),
-    );
+    respondJson(res, 200, {
+      url: folderUrl,
+      remote_name: remoteName,
+      ...(folderUrl === null ? { reason: "folder not synced yet" } : {}),
+    });
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/folder-url`, err);
   }
@@ -467,8 +421,7 @@ export async function handleSyncRun(
         sync_class: e.class,
       });
     }
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(result));
+    respondJson(res, 200, result);
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sync`, err);
   }
@@ -487,8 +440,7 @@ export async function handlePositions(
       | undefined;
     const updates = Array.isArray(body?.updates) ? body!.updates : [];
     if (updates.length === 0) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ updated: 0 }));
+      respondJson(res, 200, { updated: 0 });
       return;
     }
     const db = getDb();
@@ -511,8 +463,7 @@ export async function handlePositions(
       });
       updated += result.rowsAffected;
     }
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ updated }));
+    respondJson(res, 200, { updated });
   } catch (err) {
     respondError(res, `${req.method} /positions`, err);
   }

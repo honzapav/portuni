@@ -8,7 +8,7 @@ export interface TokenStore {
 
 export type TokenStoreKind = "file" | "keychain" | "varlock";
 
-export async function createTokenStore(): Promise<TokenStore> {
+async function createTokenStore(): Promise<TokenStore> {
   const kind = (process.env.PORTUNI_TOKEN_STORE as TokenStoreKind | undefined) ?? "file";
   switch (kind) {
     case "file": return (await import("./token-store-file.js")).createFileTokenStore();

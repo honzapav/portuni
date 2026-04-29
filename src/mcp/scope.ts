@@ -10,8 +10,6 @@ import type { Client } from "@libsql/client";
 
 export type ScopeMode = "strict" | "balanced" | "permissive";
 
-export const SCOPE_MODES: readonly ScopeMode[] = ["strict", "balanced", "permissive"];
-
 export function parseScopeMode(value: string | undefined | null): ScopeMode {
   const v = (value ?? "").trim().toLowerCase();
   if (v === "strict" || v === "balanced" || v === "permissive") return v;

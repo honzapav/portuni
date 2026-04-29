@@ -20,7 +20,7 @@ export const ExternalLinkSchema = z
     },
   );
 
-export const AddEntityAttrInput = z.object({
+const AddEntityAttrInput = z.object({
   node_id: z.string().describe("Node ID (ULID). Must be a project/process/area."),
   name: z.string().describe("Short display name."),
   description: z.string().optional().describe("Optional detail."),
@@ -28,7 +28,7 @@ export const AddEntityAttrInput = z.object({
     "Optional plain URL (http/https/mailto only). NEVER a connection string with credentials.",
   ),
 });
-export type AddEntityAttrInput = z.infer<typeof AddEntityAttrInput>;
+type AddEntityAttrInput = z.infer<typeof AddEntityAttrInput>;
 
 type EntityAttrTable = "data_sources" | "tools";
 
@@ -81,7 +81,7 @@ async function addRow<T>(
   return parser(res.rows[0]);
 }
 
-export const UpdateEntityAttrInput = z.object({
+const UpdateEntityAttrInput = z.object({
   name: z.string().optional(),
   description: z.union([z.string(), z.null()]).optional(),
   external_link: z
@@ -95,7 +95,7 @@ export const UpdateEntityAttrInput = z.object({
       },
     ),
 });
-export type UpdateEntityAttrInput = z.infer<typeof UpdateEntityAttrInput>;
+type UpdateEntityAttrInput = z.infer<typeof UpdateEntityAttrInput>;
 
 async function updateRow<T>(
   db: Client,

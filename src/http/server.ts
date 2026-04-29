@@ -2,7 +2,7 @@
 // gates (host/origin/CORS/auth) once, and dispatches to either the MCP
 // transport or the REST router.
 
-import { createServer } from "node:http";
+import { createServer, type Server } from "node:http";
 import { createMcpTransport } from "../mcp/transport.js";
 import { routeApiRequest } from "../api/router.js";
 import {
@@ -11,11 +11,25 @@ import {
   assertAuthRequiredIfNotLoopback,
 } from "./middleware.js";
 
-const PORT = Number(process.env.PORT ?? 4011);
-const HOST = process.env.HOST ?? "127.0.0.1";
+export interface HttpServerHandle {
+  server: Server;
+  shutdown: () => Promise<void>;
+}
 
-export function startHttpServer(): void {
-  assertAuthRequiredIfNotLoopback(HOST);
+export interface StartHttpServerOptions {
+  port?: number;
+  host?: string;
+  // Tests pass false so multiple ad-hoc servers don't leave orphan
+  // SIGINT handlers behind in the same process.
+  registerSigint?: boolean;
+}
+
+export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHandle {
+  const port = opts.port ?? Number(process.env.PORT ?? 4011);
+  const host = opts.host ?? process.env.HOST ?? "127.0.0.1";
+  const registerSigint = opts.registerSigint ?? true;
+
+  assertAuthRequiredIfNotLoopback(host);
 
   const mcp = createMcpTransport();
 
@@ -37,9 +51,9 @@ export function startHttpServer(): void {
     }
   });
 
-  httpServer.listen(PORT, HOST, () => {
-    console.log(`Portuni MCP server listening on http://${HOST}:${PORT}`);
-    console.log(`Streamable HTTP endpoint: http://${HOST}:${PORT}/mcp`);
+  httpServer.listen(port, host, () => {
+    console.log(`Portuni MCP server listening on http://${host}:${port}`);
+    console.log(`Streamable HTTP endpoint: http://${host}:${port}/mcp`);
     console.log(
       AUTH_ENABLED
         ? "Auth: bearer token required (Authorization: Bearer <PORTUNI_AUTH_TOKEN>)"
@@ -47,9 +61,18 @@ export function startHttpServer(): void {
     );
   });
 
-  process.on("SIGINT", () => {
+  const shutdown = async (): Promise<void> => {
     mcp.shutdown();
-    httpServer.close();
-    process.exit(0);
-  });
+    await new Promise<void>((resolve) => {
+      httpServer.close(() => resolve());
+    });
+  };
+
+  if (registerSigint) {
+    process.on("SIGINT", () => {
+      shutdown().finally(() => process.exit(0));
+    });
+  }
+
+  return { server: httpServer, shutdown };
 }

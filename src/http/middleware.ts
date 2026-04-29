@@ -4,40 +4,74 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import type { ZodType } from "zod";
 import { checkAuthRequiredForConfig } from "../infra/server-config.js";
 
-const PORT = Number(process.env.PORT ?? 4011);
 const MAX_BODY_BYTES = Number(process.env.PORTUNI_MAX_BODY_BYTES ?? 5 * 1024 * 1024);
 
-const DEFAULT_ALLOWED_ORIGINS = [
-  `http://localhost:${PORT}`,
-  `http://127.0.0.1:${PORT}`,
-  "http://localhost:4010",
-  "http://127.0.0.1:4010",
-  // localias (Caddy) serves *.test over HTTPS by default, but also responds
-  // on plain HTTP if the user disables TLS. Allow both.
-  "http://portuni.test",
-  "https://portuni.test",
-];
-export const ALLOWED_ORIGINS = new Set(
-  (process.env.PORTUNI_ALLOWED_ORIGINS ?? DEFAULT_ALLOWED_ORIGINS.join(","))
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean),
-);
+// Allowed hosts/origins are computed lazily on first use because tests
+// (rest-smoke, mcp-smoke) override PORT before booting an in-process
+// server, and module-level constants are frozen by the time a test's
+// process.env mutations run.
+let allowedHostsCache: Set<string> | null = null;
+let allowedOriginsCache: Set<string> | null = null;
 
-export const ALLOWED_HOSTS = new Set(
-  [
-    `localhost:${PORT}`,
-    `127.0.0.1:${PORT}`,
-    `[::1]:${PORT}`,
-    "api.portuni.test",
-    ...(process.env.PORTUNI_ALLOWED_HOSTS ?? "")
+function getPort(): number {
+  return Number(process.env.PORT ?? 4011);
+}
+
+function buildAllowedOrigins(): Set<string> {
+  const port = getPort();
+  const defaults = [
+    `http://localhost:${port}`,
+    `http://127.0.0.1:${port}`,
+    "http://localhost:4010",
+    "http://127.0.0.1:4010",
+    // localias (Caddy) serves *.test over HTTPS by default, but also responds
+    // on plain HTTP if the user disables TLS. Allow both.
+    "http://portuni.test",
+    "https://portuni.test",
+  ];
+  return new Set(
+    (process.env.PORTUNI_ALLOWED_ORIGINS ?? defaults.join(","))
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),
-  ].map((h) => h.toLowerCase()),
-);
+  );
+}
+
+function buildAllowedHosts(): Set<string> {
+  const port = getPort();
+  return new Set(
+    [
+      `localhost:${port}`,
+      `127.0.0.1:${port}`,
+      `[::1]:${port}`,
+      "api.portuni.test",
+      ...(process.env.PORTUNI_ALLOWED_HOSTS ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ].map((h) => h.toLowerCase()),
+  );
+}
+
+function getAllowedOrigins(): Set<string> {
+  if (!allowedOriginsCache) allowedOriginsCache = buildAllowedOrigins();
+  return allowedOriginsCache;
+}
+
+function getAllowedHosts(): Set<string> {
+  if (!allowedHostsCache) allowedHostsCache = buildAllowedHosts();
+  return allowedHostsCache;
+}
+
+// Test seam: clear the cached sets so a subsequent call rebuilds from
+// the current process.env. Production code never calls this.
+export function resetGateCachesForTesting(): void {
+  allowedHostsCache = null;
+  allowedOriginsCache = null;
+}
 
 // Bearer-token auth. When PORTUNI_AUTH_TOKEN is set, every route except
 // /health (and CORS preflight) must present a matching Authorization
@@ -67,6 +101,53 @@ export class RequestBodyTooLargeError extends Error {
     super(`Request body exceeds ${limit} bytes`);
     this.name = "RequestBodyTooLargeError";
   }
+}
+
+// One-line JSON response. Sets Content-Type, writes the status, ends
+// the response. No-op if headers were already sent (so we don't double-send
+// after an early respondError or middleware bail-out).
+export function respondJson(res: ServerResponse, status: number, body: unknown): void {
+  if (res.headersSent) return;
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+// Read JSON body and validate against a Zod schema. On parse, body-size
+// or schema errors writes the appropriate 4xx response and returns null;
+// the caller bails early without touching `res`. On success returns the
+// typed parsed value. Replaces the open-coded "parseBody → cast → manual
+// if-checks" pattern that was repeated across REST endpoints.
+export async function parseJsonBody<T>(
+  req: IncomingMessage,
+  res: ServerResponse,
+  schema: ZodType<T>,
+): Promise<T | null> {
+  let raw: unknown;
+  try {
+    raw = await parseBody(req);
+  } catch (err) {
+    if (err instanceof RequestBodyTooLargeError) {
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+      return null;
+    }
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Invalid JSON body" }));
+    return null;
+  }
+  const parsed = schema.safeParse(raw ?? {});
+  if (!parsed.success) {
+    const message = parsed.error.issues
+      .map((i) => {
+        const path = i.path.length > 0 ? `${i.path.join(".")}: ` : "";
+        return `${path}${i.message}`;
+      })
+      .join("; ");
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: message }));
+    return null;
+  }
+  return parsed.data;
 }
 
 export function parseBody(
@@ -110,6 +191,11 @@ export function respondError(res: ServerResponse, ctx: string, err: unknown): vo
     err instanceof Error ? (err.stack ?? `${err.name}: ${err.message}`) : String(err);
   console.error(`[req:${id}] ${ctx} -> ${detail}`);
   if (res.headersSent) return;
+  if (err instanceof RequestBodyTooLargeError) {
+    res.writeHead(413, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: err.message, request_id: id }));
+    return;
+  }
   if (err instanceof Error && err.name === "ZodError") {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: err.message, request_id: id }));
@@ -135,13 +221,13 @@ export function applyGates(req: IncomingMessage, res: ServerResponse): boolean {
   const url = new URL(req.url ?? "/", `http://${hostHeader || "localhost"}`);
   const origin = (req.headers.origin as string | undefined) ?? null;
 
-  if (!ALLOWED_HOSTS.has(hostHeader)) {
+  if (!getAllowedHosts().has(hostHeader)) {
     res.writeHead(403, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Host header not allowed" }));
     return true;
   }
 
-  if (origin !== null && !ALLOWED_ORIGINS.has(origin)) {
+  if (origin !== null && !getAllowedOrigins().has(origin)) {
     res.writeHead(403, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Origin not allowed" }));
     return true;

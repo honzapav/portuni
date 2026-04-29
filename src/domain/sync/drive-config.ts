@@ -52,4 +52,3 @@ export function parseServiceAccountJson(raw: string): ServiceAccountKey {
   };
 }
 
-export const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";

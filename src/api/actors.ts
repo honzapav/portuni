@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { getDb } from "../infra/db.js";
 import { SOLO_USER } from "../infra/schema.js";
 import { archiveActor, createActor, updateActor } from "../domain/actors.js";
-import { parseBody, respondError } from "../http/middleware.js";
+import { parseBody, respondError , respondJson} from "../http/middleware.js";
 
 export async function handleListActors(
   req: IncomingMessage,
@@ -31,8 +31,7 @@ export async function handleListActors(
             FROM actors ${where} ORDER BY type, name`,
       args: values,
     });
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(rows.rows));
+    respondJson(res, 200, rows.rows);
   } catch (err) {
     respondError(res, `${req.method} ${url.pathname}`, err);
   }
@@ -45,13 +44,11 @@ export async function handleCreateActor(
   try {
     const body = (await parseBody(req)) as Record<string, unknown> | undefined;
     if (!body || Object.keys(body).length === 0) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "body required" }));
+      respondJson(res, 400, { error: "body required" });
       return;
     }
     const row = await createActor(getDb(), SOLO_USER, body as Parameters<typeof createActor>[2]);
-    res.writeHead(201, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(row));
+    respondJson(res, 201, row);
   } catch (err) {
     respondError(res, `${req.method} /actors`, err);
   }
@@ -65,16 +62,14 @@ export async function handleUpdateActor(
   try {
     const body = (await parseBody(req)) as Record<string, unknown> | undefined;
     if (!body || Object.keys(body).length === 0) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "no fields to update" }));
+      respondJson(res, 400, { error: "no fields to update" });
       return;
     }
     const row = await updateActor(getDb(), SOLO_USER, {
       actor_id: actorId,
       ...(body as object),
     } as Parameters<typeof updateActor>[2]);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(row));
+    respondJson(res, 200, row);
   } catch (err) {
     respondError(res, `${req.method} /actors/${actorId}`, err);
   }
@@ -87,8 +82,7 @@ export async function handleDeleteActor(
 ): Promise<void> {
   try {
     await archiveActor(getDb(), SOLO_USER, actorId);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ archived: actorId }));
+    respondJson(res, 200, { archived: actorId });
   } catch (err) {
     respondError(res, `${req.method} /actors/${actorId}`, err);
   }

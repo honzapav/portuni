@@ -9,7 +9,7 @@ import {
   removeTool,
   updateTool,
 } from "../domain/entity-attributes.js";
-import { parseBody, respondError } from "../http/middleware.js";
+import { parseBody, respondError , respondJson} from "../http/middleware.js";
 
 export async function handleListTools(
   req: IncomingMessage,
@@ -18,14 +18,12 @@ export async function handleListTools(
 ): Promise<void> {
   const nodeId = url.searchParams.get("node_id");
   if (!nodeId) {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "node_id parameter required" }));
+    respondJson(res, 400, { error: "node_id parameter required" });
     return;
   }
   try {
     const rows = await listTools(getDb(), nodeId);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(rows));
+    respondJson(res, 200, rows);
   } catch (err) {
     respondError(res, `${req.method} ${url.pathname}`, err);
   }
@@ -38,13 +36,11 @@ export async function handleCreateTool(
   try {
     const body = (await parseBody(req)) as Record<string, unknown> | undefined;
     if (!body || Object.keys(body).length === 0) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "body required" }));
+      respondJson(res, 400, { error: "body required" });
       return;
     }
     const row = await addTool(getDb(), SOLO_USER, body as Parameters<typeof addTool>[2]);
-    res.writeHead(201, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(row));
+    respondJson(res, 201, row);
   } catch (err) {
     respondError(res, `${req.method} /tools`, err);
   }
@@ -57,8 +53,7 @@ export async function handleDeleteTool(
 ): Promise<void> {
   try {
     await removeTool(getDb(), SOLO_USER, toolId);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ deleted: toolId }));
+    respondJson(res, 200, { deleted: toolId });
   } catch (err) {
     respondError(res, `${req.method} /tools/${toolId}`, err);
   }
@@ -72,8 +67,7 @@ export async function handleUpdateTool(
   try {
     const body = (await parseBody(req)) as Record<string, unknown> | undefined;
     if (!body || Object.keys(body).length === 0) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "no fields to update" }));
+      respondJson(res, 400, { error: "no fields to update" });
       return;
     }
     const row = await updateTool(
@@ -82,8 +76,7 @@ export async function handleUpdateTool(
       toolId,
       body as Parameters<typeof updateTool>[3],
     );
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(row));
+    respondJson(res, 200, row);
   } catch (err) {
     respondError(res, `${req.method} /tools/${toolId}`, err);
   }

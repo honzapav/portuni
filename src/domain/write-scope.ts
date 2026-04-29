@@ -31,7 +31,7 @@ export interface ScopeClassification {
   portuni_root: string;
 }
 
-export function expandHome(p: string): string {
+function expandHome(p: string): string {
   if (p.startsWith("~/")) return p.replace(/^~/, homedir());
   if (p === "~") return homedir();
   return p;
@@ -252,7 +252,7 @@ export function buildClaudeMcpJson(args: {
 
 // Build the hooks block for .claude/settings.local.json. Returns null when
 // no guard script is available so callers know to omit the block.
-export function buildClaudeHooksBlock(args: {
+function buildClaudeHooksBlock(args: {
   guardScriptPath: string | null;
 }): { hooks: Record<string, unknown> } | null {
   if (!args.guardScriptPath) return null;

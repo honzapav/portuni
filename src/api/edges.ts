@@ -2,50 +2,39 @@
 // disconnect (routes through domain to honour the org-invariant precheck).
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { z } from "zod";
 import { ulid } from "ulid";
 import { getDb } from "../infra/db.js";
 import { logAudit } from "../infra/audit.js";
 import { EDGE_RELATIONS, SOLO_USER } from "../infra/schema.js";
 import { disconnectEdgeById } from "../domain/edges.js";
-import { parseBody, respondError } from "../http/middleware.js";
+import { parseJsonBody, respondError , respondJson} from "../http/middleware.js";
+
+const CreateEdgeBody = z
+  .object({
+    source_id: z.string().min(1),
+    target_id: z.string().min(1),
+    relation: z.enum(EDGE_RELATIONS),
+  })
+  .refine((b) => b.source_id !== b.target_id, {
+    message: "source and target must differ",
+    path: ["target_id"],
+  });
 
 export async function handleCreateEdge(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
+  const body = await parseJsonBody(req, res, CreateEdgeBody);
+  if (!body) return;
   try {
-    const body = (await parseBody(req)) as
-      | { source_id?: string; target_id?: string; relation?: string }
-      | undefined;
-    if (!body?.source_id || !body.target_id || !body.relation) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({ error: "source_id, target_id, relation required" }),
-      );
-      return;
-    }
-    if (!(EDGE_RELATIONS as readonly string[]).includes(body.relation)) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          error: `invalid relation; must be one of ${EDGE_RELATIONS.join(", ")}`,
-        }),
-      );
-      return;
-    }
-    if (body.source_id === body.target_id) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "source and target must differ" }));
-      return;
-    }
     const db = getDb();
     const check = await db.execute({
       sql: "SELECT id FROM nodes WHERE id IN (?, ?)",
       args: [body.source_id, body.target_id],
     });
     if (check.rows.length < 2) {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "one or both nodes not found" }));
+      respondJson(res, 404, { error: "one or both nodes not found" });
       return;
     }
     const dup = await db.execute({
@@ -53,8 +42,7 @@ export async function handleCreateEdge(
       args: [body.source_id, body.target_id, body.relation],
     });
     if (dup.rows.length > 0) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ id: dup.rows[0].id, duplicate: true }));
+      respondJson(res, 200, { id: dup.rows[0].id, duplicate: true });
       return;
     }
     const id = ulid();
@@ -68,15 +56,12 @@ export async function handleCreateEdge(
       target_id: body.target_id,
       relation: body.relation,
     });
-    res.writeHead(201, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        id,
-        source_id: body.source_id,
-        target_id: body.target_id,
-        relation: body.relation,
-      }),
-    );
+    respondJson(res, 201, {
+      id,
+      source_id: body.source_id,
+      target_id: body.target_id,
+      relation: body.relation,
+    });
   } catch (err) {
     respondError(res, `${req.method} /edges`, err);
   }
@@ -89,18 +74,15 @@ export async function handleDeleteEdge(
 ): Promise<void> {
   try {
     const result = await disconnectEdgeById(getDb(), SOLO_USER, edgeId);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(result));
+    respondJson(res, 200, result);
   } catch (err) {
     const code = (err as Error & { code?: string }).code;
     if (code === "EDGE_NOT_FOUND") {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: (err as Error).message }));
+      respondJson(res, 404, { error: (err as Error).message });
       return;
     }
     if (code === "ORG_INVARIANT") {
-      res.writeHead(409, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: (err as Error).message }));
+      respondJson(res, 409, { error: (err as Error).message });
       return;
     }
     respondError(res, `${req.method} /edges/${edgeId}`, err);

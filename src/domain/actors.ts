@@ -11,7 +11,7 @@ import { ActorRow } from "../shared/types.js";
 
 export const ACTOR_TYPES = ["person", "automation"] as const;
 
-export const CreateActorInput = z.object({
+const CreateActorInput = z.object({
   type: z.enum(ACTOR_TYPES).describe("Actor type: person (human) or automation (script, bot, integration)."),
   name: z.string().describe("Display name."),
   is_placeholder: z.boolean().optional().describe("Person-only. True means a role sketch without a real human yet (e.g. 'need a lawyer'). Must be false for automations."),
@@ -19,9 +19,9 @@ export const CreateActorInput = z.object({
   notes: z.string().optional().describe("Optional internal notes. NOT a role description -- what an actor does is expressed by responsibilities on specific nodes."),
   external_id: z.string().optional().describe("Optional external system id (globally unique when set)."),
 });
-export type CreateActorInput = z.infer<typeof CreateActorInput>;
+type CreateActorInput = z.infer<typeof CreateActorInput>;
 
-export const UpdateActorInput = z.object({
+const UpdateActorInput = z.object({
   actor_id: z.string().describe("Actor ID (ULID) to update."),
   name: z.string().optional().describe("New display name."),
   is_placeholder: z.boolean().optional().describe("Person-only. Flip between real person and placeholder role."),
@@ -29,13 +29,13 @@ export const UpdateActorInput = z.object({
   notes: z.union([z.string(), z.null()]).optional().describe("New internal notes. Pass null to clear."),
   external_id: z.string().optional().describe("New external id."),
 });
-export type UpdateActorInput = z.infer<typeof UpdateActorInput>;
+type UpdateActorInput = z.infer<typeof UpdateActorInput>;
 
-export const ListActorsInput = z.object({
+const ListActorsInput = z.object({
   type: z.enum(ACTOR_TYPES).optional().describe("Filter by actor type."),
   is_placeholder: z.boolean().optional().describe("Filter by placeholder flag."),
 });
-export type ListActorsInput = z.infer<typeof ListActorsInput>;
+type ListActorsInput = z.infer<typeof ListActorsInput>;
 
 // Direct audit writer. The shared logAudit() helper hard-codes getDb(), so
 // pure domain functions write through this helper to keep tests able to

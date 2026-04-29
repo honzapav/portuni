@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Sidebar, { type AppView } from "./components/Sidebar";
-import GraphView from "./components/GraphView";
 import DetailPane from "./components/DetailPane";
-import ActorsPage from "./components/ActorsPage";
 import SettingsPanel from "./components/SettingsPanel";
 import { fetchGraph, fetchNode } from "./api";
+
+// Lazy chunks: cytoscape (the GraphView dep) is the main reason the app
+// bundle blew past 500 kB. Splitting GraphView and ActorsPage cuts the
+// initial bundle by ~70 % and keeps the marketing/docs sites snappy.
+const GraphView = lazy(() => import("./components/GraphView"));
+const ActorsPage = lazy(() => import("./components/ActorsPage"));
 import type { GraphPayload, NodeDetail } from "./types";
 import type { Theme } from "./lib/theme";
 import { loadTheme, saveTheme } from "./lib/theme";
@@ -226,19 +230,37 @@ export default function App() {
           </div>
         )}
         {graph && view === "graph" && (
-          <GraphView
-            graph={graph}
-            selectedId={selectedId}
-            query={query}
-            disabledRelations={disabledRelations}
-            disabledOrgs={disabledOrgs}
-            disabledTypes={disabledTypes}
-            disabledStatuses={disabledStatuses}
-            theme={theme}
-            onSelect={setSelectedId}
-          />
+          <Suspense
+            fallback={
+              <div className="absolute inset-0 flex items-center justify-center text-[14px] text-[var(--color-text-dim)]">
+                Načítám graf...
+              </div>
+            }
+          >
+            <GraphView
+              graph={graph}
+              selectedId={selectedId}
+              query={query}
+              disabledRelations={disabledRelations}
+              disabledOrgs={disabledOrgs}
+              disabledTypes={disabledTypes}
+              disabledStatuses={disabledStatuses}
+              theme={theme}
+              onSelect={setSelectedId}
+            />
+          </Suspense>
         )}
-        {view === "actors" && <ActorsPage />}
+        {view === "actors" && (
+          <Suspense
+            fallback={
+              <div className="absolute inset-0 flex items-center justify-center text-[14px] text-[var(--color-text-dim)]">
+                Načítám…
+              </div>
+            }
+          >
+            <ActorsPage />
+          </Suspense>
+        )}
       </main>
 
       {view === "graph" && selectedId && (

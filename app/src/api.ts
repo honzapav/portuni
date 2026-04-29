@@ -122,14 +122,6 @@ export function updateNode(
   );
 }
 
-export function createNode(input: {
-  type: string;
-  name: string;
-  description?: string;
-}): Promise<NodeDetail> {
-  return jsonRequest<NodeDetail>("POST", "/nodes", input);
-}
-
 export function archiveNode(id: string): Promise<{ archived: string }> {
   return jsonRequest<{ archived: string }>(
     "DELETE",

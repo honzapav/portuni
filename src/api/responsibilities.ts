@@ -11,7 +11,7 @@ import {
   unassignResponsibility,
   updateResponsibility,
 } from "../domain/responsibilities.js";
-import { parseBody, respondError } from "../http/middleware.js";
+import { parseBody, respondError , respondJson} from "../http/middleware.js";
 
 export async function handleListResponsibilities(
   req: IncomingMessage,
@@ -25,8 +25,7 @@ export async function handleListResponsibilities(
     if (nodeId) filters.node_id = nodeId;
     if (actorId) filters.actor_id = actorId;
     const rows = await listResponsibilities(getDb(), filters);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(rows));
+    respondJson(res, 200, rows);
   } catch (err) {
     respondError(res, `${req.method} ${url.pathname}`, err);
   }
@@ -39,8 +38,7 @@ export async function handleCreateResponsibility(
   try {
     const body = (await parseBody(req)) as Record<string, unknown> | undefined;
     if (!body || Object.keys(body).length === 0) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "body required" }));
+      respondJson(res, 400, { error: "body required" });
       return;
     }
     const row = await createResponsibility(
@@ -48,8 +46,7 @@ export async function handleCreateResponsibility(
       SOLO_USER,
       body as Parameters<typeof createResponsibility>[2],
     );
-    res.writeHead(201, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(row));
+    respondJson(res, 201, row);
   } catch (err) {
     respondError(res, `${req.method} /responsibilities`, err);
   }
@@ -63,16 +60,14 @@ export async function handleUpdateResponsibility(
   try {
     const body = (await parseBody(req)) as Record<string, unknown> | undefined;
     if (!body || Object.keys(body).length === 0) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "no fields to update" }));
+      respondJson(res, 400, { error: "no fields to update" });
       return;
     }
     const row = await updateResponsibility(getDb(), SOLO_USER, {
       responsibility_id: respId,
       ...(body as object),
     } as Parameters<typeof updateResponsibility>[2]);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(row));
+    respondJson(res, 200, row);
   } catch (err) {
     respondError(res, `${req.method} /responsibilities/${respId}`, err);
   }
@@ -85,8 +80,7 @@ export async function handleDeleteResponsibility(
 ): Promise<void> {
   try {
     await deleteResponsibility(getDb(), SOLO_USER, respId);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ deleted: respId }));
+    respondJson(res, 200, { deleted: respId });
   } catch (err) {
     respondError(res, `${req.method} /responsibilities/${respId}`, err);
   }
@@ -100,16 +94,14 @@ export async function handleAssignResponsibility(
   try {
     const body = (await parseBody(req)) as { actor_id?: string } | undefined;
     if (!body?.actor_id) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "actor_id required" }));
+      respondJson(res, 400, { error: "actor_id required" });
       return;
     }
     await assignResponsibility(getDb(), SOLO_USER, {
       responsibility_id: respId,
       actor_id: body.actor_id,
     });
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
+    respondJson(res, 200, { ok: true });
   } catch (err) {
     respondError(
       res,
@@ -130,8 +122,7 @@ export async function handleUnassignResponsibility(
       responsibility_id: respId,
       actor_id: actorId,
     });
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
+    respondJson(res, 200, { ok: true });
   } catch (err) {
     respondError(
       res,

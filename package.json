@@ -10,7 +10,13 @@
     "lint": "biome check",
     "lint:strict": "biome check --error-on-warnings",
     "lint:fix": "biome check --write",
-    "format": "biome format --write"
+    "format": "biome format --write",
+    "typecheck": "tsc --noEmit",
+    "qa": "npm run lint:strict && npm run typecheck && npm test && npm run build",
+    "prepare": "simple-git-hooks || true"
+  },
+  "simple-git-hooks": {
+    "pre-push": "npm run qa"
   },
   "engines": {
     "node": ">=20"
@@ -25,6 +31,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",
     "@types/node": "^25.5.2",
+    "simple-git-hooks": "^2.13.1",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2"
   }

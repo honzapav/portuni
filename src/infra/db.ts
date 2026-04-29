@@ -14,3 +14,10 @@ export function getDb(): Client {
   }
   return client;
 }
+
+// Test-only seam. Lets smoke tests inject an :memory: client so they
+// don't pollute the file-backed singleton. Pass null to clear and let
+// the next getDb() call recreate from env.
+export function setDbForTesting(c: Client | null): void {
+  client = c;
+}

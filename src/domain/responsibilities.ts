@@ -11,34 +11,34 @@ export type ResponsibilityWithAssignees = ResponsibilityRow & {
   assignees: ActorRow[];
 };
 
-export const CreateResponsibilityInput = z.object({
+const CreateResponsibilityInput = z.object({
   node_id: z.string().describe("Node ID (ULID) to attach the responsibility to. Must be a project/process/area node."),
   title: z.string().describe("Short title of the responsibility."),
   description: z.string().optional().describe("Optional detail."),
   sort_order: z.number().int().optional().describe("Display order within the node. Defaults to 0."),
   assignees: z.array(z.string()).optional().describe("Optional list of actor IDs to assign immediately."),
 });
-export type CreateResponsibilityInput = z.infer<typeof CreateResponsibilityInput>;
+type CreateResponsibilityInput = z.infer<typeof CreateResponsibilityInput>;
 
-export const UpdateResponsibilityInput = z.object({
+const UpdateResponsibilityInput = z.object({
   responsibility_id: z.string().describe("Responsibility ID (ULID) to update."),
   title: z.string().optional().describe("New title."),
   description: z.union([z.string(), z.null()]).optional().describe("New description. Pass null to clear."),
   sort_order: z.number().int().optional().describe("New sort order."),
 });
-export type UpdateResponsibilityInput = z.infer<typeof UpdateResponsibilityInput>;
+type UpdateResponsibilityInput = z.infer<typeof UpdateResponsibilityInput>;
 
-export const ListResponsibilitiesInput = z.object({
+const ListResponsibilitiesInput = z.object({
   node_id: z.string().optional().describe("Filter: only responsibilities on this node."),
   actor_id: z.string().optional().describe("Filter: only responsibilities assigned to this actor."),
 });
-export type ListResponsibilitiesInput = z.infer<typeof ListResponsibilitiesInput>;
+type ListResponsibilitiesInput = z.infer<typeof ListResponsibilitiesInput>;
 
-export const AssignInput = z.object({
+const AssignInput = z.object({
   responsibility_id: z.string().describe("Responsibility ID (ULID)."),
   actor_id: z.string().describe("Actor ID (ULID) to assign / unassign."),
 });
-export type AssignInput = z.infer<typeof AssignInput>;
+type AssignInput = z.infer<typeof AssignInput>;
 
 async function writeAudit(
   db: Client,
