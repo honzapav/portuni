@@ -25,3 +25,7 @@ tauri = { version = "2.10.3", features = ["devtools"] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2.3.5"
 rand = "0.8"
+# v3 has no default features; pick platform-native stores explicitly. macOS
+# is the only smoke-tested target for this PR but cross-platform features
+# stay enabled so cargo builds on Linux/Windows without code changes.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
