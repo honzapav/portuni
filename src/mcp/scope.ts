@@ -93,9 +93,12 @@ export class SessionScope {
   }
 }
 
-// SessionStart hook calls portuni_session_init(home_node_id). That seeds the
-// scope set with the home node + its depth-1 neighbors. Returns the seed
-// node IDs so callers can audit / display them.
+// Seed the scope set with the home node + its depth-1 neighbors. Auto-seed
+// runs on session initialize when the MCP URL carries `?home_node_id=...`
+// (set by `portuni_mirror` in each mirror's `.mcp.json` / `.codex/config.toml`).
+// `portuni_session_init` invokes this as a manual fallback for clients that
+// connect without the query param. Returns the seed node IDs so callers can
+// audit / display them.
 export async function seedScopeFromHome(
   db: Client,
   scope: SessionScope,

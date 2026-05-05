@@ -34,17 +34,3 @@ Array of nodes, each containing:
 
 Uses a recursive CTE for efficient single-query traversal.
 
-## REST: GET /context
-
-Resolves a filesystem path to a graph node. Used by the SessionStart hook.
-
-```
-GET /context?path=/Users/you/Workspaces/portuni/workflow/projects/goldea-presale
-```
-
-Returns the matching node, its edges (depth 1), and recent events (last 5 active).
-
-Path matching: finds the longest registered mirror path on the current
-device that is a prefix of the given path. Mirrors are read from
-`~/.portuni/sync.db`, so each machine can have a different layout without
-trampling teammates' setups.

@@ -9,10 +9,13 @@ expanded only through user confirmation.
 
 ## How the scope set is built
 
-- **Seed** at session start. The SessionStart hook resolves the
-  user's `cwd` to its home node (the node whose mirror contains
-  `cwd`) and calls `portuni_session_init(home_node_id)`. The scope
-  set seeds with the home node + its depth-1 graph neighbors.
+- **Seed** at session start. The MCP server reads `?home_node_id=…`
+  from the connection URL (every mirror's `.mcp.json` /
+  `.codex/config.toml` carries it, written by `portuni_mirror`) and
+  seeds the scope set with the home node + its depth-1 graph
+  neighbors. No explicit tool call required. For clients connecting
+  without that query param, `portuni_session_init(home_node_id)` is
+  the manual fallback.
 - **Expand** explicitly. `portuni_expand_scope(node_ids, reason,
   triggered_by, confirmed_hard_floor?)` adds nodes. Every expansion
   is audited and surfaced in `portuni_session_log`.

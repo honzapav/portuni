@@ -49,7 +49,7 @@ The shape of the data is `(responsibility, actor)` pairs. Adding or removing a p
 
 ### Sort order
 
-Responsibilities on a node are ordered – the order is meaningful (most important first) and editable. This shows up everywhere a responsibility list is rendered: tool responses, the frontend, the SessionStart context.
+Responsibilities on a node are ordered – the order is meaningful (most important first) and editable. This shows up everywhere a responsibility list is rendered: tool responses, the frontend, and any agent walking into a session.
 
 ## Owner of an entity
 
@@ -74,7 +74,7 @@ These are descriptive metadata – they tell agents and humans "to work on this 
 
 ## How this shows up in tool output
 
-`portuni_get_node` and `portuni_get_context` (depth 0) include actors, responsibilities, data sources, and tools as enriched fields. The SessionStart hook surfaces the node's owner and top responsibilities so an agent walking into a session knows who's who without asking.
+`portuni_get_node` and `portuni_get_context` (depth 0) include actors, responsibilities, data sources, and tools as enriched fields – the agent always knows who's accountable for a node when it reads it, no separate preamble needed.
 
 ## Tool reference
 

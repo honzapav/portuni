@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  appendHomeNodeIdToUrl,
   buildClaudeMcpJson,
   buildClaudeSettings,
   buildCodexMcpServer,
@@ -169,6 +170,36 @@ describe("buildCodexSandboxConfig", () => {
   });
 });
 
+describe("appendHomeNodeIdToUrl", () => {
+  it("appends home_node_id as a query param when none exists", () => {
+    assert.equal(
+      appendHomeNodeIdToUrl("http://localhost:4011/mcp", "01ABC"),
+      "http://localhost:4011/mcp?home_node_id=01ABC",
+    );
+  });
+
+  it("appends with & when other params exist", () => {
+    assert.equal(
+      appendHomeNodeIdToUrl("http://localhost:4011/mcp?foo=bar", "01ABC"),
+      "http://localhost:4011/mcp?foo=bar&home_node_id=01ABC",
+    );
+  });
+
+  it("returns the URL unchanged when homeNodeId is null", () => {
+    assert.equal(
+      appendHomeNodeIdToUrl("http://localhost:4011/mcp", null),
+      "http://localhost:4011/mcp",
+    );
+  });
+
+  it("encodes special chars defensively", () => {
+    assert.equal(
+      appendHomeNodeIdToUrl("http://x/mcp", "a b"),
+      "http://x/mcp?home_node_id=a%20b",
+    );
+  });
+});
+
 describe("buildClaudeMcpJson", () => {
   it("emits mcpServers.portuni with type/url; no headers when no token", () => {
     const j = buildClaudeMcpJson({ url: "http://localhost:4011/mcp" });
@@ -313,6 +344,29 @@ describe("materializeScopeConfig", () => {
     assert.ok(settings.hooks?.PreToolUse?.[0]);
     assert.equal(settings.hooks.PreToolUse[0].hooks[0].command, "/usr/local/bin/portuni-guard.sh");
     assert.match(settings.hooks.PreToolUse[0].matcher, /Edit\|Write/);
+  });
+
+  it("embeds home_node_id in MCP URL of generated configs when supplied", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "portuni-scope-home-"));
+    const cur = join(dir, "a");
+    await mkdir(cur, { recursive: true });
+
+    await materializeScopeConfig({
+      currentMirror: cur,
+      otherMirrors: [],
+      portuniRoot: dir,
+      mcpUrl: "http://localhost:4011/mcp",
+      homeNodeId: "01TESTHOME",
+    });
+
+    const mcpJson = JSON.parse(await readFile(join(cur, ".mcp.json"), "utf8"));
+    assert.equal(
+      mcpJson.mcpServers.portuni.url,
+      "http://localhost:4011/mcp?home_node_id=01TESTHOME",
+    );
+
+    const toml = await readFile(join(cur, ".codex", "config.toml"), "utf8");
+    assert.match(toml, /url = "http:\/\/localhost:4011\/mcp\?home_node_id=01TESTHOME"/);
   });
 
   it("emits .mcp.json (Claude Code project-scoped MCP) and Codex [mcp_servers.portuni] block when mcpUrl is supplied", async () => {

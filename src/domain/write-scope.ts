@@ -210,6 +210,19 @@ export function resolveGuardScriptPath(): string | null {
   }
 }
 
+// Append `?home_node_id=<id>` to an MCP URL so the server can auto-seed
+// the read scope on connect. No-op when homeNodeId is null/empty so callers
+// can call this unconditionally. Detects an existing query string and uses
+// `&` as the separator in that case.
+export function appendHomeNodeIdToUrl(
+  baseUrl: string,
+  homeNodeId: string | null | undefined,
+): string {
+  if (!homeNodeId) return baseUrl;
+  const sep = baseUrl.includes("?") ? "&" : "?";
+  return `${baseUrl}${sep}home_node_id=${encodeURIComponent(homeNodeId)}`;
+}
+
 // Compose the Portuni MCP server URL from configured host/port. Honours
 // PORTUNI_URL when set (allowing a custom scheme/host/port), normalising
 // the trailing /mcp segment.

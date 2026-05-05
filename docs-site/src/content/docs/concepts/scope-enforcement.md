@@ -13,13 +13,11 @@ The scope model adds two enforceable, complementary mechanisms – one for files
 
 ## Session home node
 
-When a session starts, Portuni picks a single anchor:
+Every session has a **home node** – the node whose registered local mirror contains the agent's `cwd`. This anchor is what scope enforcement, deny lists, and soft hints all reference.
 
-- It looks at the current working directory.
-- It walks upward through registered local mirrors and finds the nearest ancestor that is a Portuni mirror.
-- The node owning that mirror becomes the **session home node**.
+The home node id is bound to the session at connect time. Each mirror's `.mcp.json` (Claude Code) and `.codex/config.toml` (Codex) carries the URL `http://<host>:<port>/mcp?home_node_id=<id>` – `portuni_mirror` writes the id when the mirror is created or regenerated. When the harness opens an MCP session against that URL, the Portuni server reads the query param and **auto-seeds** the read scope with the home node + its depth-1 neighbors. No hook, no `portuni_session_init` call, no harness-specific glue – any MCP client gets a usable scope on the first tool call.
 
-If `cwd` isn't inside any mirror, the session has no home node. Scope enforcement degrades to "warn only" – the agent is working outside Portuni territory and Portuni can't meaningfully bound it.
+Connections without the query param (legacy mirrors, ad-hoc clients) see an empty scope until they call `portuni_session_init` explicitly. That tool stays as the manual fallback.
 
 Everything else in this page is built on top of this single anchor.
 
@@ -117,12 +115,14 @@ Graph reads are bounded by a **session scope set** – the set of node IDs the a
 
 ### Initial scope set
 
-At session start the scope set contains:
+At session start, if the MCP URL carries `?home_node_id=<id>` (which `portuni_mirror`-generated configs always do), the server auto-seeds the scope set with:
 
 1. The session home node.
 2. Every node directly connected to it by an edge (depth 1, both directions).
 
-Without a home node (cwd outside any mirror), the scope set starts empty. Every read requires expansion.
+The seed runs as part of session initialization, before the agent's first tool call, and is logged as an audit entry with `triggered_by: "init"`.
+
+Without a `home_node_id` query param (legacy mirror config or ad-hoc client), the scope set starts empty. The agent must call `portuni_session_init` or `portuni_expand_scope` to populate it.
 
 ### Three ways to expand
 
@@ -156,7 +156,7 @@ Hard floors override mode. A node with `meta.scope_sensitive: true`, or a `visib
 
 | Tool | Purpose |
 |------|---------|
-| `portuni_session_init(home_node_id)` | Called by the SessionStart hook. Seeds the scope set with the home node + its depth-1 neighbors. |
+| `portuni_session_init(home_node_id)` | Manual fallback. Auto-seed normally runs on connect when the URL carries `?home_node_id=…`; this tool only exists for clients connecting without that param. Seeds the scope set with the home node + its depth-1 neighbors. |
 | `portuni_expand_scope(node_ids, reason, triggered_by, confirmed_hard_floor?)` | Add nodes to scope. Always audited. Hard-floor nodes (private-other, `meta.scope_sensitive`) require both `confirmed_hard_floor=true` AND a real user confirmation; a refusal entry is logged otherwise. |
 | `portuni_session_log()` | Returns the current scope set, mode, expansion history. |
 | `portuni_get_node` | Out-of-scope target returns `{"error":"scope_expansion_required",...}`. Name lookups are filtered to in-scope candidates first, so name probing cannot leak metadata. |
@@ -172,7 +172,8 @@ The HTTP REST endpoints (`/graph`, `/context`, `/nodes/:id/sync-status`, `/users
 | Piece | Status |
 |-------|--------|
 | Spec | Written – `docs/superpowers/specs/2026-04-24-scope-model.md` |
-| Session home node detection (`portuni_session_init`) | Implemented |
+| URL-based auto-seed on MCP connect (`?home_node_id=…`) | Implemented |
+| Session home node detection (`portuni_session_init`) | Implemented (manual fallback) |
 | Read-scope set + per-MCP-connection state | Implemented |
 | `portuni_expand_scope`, `portuni_session_log` | Implemented |
 | Hard-floor enforcement in `expand_scope` (refuses without `confirmed_hard_floor`) | Implemented |
@@ -188,7 +189,6 @@ The HTTP REST endpoints (`/graph`, `/context`, `/nodes/:id/sync-status`, `/users
 | `[mcp_servers.portuni]` block in generated Codex `config.toml` | Implemented |
 | Sibling regen on mirror add | Implemented |
 | `/scope` endpoint + `portuni-guard` PreToolUse hook (fail-closed on missing target) | Implemented |
-| `portuni-context.sh` SessionStart hook honours `PORTUNI_AUTH_TOKEN` | Implemented |
 | Audit entries: `expand_scope`, `scope_global_query`, `scope_hard_floor_refusal`, `session_init` | Implemented |
 | Session-close summary | Pending |
 | Other harnesses (Gemini CLI, Cline, Continue, Aider, Windsurf, Roo) | Out of scope until requested |
