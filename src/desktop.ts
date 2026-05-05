@@ -9,7 +9,57 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { startHttpServer } from "./http/server.js";
+import { getDb } from "./infra/db.js";
 import { ensureSchema } from "./infra/schema.js";
+
+// Single ping wrapped in a hard timeout. The libsql client doesn't expose a
+// connect timeout of its own, so without this a DNS hiccup or a slow Turso
+// cold path can park ensureSchema() indefinitely — the frontend just sees
+// the generic 30s "did not start" error with no clue why.
+async function pingDb(timeoutMs: number): Promise<void> {
+  const db = getDb();
+  await Promise.race([
+    db.execute("SELECT 1"),
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`db ping timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      ),
+    ),
+  ]);
+}
+
+async function waitForDb(): Promise<void> {
+  // Three attempts with backoff: first immediate, then +1s, then +2s. Each
+  // call gets a 5s ceiling, so total wall time is bounded at ~18s — well
+  // inside the frontend's 30s polling window. If we still can't reach the
+  // DB after that, surface a clean error instead of letting ensureSchema
+  // hang forever.
+  const attempts = [
+    { timeoutMs: 5_000, backoffMs: 0 },
+    { timeoutMs: 5_000, backoffMs: 1_000 },
+    { timeoutMs: 5_000, backoffMs: 2_000 },
+  ];
+  let lastError: unknown = null;
+  for (let i = 0; i < attempts.length; i++) {
+    const attempt = attempts[i];
+    if (attempt.backoffMs > 0) {
+      await new Promise((r) => setTimeout(r, attempt.backoffMs));
+    }
+    try {
+      console.error(`[boot] db ping attempt ${i + 1}/${attempts.length}`);
+      await pingDb(attempt.timeoutMs);
+      console.error(`[boot] db ping ok`);
+      return;
+    } catch (err) {
+      lastError = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[boot] db ping failed: ${msg}`);
+    }
+  }
+  const reason = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`database unreachable after ${attempts.length} attempts: ${reason}`);
+}
 
 async function main(): Promise<void> {
   const dataDir = process.env.PORTUNI_DATA_DIR;
@@ -22,6 +72,7 @@ async function main(): Promise<void> {
     process.env.TURSO_URL = `file:${join(dataDir, "portuni.db")}`;
   }
 
+  await waitForDb();
   await ensureSchema();
 
   const port = Number(process.env.PORTUNI_PORT ?? 0);
@@ -54,5 +105,12 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   console.error("desktop entry fatal:", err);
+  // Structured marker line the Tauri host parses out of stdout to surface
+  // a real error to the UI immediately, instead of waiting for the 30s
+  // frontend polling timeout to fire with a generic "did not start"
+  // message. Newlines are stripped because each marker must fit on one
+  // line for the parser.
+  const message = err instanceof Error ? err.message : String(err);
+  process.stdout.write(`PORTUNI_BACKEND_ERROR=${message.replace(/[\r\n]+/g, " ")}\n`);
   process.exit(1);
 });

@@ -9,10 +9,12 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use log::{error, info, warn};
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
@@ -54,7 +56,7 @@ fn random_token() -> String {
 #[tauri::command]
 fn get_backend_port(state: tauri::State<BackendPort>) -> Option<u16> {
     let port = *state.0.lock().unwrap();
-    eprintln!("[tauri] get_backend_port -> {port:?}");
+    info!("get_backend_port -> {port:?}");
     port
 }
 
@@ -67,13 +69,13 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&data_dir).ok();
     let data_dir_str = data_dir.to_string_lossy().to_string();
-    eprintln!("[tauri] spawn_sidecar: data_dir={data_dir_str}");
+    info!("spawn_sidecar: data_dir={data_dir_str}");
 
     let config = load_config(&data_dir);
     let turso_url = config.turso_url.unwrap_or_default();
     let turso_token = config.turso_auth_token.unwrap_or_default();
-    eprintln!(
-        "[tauri] config: turso_url={} turso_auth_token={}",
+    info!(
+        "config: turso_url={} turso_auth_token={}",
         if turso_url.is_empty() { "<unset>" } else { "<set>" },
         if turso_token.is_empty() { "<unset>" } else { "<set>" },
     );
@@ -122,6 +124,7 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             match event {
                 CommandEvent::Stdout(line) => {
                     let line = String::from_utf8_lossy(&line).into_owned();
+                    let line = line.trim_end_matches(|c| c == '\n' || c == '\r');
                     if let Some(rest) = line.strip_prefix("PORTUNI_LISTENING_PORT=") {
                         if let Ok(port) = rest.trim().parse::<u16>() {
                             handle
@@ -131,17 +134,31 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                                 .unwrap()
                                 .replace(port);
                             let _ = handle.emit("backend-ready", port);
-                            eprintln!("[sidecar] backend ready on port {port}");
+                            info!("sidecar backend ready on port {port}");
                         }
+                    } else if let Some(rest) = line.strip_prefix("PORTUNI_BACKEND_ERROR=") {
+                        // Sidecar surfaced a startup error in a structured form
+                        // (e.g. database unreachable). Emit it to the frontend
+                        // immediately so the UI can show a real reason instead
+                        // of the generic 30s "did not start" timeout.
+                        let msg = rest.trim().to_string();
+                        error!("sidecar backend error: {msg}");
+                        let _ = handle.emit("backend-error", msg);
                     } else {
-                        eprintln!("[sidecar] {line}");
+                        info!("sidecar: {line}");
                     }
                 }
                 CommandEvent::Stderr(line) => {
-                    eprintln!("[sidecar:err] {}", String::from_utf8_lossy(&line));
+                    let line = String::from_utf8_lossy(&line).into_owned();
+                    let line = line.trim_end_matches(|c| c == '\n' || c == '\r');
+                    warn!("sidecar:err: {line}");
                 }
                 CommandEvent::Terminated(payload) => {
-                    eprintln!("[sidecar] terminated: code={:?}", payload.code);
+                    error!("sidecar terminated: code={:?}", payload.code);
+                    let _ = handle.emit(
+                        "backend-error",
+                        format!("sidecar terminated (exit code {:?})", payload.code),
+                    );
                 }
                 _ => {}
             }
@@ -154,24 +171,37 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let auth_token = random_token();
-    eprintln!("[tauri] generated per-launch auth token (length={})", auth_token.len());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        // Logger plugin is initialised before spawn_sidecar so every line we
+        // emit during boot — including the auth-token confirmation and any
+        // sidecar stdout/stderr — lands in the file at
+        // ~/Library/Logs/<bundle_id>/sidecar.log. Without this, release
+        // builds silently drop diagnostics and force us to guess what
+        // went wrong from a 30s frontend timeout.
+        .plugin(
+            tauri_plugin_log::Builder::default()
+                .targets([
+                    Target::new(TargetKind::Stderr),
+                    Target::new(TargetKind::LogDir {
+                        file_name: Some("sidecar".to_string()),
+                    }),
+                ])
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
         .manage(SidecarState(Mutex::new(None)))
         .manage(BackendPort(Mutex::new(None)))
         .manage(AuthToken(auth_token))
         .invoke_handler(tauri::generate_handler![get_backend_port, get_auth_token])
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            info!(
+                "generated per-launch auth token (length={})",
+                app.state::<AuthToken>().0.len()
+            );
             if let Err(e) = spawn_sidecar(&app.handle().clone()) {
-                eprintln!("failed to spawn sidecar: {e}");
+                error!("failed to spawn sidecar: {e}");
             }
             Ok(())
         })
