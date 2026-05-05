@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 
 test("desktop entry boots and reports listening port to stdout", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "portuni-desktop-entry-"));
-  const child = spawn("npx", ["tsx", "src/desktop.ts"], {
+  const child = spawn(process.execPath, ["--import", "tsx", "src/desktop.ts"], {
     env: {
       ...process.env,
       PORTUNI_DATA_DIR: tmp,

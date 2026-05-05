@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 
 test("stdio MCP entry responds to initialize over JSON-RPC", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "portuni-mcp-stdio-"));
-  const child = spawn("npx", ["tsx", "src/mcp/stdio-entry.ts"], {
+  const child = spawn(process.execPath, ["--import", "tsx", "src/mcp/stdio-entry.ts"], {
     env: {
       ...process.env,
       PORTUNI_DATA_DIR: tmp,
