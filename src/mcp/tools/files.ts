@@ -15,7 +15,8 @@ import { getMirrorPath } from "../../domain/sync/mirror-registry.js";
 import { buildNodeRoot, deriveLocalPath } from "../../domain/sync/remote-path.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { decideGlobalQuery, guardNodeRead, type SessionScope } from "../scope.js";
+import type { SessionScope } from "../scope.js";
+import { guardListScope } from "../list-scope-gate.js";
 
 export function registerFileTools(server: McpServer, scope: SessionScope): void {
   server.tool(
@@ -89,56 +90,15 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
     async (args) => {
       const db = getDb();
 
-      // Scope gate. With node_id, ensure the node is in scope. Without it,
-      // treat as global query.
-      if (args.node_id !== undefined) {
-        const guard = await guardNodeRead(
-          db,
-          scope,
-          args.node_id,
-          SOLO_USER,
-          async (action, targetId, detail) => {
-            await logAudit(SOLO_USER, action, "scope", targetId, detail);
-          },
-        );
-        if (guard.kind === "not_found") {
-          return {
-            content: [
-              { type: "text" as const, text: `Error: node ${args.node_id} not found` },
-            ],
-            isError: true,
-          };
-        }
-        if (guard.kind === "elicit") {
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify(guard.error) }],
-            isError: true,
-          };
-        }
-      } else {
-        const g = decideGlobalQuery(scope);
-        if (g.kind === "elicit") {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  error: "scope_expansion_required",
-                  tool: "portuni_list_files",
-                  hint: g.message,
-                }),
-              },
-            ],
-            isError: true,
-          };
-        }
-        scope.globalQuerySeen = true;
-        await logAudit(SOLO_USER, "scope_global_query", "scope", "list_files", {
-          tool: "portuni_list_files",
-          filters: { status: args.status ?? null },
-          mode: scope.mode,
-        });
-      }
+      const gate = await guardListScope(
+        db,
+        scope,
+        args.node_id,
+        "portuni_list_files",
+        "list_files",
+        { status: args.status ?? null },
+      );
+      if (gate.kind === "error") return gate.response;
 
       const conds: string[] = [];
       const params: InValue[] = [];

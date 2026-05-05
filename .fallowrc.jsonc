@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/fallow-tools/fallow/main/schemas/fallowrc.schema.json",
+
+  // Fallow can't see process spawning, so files invoked as separate processes
+  // look unreachable to its static analysis. Both of these are real entry
+  // points — listing them here keeps them out of the dead-files report.
+  "entry": [
+    // Tauri sidecar entry. Bundled by scripts/build-sidecar.mjs and spawned
+    // by the Rust host as a child process; never imported.
+    "src/desktop.ts",
+    // MCP stdio transport entry. Spawned by Claude Desktop's MCP client over
+    // stdio; never imported.
+    "src/mcp/stdio-entry.ts"
+  ]
+}
