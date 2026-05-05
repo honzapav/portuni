@@ -160,6 +160,55 @@ struct ApiResponse {
     body: String,
 }
 
+#[derive(Serialize)]
+struct TursoStatus {
+    /// True iff config.json has a non-empty `turso_url`.
+    url_set: bool,
+    /// True iff Keychain has a non-empty Turso auth token.
+    token_set: bool,
+    /// The current `turso_url` value, if any. Frontend uses it to
+    /// distinguish remote (`libsql://...`) from local (`file:...`)
+    /// — only the remote case actually needs the modal.
+    url: Option<String>,
+}
+
+#[tauri::command]
+fn get_turso_status(app: AppHandle) -> Result<TursoStatus, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config = load_config(&data_dir);
+    let url = config
+        .turso_url
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    Ok(TursoStatus {
+        url_set: url.is_some(),
+        token_set: keychain_get_turso_token()
+            .is_some_and(|t| !t.trim().is_empty()),
+        url,
+    })
+}
+
+// Bounce the Node sidecar so it picks up a freshly-set Turso token
+// from the Keychain. Used by the first-run gate after the user pastes
+// their token. Idempotent: if no sidecar is running, just spawns one.
+#[tauri::command]
+async fn restart_sidecar(app: AppHandle) -> Result<(), String> {
+    if let Some(state) = app.try_state::<SidecarState>() {
+        if let Some(child) = state
+            .0
+            .lock()
+            .map_err(|e| e.to_string())?
+            .take()
+        {
+            let _ = child.kill();
+        }
+    }
+    if let Some(state) = app.try_state::<BackendPort>() {
+        *state.0.lock().map_err(|e| e.to_string())? = None;
+    }
+    spawn_sidecar(&app).map_err(|e| e.to_string())
+}
+
 // Webview-side HTTP proxy. The webview no longer talks to the sidecar
 // directly: it invokes this command, which lives in the same trust
 // domain as the sidecar (the Tauri host that spawned it) and therefore
@@ -378,6 +427,8 @@ pub fn run() {
             api_request,
             set_turso_token,
             clear_turso_token,
+            get_turso_status,
+            restart_sidecar,
         ])
         .setup(|app| {
             info!(

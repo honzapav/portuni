@@ -98,16 +98,26 @@ Restart the app after editing `config.json`.
 
 ### Setting the Turso token
 
-The auth token lives in the OS keychain (macOS Keychain Services on
-Darwin; Secret Service / Credential Manager on Linux/Windows), never
-in `config.json`. A first-run UI is planned; until it lands, set the
-token from the webview dev tools:
+The token is the org's shared Turso service credential — see the
+Phase 1.5 multi-user note in `docs/vision/portuni-as-workspace.md`
+for why this is a shared key today and `docs/specs.md` → "Security
+model" for where per-user identity lands later. It lives in the OS
+keychain (macOS Keychain Services on Darwin; Secret Service /
+Credential Manager on Linux/Windows), never in `config.json`.
+
+On a fresh install where `turso_url` is set but no keychain entry
+exists yet, the app shows a one-shot modal asking for the token —
+paste it, click "Uložit a restartovat", the sidecar reboots with
+the token and the modal goes away forever (until the keychain entry
+is removed).
+
+For scripted setup or to overwrite an existing entry, the same Tauri
+commands are also available from the webview dev tools:
 
 ```js
 await window.__TAURI__.core.invoke('set_turso_token', { token: '<jwt>' })
+await window.__TAURI__.core.invoke('clear_turso_token')
 ```
-
-To clear it: `await window.__TAURI__.core.invoke('clear_turso_token')`.
 
 Installs that still carry a plaintext `turso_auth_token` in
 `config.json` are migrated automatically on first launch — the value
