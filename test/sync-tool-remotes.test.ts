@@ -7,7 +7,7 @@ import {
   setRoutingPolicyService,
 } from "../src/mcp/tools/sync-remotes.js";
 import { upsertRemote, listRules } from "../src/domain/sync/routing.js";
-import { TOKEN_ENV_PREFIX } from "../src/domain/sync/device-tokens.js";
+import { TOKEN_ENV_PREFIX } from "../src/domain/sync/types.js";
 import { resetTokenStoreForTests } from "../src/domain/sync/token-store.js";
 
 function envKey(name: string, field: string): string {

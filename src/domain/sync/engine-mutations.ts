@@ -25,7 +25,7 @@ import {
   RemotePathError,
   type Section,
 } from "./remote-path.js";
-import { resolveNodeInfo } from "./engine.js";
+import { resolveNodeInfo } from "./node-info.js";
 
 export type OpStatus = "ok" | "repair_needed";
 export interface OpResult {

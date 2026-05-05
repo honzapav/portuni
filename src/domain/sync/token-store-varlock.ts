@@ -1,8 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { TokenStore } from "./token-store.js";
-import type { DeviceToken } from "./types.js";
-import { TOKEN_ENV_PREFIX } from "./device-tokens.js";
+import { type DeviceToken, TOKEN_ENV_PREFIX } from "./types.js";
 
 const execFileP = promisify(execFile);
 type Field = "ACCESS_TOKEN" | "REFRESH_TOKEN" | "EXPIRES_AT" | "SERVICE_ACCOUNT_JSON";

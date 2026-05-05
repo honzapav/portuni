@@ -1,6 +1,11 @@
 export type RemoteType = "gdrive" | "dropbox" | "s3" | "fs" | "webdav" | "sftp";
 export type NativeFormat = "gdoc" | "gsheet" | "gslide" | "notion_page";
 
+// Env-var namespace for per-remote device tokens (varlock token store).
+// Lives here so token-store implementations and the device-tokens reader
+// can both import it without forming a cycle.
+export const TOKEN_ENV_PREFIX = "PORTUNI_REMOTE_";
+
 export interface FileRef {
   path: string;
   hash: string | null;

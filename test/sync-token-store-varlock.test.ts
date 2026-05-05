@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createVarlockTokenStore } from "../src/domain/sync/token-store-varlock.js";
-import { TOKEN_ENV_PREFIX } from "../src/domain/sync/device-tokens.js";
+import { TOKEN_ENV_PREFIX } from "../src/domain/sync/types.js";
 
 function envKey(name: string, field: string): string {
   return `${TOKEN_ENV_PREFIX}${name.toUpperCase().replace(/-/g, "_")}__${field}`;
