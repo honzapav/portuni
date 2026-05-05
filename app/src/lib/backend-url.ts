@@ -36,13 +36,27 @@ async function pollBackendPort(): Promise<string> {
   const { invoke } = await import("@tauri-apps/api/core");
   const { listen } = await import("@tauri-apps/api/event");
 
-  let unlistenFn: (() => void) | null = null;
+  let unlistenReady: (() => void) | null = null;
+  let unlistenError: (() => void) | null = null;
 
   const eventPromise = new Promise<number>((resolve) => {
     void listen<number>("backend-ready", (event) => {
       resolve(event.payload);
     }).then((fn) => {
-      unlistenFn = fn;
+      unlistenReady = fn;
+    });
+  });
+
+  // Tauri host emits backend-error when the sidecar prints a structured
+  // PORTUNI_BACKEND_ERROR= line on stdout (e.g. database unreachable) or
+  // when it terminates before announcing a port. Surfacing the real
+  // reason here is what turns "did not start within 30s" into something
+  // the user can act on.
+  const errorPromise = new Promise<never>((_, reject) => {
+    void listen<string>("backend-error", (event) => {
+      reject(new Error(`backend failed to start: ${event.payload}`));
+    }).then((fn) => {
+      unlistenError = fn;
     });
   });
 
@@ -57,10 +71,11 @@ async function pollBackendPort(): Promise<string> {
   })();
 
   try {
-    const port = await Promise.race([pollPromise, eventPromise]);
+    const port = await Promise.race([pollPromise, eventPromise, errorPromise]);
     return `http://127.0.0.1:${port}`;
   } finally {
-    if (unlistenFn) (unlistenFn as () => void)();
+    if (unlistenReady) (unlistenReady as () => void)();
+    if (unlistenError) (unlistenError as () => void)();
   }
 }
 
