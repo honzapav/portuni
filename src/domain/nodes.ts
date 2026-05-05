@@ -16,6 +16,7 @@ import { generateSyncKey } from "./sync/sync-key.js";
 import { unregisterMirror } from "./sync/mirror-registry.js";
 import { getLifecycleStatesForType } from "../shared/popp.js";
 import type { NodeType } from "../shared/popp.js";
+import { writeAudit } from "../infra/audit.js";
 
 // Cleanup hook for node purge: removes the per-device local mirror row for
 // the node being purged. Best-effort -- never fails on local cleanup errors.
@@ -60,21 +61,6 @@ const UpdateNodeInput = z.object({
   owner_id: z.string().nullable().optional(),
 });
 type UpdateNodeInput = z.infer<typeof UpdateNodeInput>;
-
-async function writeAudit(
-  db: Client,
-  userId: string,
-  action: string,
-  targetType: string,
-  targetId: string,
-  detail?: Record<string, unknown>,
-): Promise<void> {
-  await db.execute({
-    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
-          VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
-    args: [ulid(), userId, action, targetType, targetId, detail ? JSON.stringify(detail) : null],
-  });
-}
 
 export async function updateNodeInternal(
   db: Client,

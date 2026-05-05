@@ -8,6 +8,7 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import type { Client, InValue } from "@libsql/client";
 import { ActorRow } from "../shared/types.js";
+import { writeAudit } from "../infra/audit.js";
 
 export const ACTOR_TYPES = ["person", "automation"] as const;
 
@@ -36,24 +37,6 @@ const ListActorsInput = z.object({
   is_placeholder: z.boolean().optional().describe("Filter by placeholder flag."),
 });
 type ListActorsInput = z.infer<typeof ListActorsInput>;
-
-// Direct audit writer. The shared logAudit() helper hard-codes getDb(), so
-// pure domain functions write through this helper to keep tests able to
-// drive them against a fresh in-memory Client.
-async function writeAudit(
-  db: Client,
-  userId: string,
-  action: string,
-  targetType: string,
-  targetId: string,
-  detail?: Record<string, unknown>,
-): Promise<void> {
-  await db.execute({
-    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
-          VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
-    args: [ulid(), userId, action, targetType, targetId, detail ? JSON.stringify(detail) : null],
-  });
-}
 
 async function loadActor(db: Client, actorId: string): Promise<ActorRow | null> {
   const res = await db.execute({

@@ -6,6 +6,7 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import type { Client, InValue } from "@libsql/client";
 import { ActorRow, ResponsibilityRow } from "../shared/types.js";
+import { writeAudit } from "../infra/audit.js";
 
 export type ResponsibilityWithAssignees = ResponsibilityRow & {
   assignees: ActorRow[];
@@ -39,21 +40,6 @@ const AssignInput = z.object({
   actor_id: z.string().describe("Actor ID (ULID) to assign / unassign."),
 });
 type AssignInput = z.infer<typeof AssignInput>;
-
-async function writeAudit(
-  db: Client,
-  userId: string,
-  action: string,
-  targetType: string,
-  targetId: string,
-  detail?: Record<string, unknown>,
-): Promise<void> {
-  await db.execute({
-    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
-          VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
-    args: [ulid(), userId, action, targetType, targetId, detail ? JSON.stringify(detail) : null],
-  });
-}
 
 async function loadResponsibility(db: Client, id: string): Promise<ResponsibilityRow | null> {
   const res = await db.execute({

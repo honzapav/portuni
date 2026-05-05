@@ -8,6 +8,7 @@ import { ulid } from "ulid";
 import type { Client, InValue } from "@libsql/client";
 import { DataSourceRow, ToolRow } from "../shared/types.js";
 import { isSafeExternalLink } from "../shared/safe-url.js";
+import { writeAudit } from "../infra/audit.js";
 
 export const ExternalLinkSchema = z
   .string()
@@ -31,21 +32,6 @@ const AddEntityAttrInput = z.object({
 type AddEntityAttrInput = z.infer<typeof AddEntityAttrInput>;
 
 type EntityAttrTable = "data_sources" | "tools";
-
-async function writeAudit(
-  db: Client,
-  userId: string,
-  action: string,
-  targetType: string,
-  targetId: string,
-  detail?: Record<string, unknown>,
-): Promise<void> {
-  await db.execute({
-    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
-          VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
-    args: [ulid(), userId, action, targetType, targetId, detail ? JSON.stringify(detail) : null],
-  });
-}
 
 async function addRow<T>(
   db: Client,

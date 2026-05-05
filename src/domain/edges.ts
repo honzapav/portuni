@@ -3,23 +3,8 @@
 // Pure functions over a libsql Client. Both REST (src/api/edges.ts) and
 // MCP (src/mcp/tools/edges.ts) call into these.
 
-import { ulid } from "ulid";
 import type { Client } from "@libsql/client";
-
-async function writeAudit(
-  db: Client,
-  userId: string,
-  action: string,
-  targetType: string,
-  targetId: string,
-  detail?: Record<string, unknown>,
-): Promise<void> {
-  await db.execute({
-    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
-          VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
-    args: [ulid(), userId, action, targetType, targetId, detail ? JSON.stringify(detail) : null],
-  });
-}
+import { writeAudit } from "../infra/audit.js";
 
 export type MoveNodeResult = {
   moved: boolean;
