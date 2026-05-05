@@ -76,4 +76,23 @@ describe("checkAuthRequiredForConfig", () => {
       { ok: true },
     );
   });
+
+  it("treats file: TURSO_URL as local SQLite (desktop/embedded mode)", () => {
+    assert.deepEqual(
+      checkAuthRequiredForConfig({
+        authEnabled: false,
+        host: "127.0.0.1",
+        tursoUrl: "file:/Users/x/Library/Application Support/Portuni/portuni.db",
+      }),
+      { ok: true },
+    );
+    assert.deepEqual(
+      checkAuthRequiredForConfig({
+        authEnabled: false,
+        host: "127.0.0.1",
+        tursoUrl: "file::memory:",
+      }),
+      { ok: true },
+    );
+  });
 });

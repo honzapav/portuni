@@ -33,7 +33,22 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
 
   const mcp = createMcpTransport();
 
+  // PORTUNI_LOG_REQUESTS=1 enables a single-line access log per request.
+  // Used for diagnosing desktop-mode CORS / auth / route problems where
+  // the only visible failure is in the webview console.
+  const requestLogging = process.env.PORTUNI_LOG_REQUESTS === "1";
+
   const httpServer = createServer(async (req, res) => {
+    const startedAt = requestLogging ? Date.now() : 0;
+    if (requestLogging) {
+      res.on("finish", () => {
+        const took = Date.now() - startedAt;
+        console.error(
+          `[req] ${req.method} ${req.url} origin=${req.headers.origin ?? "-"} host=${req.headers.host ?? "-"} -> ${res.statusCode} ${took}ms`,
+        );
+      });
+    }
+
     if (applyGates(req, res)) return;
 
     const hostHeader = (req.headers.host ?? "").toLowerCase();
