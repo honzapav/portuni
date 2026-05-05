@@ -156,6 +156,34 @@ describe("autoSeedFromHome", () => {
     assert.equal(audits.length, 0);
   });
 
+  it("propagates DB errors so the caller can reject the connection", async () => {
+    // When the DB is unreachable (e.g. Turso DNS lookup fails), we want
+    // the seed to throw rather than silently succeed with empty scope.
+    // The transport then surfaces a 503 to the MCP client so the user
+    // sees the real reason instead of "scope_expansion_required" on every
+    // subsequent read.
+    const scope = new SessionScope("strict");
+    const audits: unknown[] = [];
+    const auditFn = async () => {
+      audits.push("called");
+    };
+    const brokenDb = {
+      execute: async () => {
+        throw new Error("getaddrinfo ENOTFOUND turso.example.com");
+      },
+    } as unknown as Parameters<typeof autoSeedFromHome>[0]["db"];
+
+    await assert.rejects(
+      autoSeedFromHome({ scope, homeNodeId: "HOME", db: brokenDb, auditFn }),
+      /ENOTFOUND/,
+    );
+
+    // Scope was not partially seeded and no audit entry was written.
+    assert.equal(scope.size(), 0);
+    assert.equal(scope.homeNodeId, null);
+    assert.equal(audits.length, 0);
+  });
+
   it("does not double-seed when called twice on the same scope", async () => {
     const db = await freshGraph();
     const scope = new SessionScope("strict");
