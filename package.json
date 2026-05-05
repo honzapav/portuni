@@ -13,6 +13,7 @@
     "format": "biome format --write",
     "typecheck": "tsc --noEmit",
     "qa": "npm run lint:strict && npm run typecheck && npm test && npm run build",
+    "backup": "varlock run -- node --import tsx scripts/backup-turso.ts",
     "prepare": "simple-git-hooks || true"
   },
   "simple-git-hooks": {
@@ -26,7 +27,8 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "opendal": "^0.49.2",
     "ulid": "^3.0.2",
-    "varlock": "^0.7.1"
+    "varlock": "^0.7.1",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",

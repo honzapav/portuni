@@ -7,7 +7,7 @@ import type { NodeDetail } from "../types";
  * portuni_get_node first so state stays honest. The snapshot that follows is
  * for orientation only.
  */
-export function buildAgentPrompt(node: NodeDetail): string {
+function buildAgentPrompt(node: NodeDetail): string {
   const lines: string[] = [];
 
   lines.push(
@@ -82,14 +82,9 @@ export function buildAgentPrompt(node: NodeDetail): string {
   return lines.join("\n");
 }
 
-export function buildCdCommand(node: NodeDetail): string | null {
-  if (!node.local_mirror) return null;
-  return `cd ${shellQuote(node.local_mirror.local_path)}`;
-}
-
 // POSIX single-quote escape. Safe for arbitrary prompt content (newlines,
 // backticks, $, quotes). Internal single quotes are closed, escaped, reopened.
-export function shellQuote(s: string): string {
+function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 

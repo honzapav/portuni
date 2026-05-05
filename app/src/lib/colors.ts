@@ -1,22 +1,5 @@
-// Muted, consistent palette for node types.
-// Values must match CSS vars in index.css so UI chips and graph dots agree.
-// Node type set mirrors src/schema.ts NODE_TYPES.
-
-export const NODE_COLORS: Record<string, string> = {
-  organization: "#76d9ff",
-  project: "#a78bfa",
-  process: "#fbbf24",
-  area: "#f472b6",
-  principle: "#34d399",
-};
-
-export const DEFAULT_NODE_COLOR = "#94a3b8";
-
-export function colorForType(type: string): string {
-  return NODE_COLORS[type] ?? DEFAULT_NODE_COLOR;
-}
-
 // Order matters: drives the legend and the graph visual hierarchy.
+// Per-type colors live in theme.ts (see ThemeColors.nodeColors).
 export const TYPE_ORDER = [
   "organization",
   "project",

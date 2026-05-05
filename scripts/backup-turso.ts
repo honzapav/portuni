@@ -2,7 +2,7 @@
 // emitting CREATE + INSERT statements. Reads TURSO_URL + TURSO_AUTH_TOKEN
 // from process.env (typically supplied via varlock run --).
 //
-// Run from project root: varlock run -- node --import tsx scripts/backup-turso.ts
+// Run from project root: npm run backup
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -26,7 +26,7 @@ async function main(): Promise<void> {
   const dir = join(homedir(), "backups");
   await mkdir(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const path = join(dir, `portuni-pre-sync-phase1-${stamp}.sql`);
+  const path = join(dir, `portuni-backup-${stamp}.sql`);
 
   let out = `-- Portuni Turso backup\n-- ${new Date().toISOString()}\n\nPRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;\n\n`;
 

@@ -10,7 +10,7 @@
 import type { Client } from "@libsql/client";
 import { type SessionScope, seedScopeFromHome } from "./scope.js";
 
-export type AuditFn = (
+type AuditFn = (
   action: string,
   targetId: string,
   detail: Record<string, unknown>,

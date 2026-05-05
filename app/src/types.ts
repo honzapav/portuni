@@ -2,25 +2,18 @@
 // src/api-types.ts. Re-exporting here keeps frontend imports stable.
 export type {
   GraphNode,
-  GraphEdge,
   GraphPayload,
   DetailEdge,
   DetailFile,
   DetailEvent,
-  LocalMirror,
   NodeDetail,
-  DetailOwner,
   DetailResponsibility,
-  DetailResponsibilityAssignee,
   DetailDataSource,
   DetailTool,
   SyncClass,
   SyncStatusFile,
   SyncStatusResponse,
   SyncRunResponse,
-  SyncRunFile,
-  SyncRunErrorFile,
-  SyncRunSkippedFile,
 } from "../../src/shared/api-types";
 
 // Lifecycle state -> UI color bucket. Any state not listed falls through to "gray".
@@ -57,14 +50,8 @@ export const LIFECYCLE_COLORS: Record<string, "green" | "yellow" | "red" | "gray
 // naming kept to avoid churning every import site). It is the exact same
 // tuple.
 export {
-  NODE_TYPES,
   EDGE_RELATIONS as RELATION_TYPES,
   EVENT_TYPES,
   LIFECYCLE_STATES_BY_TYPE,
   NODE_VISIBILITIES,
-} from "../../src/shared/popp";
-export type {
-  NodeType,
-  EdgeRelation as RelationType,
-  NodeVisibility,
 } from "../../src/shared/popp";

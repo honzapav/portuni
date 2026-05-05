@@ -6,7 +6,7 @@ export interface TokenStore {
   delete(remoteName: string): Promise<void>;
 }
 
-export type TokenStoreKind = "file" | "keychain" | "varlock";
+type TokenStoreKind = "file" | "keychain" | "varlock";
 
 async function createTokenStore(): Promise<TokenStore> {
   const kind = (process.env.PORTUNI_TOKEN_STORE as TokenStoreKind | undefined) ?? "file";
