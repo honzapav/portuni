@@ -14,7 +14,7 @@ export type ThemeColors = {
   nodeColorDefault: string;
 };
 
-export const DARK_THEME: ThemeColors = {
+const DARK_THEME: ThemeColors = {
   bg: "#0a0b0d",
   text: "#e8e9eb",
   textMuted: "#9ca0a8",
@@ -34,7 +34,7 @@ export const DARK_THEME: ThemeColors = {
   nodeColorDefault: "#94a3b8",
 };
 
-export const LIGHT_THEME: ThemeColors = {
+const LIGHT_THEME: ThemeColors = {
   bg: "#f8fafc",
   text: "#0f172a",
   textMuted: "#475569",

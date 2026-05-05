@@ -7,7 +7,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { handleHealth } from "./health.js";
 import { handleGraph } from "./graph.js";
-import { handleContext } from "./context.js";
 import { handleWriteScope } from "./write-scope.js";
 import { handleListUsers } from "./users.js";
 import {
@@ -70,10 +69,6 @@ export async function routeApiRequest(
   }
   if (pathname === "/graph" && method === "GET") {
     await handleGraph(req, res);
-    return true;
-  }
-  if (pathname === "/context" && method === "GET") {
-    await handleContext(req, res, url);
     return true;
   }
   if (pathname === "/scope" && method === "GET") {

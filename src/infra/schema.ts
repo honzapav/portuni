@@ -29,15 +29,6 @@ export {
   EVENT_STATUSES,
   FILE_STATUSES,
 };
-export type {
-  NodeType,
-  EdgeRelation,
-  EventType,
-  NodeStatus,
-  NodeVisibility,
-  EventStatus,
-  FileStatus,
-} from "../shared/popp.js";
 
 // Re-export the trigger/DDL constants that tests import directly.
 export {

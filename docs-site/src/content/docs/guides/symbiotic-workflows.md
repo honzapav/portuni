@@ -11,8 +11,8 @@ For the philosophy behind this, see [Design Principles](/concepts/design-princip
 
 A typical session has four beats, in roughly this order:
 
-1. **Anchor.** Move into the mirror folder for the node you're working on. The SessionStart hook automatically injects the graph context (current node, owner, top responsibilities, recent events) so you don't have to brief the agent from scratch.
-2. **Pull what you need.** If the agent asks for context that isn't in the SessionStart payload, name the node ("look at process Partner Account Management") or use `portuni_get_context` with depth 1. Don't dump the whole graph into the session.
+1. **Anchor.** Move into the mirror folder for the node you're working on. The MCP connection auto-seeds the read scope with this node + its depth-1 neighbors – the agent walks in with the right anchor without you having to brief it.
+2. **Pull what you need.** When the agent needs more than the auto-seeded neighborhood, name the node ("look at process Partner Account Management") or use `portuni_get_context` with depth 1. Don't dump the whole graph into the session.
 3. **Work.** Edit, draft, search, refactor – whatever the task needs. The agent is your hands; you decide what to do.
 4. **Commit knowledge.** Before ending the session, log what's worth keeping. Decisions go into events (`portuni_log`). New deliverables go through `portuni_store`. If you're done with a blocker, `portuni_resolve` it.
 
@@ -20,7 +20,7 @@ The loop is intentionally cheap to repeat. Anchoring takes seconds. Pulling is o
 
 ## Where to start a session
 
-Always start in a mirror folder. The SessionStart hook only fires when `cwd` is inside a registered mirror, and a session that starts outside one means the agent has no anchor – every read needs to be explicit, every "where am I" question is unnecessary friction.
+Always start in a mirror folder. Auto-seed only fires when the session connects via a mirror's `.mcp.json` (which carries the `home_node_id`); a session opened outside any mirror means the agent has no anchor – every read needs to be explicit, every "where am I" question is unnecessary friction.
 
 If you're going to work on multiple nodes back to back, do them in separate sessions. The agent's mental model is sharper when it has one home node, not three.
 
@@ -79,13 +79,13 @@ Most of these tools are confirm-first by design. Lean into that – the prompt t
 
 **Editing files in a sibling mirror.** If you're in the Goldea Presale project and the agent decides to "also update" Partner Account Management's docs, that's an out-of-scope write. Once [scope enforcement](/concepts/scope-enforcement/) ships, this is denied by default; until then, watch for it manually and roll it back.
 
-**Auto-pulling everything at session start.** The SessionStart hook gives you depth 1 for a reason. Pulling depth 3 "just in case" produces a noisy context window and worse responses.
+**Auto-pulling everything at session start.** Auto-seed gives you depth 1 for a reason. Pulling depth 3 "just in case" produces a noisy context window and worse responses.
 
 **Logging everything as an event.** If half your events are "ran tests, all green," the next session will skip past them and miss the actual decisions. Be selective.
 
 **Treating the agent as a transcript dumper.** "Here's a 2,000-word chat – figure it out" rarely produces the right structure in Portuni. Decide what's worth keeping, then ask the agent to log it cleanly.
 
-**Skipping the mirror.** Working in a non-mirror folder and remembering to push files manually is the path to drift. Run `portuni_mirror` first, then work; you'll get the SessionStart context, the routing, and the audit trail for free.
+**Skipping the mirror.** Working in a non-mirror folder and remembering to push files manually is the path to drift. Run `portuni_mirror` first, then work; you'll get the auto-seeded scope, the routing, and the audit trail for free.
 
 ## A worked example
 
@@ -93,13 +93,13 @@ You're starting work on a new client engagement under the Workflow org. The flow
 
 1. **Create the project node:** `portuni_create_node { type: "project", name: "Acme Onboarding", organization_id: "<workflow-id>", lifecycle_state: "kickoff" }`. The atomic create writes the node + its `belongs_to -> Workflow` edge in one transaction.
 2. **Create the mirror:** `portuni_mirror { node_id: "<acme-id>", targets: ["local"] }`. Folder appears at `~/Workspaces/portuni/workflow/projects/acme-onboarding/` with `outputs/`, `wip/`, `resources/`. The remote folder auto-scaffolds in the routed Drive.
-3. **`cd` into the mirror folder.** SessionStart hook fires; agent has the project context.
+3. **`cd` into the mirror folder.** Open the agent; the MCP connection auto-seeds scope with the project + its neighbors.
 4. **Set up the responsibility list:** `portuni_create_responsibility { node_id, title: "Weekly status update", assignee_actor_ids: [...] }`. Repeat for each.
 5. **Apply the relevant processes:** `portuni_connect { source: <acme-id>, relation: "applies", target: <process-id> }`.
 6. **Drop the kickoff brief in:** `portuni_store { node_id, local_path, status: "wip" }`. File ends up in `wip/`, gets uploaded to the Workflow Projects Hub Shared Drive.
 7. **Log the kickoff event:** `portuni_log { node_id, type: "milestone", content: "Project kicked off; first deliverable due ..." }`.
 
-End of session, you can leave. Next time you open the folder, the SessionStart hook surfaces the kickoff event, the responsibility list, and the connected processes – the agent picks up exactly where you left off.
+End of session, you can leave. Next time you open the folder, scope is auto-seeded with the project node and the agent can pull the kickoff event, responsibility list, and connected processes on demand – picking up exactly where you left off.
 
 ## See also
 

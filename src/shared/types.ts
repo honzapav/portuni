@@ -12,7 +12,6 @@ export const UserRow = z.object({
   name: z.string(),
   created_at: z.string(),
 });
-export type UserRow = z.infer<typeof UserRow>;
 
 export const NodeRow = z.object({
   id: z.string(),
@@ -34,7 +33,6 @@ export const NodeRow = z.object({
   created_at: z.string(),
   updated_at: z.string(),
 });
-export type NodeRow = z.infer<typeof NodeRow>;
 
 export const EdgeRow = z.object({
   id: z.string(),
@@ -45,7 +43,6 @@ export const EdgeRow = z.object({
   created_by: z.string(),
   created_at: z.string(),
 });
-export type EdgeRow = z.infer<typeof EdgeRow>;
 
 export const AuditLogRow = z.object({
   id: z.string(),
@@ -56,15 +53,6 @@ export const AuditLogRow = z.object({
   detail: z.union([z.string(), z.null()]),
   timestamp: z.string(),
 });
-export type AuditLogRow = z.infer<typeof AuditLogRow>;
-
-export const LocalMirrorRow = z.object({
-  user_id: z.string(),
-  node_id: z.string(),
-  local_path: z.string(),
-  registered_at: z.string(),
-});
-export type LocalMirrorRow = z.infer<typeof LocalMirrorRow>;
 
 // FileRow validates rows returned from `SELECT * FROM files`. There is NO
 // `local_path` column on the table -- migration 012 dropped it. The path on
@@ -87,7 +75,6 @@ export const FileRow = z.object({
   created_at: z.string(),
   updated_at: z.string(),
 });
-export type FileRow = z.infer<typeof FileRow>;
 
 export const EventRow = z.object({
   id: z.string(),
@@ -101,7 +88,6 @@ export const EventRow = z.object({
   created_by: z.string(),
   created_at: z.string(),
 });
-export type EventRow = z.infer<typeof EventRow>;
 
 // --- Partial row schemas for SELECT subsets ---
 
@@ -112,7 +98,6 @@ export const NodeSummaryRow = NodeRow.pick({
   status: true,
   description: true,
 });
-export type NodeSummaryRow = z.infer<typeof NodeSummaryRow>;
 
 export const ActorRow = z.object({
   id: z.string(),

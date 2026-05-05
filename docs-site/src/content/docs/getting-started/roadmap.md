@@ -19,7 +19,7 @@ The core ideas have been pressure-tested through daily use and several refactors
 
 **File sync.** A pluggable `FileAdapter` interface with Google Drive (Service Account) as the first concrete backend. Two-layer state: shared `files.current_remote_hash` in Turso, per-device sync state in `~/.portuni/sync.db`. Confirm-first move / rename / delete, hash-based conflict detection, native-format snapshots for Docs / Sheets / Slides.
 
-**Integration glue.** A `SessionStart` hook injects graph context when Claude Code opens in a Portuni workspace folder; the `/context` REST endpoint resolves filesystem paths to graph nodes.
+**Integration glue.** Each mirror's per-harness MCP config carries `?home_node_id=<id>` in the server URL, so the Portuni server auto-seeds the read scope on connect – no harness-specific hooks needed.
 
 ## Gaps and what's coming next
 

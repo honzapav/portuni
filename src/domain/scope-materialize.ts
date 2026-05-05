@@ -21,6 +21,7 @@
 import { mkdir, readFile, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  appendHomeNodeIdToUrl,
   buildClaudeSettings,
   buildClaudeMcpJson,
   buildCodexMcpServer,
@@ -51,6 +52,10 @@ export interface MaterializeArgs {
   mcpUrl?: string | null;
   // Bearer auth token to embed in MCP server headers. Skipped when empty.
   mcpAuthToken?: string | null;
+  // Home node id (the node owning this mirror). Embedded as a query param
+  // on the MCP URL so the server can auto-seed the session scope on
+  // connect, no explicit portuni_session_init required. Skipped when null.
+  homeNodeId?: string | null;
 }
 
 export interface MaterializeResult {
@@ -175,9 +180,13 @@ export async function materializeScopeConfig(
   //    servers; once accepted, every session inside this mirror talks to
   //    Portuni automatically. This is a Portuni-managed file with a
   //    portuni_managed marker; we overwrite on each regen.
-  if (args.mcpUrl) {
+  const mcpUrlWithHome = args.mcpUrl
+    ? appendHomeNodeIdToUrl(args.mcpUrl, args.homeNodeId ?? null)
+    : null;
+
+  if (mcpUrlWithHome) {
     try {
-      const mcp = buildClaudeMcpJson({ url: args.mcpUrl, authToken: args.mcpAuthToken ?? null });
+      const mcp = buildClaudeMcpJson({ url: mcpUrlWithHome, authToken: args.mcpAuthToken ?? null });
       const path = join(cur, ".mcp.json");
       await safeWrite(path, JSON.stringify(mcp, null, 2) + "\n");
       result.written.push(path);
@@ -192,8 +201,8 @@ export async function materializeScopeConfig(
   //    [mcp_servers.portuni] block when an MCP URL was supplied.
   try {
     const sandbox = buildCodexSandboxConfig({ currentMirror: cur });
-    const mcpServer = args.mcpUrl
-      ? buildCodexMcpServer({ url: args.mcpUrl, authToken: args.mcpAuthToken ?? null })
+    const mcpServer = mcpUrlWithHome
+      ? buildCodexMcpServer({ url: mcpUrlWithHome, authToken: args.mcpAuthToken ?? null })
       : null;
     const path = join(cur, ".codex", "config.toml");
     let mayWrite = true;

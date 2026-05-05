@@ -43,7 +43,7 @@ Events appear in tool responses with detail that scales inversely with distance 
 | 1 | Recent events – up to 5, summary fields |
 | 2+ | No events |
 
-The `SessionStart` hook shows the 5 most recent active events whenever you enter a workspace folder, so you walk into the session already up to speed.
+Recent events surface through `portuni_get_node` and `portuni_get_context` whenever the agent reads a node, so the latest activity is one tool call away – no separate session-start preamble.
 
 ## Tools
 

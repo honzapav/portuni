@@ -6,7 +6,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
-import { UserRow, NodeRow, EdgeRow, AuditLogRow, LocalMirrorRow, FileRow, EventRow } from "../src/shared/types.js";
+import { UserRow, NodeRow, EdgeRow, AuditLogRow, FileRow, EventRow } from "../src/shared/types.js";
 import { ulid } from "ulid";
 
 async function createTestDb() {
@@ -60,13 +60,6 @@ async function createTestDb() {
       target_id TEXT NOT NULL,
       detail TEXT,
       timestamp DATETIME NOT NULL DEFAULT (datetime('now'))
-    )`,
-    `CREATE TABLE local_mirrors (
-      user_id TEXT NOT NULL REFERENCES users(id),
-      node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-      local_path TEXT NOT NULL,
-      registered_at DATETIME NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (user_id, node_id)
     )`,
     `CREATE TABLE files (
       id TEXT PRIMARY KEY,
@@ -163,24 +156,6 @@ describe("DDL vs Zod row schemas", () => {
     });
     const res = await db.execute("SELECT * FROM audit_log WHERE id = 'A1'");
     assert.doesNotThrow(() => AuditLogRow.parse(res.rows[0]));
-  });
-
-  it("LocalMirrorRow matches local_mirrors table", async () => {
-    const db = await createTestDb();
-    const n1 = ulid();
-    await db.execute({
-      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
-      args: [n1, "project", "Test", n1, "U1"],
-    });
-    await db.execute({
-      sql: "INSERT INTO local_mirrors (user_id, node_id, local_path) VALUES (?, ?, ?)",
-      args: ["U1", n1, "/tmp/test"],
-    });
-    const res = await db.execute({
-      sql: "SELECT * FROM local_mirrors WHERE user_id = 'U1' AND node_id = ?",
-      args: [n1],
-    });
-    assert.doesNotThrow(() => LocalMirrorRow.parse(res.rows[0]));
   });
 
   it("FileRow matches files table", async () => {
@@ -333,12 +308,8 @@ describe("DDL vs Zod row schemas", () => {
       sql: "INSERT INTO files (id, node_id, filename, created_by) VALUES (?, ?, ?, ?)",
       args: ["F_C", n2, "test.md", "U1"],
     });
-    await db.execute({
-      sql: "INSERT INTO local_mirrors (user_id, node_id, local_path) VALUES (?, ?, ?)",
-      args: ["U1", n2, "/tmp/proj"],
-    });
 
-    // Delete the project node -- cascade should remove edge, event, file, mirror
+    // Delete the project node -- cascade should remove edge, event, file
     await db.execute({ sql: "DELETE FROM nodes WHERE id = ?", args: [n2] });
 
     const edges = await db.execute({ sql: "SELECT id FROM edges WHERE id = ?", args: [e1] });
@@ -347,10 +318,5 @@ describe("DDL vs Zod row schemas", () => {
     assert.equal(events.rows.length, 0, "event should be cascade-deleted");
     const files = await db.execute("SELECT id FROM files WHERE id = 'F_C'");
     assert.equal(files.rows.length, 0, "file should be cascade-deleted");
-    const mirrors = await db.execute({
-      sql: "SELECT node_id FROM local_mirrors WHERE node_id = ?",
-      args: [n2],
-    });
-    assert.equal(mirrors.rows.length, 0, "mirror should be cascade-deleted");
   });
 });

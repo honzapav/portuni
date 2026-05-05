@@ -10,14 +10,12 @@ import {
   violatesHardFloor,
 } from "../scope.js";
 
-// portuni_session_init is called by the SessionStart hook with the home node
-// id (the node whose mirror contains the cwd). Seeds the scope set with the
-// home node + its depth-1 neighbors so the agent can immediately read what is
-// directly relevant. Calling without home_node_id is allowed (cwd outside any
-// mirror) — the scope set stays empty and every read requires expansion.
-//
-// Idempotent: calling a second time replaces the home node + re-seeds. This
-// makes the hook robust against retries.
+// portuni_session_init is the manual fallback for seeding the scope set.
+// Auto-seed normally fires on connect when the MCP URL carries
+// `?home_node_id=...` (every mirror's .mcp.json / .codex/config.toml gets
+// this from `portuni_mirror`). This tool exists for clients connecting
+// without the query param, programmatic re-init mid-session, or test
+// harnesses. Idempotent: replaces the home node and re-seeds.
 async function loadNodeIdFromMaybeName(
   args: { home_node_id?: string; home_node_name?: string },
 ): Promise<string | null> {
@@ -35,7 +33,7 @@ async function loadNodeIdFromMaybeName(
 export function registerScopeTools(server: McpServer, scope: SessionScope): void {
   server.tool(
     "portuni_session_init",
-    "Initialize the read-scope set for this MCP session. Called by the SessionStart hook with the home node (the node whose local mirror contains the current working directory). Seeds the scope set with the home node and its depth-1 neighbors. Call without home_node_id when cwd is outside any mirror — the scope set stays empty and every read requires explicit expansion.",
+    "Manually initialize the read-scope set for this MCP session. Auto-seed normally runs on connect when the URL carries ?home_node_id=…; use this tool only when that is absent (legacy client, ad-hoc connection). Seeds the scope set with the home node and its depth-1 neighbors. Call without home_node_id when cwd is outside any mirror — the scope set stays empty and every read requires explicit expansion.",
     {
       home_node_id: z
         .string()

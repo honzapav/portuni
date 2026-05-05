@@ -887,18 +887,3 @@ export {
   adoptFiles,
   deleteFile,
 } from "./engine-mutations.js";
-export type {
-  OpStatus,
-  OpResult,
-  MoveFileArgs,
-  MoveFilePreview,
-  MoveFileSuccess,
-  RenameFolderArgs,
-  RenameFolderResult,
-  AdoptFilesArgs,
-  AdoptFilesResult,
-  DeleteFileArgs,
-  DeleteFilePreview,
-  DeleteFileSuccess,
-  DeleteFileRepairNeeded,
-} from "./engine-mutations.js";

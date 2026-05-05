@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  appendHomeNodeIdToUrl,
   buildClaudeMcpJson,
   buildClaudeSettings,
   buildCodexMcpServer,
@@ -144,6 +145,38 @@ describe("buildClaudeSettings", () => {
     assert.equal((s as { hooks?: unknown }).hooks, undefined);
   });
 
+  it("filters ancestor mirrors out of deny so nested mirror does not block itself", () => {
+    // cur is nested inside an ancestor mirror (e.g. project under its org).
+    // The ancestor's glob `/r/org/**` would match cur's own files; deny
+    // beats allow in Claude Code, so the ancestor must not appear in deny.
+    const s = buildClaudeSettings({
+      currentMirror: "/r/org/projects/p1",
+      otherMirrors: ["/r/org", "/r/org/projects/p2", "/r/other"],
+      portuniRoot: "/r",
+    });
+    const allow = (s.permissions as { allow: string[] }).allow;
+    const deny = (s.permissions as { deny: string[] }).deny;
+    assert.ok(allow.includes("Edit(/r/org/projects/p1/**)"));
+    assert.ok(!deny.some((d) => d === "Edit(/r/org/**)"), "ancestor must not be in deny");
+    assert.ok(!deny.some((d) => d === "Write(/r/org/**)"), "ancestor must not be in deny");
+    assert.ok(deny.some((d) => d.includes("/r/org/projects/p2")), "true sibling stays in deny");
+    assert.ok(deny.some((d) => d.includes("/r/other")), "unrelated mirror stays in deny");
+  });
+
+  it("keeps descendant mirrors in deny (cur is ancestor)", () => {
+    // From the ancestor's session, nested mirrors are distinct workspaces.
+    // Direct edits should route through their own session -- so they stay
+    // in deny by design (matches findContainingMirror longest-prefix).
+    const s = buildClaudeSettings({
+      currentMirror: "/r/org",
+      otherMirrors: ["/r/org/projects/p1", "/r/other"],
+      portuniRoot: "/r",
+    });
+    const deny = (s.permissions as { deny: string[] }).deny;
+    assert.ok(deny.some((d) => d === "Write(/r/org/projects/p1/**)"));
+    assert.ok(deny.some((d) => d === "Write(/r/other/**)"));
+  });
+
   it("wires PreToolUse hook when guardScriptPath is provided", () => {
     const s = buildClaudeSettings({
       currentMirror: "/r/a",
@@ -166,6 +199,36 @@ describe("buildCodexSandboxConfig", () => {
   it("emits writable_roots list", () => {
     const cfg = buildCodexSandboxConfig({ currentMirror: "/x/y" });
     assert.deepEqual(cfg.sandbox_workspace_write.writable_roots, ["/x/y"]);
+  });
+});
+
+describe("appendHomeNodeIdToUrl", () => {
+  it("appends home_node_id as a query param when none exists", () => {
+    assert.equal(
+      appendHomeNodeIdToUrl("http://localhost:4011/mcp", "01ABC"),
+      "http://localhost:4011/mcp?home_node_id=01ABC",
+    );
+  });
+
+  it("appends with & when other params exist", () => {
+    assert.equal(
+      appendHomeNodeIdToUrl("http://localhost:4011/mcp?foo=bar", "01ABC"),
+      "http://localhost:4011/mcp?foo=bar&home_node_id=01ABC",
+    );
+  });
+
+  it("returns the URL unchanged when homeNodeId is null", () => {
+    assert.equal(
+      appendHomeNodeIdToUrl("http://localhost:4011/mcp", null),
+      "http://localhost:4011/mcp",
+    );
+  });
+
+  it("encodes special chars defensively", () => {
+    assert.equal(
+      appendHomeNodeIdToUrl("http://x/mcp", "a b"),
+      "http://x/mcp?home_node_id=a%20b",
+    );
   });
 });
 
@@ -313,6 +376,29 @@ describe("materializeScopeConfig", () => {
     assert.ok(settings.hooks?.PreToolUse?.[0]);
     assert.equal(settings.hooks.PreToolUse[0].hooks[0].command, "/usr/local/bin/portuni-guard.sh");
     assert.match(settings.hooks.PreToolUse[0].matcher, /Edit\|Write/);
+  });
+
+  it("embeds home_node_id in MCP URL of generated configs when supplied", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "portuni-scope-home-"));
+    const cur = join(dir, "a");
+    await mkdir(cur, { recursive: true });
+
+    await materializeScopeConfig({
+      currentMirror: cur,
+      otherMirrors: [],
+      portuniRoot: dir,
+      mcpUrl: "http://localhost:4011/mcp",
+      homeNodeId: "01TESTHOME",
+    });
+
+    const mcpJson = JSON.parse(await readFile(join(cur, ".mcp.json"), "utf8"));
+    assert.equal(
+      mcpJson.mcpServers.portuni.url,
+      "http://localhost:4011/mcp?home_node_id=01TESTHOME",
+    );
+
+    const toml = await readFile(join(cur, ".codex", "config.toml"), "utf8");
+    assert.match(toml, /url = "http:\/\/localhost:4011\/mcp\?home_node_id=01TESTHOME"/);
   });
 
   it("emits .mcp.json (Claude Code project-scoped MCP) and Codex [mcp_servers.portuni] block when mcpUrl is supplied", async () => {

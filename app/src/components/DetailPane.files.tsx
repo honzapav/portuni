@@ -283,33 +283,6 @@ function FileTreeNode({
   );
 }
 
-const SYNC_LABEL: Record<SyncClass, string> = {
-  clean: "synced",
-  push: "push",
-  pull: "pull",
-  conflict: "conflict",
-  orphan: "orphan",
-  native: "native",
-  deleted_local: "missing",
-};
-
-function syncCssVar(c: SyncClass): string {
-  switch (c) {
-    case "clean":
-      return "var(--color-status-active)";
-    case "push":
-    case "pull":
-    case "deleted_local":
-      return "var(--color-node-process)";
-    case "conflict":
-      return "var(--color-danger)";
-    case "orphan":
-      return "var(--color-status-archived)";
-    case "native":
-      return "var(--color-accent)";
-  }
-}
-
 // Pluralization for the work-pending counter ("3 soubory ke synchronizaci"
 // vs. "1 soubor ke synchronizaci"). Czech grammar: 1 -> singular,
 // 2-4 -> few, 5+ -> many. Used to label the action button.
@@ -428,7 +401,7 @@ export function SyncBar({
   );
 }
 
-export function SyncStatusBadge({ sync }: { sync: SyncStatusFile }) {
+function SyncStatusBadge({ sync }: { sync: SyncStatusFile }) {
   const cssVar = syncCssVar(sync.sync_class);
   const tip = [
     `class: ${sync.sync_class}`,
@@ -453,6 +426,33 @@ export function SyncStatusBadge({ sync }: { sync: SyncStatusFile }) {
       {SYNC_LABEL[sync.sync_class]}
     </span>
   );
+}
+
+const SYNC_LABEL: Record<SyncClass, string> = {
+  clean: "synced",
+  push: "push",
+  pull: "pull",
+  conflict: "conflict",
+  orphan: "orphan",
+  native: "native",
+  deleted_local: "missing",
+};
+
+function syncCssVar(c: SyncClass): string {
+  switch (c) {
+    case "clean":
+      return "var(--color-status-active)";
+    case "push":
+    case "pull":
+    case "deleted_local":
+      return "var(--color-node-process)";
+    case "conflict":
+      return "var(--color-danger)";
+    case "orphan":
+      return "var(--color-status-archived)";
+    case "native":
+      return "var(--color-accent)";
+  }
 }
 
 export function ActionButtons({

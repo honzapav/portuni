@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ulid } from "ulid";
 import { createClient, type Client } from "@libsql/client";
-import { ensureSchemaOn, SOLO_USER } from "../../src/infra/schema.js";
+import { ensureSchemaOn } from "../../src/infra/schema.js";
 import { upsertRemote, addRule } from "../../src/domain/sync/routing.js";
 
 export interface SharedDb {
@@ -59,7 +59,3 @@ export async function makeSharedDb(): Promise<SharedDb> {
   await addRule(db, { priority: 10, node_type: null, org_slug: null, remote_name: "test-fs" });
   return { db, remoteRoot, orgId, nodeId, orgSyncKey, nodeSyncKey };
 }
-
-// Re-export so tests that asserted against the schema constant don't have
-// to import from a different place.
-export { SOLO_USER };

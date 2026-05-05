@@ -7,7 +7,7 @@ const ALLOWED_EXTERNAL_LINK_SCHEMES = new Set([
   "mailto:",
 ]);
 
-export function isSafeExternalLink(value: string): boolean {
+function isSafeExternalLink(value: string): boolean {
   const trimmed = value.trim();
   if (trimmed === "") return false;
   let parsed: URL;

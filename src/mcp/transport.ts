@@ -7,6 +7,10 @@ import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer } from "./server.js";
 import { parseBody, RequestBodyTooLargeError } from "../http/middleware.js";
+import { autoSeedFromHome, parseHomeNodeIdFromUrl } from "./auto-seed.js";
+import { logAudit } from "../infra/audit.js";
+import { getDb } from "../infra/db.js";
+import { SOLO_USER } from "../infra/schema.js";
 
 const MAX_SESSIONS = Number(process.env.PORTUNI_MAX_SESSIONS ?? 100);
 const SESSION_TTL_MS = Number(process.env.PORTUNI_SESSION_TTL_MS ?? 30 * 60 * 1000);
@@ -88,7 +92,28 @@ export function createMcpTransport(): McpTransport {
         }
       };
 
-      const { server } = createMcpServer();
+      const { server, scope } = createMcpServer();
+
+      // Auto-seed scope from `?home_node_id=...` on the connection URL.
+      // This is what `portuni_mirror` writes into per-mirror configs so
+      // every harness gets scope set up without needing to call
+      // portuni_session_init explicitly. Best-effort: failures here must
+      // not block the connection.
+      const homeNodeId = parseHomeNodeIdFromUrl(req.url);
+      if (homeNodeId) {
+        try {
+          await autoSeedFromHome({
+            scope,
+            homeNodeId,
+            db: getDb(),
+            auditFn: (action, targetId, detail) =>
+              logAudit(SOLO_USER, action, "node", targetId, detail),
+          });
+        } catch (err) {
+          console.error("MCP auto-seed failed:", err);
+        }
+      }
+
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     } catch (error) {

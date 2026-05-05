@@ -43,7 +43,6 @@ export const EVENT_TYPES = [
   "note",
   "change",
 ] as const;
-export type EventType = (typeof EVENT_TYPES)[number];
 
 // Canonical node statuses.
 export const NODE_STATUSES = ["active", "completed", "archived"] as const;
@@ -59,7 +58,6 @@ export type NodeStatus = (typeof NODE_STATUSES)[number];
 // meaning "I do not want this in shared exports", not as a security
 // guarantee. Real ACL enforcement is gated on multi-user auth.
 export const NODE_VISIBILITIES = ["team", "private"] as const;
-export type NodeVisibility = (typeof NODE_VISIBILITIES)[number];
 
 // Canonical event statuses.
 export const EVENT_STATUSES = [
@@ -68,11 +66,9 @@ export const EVENT_STATUSES = [
   "superseded",
   "archived",
 ] as const;
-export type EventStatus = (typeof EVENT_STATUSES)[number];
 
 // Canonical file statuses.
 export const FILE_STATUSES = ["wip", "output"] as const;
-export type FileStatus = (typeof FILE_STATUSES)[number];
 
 // Lifecycle states per node type. Primary, visible, color-coded status.
 // The coarse `status` column (active/completed/archived) is derived from
@@ -84,9 +80,6 @@ export const LIFECYCLE_STATES_BY_TYPE = {
   project: ["backlog", "planned", "in_progress", "on_hold", "done", "cancelled"],
   principle: ["active", "archived"],
 } as const satisfies Record<NodeType, readonly string[]>;
-
-export type LifecycleState =
-  (typeof LIFECYCLE_STATES_BY_TYPE)[keyof typeof LIFECYCLE_STATES_BY_TYPE][number];
 
 export function getLifecycleStatesForType(type: NodeType): readonly string[] {
   return LIFECYCLE_STATES_BY_TYPE[type];

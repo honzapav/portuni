@@ -3,7 +3,7 @@ title: Claude Code
 description: Connecting Claude Code to Portuni and giving it access to your mirror folders.
 ---
 
-Anthropic's Claude Code is the agent most Portuni users start with. It's the one we've tested the most and the one that ships with the `SessionStart` hook integration, so graph context lands in the agent without you having to lift a finger.
+Anthropic's Claude Code is the agent most Portuni users start with. It's the one we've tested the most and gets project-scoped MCP wiring + write-scope rules generated for free when you `portuni_mirror` a node.
 
 ## Connect to Portuni
 
@@ -58,31 +58,9 @@ Note: `.claude/` configuration from the added directory is **not** picked up –
 
 Fine on a workstation dedicated to Portuni. Worth thinking twice about on anything shared.
 
-## The SessionStart hook
+## Auto-seed on connect
 
-One of Claude Code's nicer tricks is the `SessionStart` hook – a script that runs at the start of every session. Portuni ships one at `scripts/portuni-context.sh` that automatically injects the right graph context whenever you start work inside a Portuni mirror folder.
-
-Register it in `~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/absolute/path/to/portuni/scripts/portuni-context.sh",
-            "timeout": 3
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Replace the `command` path with the absolute path to your Portuni checkout. The hook asks Portuni whether your current working directory corresponds to a known workspace; if nothing matches it exits silently without touching your conversation.
+When `portuni_mirror` materialises a mirror's config, the generated `.mcp.json` URL carries `?home_node_id=<id>`. The first time Claude Code opens an MCP session inside that mirror, the Portuni server reads the param and seeds the read scope with the home node + its depth-1 neighbors – no hook, no opening tool call, scope is just ready. The same mechanism works for any MCP-capable client (Codex, etc.); it's not Claude Code-specific.
 
 ## Running more than one Portuni instance
 
@@ -103,15 +81,7 @@ If you're running several Portuni servers side by side, register each as its own
 }
 ```
 
-The `SessionStart` hook script can route across all of them. It reads a space-separated list of base URLs from `PORTUNI_URLS`, tries each one in turn, and uses the first one whose workspace matches your current directory.
-
-Export the variable in your shell startup file (e.g. `~/.zshrc`):
-
-```bash
-export PORTUNI_URLS="http://localhost:4011 http://localhost:3002"
-```
-
-If `PORTUNI_URLS` isn't set, the hook falls back to `PORTUNI_URL` (a single URL), and ultimately to `http://localhost:4011`. You only need one hook entry in `settings.json` – the script handles routing across instances.
+Each mirror's project-scoped `.mcp.json` (written by the Portuni instance that owns it) points at the right server with the right `home_node_id`, so opening a session in any mirror folder Just Works without manual routing.
 
 ## Plan mode and bypass mode
 

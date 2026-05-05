@@ -88,12 +88,13 @@ Every file has one of two statuses:
 - **wip** -- stored under `wip/`; still being worked on.
 - **output** -- stored under `outputs/`; the final, shareable version.
 
-## The context hook
+## Auto-seed on connect
 
-Portuni exposes a `/context` endpoint that resolves a filesystem path
-back to the graph node it belongs to. The `SessionStart` hook
-(`scripts/portuni-context.sh`) uses this to automatically surface the
-right graph context when you start work inside a mirror folder. See
-[Claude Code -> The SessionStart hook](/clients/claude-code/#the-sessionstart-hook)
-for how to register it -- including how to handle multiple Portuni
-instances at once.
+Each mirror's `.mcp.json` and `.codex/config.toml` (written by
+`portuni_mirror`) point the MCP URL at the Portuni server with
+`?home_node_id=<id>` baked in. When any MCP-capable harness opens a
+session against that URL from inside the mirror, the server seeds the
+read scope with the home node and its depth-1 neighbors before the
+first tool call -- no hook, no harness-specific glue. See
+[Scope enforcement -> Session home node](/concepts/scope-enforcement/#session-home-node)
+for the details.

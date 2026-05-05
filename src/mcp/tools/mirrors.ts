@@ -105,6 +105,7 @@ async function materializeAndRegen(
       guardScriptPath,
       mcpUrl,
       mcpAuthToken,
+      homeNodeId: m.node_id,
     });
     aggregated.written.push(...r.written);
     aggregated.errors.push(...r.errors);
@@ -119,6 +120,7 @@ async function materializeAndRegen(
       guardScriptPath,
       mcpUrl,
       mcpAuthToken,
+      homeNodeId: newNodeId,
     });
     aggregated.written.push(...r.written);
     aggregated.errors.push(...r.errors);

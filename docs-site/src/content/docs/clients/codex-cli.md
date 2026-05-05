@@ -106,7 +106,7 @@ url = "http://localhost:4011/mcp"
 url = "http://localhost:3002/mcp"
 ```
 
-Unlike Claude Code, Codex doesn't ship with a `SessionStart` hook for bootstrapping graph context. When you start a session, just call one of Portuni's tools (like `portuni_get_context`) as your first move.
+Codex picks up project-scoped MCP wiring via `portuni_mirror`-generated `.codex/config.toml` (URL includes `?home_node_id=<id>`). The Portuni server auto-seeds the read scope with the home node + its depth-1 neighbors on connect, so you can dive into tools immediately without an opening `portuni_session_init` call.
 
 ## Further reading
 

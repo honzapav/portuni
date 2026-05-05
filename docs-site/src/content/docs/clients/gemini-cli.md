@@ -107,7 +107,7 @@ Register each instance as its own MCP server in `~/.gemini/settings.json`:
 }
 ```
 
-Gemini CLI doesn't ship a `SessionStart`-equivalent hook, so when you start a session, just call a Portuni tool (like `portuni_get_context`) as your first move to bootstrap context.
+If you point Gemini's MCP URL at the Portuni endpoint with the `?home_node_id=<id>` query param (the same form `portuni_mirror` writes into other harness configs), the server auto-seeds the read scope on connect and you can call tools immediately. Without the query param, call `portuni_session_init` as your first move.
 
 ## Further reading
 
