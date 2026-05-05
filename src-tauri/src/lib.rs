@@ -98,12 +98,31 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     ]
     .join(",");
 
+    // The Bun-compiled sidecar's `require("@libsql/${target}")` is a
+    // dynamic call, so Bun did not bundle the native binding into the
+    // single-file output. At runtime Bun walks up from cwd looking for
+    // `node_modules/@libsql/<target>/`. Without setting cwd here, a
+    // .app launched from Finder runs with cwd=/ and the require fails
+    // with `Cannot find module`. scripts/build-sidecar.mjs stages the
+    // platform packages into src-tauri/sidecar-deps/ which Tauri ships
+    // as `bundle.resources`; at runtime they land under
+    // <Resources>/sidecar-deps/node_modules/@libsql/<target>/.
+    let resource_dir = app.path().resource_dir()?;
+    let sidecar_cwd = resource_dir.join("sidecar-deps");
+    if !sidecar_cwd.exists() {
+        warn!(
+            "sidecar-deps dir missing at {:?} — sidecar may fail to load native bindings",
+            sidecar_cwd,
+        );
+    }
+
     // tauri-plugin-shell 2.x's env_clear() does not reliably scrub the
     // parent env on macOS — additionally force-empty the variables we
     // don't want leaking from a developer's varlock-loaded shell.
     let (mut rx, child) = app
         .shell()
         .sidecar("portuni-sidecar")?
+        .current_dir(sidecar_cwd)
         .env_clear()
         .env("PORTUNI_DATA_DIR", data_dir_str)
         .env("PORTUNI_PORT", "0")
