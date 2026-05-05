@@ -6,6 +6,7 @@
 // the port isn't set yet — events that fire before a listener is
 // registered are otherwise lost.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -153,9 +154,61 @@ fn get_backend_port(state: tauri::State<BackendPort>) -> Option<u16> {
     port
 }
 
+#[derive(Serialize)]
+struct ApiResponse {
+    status: u16,
+    body: String,
+}
+
+// Webview-side HTTP proxy. The webview no longer talks to the sidecar
+// directly: it invokes this command, which lives in the same trust
+// domain as the sidecar (the Tauri host that spawned it) and therefore
+// is the right place to attach the per-launch bearer. Keeps the
+// PORTUNI_AUTH_TOKEN out of webview JS entirely.
 #[tauri::command]
-fn get_auth_token(state: tauri::State<AuthToken>) -> String {
-    state.0.clone()
+async fn api_request(
+    app: AppHandle,
+    method: String,
+    path: String,
+    body: Option<String>,
+    headers: Option<HashMap<String, String>>,
+) -> Result<ApiResponse, String> {
+    // Snapshot port + token from state, then drop the guard before
+    // awaiting — holding a std::sync::Mutex across .await deadlocks
+    // the executor on contention.
+    let port = {
+        let state = app.state::<BackendPort>();
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        guard.ok_or_else(|| "backend not ready".to_string())?
+    };
+    let token = app.state::<AuthToken>().0.clone();
+
+    let url = format!("http://127.0.0.1:{port}{path}");
+    let method_parsed =
+        reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
+    let mut req = reqwest::Client::new()
+        .request(method_parsed, &url)
+        .header("Authorization", format!("Bearer {token}"))
+        // Backend's PORTUNI_ALLOWED_ORIGINS includes tauri://localhost
+        // so the existing origin allowlist accepts proxied requests.
+        .header("Origin", "tauri://localhost");
+    if let Some(headers) = headers {
+        for (k, v) in headers {
+            // The host owns auth — drop any caller-provided
+            // Authorization to prevent webview JS from spoofing one.
+            if k.eq_ignore_ascii_case("authorization") {
+                continue;
+            }
+            req = req.header(k, v);
+        }
+    }
+    if let Some(body) = body {
+        req = req.body(body);
+    }
+    let res = req.send().await.map_err(|e| e.to_string())?;
+    let status = res.status().as_u16();
+    let body = res.text().await.map_err(|e| e.to_string())?;
+    Ok(ApiResponse { status, body })
 }
 
 fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -322,7 +375,7 @@ pub fn run() {
         .manage(AuthToken(auth_token))
         .invoke_handler(tauri::generate_handler![
             get_backend_port,
-            get_auth_token,
+            api_request,
             set_turso_token,
             clear_turso_token,
         ])

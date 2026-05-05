@@ -1,13 +1,11 @@
-// Resolves the base URL for backend HTTP calls and (in Tauri mode) the
-// per-launch auth token the sidecar requires.
+// Resolves how API calls reach the backend.
 //
-// In Tauri (desktop) mode the Rust host spawns the Node sidecar on an
-// OS-assigned loopback port and generates a random auth token per
-// launch. Two channels expose the port to the frontend:
-//   - `get_backend_port` Tauri command (preferred — works even if the
-//     event fired before the React app could listen)
-//   - `backend-ready` event (cheap fallback for the rare case the
-//     command returns null because the sidecar is still booting)
+// In Tauri (desktop) mode the Rust host owns both the per-launch auth
+// token and the loopback port. The webview no longer constructs HTTP
+// requests itself: `apiFetch` forwards every call to the `api_request`
+// Tauri command, which runs in the same trust domain as the sidecar
+// and is the only place the bearer header is attached. There is no
+// `Authorization` header in webview JS, ever.
 //
 // In a plain browser (Vite dev or static preview) we keep the existing
 // `/api` prefix so Vite's dev proxy forwards it to localhost:4011 and
@@ -23,25 +21,27 @@ const BROWSER_BASE = "/api";
 const POLL_INTERVAL_MS = 150;
 const POLL_TIMEOUT_MS = 30_000;
 
-let cachedBase: string | null = null;
-let cachedToken: string | null = null;
-let pendingBase: Promise<string> | null = null;
-let pendingToken: Promise<string> | null = null;
+let backendReady = false;
+let pendingReady: Promise<void> | null = null;
 
 export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
-async function pollBackendPort(): Promise<string> {
+// Wait until the sidecar has announced its port via `get_backend_port`
+// or the `backend-ready` event. Mirrors the previous polling logic but
+// resolves to void — callers don't construct URLs anymore, the Rust
+// side does.
+async function pollBackendReady(): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   const { listen } = await import("@tauri-apps/api/event");
 
   let unlistenReady: (() => void) | null = null;
   let unlistenError: (() => void) | null = null;
 
-  const eventPromise = new Promise<number>((resolve) => {
-    void listen<number>("backend-ready", (event) => {
-      resolve(event.payload);
+  const eventPromise = new Promise<void>((resolve) => {
+    void listen<number>("backend-ready", () => {
+      resolve();
     }).then((fn) => {
       unlistenReady = fn;
     });
@@ -60,60 +60,72 @@ async function pollBackendPort(): Promise<string> {
     });
   });
 
-  const pollPromise = (async (): Promise<number> => {
+  const pollPromise = (async (): Promise<void> => {
     const deadline = Date.now() + POLL_TIMEOUT_MS;
     while (Date.now() < deadline) {
       const port = await invoke<number | null>("get_backend_port");
-      if (port !== null) return port;
+      if (port !== null) return;
       await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     }
     throw new Error("backend sidecar did not start within 30s");
   })();
 
   try {
-    const port = await Promise.race([pollPromise, eventPromise, errorPromise]);
-    return `http://127.0.0.1:${port}`;
+    await Promise.race([pollPromise, eventPromise, errorPromise]);
   } finally {
     if (unlistenReady) (unlistenReady as () => void)();
     if (unlistenError) (unlistenError as () => void)();
   }
 }
 
-async function fetchAuthToken(): Promise<string> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<string>("get_auth_token");
-}
-
-export function getBackendBase(): Promise<string> {
-  if (cachedBase !== null) return Promise.resolve(cachedBase);
+function ensureBackendReady(): Promise<void> {
+  if (backendReady) return Promise.resolve();
   if (!isTauri()) {
-    cachedBase = BROWSER_BASE;
-    return Promise.resolve(cachedBase);
+    backendReady = true;
+    return Promise.resolve();
   }
-  if (!pendingBase) {
-    pendingBase = pollBackendPort().then((url) => {
-      cachedBase = url;
-      return url;
+  if (!pendingReady) {
+    pendingReady = pollBackendReady().then(() => {
+      backendReady = true;
     });
   }
-  return pendingBase;
+  return pendingReady;
 }
 
-function getAuthToken(): Promise<string> {
-  if (cachedToken !== null) return Promise.resolve(cachedToken);
-  if (!isTauri()) return Promise.resolve("");
-  if (!pendingToken) {
-    pendingToken = fetchAuthToken().then((token) => {
-      cachedToken = token;
-      return token;
-    });
-  }
-  return pendingToken;
-}
+type ApiResponse = { status: number; body: string };
 
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
-  const [base, token] = await Promise.all([getBackendBase(), getAuthToken()]);
-  const headers = new Headers(init?.headers ?? {});
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  return fetch(`${base}${path}`, { ...init, headers });
+  await ensureBackendReady();
+
+  if (!isTauri()) {
+    return fetch(`${BROWSER_BASE}${path}`, init);
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  const method = (init?.method ?? "GET").toUpperCase();
+
+  // api.ts's jsonRequest pre-stringifies bodies; that's the only shape
+  // the proxy supports. Reject anything else loudly so a future caller
+  // doesn't silently lose its payload.
+  let body: string | null = null;
+  if (typeof init?.body === "string") {
+    body = init.body;
+  } else if (init?.body != null) {
+    throw new Error("apiFetch (Tauri mode) requires string body");
+  }
+
+  const headers: Record<string, string> = {};
+  if (init?.headers) {
+    new Headers(init.headers).forEach((value, key) => {
+      headers[key] = value;
+    });
+  }
+
+  const res = await invoke<ApiResponse>("api_request", {
+    method,
+    path,
+    body,
+    headers: Object.keys(headers).length > 0 ? headers : null,
+  });
+  return new Response(res.body, { status: res.status });
 }

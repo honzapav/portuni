@@ -29,3 +29,7 @@ rand = "0.8"
 # is the only smoke-tested target for this PR but cross-platform features
 # stay enabled so cargo builds on Linux/Windows without code changes.
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# Used by the api_request command to proxy webview HTTP calls into the
+# sidecar. Version pinned to match what tauri already pulls in transitively
+# (Cargo.lock) so we don't bring a second copy along.
+reqwest = "0.13"
