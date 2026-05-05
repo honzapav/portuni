@@ -6,7 +6,8 @@ import { SOLO_USER, EVENT_TYPES, EVENT_STATUSES } from "../../infra/schema.js";
 import { EventRow } from "../../shared/types.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { decideGlobalQuery, guardNodeRead, type SessionScope } from "../scope.js";
+import type { SessionScope } from "../scope.js";
+import { guardListScope } from "../list-scope-gate.js";
 
 export function registerEventTools(server: McpServer, scope: SessionScope): void {
   server.tool(
@@ -235,60 +236,19 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
     async (args) => {
       const db = getDb();
 
-      // Scope gate. With node_id, run the standard read guard. Without it,
-      // this is a cross-graph listing -- subject to the global-query gate.
-      if (args.node_id !== undefined) {
-        const guard = await guardNodeRead(
-          db,
-          scope,
-          args.node_id,
-          SOLO_USER,
-          async (action, targetId, detail) => {
-            await logAudit(SOLO_USER, action, "scope", targetId, detail);
-          },
-        );
-        if (guard.kind === "not_found") {
-          return {
-            content: [
-              { type: "text" as const, text: `Error: node ${args.node_id} not found` },
-            ],
-            isError: true,
-          };
-        }
-        if (guard.kind === "elicit") {
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify(guard.error) }],
-            isError: true,
-          };
-        }
-      } else {
-        const g = decideGlobalQuery(scope);
-        if (g.kind === "elicit") {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  error: "scope_expansion_required",
-                  tool: "portuni_list_events",
-                  hint: g.message,
-                }),
-              },
-            ],
-            isError: true,
-          };
-        }
-        scope.globalQuerySeen = true;
-        await logAudit(SOLO_USER, "scope_global_query", "scope", "list_events", {
-          tool: "portuni_list_events",
-          filters: {
-            type: args.type ?? null,
-            status: args.status ?? null,
-            since: args.since ?? null,
-          },
-          mode: scope.mode,
-        });
-      }
+      const gate = await guardListScope(
+        db,
+        scope,
+        args.node_id,
+        "portuni_list_events",
+        "list_events",
+        {
+          type: args.type ?? null,
+          status: args.status ?? null,
+          since: args.since ?? null,
+        },
+      );
+      if (gate.kind === "error") return gate.response;
 
       const conditions: string[] = [];
       const values: InValue[] = [];
