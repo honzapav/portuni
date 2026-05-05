@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit",
     "qa": "npm run lint:strict && npm run typecheck && npm test && npm run build",
     "backup": "varlock run -- node --import tsx scripts/backup-turso.ts",
+    "build:sidecar": "node scripts/build-sidecar.mjs",
     "prepare": "simple-git-hooks || true"
   },
   "simple-git-hooks": {

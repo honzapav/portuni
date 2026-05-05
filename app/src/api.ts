@@ -7,6 +7,7 @@ import type {
   SyncStatusResponse,
   SyncRunResponse,
 } from "./types";
+import { apiFetch } from "./lib/backend-url";
 
 // User shape returned by GET /users. Used by the Actors page to pick a
 // user_id when creating/editing a real (non-placeholder) person actor.
@@ -17,7 +18,7 @@ export type User = {
 };
 
 export async function fetchUsers(): Promise<User[]> {
-  const res = await fetch(`${BASE}/users`);
+  const res = await apiFetch("/users");
   if (!res.ok) throw new Error(`users: ${res.status}`);
   return res.json();
 }
@@ -37,16 +38,14 @@ export type Actor = {
   external_id: string | null;
 };
 
-const BASE = "/api";
-
 export async function fetchGraph(): Promise<GraphPayload> {
-  const res = await fetch(`${BASE}/graph`);
+  const res = await apiFetch("/graph");
   if (!res.ok) throw new Error(`graph: ${res.status}`);
   return res.json();
 }
 
 export async function fetchNode(id: string): Promise<NodeDetail> {
-  const res = await fetch(`${BASE}/nodes/${encodeURIComponent(id)}`);
+  const res = await apiFetch(`/nodes/${encodeURIComponent(id)}`);
   if (!res.ok) throw new Error(`node: ${res.status}`);
   return res.json();
 }
@@ -54,9 +53,7 @@ export async function fetchNode(id: string): Promise<NodeDetail> {
 export async function fetchNodeSyncStatus(
   id: string,
 ): Promise<SyncStatusResponse> {
-  const res = await fetch(
-    `${BASE}/nodes/${encodeURIComponent(id)}/sync-status`,
-  );
+  const res = await apiFetch(`/nodes/${encodeURIComponent(id)}/sync-status`);
   if (!res.ok) throw new Error(`sync-status: ${res.status}`);
   return res.json();
 }
@@ -73,9 +70,7 @@ export type FolderUrlResponse = {
 export async function fetchNodeFolderUrl(
   id: string,
 ): Promise<FolderUrlResponse> {
-  const res = await fetch(
-    `${BASE}/nodes/${encodeURIComponent(id)}/folder-url`,
-  );
+  const res = await apiFetch(`/nodes/${encodeURIComponent(id)}/folder-url`);
   if (!res.ok) throw new Error(`folder-url: ${res.status}`);
   return res.json();
 }
@@ -92,7 +87,7 @@ async function jsonRequest<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await apiFetch(path, {
     method,
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
@@ -203,7 +198,7 @@ export async function fetchActors(params?: {
   if (params?.is_placeholder !== undefined) {
     qs.set("is_placeholder", params.is_placeholder ? "1" : "0");
   }
-  const res = await fetch(`${BASE}/actors?${qs}`);
+  const res = await apiFetch(`/actors?${qs}`);
   if (!res.ok) throw new Error(`actors: ${res.status}`);
   return res.json();
 }

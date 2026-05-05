@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
     "cytoscape": "^3.30.2",
     "cytoscape-fcose": "^2.2.0",
     "lucide-react": "^0.460.0",
