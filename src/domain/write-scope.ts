@@ -298,6 +298,15 @@ function buildClaudeHooksBlock(args: {
 // without negation, and Portuni's tier-3 enforcement runs through the
 // portuni-guard PreToolUse hook + the harness's own ambient permissions,
 // not declarative rules. An invalid synthetic rule was worse than nothing.
+//
+// Nested mirrors: when `cur` lives inside another registered mirror
+// (e.g. project node nested under its org node), the ancestor must NOT
+// appear in deny -- its glob `<ancestor>/**` would match cur's own files
+// and Claude Code's deny beats allow. We filter ancestors out here. The
+// descendant direction (cur is the ancestor, other mirrors live inside)
+// stays in deny by design: from cur's session, those nested mirrors are
+// distinct workspaces and direct edits should route through their own
+// session (matches `findContainingMirror` longest-prefix semantics).
 export function buildClaudeSettings(args: {
   currentMirror: string;
   otherMirrors: readonly string[];
@@ -305,7 +314,10 @@ export function buildClaudeSettings(args: {
   guardScriptPath?: string | null;
 }): Record<string, unknown> {
   const cur = normalize(args.currentMirror);
-  const others = args.otherMirrors.map(normalize).filter((m) => m !== cur);
+  const others = args.otherMirrors
+    .map(normalize)
+    .filter((m) => m !== cur)
+    .filter((m) => !isWithin(m, cur));
   const ALLOW_VERBS = ["Edit", "Write", "NotebookEdit"] as const;
   const allow = ALLOW_VERBS.map((v) => `${v}(${cur}/**)`);
   const deny: string[] = [];
