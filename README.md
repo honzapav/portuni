@@ -12,7 +12,7 @@ The Portuni server: a TypeScript MCP server (Streamable HTTP) backed by Turso (s
 
 ```
 src/         MCP server, schema, sync engine, tools
-scripts/     SessionStart hook, maintenance scripts
+scripts/     write-scope guard, maintenance scripts
 test/        node:test suite (no external runner)
 docs/        Internal design notes and specs
 docs-site/   Public documentation site (docs.portuni.com)
