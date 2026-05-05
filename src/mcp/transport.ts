@@ -97,8 +97,16 @@ export function createMcpTransport(): McpTransport {
       // Auto-seed scope from `?home_node_id=...` on the connection URL.
       // This is what `portuni_mirror` writes into per-mirror configs so
       // every harness gets scope set up without needing to call
-      // portuni_session_init explicitly. Best-effort: failures here must
-      // not block the connection.
+      // portuni_session_init explicitly.
+      //
+      // We deliberately reject the connection when seeding fails for
+      // infrastructure reasons (DB unreachable, network hiccup). Letting
+      // the connection succeed with an empty scope manifests downstream
+      // as scope_expansion_required on every read — which the agent
+      // typically surfaces to the user as "scope/session expired", a
+      // diagnostic dead-end. A 503 with the underlying reason lets the
+      // MCP client retry and the user see what's actually wrong.
+      // Mirrors the pre-flight DB ping pattern in src/desktop.ts.
       const homeNodeId = parseHomeNodeIdFromUrl(req.url);
       if (homeNodeId) {
         try {
@@ -110,7 +118,16 @@ export function createMcpTransport(): McpTransport {
               logAudit(SOLO_USER, action, "node", targetId, detail),
           });
         } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
           console.error("MCP auto-seed failed:", err);
+          res.writeHead(503, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              error: "Portuni database unreachable; refusing to start session with empty scope",
+              reason,
+            }),
+          );
+          return;
         }
       }
 

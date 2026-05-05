@@ -6,6 +6,7 @@
 // the port isn't set yet — events that fire before a listener is
 // registered are otherwise lost.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -22,15 +23,21 @@ struct SidecarState(Mutex<Option<CommandChild>>);
 struct BackendPort(Mutex<Option<u16>>);
 struct AuthToken(String);
 
+// Keychain coordinates for the Turso auth token. Service is bundle-id-shaped
+// so the entry shows up under "ooo.workflow.portuni" in Keychain Access on
+// macOS; account is the secret's role within that service.
+const KEYCHAIN_SERVICE: &str = "ooo.workflow.portuni";
+const KEYCHAIN_TURSO_ACCOUNT: &str = "turso_auth_token";
+
 #[derive(Default, Serialize, Deserialize, Clone)]
 struct DesktopConfig {
     /// Optional libSQL URL. When unset, defaults to a file: URL inside
     /// PORTUNI_DATA_DIR. Leave the file: variant for purely local use,
-    /// set a libsql:// URL to point the desktop at a Turso database.
+    /// set a libsql:// URL to point the desktop at a Turso database. The
+    /// matching auth token lives in the OS keychain, not this file —
+    /// see `set_turso_token` / `clear_turso_token` Tauri commands.
     #[serde(default)]
     turso_url: Option<String>,
-    #[serde(default)]
-    turso_auth_token: Option<String>,
     /// Filesystem root for local mirror folders + the per-device
     /// `<root>/.portuni/sync.db` registry. Mirror-aware backend code
     /// (file detail, status scan, store/pull) reads PORTUNI_WORKSPACE_ROOT
@@ -53,6 +60,85 @@ fn load_config(data_dir: &PathBuf) -> DesktopConfig {
         .unwrap_or_default()
 }
 
+fn keychain_get_turso_token() -> Option<String> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_TURSO_ACCOUNT)
+        .ok()
+        .and_then(|e| e.get_password().ok())
+}
+
+#[tauri::command]
+fn set_turso_token(token: String) -> Result<(), String> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_TURSO_ACCOUNT)
+        .map_err(|e| e.to_string())?
+        .set_password(&token)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_turso_token() -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_TURSO_ACCOUNT)
+        .map_err(|e| e.to_string())?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        // "no entry" means already cleared — idempotent success.
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+// One-shot migration for installs that still carry `turso_auth_token` in
+// plaintext config.json. If the field is present and Keychain has no entry
+// yet, copy it across, then strip the field from config.json so the next
+// boot is plain. If the field is present but Keychain already has a value,
+// strip the field anyway — the keychain copy supersedes it and leaving the
+// plaintext sitting around defeats the point of this whole refactor.
+fn migrate_turso_token_to_keychain(data_dir: &PathBuf) {
+    let path = config_path(data_dir);
+    let Ok(raw) = std::fs::read_to_string(&path) else { return };
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&raw) else { return };
+    let Some(obj) = value.as_object_mut() else { return };
+    if !obj.contains_key("turso_auth_token") {
+        return;
+    }
+    let token = obj
+        .get("turso_auth_token")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    let mut migrated_into_keychain = false;
+    if let Some(token) = token.filter(|t| !t.is_empty()) {
+        if keychain_get_turso_token().is_none() {
+            match keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_TURSO_ACCOUNT)
+                .and_then(|e| e.set_password(&token))
+            {
+                Ok(()) => {
+                    migrated_into_keychain = true;
+                }
+                Err(e) => {
+                    warn!("failed to migrate turso_auth_token to Keychain: {e}");
+                    return;
+                }
+            }
+        }
+    }
+
+    obj.remove("turso_auth_token");
+    match serde_json::to_string_pretty(&value) {
+        Ok(rewritten) => {
+            if let Err(e) = std::fs::write(&path, rewritten) {
+                warn!("failed to rewrite config.json after Keychain migration: {e}");
+                return;
+            }
+            if migrated_into_keychain {
+                info!("migrated turso_auth_token from config.json to Keychain");
+            } else {
+                info!("removed stale turso_auth_token field from config.json");
+            }
+        }
+        Err(e) => warn!("failed to serialize cleaned config.json: {e}"),
+    }
+}
+
 fn random_token() -> String {
     rand::thread_rng()
         .sample_iter(&Alphanumeric)
@@ -68,9 +154,110 @@ fn get_backend_port(state: tauri::State<BackendPort>) -> Option<u16> {
     port
 }
 
+#[derive(Serialize)]
+struct ApiResponse {
+    status: u16,
+    body: String,
+}
+
+#[derive(Serialize)]
+struct TursoStatus {
+    /// True iff config.json has a non-empty `turso_url`.
+    url_set: bool,
+    /// True iff Keychain has a non-empty Turso auth token.
+    token_set: bool,
+    /// The current `turso_url` value, if any. Frontend uses it to
+    /// distinguish remote (`libsql://...`) from local (`file:...`)
+    /// — only the remote case actually needs the modal.
+    url: Option<String>,
+}
+
 #[tauri::command]
-fn get_auth_token(state: tauri::State<AuthToken>) -> String {
-    state.0.clone()
+fn get_turso_status(app: AppHandle) -> Result<TursoStatus, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config = load_config(&data_dir);
+    let url = config
+        .turso_url
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    Ok(TursoStatus {
+        url_set: url.is_some(),
+        token_set: keychain_get_turso_token()
+            .is_some_and(|t| !t.trim().is_empty()),
+        url,
+    })
+}
+
+// Bounce the Node sidecar so it picks up a freshly-set Turso token
+// from the Keychain. Used by the first-run gate after the user pastes
+// their token. Idempotent: if no sidecar is running, just spawns one.
+#[tauri::command]
+async fn restart_sidecar(app: AppHandle) -> Result<(), String> {
+    if let Some(state) = app.try_state::<SidecarState>() {
+        if let Some(child) = state
+            .0
+            .lock()
+            .map_err(|e| e.to_string())?
+            .take()
+        {
+            let _ = child.kill();
+        }
+    }
+    if let Some(state) = app.try_state::<BackendPort>() {
+        *state.0.lock().map_err(|e| e.to_string())? = None;
+    }
+    spawn_sidecar(&app).map_err(|e| e.to_string())
+}
+
+// Webview-side HTTP proxy. The webview no longer talks to the sidecar
+// directly: it invokes this command, which lives in the same trust
+// domain as the sidecar (the Tauri host that spawned it) and therefore
+// is the right place to attach the per-launch bearer. Keeps the
+// PORTUNI_AUTH_TOKEN out of webview JS entirely.
+#[tauri::command]
+async fn api_request(
+    app: AppHandle,
+    method: String,
+    path: String,
+    body: Option<String>,
+    headers: Option<HashMap<String, String>>,
+) -> Result<ApiResponse, String> {
+    // Snapshot port + token from state, then drop the guard before
+    // awaiting — holding a std::sync::Mutex across .await deadlocks
+    // the executor on contention.
+    let port = {
+        let state = app.state::<BackendPort>();
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        guard.ok_or_else(|| "backend not ready".to_string())?
+    };
+    let token = app.state::<AuthToken>().0.clone();
+
+    let url = format!("http://127.0.0.1:{port}{path}");
+    let method_parsed =
+        reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
+    let mut req = reqwest::Client::new()
+        .request(method_parsed, &url)
+        .header("Authorization", format!("Bearer {token}"))
+        // Backend's PORTUNI_ALLOWED_ORIGINS includes tauri://localhost
+        // so the existing origin allowlist accepts proxied requests.
+        .header("Origin", "tauri://localhost");
+    if let Some(headers) = headers {
+        for (k, v) in headers {
+            // The host owns auth — drop any caller-provided
+            // Authorization to prevent webview JS from spoofing one.
+            if k.eq_ignore_ascii_case("authorization") {
+                continue;
+            }
+            req = req.header(k, v);
+        }
+    }
+    if let Some(body) = body {
+        req = req.body(body);
+    }
+    let res = req.send().await.map_err(|e| e.to_string())?;
+    let status = res.status().as_u16();
+    let body = res.text().await.map_err(|e| e.to_string())?;
+    Ok(ApiResponse { status, body })
 }
 
 fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -79,9 +266,14 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir_str = data_dir.to_string_lossy().to_string();
     info!("spawn_sidecar: data_dir={data_dir_str}");
 
+    // Move any legacy plaintext token into Keychain before we read either —
+    // makes the upgrade path silent for users who set turso_auth_token under
+    // the old scheme. Safe to call on every boot (no-op once migrated).
+    migrate_turso_token_to_keychain(&data_dir);
+
     let config = load_config(&data_dir);
     let turso_url = config.turso_url.unwrap_or_default();
-    let turso_token = config.turso_auth_token.unwrap_or_default();
+    let turso_token = keychain_get_turso_token().unwrap_or_default();
     // Resolve workspace root: explicit config wins, else fall back to
     // ~/Workspaces/portuni so first-run desktop installs have somewhere
     // to put mirrors. Tilde stays literal — sidecar expands it.
@@ -230,7 +422,14 @@ pub fn run() {
         .manage(SidecarState(Mutex::new(None)))
         .manage(BackendPort(Mutex::new(None)))
         .manage(AuthToken(auth_token))
-        .invoke_handler(tauri::generate_handler![get_backend_port, get_auth_token])
+        .invoke_handler(tauri::generate_handler![
+            get_backend_port,
+            api_request,
+            set_turso_token,
+            clear_turso_token,
+            get_turso_status,
+            restart_sidecar,
+        ])
         .setup(|app| {
             info!(
                 "generated per-launch auth token (length={})",
