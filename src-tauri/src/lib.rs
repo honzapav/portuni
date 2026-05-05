@@ -31,6 +31,14 @@ struct DesktopConfig {
     turso_url: Option<String>,
     #[serde(default)]
     turso_auth_token: Option<String>,
+    /// Filesystem root for local mirror folders + the per-device
+    /// `<root>/.portuni/sync.db` registry. Mirror-aware backend code
+    /// (file detail, status scan, store/pull) reads PORTUNI_WORKSPACE_ROOT
+    /// before hitting that registry. Defaults to ~/Workspaces/portuni when
+    /// unset; set to match an existing CLI workspace to share its mirrors.
+    /// Tilde (~) is expanded by the sidecar at runtime.
+    #[serde(default)]
+    portuni_workspace_root: Option<String>,
 }
 
 fn config_path(data_dir: &PathBuf) -> PathBuf {
@@ -74,10 +82,18 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config(&data_dir);
     let turso_url = config.turso_url.unwrap_or_default();
     let turso_token = config.turso_auth_token.unwrap_or_default();
+    // Resolve workspace root: explicit config wins, else fall back to
+    // ~/Workspaces/portuni so first-run desktop installs have somewhere
+    // to put mirrors. Tilde stays literal — sidecar expands it.
+    let workspace_root = config
+        .portuni_workspace_root
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "~/Workspaces/portuni".to_string());
     info!(
-        "config: turso_url={} turso_auth_token={}",
+        "config: turso_url={} turso_auth_token={} workspace_root={}",
         if turso_url.is_empty() { "<unset>" } else { "<set>" },
         if turso_token.is_empty() { "<unset>" } else { "<set>" },
+        workspace_root,
     );
 
     // Auth token: if the configured TURSO_URL is remote (libsql://), the
@@ -129,6 +145,7 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .env("PORTUNI_AUTH_TOKEN", auth_token)
         .env("TURSO_URL", turso_url)
         .env("TURSO_AUTH_TOKEN", turso_token)
+        .env("PORTUNI_WORKSPACE_ROOT", workspace_root)
         .env("PORTUNI_ALLOWED_ORIGINS", allowed_origins)
         .env("PORTUNI_LOG_REQUESTS", "1")
         .env("HOME", std::env::var("HOME").unwrap_or_default())
