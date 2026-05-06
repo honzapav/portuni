@@ -28,7 +28,12 @@ import {
   buildCodexSandboxConfig,
   buildSoftHint,
   normalize,
+  resolveGuardScriptPath,
+  resolvePortuniMcpUrl,
+  resolvePortuniRoot,
 } from "./write-scope.js";
+import { listUserMirrors } from "./sync/mirror-registry.js";
+import { SOLO_USER } from "../infra/schema.js";
 
 const BEGIN_MARKER = "<!-- BEGIN portuni-scope (auto-generated, do not edit) -->";
 const END_MARKER = "<!-- END portuni-scope -->";
@@ -249,4 +254,51 @@ export async function materializeScopeConfig(
   await refreshMarkdownHint(join(cur, "AGENTS.md"), hint, result);
 
   return result;
+}
+
+// Re-materialise every mirror registered for the solo user, picking up
+// the current MCP URL + auth token from env. Called at sidecar boot so
+// per-mirror .mcp.json files written by an older launch (random port,
+// rotated token) refresh automatically.
+//
+// Returns aggregated written paths and errors; never throws — boot must
+// not be blocked by a single mirror's filesystem hiccup.
+export async function materializeAllRegisteredMirrors(): Promise<MaterializeResult> {
+  const aggregated: MaterializeResult = { written: [], errors: [] };
+  const mirrors = await listUserMirrors(SOLO_USER);
+  if (mirrors.length === 0) return aggregated;
+
+  const paths = mirrors.map((m) => m.local_path);
+  const portuniRoot = resolvePortuniRoot({
+    envValue: process.env.PORTUNI_ROOT ?? null,
+    knownMirrors: paths,
+  });
+  if (!portuniRoot) return aggregated;
+
+  const guardScriptPath = resolveGuardScriptPath();
+  const mcpUrl = resolvePortuniMcpUrl();
+  const mcpAuthToken = (process.env.PORTUNI_AUTH_TOKEN ?? "").trim() || null;
+
+  for (const m of mirrors) {
+    const others = paths.filter((p) => p !== m.local_path);
+    try {
+      const r = await materializeScopeConfig({
+        currentMirror: m.local_path,
+        otherMirrors: others,
+        portuniRoot,
+        guardScriptPath,
+        mcpUrl,
+        mcpAuthToken,
+        homeNodeId: m.node_id,
+      });
+      aggregated.written.push(...r.written);
+      aggregated.errors.push(...r.errors);
+    } catch (e) {
+      aggregated.errors.push({
+        path: m.local_path,
+        message: (e as Error).message,
+      });
+    }
+  }
+  return aggregated;
 }
