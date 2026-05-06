@@ -15,7 +15,6 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   resolvePortuniRoot,
   resolveGuardScriptPath,
-  resolvePortuniMcpUrl,
 } from "../../domain/write-scope.js";
 import { materializeScopeConfig } from "../../domain/scope-materialize.js";
 
@@ -85,11 +84,10 @@ async function materializeAndRegen(
   }
 
   // Resolve the agent-harness wiring inputs once for the whole regen sweep.
-  // Each derives from env / install layout, not from the mirror under
-  // regeneration, so they're identical for every mirror.
+  // The MCP server URL + bearer token live in user-scoped configs
+  // (~/.claude.json, ~/.codex/config.toml) written by the Settings UI;
+  // mirror folders only carry permissions, sandbox, and soft hints.
   const guardScriptPath = resolveGuardScriptPath();
-  const mcpUrl = resolvePortuniMcpUrl();
-  const mcpAuthToken = (process.env.PORTUNI_AUTH_TOKEN ?? "").trim() || null;
 
   const aggregated: { written: string[]; errors: { path: string; message: string }[] } = {
     written: [],
@@ -103,8 +101,6 @@ async function materializeAndRegen(
       otherMirrors: others,
       portuniRoot,
       guardScriptPath,
-      mcpUrl,
-      mcpAuthToken,
       homeNodeId: m.node_id,
     });
     aggregated.written.push(...r.written);
@@ -118,8 +114,6 @@ async function materializeAndRegen(
       otherMirrors: others,
       portuniRoot,
       guardScriptPath,
-      mcpUrl,
-      mcpAuthToken,
       homeNodeId: newNodeId,
     });
     aggregated.written.push(...r.written);

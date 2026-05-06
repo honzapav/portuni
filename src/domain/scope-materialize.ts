@@ -18,18 +18,14 @@
 // so register_mirror itself doesn't fail when, say, .cursor/ has restrictive
 // permissions.
 
-import { mkdir, readFile, writeFile, stat } from "node:fs/promises";
+import { mkdir, readFile, writeFile, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  appendHomeNodeIdToUrl,
   buildClaudeSettings,
-  buildClaudeMcpJson,
-  buildCodexMcpServer,
   buildCodexSandboxConfig,
   buildSoftHint,
   normalize,
   resolveGuardScriptPath,
-  resolvePortuniMcpUrl,
   resolvePortuniRoot,
 } from "./write-scope.js";
 import { listUserMirrors } from "./sync/mirror-registry.js";
@@ -51,15 +47,11 @@ export interface MaterializeArgs {
   // generated .claude/settings.local.json wires it as a PreToolUse hook;
   // when null, no hook is generated (declarative deny list still applies).
   guardScriptPath?: string | null;
-  // Portuni MCP server URL (e.g. http://localhost:4011/mcp). Used to
-  // generate .mcp.json (Claude Code) and the Codex [mcp_servers.portuni]
-  // block. Skipped when null.
-  mcpUrl?: string | null;
-  // Bearer auth token to embed in MCP server headers. Skipped when empty.
-  mcpAuthToken?: string | null;
-  // Home node id (the node owning this mirror). Embedded as a query param
-  // on the MCP URL so the server can auto-seed the session scope on
-  // connect, no explicit portuni_session_init required. Skipped when null.
+  // Home node id (the node owning this mirror). Embedded into the soft
+  // hint so agents read it from CLAUDE.md / AGENTS.md / PORTUNI_SCOPE.md
+  // and call `portuni_session_init({ home_node_id: ... })` at the start
+  // of each session. Replaces the per-mirror `.mcp.json` auto-seed URL
+  // mechanism — connection now lives in user-scoped configs only.
   homeNodeId?: string | null;
 }
 
@@ -88,10 +80,9 @@ function tomlScalar(v: string): string {
 
 const CODEX_MARKER = "# portuni-managed: do not edit between this line and the next portuni marker";
 
-function renderCodexToml(
-  cfg: { sandbox_workspace_write: { writable_roots: string[] } },
-  mcp: { type: "http"; url: string; headers?: Record<string, string> } | null,
-): string {
+function renderCodexToml(cfg: {
+  sandbox_workspace_write: { writable_roots: string[] };
+}): string {
   const lines: string[] = [];
   lines.push(CODEX_MARKER);
   lines.push("[sandbox_workspace_write]");
@@ -99,21 +90,10 @@ function renderCodexToml(
     `writable_roots = [${cfg.sandbox_workspace_write.writable_roots.map(tomlScalar).join(", ")}]`,
   );
   lines.push("");
-
-  if (mcp) {
-    lines.push("[mcp_servers.portuni]");
-    lines.push(`type = ${tomlScalar(mcp.type)}`);
-    lines.push(`url = ${tomlScalar(mcp.url)}`);
-    if (mcp.headers) {
-      // TOML inline table for headers map.
-      const entries = Object.entries(mcp.headers)
-        .map(([k, v]) => `${tomlScalar(k)} = ${tomlScalar(v)}`)
-        .join(", ");
-      lines.push(`headers = { ${entries} }`);
-    }
-    lines.push("");
-  }
-
+  // Connection to the Portuni MCP server lives in the user-scoped
+  // ~/.codex/config.toml (written by the install_codex_global Tauri
+  // command), not here. Agents discover scope via the soft-hint
+  // `portuni_session_init` instruction in CLAUDE.md / AGENTS.md.
   return lines.join("\n");
 }
 
@@ -180,35 +160,13 @@ export async function materializeScopeConfig(
     result.errors.push({ path: ".claude/settings.local.json", message: (e as Error).message });
   }
 
-  // 2. .mcp.json -- Claude Code project-scoped MCP server registration.
-  //    Claude Code prompts the user once to trust project-scoped MCP
-  //    servers; once accepted, every session inside this mirror talks to
-  //    Portuni automatically. This is a Portuni-managed file with a
-  //    portuni_managed marker; we overwrite on each regen.
-  const mcpUrlWithHome = args.mcpUrl
-    ? appendHomeNodeIdToUrl(args.mcpUrl, args.homeNodeId ?? null)
-    : null;
-
-  if (mcpUrlWithHome) {
-    try {
-      const mcp = buildClaudeMcpJson({ url: mcpUrlWithHome, authToken: args.mcpAuthToken ?? null });
-      const path = join(cur, ".mcp.json");
-      await safeWrite(path, JSON.stringify(mcp, null, 2) + "\n");
-      result.written.push(path);
-    } catch (e) {
-      result.errors.push({ path: ".mcp.json", message: (e as Error).message });
-    }
-  }
-
-  // 3. .codex/config.toml -- write only when missing OR when the existing
-  //    file already carries the Portuni marker. Never clobber a user-owned
-  //    Codex config. Includes both sandbox_workspace_write AND the
-  //    [mcp_servers.portuni] block when an MCP URL was supplied.
+  // 2. .codex/config.toml -- sandbox config only. The MCP server
+  //    connection lives in user-scoped ~/.codex/config.toml (written by
+  //    the install_codex_global Tauri command). Write only when missing
+  //    OR when the existing file already carries the Portuni marker, so
+  //    we never clobber a hand-written Codex config.
   try {
     const sandbox = buildCodexSandboxConfig({ currentMirror: cur });
-    const mcpServer = mcpUrlWithHome
-      ? buildCodexMcpServer({ url: mcpUrlWithHome, authToken: args.mcpAuthToken ?? null })
-      : null;
     const path = join(cur, ".codex", "config.toml");
     let mayWrite = true;
     let skipReason: string | null = null;
@@ -220,7 +178,7 @@ export async function materializeScopeConfig(
       }
     }
     if (mayWrite) {
-      await safeWrite(path, renderCodexToml(sandbox, mcpServer));
+      await safeWrite(path, renderCodexToml(sandbox));
       result.written.push(path);
     } else if (skipReason) {
       result.errors.push({ path, message: skipReason });
@@ -229,8 +187,32 @@ export async function materializeScopeConfig(
     result.errors.push({ path: ".codex/config.toml", message: (e as Error).message });
   }
 
-  // 3. .cursor/rules (always written, plain text)
-  const hint = buildSoftHint({ currentMirror: cur, portuniRoot: args.portuniRoot });
+  // 3. Active cleanup: legacy per-mirror `.mcp.json` files written by
+  //    earlier Portuni versions. Connection now lives in user-scoped
+  //    ~/.claude.json (install_claude_global Tauri command); the soft
+  //    hint below tells agents to call portuni_session_init for scope.
+  //    Best-effort: if the file isn't ours, skip silently.
+  try {
+    const legacyMcpPath = join(cur, ".mcp.json");
+    if (await exists(legacyMcpPath)) {
+      const raw = await readFile(legacyMcpPath, "utf8");
+      // Only remove files that carry our marker; leave hand-written
+      // .mcp.json files untouched.
+      if (raw.includes("portuni_managed") || raw.includes('"portuni"')) {
+        await unlink(legacyMcpPath);
+        result.written.push(`removed:${legacyMcpPath}`);
+      }
+    }
+  } catch (e) {
+    result.errors.push({ path: ".mcp.json", message: (e as Error).message });
+  }
+
+  // 4. .cursor/rules (always written, plain text)
+  const hint = buildSoftHint({
+    currentMirror: cur,
+    portuniRoot: args.portuniRoot,
+    homeNodeId: args.homeNodeId ?? null,
+  });
   try {
     const path = join(cur, ".cursor", "rules");
     await safeWrite(path, hint);
@@ -239,7 +221,7 @@ export async function materializeScopeConfig(
     result.errors.push({ path: ".cursor/rules", message: (e as Error).message });
   }
 
-  // 4. PORTUNI_SCOPE.md (always present, harness-agnostic)
+  // 5. PORTUNI_SCOPE.md (always present, harness-agnostic)
   try {
     const path = join(cur, "PORTUNI_SCOPE.md");
     await safeWrite(path, hint);
@@ -248,7 +230,7 @@ export async function materializeScopeConfig(
     result.errors.push({ path: "PORTUNI_SCOPE.md", message: (e as Error).message });
   }
 
-  // 5. Refresh CLAUDE.md / AGENTS.md ONLY if they already exist (don't create
+  // 6. Refresh CLAUDE.md / AGENTS.md ONLY if they already exist (don't create
   //    them — those files are user-owned).
   await refreshMarkdownHint(join(cur, "CLAUDE.md"), hint, result);
   await refreshMarkdownHint(join(cur, "AGENTS.md"), hint, result);
@@ -276,8 +258,6 @@ export async function materializeAllRegisteredMirrors(): Promise<MaterializeResu
   if (!portuniRoot) return aggregated;
 
   const guardScriptPath = resolveGuardScriptPath();
-  const mcpUrl = resolvePortuniMcpUrl();
-  const mcpAuthToken = (process.env.PORTUNI_AUTH_TOKEN ?? "").trim() || null;
 
   for (const m of mirrors) {
     const others = paths.filter((p) => p !== m.local_path);
@@ -287,8 +267,6 @@ export async function materializeAllRegisteredMirrors(): Promise<MaterializeResu
         otherMirrors: others,
         portuniRoot,
         guardScriptPath,
-        mcpUrl,
-        mcpAuthToken,
         homeNodeId: m.node_id,
       });
       aggregated.written.push(...r.written);
