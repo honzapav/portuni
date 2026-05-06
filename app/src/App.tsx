@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import Sidebar, { type AppView } from "./components/Sidebar";
 import DetailPane from "./components/DetailPane";
 import SettingsPage from "./components/SettingsPage";
+import StatusFooter from "./components/StatusFooter";
 import { fetchGraph, fetchNode } from "./api";
 
 // Lazy chunks: cytoscape (the GraphView dep) is the main reason the app
@@ -189,7 +190,8 @@ export default function App() {
   }, []);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden">
+    <div className="flex h-screen w-screen flex-col overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
       {graph && (
         <Sidebar
           graph={graph}
@@ -286,6 +288,8 @@ export default function App() {
         />
       )}
 
+      </div>
+      <StatusFooter onOpenSettings={() => setView("settings")} />
     </div>
   );
 }
