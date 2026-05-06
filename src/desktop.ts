@@ -77,33 +77,7 @@ async function main(): Promise<void> {
   await ensureSchema();
 
   const port = Number(process.env.PORTUNI_PORT ?? 0);
-  // Align allowed-host gate with whatever port we actually bind to,
-  // and let resolvePortuniMcpUrl() (used by mirror rematerialisation
-  // below) read the right value when it builds the URL.
   process.env.PORT = String(port);
-
-  // Refresh every registered mirror's harness configs so any .mcp.json
-  // pointing at an older random port / rotated token picks up the
-  // current PORT + PORTUNI_AUTH_TOKEN. Best-effort: errors logged, never
-  // fatal — boot must not depend on filesystem state under user mirrors.
-  // Must run AFTER process.env.PORT is set (above) so the URL we write
-  // matches the port we will actually bind to.
-  try {
-    const r = await materializeAllRegisteredMirrors();
-    if (r.errors.length > 0) {
-      console.error(
-        `[boot] mirror rematerialisation completed with ${r.errors.length} error(s):`,
-        r.errors,
-      );
-    }
-    if (r.written.length > 0) {
-      console.error(
-        `[boot] refreshed ${r.written.length} per-mirror harness config file(s)`,
-      );
-    }
-  } catch (err) {
-    console.error("[boot] mirror rematerialisation skipped:", err);
-  }
 
   const handle = startHttpServer({ port, host: "127.0.0.1", registerSigint: false });
 
@@ -117,6 +91,32 @@ async function main(): Promise<void> {
   process.env.PORT = String(address.port);
   // Parent (Tauri) reads this line from stdout to learn the bound port.
   process.stdout.write(`PORTUNI_LISTENING_PORT=${address.port}\n`);
+
+  // Refresh every registered mirror's harness configs so any .mcp.json
+  // pointing at an older random port / rotated token picks up the
+  // current PORT + PORTUNI_AUTH_TOKEN. Fire-and-forget *after* the HTTP
+  // server is up: with N=37+ mirrors awaiting this used to add ~2 min to
+  // boot, during which Tauri showed "backend failed to start". Errors
+  // are logged, never fatal. Runs after PORT is set to the bound port so
+  // the URL written into per-mirror configs is correct.
+  void (async () => {
+    try {
+      const r = await materializeAllRegisteredMirrors();
+      if (r.errors.length > 0) {
+        console.error(
+          `[boot] mirror rematerialisation completed with ${r.errors.length} error(s):`,
+          r.errors,
+        );
+      }
+      if (r.written.length > 0) {
+        console.error(
+          `[boot] refreshed ${r.written.length} per-mirror harness config file(s)`,
+        );
+      }
+    } catch (err) {
+      console.error("[boot] mirror rematerialisation skipped:", err);
+    }
+  })();
 
   const shutdown = async (): Promise<void> => {
     try {
