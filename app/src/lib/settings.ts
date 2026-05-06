@@ -106,10 +106,15 @@ AS`,
     id: "ghostty",
     label: "Ghostty",
     template: `TMP=$(mktemp -t portuni-launch)
-printf '#!/bin/bash\\n%s\\n' "$PORTUNI_COMMAND" > "$TMP"
+{
+  echo '#!/bin/zsh'
+  echo '[[ -f ~/.zshrc ]] && source ~/.zshrc'
+  printf '%s\\n' "$PORTUNI_COMMAND"
+  echo 'exec /bin/zsh -i'
+} > "$TMP"
 chmod +x "$TMP"
 open -na Ghostty.app --args -e "$TMP"`,
-    hint: "Spustí Ghostty v novém okně. Příkaz jde do dočasného shell scriptu, takže multi-řádkový prompt nezlomí Ghostty -e parser.",
+    hint: "Spustí Ghostty s předem připraveným zsh skriptem (zdrojuje ~/.zshrc, takže Homebrew/claude jsou v PATH). Po doběhu příkazu zůstane okno otevřené.",
   },
   {
     id: "warp",
