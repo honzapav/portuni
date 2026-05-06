@@ -18,7 +18,7 @@ import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { WebglAddon } from "@xterm/addon-webgl";
+import { CanvasAddon } from "@xterm/addon-canvas";
 import "@xterm/xterm/css/xterm.css";
 import { isTauri } from "../lib/backend-url";
 
@@ -92,16 +92,14 @@ export default function TerminalPane({ nodeId, cwd, command, onExit }: Props) {
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
     term.open(container);
-    // WebGL renderer is order-of-magnitude faster than the default
-    // canvas renderer for high-throughput output (e.g. Claude streaming
-    // tokens, build logs). Falls back silently to canvas if WebGL is
-    // unavailable in the embedded WebView.
+    // Canvas renderer is materially faster than the DOM default for
+    // high-throughput output without the atlas-corruption artifacts
+    // we hit with the WebGL renderer (visible as horizontal bands
+    // through lines emitted by Claude Code's cursor-redraw escape
+    // sequences). Falls back to DOM if the canvas init fails.
     try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
+      term.loadAddon(new CanvasAddon());
     } catch (e) {
-      // ignore — renderer falls back to canvas
       void e;
     }
     fit.fit();
