@@ -107,14 +107,14 @@ AS`,
     label: "Ghostty",
     template: `TMP=$(mktemp -t portuni-launch)
 {
-  echo '#!/bin/zsh'
+  echo '#!/bin/zsh -l'
   echo '[[ -f ~/.zshrc ]] && source ~/.zshrc'
   printf '%s\\n' "$PORTUNI_COMMAND"
   echo 'exec /bin/zsh -i'
 } > "$TMP"
 chmod +x "$TMP"
 open -na Ghostty.app --args -e "$TMP"`,
-    hint: "Spustí Ghostty s předem připraveným zsh skriptem (zdrojuje ~/.zshrc, takže Homebrew/claude jsou v PATH). Po doběhu příkazu zůstane okno otevřené.",
+    hint: "Spustí Ghostty s login zsh skriptem (sources /etc/zprofile + ~/.zshrc, takže Homebrew/claude jsou v PATH). Po doběhu příkazu zůstane okno otevřené.",
   },
   {
     id: "warp",

@@ -2,6 +2,7 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -1392,11 +1393,36 @@ export default function GraphView({
       setOwnerPips(pips);
     };
 
-    cy.on("render", updateOrgCircles);
-    cy.on("render", updateOwnerPips);
+    // Coalesce overlay updates into a single rAF tick. Cytoscape can
+    // fire `render` multiple times per frame during animations (one per
+    // tween property change). Without throttling we re-iterate every
+    // node and call setState 3× per fire, which during `cy.animate` ran
+    // 60+ times per second — the React reconciliation of the nebula
+    // <defs> + feTurbulence overlay couldn't keep up and stalled the
+    // next cytoscape frame, manifesting as choppy zoom/pan/focus and a
+    // first-load fit that visibly never settles.
+    let overlayRafId = 0;
+    const scheduleOverlays = () => {
+      if (overlayRafId !== 0) return;
+      overlayRafId = window.requestAnimationFrame(() => {
+        overlayRafId = 0;
+        updateOrgCircles();
+        updateOwnerPips();
+      });
+    };
+    cy.on("render", scheduleOverlays);
+    // Prime the overlays once before any render event fires so the
+    // first paint already shows nebulae and pips at their settled
+    // positions (otherwise the very first frame is empty until the
+    // next cytoscape render).
+    scheduleOverlays();
 
     return () => {
       ro.disconnect();
+      if (overlayRafId !== 0) {
+        window.cancelAnimationFrame(overlayRafId);
+        overlayRafId = 0;
+      }
       if (saveTimerRef.current !== null) {
         window.clearTimeout(saveTimerRef.current);
         saveTimerRef.current = null;
@@ -1740,6 +1766,13 @@ export default function GraphView({
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
+    // Read the prior selection BEFORE we stamp the new one — we need
+    // it below to distinguish "the user just deselected" (animate back
+    // to the whole-graph framing) from "this is the very first effect
+    // run" (the data effect's fitAllInView already does the initial
+    // framing — kicking off a competing cy.animate here would race
+    // with its rAF fits and the camera visibly snaps mid-tween).
+    const prevSelected = prevSelectedRef.current;
     prevSelectedRef.current = selectedId;
     selectedNodeIdRef.current = selectedId;
     cy.batch(() => {
@@ -1767,9 +1800,13 @@ export default function GraphView({
       // clicked node is visibly enlarged, not just nudged sideways.
       cy.stop();
       focusOnNode(cy, node, 120, 1.6, 360);
-    } else if (!hasSearch) {
-      // Deselect with no search: refit to all visible nodes so the
-      // whole graph is back in view (matches the initial-load framing).
+    } else if (!hasSearch && prevSelected !== null) {
+      // Deselect-with-no-search: refit to all visible nodes so the
+      // whole graph is back in view (matches the initial-load
+      // framing). Guarded by `prevSelected !== null` so this branch
+      // only fires on a real null<-id transition; on initial mount
+      // selectedId starts null and prevSelected is also null, so
+      // we leave the data effect's fitAllInView alone.
       focusElesRef.current = null;
       cy.stop();
       cy.animate(
@@ -2093,6 +2130,92 @@ export default function GraphView({
     layout.run();
   }, [buildRelayoutOptions, queuePositionSave]);
 
+  // Org colour is a deterministic hash of org id, so the gradient JSX
+  // only changes when the org *list* changes (or theme flips), not when
+  // positions move. Memoising on a stable signature keeps the heavy
+  // <defs> section (5+ orgs × 2 gradients × 5 stops = 50+ SVG nodes)
+  // out of the per-frame React reconciliation triggered by the cy
+  // render loop.
+  const orgStructureKey = useMemo(
+    () =>
+      orgCircles
+        .map((c) => c.id)
+        .sort()
+        .join("|"),
+    [orgCircles],
+  );
+  const nebulaDefs = useMemo(() => {
+    return orgCircles.map((c) => {
+      const sid = safeSvgId(c.id);
+      const isDark = theme === "dark";
+      return (
+        <g key={`grad-${c.id}`}>
+          <radialGradient
+            id={`nebulaGlow-${sid}`}
+            cx="50%"
+            cy="50%"
+            r="50%"
+          >
+            <stop
+              offset="0%"
+              stopColor={c.color}
+              stopOpacity={isDark ? 0.2 : 0.13}
+            />
+            <stop
+              offset="30%"
+              stopColor={c.color}
+              stopOpacity={isDark ? 0.1 : 0.065}
+            />
+            <stop
+              offset="60%"
+              stopColor={c.color}
+              stopOpacity={isDark ? 0.035 : 0.022}
+            />
+            <stop
+              offset="85%"
+              stopColor={c.color}
+              stopOpacity={isDark ? 0.008 : 0.005}
+            />
+            <stop offset="100%" stopColor={c.color} stopOpacity={0} />
+          </radialGradient>
+          <radialGradient
+            id={`nebulaGrainMask-${sid}`}
+            cx="50%"
+            cy="50%"
+            r="50%"
+          >
+            <stop
+              offset="0%"
+              stopColor={c.color}
+              stopOpacity={isDark ? 0.32 : 0.2}
+            />
+            <stop
+              offset="35%"
+              stopColor={c.color}
+              stopOpacity={isDark ? 0.16 : 0.1}
+            />
+            <stop
+              offset="65%"
+              stopColor={c.color}
+              stopOpacity={isDark ? 0.05 : 0.03}
+            />
+            <stop
+              offset="90%"
+              stopColor={c.color}
+              stopOpacity={isDark ? 0.01 : 0.006}
+            />
+            <stop offset="100%" stopColor={c.color} stopOpacity={0} />
+          </radialGradient>
+        </g>
+      );
+    });
+    // orgStructureKey captures the structural change (orgs added/removed);
+    // theme captures the dark/light branch on stopOpacity. orgCircles
+    // ref churns every frame but its content is structurally stable, so
+    // we deliberately read from it without listing it as a dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orgStructureKey, theme]);
+
   return (
     <div
       className="relative isolate h-full w-full"
@@ -2128,83 +2251,10 @@ export default function GraphView({
           </filter>
           {/* Two gradients per org — colour and grain mask — sharing
               the same outer radius and matching fade curves so they
-              taper out together. Previous versions stacked four layers
-              at different radii, which produced visible "rings" where
-              one layer ended and another carried on. With one fade
-              shape, there is only one perceptual edge: the imperceptible
-              one at 100% (alpha 0). */}
-          {orgCircles.map((c) => {
-            const sid = safeSvgId(c.id);
-            const isDark = theme === "dark";
-            return (
-              <g key={`grad-${c.id}`}>
-                <radialGradient
-                  id={`nebulaGlow-${sid}`}
-                  cx="50%"
-                  cy="50%"
-                  r="50%"
-                >
-                  <stop
-                    offset="0%"
-                    stopColor={c.color}
-                    stopOpacity={isDark ? 0.2 : 0.13}
-                  />
-                  <stop
-                    offset="30%"
-                    stopColor={c.color}
-                    stopOpacity={isDark ? 0.1 : 0.065}
-                  />
-                  <stop
-                    offset="60%"
-                    stopColor={c.color}
-                    stopOpacity={isDark ? 0.035 : 0.022}
-                  />
-                  <stop
-                    offset="85%"
-                    stopColor={c.color}
-                    stopOpacity={isDark ? 0.008 : 0.005}
-                  />
-                  <stop
-                    offset="100%"
-                    stopColor={c.color}
-                    stopOpacity={0}
-                  />
-                </radialGradient>
-                <radialGradient
-                  id={`nebulaGrainMask-${sid}`}
-                  cx="50%"
-                  cy="50%"
-                  r="50%"
-                >
-                  <stop
-                    offset="0%"
-                    stopColor={c.color}
-                    stopOpacity={isDark ? 0.32 : 0.2}
-                  />
-                  <stop
-                    offset="35%"
-                    stopColor={c.color}
-                    stopOpacity={isDark ? 0.16 : 0.1}
-                  />
-                  <stop
-                    offset="65%"
-                    stopColor={c.color}
-                    stopOpacity={isDark ? 0.05 : 0.03}
-                  />
-                  <stop
-                    offset="90%"
-                    stopColor={c.color}
-                    stopOpacity={isDark ? 0.01 : 0.006}
-                  />
-                  <stop
-                    offset="100%"
-                    stopColor={c.color}
-                    stopOpacity={0}
-                  />
-                </radialGradient>
-              </g>
-            );
-          })}
+              taper out together. Memoised so the per-frame render
+              loop's setOrgCircles doesn't reconcile this whole tree
+              every tick (positions move, gradient colours don't). */}
+          {nebulaDefs}
         </defs>
         {orgCircles.map((c) => {
           const sid = safeSvgId(c.id);
