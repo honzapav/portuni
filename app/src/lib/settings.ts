@@ -1,7 +1,12 @@
-// User settings persisted in localStorage. Currently just the agent command
-// template used when copying a launch command from a node's detail pane.
+// User settings persisted in localStorage. Two templates:
+//   - agentCommand: how to invoke the AI agent itself (claude / codex / ...).
+//   - terminalLaunch: which terminal to spawn and how. Runs as `sh -c <template>`
+//     on macOS with PORTUNI_CWD / PORTUNI_COMMAND / PORTUNI_COMMAND_AS env vars
+//     exposed, so the same template handles Terminal.app, iTerm2, Ghostty,
+//     Warp, cmux, or anything else without per-terminal Rust code.
 
 const AGENT_COMMAND_KEY = "portuni:agentCommand";
+const TERMINAL_LAUNCH_KEY = "portuni:terminalLaunch";
 
 // Template uses {prompt} as a placeholder for the shell-escaped prompt.
 // If the template has no placeholder, the prompt is appended as the last arg.
@@ -55,4 +60,95 @@ export function loadAgentCommand(): string {
 
 export function saveAgentCommand(template: string): void {
   window.localStorage.setItem(AGENT_COMMAND_KEY, template);
+}
+
+// Terminal launch template. Runs as `sh -c <template>` from the Tauri host.
+// Exposed env vars:
+//   $PORTUNI_CWD         working directory of the node
+//   $PORTUNI_COMMAND     shell command to run (cd '<path>' && claude '<prompt>')
+//   $PORTUNI_COMMAND_AS  same command, escaped for AppleScript double-quoted
+//                        strings (\ -> \\, " -> \"), so it drops straight
+//                        into `do script "..."` without further work.
+export const DEFAULT_TERMINAL_LAUNCH = `osascript <<AS
+tell application "Terminal"
+  activate
+  do script "$PORTUNI_COMMAND_AS"
+end tell
+AS`;
+
+export type TerminalPreset = {
+  id: string;
+  label: string;
+  template: string;
+  hint?: string;
+};
+
+export const TERMINAL_PRESETS: TerminalPreset[] = [
+  {
+    id: "terminal_app",
+    label: "Terminal.app",
+    template: DEFAULT_TERMINAL_LAUNCH,
+    hint: "Výchozí macOS terminál.",
+  },
+  {
+    id: "iterm2",
+    label: "iTerm2",
+    template: `osascript <<AS
+tell application "iTerm"
+  activate
+  set newWindow to (create window with default profile)
+  tell current session of newWindow to write text "$PORTUNI_COMMAND_AS"
+end tell
+AS`,
+    hint: "Otevře nové okno iTerm2 a pošle příkaz přes write text.",
+  },
+  {
+    id: "ghostty",
+    label: "Ghostty",
+    template: `TMP=$(mktemp -t portuni-launch)
+{
+  echo '#!/bin/zsh -l'
+  echo '[[ -f ~/.zshrc ]] && source ~/.zshrc'
+  printf '%s\\n' "$PORTUNI_COMMAND"
+  echo 'exec /bin/zsh -i'
+} > "$TMP"
+chmod +x "$TMP"
+open -na Ghostty.app --args -e "$TMP"`,
+    hint: "Spustí Ghostty s login zsh skriptem (sources /etc/zprofile + ~/.zshrc, takže Homebrew/claude jsou v PATH). Po doběhu příkazu zůstane okno otevřené.",
+  },
+  {
+    id: "warp",
+    label: "Warp (jen otevře složku)",
+    template: `open "warp://action/new_tab?path=$PORTUNI_CWD"`,
+    hint: "Warp neumí pres URL pustit příkaz – Claude spustíš ručně.",
+  },
+  {
+    id: "cmux",
+    label: "cmux",
+    template: `CMUX="$\{CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
+[ -x "$CMUX" ] || { echo "cmux CLI not found at $CMUX (set \\$CMUX_BIN to override)" >&2; exit 1; }
+[ -d "$PORTUNI_CWD" ] || { echo "cwd does not exist: $PORTUNI_CWD" >&2; exit 1; }
+WS_OUT=$("$CMUX" "$PORTUNI_CWD" 2>&1)
+WS=$(echo "$WS_OUT" | grep -oE 'workspace:[0-9]+' | head -1)
+if [ -z "$WS" ]; then
+  echo "cmux <path> did not return a workspace id. cwd=$PORTUNI_CWD output=[$WS_OUT]" >&2
+  exit 1
+fi
+sleep 1
+TMP=$(mktemp -t portuni)
+printf '%s\n' "$PORTUNI_COMMAND" > "$TMP"
+"$CMUX" send --workspace "$WS" "bash '$TMP'; rm -f '$TMP'" 2>&1 | grep -v '^OK ' >&2
+"$CMUX" send-key --workspace "$WS" enter 2>&1 | grep -v '^OK ' >&2`,
+    hint: "Vytvoří cmux workspace v pracovní složce a pošle do něj příkaz. Cíli příkaz konkrétnímu workspace, ne fokusovanému (řeší race po novém workspace).",
+  },
+];
+
+export function loadTerminalLaunch(): string {
+  if (typeof window === "undefined") return DEFAULT_TERMINAL_LAUNCH;
+  const stored = window.localStorage.getItem(TERMINAL_LAUNCH_KEY);
+  return stored?.trim() ? stored : DEFAULT_TERMINAL_LAUNCH;
+}
+
+export function saveTerminalLaunch(template: string): void {
+  window.localStorage.setItem(TERMINAL_LAUNCH_KEY, template);
 }

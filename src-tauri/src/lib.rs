@@ -325,16 +325,27 @@ fn save_config(app: AppHandle, turso_url: Option<String>) -> Result<(), String> 
     std::fs::write(config_path(&data_dir), json).map_err(|e| e.to_string())
 }
 
-// Spawn an external Terminal.app window in the given working directory
-// and run the given shell command. macOS-only; on other platforms returns
-// a "UNSUPPORTED_OS" error so the webview can fall back to clipboard
-// copy. The webview is responsible for building the full shell command
-// (via app/src/lib/prompt.ts:buildAgentCommand) which already starts
-// with `cd <cwd> && ...` — we still validate `cwd` here so a malformed
-// path surfaces as a clear error before AppleScript sees it.
+// Run the user's terminal-launch template (configured in Settings) as a
+// shell command. The template gets these env vars exposed:
+//
+//   PORTUNI_CWD          working directory of the node
+//   PORTUNI_COMMAND      full shell command (cd <path> && claude ...)
+//   PORTUNI_COMMAND_AS   same command, AppleScript-escaped (\ -> \\,
+//                        " -> \") so it drops straight into a `do script`
+//                        double-quoted string without further escaping.
+//
+// macOS-only; on other platforms returns "UNSUPPORTED_OS" so the webview
+// can fall back to clipboard copy. The default template uses Terminal.app
+// via osascript heredoc, but the user can pick iTerm2, Ghostty, Warp,
+// cmux, or write their own template — Rust just exec's whatever they
+// configured.
 #[cfg(target_os = "macos")]
 #[tauri::command]
-async fn launch_claude_for_node(cwd: String, command: String) -> Result<(), String> {
+async fn launch_claude_for_node(
+    cwd: String,
+    command: String,
+    template: String,
+) -> Result<(), String> {
     if cwd.trim().is_empty() {
         return Err("cwd is required".to_string());
     }
@@ -344,31 +355,46 @@ async fn launch_claude_for_node(cwd: String, command: String) -> Result<(), Stri
     if command.trim().is_empty() {
         return Err("command is required".to_string());
     }
-    // AppleScript string literal uses double quotes; escape backslashes
-    // first so subsequent quote-escaping doesn't double-escape them.
-    // Single quotes (used heavily by buildAgentCommand's shellQuote) need
-    // no escaping inside an AppleScript double-quoted string.
-    let escaped = command.replace('\\', "\\\\").replace('"', "\\\"");
-    let script = format!(
-        "tell application \"Terminal\"\n\
-         \tactivate\n\
-         \tdo script \"{escaped}\"\n\
-         end tell"
-    );
-    let status = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .status()
-        .map_err(|e| format!("osascript failed: {e}"))?;
-    if !status.success() {
-        return Err(format!("osascript exited with {status}"));
+    if template.trim().is_empty() {
+        return Err("template is required".to_string());
+    }
+    let command_as = command.replace('\\', "\\\\").replace('"', "\\\"");
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&template)
+        .env("PORTUNI_CWD", &cwd)
+        .env("PORTUNI_COMMAND", &command)
+        .env("PORTUNI_COMMAND_AS", &command_as)
+        .output()
+        .map_err(|e| format!("template run failed: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut detail = String::new();
+        if !stderr.trim().is_empty() {
+            detail.push_str(" stderr=");
+            detail.push_str(stderr.trim());
+        }
+        if !stdout.trim().is_empty() {
+            detail.push_str(" stdout=");
+            detail.push_str(stdout.trim());
+        }
+        let msg = format!("template exited with {}{}", output.status, detail);
+        // Mirror to the file logger so we can diagnose without relying
+        // on the UI toast (which truncates long messages off-screen).
+        error!("launch_claude_for_node: {msg}");
+        return Err(msg);
     }
     Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
 #[tauri::command]
-async fn launch_claude_for_node(_cwd: String, _command: String) -> Result<(), String> {
+async fn launch_claude_for_node(
+    _cwd: String,
+    _command: String,
+    _template: String,
+) -> Result<(), String> {
     Err("UNSUPPORTED_OS".to_string())
 }
 
@@ -377,19 +403,7 @@ async fn launch_claude_for_node(_cwd: String, _command: String) -> Result<(), St
 // their token. Idempotent: if no sidecar is running, just spawns one.
 #[tauri::command]
 async fn restart_sidecar(app: AppHandle) -> Result<(), String> {
-    if let Some(state) = app.try_state::<SidecarState>() {
-        if let Some(child) = state
-            .0
-            .lock()
-            .map_err(|e| e.to_string())?
-            .take()
-        {
-            let _ = child.kill();
-        }
-    }
-    if let Some(state) = app.try_state::<BackendPort>() {
-        *state.0.lock().map_err(|e| e.to_string())? = None;
-    }
+    kill_managed_sidecar(&app);
     spawn_sidecar(&app).map_err(|e| e.to_string())
 }
 
@@ -447,6 +461,78 @@ async fn api_request(
     let status = res.status().as_u16();
     let body = res.text().await.map_err(|e| e.to_string())?;
     Ok(ApiResponse { status, body })
+}
+
+// Drop-side cleanup: kill the bundled sidecar child if we still hold a
+// handle to it. Used by `kill_managed_sidecar` and the various exit
+// paths that previously relied solely on `WindowEvent::Destroyed`.
+fn kill_managed_sidecar(app: &AppHandle) {
+    if let Some(state) = app.try_state::<SidecarState>() {
+        if let Ok(mut guard) = state.0.lock() {
+            if let Some(child) = guard.take() {
+                info!("killing managed sidecar (pid={})", child.pid());
+                let _ = child.kill();
+            }
+        }
+    }
+    if let Some(state) = app.try_state::<BackendPort>() {
+        if let Ok(mut guard) = state.0.lock() {
+            *guard = None;
+        }
+    }
+}
+
+// Reap any orphan portuni-sidecar process holding our loopback port,
+// then wait briefly for the OS to release the socket. Recovers from
+// abnormal exits (force-kill, crash, OS-skipped Destroyed event) where
+// the previous instance left a sidecar running. Bounded: we only kill
+// processes whose binary name matches "portuni-sidecar", never anything
+// else, even if it happens to occupy the port.
+fn reap_orphan_sidecar(port: u16) {
+    use std::process::Command;
+    let lsof = Command::new("lsof")
+        .args([
+            "-nP",
+            "-sTCP:LISTEN",
+            "-t",
+            &format!("-iTCP:{port}"),
+        ])
+        .output();
+    let Ok(lsof) = lsof else {
+        return;
+    };
+    let stdout = String::from_utf8_lossy(&lsof.stdout);
+    let pids: Vec<u32> = stdout
+        .lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .collect();
+    if pids.is_empty() {
+        return;
+    }
+    let self_pid = std::process::id();
+    for pid in pids {
+        if pid == self_pid {
+            continue;
+        }
+        let ps = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "comm="])
+            .output();
+        let Ok(ps) = ps else {
+            continue;
+        };
+        let comm = String::from_utf8_lossy(&ps.stdout);
+        if comm.contains("portuni-sidecar") {
+            info!("reaping orphan sidecar pid={pid} on port {port}");
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+        } else {
+            warn!(
+                "port {port} held by pid={pid} ({}) — not portuni-sidecar, leaving alone",
+                comm.trim()
+            );
+        }
+    }
+    // Give the kernel a moment to release the socket so the next bind() succeeds.
+    std::thread::sleep(std::time::Duration::from_millis(300));
 }
 
 fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -518,6 +604,14 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // The MCP loopback port is fixed across launches so external clients'
+    // .mcp.json configs stay valid — but that means we collide with any
+    // orphan sidecar (previous abnormal exit) holding the port. Reap it
+    // before binding so the launch succeeds instead of erroring with
+    // "Failed to start server. Is port <n> in use?".
+    let port = config.mcp_port.unwrap_or(DEFAULT_MCP_PORT);
+    reap_orphan_sidecar(port);
+
     // tauri-plugin-shell 2.x's env_clear() does not reliably scrub the
     // parent env on macOS — additionally force-empty the variables we
     // don't want leaking from a developer's varlock-loaded shell.
@@ -527,10 +621,7 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .current_dir(sidecar_cwd)
         .env_clear()
         .env("PORTUNI_DATA_DIR", data_dir_str)
-        .env(
-            "PORTUNI_PORT",
-            config.mcp_port.unwrap_or(DEFAULT_MCP_PORT).to_string(),
-        )
+        .env("PORTUNI_PORT", port.to_string())
         .env("PORTUNI_AUTH_TOKEN", auth_token)
         .env("TURSO_URL", turso_url)
         .env("TURSO_AUTH_TOKEN", turso_token)
@@ -655,14 +746,30 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::Destroyed) {
-                if let Some(state) = window.app_handle().try_state::<SidecarState>() {
-                    if let Some(child) = state.0.lock().unwrap().take() {
-                        let _ = child.kill();
-                    }
-                }
+            // Cover both lifecycle points: CloseRequested fires for Cmd+W /
+            // clicking the close button, Destroyed fires once the window is
+            // gone. Either is enough on its own; handling both is defensive
+            // against the orphan-sidecar leak that happens when only one
+            // path actually fires.
+            if matches!(
+                event,
+                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+            ) {
+                kill_managed_sidecar(window.app_handle());
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Catch the macOS Cmd+Q / app-relaunch path that does not always
+            // tear down the window first. ExitRequested fires before the
+            // process exits; Exit is the final point where we still hold
+            // the AppHandle. Killing twice is harmless (handle is taken).
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                kill_managed_sidecar(app);
+            }
+        });
 }
