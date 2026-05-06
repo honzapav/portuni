@@ -117,8 +117,12 @@ AS`,
   {
     id: "cmux",
     label: "cmux",
-    template: `open -a cmux.app "$PORTUNI_CWD"`,
-    hint: "Otevře cmux ve složce. Příkaz ti vloží do bufferu, spustíš sám.",
+    template: `CMUX="$\{CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
+"$CMUX" "$PORTUNI_CWD"
+sleep 0.5
+"$CMUX" send "$PORTUNI_COMMAND"
+"$CMUX" send-key enter`,
+    hint: "Otevře cmux v pracovní složce a pošle příkaz. Hledá cmux CLI v cmux.app bundle (lze přepsat přes $CMUX_BIN).",
   },
 ];
 
