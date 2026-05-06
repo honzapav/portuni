@@ -1,0 +1,66 @@
+name: Release
+
+# Tag-triggered: pushing a `v*` tag (e.g. `v0.1.1`) kicks off a matrix
+# build on Apple Silicon and Intel macOS runners, then attaches both
+# DMGs to a draft GitHub Release on that tag. Edit the release body
+# and click "Publish" once both jobs go green.
+#
+# No code signing yet — first launch shows the Gatekeeper "unidentified
+# developer" dialog. Wire APPLE_CERTIFICATE / APPLE_ID / TEAM_ID secrets
+# into tauri-action when you have an Apple Developer account.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: macos-13
+            target: x86_64-apple-darwin
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: oven-sh/setup-bun@v2
+
+      - run: npm ci
+
+      - run: npm ci --prefix app
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Portuni ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }} --bundles dmg
