@@ -2,6 +2,7 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -1081,8 +1082,17 @@ export default function GraphView({
   // bounding box. Updated on every cytoscape render frame (pan/zoom/drag).
   // Each org carries its deterministic nebula colour so per-instance
   // gradients can reference it without recomputing the hash mid-render.
-  const [orgCircles, setOrgCircles] = useState<
-    Array<{ id: string; cx: number; cy: number; r: number; color: string }>
+  // Overlay sync model: structure (which orgs / which owned leaves
+  // exist, their colours / labels) lives in React state and re-
+  // renders only on real structural change. All per-frame data --
+  // positions, sizes, visibility, opacity -- mutates SVG nodes
+  // directly via refs from the cytoscape render loop. Bypasses
+  // React reconciliation for the 60 fps case.
+  const [orgStructure, setOrgStructure] = useState<
+    Array<{ id: string; label: string; color: string; childCount: number }>
+  >([]);
+  const [pipStructure, setPipStructure] = useState<
+    Array<{ id: string; initials: string; type: string }>
   >([]);
 
   // Canonical org position in cytoscape WORLD coords. The org's
@@ -1095,39 +1105,16 @@ export default function GraphView({
     new Map(),
   );
 
-  // Org labels rendered as a DOM overlay -- this is the *only* drag
-  // handle for an org. Cytoscape's native compound parent label is
-  // hidden in the stylesheet so it cannot be tap-tested or grabbed.
-  // Multi-child orgs get a centred watermark; single-child orgs get
-  // a smaller caption above the galaxy so it doesn't sit on top of
-  // the lone leaf node.
-  const [orgLabels, setOrgLabels] = useState<
-    Array<{
-      id: string;
-      cx: number;
-      cy: number;
-      label: string;
-      childCount: number;
-      hidden: boolean;
-    }>
-  >([]);
-
-  // Owner pips. One per leaf node that has an assigned owner. Synced to
-  // cytoscape's render loop so the pip stays glued to the lower-right of
-  // its disc as the user pans, zooms, and drags. Rendered as absolutely
-  // positioned divs in a pointer-events:none overlay so cytoscape clicks
-  // continue to land on the underlying node.
-  const [ownerPips, setOwnerPips] = useState<
-    Array<{
-      id: string;
-      cx: number;
-      cy: number;
-      pipR: number;
-      initials: string;
-      color: string;
-      dimmed: boolean;
-    }>
-  >([]);
+  // SVG refs for imperative DOM mutation per cytoscape frame.
+  const orgGlowRefs = useRef<Map<string, SVGCircleElement>>(new Map());
+  const orgLabelRefs = useRef<Map<string, SVGGElement>>(new Map());
+  const pipGroupRefs = useRef<Map<string, SVGGElement>>(new Map());
+  const pipBgRefs = useRef<Map<string, SVGCircleElement>>(new Map());
+  const pipBorderRefs = useRef<Map<string, SVGCircleElement>>(new Map());
+  const pipTextRefs = useRef<Map<string, SVGTextElement>>(new Map());
+  // Signature strings for cheap structural-change detection.
+  const orgSigRef = useRef<string>("");
+  const pipSigRef = useRef<string>("");
 
   // Debounced queue of position changes. Node drags and layout settles
   // both funnel through this so we coalesce a flurry of updates into one
@@ -1275,20 +1262,20 @@ export default function GraphView({
     // the compound parent to refit its children, which looks like nodes
     // jumping. Keep the base style constant and only react to click.
 
-    // Sync the SVG circle overlay with cytoscape's render loop. We read
-    // each org's *rendered* bounding box (post pan/zoom transform) and
-    // emit a circumscribing circle: r = half the bbox diagonal so the
-    // circle visually contains every child the compound parent contains.
-    const updateOrgCircles = () => {
+    // The render-loop handler. Splits per-frame work into:
+    //   1) Structural detection -- only when the set of orgs / owned
+    //      leaves / their labels actually changed. Computes a
+    //      signature string and bails before setState if it matches.
+    //   2) Position / visibility / opacity update -- runs every
+    //      tick, mutates SVG via refs. Bypasses React entirely.
+    const PIP_MIN_DISC_R = 16;
+    const updateOverlays = () => {
       const orgs = cy.nodes('[type = "organization"]');
       const pan = cy.pan();
       const zoom = cy.zoom();
-      const circles = orgs.map((n) => {
+
+      orgs.forEach((n) => {
         const id = n.id();
-        // Lazy-init the anchor on first sight from the current world
-        // bbox centre. Subsequent leaf drags don't update the anchor,
-        // so the visible cluster identity stays put even as children
-        // shift around inside it.
         if (!orgAnchorsRef.current.has(id)) {
           const wbb = n.boundingBox({ includeLabels: false });
           orgAnchorsRef.current.set(id, {
@@ -1296,107 +1283,128 @@ export default function GraphView({
             y: (wbb.y1 + wbb.y2) / 2,
           });
         }
-        const anchor = orgAnchorsRef.current.get(id)!;
-        const rbb = n.renderedBoundingBox({ includeLabels: false });
-        return {
-          id,
-          cx: anchor.x * zoom + pan.x,
-          cy: anchor.y * zoom + pan.y,
-          // Radius still tracks the children's rendered bbox so a
-          // disconnected leaf gets visually nudged out of the nebula
-          // when dragged far away, instead of being silently included.
-          r: Math.min(rbb.w, rbb.h) / 2,
-          color: colorForOrg(id),
-        };
       });
-      setOrgCircles(circles);
-      const labels = orgs.map((n) => {
+
+      const orgSig = orgs
+        .map(
+          (n) =>
+            `${n.id()}|${(n.data("label") as string) ?? ""}|${n.children().length}`,
+        )
+        .join("\n");
+      if (orgSig !== orgSigRef.current) {
+        orgSigRef.current = orgSig;
+        setOrgStructure(
+          orgs.map((n) => ({
+            id: n.id(),
+            label: (n.data("label") as string) ?? "",
+            color: colorForOrg(n.id()),
+            childCount: n.children().length,
+          })),
+        );
+      }
+
+      const ownedNodes = cy.nodes().filter((n) => {
+        if (n.data("type") === "organization") return false;
+        return Boolean(n.data("owner_initials"));
+      });
+      const pipSig = ownedNodes
+        .map(
+          (n) => `${n.id()}|${n.data("owner_initials")}|${n.data("type")}`,
+        )
+        .join("\n");
+      if (pipSig !== pipSigRef.current) {
+        pipSigRef.current = pipSig;
+        setPipStructure(
+          ownedNodes.map((n) => ({
+            id: n.id(),
+            initials: n.data("owner_initials") as string,
+            type: n.data("type") as string,
+          })),
+        );
+      }
+
+      // ---------- Per-frame ref mutation ----------
+      orgs.forEach((n) => {
         const id = n.id();
-        const anchor = orgAnchorsRef.current.get(id) ?? { x: 0, y: 0 };
-        const childCount = n.children().length;
+        const anchor = orgAnchorsRef.current.get(id);
+        if (!anchor) return;
+        const rbb = n.renderedBoundingBox({ includeLabels: false });
         const screenCx = anchor.x * zoom + pan.x;
         const screenCy = anchor.y * zoom + pan.y;
-        // Single-child orgs float their label above the galaxy so it
-        // doesn't land on top of the only leaf. Multi-child orgs carry
-        // a centred watermark across the galaxy core (anchor centre).
-        const cy0 =
-          childCount <= 1
-            ? n.renderedBoundingBox({ includeLabels: false }).y1 - 14
-            : screenCy;
-        return {
-          id,
-          cx: screenCx,
-          cy: cy0,
-          label: (n.data("label") as string) ?? "",
-          childCount,
-          hidden: n.hasClass("hidden") || n.hasClass("dim"),
-        };
-      });
-      setOrgLabels(labels);
-    };
+        const r = Math.min(rbb.w, rbb.h) / 2;
+        const nebulaR = r * 1.6;
 
-    // Only render pips when the rendered disc is big enough to host
-    // one without swamping the node. Threshold is on the *rendered*
-    // radius (already factors in zoom + node-degree size), so a
-    // low-degree node needs more zoom-in than a hub to show its pip.
-    // The constellation reads as coloured stars at flyover, then the
-    // ownership layer appears when the user zooms in to make
-    // decisions.
-    const PIP_MIN_DISC_R = 16;
-    const updateOwnerPips = () => {
-      const themeColors = THEMES[themeRef.current];
-      const pips: Array<{
-        id: string;
-        cx: number;
-        cy: number;
-        pipR: number;
-        initials: string;
-        color: string;
-        dimmed: boolean;
-      }> = [];
-      cy.nodes().forEach((n) => {
-        if (n.data("type") === "organization") return;
-        const initials = n.data("owner_initials") as string;
-        if (!initials) return;
-        // Cytoscape renders the disc inside a square bbox; the disc
-        // radius equals half the bbox width.
+        const glow = orgGlowRefs.current.get(id);
+        if (glow) {
+          glow.setAttribute("cx", String(screenCx));
+          glow.setAttribute("cy", String(screenCy));
+          glow.setAttribute("r", String(nebulaR));
+        }
+        const labelG = orgLabelRefs.current.get(id);
+        if (labelG) {
+          const childCount = n.children().length;
+          const labelCy = childCount <= 1 ? rbb.y1 - 14 : screenCy;
+          labelG.setAttribute(
+            "transform",
+            `translate(${screenCx} ${labelCy})`,
+          );
+          const hidden = n.hasClass("hidden") || n.hasClass("dim");
+          labelG.style.display = hidden ? "none" : "";
+        }
+      });
+
+      ownedNodes.forEach((n) => {
+        const id = n.id();
+        const g = pipGroupRefs.current.get(id);
+        if (!g) return;
         const bb = n.renderedBoundingBox({ includeLabels: false });
         const r = Math.min(bb.w, bb.h) / 2;
-        if (r < PIP_MIN_DISC_R) return;
+        if (r < PIP_MIN_DISC_R) {
+          g.style.display = "none";
+          return;
+        }
+        g.style.display = "";
         const cx = (bb.x1 + bb.x2) / 2;
         const cy0 = (bb.y1 + bb.y2) / 2;
-        // Pip scales with the disc — 42 % of the rendered radius —
-        // so it always sits in proportion. No floor: when r drops
-        // below the threshold above we hide the pip entirely
-        // instead of clamping it to a size that overwhelms the node.
         const pipR = r * 0.42;
-        // Offset along the 45° vector. r * 0.72 puts the pip centre
-        // outside the disc's middle ring; combined with pipR it tucks
-        // the lower edge of the pip just inside the disc boundary.
         const offset = r * 0.72;
         const px = cx + offset;
         const py = cy0 + offset;
-        const typeColor =
-          themeColors.nodeColors[n.data("type") as string] ??
-          themeColors.nodeColorDefault;
-        pips.push({
-          id: n.id(),
-          cx: px,
-          cy: py,
-          pipR,
-          initials,
-          color: typeColor,
-          dimmed: n.hasClass("dim") || n.hasClass("dim-soft"),
-        });
+        g.setAttribute("transform", `translate(${px} ${py})`);
+        g.setAttribute(
+          "opacity",
+          n.hasClass("dim") || n.hasClass("dim-soft") ? "0.35" : "1",
+        );
+        const bgCircle = pipBgRefs.current.get(id);
+        const borderCircle = pipBorderRefs.current.get(id);
+        const text = pipTextRefs.current.get(id);
+        if (bgCircle) bgCircle.setAttribute("r", String(pipR));
+        if (borderCircle) borderCircle.setAttribute("r", String(pipR));
+        if (text)
+          text.setAttribute("font-size", String(Math.max(8, pipR * 0.85)));
       });
-      setOwnerPips(pips);
     };
 
-    cy.on("render", updateOrgCircles);
-    cy.on("render", updateOwnerPips);
+    // rAF-throttle: cytoscape can fire `render` several times per
+    // tick (one per animated property), so a raw handler did 3-5x
+    // the work needed.
+    let overlayRafId = 0;
+    const scheduleOverlays = () => {
+      if (overlayRafId !== 0) return;
+      overlayRafId = window.requestAnimationFrame(() => {
+        overlayRafId = 0;
+        updateOverlays();
+      });
+    };
+    cy.on("render", scheduleOverlays);
+    scheduleOverlays();
 
     return () => {
       ro.disconnect();
+      if (overlayRafId !== 0) {
+        window.cancelAnimationFrame(overlayRafId);
+        overlayRafId = 0;
+      }
       if (saveTimerRef.current !== null) {
         window.clearTimeout(saveTimerRef.current);
         saveTimerRef.current = null;
@@ -1740,6 +1748,11 @@ export default function GraphView({
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
+    // Read the prior selection BEFORE stamping the new one. Needed
+    // below to skip the deselect-fit branch on the very first
+    // effect run (where selectedId starts null and prevSelected is
+    // also null) so the data effect's fitAllInView is left alone.
+    const prevSelected = prevSelectedRef.current;
     prevSelectedRef.current = selectedId;
     selectedNodeIdRef.current = selectedId;
     cy.batch(() => {
@@ -1758,18 +1771,12 @@ export default function GraphView({
     if (selectedId) {
       const node = cy.getElementById(selectedId);
       if (node.length === 0) return;
-      // Animate immediately so the click feels responsive. The
-      // ResizeObserver fires shortly after when the DetailPane mounts
-      // and the container shrinks; it re-centres on the same node, so
-      // the node ends up exactly at the new screen centre rather than
-      // drifting off-centre with the cluster bbox. focusOnNode picks
-      // a zoom that frames the node + immediate neighbours so the
-      // clicked node is visibly enlarged, not just nudged sideways.
       cy.stop();
       focusOnNode(cy, node, 120, 1.6, 360);
-    } else if (!hasSearch) {
-      // Deselect with no search: refit to all visible nodes so the
-      // whole graph is back in view (matches the initial-load framing).
+    } else if (!hasSearch && prevSelected !== null) {
+      // Deselect-with-no-search: refit to all visible nodes. The
+      // `prevSelected !== null` guard keeps initial mount from
+      // racing with applyInitialLayout's framing.
       focusElesRef.current = null;
       cy.stop();
       cy.animate(
@@ -2093,168 +2100,91 @@ export default function GraphView({
     layout.run();
   }, [buildRelayoutOptions, queuePositionSave]);
 
+  // Heavy SVG <defs> for nebula gradients. Memoised on org list +
+  // theme so the per-frame render loop's setState (when structure
+  // genuinely changes -- rare) isn't dragging this down with it.
+  // The previous feTurbulence noise filter + second grain layer
+  // were the largest GPU paint cost: re-rasterised every frame
+  // because the filtered circle's bounds animate during pan/zoom.
+  // Removed -- the smoothness on weaker hardware is worth losing
+  // the dust grain.
+  const nebulaDefs = useMemo(() => {
+    return orgStructure.map((c) => {
+      const sid = safeSvgId(c.id);
+      const isDark = theme === "dark";
+      return (
+        <radialGradient
+          key={`grad-${c.id}`}
+          id={`nebulaGlow-${sid}`}
+          cx="50%"
+          cy="50%"
+          r="50%"
+        >
+          <stop
+            offset="0%"
+            stopColor={c.color}
+            stopOpacity={isDark ? 0.22 : 0.14}
+          />
+          <stop
+            offset="35%"
+            stopColor={c.color}
+            stopOpacity={isDark ? 0.1 : 0.065}
+          />
+          <stop
+            offset="70%"
+            stopColor={c.color}
+            stopOpacity={isDark ? 0.025 : 0.018}
+          />
+          <stop offset="100%" stopColor={c.color} stopOpacity={0} />
+        </radialGradient>
+      );
+    });
+  }, [orgStructure, theme]);
+
   return (
     <div
       className="relative isolate h-full w-full"
       style={{ background: THEMES[theme].bg }}
     >
       <svg className="pointer-events-none absolute inset-0 z-0 h-full w-full">
-        <defs>
-          {/* Grain filter: fractal noise as varying alpha, clipped to
-              the source gradient. Lower alpha multiplier (0.45) makes
-              the dust subtle enough to feel like atmosphere rather than
-              a textured disc. */}
-          <filter
-            id="nebulaNoise"
-            x="-30%"
-            y="-30%"
-            width="160%"
-            height="160%"
-          >
-            <feTurbulence
-              type="fractalNoise"
-              baseFrequency="0.9"
-              numOctaves="2"
-              seed="7"
-              stitchTiles="stitch"
-            />
-            <feColorMatrix
-              values="0 0 0 0 0
-                      0 0 0 0 0
-                      0 0 0 0 0
-                      0 0 0 0.45 0"
-            />
-            <feComposite in2="SourceGraphic" operator="in" />
-          </filter>
-          {/* Two gradients per org — colour and grain mask — sharing
-              the same outer radius and matching fade curves so they
-              taper out together. Previous versions stacked four layers
-              at different radii, which produced visible "rings" where
-              one layer ended and another carried on. With one fade
-              shape, there is only one perceptual edge: the imperceptible
-              one at 100% (alpha 0). */}
-          {orgCircles.map((c) => {
-            const sid = safeSvgId(c.id);
-            const isDark = theme === "dark";
-            return (
-              <g key={`grad-${c.id}`}>
-                <radialGradient
-                  id={`nebulaGlow-${sid}`}
-                  cx="50%"
-                  cy="50%"
-                  r="50%"
-                >
-                  <stop
-                    offset="0%"
-                    stopColor={c.color}
-                    stopOpacity={isDark ? 0.2 : 0.13}
-                  />
-                  <stop
-                    offset="30%"
-                    stopColor={c.color}
-                    stopOpacity={isDark ? 0.1 : 0.065}
-                  />
-                  <stop
-                    offset="60%"
-                    stopColor={c.color}
-                    stopOpacity={isDark ? 0.035 : 0.022}
-                  />
-                  <stop
-                    offset="85%"
-                    stopColor={c.color}
-                    stopOpacity={isDark ? 0.008 : 0.005}
-                  />
-                  <stop
-                    offset="100%"
-                    stopColor={c.color}
-                    stopOpacity={0}
-                  />
-                </radialGradient>
-                <radialGradient
-                  id={`nebulaGrainMask-${sid}`}
-                  cx="50%"
-                  cy="50%"
-                  r="50%"
-                >
-                  <stop
-                    offset="0%"
-                    stopColor={c.color}
-                    stopOpacity={isDark ? 0.32 : 0.2}
-                  />
-                  <stop
-                    offset="35%"
-                    stopColor={c.color}
-                    stopOpacity={isDark ? 0.16 : 0.1}
-                  />
-                  <stop
-                    offset="65%"
-                    stopColor={c.color}
-                    stopOpacity={isDark ? 0.05 : 0.03}
-                  />
-                  <stop
-                    offset="90%"
-                    stopColor={c.color}
-                    stopOpacity={isDark ? 0.01 : 0.006}
-                  />
-                  <stop
-                    offset="100%"
-                    stopColor={c.color}
-                    stopOpacity={0}
-                  />
-                </radialGradient>
-              </g>
-            );
-          })}
-        </defs>
-        {orgCircles.map((c) => {
+        <defs>{nebulaDefs}</defs>
+        {/* Nebula circles. cx/cy/r mutated directly via orgGlowRefs
+            from the cytoscape render loop; React only reconciles
+            this list when an org is added/removed. */}
+        {orgStructure.map((c) => {
           const sid = safeSvgId(c.id);
           return (
-            <g key={c.id}>
-              {/* Single colour cloud — same radius as the grain so
-                  there is no second disc effect. */}
-              <circle
-                cx={c.cx}
-                cy={c.cy}
-                r={c.r * 1.6}
-                fill={`url(#nebulaGlow-${sid})`}
-              />
-              {/* Subtle dust drawn over the same area, the noise is
-                  modulated by a matching fade so the grain dies out at
-                  the same rate as the colour. */}
-              <circle
-                cx={c.cx}
-                cy={c.cy}
-                r={c.r * 1.6}
-                fill={`url(#nebulaGrainMask-${sid})`}
-                filter="url(#nebulaNoise)"
-              />
-            </g>
+            <circle
+              key={c.id}
+              ref={(el) => {
+                if (el) orgGlowRefs.current.set(c.id, el);
+                else orgGlowRefs.current.delete(c.id);
+              }}
+              fill={`url(#nebulaGlow-${sid})`}
+            />
           );
         })}
       </svg>
       <div ref={containerRef} className="relative z-10 h-full w-full" />
-      {/* Org label overlay -- the single drag handle for an org. The
-          layer itself is pointer-events:none so clicks fall through
-          to the cytoscape canvas everywhere except the label box,
-          which re-enables pointer-events:auto so mousedown lands on
-          our React handler. Synced to cytoscape's render loop. */}
-      <svg
-        className="pointer-events-none absolute inset-0 z-20 h-full w-full"
-      >
-        {orgLabels.map((l) => {
-          if (l.hidden) return null;
-          const fontSize = l.childCount <= 1 ? 18 : 30;
-          const opacity = l.childCount <= 1 ? 0.85 : 0.6;
+      {/* Org label overlay. Transform / display mutated via
+          orgLabelRefs from the render loop. */}
+      <svg className="pointer-events-none absolute inset-0 z-20 h-full w-full">
+        {orgStructure.map((o) => {
+          const fontSize = o.childCount <= 1 ? 18 : 30;
+          const opacity = o.childCount <= 1 ? 0.85 : 0.6;
           return (
             <g
-              key={`org-label-${l.id}`}
-              transform={`translate(${l.cx} ${l.cy})`}
+              key={`org-label-${o.id}`}
+              ref={(el) => {
+                if (el) orgLabelRefs.current.set(o.id, el);
+                else orgLabelRefs.current.delete(o.id);
+              }}
               style={{
                 cursor: "move",
                 pointerEvents: "auto",
                 userSelect: "none",
               }}
-              onMouseDown={(e) => handleOrgLabelMouseDown(e, l.id)}
+              onMouseDown={(e) => handleOrgLabelMouseDown(e, o.id)}
             >
               <text
                 x={0}
@@ -2267,42 +2197,59 @@ export default function GraphView({
                 fill={THEMES[theme].textMuted}
                 opacity={opacity}
               >
-                {l.label}
+                {o.label}
               </text>
             </g>
           );
         })}
       </svg>
-      {/* Owner pips. SVG overlay above cytoscape so the chips appear
-          on top of every node disc. Pointer-events disabled so taps
-          continue to land on the underlying cytoscape node. Synced
-          to cytoscape's render loop in the init effect above. */}
+      {/* Owner pips. Skeleton (one <g> per owned leaf) is React-
+          managed; transform / opacity / inner-circle radii / text
+          font-size mutated directly from the render loop, with
+          display:none when the disc is too small for a pip. */}
       <svg className="pointer-events-none absolute inset-0 z-20 h-full w-full">
-        {ownerPips.map((p) => {
-          const opacity = p.dimmed ? 0.35 : 1;
+        {pipStructure.map((p) => {
+          const themeColors = THEMES[theme];
+          const typeColor =
+            themeColors.nodeColors[p.type] ?? themeColors.nodeColorDefault;
           return (
             <g
               key={`pip-${p.id}`}
-              transform={`translate(${p.cx} ${p.cy})`}
-              opacity={opacity}
+              ref={(el) => {
+                if (el) pipGroupRefs.current.set(p.id, el);
+                else pipGroupRefs.current.delete(p.id);
+              }}
+              style={{ display: "none" }}
             >
-              <circle r={p.pipR} fill={THEMES[theme].bg} />
               <circle
-                r={p.pipR}
+                ref={(el) => {
+                  if (el) pipBgRefs.current.set(p.id, el);
+                  else pipBgRefs.current.delete(p.id);
+                }}
+                fill={themeColors.bg}
+              />
+              <circle
+                ref={(el) => {
+                  if (el) pipBorderRefs.current.set(p.id, el);
+                  else pipBorderRefs.current.delete(p.id);
+                }}
                 fill="none"
-                stroke={p.color}
+                stroke={typeColor}
                 strokeWidth={1.2}
                 opacity={0.95}
               />
               <text
+                ref={(el) => {
+                  if (el) pipTextRefs.current.set(p.id, el);
+                  else pipTextRefs.current.delete(p.id);
+                }}
                 x={0}
                 y={0.5}
                 textAnchor="middle"
                 dominantBaseline="central"
                 fontFamily="Inter, sans-serif"
-                fontSize={Math.max(8, p.pipR * 0.85)}
                 fontWeight={600}
-                fill={THEMES[theme].text}
+                fill={themeColors.text}
               >
                 {p.initials}
               </text>
