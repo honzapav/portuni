@@ -51,7 +51,18 @@ struct DesktopConfig {
     /// Tilde (~) is expanded by the sidecar at runtime.
     #[serde(default)]
     portuni_workspace_root: Option<String>,
+    /// Loopback port the bundled MCP server listens on. Stable across
+    /// launches so external agents (Claude Code, Codex) can keep their
+    /// `.mcp.json` configs valid. Defaults to DEFAULT_MCP_PORT; override
+    /// in config.json if it collides with another local service.
+    #[serde(default)]
+    mcp_port: Option<u16>,
 }
+
+/// Default loopback port for the bundled MCP server. Picked high enough
+/// to avoid common dev-server ports (3000/4000/5173/4011 dev backend);
+/// users hitting a collision can override via config.json `mcp_port`.
+const DEFAULT_MCP_PORT: u16 = 47011;
 
 fn config_path(data_dir: &PathBuf) -> PathBuf {
     data_dir.join("config.json")
@@ -423,7 +434,10 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .current_dir(sidecar_cwd)
         .env_clear()
         .env("PORTUNI_DATA_DIR", data_dir_str)
-        .env("PORTUNI_PORT", "0")
+        .env(
+            "PORTUNI_PORT",
+            config.mcp_port.unwrap_or(DEFAULT_MCP_PORT).to_string(),
+        )
         .env("PORTUNI_AUTH_TOKEN", auth_token)
         .env("TURSO_URL", turso_url)
         .env("TURSO_AUTH_TOKEN", turso_token)
