@@ -80,7 +80,11 @@ export function resetGateCachesForTesting(): void {
 // disabled (single-user, single-process loopback dev mode).
 const AUTH_TOKEN = (process.env.PORTUNI_AUTH_TOKEN ?? "").trim();
 export const AUTH_ENABLED = AUTH_TOKEN.length > 0;
-const AUTH_PUBLIC_PATHS = new Set(["/health"]);
+// Paths admitted past the bearer-token gate. /mcp/info exposes only
+// non-secret metadata (URL, port, has_auth_token boolean) so the
+// Settings UI can render the MCP server status before the user has
+// any way to obtain the token.
+const AUTH_PUBLIC_PATHS = new Set(["/health", "/mcp/info"]);
 
 function timingSafeStringEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;

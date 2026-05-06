@@ -59,6 +59,23 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
       return;
     }
 
+    if (url.pathname === "/mcp/info" && req.method === "GET") {
+      const address = httpServer.address();
+      const boundPort =
+        address && typeof address !== "string" ? address.port : port;
+      // Read the env var directly rather than the AUTH_ENABLED constant:
+      // tests (and any future runtime token rotation) need a live answer,
+      // and the constant is captured at module import.
+      const body = {
+        url: `http://${host}:${boundPort}/mcp`,
+        port: boundPort,
+        has_auth_token: (process.env.PORTUNI_AUTH_TOKEN ?? "").trim().length > 0,
+      };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+      return;
+    }
+
     const handled = await routeApiRequest(req, res, url);
     if (!handled) {
       res.writeHead(404);
