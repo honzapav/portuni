@@ -11,6 +11,7 @@ import type { AddressInfo } from "node:net";
 import { startHttpServer } from "./http/server.js";
 import { getDb } from "./infra/db.js";
 import { ensureSchema } from "./infra/schema.js";
+import { materializeAllRegisteredMirrors } from "./domain/scope-materialize.js";
 
 // Single ping wrapped in a hard timeout. The libsql client doesn't expose a
 // connect timeout of its own, so without this a DNS hiccup or a slow Turso
@@ -74,6 +75,27 @@ async function main(): Promise<void> {
 
   await waitForDb();
   await ensureSchema();
+
+  // Refresh every registered mirror's harness configs so any .mcp.json
+  // pointing at an older random port / rotated token picks up the
+  // current PORT + PORTUNI_AUTH_TOKEN. Best-effort: errors logged, never
+  // fatal — boot must not depend on filesystem state under user mirrors.
+  try {
+    const r = await materializeAllRegisteredMirrors();
+    if (r.errors.length > 0) {
+      console.error(
+        `[boot] mirror rematerialisation completed with ${r.errors.length} error(s):`,
+        r.errors,
+      );
+    }
+    if (r.written.length > 0) {
+      console.error(
+        `[boot] refreshed ${r.written.length} per-mirror harness config file(s)`,
+      );
+    }
+  } catch (err) {
+    console.error("[boot] mirror rematerialisation skipped:", err);
+  }
 
   const port = Number(process.env.PORTUNI_PORT ?? 0);
   // Align allowed-host gate with whatever port we actually bind to.
