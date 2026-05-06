@@ -379,7 +379,11 @@ async fn launch_claude_for_node(
             detail.push_str(" stdout=");
             detail.push_str(stdout.trim());
         }
-        return Err(format!("template exited with {}{}", output.status, detail));
+        let msg = format!("template exited with {}{}", output.status, detail);
+        // Mirror to the file logger so we can diagnose without relying
+        // on the UI toast (which truncates long messages off-screen).
+        error!("launch_claude_for_node: {msg}");
+        return Err(msg);
     }
     Ok(())
 }
