@@ -195,9 +195,8 @@ export default function TerminalPane({ nodeId, cwd, command, onExit }: Props) {
   }
 
   return (
-    <div
-      ref={containerRef}
-      className="h-full w-full overflow-hidden bg-[#0b0d12]"
-    />
+    <div className="h-full w-full bg-[var(--color-bg)] p-3">
+      <div ref={containerRef} className="h-full w-full overflow-hidden" />
+    </div>
   );
 }

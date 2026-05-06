@@ -55,6 +55,14 @@ pub struct SpawnArgs {
     pub rows: u16,
 }
 
+// POSIX-safe single-quote escape for embedding a path into a shell
+// command. Wraps the input in single quotes; any internal single quote
+// is escaped by closing the quote, inserting an escaped quote, and
+// reopening: 'a'b' -> 'a'\''b'.
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn pick_shell() -> (String, Vec<String>) {
     // Prefer the user's $SHELL so they get their familiar prompt, history,
     // aliases, etc. Fall back to /bin/zsh on macOS (default since 10.15)
@@ -137,30 +145,42 @@ pub fn pty_spawn(
         sessions.insert(session_id.clone(), session);
     }
 
-    // If a pre-command was supplied, write it to the shell after a tiny
-    // delay so the shell prompt has time to appear first. The shell will
-    // execute it as if typed by the user.
+    // If a pre-command was supplied, write it to a tempfile and inject
+    // a short `bash /tmp/X; rm /tmp/X` line into the shell instead of
+    // typing the full multi-line command via the pty. Typing it directly
+    // makes bash print PS2 continuation prompts (`cmdand quote>`) for
+    // every embedded newline in the agent prompt, which looks broken
+    // even though it eventually executes correctly.
     if !args.command.trim().is_empty() {
-        let mut precmd = args.command.trim().to_string();
-        precmd.push('\n');
-        let sid = session_id.clone();
-        let app_handle = app.clone();
-        thread::spawn(move || {
-            // Give the shell ~150ms to print its first prompt before
-            // injecting. Not strictly required but cosmetic.
-            thread::sleep(std::time::Duration::from_millis(150));
-            if let Some(state) = app_handle.try_state::<PtyState>() {
-                if let Ok(mut sessions) = state.sessions.lock() {
-                    if let Some(s) = sessions.get_mut(&sid) {
-                        if let Err(e) = s.writer.write_all(precmd.as_bytes()) {
-                            warn!("pty pre-command write failed for {sid}: {e}");
-                        } else {
-                            let _ = s.writer.flush();
+        let tempfile = std::env::temp_dir().join(format!(
+            "portuni-precmd-{}.sh",
+            session_id.replace('/', "_"),
+        ));
+        let script = format!("#!/bin/bash\n{}\n", args.command.trim());
+        if let Err(e) = std::fs::write(&tempfile, script) {
+            warn!("pty pre-command tempfile write failed: {e}");
+        } else {
+            let quoted = shell_single_quote(&tempfile.to_string_lossy());
+            let invocation = format!("bash {0}; rm -f {0}\n", quoted);
+            let sid = session_id.clone();
+            let app_handle = app.clone();
+            thread::spawn(move || {
+                // Give the shell ~150ms to print its first prompt before
+                // injecting. Not strictly required but cosmetic.
+                thread::sleep(std::time::Duration::from_millis(150));
+                if let Some(state) = app_handle.try_state::<PtyState>() {
+                    if let Ok(mut sessions) = state.sessions.lock() {
+                        if let Some(s) = sessions.get_mut(&sid) {
+                            if let Err(e) = s.writer.write_all(invocation.as_bytes()) {
+                                warn!("pty pre-command write failed for {sid}: {e}");
+                            } else {
+                                let _ = s.writer.flush();
+                            }
                         }
                     }
                 }
-            }
-        });
+            });
+        }
     }
 
     // Reader thread: streams pty output to the webview as `pty-data`
