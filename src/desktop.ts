@@ -76,10 +76,18 @@ async function main(): Promise<void> {
   await waitForDb();
   await ensureSchema();
 
+  const port = Number(process.env.PORTUNI_PORT ?? 0);
+  // Align allowed-host gate with whatever port we actually bind to,
+  // and let resolvePortuniMcpUrl() (used by mirror rematerialisation
+  // below) read the right value when it builds the URL.
+  process.env.PORT = String(port);
+
   // Refresh every registered mirror's harness configs so any .mcp.json
   // pointing at an older random port / rotated token picks up the
   // current PORT + PORTUNI_AUTH_TOKEN. Best-effort: errors logged, never
   // fatal — boot must not depend on filesystem state under user mirrors.
+  // Must run AFTER process.env.PORT is set (above) so the URL we write
+  // matches the port we will actually bind to.
   try {
     const r = await materializeAllRegisteredMirrors();
     if (r.errors.length > 0) {
@@ -96,10 +104,6 @@ async function main(): Promise<void> {
   } catch (err) {
     console.error("[boot] mirror rematerialisation skipped:", err);
   }
-
-  const port = Number(process.env.PORTUNI_PORT ?? 0);
-  // Align allowed-host gate with whatever port we actually bind to.
-  process.env.PORT = String(port);
 
   const handle = startHttpServer({ port, host: "127.0.0.1", registerSigint: false });
 
