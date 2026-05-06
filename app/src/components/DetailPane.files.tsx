@@ -477,9 +477,11 @@ type LaunchState =
 export function ActionButtons({
   node,
   agentCommand,
+  terminalLaunch,
 }: {
   node: NodeDetail;
   agentCommand: string;
+  terminalLaunch: string;
 }) {
   const [state, setState] = useState<LaunchState>({ kind: "idle" });
 
@@ -511,6 +513,7 @@ export function ActionButtons({
           await invoke("launch_claude_for_node", {
             cwd: local_path,
             command: cmd,
+            template: terminalLaunch,
           });
           setState({ kind: "launched" });
           setTimeout(() => setState({ kind: "idle" }), 2000);
@@ -541,7 +544,7 @@ export function ActionButtons({
       case "pending":
         return "Spouštím…";
       case "launched":
-        return "Spuštěno v Terminal.app";
+        return "Spuštěno v terminálu";
       case "copied":
         return "Zkopírováno — paste do svého terminálu";
       case "error":

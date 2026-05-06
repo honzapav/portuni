@@ -14,7 +14,12 @@ const ActorsPage = lazy(() => import("./components/ActorsPage"));
 import type { GraphPayload, NodeDetail } from "./types";
 import type { Theme } from "./lib/theme";
 import { loadTheme, saveTheme } from "./lib/theme";
-import { loadAgentCommand, saveAgentCommand } from "./lib/settings";
+import {
+  loadAgentCommand,
+  saveAgentCommand,
+  loadTerminalLaunch,
+  saveTerminalLaunch,
+} from "./lib/settings";
 
 export default function App() {
   const [graph, setGraph] = useState<GraphPayload | null>(null);
@@ -28,6 +33,15 @@ export default function App() {
   const setAgentCommand = useCallback((value: string) => {
     setAgentCommandRaw(value);
     saveAgentCommand(value);
+  }, []);
+
+  const [terminalLaunch, setTerminalLaunchRaw] = useState<string>(() =>
+    loadTerminalLaunch(),
+  );
+
+  const setTerminalLaunch = useCallback((value: string) => {
+    setTerminalLaunchRaw(value);
+    saveTerminalLaunch(value);
   }, []);
 
   const [view, setView] = useState<AppView>(() => {
@@ -305,6 +319,8 @@ export default function App() {
           <SettingsPage
             agentCommand={agentCommand}
             onAgentCommandChange={setAgentCommand}
+            terminalLaunch={terminalLaunch}
+            onTerminalLaunchChange={setTerminalLaunch}
           />
         )}
       </main>
@@ -320,6 +336,7 @@ export default function App() {
           onBack={goBack}
           onMutate={refetchAll}
           agentCommand={agentCommand}
+          terminalLaunch={terminalLaunch}
         />
       )}
 

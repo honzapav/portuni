@@ -1,16 +1,25 @@
 import { useEffect, useState } from "react";
 import { Check } from "lucide-react";
-import { AGENT_PRESETS, DEFAULT_AGENT_COMMAND } from "../lib/settings";
+import {
+  AGENT_PRESETS,
+  DEFAULT_AGENT_COMMAND,
+  TERMINAL_PRESETS,
+  DEFAULT_TERMINAL_LAUNCH,
+} from "../lib/settings";
 import McpServerSection from "./McpServerSection";
 
 type Props = {
   agentCommand: string;
   onAgentCommandChange: (value: string) => void;
+  terminalLaunch: string;
+  onTerminalLaunchChange: (value: string) => void;
 };
 
 export default function SettingsPage({
   agentCommand,
   onAgentCommandChange,
+  terminalLaunch,
+  onTerminalLaunchChange,
 }: Props) {
   const [draft, setDraft] = useState(agentCommand);
 
@@ -25,6 +34,22 @@ export default function SettingsPage({
   };
 
   const matchingPreset = AGENT_PRESETS.find((p) => p.command === draft);
+
+  const [termDraft, setTermDraft] = useState(terminalLaunch);
+
+  useEffect(() => {
+    setTermDraft(terminalLaunch);
+  }, [terminalLaunch]);
+
+  const commitTerm = (value: string) => {
+    const next = value.trim() || DEFAULT_TERMINAL_LAUNCH;
+    setTermDraft(next);
+    onTerminalLaunchChange(next);
+  };
+
+  const matchingTerminal = TERMINAL_PRESETS.find(
+    (p) => p.template === termDraft,
+  );
 
   const previewPath = "/Users/ty/workspaces/portuni/tvuj-projekt";
   const samplePrompt = [
@@ -141,6 +166,68 @@ export default function SettingsPage({
               {preview}
             </pre>
           </div>
+        </section>
+
+        <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
+          <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
+            Terminál
+          </div>
+          <p className="mb-3 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
+            Při kliknutí na „Spustit Claude" Portuni spustí tenhle shell
+            příkaz s těmito proměnnými prostředí:{" "}
+            <code className="font-mono text-[var(--color-accent)]">
+              $PORTUNI_CWD
+            </code>{" "}
+            (pracovní složka uzlu),{" "}
+            <code className="font-mono text-[var(--color-accent)]">
+              $PORTUNI_COMMAND
+            </code>{" "}
+            (úplný{" "}
+            <code className="font-mono">cd … && agent …</code>) a{" "}
+            <code className="font-mono text-[var(--color-accent)]">
+              $PORTUNI_COMMAND_AS
+            </code>{" "}
+            (totéž, escapováno pro AppleScript). Funguje jen na macOS.
+          </p>
+
+          <div className="mb-4 space-y-1.5">
+            <div className="text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+              Předvolby
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {TERMINAL_PRESETS.map((p) => {
+                const active = matchingTerminal?.id === p.id;
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => commitTerm(p.template)}
+                    title={p.hint}
+                    className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[13.5px] transition-colors ${
+                      active
+                        ? "border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 text-[var(--color-accent)]"
+                        : "border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text-muted)] hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+                    }`}
+                  >
+                    {active && <Check size={11} />}
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <label className="mb-1 block text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+            Šablona shell příkazu
+          </label>
+          <textarea
+            value={termDraft}
+            onChange={(e) => setTermDraft(e.target.value)}
+            onBlur={(e) => commitTerm(e.target.value)}
+            spellCheck={false}
+            rows={6}
+            className="scroll-thin w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[13px] leading-relaxed text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)]"
+            placeholder={DEFAULT_TERMINAL_LAUNCH}
+          />
         </section>
       </div>
     </div>

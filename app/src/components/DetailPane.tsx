@@ -100,6 +100,7 @@ type Props = {
   onBack: () => void;
   onMutate: () => Promise<void>;
   agentCommand: string;
+  terminalLaunch: string;
 };
 
 export default function DetailPane({
@@ -112,6 +113,7 @@ export default function DetailPane({
   onBack,
   onMutate,
   agentCommand,
+  terminalLaunch,
 }: Props) {
   if (loading && !node) {
     return (
@@ -147,6 +149,7 @@ export default function DetailPane({
       onBack={onBack}
       onMutate={onMutate}
       agentCommand={agentCommand}
+      terminalLaunch={terminalLaunch}
     />
   );
 }
@@ -159,6 +162,7 @@ function DetailPaneBody({
   onBack,
   onMutate,
   agentCommand,
+  terminalLaunch,
 }: {
   node: NodeDetail;
   graph: GraphPayload | null;
@@ -167,6 +171,7 @@ function DetailPaneBody({
   onBack: () => void;
   onMutate: () => Promise<void>;
   agentCommand: string;
+  terminalLaunch: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
@@ -818,7 +823,11 @@ function DetailPaneBody({
             </button>
           </div>
         ) : (
-          <ActionButtons node={node} agentCommand={agentCommand} />
+          <ActionButtons
+            node={node}
+            agentCommand={agentCommand}
+            terminalLaunch={terminalLaunch}
+          />
         )}
       </div>
     </PaneShell>
