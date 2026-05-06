@@ -388,19 +388,7 @@ async fn launch_claude_for_node(
 // their token. Idempotent: if no sidecar is running, just spawns one.
 #[tauri::command]
 async fn restart_sidecar(app: AppHandle) -> Result<(), String> {
-    if let Some(state) = app.try_state::<SidecarState>() {
-        if let Some(child) = state
-            .0
-            .lock()
-            .map_err(|e| e.to_string())?
-            .take()
-        {
-            let _ = child.kill();
-        }
-    }
-    if let Some(state) = app.try_state::<BackendPort>() {
-        *state.0.lock().map_err(|e| e.to_string())? = None;
-    }
+    kill_managed_sidecar(&app);
     spawn_sidecar(&app).map_err(|e| e.to_string())
 }
 
@@ -458,6 +446,78 @@ async fn api_request(
     let status = res.status().as_u16();
     let body = res.text().await.map_err(|e| e.to_string())?;
     Ok(ApiResponse { status, body })
+}
+
+// Drop-side cleanup: kill the bundled sidecar child if we still hold a
+// handle to it. Used by `kill_managed_sidecar` and the various exit
+// paths that previously relied solely on `WindowEvent::Destroyed`.
+fn kill_managed_sidecar(app: &AppHandle) {
+    if let Some(state) = app.try_state::<SidecarState>() {
+        if let Ok(mut guard) = state.0.lock() {
+            if let Some(child) = guard.take() {
+                info!("killing managed sidecar (pid={})", child.pid());
+                let _ = child.kill();
+            }
+        }
+    }
+    if let Some(state) = app.try_state::<BackendPort>() {
+        if let Ok(mut guard) = state.0.lock() {
+            *guard = None;
+        }
+    }
+}
+
+// Reap any orphan portuni-sidecar process holding our loopback port,
+// then wait briefly for the OS to release the socket. Recovers from
+// abnormal exits (force-kill, crash, OS-skipped Destroyed event) where
+// the previous instance left a sidecar running. Bounded: we only kill
+// processes whose binary name matches "portuni-sidecar", never anything
+// else, even if it happens to occupy the port.
+fn reap_orphan_sidecar(port: u16) {
+    use std::process::Command;
+    let lsof = Command::new("lsof")
+        .args([
+            "-nP",
+            "-sTCP:LISTEN",
+            "-t",
+            &format!("-iTCP:{port}"),
+        ])
+        .output();
+    let Ok(lsof) = lsof else {
+        return;
+    };
+    let stdout = String::from_utf8_lossy(&lsof.stdout);
+    let pids: Vec<u32> = stdout
+        .lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .collect();
+    if pids.is_empty() {
+        return;
+    }
+    let self_pid = std::process::id();
+    for pid in pids {
+        if pid == self_pid {
+            continue;
+        }
+        let ps = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "comm="])
+            .output();
+        let Ok(ps) = ps else {
+            continue;
+        };
+        let comm = String::from_utf8_lossy(&ps.stdout);
+        if comm.contains("portuni-sidecar") {
+            info!("reaping orphan sidecar pid={pid} on port {port}");
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+        } else {
+            warn!(
+                "port {port} held by pid={pid} ({}) — not portuni-sidecar, leaving alone",
+                comm.trim()
+            );
+        }
+    }
+    // Give the kernel a moment to release the socket so the next bind() succeeds.
+    std::thread::sleep(std::time::Duration::from_millis(300));
 }
 
 fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -529,6 +589,14 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // The MCP loopback port is fixed across launches so external clients'
+    // .mcp.json configs stay valid — but that means we collide with any
+    // orphan sidecar (previous abnormal exit) holding the port. Reap it
+    // before binding so the launch succeeds instead of erroring with
+    // "Failed to start server. Is port <n> in use?".
+    let port = config.mcp_port.unwrap_or(DEFAULT_MCP_PORT);
+    reap_orphan_sidecar(port);
+
     // tauri-plugin-shell 2.x's env_clear() does not reliably scrub the
     // parent env on macOS — additionally force-empty the variables we
     // don't want leaking from a developer's varlock-loaded shell.
@@ -538,10 +606,7 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .current_dir(sidecar_cwd)
         .env_clear()
         .env("PORTUNI_DATA_DIR", data_dir_str)
-        .env(
-            "PORTUNI_PORT",
-            config.mcp_port.unwrap_or(DEFAULT_MCP_PORT).to_string(),
-        )
+        .env("PORTUNI_PORT", port.to_string())
         .env("PORTUNI_AUTH_TOKEN", auth_token)
         .env("TURSO_URL", turso_url)
         .env("TURSO_AUTH_TOKEN", turso_token)
@@ -666,14 +731,30 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::Destroyed) {
-                if let Some(state) = window.app_handle().try_state::<SidecarState>() {
-                    if let Some(child) = state.0.lock().unwrap().take() {
-                        let _ = child.kill();
-                    }
-                }
+            // Cover both lifecycle points: CloseRequested fires for Cmd+W /
+            // clicking the close button, Destroyed fires once the window is
+            // gone. Either is enough on its own; handling both is defensive
+            // against the orphan-sidecar leak that happens when only one
+            // path actually fires.
+            if matches!(
+                event,
+                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+            ) {
+                kill_managed_sidecar(window.app_handle());
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Catch the macOS Cmd+Q / app-relaunch path that does not always
+            // tear down the window first. ExitRequested fires before the
+            // process exits; Exit is the final point where we still hold
+            // the AppHandle. Killing twice is harmless (handle is taken).
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                kill_managed_sidecar(app);
+            }
+        });
 }
