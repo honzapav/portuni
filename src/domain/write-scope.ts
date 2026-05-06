@@ -389,32 +389,11 @@ export function buildCodexMcpServer(args: {
 }
 
 // Soft-hint paragraph that gets appended to CLAUDE.md / AGENTS.md / .cursor/rules.
-//
-// Includes a session-init instruction when homeNodeId is supplied: agents
-// are expected to call `portuni_session_init` at the start of every session
-// so the server can seed scope to the correct node. This replaces the
-// previous mechanism (per-mirror .mcp.json with `?home_node_id=…` URL
-// param), which proliferated config files and bearer tokens across the
-// workspace.
 export function buildSoftHint(args: {
   currentMirror: string;
   portuniRoot: string;
-  homeNodeId?: string | null;
 }): string {
-  const lines: string[] = [
-    "## Portuni session bootstrap",
-    "",
-  ];
-  if (args.homeNodeId && args.homeNodeId.length > 0) {
-    lines.push(
-      `**Required first MCP call:** \`portuni_session_init({ home_node_id: "${args.homeNodeId}" })\`.`,
-    );
-    lines.push(
-      "Until that runs, every `portuni_*` read returns `scope_expansion_required`.",
-    );
-    lines.push("");
-  }
-  lines.push(
+  return [
     "## Portuni write scope",
     "",
     `This mirror (\`${normalize(args.currentMirror)}\`) is your workspace.`,
@@ -422,6 +401,5 @@ export function buildSoftHint(args: {
     "Editing files in those siblings is out of scope for this session — ask the user first.",
     `Paths outside PORTUNI_ROOT (\`${normalize(args.portuniRoot)}\`) require explicit user approval for every write.`,
     "",
-  );
-  return lines.join("\n");
+  ].join("\n");
 }

@@ -65,7 +65,7 @@ describe("materializeAllRegisteredMirrors", () => {
     );
   });
 
-  it("writes the soft hint with portuni_session_init for the mirror's node", async () => {
+  it("writes the soft hint with the write-scope guidance for each mirror", async () => {
     const { nodeId } = await makeSharedDb();
     const mirror = join(workspace, "mirror-b");
     await mkdir(mirror, { recursive: true });
@@ -74,8 +74,8 @@ describe("materializeAllRegisteredMirrors", () => {
     await materializeAllRegisteredMirrors();
 
     const portuniScope = await readFile(join(mirror, "PORTUNI_SCOPE.md"), "utf8");
-    assert.match(portuniScope, /portuni_session_init/);
-    assert.match(portuniScope, new RegExp(`home_node_id: "${nodeId}"`));
+    assert.match(portuniScope, /Portuni write scope/);
+    assert.match(portuniScope, new RegExp(mirror.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   });
 
   it("returns empty result when no mirrors are registered", async () => {

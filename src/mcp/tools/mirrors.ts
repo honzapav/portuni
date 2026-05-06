@@ -101,7 +101,6 @@ async function materializeAndRegen(
       otherMirrors: others,
       portuniRoot,
       guardScriptPath,
-      homeNodeId: m.node_id,
     });
     aggregated.written.push(...r.written);
     aggregated.errors.push(...r.errors);
@@ -114,7 +113,6 @@ async function materializeAndRegen(
       otherMirrors: others,
       portuniRoot,
       guardScriptPath,
-      homeNodeId: newNodeId,
     });
     aggregated.written.push(...r.written);
     aggregated.errors.push(...r.errors);
