@@ -21,13 +21,18 @@ use tauri_plugin_shell::ShellExt;
 
 struct SidecarState(Mutex<Option<CommandChild>>);
 struct BackendPort(Mutex<Option<u16>>);
-struct AuthToken(String);
+// Wrapped in a Mutex so the regenerate_mcp_token command can rotate the
+// shared token at runtime (after a fresh value lands in Keychain) without
+// restarting the whole Tauri host.
+struct AuthToken(Mutex<String>);
 
-// Keychain coordinates for the Turso auth token. Service is bundle-id-shaped
-// so the entry shows up under "ooo.workflow.portuni" in Keychain Access on
-// macOS; account is the secret's role within that service.
+// Keychain coordinates for secrets we persist across launches. Service is
+// bundle-id-shaped so entries show up under "ooo.workflow.portuni" in
+// Keychain Access on macOS; account is the secret's role within that
+// service.
 const KEYCHAIN_SERVICE: &str = "ooo.workflow.portuni";
 const KEYCHAIN_TURSO_ACCOUNT: &str = "turso_auth_token";
+const KEYCHAIN_MCP_ACCOUNT: &str = "mcp_auth_token";
 
 #[derive(Default, Serialize, Deserialize, Clone)]
 struct DesktopConfig {
@@ -84,6 +89,59 @@ fn clear_turso_token() -> Result<(), String> {
         Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
+}
+
+// Returns the current in-memory MCP auth token. The frontend reads it
+// only when the user explicitly asks (Settings → Show / Copy) so it
+// doesn't sit in webview JS state by default.
+#[tauri::command]
+fn get_mcp_token(app: AppHandle) -> Result<String, String> {
+    Ok(app
+        .state::<AuthToken>()
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone())
+}
+
+// Rotates the MCP auth token: writes a fresh value to Keychain and into
+// the shared AuthToken state. Note that any external configs (per-mirror
+// .mcp.json, ~/.claude.json, ~/.codex/config.toml) become stale until the
+// user re-runs the corresponding "Install …" command.
+#[tauri::command]
+fn regenerate_mcp_token(app: AppHandle) -> Result<String, String> {
+    let fresh = random_token();
+    keychain_set_mcp_token(&fresh)?;
+    let state = app.state::<AuthToken>();
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    *guard = fresh.clone();
+    Ok(fresh)
+}
+
+fn keychain_get_mcp_token() -> Option<String> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_MCP_ACCOUNT)
+        .ok()
+        .and_then(|e| e.get_password().ok())
+        .filter(|s| !s.is_empty())
+}
+
+fn keychain_set_mcp_token(token: &str) -> Result<(), String> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_MCP_ACCOUNT)
+        .map_err(|e| e.to_string())?
+        .set_password(token)
+        .map_err(|e| e.to_string())
+}
+
+// Returns the persisted MCP auth token, generating + storing one on first
+// call. Subsequent launches reuse the same token so external `.mcp.json`
+// files (Claude Code, Codex) keep working across restarts.
+fn ensure_mcp_token() -> Result<String, String> {
+    if let Some(existing) = keychain_get_mcp_token() {
+        return Ok(existing);
+    }
+    let fresh = random_token();
+    keychain_set_mcp_token(&fresh)?;
+    Ok(fresh)
 }
 
 // One-shot migration for installs that still carry `turso_auth_token` in
@@ -252,7 +310,12 @@ async fn api_request(
         let guard = state.0.lock().map_err(|e| e.to_string())?;
         guard.ok_or_else(|| "backend not ready".to_string())?
     };
-    let token = app.state::<AuthToken>().0.clone();
+    let token = app
+        .state::<AuthToken>()
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
 
     let url = format!("http://127.0.0.1:{port}{path}");
     let method_parsed =
@@ -316,7 +379,12 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // local processes hitting the loopback port — generate a fresh
     // 48-char random token per launch and pipe it to both the sidecar
     // (env) and the frontend (Tauri command).
-    let auth_token = app.state::<AuthToken>().0.clone();
+    let auth_token = app
+        .state::<AuthToken>()
+        .0
+        .lock()
+        .expect("AuthToken mutex poisoned")
+        .clone();
 
     // Tauri's webview ships requests from a non-loopback origin that the
     // backend's default allowlist doesn't know about. Pass the Tauri
@@ -420,7 +488,14 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let auth_token = random_token();
+    // Persisted across launches so user-scoped MCP configs (Claude Code,
+    // Codex, per-mirror .mcp.json) stay valid. Falls back to a random
+    // value if Keychain is unreachable — the app can still boot, just
+    // without external-agent support until Keychain comes back.
+    let auth_token = ensure_mcp_token().unwrap_or_else(|e| {
+        warn!("Keychain unavailable for MCP token, falling back to per-launch random: {e}");
+        random_token()
+    });
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -443,7 +518,7 @@ pub fn run() {
         )
         .manage(SidecarState(Mutex::new(None)))
         .manage(BackendPort(Mutex::new(None)))
-        .manage(AuthToken(auth_token))
+        .manage(AuthToken(Mutex::new(auth_token)))
         .invoke_handler(tauri::generate_handler![
             get_backend_port,
             api_request,
@@ -452,11 +527,17 @@ pub fn run() {
             get_turso_status,
             save_config,
             restart_sidecar,
+            get_mcp_token,
+            regenerate_mcp_token,
         ])
         .setup(|app| {
             info!(
-                "generated per-launch auth token (length={})",
-                app.state::<AuthToken>().0.len()
+                "MCP auth token loaded (length={})",
+                app.state::<AuthToken>()
+                    .0
+                    .lock()
+                    .map(|g| g.len())
+                    .unwrap_or(0)
             );
             if let Err(e) = spawn_sidecar(&app.handle().clone()) {
                 error!("failed to spawn sidecar: {e}");
