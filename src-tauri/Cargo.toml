@@ -33,3 +33,15 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 # sidecar. Version pinned to match what tauri already pulls in transitively
 # (Cargo.lock) so we don't bring a second copy along.
 reqwest = "0.13"
+# Cross-platform pseudo-terminal for the embedded terminal pane. Spawns
+# the user's shell in a true PTY (so curses apps, prompts, color, resize
+# all work correctly) and exposes read/write/resize/kill — same code
+# path on macOS, Linux, and Windows.
+portable-pty = "0.9"
+# Base64 encoding for the PTY data event payload. We send raw bytes
+# (not a Rust String) so that multibyte UTF-8 sequences split across
+# read() chunks can't get replaced with U+FFFD in transit — that
+# replacement changes cell widths and desyncs TUIs like Claude Code
+# (visible as duplicated rows and offset glyphs after Unicode chars).
+# xterm.js' write() accepts Uint8Array and handles streaming UTF-8.
+base64 = "0.22"

@@ -65,6 +65,9 @@ import {
 // DetailPane composes them with its own state.
 import { EventCard, AddEventForm } from "./DetailPane.events";
 import { FileTree, SyncBar, ActionButtons } from "./DetailPane.files";
+import TerminalPane from "./TerminalPane";
+import { createNodeMirror } from "../api";
+import { buildAgentCommand } from "../lib/prompt";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
 // node shows the last-known badges instantly while the background
@@ -192,6 +195,15 @@ function DetailPaneBody({
     null,
   );
 
+  // Embedded terminal (Phase 3): when set, the detail pane is replaced
+  // by an xterm.js view backed by the Tauri PTY backend. cwd + command
+  // are captured at open time so the terminal stays attached to that
+  // exact session even if the underlying NodeDetail props change.
+  const [terminal, setTerminal] = useState<
+    null | { cwd: string; command: string }
+  >(null);
+  const [terminalOpening, setTerminalOpening] = useState(false);
+
   // Reset edit drafts whenever we switch to a different node.
   const lastIdRef = useRef(node.id);
   useEffect(() => {
@@ -210,8 +222,31 @@ function DetailPaneBody({
       setSyncError(null);
       setSyncRunning(false);
       setSyncRunResult(null);
+      setTerminal(null);
+      setTerminalOpening(false);
     }
   }, [node.id, node.name]);
+
+  const openEmbeddedTerminal = async () => {
+    if (terminalOpening || terminal) return;
+    setTerminalOpening(true);
+    try {
+      const { local_path } = await createNodeMirror(node.id);
+      const enriched: NodeDetail = {
+        ...node,
+        local_mirror: node.local_mirror ?? {
+          local_path,
+          registered_at: new Date().toISOString(),
+        },
+      };
+      const cmd = buildAgentCommand(enriched, agentCommand);
+      setTerminal({ cwd: local_path, command: cmd });
+    } catch (err) {
+      setErrorMsg(`Nelze otevřít terminál: ${String(err)}`);
+    } finally {
+      setTerminalOpening(false);
+    }
+  };
 
   // Trigger node-wide sync. Pushes push_candidates, pulls pull_candidates,
   // surfaces conflicts/errors. Refreshes the per-file status map after.
@@ -439,6 +474,46 @@ function DetailPaneBody({
       };
     return null;
   })();
+
+  if (terminal) {
+    return (
+      <PaneShell
+        canGoBack={canGoBack}
+        onBack={onBack}
+        // Close button on terminal mode closes the terminal and returns
+        // to the node detail. Deselecting the node from here would
+        // unmount the entire DetailPane mid-PTY-cleanup, which doesn't
+        // match the user's mental model of "X closes what I'm looking at".
+        onClose={() => setTerminal(null)}
+      >
+        <div className="flex h-full flex-col">
+          <div className="flex shrink-0 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 text-[13px]">
+            <span
+              className="inline-flex h-1.5 w-1.5 rounded-full"
+              style={{
+                background: nodeTypeVar(node.type),
+                boxShadow: `0 0 8px ${nodeTypeGlow(node.type, 0.7)}`,
+              }}
+            />
+            <span className="font-medium text-[var(--color-text)]">
+              {node.name}
+            </span>
+            <span className="text-[var(--color-text-dim)]">·</span>
+            <span className="font-mono text-[12px] text-[var(--color-text-muted)]">
+              terminál
+            </span>
+          </div>
+          <div className="min-h-0 flex-1">
+            <TerminalPane
+              nodeId={node.id}
+              cwd={terminal.cwd}
+              command={terminal.command}
+            />
+          </div>
+        </div>
+      </PaneShell>
+    );
+  }
 
   return (
     <PaneShell
@@ -818,7 +893,21 @@ function DetailPaneBody({
             </button>
           </div>
         ) : (
-          <ActionButtons node={node} agentCommand={agentCommand} />
+          <div className="flex flex-col gap-2">
+            <ActionButtons node={node} agentCommand={agentCommand} />
+            {node.type !== "organization" && (
+              <button
+                onClick={openEmbeddedTerminal}
+                disabled={terminalOpening}
+                title="Otevře terminál uvnitř Portuni a spustí v něm Claude. Pracovní složka bude vytvořena, pokud ještě neexistuje."
+                className="flex items-center justify-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-60"
+              >
+                {terminalOpening
+                  ? "Připravuji…"
+                  : "Otevřít terminál v Portuni"}
+              </button>
+            )}
+          </div>
         )}
       </div>
     </PaneShell>
