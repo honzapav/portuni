@@ -18,6 +18,7 @@ import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { isTauri } from "../lib/backend-url";
 
@@ -91,6 +92,18 @@ export default function TerminalPane({ nodeId, cwd, command, onExit }: Props) {
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
     term.open(container);
+    // WebGL renderer is order-of-magnitude faster than the default
+    // canvas renderer for high-throughput output (e.g. Claude streaming
+    // tokens, build logs). Falls back silently to canvas if WebGL is
+    // unavailable in the embedded WebView.
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    } catch (e) {
+      // ignore — renderer falls back to canvas
+      void e;
+    }
     fit.fit();
 
     let unlistenData: (() => void) | null = null;

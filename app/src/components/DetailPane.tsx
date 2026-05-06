@@ -482,14 +482,32 @@ function DetailPaneBody({
         onBack={onBack}
         onClose={() => onSelect(null)}
       >
-        <div className="relative flex h-full flex-col">
-          <button
-            onClick={() => setTerminal(null)}
-            title="Zavřít terminál (zachová si snapshot, příště otevře novou session)"
-            className="absolute right-3 top-3 z-10 flex h-7 w-7 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)]/80 text-[var(--color-text-dim)] backdrop-blur transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
-          >
-            <X size={13} />
-          </button>
+        <div className="flex h-full flex-col">
+          <div className="flex shrink-0 items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2">
+            <div className="flex items-center gap-2 text-[13px]">
+              <span
+                className="inline-flex h-1.5 w-1.5 rounded-full"
+                style={{
+                  background: nodeTypeVar(node.type),
+                  boxShadow: `0 0 8px ${nodeTypeGlow(node.type, 0.7)}`,
+                }}
+              />
+              <span className="font-medium text-[var(--color-text)]">
+                {node.name}
+              </span>
+              <span className="text-[var(--color-text-dim)]">·</span>
+              <span className="font-mono text-[12px] text-[var(--color-text-muted)]">
+                terminál
+              </span>
+            </div>
+            <button
+              onClick={() => setTerminal(null)}
+              title="Zavřít terminál"
+              className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] transition-colors hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
+            >
+              <X size={14} />
+            </button>
+          </div>
           <div className="min-h-0 flex-1">
             <TerminalPane
               nodeId={node.id}

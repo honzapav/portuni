@@ -189,7 +189,11 @@ pub fn pty_spawn(
     let sid_for_reader = session_id.clone();
     thread::spawn(move || {
         let mut reader = reader;
-        let mut buf = [0u8; 4096];
+        // 16 KB buffer reduces per-chunk overhead (event serialization
+        // + IPC round-trip) for high-throughput output. Larger buffers
+        // mean fewer events; xterm's WebGL renderer handles the bigger
+        // chunks easily.
+        let mut buf = [0u8; 16384];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => {
