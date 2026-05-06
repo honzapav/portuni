@@ -378,7 +378,7 @@ describe("materializeScopeConfig", () => {
     assert.match(settings.hooks.PreToolUse[0].matcher, /Edit\|Write/);
   });
 
-  it("embeds home_node_id in MCP URL of generated configs when supplied", async () => {
+  it("embeds portuni_session_init({home_node_id}) into the soft hint when supplied", async () => {
     const dir = await mkdtemp(join(tmpdir(), "portuni-scope-home-"));
     const cur = join(dir, "a");
     await mkdir(cur, { recursive: true });
@@ -387,61 +387,93 @@ describe("materializeScopeConfig", () => {
       currentMirror: cur,
       otherMirrors: [],
       portuniRoot: dir,
-      mcpUrl: "http://localhost:4011/mcp",
       homeNodeId: "01TESTHOME",
     });
 
-    const mcpJson = JSON.parse(await readFile(join(cur, ".mcp.json"), "utf8"));
-    assert.equal(
-      mcpJson.mcpServers.portuni.url,
-      "http://localhost:4011/mcp?home_node_id=01TESTHOME",
+    const portuniScope = await readFile(join(cur, "PORTUNI_SCOPE.md"), "utf8");
+    assert.match(portuniScope, /portuni_session_init/);
+    assert.match(portuniScope, /home_node_id: "01TESTHOME"/);
+  });
+
+  it("never writes .mcp.json or Codex [mcp_servers.portuni] in mirror folders", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "portuni-scope-no-mcp-"));
+    const cur = join(dir, "a");
+    await mkdir(cur, { recursive: true });
+
+    await materializeScopeConfig({
+      currentMirror: cur,
+      otherMirrors: [],
+      portuniRoot: dir,
+      homeNodeId: "01TESTHOME",
+    });
+
+    const mcpExists = await stat(join(cur, ".mcp.json"))
+      .then(() => true)
+      .catch(() => false);
+    assert.equal(mcpExists, false, "mirror must not carry a project-scoped .mcp.json");
+
+    const toml = await readFile(join(cur, ".codex", "config.toml"), "utf8");
+    assert.ok(!toml.includes("[mcp_servers"), "mirror Codex toml must not register MCP server");
+    assert.match(toml, /sandbox_workspace_write/, "sandbox config must still be present");
+  });
+
+  it("removes a legacy portuni-managed .mcp.json on materialise", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "portuni-scope-cleanup-"));
+    const cur = join(dir, "a");
+    await mkdir(cur, { recursive: true });
+
+    const legacy = join(cur, ".mcp.json");
+    await (await import("node:fs/promises")).writeFile(
+      legacy,
+      JSON.stringify({
+        portuni_managed: { generated_at: "2026-04-25T00:00:00Z" },
+        mcpServers: {
+          portuni: {
+            type: "http",
+            url: "http://localhost:4011/mcp?home_node_id=01OLD",
+            headers: { Authorization: "Bearer old" },
+          },
+        },
+      }),
     );
 
-    const toml = await readFile(join(cur, ".codex", "config.toml"), "utf8");
-    assert.match(toml, /url = "http:\/\/localhost:4011\/mcp\?home_node_id=01TESTHOME"/);
+    const r = await materializeScopeConfig({
+      currentMirror: cur,
+      otherMirrors: [],
+      portuniRoot: dir,
+      homeNodeId: "01TESTHOME",
+    });
+
+    const stillThere = await stat(legacy).then(() => true).catch(() => false);
+    assert.equal(stillThere, false, "legacy .mcp.json must be removed");
+    assert.ok(
+      r.written.some((p) => p.startsWith("removed:") && p.endsWith(".mcp.json")),
+      "removal must be reported in the result",
+    );
   });
 
-  it("emits .mcp.json (Claude Code project-scoped MCP) and Codex [mcp_servers.portuni] block when mcpUrl is supplied", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "portuni-scope-mcp-"));
+  it("preserves a hand-written .mcp.json without the portuni marker", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "portuni-scope-keep-"));
     const cur = join(dir, "a");
     await mkdir(cur, { recursive: true });
+
+    const userOwned = join(cur, ".mcp.json");
+    const userContent = JSON.stringify(
+      { mcpServers: { other: { command: "x" } } },
+      null,
+      2,
+    );
+    await (await import("node:fs/promises")).writeFile(userOwned, userContent);
 
     await materializeScopeConfig({
       currentMirror: cur,
       otherMirrors: [],
       portuniRoot: dir,
-      mcpUrl: "http://localhost:4011/mcp",
-      mcpAuthToken: "tok-123",
+      homeNodeId: "01TESTHOME",
     });
 
-    const mcpJson = JSON.parse(await readFile(join(cur, ".mcp.json"), "utf8"));
-    assert.equal(mcpJson.mcpServers.portuni.type, "http");
-    assert.equal(mcpJson.mcpServers.portuni.url, "http://localhost:4011/mcp");
-    assert.equal(mcpJson.mcpServers.portuni.headers.Authorization, "Bearer tok-123");
-
-    const toml = await readFile(join(cur, ".codex", "config.toml"), "utf8");
-    assert.match(toml, /\[mcp_servers\.portuni\]/);
-    assert.match(toml, /type = "http"/);
-    assert.match(toml, /url = "http:\/\/localhost:4011\/mcp"/);
-    assert.match(toml, /Bearer tok-123/);
-  });
-
-  it("omits .mcp.json and Codex MCP block when mcpUrl is null", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "portuni-scope-nomcp-"));
-    const cur = join(dir, "a");
-    await mkdir(cur, { recursive: true });
-
-    await materializeScopeConfig({
-      currentMirror: cur,
-      otherMirrors: [],
-      portuniRoot: dir,
-    });
-
-    const mcpExists = await stat(join(cur, ".mcp.json")).then(() => true).catch(() => false);
-    assert.equal(mcpExists, false);
-
-    const toml = await readFile(join(cur, ".codex", "config.toml"), "utf8");
-    assert.ok(!toml.includes("[mcp_servers"));
+    const after = await readFile(userOwned, "utf8");
+    assert.equal(after, userContent, "hand-written .mcp.json must not be touched");
   });
 
   it("preserves a user-owned .codex/config.toml (no portuni marker)", async () => {

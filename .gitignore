@@ -7,6 +7,11 @@ env.d.ts
 portuni.db
 .firecrawl/
 
+# Project-scoped MCP configs are no longer used by Portuni — connection
+# lives in user-scoped ~/.claude.json (via the Settings UI). Block any
+# stray .mcp.json from sneaking in alongside repo content.
+.mcp.json
+
 # Local Netlify folder
 .netlify
 

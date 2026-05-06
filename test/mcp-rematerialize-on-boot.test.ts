@@ -1,11 +1,11 @@
-// Verifies materializeAllRegisteredMirrors() refreshes per-mirror
-// .mcp.json files using the current PORT + PORTUNI_AUTH_TOKEN env vars.
-// This is what desktop.ts calls at sidecar boot so external configs
-// pick up rotated tokens without manual intervention.
+// Verifies materializeAllRegisteredMirrors() — what desktop.ts calls
+// at sidecar boot — refreshes per-mirror harness configs and removes
+// legacy project-scoped .mcp.json files written by older Portuni
+// versions. Connection now lives in user-scoped configs only.
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, readFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile, stat, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerMirror } from "../src/domain/sync/mirror-registry.js";
@@ -16,51 +16,31 @@ import { makeSharedDb } from "./helpers/shared-db.js";
 
 let workspace: string;
 let originalRoot: string | undefined;
-let originalPort: string | undefined;
-let originalAuth: string | undefined;
-let originalHost: string | undefined;
-let originalUrl: string | undefined;
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), "portuni-remat-"));
   originalRoot = process.env.PORTUNI_WORKSPACE_ROOT;
-  originalPort = process.env.PORT;
-  originalAuth = process.env.PORTUNI_AUTH_TOKEN;
-  originalHost = process.env.HOST;
-  originalUrl = process.env.PORTUNI_URL;
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
-  process.env.PORT = "47011";
-  process.env.HOST = "127.0.0.1";
-  process.env.PORTUNI_AUTH_TOKEN = "fresh-token-123";
-  delete process.env.PORTUNI_URL;
   resetLocalDbForTests();
 });
 
 afterEach(async () => {
   resetLocalDbForTests();
-  for (const [k, v] of [
-    ["PORTUNI_WORKSPACE_ROOT", originalRoot],
-    ["PORT", originalPort],
-    ["PORTUNI_AUTH_TOKEN", originalAuth],
-    ["HOST", originalHost],
-    ["PORTUNI_URL", originalUrl],
-  ] as const) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
+  if (originalRoot === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
+  else process.env.PORTUNI_WORKSPACE_ROOT = originalRoot;
   await rm(workspace, { recursive: true, force: true });
 });
 
 describe("materializeAllRegisteredMirrors", () => {
-  it("rewrites stale .mcp.json with the current port and token", async () => {
+  it("removes legacy .mcp.json files in every registered mirror", async () => {
     const { nodeId } = await makeSharedDb();
     const mirror = join(workspace, "mirror-a");
     await mkdir(mirror, { recursive: true });
-    // Pre-seed a stale .mcp.json that an older launch would have written.
     await writeFile(
       join(mirror, ".mcp.json"),
       JSON.stringify(
         {
+          portuni_managed: { generated_at: "2026-04-25T00:00:00Z" },
           mcpServers: {
             portuni: {
               type: "http",
@@ -76,21 +56,26 @@ describe("materializeAllRegisteredMirrors", () => {
     await registerMirror(SOLO_USER, nodeId, mirror);
 
     const r = await materializeAllRegisteredMirrors();
-    assert.ok(
-      r.written.some((p) => p.endsWith("/.mcp.json")),
-      `expected .mcp.json in written list, got: ${r.written.join(", ")}`,
-    );
 
-    const refreshed = JSON.parse(
-      await readFile(join(mirror, ".mcp.json"), "utf8"),
-    ) as {
-      mcpServers: { portuni: { url: string; headers?: { Authorization: string } } };
-    };
-    assert.match(refreshed.mcpServers.portuni.url, /:47011\/mcp/);
-    assert.equal(
-      refreshed.mcpServers.portuni.headers?.Authorization,
-      "Bearer fresh-token-123",
+    const legacy = join(mirror, ".mcp.json");
+    const stillThere = await stat(legacy).then(() => true).catch(() => false);
+    assert.equal(stillThere, false, "legacy .mcp.json must be removed");
+    assert.ok(
+      r.written.some((p) => p.startsWith("removed:") && p.endsWith(".mcp.json")),
     );
+  });
+
+  it("writes the soft hint with portuni_session_init for the mirror's node", async () => {
+    const { nodeId } = await makeSharedDb();
+    const mirror = join(workspace, "mirror-b");
+    await mkdir(mirror, { recursive: true });
+    await registerMirror(SOLO_USER, nodeId, mirror);
+
+    await materializeAllRegisteredMirrors();
+
+    const portuniScope = await readFile(join(mirror, "PORTUNI_SCOPE.md"), "utf8");
+    assert.match(portuniScope, /portuni_session_init/);
+    assert.match(portuniScope, new RegExp(`home_node_id: "${nodeId}"`));
   });
 
   it("returns empty result when no mirrors are registered", async () => {
