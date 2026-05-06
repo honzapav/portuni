@@ -33,3 +33,8 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 # sidecar. Version pinned to match what tauri already pulls in transitively
 # (Cargo.lock) so we don't bring a second copy along.
 reqwest = "0.13"
+# Cross-platform pseudo-terminal for the embedded terminal pane. Spawns
+# the user's shell in a true PTY (so curses apps, prompts, color, resize
+# all work correctly) and exposes read/write/resize/kill — same code
+# path on macOS, Linux, and Windows.
+portable-pty = "0.9"

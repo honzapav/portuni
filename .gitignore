@@ -19,3 +19,5 @@ portuni.db
 scripts/oneshot/
 src-tauri/binaries/
 src-tauri/sidecar-deps/
+*.bun-build
+.*.bun-build

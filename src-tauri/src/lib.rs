@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 mod mcp_install;
+mod pty;
 
 use log::{error, info, warn};
 use rand::distributions::Alphanumeric;
@@ -626,6 +627,7 @@ pub fn run() {
         .manage(SidecarState(Mutex::new(None)))
         .manage(BackendPort(Mutex::new(None)))
         .manage(AuthToken(Mutex::new(auth_token)))
+        .manage(pty::PtyState::default())
         .invoke_handler(tauri::generate_handler![
             get_backend_port,
             api_request,
@@ -639,6 +641,10 @@ pub fn run() {
             install_claude_global,
             install_codex_global,
             launch_claude_for_node,
+            pty::pty_spawn,
+            pty::pty_write,
+            pty::pty_resize,
+            pty::pty_kill,
         ])
         .setup(|app| {
             info!(
