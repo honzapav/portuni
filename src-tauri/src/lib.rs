@@ -325,6 +325,53 @@ fn save_config(app: AppHandle, turso_url: Option<String>) -> Result<(), String> 
     std::fs::write(config_path(&data_dir), json).map_err(|e| e.to_string())
 }
 
+// Spawn an external Terminal.app window in the given working directory
+// and run the given shell command. macOS-only; on other platforms returns
+// a "UNSUPPORTED_OS" error so the webview can fall back to clipboard
+// copy. The webview is responsible for building the full shell command
+// (via app/src/lib/prompt.ts:buildAgentCommand) which already starts
+// with `cd <cwd> && ...` — we still validate `cwd` here so a malformed
+// path surfaces as a clear error before AppleScript sees it.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn launch_claude_for_node(cwd: String, command: String) -> Result<(), String> {
+    if cwd.trim().is_empty() {
+        return Err("cwd is required".to_string());
+    }
+    if !std::path::Path::new(&cwd).is_dir() {
+        return Err(format!("cwd does not exist: {cwd}"));
+    }
+    if command.trim().is_empty() {
+        return Err("command is required".to_string());
+    }
+    // AppleScript string literal uses double quotes; escape backslashes
+    // first so subsequent quote-escaping doesn't double-escape them.
+    // Single quotes (used heavily by buildAgentCommand's shellQuote) need
+    // no escaping inside an AppleScript double-quoted string.
+    let escaped = command.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(
+        "tell application \"Terminal\"\n\
+         \tactivate\n\
+         \tdo script \"{escaped}\"\n\
+         end tell"
+    );
+    let status = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .status()
+        .map_err(|e| format!("osascript failed: {e}"))?;
+    if !status.success() {
+        return Err(format!("osascript exited with {status}"));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+async fn launch_claude_for_node(_cwd: String, _command: String) -> Result<(), String> {
+    Err("UNSUPPORTED_OS".to_string())
+}
+
 // Bounce the Node sidecar so it picks up a freshly-set Turso token
 // from the Keychain. Used by the first-run gate after the user pastes
 // their token. Idempotent: if no sidecar is running, just spawns one.
@@ -591,6 +638,7 @@ pub fn run() {
             regenerate_mcp_token,
             install_claude_global,
             install_codex_global,
+            launch_claude_for_node,
         ])
         .setup(|app| {
             info!(
