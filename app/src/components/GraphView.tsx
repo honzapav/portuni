@@ -35,6 +35,9 @@ type Props = {
   disabledStatuses: Set<string>;
   theme: Theme;
   onSelect: (id: string | null) => void;
+  // Triggered by the empty-state CTA. Always pre-selects "organization"
+  // since that's the only top-level node type a fresh user can create.
+  onCreateOrganization: () => void;
 };
 
 // Build cytoscape elements with orgs as compound parents.
@@ -1031,6 +1034,7 @@ export default function GraphView({
   disabledStatuses,
   theme,
   onSelect,
+  onCreateOrganization,
 }: Props) {
   // Defer the search query so typing stays responsive even when the graph
   // is large enough that the filter pass takes a perceptible amount of
@@ -2326,6 +2330,41 @@ export default function GraphView({
           <Shuffle size={16} />
         </button>
       </div>
+      {graph.nodes.length === 0 && (
+        <EmptyStateCta onCreateOrganization={onCreateOrganization} />
+      )}
     </div>
   );
 }
+
+// Centred CTA shown over an empty graph canvas. The first thing a fresh
+// user sees after the Turso wizard finishes — without it the app looks
+// dead because there's no node to click. Forces type=organization in the
+// modal since that's the only top-level type.
+function EmptyStateCta({
+  onCreateOrganization,
+}: {
+  onCreateOrganization: () => void;
+}) {
+  return (
+    <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center px-4">
+      <div className="pointer-events-auto max-w-[420px] rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-6 shadow-2xl">
+        <h2 className="mb-2 text-[16px] font-semibold tracking-tight text-[var(--color-text)]">
+          Začni vytvořením první organizace.
+        </h2>
+        <p className="mb-5 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
+          Portuni mapuje, na čem pracuješ — týmy, projekty, procesy. Začni
+          tím, že přidáš svou organizaci.
+        </p>
+        <button
+          type="button"
+          onClick={onCreateOrganization}
+          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-4 py-2.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-text)]"
+        >
+          + Vytvořit organizaci
+        </button>
+      </div>
+    </div>
+  );
+}
+

@@ -495,10 +495,14 @@ function DetailPaneBody({
           <IdCopy id={node.id} />
           <MetaInfo meta={node.meta} />
           <FolderLink nodeId={node.id} />
-          {node.local_mirror && (
+          {node.type !== "organization" && (
             <>
               <span className="text-[var(--color-border-strong)]">·</span>
-              <PathCopy path={node.local_mirror.local_path} />
+              {node.local_mirror ? (
+                <PathCopy path={node.local_mirror.local_path} />
+              ) : (
+                <MirrorPlaceholder />
+              )}
             </>
           )}
         </div>
@@ -3164,6 +3168,20 @@ function FolderLink({ nodeId }: { nodeId: string }) {
     >
       <ExternalLink size={11} />
     </a>
+  );
+}
+
+// Muted placeholder shown in the header when the node has no mirror on
+// this device. Fills the same horizontal slot as PathCopy so the layout
+// doesn't shift the moment a mirror is created.
+function MirrorPlaceholder() {
+  return (
+    <span className="flex min-w-0 flex-1 items-center gap-1.5 font-mono text-[10px] italic text-[var(--color-text-dim)]">
+      <Folder size={10} className="shrink-0" />
+      <span className="truncate">
+        Pracovní složka zatím neexistuje — bude vytvořena při spuštění Claude.
+      </span>
+    </span>
   );
 }
 

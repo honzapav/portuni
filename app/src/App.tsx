@@ -3,6 +3,7 @@ import Sidebar, { type AppView } from "./components/Sidebar";
 import DetailPane from "./components/DetailPane";
 import SettingsPage from "./components/SettingsPage";
 import StatusFooter from "./components/StatusFooter";
+import CreateNodeModal from "./components/CreateNodeModal";
 import { fetchGraph, fetchNode } from "./api";
 
 // Lazy chunks: cytoscape (the GraphView dep) is the main reason the app
@@ -61,6 +62,23 @@ export default function App() {
   // can toggle all three in the sidebar.
   const [disabledStatuses, setDisabledStatuses] = useState<Set<string>>(
     () => new Set(["archived"]),
+  );
+
+  // Create-node modal. Triggered from the sidebar's "+ Nová node" button
+  // and from the empty-state CTA on the graph canvas. `forceType` is set
+  // by the empty-state CTA so the user only sees the org-creation path
+  // until at least one organization exists.
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [createModalForceType, setCreateModalForceType] = useState<
+    "organization" | undefined
+  >(undefined);
+
+  const openCreateModal = useCallback(
+    (opts?: { forceType?: "organization" }) => {
+      setCreateModalForceType(opts?.forceType);
+      setCreateModalOpen(true);
+    },
+    [],
   );
 
   // Apply theme to <html> and persist
@@ -131,6 +149,19 @@ export default function App() {
     setGraph(graphRes);
     if (nodeRes) setNodeDetail(nodeRes);
   }, [selectedId]);
+
+  // Refetch on window focus. Solves the "I created a node via MCP / Claude
+  // and the graph never sees it" symptom universally — every time the
+  // user comes back to the window, we re-pull the truth. The listener is
+  // bound once; the closure captures `refetchAll`, which itself captures
+  // selectedId so the current detail stays in sync too.
+  useEffect(() => {
+    const handler = () => {
+      refetchAll().catch((err) => setGraphError(String(err)));
+    };
+    window.addEventListener("focus", handler);
+    return () => window.removeEventListener("focus", handler);
+  }, [refetchAll]);
 
   const setSelectedId = useCallback(
     (id: string | null) => {
@@ -212,6 +243,7 @@ export default function App() {
           view={view}
           onViewChange={setView}
           onOpenSettings={() => setView("settings")}
+          onCreateNode={() => openCreateModal()}
         />
       )}
 
@@ -252,6 +284,9 @@ export default function App() {
               disabledStatuses={disabledStatuses}
               theme={theme}
               onSelect={setSelectedId}
+              onCreateOrganization={() =>
+                openCreateModal({ forceType: "organization" })
+              }
             />
           </Suspense>
         )}
@@ -290,6 +325,32 @@ export default function App() {
 
       </div>
       <StatusFooter onOpenSettings={() => setView("settings")} />
+      {createModalOpen && graph && (
+        <CreateNodeModal
+          existingNodes={graph.nodes}
+          forceType={createModalForceType}
+          defaultOrgId={
+            // When the user is staring at a non-org node and clicks
+            // "+ Nová node", default to that node's organization.
+            nodeDetail
+              ? nodeDetail.type === "organization"
+                ? nodeDetail.id
+                : nodeDetail.edges.find(
+                    (e) =>
+                      e.relation === "belongs_to" &&
+                      e.direction === "outgoing" &&
+                      e.peer_type === "organization",
+                  )?.peer_id
+              : undefined
+          }
+          onClose={() => setCreateModalOpen(false)}
+          onCreated={(node) => {
+            setCreateModalOpen(false);
+            setSelectedId(node.id);
+            refetchAll().catch((err) => setGraphError(String(err)));
+          }}
+        />
+      )}
     </div>
   );
 }

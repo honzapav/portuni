@@ -9,10 +9,12 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Copy,
   FileText,
   Folder,
+  Loader2,
+  Play,
   RefreshCw,
-  Sparkles,
 } from "lucide-react";
 import type {
   DetailFile,
@@ -22,6 +24,8 @@ import type {
   SyncStatusFile,
 } from "../types";
 import { buildAgentCommand } from "../lib/prompt";
+import { createNodeMirror } from "../api";
+import { isTauri } from "../lib/backend-url";
 
 // ---------------------------------------------------------------------------
 // File tree (Files tab)
@@ -455,6 +459,21 @@ function syncCssVar(c: SyncClass): string {
   }
 }
 
+// Launch flow:
+//   1. POST /nodes/:id/mirror — idempotent; creates the working folder
+//      if missing and returns { local_path, ... } either way.
+//   2. Refresh the node's local_mirror in-memory from the response so
+//      buildAgentCommand prefixes `cd <path> && ...`.
+//   3a. On Tauri: invoke `launch_claude_for_node` to spawn Terminal.app.
+//       UNSUPPORTED_OS error → fall back to clipboard.
+//   3b. In browser: copy to clipboard.
+type LaunchState =
+  | { kind: "idle" }
+  | { kind: "pending" }
+  | { kind: "launched" }
+  | { kind: "copied" }
+  | { kind: "error"; message: string };
+
 export function ActionButtons({
   node,
   agentCommand,
@@ -462,39 +481,105 @@ export function ActionButtons({
   node: NodeDetail;
   agentCommand: string;
 }) {
-  const [copiedLaunch, setCopiedLaunch] = useState(false);
+  const [state, setState] = useState<LaunchState>({ kind: "idle" });
 
   // Organizations are workspace roots, not work locations -- nobody runs an
   // agent at org scope, so the launch command is pointless here.
   if (node.type === "organization") return null;
 
-  const handleCopyLaunch = async () => {
-    const cmd = buildAgentCommand(node, agentCommand);
-    await navigator.clipboard.writeText(cmd);
-    setCopiedLaunch(true);
-    setTimeout(() => setCopiedLaunch(false), 1500);
+  const handleLaunch = async () => {
+    setState({ kind: "pending" });
+    try {
+      // Ensure the folder exists. Idempotent — fast path when the mirror
+      // is already registered.
+      const { local_path } = await createNodeMirror(node.id);
+      // Splice the freshly known mirror onto the node so buildAgentCommand
+      // produces the cd-prefixed form even on the first launch (when
+      // node.local_mirror was still null).
+      const enriched: NodeDetail = {
+        ...node,
+        local_mirror: node.local_mirror ?? {
+          local_path,
+          registered_at: new Date().toISOString(),
+        },
+      };
+      const cmd = buildAgentCommand(enriched, agentCommand);
+
+      if (isTauri()) {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("launch_claude_for_node", {
+            cwd: local_path,
+            command: cmd,
+          });
+          setState({ kind: "launched" });
+          setTimeout(() => setState({ kind: "idle" }), 2000);
+          return;
+        } catch (err) {
+          const msg = String(err);
+          if (msg.includes("UNSUPPORTED_OS")) {
+            // Linux / Windows in Tauri build — fall through to clipboard.
+          } else {
+            setState({ kind: "error", message: msg });
+            setTimeout(() => setState({ kind: "idle" }), 3500);
+            return;
+          }
+        }
+      }
+
+      await navigator.clipboard.writeText(cmd);
+      setState({ kind: "copied" });
+      setTimeout(() => setState({ kind: "idle" }), 1800);
+    } catch (err) {
+      setState({ kind: "error", message: String(err) });
+      setTimeout(() => setState({ kind: "idle" }), 3500);
+    }
   };
 
-  const agentLabel = agentCommand.trim().split(/\s+/)[0] || "agent";
+  const label = (() => {
+    switch (state.kind) {
+      case "pending":
+        return "Spouštím…";
+      case "launched":
+        return "Spuštěno v Terminal.app";
+      case "copied":
+        return "Zkopírováno — paste do svého terminálu";
+      case "error":
+        return state.message;
+      default:
+        return "Spustit Claude";
+    }
+  })();
+
+  const icon = (() => {
+    switch (state.kind) {
+      case "pending":
+        return <Loader2 size={13} className="animate-spin" />;
+      case "launched":
+        return <Check size={13} />;
+      case "copied":
+        return <Copy size={13} />;
+      case "error":
+        return null;
+      default:
+        return <Play size={13} />;
+    }
+  })();
 
   return (
     <div className="flex gap-2">
       <button
-        onClick={handleCopyLaunch}
-        title="Zkopíruje shell příkaz, který vstoupí do složky uzlu a spustí nakonfigurovaného agenta s promptem"
-        className="group flex flex-1 items-center justify-center gap-2 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)]"
+        onClick={handleLaunch}
+        disabled={state.kind === "pending"}
+        title={
+          isTauri()
+            ? "Otevře Terminal.app v pracovní složce a spustí Claude. Pracovní složka bude vytvořena, pokud ještě neexistuje."
+            : "Zkopíruje shell příkaz pro vstup do složky a spuštění Claude. V desktopové aplikaci spustí Terminal.app přímo."
+        }
+        className="group flex flex-1 items-center justify-center gap-2 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)] disabled:opacity-60"
       >
-        {copiedLaunch ? (
-          <>
-            <Check size={13} />
-            Zkopírováno
-          </>
-        ) : (
-          <>
-            <Sparkles size={13} />
-            Spouštěcí příkaz ({agentLabel})
-          </>
-        )}
+        {icon}
+        <span className="truncate">{label}</span>
       </button>
     </div>
   );

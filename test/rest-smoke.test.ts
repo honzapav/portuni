@@ -141,3 +141,56 @@ describe("POST /nodes regression: org-invariant", () => {
     assert.equal(res.status, 400);
   });
 });
+
+describe("POST /nodes/:id/mirror", () => {
+  it("creates a mirror folder for a node and is idempotent on second call", async () => {
+    // Seed a project under the existing Acme org so we have a non-org
+    // node to mirror — orgs use a slightly different layout but mirror
+    // creation works for both.
+    const createRes = await fetch(`${BASE}/nodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "project",
+        name: "Mirror Subject",
+        organization_id: orgId,
+      }),
+    });
+    assert.equal(createRes.status, 201);
+    const node = (await createRes.json()) as { id: string };
+
+    const first = await fetch(`${BASE}/nodes/${node.id}/mirror`, {
+      method: "POST",
+    });
+    assert.equal(first.status, 201);
+    const firstBody = (await first.json()) as {
+      node_id: string;
+      local_path: string;
+      created: boolean;
+    };
+    assert.equal(firstBody.node_id, node.id);
+    assert.equal(firstBody.created, true);
+    assert.ok(
+      firstBody.local_path.startsWith(workspace),
+      `mirror path ${firstBody.local_path} should be under workspace ${workspace}`,
+    );
+
+    const second = await fetch(`${BASE}/nodes/${node.id}/mirror`, {
+      method: "POST",
+    });
+    assert.equal(second.status, 200);
+    const secondBody = (await second.json()) as {
+      local_path: string;
+      created: boolean;
+    };
+    assert.equal(secondBody.created, false);
+    assert.equal(secondBody.local_path, firstBody.local_path);
+  });
+
+  it("returns 404 for unknown node id", async () => {
+    const res = await fetch(`${BASE}/nodes/01ZZZZZZZZZZZZZZZZZZZZZZZZ/mirror`, {
+      method: "POST",
+    });
+    assert.equal(res.status, 404);
+  });
+});
