@@ -482,30 +482,19 @@ function DetailPaneBody({
         onBack={onBack}
         onClose={() => onSelect(null)}
       >
-        <div className="flex h-full flex-col">
-          <div className="flex items-center justify-between border-b border-[var(--color-border)] px-4 py-2">
-            <div className="flex items-center gap-2 text-[13px] text-[var(--color-text-muted)]">
-              <span className="font-mono">{node.name}</span>
-              <span className="text-[var(--color-text-dim)]">·</span>
-              <span className="font-mono text-[12px] text-[var(--color-text-dim)]">
-                {terminal.cwd}
-              </span>
-            </div>
-            <button
-              onClick={() => setTerminal(null)}
-              className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1 text-[12.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
-            >
-              Zavřít terminál
-            </button>
-          </div>
+        <div className="relative flex h-full flex-col">
+          <button
+            onClick={() => setTerminal(null)}
+            title="Zavřít terminál (zachová si snapshot, příště otevře novou session)"
+            className="absolute right-3 top-3 z-10 flex h-7 w-7 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)]/80 text-[var(--color-text-dim)] backdrop-blur transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+          >
+            <X size={13} />
+          </button>
           <div className="min-h-0 flex-1">
             <TerminalPane
               nodeId={node.id}
               cwd={terminal.cwd}
               command={terminal.command}
-              onExit={() => {
-                /* keep terminal mounted so user can read final output */
-              }}
             />
           </div>
         </div>

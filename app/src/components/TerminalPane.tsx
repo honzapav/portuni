@@ -40,6 +40,13 @@ export default function TerminalPane({ nodeId, cwd, command, onExit }: Props) {
   // Stable ref so the cleanup closure sees the latest session id without
   // turning it into a state-induced re-render.
   const sessionIdRef = useRef<string>("");
+  // Capture onExit in a ref so render-time inline closures from the
+  // parent don't retrigger the spawn effect (which kills + re-spawns
+  // the session on every prop reference change).
+  const onExitRef = useRef(onExit);
+  useEffect(() => {
+    onExitRef.current = onExit;
+  }, [onExit]);
 
   useEffect(() => {
     if (!isTauri()) {
@@ -56,20 +63,25 @@ export default function TerminalPane({ nodeId, cwd, command, onExit }: Props) {
       .slice(2, 8)}`;
     sessionIdRef.current = sessionId;
 
+    // Read computed CSS vars from the surrounding pane so the terminal
+    // background matches Portuni's theme. Falls back to dark hexes if
+    // the vars aren't set (e.g. in plain browser preview).
+    const css = getComputedStyle(document.documentElement);
+    const bg = css.getPropertyValue("--color-bg").trim() || "#0e1015";
+    const fg = css.getPropertyValue("--color-text").trim() || "#e6e7ea";
+    const accent = css.getPropertyValue("--color-accent").trim() || "#7ec8ff";
+
     const term = new Terminal({
       fontFamily:
         '"JetBrains Mono", "SF Mono", Menlo, Consolas, "Courier New", monospace',
       fontSize: 13,
-      lineHeight: 1.2,
+      lineHeight: 1.25,
       cursorBlink: true,
-      // Match the surrounding Portuni dark/light theme via CSS vars.
-      // xterm doesn't pick up CSS vars itself, but the body bg shows
-      // through transparent regions; explicit theme keeps text legible.
       theme: {
-        background: "#0b0d12",
-        foreground: "#e6e7ea",
-        cursor: "#7ec8ff",
-        cursorAccent: "#0b0d12",
+        background: bg,
+        foreground: fg,
+        cursor: accent,
+        cursorAccent: bg,
         selectionBackground: "rgba(126, 200, 255, 0.25)",
       },
       allowProposedApi: true,
@@ -102,7 +114,7 @@ export default function TerminalPane({ nodeId, cwd, command, onExit }: Props) {
               e.payload.code != null ? ` (code ${e.payload.code})` : ""
             }]\x1b[0m`,
           );
-          onExit?.();
+          onExitRef.current?.();
         }
       });
 
@@ -172,7 +184,7 @@ export default function TerminalPane({ nodeId, cwd, command, onExit }: Props) {
       })();
       term.dispose();
     };
-  }, [nodeId, cwd, command, onExit]);
+  }, [nodeId, cwd, command]);
 
   if (!isTauri()) {
     return (
