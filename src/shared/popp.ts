@@ -103,3 +103,17 @@ export function deriveStatusFromLifecycle(
 }
 
 export const STATUS_FROM_LIFECYCLE = LIFECYCLE_TO_STATUS;
+
+// Per-type terminal lifecycle state used when archiving. Each type has
+// its own canonical "this node is done" lifecycle value (process →
+// retired, project → cancelled, the rest → archived). Setting status
+// directly to "archived" would leave lifecycle_state stale, so a later
+// lifecycle change could flip the node back to active. Setting the
+// lifecycle here lets the DB trigger derive status correctly.
+export const ARCHIVE_LIFECYCLE_BY_TYPE: Record<NodeType, string> = {
+  organization: "archived",
+  area: "archived",
+  process: "retired",
+  project: "cancelled",
+  principle: "archived",
+};

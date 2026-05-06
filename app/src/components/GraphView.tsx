@@ -1733,7 +1733,13 @@ export default function GraphView({
         }
       }, 220);
     }
-  }, [deferredQuery, disabledRelations, disabledOrgs, disabledTypes, disabledStatuses]);
+    // `graph` belongs in the dep list because the effect reads
+    // n.data("status") off cytoscape nodes that were rewritten by the
+    // graph-load effect on refetch. Without it, archiving a node
+    // updates the underlying data but the hidden-class pass never
+    // re-runs, so the node stays visible in the canvas until some
+    // other filter change triggers the effect.
+  }, [deferredQuery, disabledRelations, disabledOrgs, disabledTypes, disabledStatuses, graph]);
 
   // Apply selection highlight AND pan the camera so the clicked node
   // sits at the centre of the viewport. We center on the SINGLE node

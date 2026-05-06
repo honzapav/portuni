@@ -9,6 +9,8 @@ import {
   NODE_VISIBILITIES,
   SOLO_USER,
 } from "../infra/schema.js";
+import { ARCHIVE_LIFECYCLE_BY_TYPE } from "../shared/popp.js";
+import type { NodeType } from "../shared/popp.js";
 import { buildNodeRoot } from "../domain/sync/remote-path.js";
 import { resolveRemote } from "../domain/sync/routing.js";
 import { getAdapter } from "../domain/sync/adapter-cache.js";
@@ -196,7 +198,11 @@ export async function handleCreateNode(
   }
 }
 
-// Soft-delete a node (status=archived). Edges and audit history stay.
+// Soft-delete a node by moving it into its type's terminal lifecycle
+// state (project → cancelled, process → retired, others → archived).
+// The lifecycle-state DB trigger then derives status='archived'. Going
+// straight to status='archived' would leave lifecycle_state stale, so
+// any later lifecycle update could revive the node.
 export async function handleDeleteNode(
   req: IncomingMessage,
   res: ServerResponse,
@@ -205,19 +211,29 @@ export async function handleDeleteNode(
   try {
     const db = getDb();
     const existing = await db.execute({
-      sql: "SELECT id FROM nodes WHERE id = ?",
+      sql: "SELECT id, type FROM nodes WHERE id = ?",
       args: [nodeId],
     });
     if (existing.rows.length === 0) {
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    const type = existing.rows[0].type as NodeType;
+    const terminalLifecycle = ARCHIVE_LIFECYCLE_BY_TYPE[type];
+    if (!terminalLifecycle) {
+      respondJson(res, 500, {
+        error: `no archive lifecycle defined for type "${type}"`,
+      });
+      return;
+    }
     await db.execute({
-      sql: "UPDATE nodes SET status = 'archived', updated_at = ? WHERE id = ?",
-      args: [new Date().toISOString(), nodeId],
+      sql: "UPDATE nodes SET lifecycle_state = ?, updated_at = ? WHERE id = ?",
+      args: [terminalLifecycle, new Date().toISOString(), nodeId],
     });
-    await logAudit(SOLO_USER, "archive_node", "node", nodeId, {});
-    respondJson(res, 200, { archived: nodeId });
+    await logAudit(SOLO_USER, "archive_node", "node", nodeId, {
+      lifecycle_state: terminalLifecycle,
+    });
+    respondJson(res, 200, { archived: nodeId, lifecycle_state: terminalLifecycle });
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}`, err);
   }
