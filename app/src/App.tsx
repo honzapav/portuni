@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Sidebar, { type AppView } from "./components/Sidebar";
 import DetailPane from "./components/DetailPane";
-import SettingsPanel from "./components/SettingsPanel";
+import SettingsPage from "./components/SettingsPage";
 import { fetchGraph, fetchNode } from "./api";
 
 // Lazy chunks: cytoscape (the GraphView dep) is the main reason the app
@@ -22,7 +22,6 @@ export default function App() {
   const [agentCommand, setAgentCommandRaw] = useState<string>(() =>
     loadAgentCommand(),
   );
-  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const setAgentCommand = useCallback((value: string) => {
     setAgentCommandRaw(value);
@@ -31,7 +30,10 @@ export default function App() {
 
   const [view, setView] = useState<AppView>(() => {
     const p = new URLSearchParams(window.location.search);
-    return p.get("view") === "actors" ? "actors" : "graph";
+    const v = p.get("view");
+    if (v === "actors") return "actors";
+    if (v === "settings") return "settings";
+    return "graph";
   });
 
   const [selectedId, setSelectedIdRaw] = useState<string | null>(() => {
@@ -85,14 +87,15 @@ export default function App() {
   }, [selectedId]);
 
   // Sync URL with current view. Default "graph" is omitted from the URL
-  // to keep it clean; ?view=actors is only present when actually on that
-  // view. The ?node param coexists and is only meaningful in graph view.
+  // to keep it clean; ?view=actors / ?view=settings only appear when on
+  // those views. The ?node param coexists and is only meaningful in
+  // graph view.
   useEffect(() => {
     const url = new URL(window.location.href);
-    if (view === "actors") {
-      url.searchParams.set("view", "actors");
-    } else {
+    if (view === "graph") {
       url.searchParams.delete("view");
+    } else {
+      url.searchParams.set("view", view);
     }
     window.history.replaceState(null, "", url.toString());
   }, [view]);
@@ -206,7 +209,7 @@ export default function App() {
           onThemeToggle={toggleTheme}
           view={view}
           onViewChange={setView}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => setView("settings")}
         />
       )}
 
@@ -261,6 +264,12 @@ export default function App() {
             <ActorsPage />
           </Suspense>
         )}
+        {view === "settings" && (
+          <SettingsPage
+            agentCommand={agentCommand}
+            onAgentCommandChange={setAgentCommand}
+          />
+        )}
       </main>
 
       {view === "graph" && selectedId && (
@@ -277,13 +286,6 @@ export default function App() {
         />
       )}
 
-      {settingsOpen && (
-        <SettingsPanel
-          agentCommand={agentCommand}
-          onAgentCommandChange={setAgentCommand}
-          onClose={() => setSettingsOpen(false)}
-        />
-      )}
     </div>
   );
 }

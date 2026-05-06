@@ -6,7 +6,7 @@ import { TYPE_ORDER } from "../lib/colors";
 import type { Theme } from "../lib/theme";
 import { foldForSearch } from "../lib/normalize";
 
-export type AppView = "graph" | "actors";
+export type AppView = "graph" | "actors" | "settings";
 
 type Props = {
   graph: GraphPayload;
@@ -121,6 +121,13 @@ export default function Sidebar({
         </div>
       )}
 
+      {view === "settings" && (
+        <div className="flex-1 px-5 py-5 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
+          Konfigurace Portuni: příkaz agenta pro spouštění z uzlů a
+          parametry MCP serveru pro Claude Code a Codex.
+        </div>
+      )}
+
       {view === "graph" && (
         <GraphSidebarContent
           graph={graph}
@@ -142,7 +149,9 @@ export default function Sidebar({
       <div className="border-t border-[var(--color-border)] px-5 py-3 text-[11px] text-[var(--color-text-dim)]">
         {view === "graph"
           ? "Kliknutím na uzel otevřete detail. Tažením posunete pohled, kolečkem přibližujete."
-          : "Klikněte na aktéra v tabulce pro úpravu."}
+          : view === "actors"
+            ? "Klikněte na aktéra v tabulce pro úpravu."
+            : "Změny se ukládají automaticky."}
       </div>
     </aside>
   );
