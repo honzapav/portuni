@@ -162,6 +162,10 @@ struct ApiResponse {
 
 #[derive(Serialize)]
 struct TursoStatus {
+    /// True iff config.json exists on disk. False means a fresh install
+    /// — the frontend should show the onboarding wizard instead of
+    /// silently defaulting to local mode.
+    config_exists: bool,
     /// True iff config.json has a non-empty `turso_url`.
     url_set: bool,
     /// True iff Keychain has a non-empty Turso auth token.
@@ -175,17 +179,35 @@ struct TursoStatus {
 #[tauri::command]
 fn get_turso_status(app: AppHandle) -> Result<TursoStatus, String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config_exists = config_path(&data_dir).exists();
     let config = load_config(&data_dir);
     let url = config
         .turso_url
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     Ok(TursoStatus {
+        config_exists,
         url_set: url.is_some(),
         token_set: keychain_get_turso_token()
             .is_some_and(|t| !t.trim().is_empty()),
         url,
     })
+}
+
+// Used by the first-run onboarding wizard to commit the user's choice
+// (connect to a remote Turso DB, or start locally) to disk. Writing an
+// empty `turso_url` produces a `{}` config — the marker that the user
+// has chosen local mode and we should stop showing the wizard.
+#[tauri::command]
+fn save_config(app: AppHandle, turso_url: Option<String>) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let mut config = load_config(&data_dir);
+    config.turso_url = turso_url
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    std::fs::write(config_path(&data_dir), json).map_err(|e| e.to_string())
 }
 
 // Bounce the Node sidecar so it picks up a freshly-set Turso token
@@ -428,6 +450,7 @@ pub fn run() {
             set_turso_token,
             clear_turso_token,
             get_turso_status,
+            save_config,
             restart_sidecar,
         ])
         .setup(|app| {
