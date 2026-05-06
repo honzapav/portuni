@@ -118,11 +118,17 @@ AS`,
     id: "cmux",
     label: "cmux",
     template: `CMUX="$\{CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
-"$CMUX" "$PORTUNI_CWD"
-sleep 0.5
-"$CMUX" send "$PORTUNI_COMMAND"
-"$CMUX" send-key enter`,
-    hint: "Otevře cmux v pracovní složce a pošle příkaz. Hledá cmux CLI v cmux.app bundle (lze přepsat přes $CMUX_BIN).",
+WS=$("$CMUX" "$PORTUNI_CWD" 2>&1 | grep -oE 'workspace:[0-9]+' | head -1)
+if [ -z "$WS" ]; then
+  echo "cmux: failed to create workspace at $PORTUNI_CWD" >&2
+  exit 1
+fi
+sleep 1
+TMP=$(mktemp -t portuni)
+printf '%s\n' "$PORTUNI_COMMAND" > "$TMP"
+"$CMUX" send --workspace "$WS" "bash '$TMP'; rm -f '$TMP'"
+"$CMUX" send-key --workspace "$WS" enter`,
+    hint: "Vytvoří cmux workspace v pracovní složce a pošle do něj příkaz. Cíli příkaz konkrétnímu workspace, ne fokusovanému (řeší race po novém workspace).",
   },
 ];
 
