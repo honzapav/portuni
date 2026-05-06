@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+mod mcp_install;
+
 use log::{error, info, warn};
 use rand::distributions::Alphanumeric;
 use rand::Rng;
@@ -127,6 +129,50 @@ fn regenerate_mcp_token(app: AppHandle) -> Result<String, String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     *guard = fresh.clone();
     Ok(fresh)
+}
+
+// Snapshots the live MCP endpoint (URL built from the bound port) +
+// auth token. Returns ("url", "token") so the install_* commands don't
+// each duplicate the same plumbing. Errors with a human message when
+// the sidecar hasn't reported its port yet — the UI gates the install
+// buttons on the same status, so this should not normally happen.
+fn snapshot_mcp_endpoint(app: &AppHandle) -> Result<(String, String), String> {
+    let port = {
+        let state = app.state::<BackendPort>();
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        guard.ok_or_else(|| "MCP server not yet running".to_string())?
+    };
+    let token = {
+        let state = app.state::<AuthToken>();
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        guard.clone()
+    };
+    Ok((format!("http://127.0.0.1:{port}/mcp"), token))
+}
+
+// Writes Portuni as a user-scoped MCP server in ~/.claude.json, so any
+// Claude Code session on this machine can connect without per-project
+// .mcp.json. Returns the absolute path of the written file for the UI
+// to surface back to the user.
+#[tauri::command]
+fn install_claude_global(app: AppHandle) -> Result<String, String> {
+    let (url, token) = snapshot_mcp_endpoint(&app)?;
+    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
+    let path = PathBuf::from(home).join(".claude.json");
+    mcp_install::write_claude_config(&path, &url, &token)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+// Same idea for Codex: writes the [mcp_servers.portuni] block into
+// ~/.codex/config.toml between Portuni-managed marker comments so we
+// can refresh idempotently without clobbering surrounding user config.
+#[tauri::command]
+fn install_codex_global(app: AppHandle) -> Result<String, String> {
+    let (url, token) = snapshot_mcp_endpoint(&app)?;
+    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
+    let path = PathBuf::from(home).join(".codex").join("config.toml");
+    mcp_install::write_codex_config(&path, &url, &token)?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 fn keychain_get_mcp_token() -> Option<String> {
@@ -543,6 +589,8 @@ pub fn run() {
             restart_sidecar,
             get_mcp_token,
             regenerate_mcp_token,
+            install_claude_global,
+            install_codex_global,
         ])
         .setup(|app| {
             info!(
