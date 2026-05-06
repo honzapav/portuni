@@ -2,7 +2,6 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -1076,24 +1075,14 @@ export default function GraphView({
     themeRef.current = theme;
   }, [theme]);
 
-  // Overlay sync model: structure (which orgs / which owned leaves
-  // exist, their colours / labels / types) lives in React state and
-  // re-renders only when structure changes -- adding / removing an
-  // org, renaming, owner assigned, theme flipped.
-  //
-  // All per-frame data -- position, size, visibility, opacity --
-  // mutates the SVG nodes directly via the refs below from the
-  // cytoscape render loop. Bypasses React reconciliation for the
-  // 60 fps case (pan/zoom/drag/animate fire `render` per frame),
-  // which is what lets the camera animate fluidly even on weaker
-  // hardware. The previous "setState every frame" model reconciled
-  // hundreds of SVG attributes per frame and stalled the next cy
-  // frame.
-  const [orgStructure, setOrgStructure] = useState<
-    Array<{ id: string; label: string; color: string; childCount: number }>
-  >([]);
-  const [pipStructure, setPipStructure] = useState<
-    Array<{ id: string; initials: string; type: string }>
+  // Org "circles" rendered as an SVG overlay synced to cytoscape's render
+  // loop. Cytoscape compound parents are hard-wired to rectangles, so we
+  // hide the rectangle body and draw a circle ourselves around each org's
+  // bounding box. Updated on every cytoscape render frame (pan/zoom/drag).
+  // Each org carries its deterministic nebula colour so per-instance
+  // gradients can reference it without recomputing the hash mid-render.
+  const [orgCircles, setOrgCircles] = useState<
+    Array<{ id: string; cx: number; cy: number; r: number; color: string }>
   >([]);
 
   // Canonical org position in cytoscape WORLD coords. The org's
@@ -1106,21 +1095,39 @@ export default function GraphView({
     new Map(),
   );
 
-  // SVG element refs keyed by node id. Populated by ref callbacks
-  // on the JSX elements; the render-loop handler reads them to call
-  // setAttribute / style mutations directly.
-  const orgGlowRefs = useRef<Map<string, SVGCircleElement>>(new Map());
-  const orgGrainRefs = useRef<Map<string, SVGCircleElement>>(new Map());
-  const orgLabelRefs = useRef<Map<string, SVGGElement>>(new Map());
-  const pipGroupRefs = useRef<Map<string, SVGGElement>>(new Map());
-  const pipBgRefs = useRef<Map<string, SVGCircleElement>>(new Map());
-  const pipBorderRefs = useRef<Map<string, SVGCircleElement>>(new Map());
-  const pipTextRefs = useRef<Map<string, SVGTextElement>>(new Map());
-  // Signature strings used to detect structural changes without a
-  // full deep-equal -- render-loop computes a fresh signature each
-  // tick and only setStates when it differs.
-  const orgSigRef = useRef<string>("");
-  const pipSigRef = useRef<string>("");
+  // Org labels rendered as a DOM overlay -- this is the *only* drag
+  // handle for an org. Cytoscape's native compound parent label is
+  // hidden in the stylesheet so it cannot be tap-tested or grabbed.
+  // Multi-child orgs get a centred watermark; single-child orgs get
+  // a smaller caption above the galaxy so it doesn't sit on top of
+  // the lone leaf node.
+  const [orgLabels, setOrgLabels] = useState<
+    Array<{
+      id: string;
+      cx: number;
+      cy: number;
+      label: string;
+      childCount: number;
+      hidden: boolean;
+    }>
+  >([]);
+
+  // Owner pips. One per leaf node that has an assigned owner. Synced to
+  // cytoscape's render loop so the pip stays glued to the lower-right of
+  // its disc as the user pans, zooms, and drags. Rendered as absolutely
+  // positioned divs in a pointer-events:none overlay so cytoscape clicks
+  // continue to land on the underlying node.
+  const [ownerPips, setOwnerPips] = useState<
+    Array<{
+      id: string;
+      cx: number;
+      cy: number;
+      pipR: number;
+      initials: string;
+      color: string;
+      dimmed: boolean;
+    }>
+  >([]);
 
   // Debounced queue of position changes. Node drags and layout settles
   // both funnel through this so we coalesce a flurry of updates into one
@@ -1159,18 +1166,6 @@ export default function GraphView({
       style: stylesheet(THEMES[theme]),
       minZoom: 0.25,
       maxZoom: 3,
-      // Perf knobs for low-end machines:
-      // - textureOnViewport: during pan/zoom cytoscape uses a cached
-      //   texture instead of redrawing every node. Equivalent to React
-      //   Flow's "single CSS transform on the stage" approach -- pan
-      //   and zoom become essentially free regardless of node count.
-      // - hideEdgesOnViewport: skip edge rendering while the user is
-      //   panning/zooming. Edges reappear when the interaction ends.
-      // - wheelSensitivity: tuned a touch lower so a single trackpad
-      //   gesture doesn't blow past 2 zoom decades on high-DPI mice.
-      textureOnViewport: true,
-      hideEdgesOnViewport: true,
-      wheelSensitivity: 0.4,
     });
 
     cyRef.current = cy;
