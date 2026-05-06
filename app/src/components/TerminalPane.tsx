@@ -18,7 +18,7 @@ import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { CanvasAddon } from "@xterm/addon-canvas";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import { isTauri } from "../lib/backend-url";
 
@@ -33,8 +33,18 @@ type Props = {
   onExit?: () => void;
 };
 
-type PtyDataPayload = { session_id: string; data: string };
+type PtyDataPayload = { session_id: string; data_b64: string };
 type PtyExitPayload = { session_id: string; code: number | null };
+
+// Decode a base64 string into a Uint8Array. atob is built into
+// every browser/webview; doing this inline avoids pulling in a
+// base64 library just for the PTY path. Hot path — keep tight.
+function b64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
 
 export default function TerminalPane({ nodeId, cwd, command, onExit }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -72,11 +82,25 @@ export default function TerminalPane({ nodeId, cwd, command, onExit }: Props) {
     const fg = css.getPropertyValue("--color-text").trim() || "#e6e7ea";
     const accent = css.getPropertyValue("--color-accent").trim() || "#7ec8ff";
 
+    // Font chain priorities, in order:
+    //   - "JetBrains Mono NL" / "JetBrains Mono" — bundled webfont
+    //     (loaded via @font-face in index.css). NL is the no-ligatures
+    //     variant which avoids xterm.js' known ligature artifacts.
+    //   - Menlo / Consolas / DejaVu Sans Mono — system fallbacks per OS
+    //     so the terminal still renders if the bundled font fails to
+    //     load.
+    //   - "Apple Color Emoji" / "Symbola" — emoji + symbol coverage
+    //     for the unicode glyphs Claude Code's TUI emits (✻ ✦ ⏵ →).
+    //     Without this, those codepoints fall back to a proportional
+    //     system font, the glyph renders wider than a cell, and the
+    //     next character overlaps it — visually identical to the
+    //     "strikethrough/duplicate" artifacts the user has been seeing.
     const term = new Terminal({
       fontFamily:
-        '"JetBrains Mono", "SF Mono", Menlo, Consolas, "Courier New", monospace',
+        '"JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", "Apple Color Emoji", "Symbola", monospace',
       fontSize: 13,
-      lineHeight: 1.25,
+      lineHeight: 1.0,
+      letterSpacing: 0,
       cursorBlink: true,
       theme: {
         background: bg,
@@ -91,30 +115,65 @@ export default function TerminalPane({ nodeId, cwd, command, onExit }: Props) {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
-    term.open(container);
-    // Canvas renderer is materially faster than the DOM default for
-    // high-throughput output without the atlas-corruption artifacts
-    // we hit with the WebGL renderer (visible as horizontal bands
-    // through lines emitted by Claude Code's cursor-redraw escape
-    // sequences). Falls back to DOM if the canvas init fails.
-    try {
-      term.loadAddon(new CanvasAddon());
-    } catch (e) {
-      void e;
-    }
-    fit.fit();
+    // Unicode 11 width data — xterm defaults to Unicode 6 widths from
+    // 1991, but Claude Code (and any modern TUI) emits codepoints
+    // assigned width by Unicode 9-15. With the v6 table loaded and
+    // activated, xterm now agrees with the app on whether a glyph
+    // takes 1 or 2 cells, so the cursor doesn't drift after each
+    // emoji and previously-rendered cells aren't half-overwritten by
+    // the next frame — the duplicate-row symptom.
+    const unicode11 = new Unicode11Addon();
+    term.loadAddon(unicode11);
+    term.unicode.activeVersion = "11";
 
+    let cancelled = false;
+    let killed = false;
     let unlistenData: (() => void) | null = null;
     let unlistenExit: (() => void) | null = null;
-    let killed = false;
+    let resizeObserver: ResizeObserver | null = null;
+    let pendingResizeTimer: number | null = null;
 
-    const setup = async () => {
+    const init = async () => {
+      // Wait for the document's font set to settle before opening so
+      // the GPU glyph atlas is built with the final, correct font
+      // metrics. Without this, xterm measures with whatever the
+      // browser currently has loaded, swaps in the real font moments
+      // later, and every cached glyph ends up drawn at the wrong
+      // baseline — the visible "strikethrough" artifact.
+      await document.fonts.ready;
+      if (cancelled) return;
+
+      term.open(container);
+
+      // Stay on the built-in DOM renderer.
+      //
+      // WebGL was the obvious choice for "fast TUI" but in practice it
+      // kept drawing underlines through the middle of cells (claude
+      // code's `\x1b[4m` lines came out looking like strikethroughs),
+      // and unknown glyphs rendered as hex-code tofu instead of using
+      // browser font fallback. The DOM renderer hands underline to
+      // CSS `text-decoration` (correct baseline by definition) and
+      // routes glyph fallback through the browser's own font picker,
+      // which knows about Apple Color Emoji on macOS without us
+      // configuring it.
+      //
+      // Throughput on the DOM renderer is plenty for an interactive
+      // claude code session — perf only matters for log floods, which
+      // this pane doesn't see.
+      try {
+        fit.fit();
+      } catch (e) {
+        void e;
+      }
+
       const { invoke } = await import("@tauri-apps/api/core");
       const { listen } = await import("@tauri-apps/api/event");
 
       unlistenData = await listen<PtyDataPayload>("pty-data", (e) => {
         if (e.payload.session_id === sessionId) {
-          term.write(e.payload.data);
+          // Feed raw bytes; xterm decodes UTF-8 across calls so
+          // boundary-split multibyte codepoints don't get mangled.
+          term.write(b64ToBytes(e.payload.data_b64));
         }
       });
       unlistenExit = await listen<PtyExitPayload>("pty-exit", (e) => {
@@ -128,6 +187,8 @@ export default function TerminalPane({ nodeId, cwd, command, onExit }: Props) {
           onExitRef.current?.();
         }
       });
+
+      if (cancelled) return;
 
       try {
         await invoke("pty_spawn", {
@@ -159,32 +220,85 @@ export default function TerminalPane({ nodeId, cwd, command, onExit }: Props) {
       });
 
       // Forward resize on container changes (split drag, window resize).
-      const ro = new ResizeObserver(() => {
-        try {
-          fit.fit();
+      // Two layers of protection here:
+      //   1. Debounce — the observer can fire many times during a drag
+      //      or animation. Coalesce them onto a single trailing call so
+      //      the PTY only sees the final geometry.
+      //   2. Dedupe — even if cell-pixel size changes, cols/rows often
+      //      don't. Skip the IPC if neither dimension actually changed.
+      // Without these, claude code (and any Ink TUI) gets a flood of
+      // SIGWINCH-equivalent resize signals and re-paints repeatedly,
+      // leaving stale duplicate rows on screen.
+      let lastCols = term.cols;
+      let lastRows = term.rows;
+      resizeObserver = new ResizeObserver(() => {
+        if (pendingResizeTimer != null) {
+          window.clearTimeout(pendingResizeTimer);
+        }
+        pendingResizeTimer = window.setTimeout(() => {
+          pendingResizeTimer = null;
+          try {
+            fit.fit();
+          } catch (err) {
+            // fit can throw if the container is briefly 0×0 during
+            // layout; the next observation will succeed.
+            void err;
+            return;
+          }
+          if (term.cols === lastCols && term.rows === lastRows) {
+            return;
+          }
+          lastCols = term.cols;
+          lastRows = term.rows;
           void invoke("pty_resize", {
             args: { session_id: sessionId, cols: term.cols, rows: term.rows },
           });
-        } catch (err) {
-          // ignore — fit can throw if the container is briefly 0×0
-          // during layout, and the next observation will succeed.
-          void err;
-        }
+        }, 80);
       });
-      ro.observe(container);
-      // Stash the observer disposer on the term so cleanup below can
-      // reach it without holding another ref.
-      (term as unknown as { __ro?: ResizeObserver }).__ro = ro;
+      resizeObserver.observe(container);
     };
 
-    void setup();
+    void init().catch((err) => {
+      // init runs async; an unhandled rejection from imports or
+      // listeners would otherwise surface as a uncaught error in the
+      // surrounding React tree on the next tick. Swallow it here and
+      // surface it inside the terminal instead.
+      try {
+        term.writeln(`\x1b[31m[terminal init failed: ${String(err)}]\x1b[0m`);
+      } catch {
+        /* term might already be disposed */
+      }
+    });
 
     return () => {
+      // Every unmount path must be defensive. React 18 propagates
+      // exceptions thrown in effect cleanup all the way up; without an
+      // ErrorBoundary that means the whole app remounts with empty
+      // state — the symptom of "closing the terminal hides the entire
+      // UI." Wrap each disposer in try/catch so one failure can't take
+      // the rest with it.
+      cancelled = true;
       killed = true;
-      const ro = (term as unknown as { __ro?: ResizeObserver }).__ro;
-      ro?.disconnect();
-      unlistenData?.();
-      unlistenExit?.();
+      if (pendingResizeTimer != null) {
+        window.clearTimeout(pendingResizeTimer);
+        pendingResizeTimer = null;
+      }
+      try {
+        resizeObserver?.disconnect();
+      } catch (e) {
+        void e;
+      }
+      try {
+        unlistenData?.();
+      } catch (e) {
+        void e;
+      }
+      try {
+        unlistenExit?.();
+      } catch (e) {
+        void e;
+      }
+      // Fire-and-forget; pty_kill IPC must not block the cleanup tick.
       void (async () => {
         try {
           const { invoke } = await import("@tauri-apps/api/core");
@@ -193,7 +307,11 @@ export default function TerminalPane({ nodeId, cwd, command, onExit }: Props) {
           // session may already be gone — fine.
         }
       })();
-      term.dispose();
+      try {
+        term.dispose();
+      } catch (e) {
+        void e;
+      }
     };
   }, [nodeId, cwd, command]);
 
@@ -206,7 +324,7 @@ export default function TerminalPane({ nodeId, cwd, command, onExit }: Props) {
   }
 
   return (
-    <div className="h-full w-full bg-[var(--color-bg)] p-3">
+    <div className="h-full w-full bg-[var(--color-bg)] p-5">
       <div ref={containerRef} className="h-full w-full overflow-hidden" />
     </div>
   );

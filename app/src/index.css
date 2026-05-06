@@ -1,4 +1,12 @@
 @import "tailwindcss";
+/* JetBrains Mono webfont — bundled so the embedded xterm.js terminal
+ * gets a guaranteed-loaded monospace with broad unicode coverage. Without
+ * a webfont, listing JetBrains Mono first in any font-stack would race
+ * against xterm's glyph atlas build (font wasn't installed → atlas built
+ * with proportional fallback → text rendered with wrong metrics). 400
+ * (regular) is enough for terminal text; 700 covers bold ANSI styling. */
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/700.css";
 
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;

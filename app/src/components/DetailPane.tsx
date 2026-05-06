@@ -480,33 +480,28 @@ function DetailPaneBody({
       <PaneShell
         canGoBack={canGoBack}
         onBack={onBack}
-        onClose={() => onSelect(null)}
+        // Close button on terminal mode closes the terminal and returns
+        // to the node detail. Deselecting the node from here would
+        // unmount the entire DetailPane mid-PTY-cleanup, which doesn't
+        // match the user's mental model of "X closes what I'm looking at".
+        onClose={() => setTerminal(null)}
       >
         <div className="flex h-full flex-col">
-          <div className="flex shrink-0 items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2">
-            <div className="flex items-center gap-2 text-[13px]">
-              <span
-                className="inline-flex h-1.5 w-1.5 rounded-full"
-                style={{
-                  background: nodeTypeVar(node.type),
-                  boxShadow: `0 0 8px ${nodeTypeGlow(node.type, 0.7)}`,
-                }}
-              />
-              <span className="font-medium text-[var(--color-text)]">
-                {node.name}
-              </span>
-              <span className="text-[var(--color-text-dim)]">·</span>
-              <span className="font-mono text-[12px] text-[var(--color-text-muted)]">
-                terminál
-              </span>
-            </div>
-            <button
-              onClick={() => setTerminal(null)}
-              title="Zavřít terminál"
-              className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] transition-colors hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
-            >
-              <X size={14} />
-            </button>
+          <div className="flex shrink-0 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 text-[13px]">
+            <span
+              className="inline-flex h-1.5 w-1.5 rounded-full"
+              style={{
+                background: nodeTypeVar(node.type),
+                boxShadow: `0 0 8px ${nodeTypeGlow(node.type, 0.7)}`,
+              }}
+            />
+            <span className="font-medium text-[var(--color-text)]">
+              {node.name}
+            </span>
+            <span className="text-[var(--color-text-dim)]">·</span>
+            <span className="font-mono text-[12px] text-[var(--color-text-muted)]">
+              terminál
+            </span>
           </div>
           <div className="min-h-0 flex-1">
             <TerminalPane

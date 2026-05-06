@@ -15,6 +15,7 @@ use std::io::{Read, Write};
 use std::sync::Mutex;
 use std::thread;
 
+use base64::{prelude::BASE64_STANDARD, Engine};
 use log::{error, info, warn};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -23,7 +24,14 @@ use tauri::{AppHandle, Emitter, Manager, State};
 #[derive(Serialize, Clone)]
 pub struct PtyDataEvent {
     pub session_id: String,
-    pub data: String,
+    /// Base64 of the raw bytes read from the PTY. The frontend
+    /// decodes this and feeds it to `term.write(Uint8Array)` so
+    /// xterm's own streaming UTF-8 decoder handles boundary-spanning
+    /// codepoints correctly. Sending a Rust String here would force
+    /// `String::from_utf8_lossy` on each chunk, which silently
+    /// replaces split multibyte sequences with U+FFFD — fatal for
+    /// Claude Code's Unicode-heavy TUI.
+    pub data_b64: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -201,12 +209,12 @@ pub fn pty_spawn(
                     break;
                 }
                 Ok(n) => {
-                    let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let encoded = BASE64_STANDARD.encode(&buf[..n]);
                     if let Err(e) = app_for_reader.emit(
                         "pty-data",
                         PtyDataEvent {
                             session_id: sid_for_reader.clone(),
-                            data: chunk,
+                            data_b64: encoded,
                         },
                     ) {
                         error!("pty-data emit failed for {sid_for_reader}: {e}");
