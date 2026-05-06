@@ -97,7 +97,7 @@ export const TERMINAL_PRESETS: TerminalPreset[] = [
 tell application "iTerm"
   activate
   set newWindow to (create window with default profile)
-  tell current session of newWindow to write text "$PORTUNI_COMMAND"
+  tell current session of newWindow to write text "$PORTUNI_COMMAND_AS"
 end tell
 AS`,
     hint: "Otevře nové okno iTerm2 a pošle příkaz přes write text.",
