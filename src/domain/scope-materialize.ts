@@ -47,12 +47,6 @@ export interface MaterializeArgs {
   // generated .claude/settings.local.json wires it as a PreToolUse hook;
   // when null, no hook is generated (declarative deny list still applies).
   guardScriptPath?: string | null;
-  // Home node id (the node owning this mirror). Embedded into the soft
-  // hint so agents read it from CLAUDE.md / AGENTS.md / PORTUNI_SCOPE.md
-  // and call `portuni_session_init({ home_node_id: ... })` at the start
-  // of each session. Replaces the per-mirror `.mcp.json` auto-seed URL
-  // mechanism — connection now lives in user-scoped configs only.
-  homeNodeId?: string | null;
 }
 
 export interface MaterializeResult {
@@ -211,7 +205,6 @@ export async function materializeScopeConfig(
   const hint = buildSoftHint({
     currentMirror: cur,
     portuniRoot: args.portuniRoot,
-    homeNodeId: args.homeNodeId ?? null,
   });
   try {
     const path = join(cur, ".cursor", "rules");
@@ -267,7 +260,6 @@ export async function materializeAllRegisteredMirrors(): Promise<MaterializeResu
         otherMirrors: others,
         portuniRoot,
         guardScriptPath,
-        homeNodeId: m.node_id,
       });
       aggregated.written.push(...r.written);
       aggregated.errors.push(...r.errors);

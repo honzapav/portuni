@@ -378,23 +378,6 @@ describe("materializeScopeConfig", () => {
     assert.match(settings.hooks.PreToolUse[0].matcher, /Edit\|Write/);
   });
 
-  it("embeds portuni_session_init({home_node_id}) into the soft hint when supplied", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "portuni-scope-home-"));
-    const cur = join(dir, "a");
-    await mkdir(cur, { recursive: true });
-
-    await materializeScopeConfig({
-      currentMirror: cur,
-      otherMirrors: [],
-      portuniRoot: dir,
-      homeNodeId: "01TESTHOME",
-    });
-
-    const portuniScope = await readFile(join(cur, "PORTUNI_SCOPE.md"), "utf8");
-    assert.match(portuniScope, /portuni_session_init/);
-    assert.match(portuniScope, /home_node_id: "01TESTHOME"/);
-  });
-
   it("never writes .mcp.json or Codex [mcp_servers.portuni] in mirror folders", async () => {
     const dir = await mkdtemp(join(tmpdir(), "portuni-scope-no-mcp-"));
     const cur = join(dir, "a");
@@ -404,7 +387,6 @@ describe("materializeScopeConfig", () => {
       currentMirror: cur,
       otherMirrors: [],
       portuniRoot: dir,
-      homeNodeId: "01TESTHOME",
     });
 
     const mcpExists = await stat(join(cur, ".mcp.json"))
@@ -441,7 +423,6 @@ describe("materializeScopeConfig", () => {
       currentMirror: cur,
       otherMirrors: [],
       portuniRoot: dir,
-      homeNodeId: "01TESTHOME",
     });
 
     const stillThere = await stat(legacy).then(() => true).catch(() => false);
@@ -469,7 +450,6 @@ describe("materializeScopeConfig", () => {
       currentMirror: cur,
       otherMirrors: [],
       portuniRoot: dir,
-      homeNodeId: "01TESTHOME",
     });
 
     const after = await readFile(userOwned, "utf8");
