@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Check } from "lucide-react";
 import { AGENT_PRESETS, DEFAULT_AGENT_COMMAND } from "../lib/settings";
+import McpServerSection from "./McpServerSection";
 
 type Props = {
   agentCommand: string;
@@ -66,6 +67,8 @@ export default function SettingsPage({
             Změny se ukládají automaticky.
           </p>
         </header>
+
+        <McpServerSection />
 
         <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
           <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
