@@ -1,0 +1,1269 @@
+<!doctype html>
+<html lang="cs" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Reading a node at a glance — Portuni graph studies</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link
+  href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;1,9..144,300;1,9..144,500&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+  rel="stylesheet" />
+<style>
+  /* ---------- theme tokens (mirrors app/src/index.css) ---------- */
+  :root,
+  html[data-theme="dark"] {
+    --bg: #0a0b0d;
+    --bg-2: #0f1013;
+    --surface: #141518;
+    --surface-2: #1c1d21;
+    --border: #27282c;
+    --border-strong: #35363b;
+    --text: #f1f2f5;
+    --text-muted: #c2c6cf;
+    --text-dim: #9298a2;
+    --accent: #76d9ff;
+
+    --node-organization: #76d9ff;
+    --node-project: #a78bfa;
+    --node-process: #fbbf24;
+    --node-area: #f472b6;
+    --node-principle: #34d399;
+    --node-default: #94a3b8;
+
+    --status-active: #34d399;
+    --status-progress: #60a5fa;
+    --status-warn: #fbbf24;
+    --status-broken: #f87171;
+    --status-hold: #9298a2;
+
+    --grain-opacity: 0.05;
+  }
+  html[data-theme="light"] {
+    --bg: #f5f3ee;
+    --bg-2: #efece4;
+    --surface: #ffffff;
+    --surface-2: #f1f5f9;
+    --border: #e2e2dc;
+    --border-strong: #cbcabd;
+    --text: #1a1a1a;
+    --text-muted: #4b4b4b;
+    --text-dim: #74746b;
+    --accent: #0284c7;
+
+    --node-organization: #0891b2;
+    --node-project: #7c3aed;
+    --node-process: #d97706;
+    --node-area: #db2777;
+    --node-principle: #059669;
+    --node-default: #64748b;
+
+    --status-active: #059669;
+    --status-progress: #2563eb;
+    --status-warn: #d97706;
+    --status-broken: #dc2626;
+    --status-hold: #78716c;
+
+    --grain-opacity: 0.025;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Inter", system-ui, sans-serif;
+    font-feature-settings: "ss01", "cv11";
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.55;
+    transition: background 600ms ease, color 600ms ease;
+    min-height: 100vh;
+  }
+
+  /* subtle paper grain overlay over the whole page */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.45 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    opacity: var(--grain-opacity);
+    mix-blend-mode: overlay;
+    z-index: 999;
+  }
+
+  /* ---------- chrome ---------- */
+  .container {
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 64px 56px 120px;
+  }
+  @media (max-width: 760px) { .container { padding: 40px 24px 80px; } }
+
+  header.top {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 32px;
+    padding-bottom: 28px;
+    margin-bottom: 56px;
+    border-bottom: 1px solid var(--border);
+  }
+  .eyebrow {
+    font-family: "JetBrains Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 18px;
+  }
+  .eyebrow .sep { opacity: 0.4; margin: 0 8px; }
+  h1.display {
+    font-family: "Fraunces", serif;
+    font-weight: 300;
+    font-style: italic;
+    font-size: clamp(40px, 6.4vw, 78px);
+    line-height: 0.96;
+    letter-spacing: -0.02em;
+    margin: 0;
+    color: var(--text);
+  }
+  h1.display em {
+    font-style: normal;
+    font-weight: 500;
+  }
+
+  .theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 6px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+  }
+  .theme-toggle button {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    color: var(--text-dim);
+    padding: 7px 14px;
+    border-radius: 999px;
+    cursor: pointer;
+    font: inherit;
+    transition: color 200ms ease, background 200ms ease;
+  }
+  .theme-toggle button[aria-pressed="true"] {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+
+  .lede {
+    max-width: 720px;
+    margin: 36px 0 0;
+    font-size: 19px;
+    line-height: 1.6;
+    color: var(--text-muted);
+  }
+  .lede strong { color: var(--text); font-weight: 500; }
+
+  /* ---------- section frames ---------- */
+  section.study {
+    margin-top: 96px;
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+    gap: 56px;
+    align-items: start;
+  }
+  @media (max-width: 980px) {
+    section.study { grid-template-columns: 1fr; gap: 32px; }
+  }
+
+  .study-hgroup {
+    display: flex;
+    align-items: baseline;
+    gap: 18px;
+    margin-bottom: 18px;
+  }
+  .study-num {
+    font-family: "JetBrains Mono", monospace;
+    color: var(--text-dim);
+    font-size: 13px;
+    letter-spacing: 0.12em;
+  }
+  h2.study-title {
+    font-family: "Fraunces", serif;
+    font-weight: 500;
+    font-size: 32px;
+    line-height: 1.05;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+  h2.study-title em {
+    font-style: italic;
+    font-weight: 300;
+    color: var(--text-muted);
+  }
+  .study-intent {
+    color: var(--text-muted);
+    margin: 0 0 22px;
+    font-size: 15px;
+    max-width: 56ch;
+  }
+
+  /* graph canvas — mimics the real Portuni dark canvas with subtle radial nebulae */
+  .canvas {
+    position: relative;
+    aspect-ratio: 1.35 / 1;
+    border-radius: 14px;
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse 60% 70% at 28% 32%, color-mix(in srgb, var(--node-project) 14%, transparent), transparent 60%),
+      radial-gradient(ellipse 50% 60% at 76% 70%, color-mix(in srgb, var(--node-area) 11%, transparent), transparent 60%),
+      radial-gradient(ellipse 40% 45% at 60% 22%, color-mix(in srgb, var(--node-principle) 9%, transparent), transparent 60%),
+      var(--bg-2);
+    border: 1px solid var(--border);
+  }
+  html[data-theme="light"] .canvas {
+    background:
+      radial-gradient(ellipse 60% 70% at 28% 32%, color-mix(in srgb, var(--node-project) 18%, transparent), transparent 60%),
+      radial-gradient(ellipse 50% 60% at 76% 70%, color-mix(in srgb, var(--node-area) 14%, transparent), transparent 60%),
+      radial-gradient(ellipse 40% 45% at 60% 22%, color-mix(in srgb, var(--node-principle) 12%, transparent), transparent 60%),
+      var(--bg-2);
+  }
+
+  .canvas svg.scene { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+  .canvas-corner {
+    position: absolute;
+    bottom: 12px;
+    right: 14px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    opacity: 0.7;
+  }
+  .canvas-corner::before {
+    content: "";
+    display: inline-block;
+    width: 6px; height: 6px;
+    background: var(--accent);
+    border-radius: 50%;
+    margin-right: 8px;
+    transform: translateY(-1px);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 60%, transparent);
+  }
+
+  /* right column — decoder + pros/cons */
+  .decoder {
+    border-left: 1px solid var(--border);
+    padding-left: 28px;
+  }
+  .decoder h3 {
+    font-family: "Fraunces", serif;
+    font-style: italic;
+    font-weight: 300;
+    font-size: 15px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    margin: 0 0 14px;
+  }
+  .decoder + .decoder { margin-top: 28px; }
+
+  .legend {
+    display: grid;
+    grid-template-columns: 26px 1fr;
+    gap: 12px 14px;
+    align-items: center;
+    margin: 0;
+    padding: 0;
+  }
+  .legend dt {
+    display: flex;
+    justify-content: center;
+  }
+  .legend dd {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+  .legend dd code {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 1px 6px;
+    border-radius: 4px;
+    margin-right: 4px;
+  }
+
+  .verdict {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-top: 24px;
+    padding-top: 22px;
+    border-top: 1px solid var(--border);
+  }
+  .verdict h4 {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin: 0 0 10px;
+    font-weight: 500;
+  }
+  .verdict ul {
+    margin: 0;
+    padding-left: 16px;
+    color: var(--text-muted);
+    font-size: 13.5px;
+    line-height: 1.55;
+  }
+  .verdict li { margin-bottom: 6px; }
+  .verdict li::marker { color: var(--text-dim); }
+
+  /* ---------- comparison row ---------- */
+  .compare {
+    margin-top: 120px;
+    border-top: 1px solid var(--border);
+    padding-top: 56px;
+  }
+  .compare h2 {
+    font-family: "Fraunces", serif;
+    font-weight: 500;
+    font-size: 28px;
+    margin: 0 0 8px;
+  }
+  .compare h2 em { font-style: italic; font-weight: 300; color: var(--text-muted); }
+  .compare-intro { color: var(--text-muted); max-width: 60ch; margin: 0 0 36px; }
+  .compare-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 24px;
+  }
+  @media (max-width: 980px) {
+    .compare-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  .compare-cell {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px;
+    aspect-ratio: 1 / 1;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .compare-cell svg { width: 100%; height: 100%; }
+  .compare-cell::after {
+    content: attr(data-label);
+    position: absolute;
+    top: 12px;
+    left: 14px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  /* ---------- recommendation ---------- */
+  .recommend {
+    margin-top: 100px;
+    padding: 48px;
+    background:
+      radial-gradient(ellipse 70% 100% at 100% 0%, color-mix(in srgb, var(--node-principle) 12%, transparent), transparent 60%),
+      radial-gradient(ellipse 80% 80% at 0% 100%, color-mix(in srgb, var(--node-project) 10%, transparent), transparent 60%),
+      var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+    gap: 48px;
+    align-items: start;
+  }
+  @media (max-width: 880px) {
+    .recommend { grid-template-columns: 1fr; padding: 32px; }
+  }
+  .recommend .pick-eyebrow {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--accent);
+    margin-bottom: 14px;
+  }
+  .recommend h2 {
+    font-family: "Fraunces", serif;
+    font-weight: 500;
+    font-size: 36px;
+    line-height: 1.05;
+    letter-spacing: -0.01em;
+    margin: 0 0 20px;
+  }
+  .recommend h2 em { font-style: italic; font-weight: 300; color: var(--text-muted); }
+  .recommend p { margin: 0 0 16px; color: var(--text-muted); font-size: 15px; }
+  .recommend p strong { color: var(--text); font-weight: 500; }
+
+  .footnote {
+    margin-top: 64px;
+    padding-top: 28px;
+    border-top: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 12.5px;
+    font-family: "JetBrains Mono", monospace;
+    letter-spacing: 0.04em;
+    line-height: 1.7;
+  }
+  .footnote a { color: var(--text-muted); text-decoration: none; border-bottom: 1px solid var(--border-strong); padding-bottom: 1px; }
+  .footnote a:hover { color: var(--text); }
+
+  /* ---------- the actual SVG node animations ---------- */
+  @keyframes pulseRing {
+    0%, 100% { opacity: 0.55; transform: scale(1); }
+    50%      { opacity: 0.95; transform: scale(1.06); }
+  }
+  @keyframes rotate360 {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+  .pulse-ring  { animation: pulseRing 1.8s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+  .rotor       { animation: rotate360 3.4s linear infinite; transform-origin: center; transform-box: fill-box; }
+
+  /* anchor a node's animation origin to its own bbox so transforms work in <g> */
+  g.node-anim { transform-box: fill-box; transform-origin: center; }
+
+  .label {
+    font-family: "Inter", sans-serif;
+    font-size: 11px;
+    fill: var(--text);
+    font-weight: 500;
+    paint-order: stroke;
+    stroke: var(--bg-2);
+    stroke-width: 4px;
+    stroke-linejoin: round;
+  }
+  .label-meta {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 9px;
+    fill: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .edge {
+    stroke: color-mix(in srgb, var(--text-dim) 55%, transparent);
+    stroke-width: 1;
+    fill: none;
+  }
+  html[data-theme="light"] .edge {
+    stroke: color-mix(in srgb, var(--text-dim) 70%, transparent);
+  }
+
+  .initials {
+    font-family: "Inter", sans-serif;
+    font-weight: 600;
+    fill: var(--text);
+    text-anchor: middle;
+    dominant-baseline: central;
+  }
+
+  /* swatch chips used in legends */
+  .swatch {
+    display: inline-block;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+  }
+  .swatch.dot { width: 10px; height: 10px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- ===================== HEADER ===================== -->
+  <header class="top">
+    <div>
+      <div class="eyebrow">Portuni <span class="sep">·</span> Graph studies <span class="sep">·</span> Apr&nbsp;2026</div>
+      <h1 class="display">Reading a node<br/><em>at a glance.</em></h1>
+    </div>
+    <div class="theme-toggle" role="group" aria-label="Theme">
+      <button id="theme-dark" aria-pressed="true">Dark</button>
+      <button id="theme-light" aria-pressed="false">Light</button>
+    </div>
+  </header>
+
+  <p class="lede">
+    Today a leaf node carries one signal — the entity type, painted as a coloured disc. Lifecycle states
+    whisper through tinted borders; <strong>owners stay invisible</strong> until you open the detail pane.
+    Four directions for letting the graph answer two more questions without forcing you to click:
+    <em>what shape is this work in</em>, and <em>who carries it</em>.
+  </p>
+
+  <!-- ===================== STUDY A: AURORA RING ===================== -->
+  <section class="study" id="study-a">
+    <div class="canvas">
+      <svg class="scene" viewBox="0 0 720 540" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <radialGradient id="a-glow-project" cx="50%" cy="50%" r="50%">
+            <stop offset="0%"  stop-color="#a78bfa" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#a78bfa" stop-opacity="0.55"/>
+          </radialGradient>
+          <radialGradient id="a-glow-process" cx="50%" cy="50%" r="50%">
+            <stop offset="0%"  stop-color="#fbbf24" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#fbbf24" stop-opacity="0.55"/>
+          </radialGradient>
+          <radialGradient id="a-glow-area" cx="50%" cy="50%" r="50%">
+            <stop offset="0%"  stop-color="#f472b6" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#f472b6" stop-opacity="0.55"/>
+          </radialGradient>
+          <radialGradient id="a-glow-principle" cx="50%" cy="50%" r="50%">
+            <stop offset="0%"  stop-color="#34d399" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#34d399" stop-opacity="0.55"/>
+          </radialGradient>
+        </defs>
+
+        <!-- edges -->
+        <g class="edges">
+          <path class="edge" d="M165,170 C 240,150 280,210 360,200" />
+          <path class="edge" d="M360,200 C 430,180 490,260 555,240" />
+          <path class="edge" d="M165,170 C 200,260 280,310 360,360" />
+          <path class="edge" d="M360,360 C 430,420 510,400 555,420" />
+          <path class="edge" d="M360,200 C 380,260 360,320 360,360" />
+        </g>
+
+        <!-- node 1 — project, in_progress, owner JP -->
+        <g class="node-anim" transform="translate(165,170)">
+          <circle r="22" fill="url(#a-glow-project)"/>
+          <g class="rotor">
+            <circle r="29" fill="none" stroke="#60a5fa" stroke-width="2.4"
+              stroke-dasharray="48 132" stroke-linecap="round" opacity="0.95"/>
+            <circle r="29" cx="29" cy="0" fill="#60a5fa"/>
+          </g>
+          <!-- owner satellite -->
+          <g transform="translate(20,20)">
+            <circle r="11" fill="#0a0b0d" stroke="#a78bfa" stroke-width="1.4"/>
+            <text class="initials" font-size="10">JP</text>
+          </g>
+          <text class="label" y="56" text-anchor="middle">Onboarding revamp</text>
+          <text class="label-meta" y="71" text-anchor="middle">project · in&nbsp;progress</text>
+        </g>
+
+        <!-- node 2 — process, at_risk, owner MK -->
+        <g class="node-anim" transform="translate(360,200)">
+          <circle r="20" fill="url(#a-glow-process)"/>
+          <circle class="pulse-ring" r="27" fill="none" stroke="#fbbf24" stroke-width="2.5" opacity="0.6"/>
+          <g transform="translate(18,18)">
+            <circle r="11" fill="#0a0b0d" stroke="#fbbf24" stroke-width="1.4"/>
+            <text class="initials" font-size="10">MK</text>
+          </g>
+          <text class="label" y="52" text-anchor="middle">Vendor invoice approval</text>
+          <text class="label-meta" y="67" text-anchor="middle">process · at&nbsp;risk</text>
+        </g>
+
+        <!-- node 3 — area, broken, owner LH -->
+        <g class="node-anim" transform="translate(555,240)">
+          <circle r="22" fill="url(#a-glow-area)" opacity="0.75"/>
+          <!-- broken ring: dashed segments with gaps -->
+          <circle r="29" fill="none" stroke="#f87171" stroke-width="2.6"
+            stroke-dasharray="14 10" stroke-linecap="butt" opacity="0.95"/>
+          <g transform="translate(20,20)">
+            <circle r="11" fill="#0a0b0d" stroke="#f472b6" stroke-width="1.4"/>
+            <text class="initials" font-size="10">LH</text>
+          </g>
+          <text class="label" y="56" text-anchor="middle">Customer success</text>
+          <text class="label-meta" y="71" text-anchor="middle">area · broken</text>
+        </g>
+
+        <!-- node 4 — principle, active, owner JP -->
+        <g class="node-anim" transform="translate(360,360)">
+          <circle r="20" fill="url(#a-glow-principle)"/>
+          <circle r="27" fill="none" stroke="#34d399" stroke-width="2.2" opacity="0.85"/>
+          <g transform="translate(18,18)">
+            <circle r="11" fill="#0a0b0d" stroke="#34d399" stroke-width="1.4"/>
+            <text class="initials" font-size="10">JP</text>
+          </g>
+          <text class="label" y="52" text-anchor="middle">Decisions written down</text>
+          <text class="label-meta" y="67" text-anchor="middle">principle · active</text>
+        </g>
+
+        <!-- node 5 — project, on_hold, no owner -->
+        <g class="node-anim" transform="translate(555,420)">
+          <circle r="20" fill="url(#a-glow-project)" opacity="0.55"/>
+          <circle r="27" fill="none" stroke="#9298a2" stroke-width="2.2"
+            stroke-dasharray="3 6" opacity="0.9"/>
+          <text class="label" y="52" text-anchor="middle">Mobile prototype</text>
+          <text class="label-meta" y="67" text-anchor="middle">project · on&nbsp;hold</text>
+        </g>
+
+        <!-- node 6 — process, archived, owner faded -->
+        <g class="node-anim" transform="translate(140,400)" opacity="0.42">
+          <circle r="18" fill="url(#a-glow-process)"/>
+          <circle r="25" fill="none" stroke="#9298a2" stroke-width="1.4" opacity="0.5"/>
+          <g transform="translate(16,16)">
+            <circle r="10" fill="#0a0b0d" stroke="#9298a2" stroke-width="1.2"/>
+            <text class="initials" font-size="9" fill="#9298a2">PD</text>
+          </g>
+          <text class="label" y="48" text-anchor="middle" fill="#9298a2">Old expense flow</text>
+          <text class="label-meta" y="62" text-anchor="middle">process · retired</text>
+        </g>
+      </svg>
+      <div class="canvas-corner">A · Aurora ring</div>
+    </div>
+
+    <div>
+      <div class="study-hgroup">
+        <span class="study-num">A / 01</span>
+        <h2 class="study-title">Aurora ring <em>— state orbits the disc.</em></h2>
+      </div>
+      <p class="study-intent">
+        Keep the existing coloured disc untouched. Wrap it with a status ring whose
+        <em>shape</em>, <em>colour</em> and <em>motion</em> answer "how is this work doing?"
+        Owner clings to the lower right like a small moon — the same place every time.
+      </p>
+
+      <div class="decoder">
+        <h3>State ring · decoder</h3>
+        <dl class="legend">
+          <dt><svg width="22" height="22" viewBox="-13 -13 26 26"><circle r="11" fill="none" stroke="#34d399" stroke-width="2.2"/></svg></dt>
+          <dd><code>active</code><code>operating</code> solid ring, healthy hue</dd>
+          <dt><svg width="22" height="22" viewBox="-13 -13 26 26"><g class="rotor"><circle r="11" fill="none" stroke="#60a5fa" stroke-width="2.2" stroke-dasharray="20 50" stroke-linecap="round"/><circle r="11" cx="11" cy="0" fill="#60a5fa"/></g></svg></dt>
+          <dd><code>in_progress</code><code>implementing</code> arc with comet head, slow rotation</dd>
+          <dt><svg width="22" height="22" viewBox="-13 -13 26 26"><circle class="pulse-ring" r="11" fill="none" stroke="#fbbf24" stroke-width="2.2"/></svg></dt>
+          <dd><code>at_risk</code><code>needs_attention</code> amber pulse</dd>
+          <dt><svg width="22" height="22" viewBox="-13 -13 26 26"><circle r="11" fill="none" stroke="#f87171" stroke-width="2.4" stroke-dasharray="6 4"/></svg></dt>
+          <dd><code>broken</code> red, broken segments</dd>
+          <dt><svg width="22" height="22" viewBox="-13 -13 26 26"><circle r="11" fill="none" stroke="#9298a2" stroke-width="2" stroke-dasharray="2 5"/></svg></dt>
+          <dd><code>on_hold</code> grey, finely dashed</dd>
+          <dt><svg width="22" height="22" viewBox="-13 -13 26 26"><circle r="11" fill="none" stroke="#9298a2" stroke-width="1.4" opacity="0.5"/></svg></dt>
+          <dd><code>archived</code><code>retired</code><code>cancelled</code> ghosted, disc dimmed</dd>
+        </dl>
+      </div>
+
+      <div class="decoder">
+        <h3>Owner · always at 4 o'clock</h3>
+        <p style="margin:0;color:var(--text-muted);font-size:13.5px;">
+          A 22-px disc with two-letter initials. Stroke colour echoes the entity type
+          so the satellite still feels family. Empty owner = no satellite.
+        </p>
+      </div>
+
+      <div class="verdict">
+        <div>
+          <h4>Strengths</h4>
+          <ul>
+            <li>Doesn't disturb the existing palette or layout physics.</li>
+            <li>Motion makes "in progress" and "at risk" pop at any zoom.</li>
+            <li>Owner placement is consistent — eye learns to hunt 4 o'clock.</li>
+          </ul>
+        </div>
+        <div>
+          <h4>Tradeoffs</h4>
+          <ul>
+            <li>Every node grows ~30 % to fit ring + satellite.</li>
+            <li>Animation budget grows with graph size — needs throttling.</li>
+            <li>Two-letter initials collide on common names (J. Pavel vs. J. Pav).</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== STUDY B: INITIALS CORE ===================== -->
+  <section class="study" id="study-b">
+    <div class="canvas">
+      <svg class="scene" viewBox="0 0 720 540" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <radialGradient id="b-halo-project" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#a78bfa" stop-opacity="0.95"/>
+            <stop offset="60%" stop-color="#a78bfa" stop-opacity="0.4"/>
+            <stop offset="100%" stop-color="#a78bfa" stop-opacity="0"/>
+          </radialGradient>
+          <radialGradient id="b-halo-process" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#fbbf24" stop-opacity="0.95"/>
+            <stop offset="60%" stop-color="#fbbf24" stop-opacity="0.4"/>
+            <stop offset="100%" stop-color="#fbbf24" stop-opacity="0"/>
+          </radialGradient>
+          <radialGradient id="b-halo-area" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#f472b6" stop-opacity="0.95"/>
+            <stop offset="60%" stop-color="#f472b6" stop-opacity="0.4"/>
+            <stop offset="100%" stop-color="#f472b6" stop-opacity="0"/>
+          </radialGradient>
+          <radialGradient id="b-halo-principle" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#34d399" stop-opacity="0.95"/>
+            <stop offset="60%" stop-color="#34d399" stop-opacity="0.4"/>
+            <stop offset="100%" stop-color="#34d399" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+
+        <g class="edges">
+          <path class="edge" d="M170,180 C 250,160 300,220 370,210" />
+          <path class="edge" d="M370,210 C 440,200 500,260 565,250" />
+          <path class="edge" d="M170,180 C 200,270 290,320 370,360" />
+          <path class="edge" d="M370,360 C 440,420 510,400 565,420" />
+        </g>
+
+        <!-- node 1: project, in_progress, owner JP -->
+        <g transform="translate(170,180)">
+          <circle r="34" fill="url(#b-halo-project)"/>
+          <g class="rotor">
+            <circle r="26" fill="none" stroke="#60a5fa" stroke-width="2.2" stroke-dasharray="42 122" stroke-linecap="round"/>
+          </g>
+          <circle r="22" fill="#141518" stroke="#a78bfa" stroke-width="1.6"/>
+          <text class="initials" font-size="14">JP</text>
+          <text class="label" y="60" text-anchor="middle">Onboarding revamp</text>
+          <text class="label-meta" y="74" text-anchor="middle">project · in&nbsp;progress</text>
+        </g>
+
+        <!-- node 2: process, at_risk, owner MK -->
+        <g transform="translate(370,210)">
+          <circle r="34" fill="url(#b-halo-process)"/>
+          <circle class="pulse-ring" r="27" fill="none" stroke="#fbbf24" stroke-width="2.6" opacity="0.65"/>
+          <circle r="22" fill="#141518" stroke="#fbbf24" stroke-width="1.6"/>
+          <text class="initials" font-size="14">MK</text>
+          <text class="label" y="60" text-anchor="middle">Vendor invoice approval</text>
+          <text class="label-meta" y="74" text-anchor="middle">process · at&nbsp;risk</text>
+        </g>
+
+        <!-- node 3: area, broken, owner LH -->
+        <g transform="translate(565,250)">
+          <circle r="34" fill="url(#b-halo-area)" opacity="0.7"/>
+          <circle r="27" fill="none" stroke="#f87171" stroke-width="2.6" stroke-dasharray="14 10"/>
+          <circle r="22" fill="#141518" stroke="#f472b6" stroke-width="1.6"/>
+          <text class="initials" font-size="14">LH</text>
+          <text class="label" y="60" text-anchor="middle">Customer success</text>
+          <text class="label-meta" y="74" text-anchor="middle">area · broken</text>
+        </g>
+
+        <!-- node 4: principle, active, owner JP -->
+        <g transform="translate(370,360)">
+          <circle r="34" fill="url(#b-halo-principle)"/>
+          <circle r="27" fill="none" stroke="#34d399" stroke-width="2.2" opacity="0.85"/>
+          <circle r="22" fill="#141518" stroke="#34d399" stroke-width="1.6"/>
+          <text class="initials" font-size="14">JP</text>
+          <text class="label" y="60" text-anchor="middle">Decisions written down</text>
+          <text class="label-meta" y="74" text-anchor="middle">principle · active</text>
+        </g>
+
+        <!-- node 5: project, on_hold, no owner -->
+        <g transform="translate(565,420)">
+          <circle r="34" fill="url(#b-halo-project)" opacity="0.45"/>
+          <circle r="27" fill="none" stroke="#9298a2" stroke-width="2.2" stroke-dasharray="3 6"/>
+          <circle r="22" fill="#1c1d21" stroke="#35363b" stroke-width="1.5"/>
+          <text class="initials" font-size="14" fill="#9298a2">—</text>
+          <text class="label" y="60" text-anchor="middle">Mobile prototype</text>
+          <text class="label-meta" y="74" text-anchor="middle">project · on&nbsp;hold</text>
+        </g>
+      </svg>
+      <div class="canvas-corner">B · Initials core</div>
+    </div>
+
+    <div>
+      <div class="study-hgroup">
+        <span class="study-num">B / 02</span>
+        <h2 class="study-title">Initials core <em>— the node is the owner.</em></h2>
+      </div>
+      <p class="study-intent">
+        Flip the hierarchy. The avatar is the centre of gravity; type and state become
+        atmosphere around it. The graph reads like a roster — Jan owns these three things,
+        Marie owns those two — and accountability becomes the dominant gestalt.
+      </p>
+
+      <div class="decoder">
+        <h3>What encodes what</h3>
+        <dl class="legend">
+          <dt><svg width="22" height="22" viewBox="-13 -13 26 26"><circle r="13" fill="url(#b-halo-project)" opacity="0.7"/></svg></dt>
+          <dd>Halo gradient = entity type (project, process, area, …)</dd>
+          <dt><svg width="22" height="22" viewBox="-13 -13 26 26"><circle r="10" fill="#141518" stroke="#a78bfa" stroke-width="1.4"/><text class="initials" font-size="9">JP</text></svg></dt>
+          <dd>Initials disc = owner; <code>—</code> if unowned</dd>
+          <dt><svg width="22" height="22" viewBox="-13 -13 26 26"><circle r="11" fill="none" stroke="#fbbf24" stroke-width="2"/></svg></dt>
+          <dd>Ring = lifecycle state, same vocabulary as direction A</dd>
+        </dl>
+      </div>
+
+      <div class="verdict">
+        <div>
+          <h4>Strengths</h4>
+          <ul>
+            <li>Ownership becomes the first thing the eye picks up.</li>
+            <li>Great for "who's overloaded?" or "who owns the broken stuff?"</li>
+            <li>Halo + ring still encode type and state, just demoted.</li>
+          </ul>
+        </div>
+        <div>
+          <h4>Tradeoffs</h4>
+          <ul>
+            <li>Nodes must be ≥ 44 px for legible 2-letter initials.</li>
+            <li>Loses the simple "field of coloured stars" feel of the current graph.</li>
+            <li>Unowned items look orphaned; can be a feature or a bug.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== STUDY C: STATUS SIGIL ===================== -->
+  <section class="study" id="study-c">
+    <div class="canvas">
+      <svg class="scene" viewBox="0 0 720 540" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <radialGradient id="c-glow-project" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#a78bfa" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#a78bfa" stop-opacity="0.55"/>
+          </radialGradient>
+          <radialGradient id="c-glow-process" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#fbbf24" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#fbbf24" stop-opacity="0.55"/>
+          </radialGradient>
+          <radialGradient id="c-glow-area" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#f472b6" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#f472b6" stop-opacity="0.55"/>
+          </radialGradient>
+          <radialGradient id="c-glow-principle" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#34d399" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#34d399" stop-opacity="0.55"/>
+          </radialGradient>
+        </defs>
+        <g class="edges">
+          <path class="edge" d="M170,180 C 250,160 300,220 370,210" />
+          <path class="edge" d="M370,210 C 440,200 500,260 565,250" />
+          <path class="edge" d="M170,180 C 200,270 290,320 370,360" />
+          <path class="edge" d="M370,360 C 440,420 510,400 565,420" />
+        </g>
+
+        <!-- node 1: project, in_progress, owner JP -->
+        <g transform="translate(170,180)">
+          <circle r="22" fill="url(#c-glow-project)"/>
+          <!-- glyph chip top-right: spinner -->
+          <g transform="translate(17,-17)">
+            <circle r="10" fill="#0a0b0d" stroke="#60a5fa" stroke-width="1.5"/>
+            <g class="rotor"><path d="M -5 0 A 5 5 0 0 1 5 0" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round"/></g>
+          </g>
+          <!-- owner pip bottom-right -->
+          <g transform="translate(17,17)">
+            <circle r="10" fill="#1c1d21" stroke="#27282c" stroke-width="1"/>
+            <text class="initials" font-size="9">JP</text>
+          </g>
+          <text class="label" y="50" text-anchor="middle">Onboarding revamp</text>
+          <text class="label-meta" y="64" text-anchor="middle">project · in&nbsp;progress</text>
+        </g>
+
+        <!-- node 2: process, at_risk, owner MK -->
+        <g transform="translate(370,210)">
+          <circle r="22" fill="url(#c-glow-process)"/>
+          <!-- warn glyph top-right -->
+          <g transform="translate(17,-17)">
+            <circle r="10" fill="#0a0b0d" stroke="#fbbf24" stroke-width="1.5"/>
+            <path d="M 0 -4.5 L 4 3 L -4 3 Z" fill="none" stroke="#fbbf24" stroke-width="1.6" stroke-linejoin="round"/>
+            <circle cx="0" cy="1.4" r="0.9" fill="#fbbf24"/>
+          </g>
+          <g transform="translate(17,17)">
+            <circle r="10" fill="#1c1d21" stroke="#27282c" stroke-width="1"/>
+            <text class="initials" font-size="9">MK</text>
+          </g>
+          <text class="label" y="50" text-anchor="middle">Vendor invoice approval</text>
+          <text class="label-meta" y="64" text-anchor="middle">process · at&nbsp;risk</text>
+        </g>
+
+        <!-- node 3: area, broken, owner LH -->
+        <g transform="translate(565,250)">
+          <circle r="22" fill="url(#c-glow-area)" opacity="0.75"/>
+          <!-- broken (X) glyph -->
+          <g transform="translate(17,-17)">
+            <circle r="10" fill="#0a0b0d" stroke="#f87171" stroke-width="1.5"/>
+            <path d="M -3.5 -3.5 L 3.5 3.5 M 3.5 -3.5 L -3.5 3.5" stroke="#f87171" stroke-width="1.7" stroke-linecap="round"/>
+          </g>
+          <g transform="translate(17,17)">
+            <circle r="10" fill="#1c1d21" stroke="#27282c" stroke-width="1"/>
+            <text class="initials" font-size="9">LH</text>
+          </g>
+          <text class="label" y="50" text-anchor="middle">Customer success</text>
+          <text class="label-meta" y="64" text-anchor="middle">area · broken</text>
+        </g>
+
+        <!-- node 4: principle, active, owner JP -->
+        <g transform="translate(370,360)">
+          <circle r="22" fill="url(#c-glow-principle)"/>
+          <!-- check glyph -->
+          <g transform="translate(17,-17)">
+            <circle r="10" fill="#0a0b0d" stroke="#34d399" stroke-width="1.5"/>
+            <path d="M -3.5 0.5 L -1 3 L 4 -2.5" fill="none" stroke="#34d399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </g>
+          <g transform="translate(17,17)">
+            <circle r="10" fill="#1c1d21" stroke="#27282c" stroke-width="1"/>
+            <text class="initials" font-size="9">JP</text>
+          </g>
+          <text class="label" y="50" text-anchor="middle">Decisions written down</text>
+          <text class="label-meta" y="64" text-anchor="middle">principle · active</text>
+        </g>
+
+        <!-- node 5: project, on_hold, no owner -->
+        <g transform="translate(565,420)">
+          <circle r="22" fill="url(#c-glow-project)" opacity="0.55"/>
+          <!-- pause glyph -->
+          <g transform="translate(17,-17)">
+            <circle r="10" fill="#0a0b0d" stroke="#9298a2" stroke-width="1.5"/>
+            <rect x="-3.5" y="-3.5" width="2.2" height="7" fill="#9298a2"/>
+            <rect x="1.3"  y="-3.5" width="2.2" height="7" fill="#9298a2"/>
+          </g>
+          <text class="label" y="50" text-anchor="middle">Mobile prototype</text>
+          <text class="label-meta" y="64" text-anchor="middle">project · on&nbsp;hold</text>
+        </g>
+      </svg>
+      <div class="canvas-corner">C · Status sigil</div>
+    </div>
+
+    <div>
+      <div class="study-hgroup">
+        <span class="study-num">C / 03</span>
+        <h2 class="study-title">Status sigil <em>— annotated atom.</em></h2>
+      </div>
+      <p class="study-intent">
+        The disc keeps its size; two small chips dock at its corners. State sits
+        top-right as an icon — check, spinner, warning, X, pause. Owner sits bottom-right
+        as initials. Reads like a notification badge on an app icon.
+      </p>
+
+      <div class="decoder">
+        <h3>State glyph · decoder</h3>
+        <dl class="legend">
+          <dt><svg width="22" height="22" viewBox="-11 -11 22 22"><circle r="9" fill="none" stroke="#34d399" stroke-width="1.4"/><path d="M -3.5 0.5 L -1 3 L 4 -2.5" fill="none" stroke="#34d399" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></dt>
+          <dd><code>active</code><code>operating</code><code>done</code> green check</dd>
+          <dt><svg width="22" height="22" viewBox="-11 -11 22 22"><circle r="9" fill="none" stroke="#60a5fa" stroke-width="1.4"/><g class="rotor"><path d="M -5 0 A 5 5 0 0 1 5 0" fill="none" stroke="#60a5fa" stroke-width="1.8" stroke-linecap="round"/></g></svg></dt>
+          <dd><code>in_progress</code><code>implementing</code> blue spinner</dd>
+          <dt><svg width="22" height="22" viewBox="-11 -11 22 22"><circle r="9" fill="none" stroke="#fbbf24" stroke-width="1.4"/><path d="M 0 -4.5 L 4 3 L -4 3 Z" fill="none" stroke="#fbbf24" stroke-width="1.4" stroke-linejoin="round"/></svg></dt>
+          <dd><code>at_risk</code><code>needs_attention</code> amber triangle</dd>
+          <dt><svg width="22" height="22" viewBox="-11 -11 22 22"><circle r="9" fill="none" stroke="#f87171" stroke-width="1.4"/><path d="M -3.5 -3.5 L 3.5 3.5 M 3.5 -3.5 L -3.5 3.5" stroke="#f87171" stroke-width="1.6" stroke-linecap="round"/></svg></dt>
+          <dd><code>broken</code> red ×</dd>
+          <dt><svg width="22" height="22" viewBox="-11 -11 22 22"><circle r="9" fill="none" stroke="#9298a2" stroke-width="1.4"/><rect x="-3.5" y="-3.5" width="2.2" height="7" fill="#9298a2"/><rect x="1.3" y="-3.5" width="2.2" height="7" fill="#9298a2"/></svg></dt>
+          <dd><code>on_hold</code> grey pause</dd>
+        </dl>
+      </div>
+
+      <div class="verdict">
+        <div>
+          <h4>Strengths</h4>
+          <ul>
+            <li>Most legible state encoding — icons read at a glance.</li>
+            <li>Disc size unchanged; existing layout physics keep working.</li>
+            <li>Glyph vocabulary maps cleanly to status pills in detail pane.</li>
+          </ul>
+        </div>
+        <div>
+          <h4>Tradeoffs</h4>
+          <ul>
+            <li>Two chips per node = visually busier; risks "Christmas tree" look at scale.</li>
+            <li>Glyph chips can collide with edges in dense clusters.</li>
+            <li>Furthest from current aesthetic — most engineering work.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== STUDY D: CONSTELLATION PIP ===================== -->
+  <section class="study" id="study-d">
+    <div class="canvas">
+      <svg class="scene" viewBox="0 0 720 540" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <radialGradient id="d-glow-project" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#a78bfa" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#a78bfa" stop-opacity="0.55"/>
+          </radialGradient>
+          <radialGradient id="d-glow-process" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#fbbf24" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#fbbf24" stop-opacity="0.55"/>
+          </radialGradient>
+          <radialGradient id="d-glow-area" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#f472b6" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#f472b6" stop-opacity="0.55"/>
+          </radialGradient>
+          <radialGradient id="d-glow-principle" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#34d399" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#34d399" stop-opacity="0.55"/>
+          </radialGradient>
+          <pattern id="d-hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <line x1="0" y1="0" x2="0" y2="5" stroke="#0a0b0d" stroke-width="2"/>
+          </pattern>
+          <clipPath id="d-clip-half"><rect x="-22" y="0" width="44" height="22"/></clipPath>
+        </defs>
+
+        <g class="edges">
+          <path class="edge" d="M170,180 C 250,160 300,220 370,210" />
+          <path class="edge" d="M370,210 C 440,200 500,260 565,250" />
+          <path class="edge" d="M170,180 C 200,270 290,320 370,360" />
+          <path class="edge" d="M370,360 C 440,420 510,400 565,420" />
+        </g>
+
+        <!-- node 1: project, in_progress, owner JP -->
+        <g transform="translate(170,180)">
+          <circle r="18" fill="url(#d-glow-project)" opacity="0.45"/>
+          <circle r="18" fill="url(#d-glow-project)" clip-path="url(#d-clip-half)"/>
+          <text class="label" y="42" text-anchor="middle">Onboarding revamp</text>
+          <g transform="translate(0,57)">
+            <text class="label-meta" text-anchor="middle">project · in progress</text>
+          </g>
+          <g transform="translate(0,72)">
+            <rect x="-22" y="-7" width="44" height="14" rx="7" fill="#1c1d21" stroke="#27282c" stroke-width="1"/>
+            <text x="0" y="0.5" text-anchor="middle" dominant-baseline="central" font-family="JetBrains Mono" font-size="9" fill="#c2c6cf">by JP</text>
+          </g>
+        </g>
+
+        <!-- node 2: process, at_risk, owner MK -->
+        <g transform="translate(370,210)">
+          <circle r="18" fill="url(#d-glow-process)"/>
+          <circle r="18" fill="url(#d-hatch)" opacity="0.55"/>
+          <circle r="18" fill="none" stroke="#fbbf24" stroke-width="1.4"/>
+          <text class="label" y="42" text-anchor="middle">Vendor invoice approval</text>
+          <g transform="translate(0,57)">
+            <text class="label-meta" text-anchor="middle">process · at risk</text>
+          </g>
+          <g transform="translate(0,72)">
+            <rect x="-26" y="-7" width="52" height="14" rx="7" fill="#1c1d21" stroke="#27282c" stroke-width="1"/>
+            <text x="0" y="0.5" text-anchor="middle" dominant-baseline="central" font-family="JetBrains Mono" font-size="9" fill="#c2c6cf">by MK</text>
+          </g>
+        </g>
+
+        <!-- node 3: area, broken, owner LH -->
+        <g transform="translate(565,250)">
+          <circle r="18" fill="url(#d-glow-area)" opacity="0.55"/>
+          <path d="M -10 -10 L 10 10 M 10 -10 L -10 10" stroke="#f87171" stroke-width="2.4" stroke-linecap="round"/>
+          <circle r="18" fill="none" stroke="#f87171" stroke-width="1.2"/>
+          <text class="label" y="42" text-anchor="middle">Customer success</text>
+          <g transform="translate(0,57)">
+            <text class="label-meta" text-anchor="middle">area · broken</text>
+          </g>
+          <g transform="translate(0,72)">
+            <rect x="-26" y="-7" width="52" height="14" rx="7" fill="#1c1d21" stroke="#27282c" stroke-width="1"/>
+            <text x="0" y="0.5" text-anchor="middle" dominant-baseline="central" font-family="JetBrains Mono" font-size="9" fill="#c2c6cf">by LH</text>
+          </g>
+        </g>
+
+        <!-- node 4: principle, active, owner JP -->
+        <g transform="translate(370,360)">
+          <circle r="18" fill="url(#d-glow-principle)"/>
+          <text class="label" y="42" text-anchor="middle">Decisions written down</text>
+          <g transform="translate(0,57)">
+            <text class="label-meta" text-anchor="middle">principle · active</text>
+          </g>
+          <g transform="translate(0,72)">
+            <rect x="-22" y="-7" width="44" height="14" rx="7" fill="#1c1d21" stroke="#27282c" stroke-width="1"/>
+            <text x="0" y="0.5" text-anchor="middle" dominant-baseline="central" font-family="JetBrains Mono" font-size="9" fill="#c2c6cf">by JP</text>
+          </g>
+        </g>
+
+        <!-- node 5: project, on_hold, no owner -->
+        <g transform="translate(565,420)">
+          <circle r="18" fill="none" stroke="#a78bfa" stroke-width="2" stroke-dasharray="4 4"/>
+          <text class="label" y="42" text-anchor="middle">Mobile prototype</text>
+          <g transform="translate(0,57)">
+            <text class="label-meta" text-anchor="middle">project · on hold</text>
+          </g>
+        </g>
+      </svg>
+      <div class="canvas-corner">D · Constellation pip</div>
+    </div>
+
+    <div>
+      <div class="study-hgroup">
+        <span class="study-num">D / 04</span>
+        <h2 class="study-title">Constellation pip <em>— semiotics over chrome.</em></h2>
+      </div>
+      <p class="study-intent">
+        Most restrained. The disc stays small; state is encoded as the disc's
+        <em>fill pattern</em>, not as added orbiting elements. Owner becomes a
+        small monospaced tag floating beneath the label — almost a caption.
+      </p>
+
+      <div class="decoder">
+        <h3>Fill pattern · decoder</h3>
+        <dl class="legend">
+          <dt><svg width="22" height="22" viewBox="-11 -11 22 22"><circle r="10" fill="url(#d-glow-principle)"/></svg></dt>
+          <dd><code>active</code><code>operating</code> solid fill</dd>
+          <dt><svg width="22" height="22" viewBox="-11 -11 22 22"><circle r="10" fill="url(#d-glow-project)" opacity="0.4"/><circle r="10" fill="url(#d-glow-project)" clip-path="url(#d-clip-half)"/></svg></dt>
+          <dd><code>in_progress</code><code>implementing</code> half-fill, like a moon phase</dd>
+          <dt><svg width="22" height="22" viewBox="-11 -11 22 22"><circle r="10" fill="url(#d-glow-process)"/><circle r="10" fill="url(#d-hatch)" opacity="0.55"/></svg></dt>
+          <dd><code>at_risk</code> hatched overlay</dd>
+          <dt><svg width="22" height="22" viewBox="-11 -11 22 22"><circle r="10" fill="url(#d-glow-area)" opacity="0.55"/><path d="M -6 -6 L 6 6 M 6 -6 L -6 6" stroke="#f87171" stroke-width="2"/></svg></dt>
+          <dd><code>broken</code> red strike-through</dd>
+          <dt><svg width="22" height="22" viewBox="-11 -11 22 22"><circle r="10" fill="none" stroke="#a78bfa" stroke-width="1.6" stroke-dasharray="3 3"/></svg></dt>
+          <dd><code>on_hold</code><code>backlog</code> hollow ring, dashed</dd>
+        </dl>
+      </div>
+
+      <div class="verdict">
+        <div>
+          <h4>Strengths</h4>
+          <ul>
+            <li>Cheapest to render — no animation, no extra geometry.</li>
+            <li>Survives extreme zoom-out: hatching and X-marks remain readable.</li>
+            <li>Owner caption stays optional and legible without crowding the disc.</li>
+          </ul>
+        </div>
+        <div>
+          <h4>Tradeoffs</h4>
+          <ul>
+            <li>Pattern vocabulary takes a beat to learn.</li>
+            <li>Owner tag adds a third line below each label — vertical sprawl.</li>
+            <li>Hatched at-risk can clash visually with adjacent process-yellow.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== COMPARISON ROW ===================== -->
+  <section class="compare">
+    <h2><em>Same scenario,</em> four readings.</h2>
+    <p class="compare-intro">
+      One node, one truth: <em>Vendor invoice approval</em> — a
+      <span style="color:var(--node-process)">process</span> that's
+      <span style="color:var(--status-warn)">at risk</span>, owned by MK.
+      Each direction tells the same story differently.
+    </p>
+    <div class="compare-grid">
+
+      <!-- A -->
+      <div class="compare-cell" data-label="A · Aurora ring">
+        <svg viewBox="-50 -50 100 100">
+          <defs>
+            <radialGradient id="cmpA-process" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#fbbf24" stop-opacity="1"/>
+              <stop offset="100%" stop-color="#fbbf24" stop-opacity="0.55"/>
+            </radialGradient>
+          </defs>
+          <circle r="22" fill="url(#cmpA-process)"/>
+          <circle class="pulse-ring" r="29" fill="none" stroke="#fbbf24" stroke-width="2.6" opacity="0.65"/>
+          <g transform="translate(20,20)">
+            <circle r="11" fill="#0a0b0d" stroke="#fbbf24" stroke-width="1.4"/>
+            <text class="initials" font-size="10">MK</text>
+          </g>
+        </svg>
+      </div>
+
+      <!-- B -->
+      <div class="compare-cell" data-label="B · Initials core">
+        <svg viewBox="-50 -50 100 100">
+          <defs>
+            <radialGradient id="cmpB-process" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#fbbf24" stop-opacity="0.95"/>
+              <stop offset="60%" stop-color="#fbbf24" stop-opacity="0.4"/>
+              <stop offset="100%" stop-color="#fbbf24" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <circle r="38" fill="url(#cmpB-process)"/>
+          <circle class="pulse-ring" r="29" fill="none" stroke="#fbbf24" stroke-width="2.6" opacity="0.65"/>
+          <circle r="24" fill="#141518" stroke="#fbbf24" stroke-width="1.6"/>
+          <text class="initials" font-size="16">MK</text>
+        </svg>
+      </div>
+
+      <!-- C -->
+      <div class="compare-cell" data-label="C · Status sigil">
+        <svg viewBox="-50 -50 100 100">
+          <defs>
+            <radialGradient id="cmpC-process" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#fbbf24" stop-opacity="1"/>
+              <stop offset="100%" stop-color="#fbbf24" stop-opacity="0.55"/>
+            </radialGradient>
+          </defs>
+          <circle r="24" fill="url(#cmpC-process)"/>
+          <g transform="translate(19,-19)">
+            <circle r="11" fill="#0a0b0d" stroke="#fbbf24" stroke-width="1.5"/>
+            <path d="M 0 -4.5 L 4.5 3.5 L -4.5 3.5 Z" fill="none" stroke="#fbbf24" stroke-width="1.6" stroke-linejoin="round"/>
+            <circle cx="0" cy="1.6" r="0.9" fill="#fbbf24"/>
+          </g>
+          <g transform="translate(19,19)">
+            <circle r="11" fill="#1c1d21" stroke="#27282c" stroke-width="1"/>
+            <text class="initials" font-size="10">MK</text>
+          </g>
+        </svg>
+      </div>
+
+      <!-- D -->
+      <div class="compare-cell" data-label="D · Constellation pip">
+        <svg viewBox="-50 -50 100 100">
+          <defs>
+            <radialGradient id="cmpD-process" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#fbbf24" stop-opacity="1"/>
+              <stop offset="100%" stop-color="#fbbf24" stop-opacity="0.55"/>
+            </radialGradient>
+            <pattern id="cmpD-hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+              <line x1="0" y1="0" x2="0" y2="5" stroke="#0a0b0d" stroke-width="2"/>
+            </pattern>
+          </defs>
+          <circle r="20" fill="url(#cmpD-process)"/>
+          <circle r="20" fill="url(#cmpD-hatch)" opacity="0.55"/>
+          <circle r="20" fill="none" stroke="#fbbf24" stroke-width="1.4"/>
+          <g transform="translate(0,32)">
+            <rect x="-26" y="-8" width="52" height="16" rx="8" fill="#1c1d21" stroke="#27282c" stroke-width="1"/>
+            <text x="0" y="0.5" text-anchor="middle" dominant-baseline="central" font-family="JetBrains Mono" font-size="10" fill="#c2c6cf">by MK</text>
+          </g>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== RECOMMENDATION ===================== -->
+  <section class="recommend">
+    <div>
+      <div class="pick-eyebrow">Director's pick</div>
+      <h2>Aurora ring,<br/><em>then graduate to sigil.</em></h2>
+    </div>
+    <div>
+      <p>
+        <strong>Aurora (A) preserves what already works.</strong> The disc keeps its identity,
+        the ring upgrades the existing border treatment instead of replacing it, and the
+        owner satellite borrows from a familiar visual idiom — a moon orbiting a planet.
+        It's the smallest leap from today, and motion does the heavy lifting on the two
+        states that matter most operationally: <em>in&nbsp;progress</em> and <em>at&nbsp;risk</em>.
+      </p>
+      <p>
+        Once the ring is in place, the <strong>status sigil (C)</strong> becomes a free upgrade
+        for power users — same disc, just a small chip toggled by a viewport setting.
+        Keep <strong>direction B</strong> in your back pocket for an "ownership view" toggle
+        that re-frames the same graph around people instead of work. <strong>D</strong> is
+        the right answer if performance ever forces a retreat from animation.
+      </p>
+      <p>
+        One pragmatic note: introduce the new node grammar behind a feature flag and ship
+        with a two-week period where the legend (the decoder above) is one click away from
+        the canvas. Vocabulary is half the design.
+      </p>
+    </div>
+  </section>
+
+  <p class="footnote">
+    File · <a href="./graph-node-exploration.html">docs/design/graph-node-exploration.html</a>
+    &nbsp;·&nbsp; Picked direction in <a href="./graph-node-design.html">graph-node-design.html</a>
+    &nbsp;·&nbsp; Tokens mirror app/src/index.css
+    &nbsp;·&nbsp; Open in browser, toggle theme, then decide.
+  </p>
+
+</div>
+
+<script>
+  const root = document.documentElement;
+  const dark = document.getElementById("theme-dark");
+  const light = document.getElementById("theme-light");
+  function set(theme) {
+    root.dataset.theme = theme;
+    dark.setAttribute("aria-pressed", theme === "dark");
+    light.setAttribute("aria-pressed", theme === "light");
+  }
+  dark.addEventListener("click", () => set("dark"));
+  light.addEventListener("click", () => set("light"));
+</script>
+</body>
+</html>
