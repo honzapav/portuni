@@ -359,16 +359,27 @@ async fn launch_claude_for_node(
         return Err("template is required".to_string());
     }
     let command_as = command.replace('\\', "\\\\").replace('"', "\\\"");
-    let status = std::process::Command::new("sh")
+    let output = std::process::Command::new("sh")
         .arg("-c")
         .arg(&template)
         .env("PORTUNI_CWD", &cwd)
         .env("PORTUNI_COMMAND", &command)
         .env("PORTUNI_COMMAND_AS", &command_as)
-        .status()
+        .output()
         .map_err(|e| format!("template run failed: {e}"))?;
-    if !status.success() {
-        return Err(format!("template exited with {status}"));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut detail = String::new();
+        if !stderr.trim().is_empty() {
+            detail.push_str(" stderr=");
+            detail.push_str(stderr.trim());
+        }
+        if !stdout.trim().is_empty() {
+            detail.push_str(" stdout=");
+            detail.push_str(stdout.trim());
+        }
+        return Err(format!("template exited with {}{}", output.status, detail));
     }
     Ok(())
 }

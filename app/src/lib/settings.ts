@@ -118,16 +118,19 @@ AS`,
     id: "cmux",
     label: "cmux",
     template: `CMUX="$\{CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
-WS=$("$CMUX" "$PORTUNI_CWD" 2>&1 | grep -oE 'workspace:[0-9]+' | head -1)
+[ -x "$CMUX" ] || { echo "cmux CLI not found at $CMUX (set \\$CMUX_BIN to override)" >&2; exit 1; }
+[ -d "$PORTUNI_CWD" ] || { echo "cwd does not exist: $PORTUNI_CWD" >&2; exit 1; }
+WS_OUT=$("$CMUX" "$PORTUNI_CWD" 2>&1)
+WS=$(echo "$WS_OUT" | grep -oE 'workspace:[0-9]+' | head -1)
 if [ -z "$WS" ]; then
-  echo "cmux: failed to create workspace at $PORTUNI_CWD" >&2
+  echo "cmux <path> did not return a workspace id. cwd=$PORTUNI_CWD output=[$WS_OUT]" >&2
   exit 1
 fi
 sleep 1
 TMP=$(mktemp -t portuni)
 printf '%s\n' "$PORTUNI_COMMAND" > "$TMP"
-"$CMUX" send --workspace "$WS" "bash '$TMP'; rm -f '$TMP'"
-"$CMUX" send-key --workspace "$WS" enter`,
+"$CMUX" send --workspace "$WS" "bash '$TMP'; rm -f '$TMP'" 2>&1 | grep -v '^OK ' >&2
+"$CMUX" send-key --workspace "$WS" enter 2>&1 | grep -v '^OK ' >&2`,
     hint: "Vytvoří cmux workspace v pracovní složce a pošle do něj příkaz. Cíli příkaz konkrétnímu workspace, ne fokusovanému (řeší race po novém workspace).",
   },
 ];
