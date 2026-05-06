@@ -1,32 +1,21 @@
-import { useEffect, useRef, useState } from "react";
-import { X, Check } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Check } from "lucide-react";
 import { AGENT_PRESETS, DEFAULT_AGENT_COMMAND } from "../lib/settings";
 
 type Props = {
   agentCommand: string;
   onAgentCommandChange: (value: string) => void;
-  onClose: () => void;
 };
 
-export default function SettingsPanel({
+export default function SettingsPage({
   agentCommand,
   onAgentCommandChange,
-  onClose,
 }: Props) {
   const [draft, setDraft] = useState(agentCommand);
-  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setDraft(agentCommand);
   }, [agentCommand]);
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
 
   const commit = (value: string) => {
     const next = value.trim() || DEFAULT_AGENT_COMMAND;
@@ -67,29 +56,18 @@ export default function SettingsPanel({
   const preview = `cd '${previewPath}' && ${invocation}`;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        ref={containerRef}
-        className="flex max-h-[86vh] w-full max-w-[780px] flex-col overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] shadow-2xl"
-      >
-        <div className="flex items-center justify-between border-b border-[var(--color-border)] px-5 py-3">
-          <div className="text-[15px] font-semibold tracking-tight text-[var(--color-text)]">
+    <div className="scroll-thin h-full w-full overflow-y-auto bg-[var(--color-bg)]">
+      <div className="mx-auto flex max-w-[840px] flex-col gap-8 px-8 py-8">
+        <header>
+          <h1 className="text-[20px] font-semibold tracking-tight text-[var(--color-text)]">
             Nastavení
-          </div>
-          <button
-            onClick={onClose}
-            className="flex h-7 w-7 items-center justify-center rounded text-[var(--color-text-dim)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
-          >
-            <X size={13} />
-          </button>
-        </div>
+          </h1>
+          <p className="mt-1 text-[13px] text-[var(--color-text-dim)]">
+            Změny se ukládají automaticky.
+          </p>
+        </header>
 
-        <div className="scroll-thin flex-1 overflow-y-auto px-5 py-5">
+        <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
           <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
             Příkaz agenta
           </div>
@@ -119,7 +97,7 @@ export default function SettingsPanel({
                     className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[13.5px] transition-colors ${
                       active
                         ? "border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 text-[var(--color-accent)]"
-                        : "border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+                        : "border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text-muted)] hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
                     }`}
                   >
                     {active && <Check size={11} />}
@@ -143,7 +121,7 @@ export default function SettingsPanel({
               }
             }}
             spellCheck={false}
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 font-mono text-[14px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)]"
+            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[14px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)]"
             placeholder={DEFAULT_AGENT_COMMAND}
           />
 
@@ -156,11 +134,11 @@ export default function SettingsPanel({
                 Vzorový uzel – skutečný prompt vznikne z vybraného uzlu.
               </div>
             </div>
-            <pre className="scroll-thin max-h-[360px] overflow-auto whitespace-pre-wrap break-words rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5 font-mono text-[12.5px] leading-relaxed text-[var(--color-text-muted)]">
+            <pre className="scroll-thin max-h-[360px] overflow-auto whitespace-pre-wrap break-words rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2.5 font-mono text-[12.5px] leading-relaxed text-[var(--color-text-muted)]">
               {preview}
             </pre>
           </div>
-        </div>
+        </section>
       </div>
     </div>
   );
