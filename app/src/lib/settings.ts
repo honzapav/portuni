@@ -105,8 +105,11 @@ AS`,
   {
     id: "ghostty",
     label: "Ghostty",
-    template: `open -na Ghostty.app --args -e "$PORTUNI_COMMAND"`,
-    hint: "Spustí Ghostty v novém okně s příkazem.",
+    template: `TMP=$(mktemp -t portuni-launch)
+printf '#!/bin/bash\\n%s\\n' "$PORTUNI_COMMAND" > "$TMP"
+chmod +x "$TMP"
+open -na Ghostty.app --args -e "$TMP"`,
+    hint: "Spustí Ghostty v novém okně. Příkaz jde do dočasného shell scriptu, takže multi-řádkový prompt nezlomí Ghostty -e parser.",
   },
   {
     id: "warp",
