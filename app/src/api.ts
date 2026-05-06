@@ -82,6 +82,36 @@ export async function runNodeSync(id: string): Promise<SyncRunResponse> {
   );
 }
 
+// Create a working folder for the node and register it in sync.db.
+// Idempotent — calling for an already-mirrored node returns the existing
+// path with `created: false`. Returned `local_path` is what the agent
+// launcher will `cd` into.
+export type CreateMirrorResponse = {
+  node_id: string;
+  local_path: string;
+  created: boolean;
+  remote_url: string | null;
+};
+
+export function createNodeMirror(id: string): Promise<CreateMirrorResponse> {
+  return jsonRequest<CreateMirrorResponse>(
+    "POST",
+    `/nodes/${encodeURIComponent(id)}/mirror`,
+  );
+}
+
+// Create a node via REST. Type and name are required; organization_id is
+// required for non-organization types (the server enforces this and
+// returns 400 otherwise — kept here for clarity at the call site).
+export function createNode(input: {
+  type: string;
+  name: string;
+  description?: string;
+  organization_id?: string;
+}): Promise<NodeDetail> {
+  return jsonRequest<NodeDetail>("POST", "/nodes", input);
+}
+
 async function jsonRequest<T>(
   method: string,
   path: string,

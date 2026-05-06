@@ -37,6 +37,7 @@ import {
 } from "./tools.js";
 import {
   handleCreateNode,
+  handleCreateNodeMirror,
   handleDeleteNode,
   handleFolderUrl,
   handleGetNode,
@@ -277,6 +278,11 @@ async function routeNodes(
   const syncRunMatch = pathname.match(/^\/nodes\/([^/]+)\/sync$/);
   if (syncRunMatch && method === "POST") {
     await handleSyncRun(req, res, decodeURIComponent(syncRunMatch[1]));
+    return true;
+  }
+  const mirrorMatch = pathname.match(/^\/nodes\/([^/]+)\/mirror$/);
+  if (mirrorMatch && method === "POST") {
+    await handleCreateNodeMirror(req, res, decodeURIComponent(mirrorMatch[1]));
     return true;
   }
   const moveMatch = pathname.match(/^\/nodes\/([^/]+)\/move$/);

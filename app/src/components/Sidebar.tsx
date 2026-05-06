@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Search, Sun, Moon, X, Users, Settings, Waypoints } from "lucide-react";
+import { Plus, Search, Sun, Moon, X, Users, Settings, Waypoints } from "lucide-react";
 import type { GraphPayload, GraphNode } from "../types";
 import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
@@ -27,6 +27,9 @@ type Props = {
   view: AppView;
   onViewChange: (view: AppView) => void;
   onOpenSettings: () => void;
+  // Open the "create node" modal. Always visible at the top of the
+  // graph view so it's the first action a user sees.
+  onCreateNode: () => void;
 };
 
 function nodeTypeVar(type: string): string {
@@ -64,6 +67,7 @@ export default function Sidebar({
   view,
   onViewChange,
   onOpenSettings,
+  onCreateNode,
 }: Props) {
   return (
     <aside className="flex h-full w-[300px] shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-bg)]">
@@ -129,21 +133,34 @@ export default function Sidebar({
       )}
 
       {view === "graph" && (
-        <GraphSidebarContent
-          graph={graph}
-          query={query}
-          onQuery={onQuery}
-          disabledRelations={disabledRelations}
-          onToggleRelation={onToggleRelation}
-          disabledOrgs={disabledOrgs}
-          onToggleOrg={onToggleOrg}
-          disabledTypes={disabledTypes}
-          onToggleType={onToggleType}
-          disabledStatuses={disabledStatuses}
-          onToggleStatus={onToggleStatus}
-          selectedId={selectedId}
-          onSelect={onSelect}
-        />
+        <>
+          <div className="px-4 pt-4">
+            <button
+              type="button"
+              onClick={onCreateNode}
+              title="Vytvořit nový uzel (organizace, projekt, proces, oblast, princip)"
+              className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-3 py-2 text-[13px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-text)]"
+            >
+              <Plus size={13} />
+              Nový uzel
+            </button>
+          </div>
+          <GraphSidebarContent
+            graph={graph}
+            query={query}
+            onQuery={onQuery}
+            disabledRelations={disabledRelations}
+            onToggleRelation={onToggleRelation}
+            disabledOrgs={disabledOrgs}
+            onToggleOrg={onToggleOrg}
+            disabledTypes={disabledTypes}
+            onToggleType={onToggleType}
+            disabledStatuses={disabledStatuses}
+            onToggleStatus={onToggleStatus}
+            selectedId={selectedId}
+            onSelect={onSelect}
+          />
+        </>
       )}
 
       <div className="border-t border-[var(--color-border)] px-5 py-3 text-[11px] text-[var(--color-text-dim)]">

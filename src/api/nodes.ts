@@ -16,6 +16,10 @@ import { statusScan, storeFile, pullFile } from "../domain/sync/engine.js";
 import { createNodeInternal, updateNodeInternal } from "../domain/nodes.js";
 import { moveNodeToOrganization } from "../domain/edges.js";
 import { loadNodeDetail } from "../domain/queries/node-detail.js";
+import {
+  createMirrorForNode,
+  MirrorCreateError,
+} from "../domain/sync/mirror-create.js";
 import type { SyncStatusResponse, SyncRunResponse } from "../shared/api-types.js";
 import { parseBody, parseJsonBody, respondError , respondJson} from "../http/middleware.js";
 import { z } from "zod";
@@ -425,6 +429,93 @@ export async function handleSyncRun(
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sync`, err);
   }
+}
+
+// Idempotent "make me a working folder for this node" entry point. Wraps
+// the same domain function the MCP `portuni_mirror` tool calls. New mirror
+// returns 201; existing one returns 200 with the current path. The UI
+// hits this from the create-node modal and the "Spustit Claude" launcher.
+export async function handleCreateNodeMirror(
+  req: IncomingMessage,
+  res: ServerResponse,
+  nodeId: string,
+): Promise<void> {
+  if (!nodeId) {
+    respondJson(res, 400, { error: "node id required" });
+    return;
+  }
+  try {
+    const result = await createMirrorForNode(getDb(), SOLO_USER, { nodeId });
+    // Best-effort folder URL on the routed remote — not part of the
+    // happy-path mirror creation. We don't await any heavy listing here;
+    // folderUrl returns null when the folder hasn't been synced yet.
+    let remoteUrl: string | null = null;
+    try {
+      remoteUrl = await resolveRemoteFolderUrl(getDb(), nodeId);
+    } catch {
+      remoteUrl = null;
+    }
+    respondJson(res, result.created ? 201 : 200, {
+      node_id: result.node_id,
+      local_path: result.local_path,
+      created: result.created,
+      remote_url: remoteUrl,
+      subdirs: result.subdirs,
+      remote_scaffold: result.remote_scaffold,
+      scope_config: result.scope_config,
+    });
+  } catch (err) {
+    if (err instanceof MirrorCreateError) {
+      const status =
+        err.code === "NODE_NOT_FOUND"
+          ? 404
+          : err.code === "PATH_TRAVERSAL"
+            ? 400
+            : 500;
+      respondJson(res, status, { error: err.message, code: err.code });
+      return;
+    }
+    respondError(res, `${req.method} /nodes/${nodeId}/mirror`, err);
+  }
+}
+
+// Helper used by handleCreateNodeMirror — same shape as handleFolderUrl
+// above but returns just the URL or null without writing the response.
+async function resolveRemoteFolderUrl(
+  db: ReturnType<typeof getDb>,
+  nodeId: string,
+): Promise<string | null> {
+  const nodeRow = await db.execute({
+    sql: "SELECT id, type, sync_key FROM nodes WHERE id = ?",
+    args: [nodeId],
+  });
+  if (nodeRow.rows.length === 0) return null;
+  const n = nodeRow.rows[0];
+  const nodeType = n.type as string;
+  const nodeSyncKey = n.sync_key as string;
+  let orgSyncKey: string | null = null;
+  if (nodeType !== "organization") {
+    const orgRow = await db.execute({
+      sql: `SELECT o.sync_key FROM edges e
+            JOIN nodes o ON o.id = e.target_id
+            WHERE e.source_id = ? AND e.relation = 'belongs_to' LIMIT 1`,
+      args: [nodeId],
+    });
+    if (orgRow.rows.length === 0) return null;
+    orgSyncKey = orgRow.rows[0].sync_key as string;
+  } else {
+    orgSyncKey = nodeSyncKey;
+  }
+  const remoteName = await resolveRemote(db, nodeType, orgSyncKey);
+  if (!remoteName) return null;
+  const adapter = await getAdapter(db, remoteName);
+  if (!adapter.folderUrl) return null;
+  const folderPath = buildNodeRoot({
+    orgSyncKey: nodeType === "organization" ? null : orgSyncKey,
+    nodeType,
+    nodeSyncKey,
+  });
+  return adapter.folderUrl(folderPath);
 }
 
 // Batch-save persisted node positions. Called by the frontend after layout
