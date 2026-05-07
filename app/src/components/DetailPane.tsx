@@ -505,9 +505,11 @@ function DetailPaneBody({
           </div>
           <div className="min-h-0 flex-1">
             <TerminalPane
-              nodeId={node.id}
+              sessionId={`legacy_${node.id}`}
               cwd={terminal.cwd}
               command={terminal.command}
+              active={true}
+              onExit={() => setTerminal(null)}
             />
           </div>
         </div>
