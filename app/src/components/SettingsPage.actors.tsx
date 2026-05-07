@@ -10,7 +10,7 @@ export default function SettingsActorsPanel() {
     <Suspense
       fallback={
         <div className="flex h-full items-center justify-center text-[14px] text-[var(--color-text-dim)]">
-          Nacitam aktéry…
+          Načítám aktéry…
         </div>
       }
     >
