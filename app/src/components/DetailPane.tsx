@@ -65,9 +65,6 @@ import {
 // DetailPane composes them with its own state.
 import { EventCard, AddEventForm } from "./DetailPane.events";
 import { FileTree, SyncBar, ActionButtons } from "./DetailPane.files";
-import TerminalPane from "./TerminalPane";
-import { createNodeMirror } from "../api";
-import { buildAgentCommand } from "../lib/prompt";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
 // node shows the last-known badges instantly while the background
@@ -103,6 +100,12 @@ type Props = {
   onBack: () => void;
   onMutate: () => Promise<void>;
   agentCommand: string;
+  onOpenTerminal: (nodeId: string) => void;
+  // True when this pane is rendered inside another column (e.g. the
+  // workspace's right-side detail). Drops the slide-in animation, the
+  // 40vw / min-w-440 sizing, and the left border so the parent's layout
+  // controls the geometry.
+  embedded?: boolean;
 };
 
 export default function DetailPane({
@@ -115,10 +118,17 @@ export default function DetailPane({
   onBack,
   onMutate,
   agentCommand,
+  onOpenTerminal,
+  embedded,
 }: Props) {
   if (loading && !node) {
     return (
-      <PaneShell onClose={() => onSelect(null)} canGoBack={false} onBack={onBack}>
+      <PaneShell
+        onClose={() => onSelect(null)}
+        canGoBack={false}
+        onBack={onBack}
+        embedded={embedded}
+      >
         <div className="flex h-full items-center justify-center text-[13.5px] text-[var(--color-text-dim)]">
           Načítám...
         </div>
@@ -128,7 +138,12 @@ export default function DetailPane({
 
   if (error) {
     return (
-      <PaneShell onClose={() => onSelect(null)} canGoBack={false} onBack={onBack}>
+      <PaneShell
+        onClose={() => onSelect(null)}
+        canGoBack={false}
+        onBack={onBack}
+        embedded={embedded}
+      >
         <div
           className="flex h-full items-center justify-center text-[13.5px]"
           style={{ color: "var(--color-danger)" }}
@@ -150,6 +165,8 @@ export default function DetailPane({
       onBack={onBack}
       onMutate={onMutate}
       agentCommand={agentCommand}
+      onOpenTerminal={onOpenTerminal}
+      embedded={embedded}
     />
   );
 }
@@ -162,6 +179,8 @@ function DetailPaneBody({
   onBack,
   onMutate,
   agentCommand,
+  onOpenTerminal,
+  embedded,
 }: {
   node: NodeDetail;
   graph: GraphPayload | null;
@@ -170,6 +189,8 @@ function DetailPaneBody({
   onBack: () => void;
   onMutate: () => Promise<void>;
   agentCommand: string;
+  onOpenTerminal: (nodeId: string) => void;
+  embedded?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
@@ -195,15 +216,6 @@ function DetailPaneBody({
     null,
   );
 
-  // Embedded terminal (Phase 3): when set, the detail pane is replaced
-  // by an xterm.js view backed by the Tauri PTY backend. cwd + command
-  // are captured at open time so the terminal stays attached to that
-  // exact session even if the underlying NodeDetail props change.
-  const [terminal, setTerminal] = useState<
-    null | { cwd: string; command: string }
-  >(null);
-  const [terminalOpening, setTerminalOpening] = useState(false);
-
   // Reset edit drafts whenever we switch to a different node.
   const lastIdRef = useRef(node.id);
   useEffect(() => {
@@ -222,30 +234,11 @@ function DetailPaneBody({
       setSyncError(null);
       setSyncRunning(false);
       setSyncRunResult(null);
-      setTerminal(null);
-      setTerminalOpening(false);
     }
   }, [node.id, node.name]);
 
-  const openEmbeddedTerminal = async () => {
-    if (terminalOpening || terminal) return;
-    setTerminalOpening(true);
-    try {
-      const { local_path } = await createNodeMirror(node.id);
-      const enriched: NodeDetail = {
-        ...node,
-        local_mirror: node.local_mirror ?? {
-          local_path,
-          registered_at: new Date().toISOString(),
-        },
-      };
-      const cmd = buildAgentCommand(enriched, agentCommand);
-      setTerminal({ cwd: local_path, command: cmd });
-    } catch (err) {
-      setErrorMsg(`Nelze otevřít terminál: ${String(err)}`);
-    } finally {
-      setTerminalOpening(false);
-    }
+  const openEmbeddedTerminal = () => {
+    onOpenTerminal(node.id);
   };
 
   // Trigger node-wide sync. Pushes push_candidates, pulls pull_candidates,
@@ -475,46 +468,6 @@ function DetailPaneBody({
     return null;
   })();
 
-  if (terminal) {
-    return (
-      <PaneShell
-        canGoBack={canGoBack}
-        onBack={onBack}
-        // Close button on terminal mode closes the terminal and returns
-        // to the node detail. Deselecting the node from here would
-        // unmount the entire DetailPane mid-PTY-cleanup, which doesn't
-        // match the user's mental model of "X closes what I'm looking at".
-        onClose={() => setTerminal(null)}
-      >
-        <div className="flex h-full flex-col">
-          <div className="flex shrink-0 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 text-[13px]">
-            <span
-              className="inline-flex h-1.5 w-1.5 rounded-full"
-              style={{
-                background: nodeTypeVar(node.type),
-                boxShadow: `0 0 8px ${nodeTypeGlow(node.type, 0.7)}`,
-              }}
-            />
-            <span className="font-medium text-[var(--color-text)]">
-              {node.name}
-            </span>
-            <span className="text-[var(--color-text-dim)]">·</span>
-            <span className="font-mono text-[12px] text-[var(--color-text-muted)]">
-              terminál
-            </span>
-          </div>
-          <div className="min-h-0 flex-1">
-            <TerminalPane
-              nodeId={node.id}
-              cwd={terminal.cwd}
-              command={terminal.command}
-            />
-          </div>
-        </div>
-      </PaneShell>
-    );
-  }
-
   return (
     <PaneShell
       canGoBack={canGoBack}
@@ -522,6 +475,7 @@ function DetailPaneBody({
       onClose={() => onSelect(null)}
       editing={editing}
       onEdit={startEdit}
+      embedded={embedded}
     >
       {/* Header */}
       <div className="border-b border-[var(--color-border)] px-6 py-5">
@@ -898,13 +852,10 @@ function DetailPaneBody({
             {node.type !== "organization" && (
               <button
                 onClick={openEmbeddedTerminal}
-                disabled={terminalOpening}
-                title="Otevře terminál uvnitř Portuni a spustí v něm Claude. Pracovní složka bude vytvořena, pokud ještě neexistuje."
-                className="flex items-center justify-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-60"
+                title="Otevře terminál v Práci a spustí v něm Claude. Pracovní složka bude vytvořena, pokud ještě neexistuje."
+                className="flex items-center justify-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
               >
-                {terminalOpening
-                  ? "Připravuji…"
-                  : "Otevřít terminál v Portuni"}
+                Otevřít terminál v Portuni
               </button>
             )}
           </div>
@@ -921,6 +872,7 @@ function PaneShell({
   onClose,
   editing,
   onEdit,
+  embedded,
 }: {
   children: React.ReactNode;
   canGoBack: boolean;
@@ -928,9 +880,19 @@ function PaneShell({
   onClose: () => void;
   editing?: boolean;
   onEdit?: () => void;
+  // When embedded inside another pane (e.g. WorkspaceView's right
+  // column), drop the slide-in animation, the fixed-width / min-width
+  // sizing, and the left border — the parent supplies all of those.
+  embedded?: boolean;
 }) {
   return (
-    <aside className="animate-slide-in flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)] bg-[var(--color-bg)]">
+    <aside
+      className={
+        embedded
+          ? "flex h-full w-full flex-col bg-[var(--color-bg)]"
+          : "animate-slide-in flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)] bg-[var(--color-bg)]"
+      }
+    >
       <div className="flex items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2">
         <button
           disabled={!canGoBack}

@@ -102,6 +102,25 @@ pub fn pty_spawn(
         return Err(format!("cwd does not exist: {}", args.cwd));
     }
 
+    // Guard against duplicate spawns. The multi-session design assumes
+    // exactly one pty_spawn per session_id; the React TerminalPane mounts
+    // once per session and never re-spawns on rerenders. If we land here
+    // and the id already exists, something on the frontend is remounting
+    // (a known symptom: 1Password keeps asking because the shell keeps
+    // restarting). The right move is to keep the existing PTY alive and
+    // log loudly — replacing would SIGHUP the running shell, which is
+    // exactly the wrong thing for a multi-session workspace.
+    {
+        let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+        if sessions.contains_key(&args.session_id) {
+            warn!(
+                "pty_spawn called twice for session {} — keeping existing PTY (frontend remount bug?)",
+                args.session_id
+            );
+            return Ok(());
+        }
+    }
+
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {

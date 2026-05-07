@@ -2,15 +2,22 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import Sidebar, { type AppView } from "./components/Sidebar";
 import DetailPane from "./components/DetailPane";
 import SettingsPage from "./components/SettingsPage";
+import WorkspaceView from "./components/WorkspaceView";
 import StatusFooter from "./components/StatusFooter";
 import CreateNodeModal from "./components/CreateNodeModal";
-import { fetchGraph, fetchNode } from "./api";
+import { fetchGraph, fetchNode, createNodeMirror } from "./api";
+import { buildAgentCommand } from "./lib/prompt";
+import {
+  type TerminalSession,
+  createSession,
+  removeSession,
+  markActivity,
+} from "./lib/sessions";
 
 // Lazy chunks: cytoscape (the GraphView dep) is the main reason the app
 // bundle blew past 500 kB. Splitting GraphView and ActorsPage cuts the
 // initial bundle by ~70 % and keeps the marketing/docs sites snappy.
 const GraphView = lazy(() => import("./components/GraphView"));
-const ActorsPage = lazy(() => import("./components/ActorsPage"));
 import type { GraphPayload, NodeDetail } from "./types";
 import type { Theme } from "./lib/theme";
 import { loadTheme, saveTheme } from "./lib/theme";
@@ -33,7 +40,7 @@ export default function App() {
   const [view, setView] = useState<AppView>(() => {
     const p = new URLSearchParams(window.location.search);
     const v = p.get("view");
-    if (v === "actors") return "actors";
+    if (v === "workspace") return "workspace";
     if (v === "settings") return "settings";
     return "graph";
   });
@@ -115,6 +122,11 @@ export default function App() {
       url.searchParams.delete("view");
     } else {
       url.searchParams.set("view", view);
+    }
+    // ?settingsTab is only meaningful inside the Settings page; drop it
+    // when navigating away so it doesn't leak into other views' URLs.
+    if (view !== "settings") {
+      url.searchParams.delete("settingsTab");
     }
     window.history.replaceState(null, "", url.toString());
   }, [view]);
@@ -220,6 +232,179 @@ export default function App() {
     setTheme((t) => (t === "dark" ? "light" : "dark"));
   }, []);
 
+  // --- Session state ---
+  const [sessions, setSessions] = useState<TerminalSession[]>([]);
+  const [selectedWorkspaceNodeId, setSelectedWorkspaceNodeId] = useState<string | null>(null);
+  const [activeSessionIdByNode, setActiveSessionIdByNode] = useState<Record<string, string>>({});
+  const [now, setNow] = useState<number>(() => Date.now());
+
+  // Detail for the workspace's selected node. Kept separate from
+  // graph-view's `nodeDetail` so the two views can have independent
+  // selection (the graph is for browsing, the workspace is for active
+  // work — different selections make sense).
+  const [workspaceNodeDetail, setWorkspaceNodeDetail] = useState<NodeDetail | null>(null);
+  const [workspaceDetailLoading, setWorkspaceDetailLoading] = useState(false);
+  const [workspaceDetailError, setWorkspaceDetailError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedWorkspaceNodeId) {
+      setWorkspaceNodeDetail(null);
+      setWorkspaceDetailError(null);
+      return;
+    }
+    setWorkspaceDetailLoading(true);
+    setWorkspaceDetailError(null);
+    let cancelled = false;
+    fetchNode(selectedWorkspaceNodeId)
+      .then((n) => {
+        if (cancelled) return;
+        setWorkspaceNodeDetail(n);
+        setWorkspaceDetailLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setWorkspaceDetailError(String(err));
+        setWorkspaceDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedWorkspaceNodeId]);
+
+  const refetchWorkspaceDetail = useCallback(async () => {
+    if (!selectedWorkspaceNodeId) return;
+    try {
+      const n = await fetchNode(selectedWorkspaceNodeId);
+      setWorkspaceNodeDetail(n);
+      setWorkspaceDetailError(null);
+    } catch (err) {
+      setWorkspaceDetailError(String(err));
+    }
+  }, [selectedWorkspaceNodeId]);
+
+  // 1s tick so the activity-indicator color flips green->orange as the
+  // 1.5s threshold passes without further output. Cheap; the only state
+  // consumers are the indicator dots in WorkspaceNodeList and TerminalTabs.
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  // Listen for pty-data and pty-exit events at App level so lastOutputAt
+  // updates for every session regardless of which pane is visible.
+  useEffect(() => {
+    let unlistenData: (() => void) | null = null;
+    let unlistenExit: (() => void) | null = null;
+    let cancelled = false;
+    (async () => {
+      if (typeof window === "undefined") return;
+      // Browser-mode (vite dev outside Tauri) has no pty events. Skip.
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        type PtyData = { session_id: string };
+        type PtyExit = { session_id: string; code: number | null };
+        unlistenData = await listen<PtyData>("pty-data", (e) => {
+          if (cancelled) return;
+          const id = e.payload.session_id;
+          setSessions((prev) => markActivity(prev, id));
+        });
+        unlistenExit = await listen<PtyExit>("pty-exit", (e) => {
+          if (cancelled) return;
+          const id = e.payload.session_id;
+          setSessions((prev) => removeSession(prev, id));
+          setActiveSessionIdByNode((prev) => {
+            const next: Record<string, string> = {};
+            for (const [nid, sid] of Object.entries(prev)) {
+              if (sid !== id) next[nid] = sid;
+            }
+            return next;
+          });
+          // selectedWorkspaceNodeId may now point at a node with zero
+          // sessions. WorkspaceNodeList only renders nodes-with-sessions
+          // so a stale pointer is a render-time no-op for now; Task 9
+          // can clear it explicitly once we have a UX answer for "where
+          // does focus land when the last session for the selected node
+          // dies?".
+        });
+      } catch {
+        // Not running in Tauri -- fine.
+      }
+    })();
+    return () => {
+      cancelled = true;
+      try { unlistenData?.(); } catch { /* unlisten can throw if Tauri is gone */ }
+      try { unlistenExit?.(); } catch { /* same */ }
+    };
+  }, []);
+
+  const openSession = useCallback(
+    (input: { node: NodeDetail; cwd: string; command: string }) => {
+      const session = createSession({
+        nodeId: input.node.id,
+        nodeName: input.node.name,
+        nodeType: input.node.type,
+        cwd: input.cwd,
+        command: input.command,
+      });
+      setSessions((prev) => [...prev, session]);
+      setSelectedWorkspaceNodeId(input.node.id);
+      setActiveSessionIdByNode((prev) => ({ ...prev, [input.node.id]: session.id }));
+      setView("workspace");
+    },
+    [],
+  );
+
+  const openSessionForNodeId = useCallback(
+    async (nodeId: string) => {
+      let detail: NodeDetail | null = null;
+      try {
+        detail = await fetchNode(nodeId);
+      } catch (err) {
+        setGraphError(`Nelze načíst uzel: ${String(err)}`);
+        return;
+      }
+      if (!detail) return;
+      let cwd: string;
+      try {
+        const mirror = await createNodeMirror(nodeId);
+        cwd = mirror.local_path;
+      } catch (err) {
+        setGraphError(`Nelze otevřít terminál: ${String(err)}`);
+        return;
+      }
+      const enriched: NodeDetail = {
+        ...detail,
+        local_mirror: detail.local_mirror ?? {
+          local_path: cwd,
+          registered_at: new Date().toISOString(),
+        },
+      };
+      const command = buildAgentCommand(enriched, agentCommand);
+      openSession({ node: enriched, cwd, command });
+    },
+    [agentCommand, openSession],
+  );
+
+  const closeSession = useCallback((sessionId: string) => {
+    setSessions((prev) => removeSession(prev, sessionId));
+    setActiveSessionIdByNode((prev) => {
+      const next = { ...prev };
+      for (const [nid, sid] of Object.entries(next)) {
+        if (sid === sessionId) delete next[nid];
+      }
+      return next;
+    });
+    // Best-effort: tell the backend the PTY is gone. Errors swallowed --
+    // the pty-exit reader thread will clean up its own map entry once
+    // the child SIGHUPs. This is the SOLE pty_kill call site in the app.
+    void (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("pty_kill", { args: { session_id: sessionId } });
+      } catch { /* errors swallowed -- pty-exit thread self-cleans */ }
+    })();
+  }, []);
+
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden">
       <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -244,6 +429,7 @@ export default function App() {
           onViewChange={setView}
           onOpenSettings={() => setView("settings")}
           onCreateNode={() => openCreateModal()}
+          workspaceBadge={sessions.length}
         />
       )}
 
@@ -290,16 +476,51 @@ export default function App() {
             />
           </Suspense>
         )}
-        {view === "actors" && (
-          <Suspense
-            fallback={
-              <div className="absolute inset-0 flex items-center justify-center text-[14px] text-[var(--color-text-dim)]">
-                Načítám…
-              </div>
+        {/*
+          WorkspaceView stays mounted whenever there are live sessions, so
+          switching to Graf/Nastavení and back doesn't unmount TerminalPane
+          and accidentally re-spawn the PTY (pty_spawn replaces by id, which
+          would SIGHUP the running shell — breaks the "sessions přežijí
+          přepnutí pohledu" contract from the sidebar hint). When no sessions
+          exist, we only mount on demand so the picker's autoFocus doesn't
+          steal focus from the graph view.
+        */}
+        {(view === "workspace" || sessions.length > 0) && (
+          <div
+            className={
+              view === "workspace"
+                ? "absolute inset-0"
+                : "pointer-events-none absolute inset-0 hidden"
             }
+            aria-hidden={view !== "workspace"}
           >
-            <ActorsPage />
-          </Suspense>
+            <WorkspaceView
+              graph={graph}
+              sessions={sessions}
+              now={now}
+              selectedNodeId={selectedWorkspaceNodeId}
+              onSelectNode={setSelectedWorkspaceNodeId}
+              activeSessionIdByNode={activeSessionIdByNode}
+              onSetActiveSession={(nodeId, sessionId) =>
+                setActiveSessionIdByNode((p) => ({ ...p, [nodeId]: sessionId }))
+              }
+              onCloseSession={closeSession}
+              onOpenSessionFromPicker={(node) => {
+                void openSessionForNodeId(node.id);
+              }}
+              onNewSessionForCurrentNode={(nodeId) => {
+                void openSessionForNodeId(nodeId);
+              }}
+              nodeDetail={workspaceNodeDetail}
+              nodeDetailLoading={workspaceDetailLoading}
+              nodeDetailError={workspaceDetailError}
+              agentCommand={agentCommand}
+              onOpenTerminal={openSessionForNodeId}
+              onMutate={async () => {
+                await Promise.all([refetchAll(), refetchWorkspaceDetail()]);
+              }}
+            />
+          </div>
         )}
         {view === "settings" && (
           <SettingsPage
@@ -320,11 +541,16 @@ export default function App() {
           onBack={goBack}
           onMutate={refetchAll}
           agentCommand={agentCommand}
+          onOpenTerminal={openSessionForNodeId}
         />
       )}
 
       </div>
-      <StatusFooter onOpenSettings={() => setView("settings")} />
+      <StatusFooter
+        onOpenSettings={() => setView("settings")}
+        sessionCount={sessions.length}
+        onOpenWorkspace={() => setView("workspace")}
+      />
       {createModalOpen && graph && (
         <CreateNodeModal
           existingNodes={graph.nodes}
