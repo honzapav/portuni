@@ -7,9 +7,15 @@ import { useMcpStatus } from "../lib/use-mcp-status";
 
 type Props = {
   onOpenSettings: () => void;
+  sessionCount: number;
+  onOpenWorkspace: () => void;
 };
 
-export default function StatusFooter({ onOpenSettings }: Props) {
+export default function StatusFooter({
+  onOpenSettings,
+  sessionCount,
+  onOpenWorkspace,
+}: Props) {
   const status = useMcpStatus();
 
   const dotColor =
@@ -47,6 +53,17 @@ export default function StatusFooter({ onOpenSettings }: Props) {
         />
         <span className="font-mono">{label}</span>
       </button>
+      {sessionCount > 0 && (
+        <button
+          type="button"
+          title={`Aktivní sessions: ${sessionCount}`}
+          onClick={onOpenWorkspace}
+          className="ml-3 flex items-center gap-2 rounded px-2 py-0.5 transition-colors hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
+        >
+          <span aria-hidden="true" className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
+          <span className="font-mono">{sessionCount} sess</span>
+        </button>
+      )}
     </footer>
   );
 }

@@ -477,7 +477,11 @@ export default function App() {
       )}
 
       </div>
-      <StatusFooter onOpenSettings={() => setView("settings")} />
+      <StatusFooter
+        onOpenSettings={() => setView("settings")}
+        sessionCount={sessions.length}
+        onOpenWorkspace={() => setView("workspace")}
+      />
       {createModalOpen && graph && (
         <CreateNodeModal
           existingNodes={graph.nodes}
