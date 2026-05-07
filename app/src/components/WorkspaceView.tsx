@@ -1,14 +1,16 @@
-// 3-column layout shell. In this task it just renders placeholders — the
-// real left/middle/right column components arrive in Tasks 6–8. The
-// detail-collapse state lives here so the layout owns its own UI state.
+// 3-column layout shell: workspace node list on the left, terminal tabs
+// in the middle, the selected node's detail (the existing DetailPane in
+// embedded mode) on the right. The detail-collapse state lives here so
+// the layout owns its own UI state.
 
 import { useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import type { GraphPayload, GraphNode } from "../types";
+import type { GraphPayload, GraphNode, NodeDetail } from "../types";
 import type { TerminalSession } from "../lib/sessions";
 import WorkspaceNodeList from "./WorkspaceNodeList";
 import TerminalTabs from "./TerminalTabs";
 import WorkspaceEmpty from "./WorkspaceEmpty";
+import DetailPane from "./DetailPane";
 
 type Props = {
   graph: GraphPayload | null;
@@ -21,7 +23,16 @@ type Props = {
   onCloseSession: (sessionId: string) => void;
   onOpenSessionFromPicker: (node: GraphNode) => void;
   onNewSessionForCurrentNode: (nodeId: string) => void;
-  detailNodeId: string | null;
+  // Detail data for the right column. Fetched in App.tsx whenever
+  // selectedNodeId changes.
+  nodeDetail: NodeDetail | null;
+  nodeDetailLoading: boolean;
+  nodeDetailError: string | null;
+  agentCommand: string;
+  onOpenTerminal: (nodeId: string) => void;
+  // Refetch graph + this view's node detail after an edit. DetailPane's
+  // edit / lifecycle / sync flows all funnel through this.
+  onMutate: () => Promise<void>;
 };
 
 export default function WorkspaceView({
@@ -35,7 +46,12 @@ export default function WorkspaceView({
   onCloseSession,
   onOpenSessionFromPicker,
   onNewSessionForCurrentNode,
-  detailNodeId: _detailNodeId,
+  nodeDetail,
+  nodeDetailLoading,
+  nodeDetailError,
+  agentCommand,
+  onOpenTerminal,
+  onMutate,
 }: Props) {
   const [detailVisible, setDetailVisible] = useState<boolean>(() => {
     return localStorage.getItem("portuni:workspace.detailVisible") !== "false";
@@ -81,23 +97,49 @@ export default function WorkspaceView({
         )}
       </main>
       {detailVisible ? (
-        <aside className="flex w-[360px] shrink-0 flex-col border-l border-[var(--color-border)]">
-          <div className="flex items-center justify-between px-4 py-2">
+        <aside className="flex w-[440px] shrink-0 flex-col border-l border-[var(--color-border)]">
+          <div className="flex shrink-0 items-center justify-between border-b border-[var(--color-border)] px-4 py-2">
             <span className="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-dim)]">
               Detail
             </span>
-            <button onClick={toggleDetail} title="Skrýt detail">
+            <button
+              onClick={toggleDetail}
+              title="Skrýt detail"
+              aria-label="Skrýt detail"
+              className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
+            >
               <ChevronRight size={14} />
             </button>
           </div>
-          <div className="flex-1 px-4 text-[13px] text-[var(--color-text-dim)]">
-            Detail placeholder
+          <div className="min-h-0 flex-1">
+            {selectedNodeId ? (
+              <DetailPane
+                node={nodeDetail}
+                graph={graph}
+                loading={nodeDetailLoading}
+                error={nodeDetailError}
+                onSelect={(id) => onSelectNode(id)}
+                canGoBack={false}
+                onBack={() => {
+                  // No-op: workspace doesn't keep a back-stack like graph does.
+                }}
+                onMutate={onMutate}
+                agentCommand={agentCommand}
+                onOpenTerminal={onOpenTerminal}
+                embedded
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center px-4 text-center text-[13px] text-[var(--color-text-dim)]">
+                Vyber uzel vlevo nebo otevři terminál.
+              </div>
+            )}
           </div>
         </aside>
       ) : (
         <button
           onClick={toggleDetail}
           title="Zobrazit detail"
+          aria-label="Zobrazit detail"
           className="flex h-full w-6 shrink-0 items-center justify-center border-l border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
         >
           <ChevronLeft size={14} />

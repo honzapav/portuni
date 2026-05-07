@@ -101,6 +101,11 @@ type Props = {
   onMutate: () => Promise<void>;
   agentCommand: string;
   onOpenTerminal: (nodeId: string) => void;
+  // True when this pane is rendered inside another column (e.g. the
+  // workspace's right-side detail). Drops the slide-in animation, the
+  // 40vw / min-w-440 sizing, and the left border so the parent's layout
+  // controls the geometry.
+  embedded?: boolean;
 };
 
 export default function DetailPane({
@@ -114,10 +119,16 @@ export default function DetailPane({
   onMutate,
   agentCommand,
   onOpenTerminal,
+  embedded,
 }: Props) {
   if (loading && !node) {
     return (
-      <PaneShell onClose={() => onSelect(null)} canGoBack={false} onBack={onBack}>
+      <PaneShell
+        onClose={() => onSelect(null)}
+        canGoBack={false}
+        onBack={onBack}
+        embedded={embedded}
+      >
         <div className="flex h-full items-center justify-center text-[13.5px] text-[var(--color-text-dim)]">
           Načítám...
         </div>
@@ -127,7 +138,12 @@ export default function DetailPane({
 
   if (error) {
     return (
-      <PaneShell onClose={() => onSelect(null)} canGoBack={false} onBack={onBack}>
+      <PaneShell
+        onClose={() => onSelect(null)}
+        canGoBack={false}
+        onBack={onBack}
+        embedded={embedded}
+      >
         <div
           className="flex h-full items-center justify-center text-[13.5px]"
           style={{ color: "var(--color-danger)" }}
@@ -150,6 +166,7 @@ export default function DetailPane({
       onMutate={onMutate}
       agentCommand={agentCommand}
       onOpenTerminal={onOpenTerminal}
+      embedded={embedded}
     />
   );
 }
@@ -163,6 +180,7 @@ function DetailPaneBody({
   onMutate,
   agentCommand,
   onOpenTerminal,
+  embedded,
 }: {
   node: NodeDetail;
   graph: GraphPayload | null;
@@ -172,6 +190,7 @@ function DetailPaneBody({
   onMutate: () => Promise<void>;
   agentCommand: string;
   onOpenTerminal: (nodeId: string) => void;
+  embedded?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
@@ -456,6 +475,7 @@ function DetailPaneBody({
       onClose={() => onSelect(null)}
       editing={editing}
       onEdit={startEdit}
+      embedded={embedded}
     >
       {/* Header */}
       <div className="border-b border-[var(--color-border)] px-6 py-5">
@@ -852,6 +872,7 @@ function PaneShell({
   onClose,
   editing,
   onEdit,
+  embedded,
 }: {
   children: React.ReactNode;
   canGoBack: boolean;
@@ -859,9 +880,19 @@ function PaneShell({
   onClose: () => void;
   editing?: boolean;
   onEdit?: () => void;
+  // When embedded inside another pane (e.g. WorkspaceView's right
+  // column), drop the slide-in animation, the fixed-width / min-width
+  // sizing, and the left border — the parent supplies all of those.
+  embedded?: boolean;
 }) {
   return (
-    <aside className="animate-slide-in flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)] bg-[var(--color-bg)]">
+    <aside
+      className={
+        embedded
+          ? "flex h-full w-full flex-col bg-[var(--color-bg)]"
+          : "animate-slide-in flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)] bg-[var(--color-bg)]"
+      }
+    >
       <div className="flex items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2">
         <button
           disabled={!canGoBack}

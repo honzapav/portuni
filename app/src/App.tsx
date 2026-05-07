@@ -238,6 +238,50 @@ export default function App() {
   const [activeSessionIdByNode, setActiveSessionIdByNode] = useState<Record<string, string>>({});
   const [now, setNow] = useState<number>(() => Date.now());
 
+  // Detail for the workspace's selected node. Kept separate from
+  // graph-view's `nodeDetail` so the two views can have independent
+  // selection (the graph is for browsing, the workspace is for active
+  // work — different selections make sense).
+  const [workspaceNodeDetail, setWorkspaceNodeDetail] = useState<NodeDetail | null>(null);
+  const [workspaceDetailLoading, setWorkspaceDetailLoading] = useState(false);
+  const [workspaceDetailError, setWorkspaceDetailError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedWorkspaceNodeId) {
+      setWorkspaceNodeDetail(null);
+      setWorkspaceDetailError(null);
+      return;
+    }
+    setWorkspaceDetailLoading(true);
+    setWorkspaceDetailError(null);
+    let cancelled = false;
+    fetchNode(selectedWorkspaceNodeId)
+      .then((n) => {
+        if (cancelled) return;
+        setWorkspaceNodeDetail(n);
+        setWorkspaceDetailLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setWorkspaceDetailError(String(err));
+        setWorkspaceDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedWorkspaceNodeId]);
+
+  const refetchWorkspaceDetail = useCallback(async () => {
+    if (!selectedWorkspaceNodeId) return;
+    try {
+      const n = await fetchNode(selectedWorkspaceNodeId);
+      setWorkspaceNodeDetail(n);
+      setWorkspaceDetailError(null);
+    } catch (err) {
+      setWorkspaceDetailError(String(err));
+    }
+  }, [selectedWorkspaceNodeId]);
+
   // 1s tick so the activity-indicator color flips green->orange as the
   // 1.5s threshold passes without further output. Cheap; the only state
   // consumers are the indicator dots in WorkspaceNodeList and TerminalTabs.
@@ -467,7 +511,14 @@ export default function App() {
               onNewSessionForCurrentNode={(nodeId) => {
                 void openSessionForNodeId(nodeId);
               }}
-              detailNodeId={selectedWorkspaceNodeId}
+              nodeDetail={workspaceNodeDetail}
+              nodeDetailLoading={workspaceDetailLoading}
+              nodeDetailError={workspaceDetailError}
+              agentCommand={agentCommand}
+              onOpenTerminal={openSessionForNodeId}
+              onMutate={async () => {
+                await Promise.all([refetchAll(), refetchWorkspaceDetail()]);
+              }}
             />
           </div>
         )}
