@@ -77,9 +77,11 @@ export default function SettingsPage({
           <h1 className="text-[20px] font-semibold tracking-tight text-[var(--color-text)]">
             Nastavení
           </h1>
-          <p className="mt-1 text-[13px] text-[var(--color-text-dim)]">
-            Změny se ukládají automaticky.
-          </p>
+          {tab === "general" && (
+            <p className="mt-1 text-[13px] text-[var(--color-text-dim)]">
+              Změny se ukládají automaticky.
+            </p>
+          )}
           <div className="mt-3 flex w-max gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-0.5">
             <button
               onClick={() => setTab("general")}

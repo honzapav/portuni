@@ -114,6 +114,11 @@ export default function App() {
     } else {
       url.searchParams.set("view", view);
     }
+    // ?settingsTab is only meaningful inside the Settings page; drop it
+    // when navigating away so it doesn't leak into other views' URLs.
+    if (view !== "settings") {
+      url.searchParams.delete("settingsTab");
+    }
     window.history.replaceState(null, "", url.toString());
   }, [view]);
 
