@@ -274,6 +274,12 @@ export default function App() {
             }
             return next;
           });
+          // selectedWorkspaceNodeId may now point at a node with zero
+          // sessions. WorkspaceNodeList only renders nodes-with-sessions
+          // so a stale pointer is a render-time no-op for now; Task 9
+          // can clear it explicitly once we have a UX answer for "where
+          // does focus land when the last session for the selected node
+          // dies?".
         });
       } catch {
         // Not running in Tauri -- fine.
@@ -414,7 +420,9 @@ export default function App() {
               setView("graph");
             }}
             onNewSessionForCurrentNode={(_nodeId) => {
-              // Task 9 replaces this stub with: openSession({ node, cwd, command })
+              // Stub. Task 9 wires this through openSession({ node, cwd, command });
+              // until then `void openSession` silences noUnusedLocals without
+              // calling anything (void on an identifier evaluates and discards).
               void openSession;
             }}
             detailNodeId={selectedWorkspaceNodeId}

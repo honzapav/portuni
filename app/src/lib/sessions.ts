@@ -57,7 +57,11 @@ export function markActivity(
     mutated = true;
     return { ...s, lastOutputAt: at };
   });
-  return mutated ? next : sessions.slice();
+  // Return the original array reference when nothing changed so React
+  // setters short-circuit on identity. pty-data fires per byte chunk;
+  // a fresh array on every event would rerender every consumer for
+  // free. Cast through unknown to drop readonly without copying.
+  return mutated ? next : (sessions as unknown as TerminalSession[]);
 }
 
 export function isSessionActive(
