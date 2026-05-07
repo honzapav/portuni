@@ -504,6 +504,13 @@ function DetailPaneBody({
             </span>
           </div>
           <div className="min-h-0 flex-1">
+            {/*
+              Temporary bridge: until the multi-session workspace lands (Task 9 of
+              the plan), DetailPane still owns the single-terminal flow. The
+              parent-owned pty_kill contract introduced in Task 2 is satisfied by
+              the pty-exit reader thread on natural shell exit; explicit kill on X
+              is wired up in Task 9.
+            */}
             <TerminalPane
               sessionId={`legacy_${node.id}`}
               cwd={terminal.cwd}

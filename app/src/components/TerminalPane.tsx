@@ -106,7 +106,6 @@ export default function TerminalPane({
       scrollback: 5000,
     });
     const fit = new FitAddon();
-    fitRef.current = fit;
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
     const unicode11 = new Unicode11Addon();
@@ -123,10 +122,13 @@ export default function TerminalPane({
       await document.fonts.ready;
       if (cancelled) return;
       term.open(container);
+      // Now safe to expose the addon to the active-fit effect — before
+      // term.open(), FitAddon.fit() throws because there's no DOM.
+      fitRef.current = fit;
       try {
         fit.fit();
-      } catch (e) {
-        void e;
+      } catch {
+        // container may be 0x0 at open time — ignore
       }
 
       const { invoke } = await import("@tauri-apps/api/core");
@@ -233,6 +235,8 @@ export default function TerminalPane({
   // (B) Active-fit effect — refits when a pane becomes the active tab.
   useEffect(() => {
     if (!active) return;
+    // One animation frame to let the browser apply display:block on a
+    // previously hidden pane before we measure cell sizes.
     const id = window.setTimeout(() => {
       try {
         fitRef.current?.fit();
