@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, Search, Sun, Moon, X, Settings, Waypoints } from "lucide-react";
+import { Plus, Search, Sun, Moon, X, Settings, Waypoints, Terminal } from "lucide-react";
 import type { GraphPayload, GraphNode } from "../types";
 import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
 import type { Theme } from "../lib/theme";
 import { foldForSearch } from "../lib/normalize";
 
-export type AppView = "graph" | "actors" | "settings";
+export type AppView = "graph" | "workspace" | "settings";
 
 type Props = {
   graph: GraphPayload;
@@ -30,6 +30,7 @@ type Props = {
   // Open the "create node" modal. Always visible at the top of the
   // graph view so it's the first action a user sees.
   onCreateNode: () => void;
+  workspaceBadge?: number;
 };
 
 function nodeTypeVar(type: string): string {
@@ -68,6 +69,7 @@ export default function Sidebar({
   onViewChange,
   onOpenSettings,
   onCreateNode,
+  workspaceBadge,
 }: Props) {
   return (
     <aside className="flex h-full w-[300px] shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-bg)]">
@@ -108,6 +110,13 @@ export default function Sidebar({
             icon={<Waypoints size={12} />}
             active={view === "graph"}
             onClick={() => onViewChange("graph")}
+          />
+          <ViewToggleButton
+            label="Práce"
+            icon={<Terminal size={12} />}
+            active={view === "workspace"}
+            onClick={() => onViewChange("workspace")}
+            badge={workspaceBadge}
           />
         </div>
       </div>
@@ -153,7 +162,9 @@ export default function Sidebar({
       <div className="border-t border-[var(--color-border)] px-5 py-3 text-[11px] text-[var(--color-text-dim)]">
         {view === "graph"
           ? "Kliknutím na uzel otevřete detail. Tažením posunete pohled, kolečkem přibližujete."
-          : "Změny se ukládají automaticky."}
+          : view === "workspace"
+            ? "Sessions zůstávají naživu při přepnutí pohledu. Cmd+Q ukončí všechny."
+            : "Změny se ukládají automaticky."}
       </div>
     </aside>
   );
@@ -164,11 +175,13 @@ function ViewToggleButton({
   icon,
   active,
   onClick,
+  badge,
 }: {
   label: string;
   icon: React.ReactNode;
   active: boolean;
   onClick: () => void;
+  badge?: number;
 }) {
   return (
     <button
@@ -181,6 +194,11 @@ function ViewToggleButton({
     >
       {icon}
       {label}
+      {badge != null && badge > 0 && (
+        <span className="ml-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--color-accent-soft)] px-1 text-[10px] font-medium text-[var(--color-accent)]">
+          {badge}
+        </span>
+      )}
     </button>
   );
 }

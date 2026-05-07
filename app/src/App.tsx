@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import Sidebar, { type AppView } from "./components/Sidebar";
 import DetailPane from "./components/DetailPane";
 import SettingsPage from "./components/SettingsPage";
+import WorkspaceView from "./components/WorkspaceView";
 import StatusFooter from "./components/StatusFooter";
 import CreateNodeModal from "./components/CreateNodeModal";
 import { fetchGraph, fetchNode } from "./api";
@@ -32,6 +33,7 @@ export default function App() {
   const [view, setView] = useState<AppView>(() => {
     const p = new URLSearchParams(window.location.search);
     const v = p.get("view");
+    if (v === "workspace") return "workspace";
     if (v === "settings") return "settings";
     return "graph";
   });
@@ -247,6 +249,7 @@ export default function App() {
           onViewChange={setView}
           onOpenSettings={() => setView("settings")}
           onCreateNode={() => openCreateModal()}
+          workspaceBadge={0}
         />
       )}
 
@@ -293,6 +296,7 @@ export default function App() {
             />
           </Suspense>
         )}
+        {view === "workspace" && <WorkspaceView />}
         {view === "settings" && (
           <SettingsPage
             agentCommand={agentCommand}
