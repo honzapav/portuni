@@ -63,4 +63,31 @@ describe("sessions helpers", () => {
     assert.equal(counts.get("node_a"), 2);
     assert.equal(counts.get("node_b"), 1);
   });
+
+  it("isSessionActive returns true at the threshold boundary", () => {
+    // Default threshold is 1500ms; exactly 1500ms ago is still active.
+    assert.equal(isSessionActive(2500, 1000), true);
+  });
+
+  it("markActivity is a silent no-op for unknown session ids", () => {
+    // Race-condition contract: a pty-data event can arrive after the
+    // session was removed from state. markActivity must tolerate it
+    // without throwing or corrupting the array.
+    const a = createSession(baseNode, 1);
+    const out = markActivity([a], "term_does_not_exist", 999);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].lastOutputAt, 1);
+  });
+
+  it("removeSession with unknown id returns the full array", () => {
+    const a = createSession(baseNode, 1);
+    const b = createSession(baseNode, 2);
+    const out = removeSession([a, b], "nope");
+    assert.equal(out.length, 2);
+  });
+
+  it("countSessionsByNode([]) returns an empty Map", () => {
+    const counts = countSessionsByNode([]);
+    assert.equal(counts.size, 0);
+  });
 });
