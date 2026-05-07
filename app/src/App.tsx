@@ -6,6 +6,12 @@ import WorkspaceView from "./components/WorkspaceView";
 import StatusFooter from "./components/StatusFooter";
 import CreateNodeModal from "./components/CreateNodeModal";
 import { fetchGraph, fetchNode } from "./api";
+import {
+  type TerminalSession,
+  createSession,
+  removeSession,
+  markActivity,
+} from "./lib/sessions";
 
 // Lazy chunks: cytoscape (the GraphView dep) is the main reason the app
 // bundle blew past 500 kB. Splitting GraphView and ActorsPage cuts the
@@ -225,6 +231,98 @@ export default function App() {
     setTheme((t) => (t === "dark" ? "light" : "dark"));
   }, []);
 
+  // --- Session state ---
+  const [sessions, setSessions] = useState<TerminalSession[]>([]);
+  const [selectedWorkspaceNodeId, setSelectedWorkspaceNodeId] = useState<string | null>(null);
+  const [activeSessionIdByNode, setActiveSessionIdByNode] = useState<Record<string, string>>({});
+  const [now, setNow] = useState<number>(() => Date.now());
+
+  // 1s tick so the activity-indicator color flips green->orange as the
+  // 1.5s threshold passes without further output. Cheap; the only state
+  // consumers are the indicator dots in WorkspaceNodeList and TerminalTabs.
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  // Listen for pty-data and pty-exit events at App level so lastOutputAt
+  // updates for every session regardless of which pane is visible.
+  useEffect(() => {
+    let unlistenData: (() => void) | null = null;
+    let unlistenExit: (() => void) | null = null;
+    let cancelled = false;
+    (async () => {
+      if (typeof window === "undefined") return;
+      // Browser-mode (vite dev outside Tauri) has no pty events. Skip.
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        type PtyData = { session_id: string };
+        type PtyExit = { session_id: string; code: number | null };
+        unlistenData = await listen<PtyData>("pty-data", (e) => {
+          if (cancelled) return;
+          const id = e.payload.session_id;
+          setSessions((prev) => markActivity(prev, id));
+        });
+        unlistenExit = await listen<PtyExit>("pty-exit", (e) => {
+          if (cancelled) return;
+          const id = e.payload.session_id;
+          setSessions((prev) => removeSession(prev, id));
+          setActiveSessionIdByNode((prev) => {
+            const next: Record<string, string> = {};
+            for (const [nid, sid] of Object.entries(prev)) {
+              if (sid !== id) next[nid] = sid;
+            }
+            return next;
+          });
+        });
+      } catch {
+        // Not running in Tauri -- fine.
+      }
+    })();
+    return () => {
+      cancelled = true;
+      try { unlistenData?.(); } catch { /* unlisten can throw if Tauri is gone */ }
+      try { unlistenExit?.(); } catch { /* same */ }
+    };
+  }, []);
+
+  const openSession = useCallback(
+    (input: { node: NodeDetail; cwd: string; command: string }) => {
+      const session = createSession({
+        nodeId: input.node.id,
+        nodeName: input.node.name,
+        nodeType: input.node.type,
+        cwd: input.cwd,
+        command: input.command,
+      });
+      setSessions((prev) => [...prev, session]);
+      setSelectedWorkspaceNodeId(input.node.id);
+      setActiveSessionIdByNode((prev) => ({ ...prev, [input.node.id]: session.id }));
+      setView("workspace");
+    },
+    [],
+  );
+
+  const closeSession = useCallback((sessionId: string) => {
+    setSessions((prev) => removeSession(prev, sessionId));
+    setActiveSessionIdByNode((prev) => {
+      const next = { ...prev };
+      for (const [nid, sid] of Object.entries(next)) {
+        if (sid === sessionId) delete next[nid];
+      }
+      return next;
+    });
+    // Best-effort: tell the backend the PTY is gone. Errors swallowed --
+    // the pty-exit reader thread will clean up its own map entry once
+    // the child SIGHUPs. This is the SOLE pty_kill call site in the app.
+    void (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("pty_kill", { args: { session_id: sessionId } });
+      } catch { /* errors swallowed -- pty-exit thread self-cleans */ }
+    })();
+  }, []);
+
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden">
       <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -249,7 +347,7 @@ export default function App() {
           onViewChange={setView}
           onOpenSettings={() => setView("settings")}
           onCreateNode={() => openCreateModal()}
-          workspaceBadge={0}
+          workspaceBadge={sessions.length}
         />
       )}
 
@@ -296,7 +394,32 @@ export default function App() {
             />
           </Suspense>
         )}
-        {view === "workspace" && <WorkspaceView />}
+        {view === "workspace" && (
+          <WorkspaceView
+            graph={graph}
+            sessions={sessions}
+            now={now}
+            selectedNodeId={selectedWorkspaceNodeId}
+            onSelectNode={setSelectedWorkspaceNodeId}
+            activeSessionIdByNode={activeSessionIdByNode}
+            onSetActiveSession={(nodeId, sessionId) =>
+              setActiveSessionIdByNode((p) => ({ ...p, [nodeId]: sessionId }))
+            }
+            onCloseSession={closeSession}
+            onOpenSessionFromPicker={(node) => {
+              // Mirror creation lives in Task 9 plumbing -- for now the empty
+              // state opens a session by deferring to DetailPane via selecting
+              // the node in graph view. Workspace task 8 wires the real picker.
+              setSelectedId(node.id);
+              setView("graph");
+            }}
+            onNewSessionForCurrentNode={(_nodeId) => {
+              // Task 9 replaces this stub with: openSession({ node, cwd, command })
+              void openSession;
+            }}
+            detailNodeId={selectedWorkspaceNodeId}
+          />
+        )}
         {view === "settings" && (
           <SettingsPage
             agentCommand={agentCommand}

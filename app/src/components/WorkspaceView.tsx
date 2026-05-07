@@ -1,13 +1,24 @@
 // 3-column layout shell. In this task it just renders placeholders — the
-// real left/middle/right column components arrive in Tasks 5–8. The
+// real left/middle/right column components arrive in Tasks 6–8. The
 // detail-collapse state lives here so the layout owns its own UI state.
 
 import { useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import type { GraphPayload, GraphNode } from "../types";
+import type { TerminalSession } from "../lib/sessions";
 
-// biome-ignore lint/complexity/noBannedTypes: intentionally empty; Task 5 expands this
 type Props = {
-  // (Filled in by Task 5+)
+  graph: GraphPayload | null;
+  sessions: TerminalSession[];
+  now: number;
+  selectedNodeId: string | null;
+  onSelectNode: (id: string | null) => void;
+  activeSessionIdByNode: Record<string, string>;
+  onSetActiveSession: (nodeId: string, sessionId: string) => void;
+  onCloseSession: (sessionId: string) => void;
+  onOpenSessionFromPicker: (node: GraphNode) => void;
+  onNewSessionForCurrentNode: (nodeId: string) => void;
+  detailNodeId: string | null;
 };
 
 export default function WorkspaceView(_props: Props) {
