@@ -8,6 +8,7 @@ import type { GraphPayload, GraphNode } from "../types";
 import type { TerminalSession } from "../lib/sessions";
 import WorkspaceNodeList from "./WorkspaceNodeList";
 import TerminalTabs from "./TerminalTabs";
+import WorkspaceEmpty from "./WorkspaceEmpty";
 
 type Props = {
   graph: GraphPayload | null;
@@ -28,11 +29,11 @@ export default function WorkspaceView({
   selectedNodeId,
   onSelectNode,
   now,
-  graph: _graph,
+  graph,
   activeSessionIdByNode,
   onSetActiveSession,
   onCloseSession,
-  onOpenSessionFromPicker: _onOpenSessionFromPicker,
+  onOpenSessionFromPicker,
   onNewSessionForCurrentNode,
   detailNodeId: _detailNodeId,
 }: Props) {
@@ -62,7 +63,9 @@ export default function WorkspaceView({
         </div>
       </aside>
       <main className="flex min-w-0 flex-1 flex-col">
-        {selectedNodeId ? (
+        {sessions.length === 0 ? (
+          <WorkspaceEmpty graph={graph} onPick={(n) => onOpenSessionFromPicker(n)} />
+        ) : selectedNodeId ? (
           <TerminalTabs
             sessionsForNode={sessions.filter((s) => s.nodeId === selectedNodeId)}
             activeSessionId={activeSessionIdByNode[selectedNodeId] ?? null}
