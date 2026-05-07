@@ -10,7 +10,6 @@ import { fetchGraph, fetchNode } from "./api";
 // bundle blew past 500 kB. Splitting GraphView and ActorsPage cuts the
 // initial bundle by ~70 % and keeps the marketing/docs sites snappy.
 const GraphView = lazy(() => import("./components/GraphView"));
-const ActorsPage = lazy(() => import("./components/ActorsPage"));
 import type { GraphPayload, NodeDetail } from "./types";
 import type { Theme } from "./lib/theme";
 import { loadTheme, saveTheme } from "./lib/theme";
@@ -33,7 +32,6 @@ export default function App() {
   const [view, setView] = useState<AppView>(() => {
     const p = new URLSearchParams(window.location.search);
     const v = p.get("view");
-    if (v === "actors") return "actors";
     if (v === "settings") return "settings";
     return "graph";
   });
@@ -288,17 +286,6 @@ export default function App() {
                 openCreateModal({ forceType: "organization" })
               }
             />
-          </Suspense>
-        )}
-        {view === "actors" && (
-          <Suspense
-            fallback={
-              <div className="absolute inset-0 flex items-center justify-center text-[14px] text-[var(--color-text-dim)]">
-                Načítám…
-              </div>
-            }
-          >
-            <ActorsPage />
           </Suspense>
         )}
         {view === "settings" && (

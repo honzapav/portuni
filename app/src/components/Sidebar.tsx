@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, Search, Sun, Moon, X, Users, Settings, Waypoints } from "lucide-react";
+import { Plus, Search, Sun, Moon, X, Settings, Waypoints } from "lucide-react";
 import type { GraphPayload, GraphNode } from "../types";
 import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
@@ -109,21 +109,8 @@ export default function Sidebar({
             active={view === "graph"}
             onClick={() => onViewChange("graph")}
           />
-          <ViewToggleButton
-            label="Aktéři"
-            icon={<Users size={12} />}
-            active={view === "actors"}
-            onClick={() => onViewChange("actors")}
-          />
         </div>
       </div>
-
-      {view === "actors" && (
-        <div className="flex-1 px-5 py-5 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
-          Správa aktérů napříč organizacemi. Přidávejte, upravujte a mažte
-          lidi i automatizace, které jsou přiřazovány úlohám.
-        </div>
-      )}
 
       {view === "settings" && (
         <div className="flex-1 px-5 py-5 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
@@ -166,9 +153,7 @@ export default function Sidebar({
       <div className="border-t border-[var(--color-border)] px-5 py-3 text-[11px] text-[var(--color-text-dim)]">
         {view === "graph"
           ? "Kliknutím na uzel otevřete detail. Tažením posunete pohled, kolečkem přibližujete."
-          : view === "actors"
-            ? "Klikněte na aktéra v tabulce pro úpravu."
-            : "Změny se ukládají automaticky."}
+          : "Změny se ukládají automaticky."}
       </div>
     </aside>
   );
