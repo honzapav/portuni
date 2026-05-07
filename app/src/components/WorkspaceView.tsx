@@ -7,6 +7,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { GraphPayload, GraphNode } from "../types";
 import type { TerminalSession } from "../lib/sessions";
 import WorkspaceNodeList from "./WorkspaceNodeList";
+import TerminalTabs from "./TerminalTabs";
 
 type Props = {
   graph: GraphPayload | null;
@@ -28,11 +29,11 @@ export default function WorkspaceView({
   onSelectNode,
   now,
   graph: _graph,
-  activeSessionIdByNode: _activeSessionIdByNode,
-  onSetActiveSession: _onSetActiveSession,
-  onCloseSession: _onCloseSession,
+  activeSessionIdByNode,
+  onSetActiveSession,
+  onCloseSession,
   onOpenSessionFromPicker: _onOpenSessionFromPicker,
-  onNewSessionForCurrentNode: _onNewSessionForCurrentNode,
+  onNewSessionForCurrentNode,
   detailNodeId: _detailNodeId,
 }: Props) {
   const [detailVisible, setDetailVisible] = useState<boolean>(() => {
@@ -61,9 +62,20 @@ export default function WorkspaceView({
         </div>
       </aside>
       <main className="flex min-w-0 flex-1 flex-col">
-        <div className="flex flex-1 items-center justify-center text-[14px] text-[var(--color-text-dim)]">
-          Workspace placeholder
-        </div>
+        {selectedNodeId ? (
+          <TerminalTabs
+            sessionsForNode={sessions.filter((s) => s.nodeId === selectedNodeId)}
+            activeSessionId={activeSessionIdByNode[selectedNodeId] ?? null}
+            onSelectSession={(id) => onSetActiveSession(selectedNodeId, id)}
+            onCloseSession={onCloseSession}
+            onNewSession={() => onNewSessionForCurrentNode(selectedNodeId)}
+            now={now}
+          />
+        ) : (
+          <div className="flex flex-1 items-center justify-center text-[14px] text-[var(--color-text-dim)]">
+            Vyber uzel vlevo nebo otevři terminál z detailu.
+          </div>
+        )}
       </main>
       {detailVisible ? (
         <aside className="flex w-[360px] shrink-0 flex-col border-l border-[var(--color-border)]">
