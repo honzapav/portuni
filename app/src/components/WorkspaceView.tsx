@@ -97,43 +97,40 @@ export default function WorkspaceView({
         )}
       </main>
       {detailVisible ? (
-        <aside className="flex w-[440px] shrink-0 flex-col border-l border-[var(--color-border)]">
-          <div className="flex shrink-0 items-center justify-between border-b border-[var(--color-border)] px-4 py-2">
-            <span className="text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-dim)]">
-              Detail
-            </span>
-            <button
-              onClick={toggleDetail}
-              title="Skrýt detail"
-              aria-label="Skrýt detail"
-              className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
-            >
-              <ChevronRight size={14} />
-            </button>
-          </div>
-          <div className="min-h-0 flex-1">
-            {selectedNodeId ? (
-              <DetailPane
-                node={nodeDetail}
-                graph={graph}
-                loading={nodeDetailLoading}
-                error={nodeDetailError}
-                onSelect={(id) => onSelectNode(id)}
-                canGoBack={false}
-                onBack={() => {
-                  // No-op: workspace doesn't keep a back-stack like graph does.
-                }}
-                onMutate={onMutate}
-                agentCommand={agentCommand}
-                onOpenTerminal={onOpenTerminal}
-                embedded
-              />
-            ) : (
-              <div className="flex h-full items-center justify-center px-4 text-center text-[13px] text-[var(--color-text-dim)]">
-                Vyber uzel vlevo nebo otevři terminál.
-              </div>
-            )}
-          </div>
+        <aside className="relative flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)]">
+          {/*
+            Floating collapse handle so the detail body matches the graph
+            view 1:1 without a separate header bar eating vertical space.
+          */}
+          <button
+            onClick={toggleDetail}
+            title="Skrýt detail"
+            aria-label="Skrýt detail"
+            className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
+          >
+            <ChevronRight size={14} />
+          </button>
+          {selectedNodeId ? (
+            <DetailPane
+              node={nodeDetail}
+              graph={graph}
+              loading={nodeDetailLoading}
+              error={nodeDetailError}
+              onSelect={(id) => onSelectNode(id)}
+              canGoBack={false}
+              onBack={() => {
+                // No-op: workspace doesn't keep a back-stack like graph does.
+              }}
+              onMutate={onMutate}
+              agentCommand={agentCommand}
+              onOpenTerminal={onOpenTerminal}
+              embedded
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center px-4 text-center text-[13px] text-[var(--color-text-dim)]">
+              Vyber uzel vlevo nebo otevři terminál.
+            </div>
+          )}
         </aside>
       ) : (
         <button

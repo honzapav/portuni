@@ -82,10 +82,6 @@ export default function TerminalPane({
     if (!container) return;
 
     const id = sessionId;
-    // Diagnostic: every mount of this effect = one pty_spawn IPC.
-    // If you see this fire repeatedly for the same id, the parent is
-    // remounting TerminalPane unexpectedly.
-    console.log("[TerminalPane] spawn effect run for", id);
 
     const css = getComputedStyle(document.documentElement);
     const bg = css.getPropertyValue("--color-bg").trim() || "#0e1015";
@@ -210,7 +206,6 @@ export default function TerminalPane({
       // CRUCIAL: do NOT call pty_kill here. Parent owns lifecycle so a
       // re-render or tab switch (which can remount us) doesn't tear down
       // the PTY. Only dispose xterm + listeners.
-      console.log("[TerminalPane] spawn effect cleanup for", id);
       cancelled = true;
       if (pendingResizeTimer != null) window.clearTimeout(pendingResizeTimer);
       try {
