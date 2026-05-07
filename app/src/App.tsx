@@ -432,26 +432,44 @@ export default function App() {
             />
           </Suspense>
         )}
-        {view === "workspace" && (
-          <WorkspaceView
-            graph={graph}
-            sessions={sessions}
-            now={now}
-            selectedNodeId={selectedWorkspaceNodeId}
-            onSelectNode={setSelectedWorkspaceNodeId}
-            activeSessionIdByNode={activeSessionIdByNode}
-            onSetActiveSession={(nodeId, sessionId) =>
-              setActiveSessionIdByNode((p) => ({ ...p, [nodeId]: sessionId }))
+        {/*
+          WorkspaceView stays mounted whenever there are live sessions, so
+          switching to Graf/Nastavení and back doesn't unmount TerminalPane
+          and accidentally re-spawn the PTY (pty_spawn replaces by id, which
+          would SIGHUP the running shell — breaks the "sessions přežijí
+          přepnutí pohledu" contract from the sidebar hint). When no sessions
+          exist, we only mount on demand so the picker's autoFocus doesn't
+          steal focus from the graph view.
+        */}
+        {(view === "workspace" || sessions.length > 0) && (
+          <div
+            className={
+              view === "workspace"
+                ? "absolute inset-0"
+                : "pointer-events-none absolute inset-0 hidden"
             }
-            onCloseSession={closeSession}
-            onOpenSessionFromPicker={(node) => {
-              void openSessionForNodeId(node.id);
-            }}
-            onNewSessionForCurrentNode={(nodeId) => {
-              void openSessionForNodeId(nodeId);
-            }}
-            detailNodeId={selectedWorkspaceNodeId}
-          />
+            aria-hidden={view !== "workspace"}
+          >
+            <WorkspaceView
+              graph={graph}
+              sessions={sessions}
+              now={now}
+              selectedNodeId={selectedWorkspaceNodeId}
+              onSelectNode={setSelectedWorkspaceNodeId}
+              activeSessionIdByNode={activeSessionIdByNode}
+              onSetActiveSession={(nodeId, sessionId) =>
+                setActiveSessionIdByNode((p) => ({ ...p, [nodeId]: sessionId }))
+              }
+              onCloseSession={closeSession}
+              onOpenSessionFromPicker={(node) => {
+                void openSessionForNodeId(node.id);
+              }}
+              onNewSessionForCurrentNode={(nodeId) => {
+                void openSessionForNodeId(nodeId);
+              }}
+              detailNodeId={selectedWorkspaceNodeId}
+            />
+          </div>
         )}
         {view === "settings" && (
           <SettingsPage
