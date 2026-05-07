@@ -59,26 +59,20 @@ export default function TerminalTabs({
                 role="button"
                 tabIndex={0}
                 onClick={(e) => {
+                  // window.confirm() is not implemented in the Tauri
+                  // webview on macOS — calling it silently no-ops, so the
+                  // user clicks X and nothing happens. Closing on a single
+                  // explicit X click is the simplest reliable fix; the
+                  // session is recoverable by re-opening from the node.
                   e.stopPropagation();
-                  if (
-                    window.confirm(
-                      `Zavřít session #${idx + 1}? Běžící proces dostane SIGHUP.`,
-                    )
-                  ) {
-                    onCloseSession(s.id);
-                  }
+                  e.preventDefault();
+                  onCloseSession(s.id);
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
                     e.stopPropagation();
-                    if (
-                      window.confirm(
-                        `Zavřít session #${idx + 1}? Běžící proces dostane SIGHUP.`,
-                      )
-                    ) {
-                      onCloseSession(s.id);
-                    }
+                    onCloseSession(s.id);
                   }
                 }}
                 className="ml-1 inline-flex h-4 w-4 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
