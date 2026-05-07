@@ -5,7 +5,8 @@ import SettingsPage from "./components/SettingsPage";
 import WorkspaceView from "./components/WorkspaceView";
 import StatusFooter from "./components/StatusFooter";
 import CreateNodeModal from "./components/CreateNodeModal";
-import { fetchGraph, fetchNode } from "./api";
+import { fetchGraph, fetchNode, createNodeMirror } from "./api";
+import { buildAgentCommand } from "./lib/prompt";
 import {
   type TerminalSession,
   createSession,
@@ -309,6 +310,37 @@ export default function App() {
     [],
   );
 
+  const openSessionForNodeId = useCallback(
+    async (nodeId: string) => {
+      let detail: NodeDetail | null = null;
+      try {
+        detail = await fetchNode(nodeId);
+      } catch (err) {
+        setGraphError(`Nelze načíst uzel: ${String(err)}`);
+        return;
+      }
+      if (!detail) return;
+      let cwd: string;
+      try {
+        const mirror = await createNodeMirror(nodeId);
+        cwd = mirror.local_path;
+      } catch (err) {
+        setGraphError(`Nelze otevřít terminál: ${String(err)}`);
+        return;
+      }
+      const enriched: NodeDetail = {
+        ...detail,
+        local_mirror: detail.local_mirror ?? {
+          local_path: cwd,
+          registered_at: new Date().toISOString(),
+        },
+      };
+      const command = buildAgentCommand(enriched, agentCommand);
+      openSession({ node: enriched, cwd, command });
+    },
+    [agentCommand, openSession],
+  );
+
   const closeSession = useCallback((sessionId: string) => {
     setSessions((prev) => removeSession(prev, sessionId));
     setActiveSessionIdByNode((prev) => {
@@ -413,17 +445,10 @@ export default function App() {
             }
             onCloseSession={closeSession}
             onOpenSessionFromPicker={(node) => {
-              // Mirror creation lives in Task 9 plumbing -- for now the empty
-              // state opens a session by deferring to DetailPane via selecting
-              // the node in graph view. Workspace task 8 wires the real picker.
-              setSelectedId(node.id);
-              setView("graph");
+              void openSessionForNodeId(node.id);
             }}
-            onNewSessionForCurrentNode={(_nodeId) => {
-              // Stub. Task 9 wires this through openSession({ node, cwd, command });
-              // until then `void openSession` silences noUnusedLocals without
-              // calling anything (void on an identifier evaluates and discards).
-              void openSession;
+            onNewSessionForCurrentNode={(nodeId) => {
+              void openSessionForNodeId(nodeId);
             }}
             detailNodeId={selectedWorkspaceNodeId}
           />
@@ -447,6 +472,7 @@ export default function App() {
           onBack={goBack}
           onMutate={refetchAll}
           agentCommand={agentCommand}
+          onOpenTerminal={openSessionForNodeId}
         />
       )}
 
