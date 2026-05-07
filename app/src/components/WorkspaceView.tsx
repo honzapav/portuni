@@ -6,6 +6,7 @@ import { useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { GraphPayload, GraphNode } from "../types";
 import type { TerminalSession } from "../lib/sessions";
+import WorkspaceNodeList from "./WorkspaceNodeList";
 
 type Props = {
   graph: GraphPayload | null;
@@ -21,7 +22,19 @@ type Props = {
   detailNodeId: string | null;
 };
 
-export default function WorkspaceView(_props: Props) {
+export default function WorkspaceView({
+  sessions,
+  selectedNodeId,
+  onSelectNode,
+  now,
+  graph: _graph,
+  activeSessionIdByNode: _activeSessionIdByNode,
+  onSetActiveSession: _onSetActiveSession,
+  onCloseSession: _onCloseSession,
+  onOpenSessionFromPicker: _onOpenSessionFromPicker,
+  onNewSessionForCurrentNode: _onNewSessionForCurrentNode,
+  detailNodeId: _detailNodeId,
+}: Props) {
   const [detailVisible, setDetailVisible] = useState<boolean>(() => {
     return localStorage.getItem("portuni:workspace.detailVisible") !== "false";
   });
@@ -38,8 +51,13 @@ export default function WorkspaceView(_props: Props) {
         <div className="px-4 py-3 text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-dim)]">
           Práce
         </div>
-        <div className="flex-1 px-4 text-[13px] text-[var(--color-text-dim)]">
-          Žádné aktivní sessions. Otevři terminál z detailu uzlu.
+        <div className="flex-1 overflow-y-auto scroll-thin">
+          <WorkspaceNodeList
+            sessions={sessions}
+            selectedNodeId={selectedNodeId}
+            onSelectNode={onSelectNode}
+            now={now}
+          />
         </div>
       </aside>
       <main className="flex min-w-0 flex-1 flex-col">
