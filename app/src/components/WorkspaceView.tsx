@@ -4,7 +4,7 @@
 // the layout owns its own UI state.
 
 import { useState } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft } from "lucide-react";
 import type { GraphPayload, GraphNode, NodeDetail } from "../types";
 import type { TerminalSession } from "../lib/sessions";
 import WorkspaceNodeList from "./WorkspaceNodeList";
@@ -97,19 +97,7 @@ export default function WorkspaceView({
         )}
       </main>
       {detailVisible ? (
-        <aside className="relative flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)]">
-          {/*
-            Floating collapse handle so the detail body matches the graph
-            view 1:1 without a separate header bar eating vertical space.
-          */}
-          <button
-            onClick={toggleDetail}
-            title="Skrýt detail"
-            aria-label="Skrýt detail"
-            className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
-          >
-            <ChevronRight size={14} />
-          </button>
+        <aside className="flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)]">
           {selectedNodeId ? (
             <DetailPane
               node={nodeDetail}
@@ -118,12 +106,11 @@ export default function WorkspaceView({
               error={nodeDetailError}
               onSelect={(id) => onSelectNode(id)}
               canGoBack={false}
-              onBack={() => {
-                // No-op: workspace doesn't keep a back-stack like graph does.
-              }}
+              onBack={() => {}}
               onMutate={onMutate}
               agentCommand={agentCommand}
               onOpenTerminal={onOpenTerminal}
+              onHide={toggleDetail}
               embedded
             />
           ) : (

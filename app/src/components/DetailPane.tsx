@@ -106,6 +106,9 @@ type Props = {
   // 40vw / min-w-440 sizing, and the left border so the parent's layout
   // controls the geometry.
   embedded?: boolean;
+  // When provided, the close/hide button calls this instead of onSelect(null).
+  // Used by WorkspaceView to hide the panel without deselecting the node.
+  onHide?: () => void;
 };
 
 export default function DetailPane({
@@ -120,11 +123,12 @@ export default function DetailPane({
   agentCommand,
   onOpenTerminal,
   embedded,
+  onHide,
 }: Props) {
   if (loading && !node) {
     return (
       <PaneShell
-        onClose={() => onSelect(null)}
+        onClose={onHide ?? (() => onSelect(null))}
         canGoBack={false}
         onBack={onBack}
         embedded={embedded}
@@ -139,7 +143,7 @@ export default function DetailPane({
   if (error) {
     return (
       <PaneShell
-        onClose={() => onSelect(null)}
+        onClose={onHide ?? (() => onSelect(null))}
         canGoBack={false}
         onBack={onBack}
         embedded={embedded}
