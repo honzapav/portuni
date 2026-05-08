@@ -4,7 +4,7 @@
 // the layout owns its own UI state.
 
 import { useState } from "react";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, X } from "lucide-react";
 import type { GraphPayload, GraphNode, NodeDetail } from "../types";
 import type { TerminalSession } from "../lib/sessions";
 import WorkspaceNodeList from "./WorkspaceNodeList";
@@ -114,9 +114,21 @@ export default function WorkspaceView({
               embedded
             />
           ) : (
-            <div className="flex h-full items-center justify-center px-4 text-center text-[13px] text-[var(--color-text-dim)]">
-              Vyber uzel vlevo nebo otevři terminál.
-            </div>
+            <>
+              <div className="flex items-center justify-end border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2">
+                <button
+                  onClick={toggleDetail}
+                  title="Skrýt detail"
+                  aria-label="Skrýt detail"
+                  className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+              <div className="flex flex-1 items-center justify-center px-4 text-center text-[13px] text-[var(--color-text-dim)]">
+                Vyber uzel vlevo nebo otevři terminál.
+              </div>
+            </>
           )}
         </aside>
       ) : (

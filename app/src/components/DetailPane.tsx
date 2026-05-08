@@ -171,6 +171,7 @@ export default function DetailPane({
       agentCommand={agentCommand}
       onOpenTerminal={onOpenTerminal}
       embedded={embedded}
+      onHide={onHide}
     />
   );
 }
@@ -185,6 +186,7 @@ function DetailPaneBody({
   agentCommand,
   onOpenTerminal,
   embedded,
+  onHide,
 }: {
   node: NodeDetail;
   graph: GraphPayload | null;
@@ -195,6 +197,7 @@ function DetailPaneBody({
   agentCommand: string;
   onOpenTerminal: (nodeId: string) => void;
   embedded?: boolean;
+  onHide?: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
@@ -476,7 +479,7 @@ function DetailPaneBody({
     <PaneShell
       canGoBack={canGoBack}
       onBack={onBack}
-      onClose={() => onSelect(null)}
+      onClose={onHide ?? (() => onSelect(null))}
       editing={editing}
       onEdit={startEdit}
       embedded={embedded}
