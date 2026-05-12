@@ -13,13 +13,15 @@ The core ideas have been pressure-tested through daily use and several refactors
 
 **Graph model.** Five POPP node types (organization, project, process, area, principle) and four edge relations (`related_to`, `belongs_to`, `applies`, `informed_by`), strictly enforced via Zod schemas, database CHECK constraints, and a single source of truth in `src/popp.ts`. The organization invariant – every non-organization node belongs to exactly one organization – is enforced via atomic tool-level batches plus database triggers, with a startup integrity sweep that aborts on violations.
 
-**MCP tools.** 15+ tools covering create / update / list / get for nodes, connect / disconnect for edges, recursive context fetching, mirror folder management, file store / pull / list, and a full event timeline (log, list, resolve, supersede). Streamable HTTP transport on port 4011.
+**MCP tools.** 46 tools covering nodes (create / update / list / get / delete + move), edges (connect / disconnect / move), actors (create / update / list / get / delete) and responsibilities (with assignment), data sources and tools as descriptive metadata, recursive context fetching, mirror folder management, file flow (store / pull / list / status / adopt / snapshot) and the destructive operations (move / rename / delete), remote configuration and routing policy, and the event timeline (log, list, resolve, supersede). Streamable HTTP transport on port 4011. Full reference: [Tools](/reference/nodes/).
 
 **Events.** A time-ordered timeline of what happened on each node – decisions, blockers, discoveries – with status tracking and supersede semantics. Events ride along with `get_context` so agents see recent history.
 
 **File sync.** A pluggable `FileAdapter` interface with Google Drive (Service Account) as the first concrete backend. Two-layer state: shared `files.current_remote_hash` in Turso, per-device sync state in `~/.portuni/sync.db`. Confirm-first move / rename / delete, hash-based conflict detection, native-format snapshots for Docs / Sheets / Slides.
 
 **Integration glue.** Each mirror's per-harness MCP config carries `?home_node_id=<id>` in the server URL, so the Portuni server auto-seeds the read scope on connect – no harness-specific hooks needed.
+
+**Desktop app.** `Portuni.app` is a Tauri-built macOS application with a Cytoscape graph view, a detail pane (events, files, responsibilities), multi-session terminal tabs, and an embedded MCP server sidecar — install one DMG and the server runs alongside the UI. Tag-triggered GitHub releases ship aarch64 + x86_64 DMGs. See [Desktop App](/clients/desktop-app/).
 
 ## Gaps and what's coming next
 
@@ -40,7 +42,7 @@ The roadmap is grouped by intent, not by version number. Each gap is stated once
 - **Background sync.** Every file operation is explicit, triggered by an MCP tool call. A daemon that watches for changes is on the list.
 - **Artifacts hosting.** A central `workflow-pages` GitHub repo and Cloudflare Pages target for AI-generated documents, with `artifact` nodes and a `publish_artifact` workflow.
 - **Per-node summarization.** LLM-generated summaries on each node, regenerated lazily after events accumulate, usable as an embedding source.
-- **Web app polish.** `app/` (React + Cytoscape graph viewer) is exploratory and lags the server in features. The primary interface remains MCP – the app will catch up over time.
+- **Cross-platform desktop bundles.** `Portuni.app` (Tauri + React + Cytoscape) is the daily-driver client today and ships as macOS DMGs (aarch64 + x86_64) via tag-triggered GitHub releases. Linux and Windows bundles are not on the near roadmap; CLI install covers those platforms. Code-signing for macOS is also outstanding — first launch shows the Gatekeeper "unidentified developer" dialog until APPLE_CERTIFICATE secrets are wired into the release workflow.
 
 ### Exploring (open questions)
 

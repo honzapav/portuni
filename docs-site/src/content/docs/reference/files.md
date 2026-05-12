@@ -86,9 +86,10 @@ List files across all nodes with optional filtering. Each row includes a
 | `node_id` | string | no | Filter by node |
 | `status` | enum | no | Filter by status (`wip` or `output`) |
 
-Returns: Array of files with `node_name`, `remote_name`, `remote_path`,
-`current_remote_hash`, `last_pushed_at`, `is_native_format`, and the
-derived `local_path`.
+Returns: Array of files, each with: `id`, `node_id`, `node_name`,
+`filename`, `status`, `description`, `remote_name`, `remote_path`,
+`current_remote_hash`, `last_pushed_at`, `is_native_format`, the derived
+`local_path`, and `updated_at`.
 
 ## portuni_status
 
@@ -104,7 +105,7 @@ migrations, or whenever the user asks about sync state.
 
 Returns: classified buckets (`clean`, `push_candidates`, `pull_candidates`,
 `conflicts`, `orphan`, `native`, `new_local`, `new_remote`,
-`deleted_local`).
+`deleted_local`, `moved`).
 
 ## portuni_list_remotes / portuni_setup_remote / portuni_set_routing_policy
 

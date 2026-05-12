@@ -113,32 +113,19 @@ op run -- env \
 
 ## Routing rules
 
-A registered remote does nothing until a routing rule sends nodes to it. Add rules for each `(node_type, org_slug)` combination:
+A registered remote does nothing until a routing rule sends nodes to it. `portuni_set_routing_policy` takes a single `rules: array` and **replaces the entire routing table** — every existing rule that isn't in the new list is deleted. So write out the full intended policy in one call:
 
 ```
 portuni_set_routing_policy {
-  node_type:   "project",
-  org_slug:    "*",
-  remote_name: "projects-hub",
-  priority:    100
-}
-
-portuni_set_routing_policy {
-  node_type:   "process",
-  org_slug:    "workflow",
-  remote_name: "drive-workflow",
-  priority:    10
-}
-
-portuni_set_routing_policy {
-  node_type:   "process",
-  org_slug:    "*",
-  remote_name: "shared-processes",
-  priority:    100
+  rules: [
+    { priority: 10,  node_type: "process", org_slug: "workflow", remote_name: "drive-workflow" },
+    { priority: 100, node_type: "process", org_slug: null,       remote_name: "shared-processes" },
+    { priority: 100, node_type: "project", org_slug: null,       remote_name: "projects-hub" }
+  ]
 }
 ```
 
-`*` is a wildcard. Lower priority wins – use `10` for org-specific overrides and `100` for catch-all defaults.
+`null` on `node_type` or `org_slug` is a wildcard ("any"). Lower priority wins – use `10` for org-specific overrides and `100` for catch-all defaults. Tie-break is by insertion order within the rule list.
 
 Verify with `portuni_list_remotes` – each remote shows the routing rules pointing at it.
 
@@ -183,7 +170,7 @@ Phase 1 does not implement domain-wide delegation. If your org needs it, this be
 
 ## What Drive users should expect
 
-- **Delete is soft.** Portuni's `portuni_delete_file` moves files to Drive Trash (30-day recovery). Portuni never hard-deletes.
+- **Delete on Drive is soft.** `portuni_delete_file` defaults to `mode: "complete"` (removes the local file, the DB row, and the remote copy). On Drive remotes, the remote-side delete moves the file to Drive Trash rather than truly destroying it (30-day recovery window). The `unregister_only` mode drops just the DB row without touching disk or remote — useful when the file is already gone from both.
 - **Rename of a node does NOT rename the Drive folder.** Folder paths are anchored on the immutable `sync_key`. Use `portuni_rename_folder` for an explicit, atomic rename of the visible folder name.
 - **Native files (Docs / Sheets / Slides) are tracked but not round-trip synced.** They have URL + modified-at metadata. Use `portuni_snapshot` to export a PDF / markdown / docx copy as a regular tracked file.
 - **Drive versioning is the safety net.** 30-day version history under Portuni's audit log gives a second line of defense for anything overwritten.

@@ -36,7 +36,7 @@ Three layers of defense, because losing this invariant silently is the worst pos
 
 `portuni_connect` rejects any attempt to add a second `belongs_to -> organization` edge for a non-organization source. The error tells you which existing org the node belongs to and how to move it.
 
-`portuni_disconnect` rejects removal of the only `belongs_to -> organization` edge for a non-organization source. To move a node between organizations, disconnect the old edge and connect the new one **in the same operation** (the tool exposes a flag for this, so the database never sees a moment of orphan state).
+`portuni_disconnect` rejects removal of the only `belongs_to -> organization` edge for a non-organization source. To move a node between organizations, call [`portuni_move_node`](/reference/edges/#portuni_move_node) — it rebinds the existing `belongs_to` edge atomically via an `UPDATE`, so the org-invariant triggers (which fire only on `INSERT` / `DELETE`) are bypassed by construction and the edge id stays stable for continuous audit history.
 
 ### 3. SQL triggers (defense in depth)
 

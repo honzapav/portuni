@@ -67,8 +67,8 @@ Automations can hold responsibilities, but they cannot be owners. An automation 
 
 Two more attribute lists hang off project/process/area nodes:
 
-- **Data sources** – what the node reads from. Examples: an Asana board, a BigQuery dataset, a CRM segment, a recurring report. Each entry has a name, a kind, and an `external_link` (plain URL – never a connection string with credentials).
-- **Tools** – what the node uses to do its work. Examples: Asana, Figma, Notion, a specific MCP server. Each entry has a name and an `external_link`.
+- **Data sources** – what the node reads from. Examples: an Asana board, a BigQuery dataset, a CRM segment, a recurring report. Each entry has a `name`, an optional `description`, and an optional `external_link` (plain URL – never a connection string with credentials).
+- **Tools** – what the node uses to do its work. Examples: Asana, Figma, Notion, a specific MCP server. Each entry has a `name`, an optional `description`, and an optional `external_link`.
 
 These are descriptive metadata – they tell agents and humans "to work on this node, you'll be touching these things." They are not credentials, not configurations, and not edges in the POPP graph.
 

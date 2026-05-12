@@ -5,14 +5,33 @@ description: How to install and run Portuni.
 
 If you're reading this, you're about to get Portuni running on your machine. This page walks you through the install, the environment variables, and starting the server – so that by the end, your AI agents have something to talk to.
 
-## Before you start
+Two install paths: the desktop app (recommended) or the standalone CLI server (for contributors and CI).
+
+## Install the desktop app (recommended)
+
+`Portuni.app` is a Tauri-built macOS application that bundles the MCP server as an embedded sidecar. You install one thing; you get the UI, the server, and the integration glue.
+
+1. Open the [GitHub releases](https://github.com/honzapav/portuni/releases) page.
+2. Download the DMG for your CPU — `aarch64` for Apple Silicon, `x86_64` for Intel.
+3. Open the DMG and drag `Portuni.app` to `/Applications/`.
+4. Launch it. First run: see [Desktop App](/clients/desktop-app/) for the Turso setup gate and the workspace-root prompt.
+
+The app uses its own port (default `4011` for the sidecar, surfaced via `localhost:4011` for any MCP client you want to point at it). You don't need to clone the repo, install Node, or keep a tmux session running — the app handles all of that.
+
+The app is currently **macOS only**. For Linux/Windows, use the CLI install below; native bundles for other platforms aren't on the near roadmap.
+
+## Install the CLI / standalone server
+
+Use this path if you want to contribute to Portuni, run it on Linux/Windows, run multiple instances side by side, or deploy it to a server.
+
+### Before you start
 
 - Node.js 20 or newer
 - [Varlock](https://github.com/varlockteam/varlock) for secrets management
 - A [Turso](https://turso.tech/) account if you're setting up the team or production mode. Turso is the shared cloud database that lets multiple people and multiple agents work against the same graph – it's where Portuni is designed to live long-term.
 - **No database account needed** for a solo or testing setup: Portuni quietly falls back to a local SQLite file. Good for trying things out, or for working on the server itself. Plan to move to Turso as soon as more than one person needs the graph.
 
-## Install
+### Install
 
 ```bash
 git clone https://github.com/honzapav/portuni
@@ -21,9 +40,9 @@ npm install
 npm run build
 ```
 
-## Environment
+### Environment
 
-Portuni uses Varlock for credentials. The authoritative list of variables lives in `.env.schema`; here's the quick rundown:
+The CLI server uses Varlock for credentials. The authoritative list of variables lives in `.env.schema`; here's the quick rundown:
 
 | Variable | When you need it | What it's for |
 |----------|------------------|---------------|
@@ -34,12 +53,14 @@ Portuni uses Varlock for credentials. The authoritative list of variables lives 
 | `PORTUNI_USER_NAME` | optional | Solo-user display name. Defaults to `Solo User` |
 | `PORT` | optional | HTTP port for the MCP server. Default `4011` |
 
+The desktop app handles these via its in-app settings UI (Turso credentials, workspace root) — you do not edit `.env.local` for daily use of `Portuni.app`.
+
 ### Two ways to run it
 
 - **Team / production (Turso).** Set `TURSO_URL` and `TURSO_AUTH_TOKEN`. The database lives in Turso's libsql cloud, so every teammate and every agent connects to the same graph. This is where Portuni delivers its core value – a shared, organization-wide knowledge graph. Move here as soon as more than one person is involved.
 - **Solo / testing (local SQLite).** Leave both Turso variables empty. Portuni creates `./portuni.db` in the project directory on first start. Good for trying things out or working on the server itself, but it doesn't scale past one machine – treat it as a stepping stone, not a home.
 
-## Running the server
+### Running the server
 
 ```bash
 npx varlock run -- npm start       # production
@@ -54,7 +75,7 @@ If you'd like it to stay running in the background (so it survives closing the t
 tmux new-session -d -s portuni -c /path/to/portuni 'npx varlock run -- npm run dev'
 ```
 
-## Running multiple instances
+### Running multiple instances
 
 Portuni instances are independent: each has its own database, its own workspace root, and its own port. To run more than one side by side:
 
@@ -67,14 +88,14 @@ Portuni instances are independent: each has its own database, its own workspace 
 
 Each running instance is a separate MCP endpoint. See the [MCP Clients](/clients/overview/) section for how to register multiple endpoints with your AI CLI.
 
-## Check it's alive
+### Check it's alive
 
 ```bash
 curl http://localhost:4011/health
 # {"status":"ok"}
 ```
 
-## Running the test suite
+### Running the test suite
 
 ```bash
 npm test
@@ -84,4 +105,4 @@ Portuni uses Node.js's built-in test runner (`node:test`). No external framework
 
 ## Connect a client
 
-Portuni on its own is a passive server – nothing happens until an MCP client connects. Head to [MCP Clients](/clients/overview/) for per-client instructions, including how to give each client access to your mirror folders.
+Portuni on its own is a passive server – nothing happens until an MCP client connects. Head to [MCP Clients](/clients/overview/) for per-client instructions, including how to give each client access to your mirror folders. The desktop app's own UI counts as a client too — see [Desktop App](/clients/desktop-app/).

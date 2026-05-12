@@ -22,6 +22,7 @@ export default defineConfig({
 					label: 'MCP Clients',
 					items: [
 						{ label: 'Overview', slug: 'clients/overview' },
+						{ label: 'Desktop App', slug: 'clients/desktop-app' },
 						{ label: 'Claude Code', slug: 'clients/claude-code' },
 						{ label: 'Codex CLI', slug: 'clients/codex-cli' },
 						{ label: 'Gemini CLI', slug: 'clients/gemini-cli' },
@@ -55,6 +56,7 @@ export default defineConfig({
 				{
 					label: 'Guides',
 					items: [
+						{ label: 'Working in the Desktop App', slug: 'guides/working-in-the-app' },
 						{ label: 'Setting Up Remotes', slug: 'guides/setting-up-remotes' },
 						{ label: 'Symbiotic Workflows', slug: 'guides/symbiotic-workflows' },
 					],

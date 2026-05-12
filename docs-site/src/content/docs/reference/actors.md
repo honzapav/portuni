@@ -56,15 +56,17 @@ Get a single actor with their responsibility assignments across every node.
 
 Returns the actor record plus an `assignments` array – one entry per `(responsibility, node)` pair the actor holds. Useful for "what is this person on the hook for across the org."
 
-## portuni_archive_actor
+## portuni_delete_actor
 
-Hard-delete an actor and cascade-delete every responsibility assignment they hold. The responsibility itself stays – only the assignment is removed.
+Hard-delete an actor and cascade-delete every responsibility assignment they hold. The responsibility itself stays – only the assignment is removed. Any `node.owner_id` referencing this actor becomes `NULL`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `actor_id` | string | yes | Actor ID |
 
-There is no soft-delete. Archiving is final. If you might want the actor back, update them to a `placeholder` instead.
+There is no soft-delete. If you might want the actor back, update them to a `placeholder` instead.
+
+Renamed from `portuni_archive_actor` (which was a misnomer – the call was always a hard delete). The legacy name no longer resolves; update any saved prompts or scripts to use `portuni_delete_actor`.
 
 ## portuni_assign_responsibility
 

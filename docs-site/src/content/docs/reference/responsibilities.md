@@ -14,19 +14,21 @@ Create a responsibility on a node. Optionally assign initial actors in the same 
 | `node_id` | string | yes | Project, process, or area to attach to |
 | `title` | string | yes | Short title |
 | `description` | string | no | Longer explanation |
-| `sort_order` | number | no | Position in the list (lower = higher priority). Defaults to end-of-list |
-| `assignee_actor_ids` | string[] | no | Actors to assign on creation |
+| `sort_order` | number | no | Display order within the node (lower sorts first). Default `0` |
+| `assignees` | string[] | no | Actor IDs to assign on creation |
 
-Returns: `{ responsibility_id, node_id, title, sort_order, assignees }`
+Returns: the created responsibility row (`{ id, node_id, title, description, sort_order, assignees }`).
 
 ## portuni_update_responsibility
+
+Update fields on an existing responsibility. Only provided fields change.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `responsibility_id` | string | yes | Responsibility ID |
 | `title` | string | no | New title |
-| `description` | string | no | New description |
-| `sort_order` | number | no | New position |
+| `description` | string \| null | no | New description. Pass `null` to clear |
+| `sort_order` | number | no | New sort order |
 
 Assignments are managed separately via [`portuni_assign_responsibility`](/reference/actors/#portuni_assign_responsibility) and `portuni_unassign_responsibility`.
 
@@ -58,9 +60,9 @@ Two parallel attribute lists hang off project / process / area nodes.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `node_id` | string | yes | Project, process, or area |
-| `name` | string | yes | Display name (e.g. "Workflow CRM segment: VIP partners") |
-| `kind` | string | no | Free-form classification (e.g. `crm`, `bigquery`, `report`, `airtable`) |
-| `external_link` | string | no | URL to the source. **Plain URL only – never include credentials** |
+| `name` | string | yes | Short display name (e.g. "CRM Airtable", "Q3 revenue report") |
+| `description` | string | no | Optional detail |
+| `external_link` | string | no | Optional plain URL (`http://`, `https://`, or `mailto:` only). No credentials in the URL — they would land in audit logs |
 
 ### portuni_remove_data_source
 
@@ -79,8 +81,9 @@ Two parallel attribute lists hang off project / process / area nodes.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `node_id` | string | yes | Project, process, or area |
-| `name` | string | yes | Display name (e.g. "Asana", "Figma") |
-| `external_link` | string | no | URL or identifier |
+| `name` | string | yes | Short display name (e.g. "Asana", "Figma", "Slack") — identifies what it is, not live state from the linked system |
+| `description` | string | no | Optional detail. Identify what the linked resource is; skip live state (status, stage, counts, assignees, dates) — Portuni does not auto-sync and any such state would go stale |
+| `external_link` | string | no | Optional plain URL (`http://`, `https://`, or `mailto:` only). No credentials in the URL — they would land in audit logs |
 
 ### portuni_remove_tool
 

@@ -28,13 +28,23 @@ Your AI agents then use Portuni to:
 
 ## How it fits together
 
-Portuni is a standalone HTTP server that speaks MCP (Model Context Protocol). It exposes 15 tools for working with the graph, logging events, and managing files.
+Portuni is an HTTP server that speaks MCP (Model Context Protocol). It exposes 46 tools for working with the graph, logging events, scope, files, remotes, actors, and responsibilities.
+
+You can run it two ways:
+
+- **Desktop app** (`Portuni.app`, macOS) — recommended for daily use. A Tauri-built UI with a graph view, detail pane, and built-in terminal tabs. Bundles the MCP server as an embedded sidecar, so you don't have to keep a separate process running. Downloads are on the [GitHub releases](https://github.com/honzapav/portuni/releases) page; see [Desktop App](/clients/desktop-app/) for the details.
+- **CLI / standalone server** — clone the repo and run `npm start`. The path most contributors and CI use; same MCP surface as the desktop app's sidecar.
 
 The data itself lives in a database. Portuni is designed for teams, so the intended setup is a shared [Turso](https://turso.tech/) database – a libsql cloud – that everyone and every agent connects to. For trying things out, running a personal graph, or working on the server itself, there's also a local SQLite fallback. Handy on a single machine, but not where you want to stay once more than one person is involved.
 
 ```
-Claude Code  <--MCP-->  Portuni Server  <-->  Turso (shared, team)
-                            |                    or SQLite (local, solo)
+Portuni.app (desktop UI)
+   │
+   ├─ embedded sidecar ─┐
+   │                    │
+Claude Code <--MCP-->   Portuni Server <-->  Turso (shared, team)
+Codex CLI               (HTTP, port 4011)    or SQLite (local, solo)
+Gemini CLI                    │
                        Local mirrors
                      (workspace folders)
 ```
