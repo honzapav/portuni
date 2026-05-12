@@ -17,7 +17,7 @@ import {
 export function registerResponsibilityTools(server: McpServer): void {
   server.tool(
     "portuni_create_responsibility",
-    "Create a responsibility on a project/process/area node. Responsibilities are concrete duties ('Review kódu', 'Ops on-call') attached to entities; they are not nodes themselves. Optionally pass a list of actor IDs to assign immediately. ONLY create when the user explicitly asks.",
+    "Create a responsibility on a project/process/area node. Responsibilities are concrete duties ('Review kódu', 'Ops on-call') attached to entities; they are not nodes themselves. Optionally pass a list of actor IDs to assign immediately. Create only when the user explicitly asks.",
     {
       node_id: z.string().describe("Node ID (ULID). Must be a project/process/area."),
       title: z.string().describe("Short title."),
@@ -62,7 +62,7 @@ export function registerResponsibilityTools(server: McpServer): void {
 
   server.tool(
     "portuni_delete_responsibility",
-    "Hard-delete a responsibility. IRREVERSIBLE: removes the row and cascades to all of its actor assignments. Use only when the user explicitly asks.",
+    "Hard-delete a responsibility — removes the row and cascade-deletes its actor assignments. Use only when the user explicitly asks.",
     {
       responsibility_id: z.string().describe("Responsibility ID (ULID) to delete."),
     },

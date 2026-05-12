@@ -401,7 +401,7 @@ function serializeForMcp(payload: ContextPayload): unknown[] {
 export function registerContextTools(server: McpServer, scope: SessionScope): void {
   server.tool(
     "portuni_get_context",
-    "Traverse the graph from a node. Returns the starting node (depth 0) with full detail (owner, responsibilities with assignees, data_sources, tools, goal, lifecycle_state, events, files, edges) and connected nodes (depth 1+) with lighter detail (lifecycle_state, owner_name, responsibilities_count, edges, recent events at depth 1). Subject to the session's read scope: the starting node must be in scope; nodes revealed by traversal are added to scope implicitly.",
+    "Traverse the graph from a node. Call this before starting work on a node to load it plus its neighbourhood. Returns the starting node (depth 0) with full detail (owner, responsibilities with assignees, data_sources, tools, goal, lifecycle_state, events, files, edges) and connected nodes (depth 1+) with lighter detail (lifecycle_state, owner_name, responsibilities_count, edges, recent events at depth 1). The starting node must be in session scope; nodes revealed by traversal are added to scope automatically and recorded in the expansion log. For single-node detail without traversal use portuni_get_node.",
     {
       node_id: z.string().describe("Starting node ID (ULID)"),
       depth: z

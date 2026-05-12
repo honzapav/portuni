@@ -82,7 +82,7 @@ export async function snapshotService(db: Client, a: SnapshotArgs): Promise<Snap
 export function registerSyncSnapshotTools(server: McpServer): void {
   server.tool(
     "portuni_snapshot",
-    "Export a Google Docs/Sheets/Slides URL to PDF/Markdown/DOCX and store it as a tracked file on the node. Uses Drive file ID extracted from the URL (/d/<id>).",
+    "Export a Google Docs/Sheets/Slides URL to PDF/Markdown/DOCX and store it as a tracked file on the node. Use when the user wants a point-in-time copy of a native Google doc tracked on a node — e.g. archiving a spec snapshot before continuing edits. Uses the Drive file ID extracted from the URL (/d/<id>).",
     {
       node_id: z.string(),
       doc_url: z.string().describe("URL of a Google Doc/Sheet/Slide (must contain /d/<id>/)"),

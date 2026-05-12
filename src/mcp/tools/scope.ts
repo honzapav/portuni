@@ -119,7 +119,7 @@ export function registerScopeTools(server: McpServer, scope: SessionScope): void
 
   server.tool(
     "portuni_expand_scope",
-    "Add one or more nodes to the current MCP session's read-scope set. Required when a read tool returned {error: scope_expansion_required, ...}: surface the request to the user, get confirmation, then call this. reason: 'user-requested: <quoted prompt fragment>' when the user named the node in the prompt; 'user-confirmed-in-chat' after a chat confirmation. Hard-floor nodes (visibility=private owned by another user, or meta.scope_sensitive=true) require confirmed_hard_floor=true backed by an explicit user confirmation -- never set this on agent initiative. Every expansion is audited and surfaced in portuni_session_log. See portuni://scope-rules.",
+    "Add one or more nodes to the current MCP session's read-scope set. Required when a read tool returned {error: scope_expansion_required, ...}: surface the request to the user, get confirmation, then call this. reason: 'user-requested: <quoted prompt fragment>' when the user named the node in the prompt; 'user-confirmed-in-chat' after a chat confirmation. Hard-floor nodes (visibility=private owned by another user, or meta.scope_sensitive=true) need confirmed_hard_floor=true backed by explicit user confirmation. Every expansion is audited and surfaced in portuni_session_log. See portuni://scope-rules.",
     {
       node_ids: z
         .array(z.string())
@@ -143,7 +143,7 @@ export function registerScopeTools(server: McpServer, scope: SessionScope): void
         .optional()
         .default(false)
         .describe(
-          "Set to true ONLY when the user has explicitly confirmed reaching a hard-floor node (visibility=private owned by another user, or meta.scope_sensitive=true). Without this flag, hard-floor nodes are refused even when reason claims user confirmation.",
+          "Set to true only when the user has explicitly confirmed reaching a hard-floor node (visibility=private owned by another user, or meta.scope_sensitive=true) — without this flag, such nodes are refused even when reason claims user confirmation.",
         ),
     },
     async (args) => {
@@ -212,7 +212,7 @@ export function registerScopeTools(server: McpServer, scope: SessionScope): void
               refused_hard_floor,
               scope_size: scope.size(),
               hint: refused_hard_floor.length > 0
-                ? "Re-call portuni_expand_scope with confirmed_hard_floor=true ONLY after the user explicitly authorises the hard-floor node."
+                ? "Re-call portuni_expand_scope with confirmed_hard_floor=true only after the user explicitly authorises the hard-floor node."
                 : undefined,
             }),
           },
@@ -223,7 +223,7 @@ export function registerScopeTools(server: McpServer, scope: SessionScope): void
 
   server.tool(
     "portuni_session_log",
-    "Return the current read-scope set, scope mode, and ordered expansion history for this MCP session. Useful both for the user (\"what did the agent look at?\") and for retrospective review of an autonomous run.",
+    "Return the current read-scope set, scope mode, and ordered expansion history for this MCP session. Use to inspect what the agent has looked at in this session.",
     {},
     async () => {
       return {

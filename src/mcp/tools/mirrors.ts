@@ -10,7 +10,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerMirrorTools(server: McpServer): void {
   server.tool(
     "portuni_mirror",
-    "Create a local folder for a node and register it. Default path: {root}/{org-slug}/{type-plural}/{node-slug}/ (e.g. workflow/processes/gws-implementation). Organizations mirror directly to {root}/{org-slug}/. Creates outputs/, wip/, resources/ subfolders. Targets: only 'local' supported in Phase 1.",
+    "Create a local folder for a node and register it. Use the first time you want to store files for a node on this device. Default path: {root}/{org-slug}/{type-plural}/{node-slug}/ (e.g. workflow/processes/gws-implementation). Organizations mirror directly to {root}/{org-slug}/. Creates outputs/, wip/, resources/ subfolders. Targets: only 'local' supported in Phase 1.",
     {
       node_id: z.string().describe("Node ID (ULID)"),
       targets: z

@@ -27,6 +27,7 @@ import { registerEntityAttributeTools } from "./tools/entity-attributes.js";
 // portuni:// resources, which the agent pulls on demand.
 const INSTRUCTIONS = `Portuni is the organizational knowledge graph (POPP: organizations, projects, processes, areas, principles).
 Call portuni_get_context before starting work on a node; portuni_get_node for details and the local mirror path.
+After any file-state mutation (portuni_store, portuni_move_file, portuni_delete_file, portuni_rename_folder, portuni_adopt_files), call portuni_status before ending the turn so disk, DB, and remote stay consistent.
 For semantics, contracts, and enums fetch resources: portuni://architecture, portuni://sync-model, portuni://scope-rules, portuni://enums.`;
 
 export function createMcpServer(): { server: McpServer; scope: SessionScope } {

@@ -21,7 +21,7 @@ import { guardListScope } from "../list-scope-gate.js";
 export function registerFileTools(server: McpServer, scope: SessionScope): void {
   server.tool(
     "portuni_store",
-    "Store a file for a node: copies into the node's local mirror, uploads to the routed remote, and tracks it for sync. Uses sync_key-based paths so renaming nodes does not break remote storage. MUST: after this returns, call portuni_status before ending the turn to detect drift between local files, the Portuni DB, and the remote. See portuni://sync-model.",
+    "Store a file for a node: copies into the node's local mirror, uploads to the routed remote, and tracks it for sync. Uses sync_key-based paths so renaming nodes does not break remote storage. Call portuni_status before ending the turn to detect drift between local files, the Portuni DB, and the remote. See portuni://sync-model.",
     {
       node_id: z.string().describe("Target node ID"),
       local_path: z.string().describe("Absolute path of the source file on this device"),
@@ -57,10 +57,10 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
 
   server.tool(
     "portuni_pull",
-    "Pull mode: with file_id, download remote content into mirror. With node_id (preview), classify each file (unchanged/updated/conflict/orphan/native) without modifying anything.",
+    "Two modes selected by which argument you pass. With file_id: download the remote version into the mirror and refresh the local hash cache — use to restore a deleted local copy or pull a teammate's update. With node_id: classify each file (unchanged/updated/conflict/orphan/native) without modifying anything — use as a preview before pulling. Exactly one of file_id or node_id must be provided.",
     {
-      file_id: z.string().optional(),
-      node_id: z.string().optional(),
+      file_id: z.string().optional().describe("File ID (ULID). Download mode — fetches the remote version into the mirror."),
+      node_id: z.string().optional().describe("Node ID (ULID). Preview mode — classifies each file without modifying anything."),
     },
     async (args) => {
       if (!args.file_id && !args.node_id) {
@@ -82,7 +82,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
 
   server.tool(
     "portuni_list_files",
-    "List files across nodes, optionally filtered by node and/or status. Each file includes a derived local_path built from the current mirror + remote_path + sync_key (null when the node has no mirror on this device). Subject to session scope: with node_id the node must be in scope; without node_id the call is treated as a global query and is mode-gated.",
+    "List files across nodes, optionally filtered by node and/or status. Each file includes a derived local_path built from the current mirror + remote_path + sync_key (null when the node has no mirror on this device). With node_id the node must be in session scope; without node_id the call is a global query — see portuni://scope-rules.",
     {
       node_id: z.string().optional(),
       status: z.enum(FILE_STATUSES).optional(),
@@ -189,7 +189,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
 
   server.tool(
     "portuni_move_file",
-    "Move a file within its node (new subpath or section) or across nodes. Confirm-first: first call returns a preview; surface it to the user, get explicit confirmation, then call again with confirmed: true to execute. Best-effort ordered: remote, then local, then DB. Partial failure returns repair_needed with a hint. See portuni://sync-model.",
+    "Move a file within its node (new subpath or section) or across nodes. Confirm-first: the first call returns a preview without acting; show the preview to the user, then call again with confirmed: true to execute. Best-effort ordered: remote, then local, then DB. Partial failure returns repair_needed with a hint. See portuni://sync-model.",
     {
       file_id: z.string(),
       new_subpath: z.string().nullable().optional(),
@@ -255,7 +255,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
 
   server.tool(
     "portuni_delete_file",
-    "Delete a file. Confirm-first: first call returns a preview; surface it to the user, get explicit confirmation, then call again with confirmed: true to execute. Modes: complete (remote + local + portuni DB row) or unregister_only (only the DB row -- use when the file is already gone from disk and remote). See portuni://sync-model.",
+    "Delete a file. Confirm-first: the first call returns a preview without acting; show the preview to the user, then call again with confirmed: true to execute. Modes: complete (remote + local + portuni DB row) and unregister_only (only the DB row — use when the file is already gone from disk and remote). See portuni://sync-model.",
     {
       file_id: z.string(),
       mode: z.enum(["complete", "unregister_only"]).optional(),

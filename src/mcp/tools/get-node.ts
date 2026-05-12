@@ -12,7 +12,7 @@ import { logAudit } from "../../infra/audit.js";
 export function registerGetNodeTool(server: McpServer, scope: SessionScope): void {
   server.tool(
     "portuni_get_node",
-    "Get a single node from the Portuni knowledge graph by ID or name. Returns the node's core fields plus owner, responsibilities (with assignees), data_sources, tools, goal, lifecycle_state, direct edges (both directions), files, events, and local mirror path. Subject to the session's read scope: if the target is outside scope and not user-confirmed, the call returns scope_expansion_required and the agent must call portuni_expand_scope first. Name-based lookups are filtered to in-scope candidates so unscoped name probing cannot surface neighbouring node metadata.",
+    "Get a single node from the Portuni knowledge graph by ID or name. Use when the user names a specific node or you need rich single-node detail (files, visibility, timestamps, mirror metadata) that portuni_get_context's depth-0 root does not include. For neighbourhood / traversal use portuni_get_context with depth>=1. Returns the node's core fields plus owner, responsibilities (with assignees), data_sources, tools, goal, lifecycle_state, direct edges (both directions), files, events, and local mirror path. Subject to the session's read scope: if the target is outside scope and not user-confirmed, the call returns scope_expansion_required and the agent must call portuni_expand_scope first. Name-based lookups are filtered to in-scope candidates so unscoped name probing cannot surface neighbouring node metadata.",
     {
       node_id: z.string().optional().describe("Node ID (ULID)"),
       name: z.string().optional().describe("Node name (case-insensitive match)"),

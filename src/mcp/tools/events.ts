@@ -12,7 +12,7 @@ import { guardListScope } from "../list-scope-gate.js";
 export function registerEventTools(server: McpServer, scope: SessionScope): void {
   server.tool(
     "portuni_log",
-    "Log a time-ordered knowledge event to a node. ONLY log events that capture substantive knowledge: real decisions, discoveries, blockers, milestones. NEVER log technical operations (mirror moves, file renames, tool actions) or narrate what you just did. Events are organizational memory, not an activity log.",
+    "Log a time-ordered knowledge event to a node. Log substantive knowledge — real decisions, discoveries, blockers, milestones. Skip operational chatter (mirror moves, file renames, tool actions, narration of recent steps). Events are organizational memory, not an activity log.",
     {
       node_id: z.string().describe("Node ID (ULID) to attach the event to"),
       type: z.enum(EVENT_TYPES).describe("Event type: decision, discovery, blocker, reference, milestone, note, or change"),
@@ -97,7 +97,7 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
 
   server.tool(
     "portuni_resolve",
-    "Resolve an active event (e.g. close an issue, confirm a decision). Merges optional resolution text into event meta.",
+    "Resolve an active event — use when a question is answered, a blocker is unblocked, or a decision is finalized. Merges optional resolution text into the event's meta. Only active events can be resolved.",
     {
       event_id: z.string().describe("Event ID (ULID) to resolve"),
       resolution: z.string().optional().describe("Optional resolution text"),
@@ -152,7 +152,7 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
 
   server.tool(
     "portuni_supersede",
-    "Replace an event with a new version. The old event is marked as superseded and the new one references it.",
+    "Replace an event with a corrected or updated version — use when an event's content needs to change after it was logged. The old event is marked superseded and the new one references it (refs=[old_event_id]). Prefer this over delete-then-create so the history chain stays intact.",
     {
       event_id: z.string().describe("Event ID (ULID) to supersede"),
       new_content: z.string().describe("Content for the replacement event"),
@@ -225,7 +225,7 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
 
   server.tool(
     "portuni_list_events",
-    "List events from the knowledge graph, optionally filtered by node, type, status, or time range. Returns up to 100 events by default (newest first); pass `limit` to override. Subject to session scope: with node_id the node must be in scope; without node_id the call is treated as a global query (strict refuses, balanced first-time refuses, permissive auto-allow + audit).",
+    "List events from the knowledge graph, optionally filtered by node, type, status, or time range. Returns up to 100 events by default (newest first); pass `limit` to override. With node_id the node must be in session scope; without node_id the call is a global query — see portuni://scope-rules.",
     {
       node_id: z.string().optional().describe("Filter by node ID"),
       type: z.enum(EVENT_TYPES).optional().describe("Filter by event type"),

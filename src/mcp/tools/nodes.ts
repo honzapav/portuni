@@ -23,17 +23,17 @@ import { decideGlobalQuery, type SessionScope } from "../scope.js";
 export function registerNodeTools(server: McpServer, scope: SessionScope): void {
   server.tool(
     "portuni_create_node",
-    "Create a new node in the Portuni knowledge graph. ONLY create nodes when the user explicitly asks. Never create nodes as a side effect of other work or to organize things on your own initiative. Node types (strictly enforced): organization, project, process, area, principle. Organization invariant: every non-organization node MUST specify organization_id -- it will be atomically connected to that organization via a belongs_to edge. Optionally set goal (textual purpose) and lifecycle_state (type-specific primary state -- status is derived automatically). See portuni://architecture for the invariant and portuni://enums for the closed type / lifecycle sets.",
+    "Create a new node in the Portuni knowledge graph. Create only when the user explicitly asks — agent-initiative nodes pollute the graph and the user cannot easily distinguish them later. Non-organization nodes must specify organization_id; the node and its belongs_to edge are inserted atomically. Optionally set goal (textual purpose) and lifecycle_state — status is derived. See portuni://architecture for the invariant and portuni://enums for the closed type / lifecycle sets.",
     {
-      type: z.enum(NODE_TYPES).describe("Node type: organization, project, process, area, or principle"),
+      type: z.enum(NODE_TYPES).describe("Node type. See portuni://enums for the closed set."),
       name: z.string().describe("Human-readable name"),
       description: z.string().optional().describe("What this node represents"),
-      organization_id: z.string().optional().describe("Organization ID (ULID) -- required for non-organization types. Ignored when type='organization'. The new node will be atomically connected to this organization via belongs_to."),
+      organization_id: z.string().optional().describe("Organization ID (ULID) — required for non-organization types. Ignored when type='organization'. The new node is atomically connected to this organization via belongs_to."),
       meta: z.record(z.string(), z.unknown()).optional().describe("Type-specific JSON data"),
-      status: z.enum(NODE_STATUSES).optional().describe("Node status (default: active). Prefer setting lifecycle_state -- status is derived automatically."),
+      status: z.enum(NODE_STATUSES).optional().describe("Node status (default: active). Prefer setting lifecycle_state — status is derived from it."),
       visibility: z.enum(NODE_VISIBILITIES).optional().describe("Visibility (default: team)"),
       goal: z.string().optional().describe("Optional textual goal / purpose of the node."),
-      lifecycle_state: z.string().optional().describe("Optional primary lifecycle state. Must be valid for node type (project: backlog/planned/in_progress/on_hold/done/cancelled; process: not_implemented/implementing/operating/at_risk/broken/retired; etc.). status is derived from this."),
+      lifecycle_state: z.string().optional().describe("Optional primary lifecycle state — type-specific. See portuni://enums for the per-type closed set. status is derived from this."),
     },
     async (args) => {
       const db = getDb();
@@ -76,16 +76,16 @@ export function registerNodeTools(server: McpServer, scope: SessionScope): void 
 
   server.tool(
     "portuni_update_node",
-    "Update an existing node in the Portuni knowledge graph. Only provided fields are changed. Status is derived automatically from lifecycle_state -- prefer setting lifecycle_state. owner_id must reference an actor of type=person with user_id set, in the same organization.",
+    "Update an existing node in the Portuni knowledge graph. Only provided fields change. Status is derived from lifecycle_state — prefer setting lifecycle_state. owner_id must reference an actor of type=person with user_id set, in the same organization.",
     {
       node_id: z.string().describe("Node ID (ULID)"),
       name: z.string().optional().describe("New human-readable name"),
       description: z.string().nullable().optional().describe("New description"),
-      status: z.enum(NODE_STATUSES).optional().describe("New coarse status. Prefer setting lifecycle_state -- status is derived automatically."),
+      status: z.enum(NODE_STATUSES).optional().describe("New coarse status. Prefer setting lifecycle_state — status is derived from it."),
       visibility: z.enum(NODE_VISIBILITIES).optional().describe("New visibility"),
       meta: z.record(z.string(), z.unknown()).optional().describe("New type-specific JSON data"),
       goal: z.string().nullable().optional().describe("New goal text. Pass null to clear."),
-      lifecycle_state: z.string().nullable().optional().describe("New lifecycle state. Must be valid for node type (project: backlog/planned/in_progress/on_hold/done/cancelled; process: not_implemented/implementing/operating/at_risk/broken/retired; etc.). Pass null to clear."),
+      lifecycle_state: z.string().nullable().optional().describe("New lifecycle state — type-specific. See portuni://enums for the per-type closed set. Pass null to clear."),
       owner_id: z.string().nullable().optional().describe("New owner (actors.id). Must reference an actor of type=person with user_id set (non-placeholder) in the same organization. Pass null to clear."),
     },
     async (args) => {
@@ -143,7 +143,7 @@ export function registerNodeTools(server: McpServer, scope: SessionScope): void 
 
   server.tool(
     "portuni_list_nodes",
-    "List nodes from the Portuni knowledge graph, optionally filtered by type and/or status. Returns only nodes already in the session scope set unless scope='global' is set, which returns the full graph (and is logged as a broad listing). Empty results in default scope mean the agent must call portuni_expand_scope or ask the user.",
+    "List nodes from the Portuni knowledge graph, optionally filtered by type and/or status. Default scope='session' returns only nodes already in the session scope set; scope='global' returns the full graph and is mode-gated. Empty session-scope results mean the agent should call portuni_expand_scope or ask the user. See portuni://scope-rules.",
     {
       type: z.enum(NODE_TYPES).optional().describe("Filter by node type"),
       status: z.enum(NODE_STATUSES).optional().describe("Filter by status"),
@@ -151,9 +151,7 @@ export function registerNodeTools(server: McpServer, scope: SessionScope): void 
         .enum(["session", "global"])
         .optional()
         .default("session")
-        .describe(
-          "session (default): only nodes in the session scope set. global: full graph; subject to scope mode (elicits in strict, audited in permissive).",
-        ),
+        .describe("session (default): nodes already in the session scope set. global: full graph; subject to scope mode — see portuni://scope-rules."),
     },
     async (args) => {
       const db = getDb();
@@ -218,13 +216,13 @@ export function registerNodeTools(server: McpServer, scope: SessionScope): void 
 
   server.tool(
     "portuni_delete_node",
-    "Delete a node from the Portuni knowledge graph. Two modes: 'archive' (default, soft delete -- sets status to archived, preserves edges and history) or 'purge' (hard delete -- permanently removes node and cascade-deletes all edges, files, events, and mirrors). Purge is irreversible. Organizations with children cannot be purged -- re-parent children first.",
+    "Delete a node from the Portuni knowledge graph. Use only when the user explicitly asks. Two modes: 'archive' (default, soft delete — sets status to archived, preserves edges and history) and 'purge' (hard delete — permanently removes node and cascade-deletes all edges, files, events, and mirrors). Organizations with children cannot be purged — re-parent children first.",
     {
       node_id: z.string().describe("Node ID (ULID) to delete"),
       mode: z
         .enum(["archive", "purge"])
         .default("archive")
-        .describe("archive (soft delete, default) or purge (hard delete, irreversible)"),
+        .describe("archive (soft delete, default) or purge (hard delete)"),
     },
     async (args) => {
       const db = getDb();

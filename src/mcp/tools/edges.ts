@@ -12,7 +12,7 @@ import { moveNodeToOrganization } from "../../domain/edges.js";
 export function registerEdgeTools(server: McpServer): void {
   server.tool(
     "portuni_connect",
-    "Create a directed edge between two nodes. ONLY create edges when the user explicitly asks or when creating a node that requires a belongs_to edge. Never speculatively connect nodes because they seem related. Relations (strictly enforced): related_to (near-default lateral connection), belongs_to (scope; EXACTLY ONE per non-organization node), applies (concrete work uses a pattern, e.g. project applies process), informed_by (knowledge transfer). To move a node between organizations, prefer portuni_move_node -- it rebinds the existing belongs_to atomically. Do NOT disconnect-then-connect across organizations: the disconnect of the only belongs_to is rejected to preserve the invariant. See portuni://architecture.",
+    "Create a directed edge between two nodes. Connect only when the user explicitly asks or when creating a node that needs its initial belongs_to edge — speculative connections clutter the graph and mislead later readers. Relations (strictly enforced): related_to (lateral connection), belongs_to (scope; one per non-organization node), applies (concrete work uses a pattern, e.g. project applies process), informed_by (knowledge transfer). To move a node between organizations, call portuni_move_node — it rebinds the existing belongs_to atomically. A disconnect-then-connect across organizations is rejected because it would transiently orphan the node. See portuni://architecture.",
     {
       source_id: z.string().describe("Source node ID (ULID)"),
       target_id: z.string().describe("Target node ID (ULID)"),

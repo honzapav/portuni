@@ -82,7 +82,7 @@ export async function listRemotesService(db: Client): Promise<RemoteListing[]> {
 export function registerSyncRemoteTools(server: McpServer): void {
   server.tool(
     "portuni_setup_remote",
-    "Create or update a named remote (fs, gdrive, dropbox, s3, webdav, sftp). For gdrive, pass service_account_json.",
+    "Create or update a named remote (fs, gdrive, dropbox, s3, webdav, sftp). Use when the user is configuring a sync backend. For gdrive, pass service_account_json — other types ignore it.",
     {
       name: z.string().min(1),
       type: z.enum(["fs", "gdrive", "dropbox", "s3", "webdav", "sftp"]),
@@ -111,7 +111,7 @@ export function registerSyncRemoteTools(server: McpServer): void {
 
   server.tool(
     "portuni_set_routing_policy",
-    "Replace the full remote_routing table with a new list of rules. Admin tool.",
+    "Replace the entire remote_routing table with a new list of rules — every existing rule that is not in the new list is deleted. Use only when the user explicitly asks to overwrite the routing policy.",
     {
       rules: z.array(
         z.object({
@@ -138,7 +138,7 @@ export function registerSyncRemoteTools(server: McpServer): void {
 
   server.tool(
     "portuni_list_remotes",
-    "List all configured remotes with their auth status on this device.",
+    "List all configured remotes with their auth status on this device. Use when answering 'which remotes are set up?' or before setting a routing policy.",
     {},
     async () => {
       const db = getDb();
