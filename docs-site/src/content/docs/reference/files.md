@@ -35,6 +35,19 @@ store per-device paths.
 Copy a file into the node's local mirror, upload it via the routed remote,
 and persist a `files` row + `file_state` cache.
 
+:::caution[Register at creation time]
+Call `portuni_store` **immediately** after any tool (Claude Code `Write` /
+`Edit` / `MultiEdit`, Codex `apply_patch`, shell `cp`/`mv`, app save dialog)
+creates a new file inside a mirror's `wip/`, `outputs/`, or `resources/`.
+Writing alone places bytes on disk but does **not** create a `files` row --
+the next session, the routed remote, and teammates won't see the file.
+Treat "create file in mirror" and "call `portuni_store`" as a single
+atomic step. The end-of-turn `portuni_status` check is a drift safety
+net, not the primary registration path. For files that already exist on
+the remote (created elsewhere), use [`portuni_adopt_files`](/reference/sync/#portuni_adopt_files)
+instead.
+:::
+
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `node_id` | string | yes | Node ID |

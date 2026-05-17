@@ -232,6 +232,8 @@ Solo-mode setup: one remote, one wildcard rule, no per-org complexity. Adding or
 
 ### portuni_store
 
+Primary registration path. Agents must call this **immediately** after creating any new file inside a mirror via `Write`, `Edit`, `MultiEdit`, or shell `cp`/`mv` -- `Write` alone leaves the file unregistered and invisible to the next session, the remote, and teammates. Do not defer to the end-of-turn `portuni_status` check; that check is a drift safety net, not the primary path.
+
 ```
 Input:  { node_id, local_path, description?, status?, subpath? }
         - subpath: optional nested folder within wip|outputs|resources

@@ -21,7 +21,7 @@ import { guardListScope } from "../list-scope-gate.js";
 export function registerFileTools(server: McpServer, scope: SessionScope): void {
   server.tool(
     "portuni_store",
-    "Store a file for a node: copies into the node's local mirror, uploads to the routed remote, and tracks it for sync. Uses sync_key-based paths so renaming nodes does not break remote storage. Call portuni_status before ending the turn to detect drift between local files, the Portuni DB, and the remote. See portuni://sync-model.",
+    "Register a file with Portuni: copies into the node's local mirror (if not already there), uploads to the routed remote, and creates the files row. Use this IMMEDIATELY after you create a new file inside any mirror via Write, Edit, MultiEdit, or shell cp/mv -- treat 'create file in wip/outputs/resources' and 'call portuni_store' as a single atomic step. Write alone places bytes on disk but does not register the file; the next session, the remote, and teammates will not see it. Also use for files surfaced as new_local by portuni_status. For files surfaced as new_remote (created elsewhere, already on the remote), use portuni_adopt_files instead. Uses sync_key-based paths so renaming nodes does not break remote storage. See portuni://sync-model.",
     {
       node_id: z.string().describe("Target node ID"),
       local_path: z.string().describe("Absolute path of the source file on this device"),

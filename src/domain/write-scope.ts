@@ -401,5 +401,13 @@ export function buildSoftHint(args: {
     "Editing files in those siblings is out of scope for this session — ask the user first.",
     `Paths outside PORTUNI_ROOT (\`${normalize(args.portuniRoot)}\`) require explicit user approval for every write.`,
     "",
+    "## Portuni file registration",
+    "",
+    "When you create a new file inside this mirror's `wip/`, `outputs/`, or `resources/` via `Write`, `Edit`, `MultiEdit`, or shell `cp`/`mv`, your next action MUST be `portuni_store` with that path.",
+    "`Write` alone places bytes on disk but does not create a `files` row in Portuni — the next session, the routed remote, and teammates will not see the file.",
+    "Treat \"create file in mirror\" and \"call `portuni_store`\" as a single atomic step. Do not defer registration to the end-of-turn `portuni_status` drift check — that check is a safety net, not the primary path.",
+    "If `portuni_status` returns `new_local` for a file you just created, you forgot this rule — register it via `portuni_store` immediately.",
+    "For files that appeared from elsewhere (`new_remote` from `portuni_status`, or `new_local` left over from a prior session you didn't author), use `portuni_adopt_files` or `portuni_store` respectively.",
+    "",
   ].join("\n");
 }

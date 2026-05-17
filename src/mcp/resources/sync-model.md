@@ -52,16 +52,31 @@ local. Each tracked file is classified:
 Reconcile drift via:
 
 - `portuni_store(node_id, local_path)` -- promote a new local file to
-  tracked.
+  tracked. **Use this for any file you yourself just created or copied
+  into a mirror via `Write`, `Edit`, `MultiEdit`, `cp`, or save-from-app.
+  Do not wait for `portuni_status` discovery to remind you -- by the
+  time discovery runs, the agent has often already moved on.** Treat
+  "create file in `wip/` or `outputs/`" and "call `portuni_store`" as
+  a single atomic step.
 - `portuni_pull(file_id)` -- download remote content into the mirror
   for a tracked file.
-- `portuni_adopt_files(node_id, paths)` -- register existing remote
+- `portuni_adopt_files(node_id, paths)` -- register existing **remote**
   files (surfaced as `new_remote` by `portuni_status`) as tracked
-  files.
+  files. Use this for files a teammate or another device produced;
+  for your own newly-created local files, use `portuni_store` instead.
 - `portuni_delete_file(file_id, mode)` -- remove a tracked file.
   `complete` removes remote+local+DB row; `unregister_only` drops
   just the DB row when the file is already gone from disk and
   remote.
+
+### When to use `portuni_store` vs `portuni_adopt_files`
+
+| Situation | Use |
+| --- | --- |
+| You just created a file via `Write`/`Edit` in `<mirror>/wip` or `outputs` | `portuni_store` immediately (same turn, before any other tool call that doesn't depend on it) |
+| You copied a file into a mirror with `cp` / Finder / app save dialog | `portuni_store` |
+| `portuni_status` returned `new_local` for a file you didn't create (left over from a prior session) | `portuni_store` |
+| `portuni_status` returned `new_remote` (file lives on the remote, not locally) | `portuni_adopt_files` |
 
 ## Confirm-first patterns
 
@@ -98,9 +113,23 @@ the apply flag. Never fabricate user confirmation.
 
 ## Session discipline
 
-After any local file modification in a Portuni-mirrored repo (`git mv`,
-`git rm`, edits, plain `mv`), call `portuni_status` before ending the
-turn. This detects drift between local files, the Portuni DB, and the
-remote -- catching it inside the same session keeps reconciliation
-cheap. Skipping the check leaves silent drift for the next session
-to discover.
+Two complementary rules:
+
+1. **Register at creation time.** When you create a new file inside a
+   mirror (via `Write`, `Edit`, `MultiEdit`, or shell `cp`/`mv` into
+   the mirror tree), immediately call `portuni_store` with that path.
+   `Write` alone places bytes on disk but does not create a `files`
+   row -- the next session, the remote, and teammates will not see
+   the file. Do not defer this to "I'll call `portuni_status` at the
+   end" -- the end-of-turn check is a safety net, not the primary
+   registration path.
+
+2. **End-of-turn drift check.** After any local file modification in
+   a Portuni-mirrored repo (`git mv`, `git rm`, edits, plain `mv`),
+   call `portuni_status` before ending the turn. This detects drift
+   between local files, the Portuni DB, and the remote -- catching
+   it inside the same session keeps reconciliation cheap. Skipping
+   the check leaves silent drift for the next session to discover.
+   If `portuni_status` surfaces `new_local` entries that came from
+   work you just did, that's a signal you forgot rule 1 -- register
+   them now via `portuni_store`.

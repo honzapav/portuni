@@ -132,7 +132,12 @@ Returns the preview or the executed result. For Drive remotes, "delete" means mo
 
 ### portuni_adopt_files
 
-Register existing remote files (not currently tracked) as `files` rows for the given node. Non-destructive. Use after `portuni_status` surfaces `new_remote` entries to bring them under tracking.
+Register existing **remote** files (not currently tracked) as `files` rows for the given node. Non-destructive. Use after `portuni_status` surfaces `new_remote` entries to bring them under tracking.
+
+:::note[Adopt vs store]
+- `portuni_adopt_files` is for files that already live on the remote (created by a teammate or another device). It pulls metadata only, no upload.
+- [`portuni_store`](/reference/files/#portuni_store) is for files you just created locally (via `Write`, `Edit`, `cp`, save dialog, etc.). It uploads to the remote and registers in one call. **Always use `portuni_store` immediately after creating a file in a mirror -- don't wait for `portuni_status` discovery.**
+:::
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
