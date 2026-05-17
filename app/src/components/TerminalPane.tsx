@@ -15,12 +15,14 @@
 // terminal requires the desktop app.
 
 import { useEffect, useRef } from "react";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { isTauri } from "../lib/backend-url";
+import type { Theme } from "../lib/theme";
 
 type Props = {
   // Pre-allocated by the parent. Used as the PTY backend session id —
@@ -32,6 +34,11 @@ type Props = {
   // that are mounted but display:none — those skip resize-IPC since
   // their measurements would be wrong anyway.
   active: boolean;
+  // App-level theme. xterm holds a snapshot of CSS-variable colors so
+  // we re-apply them imperatively on theme flip — the Tailwind wrapper
+  // around the canvas updates fine via CSS but the canvas itself does
+  // not re-read variables.
+  theme: Theme;
   // Called when the user closes the tab; parent removes from state +
   // invokes pty_kill. Component itself never calls pty_kill.
   onExit?: (code: number | null) => void;
@@ -40,6 +47,22 @@ type Props = {
   // the bytes and only uses the timing.
   onOutput?: () => void;
 };
+
+// Read current CSS variables into an xterm ITheme. Called at mount
+// and on every theme flip — wherever xterm needs a fresh snapshot.
+function buildXtermTheme(): ITheme {
+  const css = getComputedStyle(document.documentElement);
+  const bg = css.getPropertyValue("--color-bg").trim();
+  const fg = css.getPropertyValue("--color-text").trim();
+  const accent = css.getPropertyValue("--color-accent").trim();
+  return {
+    background: bg || "#0e1015",
+    foreground: fg || "#e6e7ea",
+    cursor: accent || "#7ec8ff",
+    cursorAccent: bg || "#0e1015",
+    selectionBackground: "rgba(126, 200, 255, 0.25)",
+  };
+}
 
 type PtyDataPayload = { session_id: string; data_b64: string };
 type PtyExitPayload = { session_id: string; code: number | null };
@@ -59,11 +82,13 @@ export default function TerminalPane({
   cwd,
   command,
   active,
+  theme,
   onExit,
   onOutput,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const termRef = useRef<Terminal | null>(null);
   const onExitRef = useRef(onExit);
   const onOutputRef = useRef(onOutput);
   useEffect(() => {
@@ -83,33 +108,37 @@ export default function TerminalPane({
 
     const id = sessionId;
 
-    const css = getComputedStyle(document.documentElement);
-    const bg = css.getPropertyValue("--color-bg").trim() || "#0e1015";
-    const fg = css.getPropertyValue("--color-text").trim() || "#e6e7ea";
-    const accent = css.getPropertyValue("--color-accent").trim() || "#7ec8ff";
-
     const term = new Terminal({
+      // Drop "Apple Color Emoji" from the fallback chain — when a glyph
+      // is missing from JetBrains Mono / Menlo (●, ◯, ✓, ║, │), the
+      // browser falls through to the next family. Apple Color Emoji is a
+      // color-bitmap font with a different baseline and an emoji-width
+      // glyf, which makes simple Unicode bullets float above the line
+      // and wider than one cell — wrecking diff and bullet alignment.
+      // Symbola provides monochrome text glyphs at monospace widths and
+      // is a clean text-class fallback.
       fontFamily:
-        '"JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", "Apple Color Emoji", "Symbola", monospace',
+        '"JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", "Symbola", monospace',
       fontSize: 13,
       lineHeight: 1.0,
       letterSpacing: 0,
       cursorBlink: true,
-      theme: {
-        background: bg,
-        foreground: fg,
-        cursor: accent,
-        cursorAccent: bg,
-        selectionBackground: "rgba(126, 200, 255, 0.25)",
-      },
+      theme: buildXtermTheme(),
       allowProposedApi: true,
       scrollback: 5000,
-      // Option becomes Meta — unlocks readline word-nav (Option+B/F),
-      // word-delete (Option+Backspace / Option+D), and similar shell shortcuts.
-      macOptionIsMeta: true,
+      // CRITICAL on macOS with non-US keyboard layouts. With
+      // macOptionIsMeta=true, xterm treats Option+key as Meta+key (ESC
+      // prefix), which steals OS-level layout composition: on a Czech
+      // (and many EU) keyboard, @ = Option+V, > = Option+., & = Option+7,
+      // etc. — those characters never make it to the PTY. We leave Meta
+      // off here and re-introduce Option+B/F (word-nav) explicitly via
+      // the customKeyEventHandler below, which only fires for the actual
+      // navigation letters, not for printable punctuation.
+      macOptionIsMeta: false,
       // Right-click highlights the word under the cursor, then Cmd+C copies.
       rightClickSelectsWord: true,
     });
+    termRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     // WebLinksAddon is loaded later, inside init(), with a Tauri-aware handler.
@@ -152,6 +181,20 @@ export default function TerminalPane({
           },
         ),
       );
+      // WebGL renderer — replaces the default DOM renderer with a
+      // canvas/WebGL pipeline that does subpixel-accurate glyph
+      // positioning. Wide glyphs (box-drawing │ ║, bullets ●, CJK,
+      // emoji-text) line up cell-for-cell, so diff columns and ASCII
+      // tables stay aligned. Falls back silently if the webview can't
+      // get a WebGL context (e.g. headless / GPU disabled) — DOM
+      // renderer keeps working in that case.
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => webgl.dispose());
+        term.loadAddon(webgl);
+      } catch {
+        // WebGL unavailable — fall back to DOM renderer silently.
+      }
       try {
         fit.fit();
       } catch {
@@ -189,16 +232,29 @@ export default function TerminalPane({
         return;
       }
 
-      // Shift+Enter → send ESC+CR (equivalent of Option+Enter). TUIs that
-      // distinguish "newline" from "submit" — Claude Code, many REPLs — treat
-      // this as a soft newline. Plain Enter still sends CR.
+      // Manual Meta/Option handling. macOptionIsMeta is off (CZ-keyboard
+      // friendliness — see the constructor option above), so we re-inject
+      // the four navigation shortcuts that shell users actually rely on.
+      // Match by event.code, not event.key — on non-US layouts Option+B
+      // could resolve to a different printable, but the physical key
+      // (KeyB) stays put. Letters keyed without Option still produce the
+      // layout's char via xterm.onData; this handler only intercepts the
+      // Option-modified combinations.
+      //
+      // Shift+Enter → ESC+CR (soft newline, Option+Enter equivalent) for
+      // Claude Code and REPLs that distinguish newline from submit.
       //
       // xterm's customKeyEventHandler fires for keydown AND keypress AND
       // keyup. We must return false on ALL of them; otherwise xterm's
       // _keyPress sends a plain "\r" right after our "\x1b\r", and the
       // shell sees "\x1b\r\r" — ESC is dropped, the second CR submits.
       // The pty_write itself only runs on keydown so we don't double-send.
+      const writePty = (data: string) =>
+        invoke("pty_write", { args: { session_id: id, data } }).catch(() => {
+          // pty may be gone already — ignore
+        });
       term.attachCustomKeyEventHandler((event) => {
+        // Shift+Enter — soft newline.
         if (
           event.key === "Enter" &&
           event.shiftKey &&
@@ -206,14 +262,39 @@ export default function TerminalPane({
           !event.metaKey &&
           !event.altKey
         ) {
-          if (event.type === "keydown") {
-            void invoke("pty_write", {
-              args: { session_id: id, data: "\x1b\r" },
-            }).catch(() => {
-              // pty may be gone already — ignore
-            });
-          }
+          if (event.type === "keydown") void writePty("\x1b\r");
           return false;
+        }
+        // Option (Alt) + navigation chord. Only intercept when Option is
+        // the ONLY modifier so we don't fight system shortcuts like
+        // Cmd+Option+anything.
+        if (
+          event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.shiftKey
+        ) {
+          let seq: string | null = null;
+          switch (event.code) {
+            case "KeyB":
+              seq = "\x1bb";
+              break;
+            case "KeyF":
+              seq = "\x1bf";
+              break;
+            case "KeyD":
+              seq = "\x1bd";
+              break;
+            case "Backspace":
+              // ESC + DEL — readline word-delete-back. Some shells also
+              // accept Ctrl+W; this matches macOS Terminal's default.
+              seq = "\x1b\x7f";
+              break;
+          }
+          if (seq) {
+            if (event.type === "keydown") void writePty(seq);
+            return false;
+          }
         }
         return true;
       });
@@ -285,10 +366,22 @@ export default function TerminalPane({
         // defensive — ignore
       }
       fitRef.current = null;
+      termRef.current = null;
     };
   }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // (B) Active-fit effect — refits when a pane becomes the active tab.
+  // (B) Theme effect — re-apply colors whenever the user flips
+  // dark/light at runtime. Reads the freshly-applied CSS variables off
+  // <html data-theme="..."> and pokes them into xterm's options. Skips
+  // the initial mount (the constructor already used buildXtermTheme())
+  // but is intentionally cheap enough to run anyway.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.theme = buildXtermTheme();
+  }, [theme]);
+
+  // (C) Active-fit effect — refits when a pane becomes the active tab.
   useEffect(() => {
     if (!active) return;
     // One animation frame to let the browser apply display:block on a
@@ -313,7 +406,17 @@ export default function TerminalPane({
 
   return (
     <div className="h-full w-full bg-[var(--color-bg)] p-5">
-      <div ref={containerRef} className="h-full w-full overflow-hidden" />
+      <div
+        ref={containerRef}
+        className="h-full w-full overflow-hidden"
+        // font-variant-emoji: text forces the browser to pick the text
+        // (non-color) glyph variant for dual-encoded codepoints. Combined
+        // with the Symbola fallback in the font stack, this keeps single
+        // bullets (●, ◯, ✓), box-drawing chars (│, ║), and other diff
+        // glyphs at one-cell width and on baseline — Apple Color Emoji
+        // otherwise widens them and offsets text by half a row.
+        style={{ fontVariantEmoji: "text" } as React.CSSProperties}
+      />
     </div>
   );
 }

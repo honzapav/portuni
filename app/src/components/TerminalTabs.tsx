@@ -1,120 +1,84 @@
-// Middle column. Renders one tab per session for the currently selected
-// node, plus a "+" button (re-using the parent's "open" callback). Every
-// pane is mounted; only the active one is visible. Background panes
-// keep their PTY alive and their xterm scrollback intact.
-import { X, Plus } from "lucide-react";
+// Middle column. Mounts one TerminalPane per *every* live session —
+// across all nodes — and toggles display:none on the ones that aren't
+// the visible (selectedNode + activeSession) pair. The per-node session
+// strip used to live at the top of this column; it has moved into
+// WorkspaceNodeList (left column) so the middle column is a pure
+// terminal canvas with no chrome.
+//
+// Why mount across nodes too: switching the left-pane node used to drop
+// the previous node's panes out of the React tree, which fired
+// xterm.dispose() and lost the scrollback. The PTY survives on the
+// backend (pty.rs keeps it alive across duplicate spawns) so the next
+// remount only ever saw new output — the user saw the terminal "go
+// blank" when bouncing between nodes. Keeping every pane mounted means
+// the xterm buffer survives node switches too.
 import TerminalPane from "./TerminalPane";
-import { isSessionActive, type TerminalSession } from "../lib/sessions";
+import type { TerminalSession } from "../lib/sessions";
+import type { Theme } from "../lib/theme";
 
 type Props = {
-  sessionsForNode: TerminalSession[];   // already filtered to one node
-  activeSessionId: string | null;
-  onSelectSession: (id: string) => void;
+  // ALL live sessions, not just for the selected node. Filtering happens
+  // inside this component so non-visible panes can still be mounted.
+  sessions: TerminalSession[];
+  selectedNodeId: string | null;
+  activeSessionIdByNode: Record<string, string>;
   onCloseSession: (id: string) => void;
-  onNewSession: () => void;
-  now: number;
+  theme: Theme;
 };
 
 export default function TerminalTabs({
-  sessionsForNode,
-  activeSessionId,
-  onSelectSession,
+  sessions,
+  selectedNodeId,
+  activeSessionIdByNode,
   onCloseSession,
-  onNewSession,
-  now,
+  theme,
 }: Props) {
-  if (sessionsForNode.length === 0) {
-    return (
-      <div className="flex flex-1 items-center justify-center text-[13px] text-[var(--color-text-dim)]">
-        Žádné sessions pro tento uzel.
-      </div>
-    );
-  }
+  const sessionsForNode = selectedNodeId
+    ? sessions.filter((s) => s.nodeId === selectedNodeId)
+    : [];
+  const activeSessionId = selectedNodeId
+    ? (activeSessionIdByNode[selectedNodeId] ?? null)
+    : null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center gap-1 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-2">
-        {sessionsForNode.map((s, idx) => {
-          const active = isSessionActive(now, s.lastOutputAt);
-          const selected = s.id === activeSessionId;
-          return (
-            <button
-              key={s.id}
-              type="button"
-              onClick={() => onSelectSession(s.id)}
-              className={`flex items-center gap-1.5 rounded-t-md px-3 py-1.5 text-[12.5px] transition-colors ${
-                selected
-                  ? "bg-[var(--color-bg)] text-[var(--color-text)]"
-                  : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-              }`}
-            >
-              <span
-                role="img"
-                aria-label={active ? "active" : "idle"}
-                className={`inline-block h-1.5 w-1.5 rounded-full ${active ? "bg-emerald-500" : "bg-amber-500/70"}`}
-              />
-              <span className="font-mono">#{idx + 1}</span>
-              {/* biome-ignore lint/a11y/useSemanticElements: nested <button> inside <button> is invalid HTML; role+tabIndex pattern is the correct workaround */}
-              <span
-                role="button"
-                tabIndex={0}
-                onClick={(e) => {
-                  // window.confirm() is not implemented in the Tauri
-                  // webview on macOS — calling it silently no-ops, so the
-                  // user clicks X and nothing happens. Closing on a single
-                  // explicit X click is the simplest reliable fix; the
-                  // session is recoverable by re-opening from the node.
-                  e.stopPropagation();
-                  e.preventDefault();
-                  onCloseSession(s.id);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onCloseSession(s.id);
-                  }
-                }}
-                className="ml-1 inline-flex h-4 w-4 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
-                title="Zavřít session"
-                aria-label="Zavřít session"
-              >
-                <X size={11} />
-              </span>
-            </button>
-          );
-        })}
-        <button
-          type="button"
-          onClick={onNewSession}
-          className="ml-1 flex items-center gap-1 rounded-md px-2 py-1 text-[12.5px] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-          title="Nová session pro tento uzel"
-        >
-          <Plus size={12} />
-          Nová
-        </button>
-      </div>
-
-      <div className="relative min-h-0 flex-1">
-        {sessionsForNode.map((s) => {
-          const active = s.id === activeSessionId;
-          return (
-            <div
-              key={s.id}
-              className="absolute inset-0"
-              style={{ display: active ? "block" : "none" }}
-            >
-              <TerminalPane
-                sessionId={s.id}
-                cwd={s.cwd}
-                command={s.command}
-                active={active}
-                onExit={() => onCloseSession(s.id)}
-              />
-            </div>
-          );
-        })}
-      </div>
+    <div className="relative h-full min-h-0">
+      {/*
+        All sessions are mounted at once. Visibility is decided by
+        (selectedNodeId, activeSessionId) — anything else gets
+        display:none. TerminalPane's own active-fit effect refits xterm
+        whenever its `active` prop flips true, so coming back from a
+        hidden tab redraws at the current container size.
+      */}
+      {sessions.map((s) => {
+        const visible =
+          s.nodeId === selectedNodeId && s.id === activeSessionId;
+        return (
+          <div
+            key={s.id}
+            className="absolute inset-0"
+            style={{ display: visible ? "block" : "none" }}
+          >
+            <TerminalPane
+              sessionId={s.id}
+              cwd={s.cwd}
+              command={s.command}
+              active={visible}
+              theme={theme}
+              onExit={() => onCloseSession(s.id)}
+            />
+          </div>
+        );
+      })}
+      {selectedNodeId && sessionsForNode.length === 0 ? (
+        <div className="flex h-full items-center justify-center text-[13px] text-[var(--color-text-dim)]">
+          Žádné sessions pro tento uzel.
+        </div>
+      ) : null}
+      {!selectedNodeId ? (
+        <div className="flex h-full items-center justify-center text-[13px] text-[var(--color-text-dim)]">
+          Vyber uzel vlevo nebo otevři terminál z detailu.
+        </div>
+      ) : null}
     </div>
   );
 }

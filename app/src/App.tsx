@@ -237,6 +237,7 @@ export default function App() {
   const [selectedWorkspaceNodeId, setSelectedWorkspaceNodeId] = useState<string | null>(null);
   const [activeSessionIdByNode, setActiveSessionIdByNode] = useState<Record<string, string>>({});
   const [now, setNow] = useState<number>(() => Date.now());
+  const openingSessionNodeIdsRef = useRef<Set<string>>(new Set());
 
   // Detail for the workspace's selected node. Kept separate from
   // graph-view's `nodeDetail` so the two views can have independent
@@ -356,31 +357,37 @@ export default function App() {
 
   const openSessionForNodeId = useCallback(
     async (nodeId: string) => {
-      let detail: NodeDetail | null = null;
+      if (openingSessionNodeIdsRef.current.has(nodeId)) return;
+      openingSessionNodeIdsRef.current.add(nodeId);
       try {
-        detail = await fetchNode(nodeId);
-      } catch (err) {
-        setGraphError(`Nelze načíst uzel: ${String(err)}`);
-        return;
+        let detail: NodeDetail | null = null;
+        try {
+          detail = await fetchNode(nodeId);
+        } catch (err) {
+          setGraphError(`Nelze načíst uzel: ${String(err)}`);
+          return;
+        }
+        if (!detail) return;
+        let cwd: string;
+        try {
+          const mirror = await createNodeMirror(nodeId);
+          cwd = mirror.local_path;
+        } catch (err) {
+          setGraphError(`Nelze otevřít terminál: ${String(err)}`);
+          return;
+        }
+        const enriched: NodeDetail = {
+          ...detail,
+          local_mirror: detail.local_mirror ?? {
+            local_path: cwd,
+            registered_at: new Date().toISOString(),
+          },
+        };
+        const command = buildAgentCommand(enriched, agentCommand);
+        openSession({ node: enriched, cwd, command });
+      } finally {
+        openingSessionNodeIdsRef.current.delete(nodeId);
       }
-      if (!detail) return;
-      let cwd: string;
-      try {
-        const mirror = await createNodeMirror(nodeId);
-        cwd = mirror.local_path;
-      } catch (err) {
-        setGraphError(`Nelze otevřít terminál: ${String(err)}`);
-        return;
-      }
-      const enriched: NodeDetail = {
-        ...detail,
-        local_mirror: detail.local_mirror ?? {
-          local_path: cwd,
-          registered_at: new Date().toISOString(),
-        },
-      };
-      const command = buildAgentCommand(enriched, agentCommand);
-      openSession({ node: enriched, cwd, command });
     },
     [agentCommand, openSession],
   );
@@ -498,6 +505,7 @@ export default function App() {
               graph={graph}
               sessions={sessions}
               now={now}
+              theme={theme}
               selectedNodeId={selectedWorkspaceNodeId}
               onSelectNode={setSelectedWorkspaceNodeId}
               activeSessionIdByNode={activeSessionIdByNode}

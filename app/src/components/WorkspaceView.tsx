@@ -7,6 +7,7 @@ import { useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { GraphPayload, GraphNode, NodeDetail } from "../types";
 import type { TerminalSession } from "../lib/sessions";
+import type { Theme } from "../lib/theme";
 import WorkspaceNodeList from "./WorkspaceNodeList";
 import TerminalTabs from "./TerminalTabs";
 import WorkspaceEmpty from "./WorkspaceEmpty";
@@ -16,6 +17,11 @@ type Props = {
   graph: GraphPayload | null;
   sessions: TerminalSession[];
   now: number;
+  // Theme drives xterm colors inside TerminalPane; the rest of the
+  // workspace uses CSS variables, but xterm holds a snapshot of those
+  // colors that has to be re-applied imperatively when the user
+  // toggles dark/light at runtime.
+  theme: Theme;
   selectedNodeId: string | null;
   onSelectNode: (id: string | null) => void;
   activeSessionIdByNode: Record<string, string>;
@@ -40,6 +46,7 @@ export default function WorkspaceView({
   selectedNodeId,
   onSelectNode,
   now,
+  theme,
   graph,
   activeSessionIdByNode,
   onSetActiveSession,
@@ -73,7 +80,11 @@ export default function WorkspaceView({
           <WorkspaceNodeList
             sessions={sessions}
             selectedNodeId={selectedNodeId}
+            activeSessionIdByNode={activeSessionIdByNode}
             onSelectNode={onSelectNode}
+            onSelectSession={onSetActiveSession}
+            onCloseSession={onCloseSession}
+            onNewSession={onNewSessionForCurrentNode}
             now={now}
           />
         </div>
@@ -81,19 +92,20 @@ export default function WorkspaceView({
       <main className="flex min-w-0 flex-1 flex-col">
         {sessions.length === 0 ? (
           <WorkspaceEmpty graph={graph} onPick={(n) => onOpenSessionFromPicker(n)} />
-        ) : selectedNodeId ? (
-          <TerminalTabs
-            sessionsForNode={sessions.filter((s) => s.nodeId === selectedNodeId)}
-            activeSessionId={activeSessionIdByNode[selectedNodeId] ?? null}
-            onSelectSession={(id) => onSetActiveSession(selectedNodeId, id)}
-            onCloseSession={onCloseSession}
-            onNewSession={() => onNewSessionForCurrentNode(selectedNodeId)}
-            now={now}
-          />
         ) : (
-          <div className="flex flex-1 items-center justify-center text-[14px] text-[var(--color-text-dim)]">
-            Vyber uzel vlevo nebo otevři terminál z detailu.
-          </div>
+          // TerminalTabs receives every live session and decides
+          // internally which pane is visible. Mounting all panes across
+          // node switches keeps each xterm's scrollback intact — see
+          // the comment at the top of TerminalTabs.tsx. Per-node tab
+          // controls (select / close / new) live in WorkspaceNodeList
+          // now, not in this component.
+          <TerminalTabs
+            sessions={sessions}
+            selectedNodeId={selectedNodeId}
+            activeSessionIdByNode={activeSessionIdByNode}
+            onCloseSession={onCloseSession}
+            theme={theme}
+          />
         )}
       </main>
       {detailVisible ? (
