@@ -56,3 +56,14 @@ export function loadAgentCommand(): string {
 export function saveAgentCommand(template: string): void {
   window.localStorage.setItem(AGENT_COMMAND_KEY, template);
 }
+
+// Display name for the agent the current template invokes. Used by
+// "Spustit X" / "spustí X" labels in the UI so they reflect Settings.
+// Falls back to the capitalised first token of the template when the
+// user has typed a custom command — accurate for any well-formed
+// invocation (`codex {prompt}`, `gemini -p {prompt}`, `my-agent ...`).
+export function agentDisplayName(template: string): string {
+  const bin = template.trim().split(/\s+/)[0] ?? "";
+  if (!bin) return "agenta";
+  return bin[0].toUpperCase() + bin.slice(1);
+}
