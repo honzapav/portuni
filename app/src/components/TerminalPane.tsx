@@ -104,10 +104,15 @@ export default function TerminalPane({
       },
       allowProposedApi: true,
       scrollback: 5000,
+      // Option becomes Meta — unlocks readline word-nav (Option+B/F),
+      // word-delete (Option+Backspace / Option+D), and similar shell shortcuts.
+      macOptionIsMeta: true,
+      // Right-click highlights the word under the cursor, then Cmd+C copies.
+      rightClickSelectsWord: true,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
+    // WebLinksAddon is loaded later, inside init(), with a Tauri-aware handler.
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
     term.unicode.activeVersion = "11";
@@ -125,6 +130,28 @@ export default function TerminalPane({
       // Now safe to expose the addon to the active-fit effect — before
       // term.open(), FitAddon.fit() throws because there's no DOM.
       fitRef.current = fit;
+      // WebLinksAddon's default handler is window.open(), which is a no-op
+      // inside the Tauri webview. Re-load with an explicit handler that
+      // routes through tauri-plugin-shell so links open in the OS handler
+      // (browser for http(s), Finder for file://, mail client for mailto:).
+      // Default urlRegex only covers http(s); widen it to file/mailto too.
+      term.loadAddon(
+        new WebLinksAddon(
+          async (event, uri) => {
+            event.preventDefault();
+            try {
+              const { open } = await import("@tauri-apps/plugin-shell");
+              await open(uri);
+            } catch {
+              // shell plugin missing or URL blocked by regex — ignore
+            }
+          },
+          {
+            urlRegex:
+              /((https?|HTTPS?):\/\/|file:\/\/|mailto:)[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~[\]`()<>]/,
+          },
+        ),
+      );
       try {
         fit.fit();
       } catch {
@@ -161,6 +188,35 @@ export default function TerminalPane({
         term.writeln(`\x1b[31mFailed to spawn pty: ${String(err)}\x1b[0m`);
         return;
       }
+
+      // Shift+Enter → send ESC+CR (equivalent of Option+Enter). TUIs that
+      // distinguish "newline" from "submit" — Claude Code, many REPLs — treat
+      // this as a soft newline. Plain Enter still sends CR.
+      //
+      // xterm's customKeyEventHandler fires for keydown AND keypress AND
+      // keyup. We must return false on ALL of them; otherwise xterm's
+      // _keyPress sends a plain "\r" right after our "\x1b\r", and the
+      // shell sees "\x1b\r\r" — ESC is dropped, the second CR submits.
+      // The pty_write itself only runs on keydown so we don't double-send.
+      term.attachCustomKeyEventHandler((event) => {
+        if (
+          event.key === "Enter" &&
+          event.shiftKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.altKey
+        ) {
+          if (event.type === "keydown") {
+            void invoke("pty_write", {
+              args: { session_id: id, data: "\x1b\r" },
+            }).catch(() => {
+              // pty may be gone already — ignore
+            });
+          }
+          return false;
+        }
+        return true;
+      });
 
       term.onData((data) => {
         void invoke("pty_write", { args: { session_id: id, data } }).catch(() => {
