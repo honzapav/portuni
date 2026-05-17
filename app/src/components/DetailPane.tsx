@@ -38,6 +38,7 @@ import {
   NODE_VISIBILITIES,
 } from "../types";
 import { safeHref } from "../lib/safe-url";
+import { agentDisplayName } from "../lib/settings";
 import type { Actor } from "../api";
 import {
   updateNode,
@@ -337,13 +338,10 @@ function DetailPaneBody({
   };
 
   const handleArchive = async () => {
-    if (
-      !confirm(
-        `Archivovat „${node.name}"? Uzel bude skryt z grafu, ale vazby a historie zůstanou v databázi.`,
-      )
-    ) {
-      return;
-    }
+    // window.confirm() is a no-op in the Tauri webview on macOS — same
+    // bug as TerminalTabs (commit d229d84). The button lives in the
+    // "Nebezpečná oblast" section in edit mode, so a click is already a
+    // deliberate gesture, and archive is reversible from the DB.
     setBusy(true);
     setErrorMsg(null);
     try {
@@ -530,7 +528,7 @@ function DetailPaneBody({
               {node.local_mirror ? (
                 <PathCopy path={node.local_mirror.local_path} />
               ) : (
-                <MirrorPlaceholder />
+                <MirrorPlaceholder agentCommand={agentCommand} />
               )}
             </>
           )}
@@ -852,7 +850,7 @@ function DetailPaneBody({
             {node.type !== "organization" && (
               <button
                 onClick={openEmbeddedTerminal}
-                title="Otevře terminál v Práci a spustí v něm Claude. Pracovní složka bude vytvořena, pokud ještě neexistuje."
+                title={`Otevře terminál v Práci a spustí v něm ${agentDisplayName(agentCommand)}. Pracovní složka bude vytvořena, pokud ještě neexistuje.`}
                 className="flex items-center justify-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
               >
                 Otevřít terminál v Portuni
@@ -894,14 +892,23 @@ function PaneShell({
       }
     >
       <div className="flex items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2">
-        <button
-          disabled={!canGoBack}
-          onClick={onBack}
-          className="flex items-center gap-1.5 rounded px-2 py-1 text-[14px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)] disabled:opacity-30 disabled:hover:text-[var(--color-text-dim)]"
-        >
-          <ArrowLeft size={12} />
-          Zpět
-        </button>
+        {embedded ? (
+          // Embedded inside WorkspaceView: the parent column owns
+          // collapse (chevron) and there's no back-stack to unwind.
+          // Render an empty spacer so the Upravit button stays
+          // right-aligned without a "Zpět" affordance that would
+          // confuse the user (it can't navigate anywhere).
+          <span />
+        ) : (
+          <button
+            disabled={!canGoBack}
+            onClick={onBack}
+            className="flex items-center gap-1.5 rounded px-2 py-1 text-[14px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)] disabled:opacity-30 disabled:hover:text-[var(--color-text-dim)]"
+          >
+            <ArrowLeft size={12} />
+            Zpět
+          </button>
+        )}
         <div className="flex items-center gap-1">
           {onEdit && !editing && (
             <button
@@ -913,12 +920,22 @@ function PaneShell({
               Upravit
             </button>
           )}
-          <button
-            onClick={onClose}
-            className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
-          >
-            <X size={13} />
-          </button>
+          {/*
+            X close deselects the node (onSelect(null)). In standalone
+            mode that's the right way to dismiss the slide-in pane. In
+            embedded mode (WorkspaceView right column), the parent owns
+            visibility via its own chevron toggle — rendering X here
+            duplicates the affordance AND breaks workspace layout when
+            clicked (left column would lose selection).
+          */}
+          {!embedded && (
+            <button
+              onClick={onClose}
+              className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
+            >
+              <X size={13} />
+            </button>
+          )}
         </div>
       </div>
       <div className="flex flex-1 flex-col overflow-hidden">{children}</div>
@@ -2306,11 +2323,8 @@ function ResponsibilityItem({
   };
 
   const remove = async () => {
-    if (
-      !confirm(`Smazat úlohu „${responsibility.title}"? Tato akce je trvalá.`)
-    ) {
-      return;
-    }
+    // window.confirm() is a no-op in the Tauri webview (see d229d84).
+    // The trash icon is the explicit gesture.
     setBusy(true);
     onError(null);
     try {
@@ -2697,7 +2711,7 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const remove = async (item: TItem) => {
-    if (!confirm("Opravdu smazat?")) return;
+    // window.confirm() is a no-op in the Tauri webview (see d229d84).
     setBusyId(item.id);
     onError(null);
     try {
@@ -3225,12 +3239,13 @@ function FolderLink({ nodeId }: { nodeId: string }) {
 // Muted placeholder shown in the header when the node has no mirror on
 // this device. Fills the same horizontal slot as PathCopy so the layout
 // doesn't shift the moment a mirror is created.
-function MirrorPlaceholder() {
+function MirrorPlaceholder({ agentCommand }: { agentCommand: string }) {
   return (
     <span className="flex min-w-0 flex-1 items-center gap-1.5 font-mono text-[10px] italic text-[var(--color-text-dim)]">
       <Folder size={10} className="shrink-0" />
       <span className="truncate">
-        Pracovní složka zatím neexistuje — bude vytvořena při spuštění Claude.
+        Pracovní složka zatím neexistuje — bude vytvořena při spuštění{" "}
+        {agentDisplayName(agentCommand)}.
       </span>
     </span>
   );
