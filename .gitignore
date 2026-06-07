@@ -15,6 +15,9 @@ portuni.db
 # Local Netlify folder
 .netlify
 
+# Brainstorming visual-companion artifacts
+.superpowers/
+
 # One-shot/throwaway scripts (delete after use)
 scripts/oneshot/
 src-tauri/binaries/
