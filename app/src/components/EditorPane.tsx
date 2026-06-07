@@ -1,21 +1,21 @@
 // Compact source editor for the workspace right column. Swaps in for the
 // node detail (Option C). "← zpět" returns to detail; ⤢ expands to fullscreen.
 import { ChevronLeft, Maximize2, Save } from "lucide-react";
-import { useFileEditor } from "../lib/use-file-editor";
+import type { FileEditor } from "../lib/use-file-editor";
 import MarkdownEditor from "./MarkdownEditor";
 
 export default function EditorPane({
-  nodeId,
+  editor,
   relPath,
   onClose,
   onExpand,
 }: {
-  nodeId: string;
+  editor: FileEditor;
   relPath: string;
   onClose: () => void;
   onExpand: () => void;
 }) {
-  const ed = useFileEditor(nodeId, relPath);
+  const ed = editor;
   const filename = relPath.split("/").pop() ?? relPath;
 
   return (
@@ -56,7 +56,7 @@ export default function EditorPane({
 }
 
 // Shared body: loading / error / conflict banner / editor. Reused by fullscreen.
-export function EditorBody({ ed }: { ed: ReturnType<typeof useFileEditor> }) {
+export function EditorBody({ ed }: { ed: FileEditor }) {
   if (ed.status.kind === "loading") {
     return (
       <div className="flex flex-1 items-center justify-center text-[13px] text-[var(--color-text-dim)]">
@@ -85,7 +85,7 @@ export function EditorBody({ ed }: { ed: ReturnType<typeof useFileEditor> }) {
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-auto">
-        <MarkdownEditor value={ed.content} onChange={ed.onChange} onSave={() => ed.save()} />
+        <MarkdownEditor value={ed.content} onChange={ed.onChange} onSave={(v) => ed.save(v)} />
       </div>
     </div>
   );

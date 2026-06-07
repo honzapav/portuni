@@ -7,6 +7,7 @@ import EditorFullscreen from "./components/EditorFullscreen";
 import StatusFooter from "./components/StatusFooter";
 import CreateNodeModal from "./components/CreateNodeModal";
 import { fetchGraph, fetchNode, createNodeMirror } from "./api";
+import { useFileEditor } from "./lib/use-file-editor";
 import { buildAgentCommand } from "./lib/prompt";
 import {
   type TerminalSession,
@@ -274,6 +275,16 @@ export default function App() {
   // --- Source editor state ---
   const [editorFile, setEditorFile] = useState<{ nodeId: string; relPath: string } | null>(null);
   const [editorFullscreen, setEditorFullscreen] = useState(false);
+
+  // One shared editor instance, owned here and handed to BOTH the pane and
+  // the fullscreen shell. Hooks must run unconditionally, so we call it with
+  // nulls when no file is open (the hook is inert in that case). Sharing it
+  // is what keeps unsaved edits across the expand/collapse transition and
+  // avoids a second GET when fullscreen mounts.
+  const fileEditor = useFileEditor(
+    editorFile?.nodeId ?? null,
+    editorFile?.relPath ?? null,
+  );
 
   const openFileInEditor = useCallback(
     (nodeId: string, relPath: string) => {
@@ -572,6 +583,8 @@ export default function App() {
                 await Promise.all([refetchAll(), refetchWorkspaceDetail()]);
               }}
               editorFile={editorFile}
+              editor={fileEditor}
+              editorFullscreen={editorFullscreen}
               onOpenFile={openFileInEditor}
               onCloseEditor={closeEditor}
               onExpandEditor={() => setEditorFullscreen(true)}
@@ -636,7 +649,7 @@ export default function App() {
       )}
       {editorFile && editorFullscreen && (
         <EditorFullscreen
-          nodeId={editorFile.nodeId}
+          editor={fileEditor}
           relPath={editorFile.relPath}
           onCollapse={() => {
             // Collapse to pane only makes sense in workspace; elsewhere close.

@@ -487,8 +487,24 @@ function DetailPaneBody({
       return;
     }
     try {
-      await deleteFile(node.id, fileId);
+      // deleteFile returns 200 even when the remote delete failed; in that
+      // case the body is { status: "repair_needed", repair_hint } and the
+      // DB row + local copy are intentionally kept. Surface that so the user
+      // knows the file was NOT fully removed.
+      const res: unknown = await deleteFile(node.id, fileId);
       await Promise.all([onMutate(), loadSyncStatus()]);
+      if (
+        typeof res === "object" &&
+        res !== null &&
+        (res as { status?: unknown }).status === "repair_needed"
+      ) {
+        const hint = (res as { repair_hint?: unknown }).repair_hint;
+        window.alert(
+          typeof hint === "string" && hint
+            ? hint
+            : "Soubor se nepodařilo smazat z remote úložiště. Lokální kopie i záznam zůstaly zachovány.",
+        );
+      }
     } catch (e) {
       window.alert(`Smazání selhalo: ${String(e)}`);
     }

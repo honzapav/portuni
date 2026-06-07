@@ -10,7 +10,7 @@ export type EditorStatus =
 
 export type ConflictState = { theirVersion: string } | null;
 
-export function useFileEditor(nodeId: string, relPath: string) {
+export function useFileEditor(nodeId: string | null, relPath: string | null) {
   const [status, setStatus] = useState<EditorStatus>({ kind: "loading" });
   const [content, setContent] = useState("");
   const [version, setVersion] = useState<string | null>(null);
@@ -18,9 +18,12 @@ export function useFileEditor(nodeId: string, relPath: string) {
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState<ConflictState>(null);
 
-  // Load on (nodeId, relPath) change.
+  // Load on (nodeId, relPath) change. When no file is open (either arg
+  // null) the hook is inert: no fetch, callbacks no-op. This lets App own
+  // a single instance and call the hook unconditionally (hooks rule).
   useEffect(() => {
     let cancelled = false;
+    if (nodeId == null || relPath == null) return;
     setStatus({ kind: "loading" });
     setConflict(null);
     fetchFileContent(nodeId, relPath)
@@ -46,14 +49,16 @@ export function useFileEditor(nodeId: string, relPath: string) {
   }, []);
 
   const doSave = useCallback(
-    async (opts?: { force?: boolean }) => {
+    async (opts?: { force?: boolean; value?: string }) => {
+      if (nodeId == null || relPath == null) return;
       setSaving(true);
       try {
-        const r = await saveFileContent(nodeId, relPath, {
-          content,
+        const body = {
+          content: opts?.value ?? content,
           baseVersion: version ?? undefined,
           force: opts?.force,
-        });
+        };
+        const r = await saveFileContent(nodeId, relPath, body);
         setVersion(r.version);
         setDirty(false);
         setConflict(null);
@@ -73,6 +78,7 @@ export function useFileEditor(nodeId: string, relPath: string) {
   // Conflict resolution: keep mine (force) or reload theirs (re-fetch).
   const keepMine = useCallback(() => doSave({ force: true }), [doSave]);
   const reloadTheirs = useCallback(async () => {
+    if (nodeId == null || relPath == null) return;
     const r = await fetchFileContent(nodeId, relPath);
     setContent(r.content);
     setVersion(r.version);
@@ -84,7 +90,7 @@ export function useFileEditor(nodeId: string, relPath: string) {
     status,
     content,
     onChange,
-    save: () => doSave(),
+    save: (value?: string) => doSave({ value }),
     saving,
     dirty,
     conflict,
@@ -92,3 +98,5 @@ export function useFileEditor(nodeId: string, relPath: string) {
     reloadTheirs,
   };
 }
+
+export type FileEditor = ReturnType<typeof useFileEditor>;

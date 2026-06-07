@@ -9,6 +9,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { GraphPayload, GraphNode, NodeDetail } from "../types";
 import type { TerminalSession } from "../lib/sessions";
 import type { Theme } from "../lib/theme";
+import type { FileEditor } from "../lib/use-file-editor";
 import TerminalTabs from "./TerminalTabs";
 import WorkspaceEmpty from "./WorkspaceEmpty";
 import DetailPane from "./DetailPane";
@@ -40,6 +41,11 @@ type Props = {
   // Source-editor wiring. When a file is open for the selected node, the
   // right column swaps DetailPane for EditorPane (Option C).
   editorFile: { nodeId: string; relPath: string } | null;
+  // The single editor instance owned by App and shared across the pane
+  // and the fullscreen shell. Lifting it here is what preserves unsaved
+  // edits across the expand/collapse transition (and avoids a double GET).
+  editor: FileEditor;
+  editorFullscreen: boolean;
   onOpenFile: (nodeId: string, relPath: string) => void;
   onCloseEditor: () => void;
   onExpandEditor: () => void;
@@ -61,6 +67,8 @@ export default function WorkspaceView({
   onOpenTerminal,
   onMutate,
   editorFile,
+  editor,
+  editorFullscreen,
   onOpenFile,
   onCloseEditor,
   onExpandEditor,
@@ -76,9 +84,14 @@ export default function WorkspaceView({
   };
 
   // The editor occupies the right column only when its open file belongs to
-  // the currently-selected node; otherwise the detail/placeholder shows.
+  // the currently-selected node AND we're not in fullscreen. When fullscreen,
+  // App renders EditorFullscreen instead and the pane must not mount a second
+  // editor shell (that would double-render the shared instance's body).
   const showEditor =
-    editorFile != null && selectedNodeId != null && editorFile.nodeId === selectedNodeId;
+    !editorFullscreen &&
+    editorFile != null &&
+    selectedNodeId != null &&
+    editorFile.nodeId === selectedNodeId;
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-[var(--color-bg)]">
@@ -105,7 +118,7 @@ export default function WorkspaceView({
         <aside className="flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)]">
           {showEditor && editorFile ? (
             <EditorPane
-              nodeId={editorFile.nodeId}
+              editor={editor}
               relPath={editorFile.relPath}
               onClose={onCloseEditor}
               onExpand={onExpandEditor}

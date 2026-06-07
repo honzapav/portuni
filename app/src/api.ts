@@ -422,9 +422,17 @@ export async function saveFileContent(
     },
   );
   if (res.status === 409) {
-    const j = (await res.json().catch(() => ({}))) as { currentVersion?: string };
-    if (j.currentVersion) throw new FileConflictError(j.currentVersion);
-    throw new Error("save conflict (409) without currentVersion");
+    // Both CONFLICT (stale base version) and NO_MIRROR map to 409 on the
+    // backend. Only the former is an editor conflict the user can resolve
+    // with keep-mine / reload-theirs; treat everything else as a plain error.
+    const j = (await res.json().catch(() => ({}))) as {
+      code?: string;
+      currentVersion?: string;
+      error?: string;
+    };
+    if (j.code === "CONFLICT" && j.currentVersion)
+      throw new FileConflictError(j.currentVersion);
+    throw new Error(j.error ?? `save: 409`);
   }
   if (!res.ok) {
     const text = await res.text();

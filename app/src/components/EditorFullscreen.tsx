@@ -3,21 +3,21 @@
 // never be clipped or contained by an ancestor's overflow/transform.
 import { createPortal } from "react-dom";
 import { Minimize2, Save, X } from "lucide-react";
-import { useFileEditor } from "../lib/use-file-editor";
+import type { FileEditor } from "../lib/use-file-editor";
 import { EditorBody } from "./EditorPane";
 
 export default function EditorFullscreen({
-  nodeId,
+  editor,
   relPath,
   onCollapse,
   onClose,
 }: {
-  nodeId: string;
+  editor: FileEditor;
   relPath: string;
   onCollapse: () => void; // back to pane
   onClose: () => void; // close editor entirely
 }) {
-  const ed = useFileEditor(nodeId, relPath);
+  const ed = editor;
   const filename = relPath.split("/").pop() ?? relPath;
 
   return createPortal(
