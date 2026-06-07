@@ -12,6 +12,7 @@ import type { Theme } from "../lib/theme";
 import TerminalTabs from "./TerminalTabs";
 import WorkspaceEmpty from "./WorkspaceEmpty";
 import DetailPane from "./DetailPane";
+import EditorPane from "./EditorPane";
 
 type Props = {
   graph: GraphPayload | null;
@@ -36,6 +37,12 @@ type Props = {
   // Refetch graph + this view's node detail after an edit. DetailPane's
   // edit / lifecycle / sync flows all funnel through this.
   onMutate: () => Promise<void>;
+  // Source-editor wiring. When a file is open for the selected node, the
+  // right column swaps DetailPane for EditorPane (Option C).
+  editorFile: { nodeId: string; relPath: string } | null;
+  onOpenFile: (nodeId: string, relPath: string) => void;
+  onCloseEditor: () => void;
+  onExpandEditor: () => void;
 };
 
 export default function WorkspaceView({
@@ -53,6 +60,10 @@ export default function WorkspaceView({
   agentCommand,
   onOpenTerminal,
   onMutate,
+  editorFile,
+  onOpenFile,
+  onCloseEditor,
+  onExpandEditor,
 }: Props) {
   const [detailVisible, setDetailVisible] = useState<boolean>(() => {
     return localStorage.getItem("portuni:workspace.detailVisible") !== "false";
@@ -63,6 +74,11 @@ export default function WorkspaceView({
       return !v;
     });
   };
+
+  // The editor occupies the right column only when its open file belongs to
+  // the currently-selected node; otherwise the detail/placeholder shows.
+  const showEditor =
+    editorFile != null && selectedNodeId != null && editorFile.nodeId === selectedNodeId;
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-[var(--color-bg)]">
@@ -87,7 +103,14 @@ export default function WorkspaceView({
       </main>
       {detailVisible ? (
         <aside className="flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)]">
-          {selectedNodeId ? (
+          {showEditor && editorFile ? (
+            <EditorPane
+              nodeId={editorFile.nodeId}
+              relPath={editorFile.relPath}
+              onClose={onCloseEditor}
+              onExpand={onExpandEditor}
+            />
+          ) : selectedNodeId ? (
             // Collapse chevron is rendered inside DetailPane's header
             // (left side) so it doesn't overlap the Upravit button.
             <DetailPane
@@ -103,6 +126,7 @@ export default function WorkspaceView({
               onMutate={onMutate}
               agentCommand={agentCommand}
               onOpenTerminal={onOpenTerminal}
+              onOpenFile={onOpenFile}
               embedded
               onCollapse={toggleDetail}
             />

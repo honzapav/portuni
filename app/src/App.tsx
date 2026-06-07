@@ -3,6 +3,7 @@ import Sidebar, { type AppView } from "./components/Sidebar";
 import DetailPane from "./components/DetailPane";
 import SettingsPage from "./components/SettingsPage";
 import WorkspaceView from "./components/WorkspaceView";
+import EditorFullscreen from "./components/EditorFullscreen";
 import StatusFooter from "./components/StatusFooter";
 import CreateNodeModal from "./components/CreateNodeModal";
 import { fetchGraph, fetchNode, createNodeMirror } from "./api";
@@ -269,6 +270,23 @@ export default function App() {
       setWorkspaceDetailError(String(err));
     }
   }, [selectedWorkspaceNodeId]);
+
+  // --- Source editor state ---
+  const [editorFile, setEditorFile] = useState<{ nodeId: string; relPath: string } | null>(null);
+  const [editorFullscreen, setEditorFullscreen] = useState(false);
+
+  const openFileInEditor = useCallback(
+    (nodeId: string, relPath: string) => {
+      setEditorFile({ nodeId, relPath });
+      // Workspace shows it in the side pane; elsewhere (graph) go fullscreen.
+      setEditorFullscreen(view !== "workspace");
+    },
+    [view],
+  );
+  const closeEditor = useCallback(() => {
+    setEditorFile(null);
+    setEditorFullscreen(false);
+  }, []);
 
   // Refetch on focus AND tab-visible. Covers BOTH the graph selection and
   // the workspace selection so files registered elsewhere (MCP / another
@@ -553,6 +571,10 @@ export default function App() {
               onMutate={async () => {
                 await Promise.all([refetchAll(), refetchWorkspaceDetail()]);
               }}
+              editorFile={editorFile}
+              onOpenFile={openFileInEditor}
+              onCloseEditor={closeEditor}
+              onExpandEditor={() => setEditorFullscreen(true)}
             />
           </div>
         )}
@@ -576,6 +598,7 @@ export default function App() {
           onMutate={refetchAll}
           agentCommand={agentCommand}
           onOpenTerminal={openSessionForNodeId}
+          onOpenFile={openFileInEditor}
         />
       )}
 
@@ -609,6 +632,18 @@ export default function App() {
             setSelectedId(node.id);
             refetchAll().catch((err) => setGraphError(String(err)));
           }}
+        />
+      )}
+      {editorFile && editorFullscreen && (
+        <EditorFullscreen
+          nodeId={editorFile.nodeId}
+          relPath={editorFile.relPath}
+          onCollapse={() => {
+            // Collapse to pane only makes sense in workspace; elsewhere close.
+            if (view === "workspace") setEditorFullscreen(false);
+            else closeEditor();
+          }}
+          onClose={closeEditor}
         />
       )}
     </div>
