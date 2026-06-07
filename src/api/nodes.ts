@@ -13,6 +13,8 @@ import { buildNodeRoot } from "../domain/sync/remote-path.js";
 import { resolveRemote } from "../domain/sync/routing.js";
 import { getAdapter } from "../domain/sync/adapter-cache.js";
 import { statusScan, storeFile, pullFile } from "../domain/sync/engine.js";
+import { listUntrackedLocal } from "../domain/sync/discover-local.js";
+import { mimeFor } from "../domain/sync/engine.js";
 import { createNodeInternal, updateNodeInternal } from "../domain/nodes.js";
 import { moveNodeToOrganization } from "../domain/edges.js";
 import { loadNodeDetail } from "../domain/queries/node-detail.js";
@@ -20,7 +22,7 @@ import {
   createMirrorForNode,
   MirrorCreateError,
 } from "../domain/sync/mirror-create.js";
-import type { SyncStatusResponse, SyncRunResponse } from "../shared/api-types.js";
+import type { SyncStatusResponse, SyncRunResponse, UntrackedFile } from "../shared/api-types.js";
 import { parseBody, parseJsonBody, respondError , respondJson} from "../http/middleware.js";
 import { z } from "zod";
 
@@ -276,7 +278,18 @@ export async function handleSyncStatus(
     push(result.orphan, "orphan");
     push(result.native, "native");
     push(result.deleted_local, "deleted_local");
-    const payload: SyncStatusResponse = { files: tagged, untracked: [] };
+    const untrackedRaw = await listUntrackedLocal(getDb(), { userId: SOLO_USER, nodeId });
+    const untracked: UntrackedFile[] = untrackedRaw.map((u) => ({
+      relative_path: u.subpath
+        ? `${u.section}/${u.subpath}/${u.filename}`
+        : `${u.section}/${u.filename}`,
+      section: u.section,
+      subpath: u.subpath,
+      filename: u.filename,
+      local_path: u.local_path,
+      mime_type: mimeFor(u.filename),
+    }));
+    const payload: SyncStatusResponse = { files: tagged, untracked };
     respondJson(res, 200, payload);
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sync-status`, err);
