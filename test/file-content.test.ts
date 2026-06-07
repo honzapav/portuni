@@ -159,3 +159,40 @@ describe("writeFileContent", () => {
     assert.equal(await readFile(join(mirrorRoot, "wip", "x.md"), "utf8"), "mine");
   });
 });
+
+describe("createFile", () => {
+  it("writes the file, registers it, and returns a DetailFile shape", async () => {
+    const { db, nodeId, remoteRoot } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const { createFile } = await import("../src/domain/sync/file-content.js");
+    const f = await createFile(db, {
+      userId: "U1",
+      nodeId,
+      filename: "notes.md",
+      content: "# Notes\n",
+    });
+    assert.equal(f.filename, "notes.md");
+    assert.equal(f.relative_path, "wip/notes.md");
+    assert.equal(f.mime_type, "text/markdown");
+    assert.ok(f.id.length > 0);
+    // file row exists
+    const rows = await db.execute({ sql: "SELECT id FROM files WHERE id = ?", args: [f.id] });
+    assert.equal(rows.rows.length, 1);
+    // bytes landed on the fs remote
+    void remoteRoot;
+    assert.equal(await readFile(join(mirrorRoot, "wip", "notes.md"), "utf8"), "# Notes\n");
+  });
+
+  it("throws EXISTS when the file already exists", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const { createFile } = await import("../src/domain/sync/file-content.js");
+    await createFile(db, { userId: "U1", nodeId, filename: "a.md", content: "x" });
+    await assert.rejects(
+      () => createFile(db, { userId: "U1", nodeId, filename: "a.md", content: "y" }),
+      (e: unknown) => e instanceof FileContentError && e.code === "EXISTS",
+    );
+  });
+});
