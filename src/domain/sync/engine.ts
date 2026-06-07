@@ -41,7 +41,7 @@ const MIME: Record<string, string> = {
   ".zip": "application/zip",
 };
 
-function mimeFor(n: string): string | null {
+export function mimeFor(n: string): string | null {
   const d = n.lastIndexOf(".");
   return d < 0 ? null : (MIME[n.slice(d).toLowerCase()] ?? null);
 }
