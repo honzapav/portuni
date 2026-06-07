@@ -36,6 +36,13 @@ import {
   handleUpdateTool,
 } from "./tools.js";
 import {
+  handleCreateFile,
+  handleDeleteFile,
+  handleGetFileContent,
+  handlePutFileContent,
+  handleRenameFile,
+} from "./files.js";
+import {
   handleCreateNode,
   handleCreateNodeMirror,
   handleDeleteNode,
@@ -71,6 +78,7 @@ const SUB_ROUTERS: SubRouter[] = [
   routeResponsibilities,
   routeDataSources,
   routeTools,
+  routeFiles,
   routeNodes,
   routeEdges,
   routeEvents,
@@ -253,6 +261,62 @@ async function routeTools(
       return true;
     }
   }
+  return false;
+}
+
+// --- Files (content + lifecycle). MUST be registered before routeNodes:
+// routeNodes' `pathname.startsWith("/nodes/")` would otherwise swallow
+// /nodes/:id/file and treat "id/file" as a node id. ---
+async function routeFiles(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  method: string,
+): Promise<boolean> {
+  const { pathname } = url;
+
+  const contentMatch = pathname.match(/^\/nodes\/([^/]+)\/file$/);
+  if (contentMatch) {
+    const nodeId = decodeURIComponent(contentMatch[1]);
+    if (method === "GET") {
+      await handleGetFileContent(req, res, nodeId, url);
+      return true;
+    }
+    if (method === "PUT") {
+      await handlePutFileContent(req, res, nodeId, url);
+      return true;
+    }
+  }
+
+  const renameMatch = pathname.match(/^\/nodes\/([^/]+)\/files\/([^/]+)\/rename$/);
+  if (renameMatch && method === "POST") {
+    await handleRenameFile(
+      req,
+      res,
+      decodeURIComponent(renameMatch[1]),
+      decodeURIComponent(renameMatch[2]),
+    );
+    return true;
+  }
+
+  const createMatch = pathname.match(/^\/nodes\/([^/]+)\/files$/);
+  if (createMatch && method === "POST") {
+    await handleCreateFile(req, res, decodeURIComponent(createMatch[1]));
+    return true;
+  }
+
+  const fileMatch = pathname.match(/^\/nodes\/([^/]+)\/files\/([^/]+)$/);
+  if (fileMatch && method === "DELETE") {
+    await handleDeleteFile(
+      req,
+      res,
+      decodeURIComponent(fileMatch[1]),
+      decodeURIComponent(fileMatch[2]),
+      url,
+    );
+    return true;
+  }
+
   return false;
 }
 
