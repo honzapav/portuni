@@ -4,6 +4,7 @@ import DetailPane from "./components/DetailPane";
 import SettingsPage from "./components/SettingsPage";
 import WorkspaceView from "./components/WorkspaceView";
 import EditorFullscreen from "./components/EditorFullscreen";
+import EditorPane from "./components/EditorPane";
 import StatusFooter from "./components/StatusFooter";
 import CreateNodeModal from "./components/CreateNodeModal";
 import { fetchGraph, fetchNode, createNodeMirror } from "./api";
@@ -286,14 +287,13 @@ export default function App() {
     editorFile?.relPath ?? null,
   );
 
-  const openFileInEditor = useCallback(
-    (nodeId: string, relPath: string) => {
-      setEditorFile({ nodeId, relPath });
-      // Workspace shows it in the side pane; elsewhere (graph) go fullscreen.
-      setEditorFullscreen(view !== "workspace");
-    },
-    [view],
-  );
+  const openFileInEditor = useCallback((nodeId: string, relPath: string) => {
+    // Always open in the right-side pane first (replacing the detail pane in
+    // both graph and workspace views). Fullscreen is opt-in via the expand (⤢)
+    // button, never automatic.
+    setEditorFile({ nodeId, relPath });
+    setEditorFullscreen(false);
+  }, []);
   const closeEditor = useCallback(() => {
     setEditorFile(null);
     setEditorFullscreen(false);
@@ -599,21 +599,36 @@ export default function App() {
         )}
       </main>
 
-      {view === "graph" && selectedId && (
-        <DetailPane
-          node={nodeDetail}
-          graph={graph}
-          loading={detailLoading}
-          error={detailError}
-          onSelect={setSelectedId}
-          canGoBack={historyRef.current.length > 0}
-          onBack={goBack}
-          onMutate={refetchAll}
-          agentCommand={agentCommand}
-          onOpenTerminal={openSessionForNodeId}
-          onOpenFile={openFileInEditor}
-        />
-      )}
+      {view === "graph" &&
+        selectedId &&
+        (editorFile &&
+        !editorFullscreen &&
+        editorFile.nodeId === selectedId ? (
+          // Editor takes over the right slide-out slot (same geometry as the
+          // detail pane). "← zpět" returns to the detail; ⤢ goes fullscreen.
+          <aside className="animate-slide-in flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)] bg-[var(--color-bg)]">
+            <EditorPane
+              editor={fileEditor}
+              relPath={editorFile.relPath}
+              onClose={closeEditor}
+              onExpand={() => setEditorFullscreen(true)}
+            />
+          </aside>
+        ) : (
+          <DetailPane
+            node={nodeDetail}
+            graph={graph}
+            loading={detailLoading}
+            error={detailError}
+            onSelect={setSelectedId}
+            canGoBack={historyRef.current.length > 0}
+            onBack={goBack}
+            onMutate={refetchAll}
+            agentCommand={agentCommand}
+            onOpenTerminal={openSessionForNodeId}
+            onOpenFile={openFileInEditor}
+          />
+        ))}
 
       </div>
       <StatusFooter
@@ -651,11 +666,9 @@ export default function App() {
         <EditorFullscreen
           editor={fileEditor}
           relPath={editorFile.relPath}
-          onCollapse={() => {
-            // Collapse to pane only makes sense in workspace; elsewhere close.
-            if (view === "workspace") setEditorFullscreen(false);
-            else closeEditor();
-          }}
+          // Both graph and workspace render the pane when not fullscreen, so
+          // collapsing always returns to the right-side pane.
+          onCollapse={() => setEditorFullscreen(false)}
           onClose={closeEditor}
         />
       )}
