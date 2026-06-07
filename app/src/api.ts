@@ -6,6 +6,8 @@ import type {
   DetailTool,
   SyncStatusResponse,
   SyncRunResponse,
+  DetailFile,
+  FileContentResponse,
 } from "./types";
 import { apiFetch } from "./lib/backend-url";
 
@@ -377,5 +379,86 @@ export function removeTool(id: string): Promise<{ deleted: string }> {
   return jsonRequest<{ deleted: string }>(
     "DELETE",
     `/tools/${encodeURIComponent(id)}`,
+  );
+}
+
+// -- File content + lifecycle ------------------------------------------
+
+// Thrown by saveFileContent when the on-disk file changed since it was
+// opened. Carries the current on-disk version so the UI can offer
+// keep-mine (resend with force) / reload-theirs (re-fetch).
+export class FileConflictError extends Error {
+  constructor(readonly currentVersion: string) {
+    super("file changed on disk since it was opened");
+    this.name = "FileConflictError";
+  }
+}
+
+export async function fetchFileContent(
+  nodeId: string,
+  relPath: string,
+): Promise<FileContentResponse> {
+  const res = await apiFetch(
+    `/nodes/${encodeURIComponent(nodeId)}/file?path=${encodeURIComponent(relPath)}`,
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`file content: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+export async function saveFileContent(
+  nodeId: string,
+  relPath: string,
+  body: { content: string; baseVersion?: string; force?: boolean },
+): Promise<{ version: string }> {
+  const res = await apiFetch(
+    `/nodes/${encodeURIComponent(nodeId)}/file?path=${encodeURIComponent(relPath)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  if (res.status === 409) {
+    const j = (await res.json().catch(() => ({}))) as { currentVersion?: string };
+    if (j.currentVersion) throw new FileConflictError(j.currentVersion);
+    throw new Error("save conflict (409) without currentVersion");
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`save: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+export function createFile(
+  nodeId: string,
+  input: { filename: string; section?: string; subpath?: string | null; content?: string },
+): Promise<DetailFile> {
+  return jsonRequest<DetailFile>(
+    "POST",
+    `/nodes/${encodeURIComponent(nodeId)}/files`,
+    input,
+  );
+}
+
+export function renameFile(
+  nodeId: string,
+  fileId: string,
+  newFilename: string,
+): Promise<unknown> {
+  return jsonRequest(
+    "POST",
+    `/nodes/${encodeURIComponent(nodeId)}/files/${encodeURIComponent(fileId)}/rename`,
+    { new_filename: newFilename },
+  );
+}
+
+export function deleteFile(nodeId: string, fileId: string): Promise<unknown> {
+  return jsonRequest(
+    "DELETE",
+    `/nodes/${encodeURIComponent(nodeId)}/files/${encodeURIComponent(fileId)}?confirmed=true`,
   );
 }

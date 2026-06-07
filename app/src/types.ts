@@ -14,6 +14,8 @@ export type {
   SyncStatusFile,
   SyncStatusResponse,
   SyncRunResponse,
+  UntrackedFile,
+  FileContentResponse,
 } from "../../src/shared/api-types";
 
 // Lifecycle state -> UI color bucket. Any state not listed falls through to "gray".
