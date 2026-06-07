@@ -439,6 +439,21 @@ export async function handleSyncRun(
         sync_class: e.class,
       });
     }
+    // Deterministic registration: adopt any file the agent wrote to the
+    // mirror but never registered. Each storeFile registers + pushes.
+    const untracked = await listUntrackedLocal(db, { userId: SOLO_USER, nodeId });
+    for (const u of untracked) {
+      try {
+        const sr = await storeFile(db, {
+          userId: SOLO_USER,
+          nodeId: u.node_id,
+          localPath: u.local_path,
+        });
+        result.adopted.push({ file_id: sr.file_id, filename: u.filename });
+      } catch (err) {
+        result.errors.push({ file_id: "", filename: u.filename, error: String(err) });
+      }
+    }
     respondJson(res, 200, result);
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sync`, err);
