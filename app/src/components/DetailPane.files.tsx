@@ -125,18 +125,16 @@ function aggregateFolderSync(
     if (cur.file) {
       const sync = cur.file.fileId ? map.get(cur.file.fileId) : undefined;
       if (!sync) continue;
-      {
-        any = true;
-        if (sync.sync_class === "conflict") hasConflict = true;
-        else if (
-          sync.sync_class === "push" ||
-          sync.sync_class === "pull" ||
-          sync.sync_class === "deleted_local"
-        ) {
-          hasPending = true;
-        } else if (sync.sync_class === "orphan") hasOrphan = true;
-        else if (sync.sync_class === "clean") hasClean = true;
-      }
+      any = true;
+      if (sync.sync_class === "conflict") hasConflict = true;
+      else if (
+        sync.sync_class === "push" ||
+        sync.sync_class === "pull" ||
+        sync.sync_class === "deleted_local"
+      ) {
+        hasPending = true;
+      } else if (sync.sync_class === "orphan") hasOrphan = true;
+      else if (sync.sync_class === "clean") hasClean = true;
     } else if (cur.children) {
       for (const c of cur.children.values()) stack.push(c);
     }

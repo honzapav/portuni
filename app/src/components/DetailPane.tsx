@@ -318,16 +318,19 @@ function DetailPaneBody({
   // effect on the very setState below, the previous run's cleanup would
   // mark its own response cancelled, and nothing would ever land.
   const loadSyncStatus = useCallback(async () => {
+    const requestNodeId = node.id;
     try {
-      const res = await fetchNodeSyncStatus(node.id);
+      const res = await fetchNodeSyncStatus(requestNodeId);
+      if (lastIdRef.current !== requestNodeId) return;
       const m = new Map<string, SyncStatusFile>();
       for (const f of res.files) m.set(f.file_id, f);
-      SYNC_STATUS_CACHE.set(node.id, m);
+      SYNC_STATUS_CACHE.set(requestNodeId, m);
       setSyncStatus(m);
       setUntracked(res.untracked ?? []);
       setSyncLoaded(true);
       setSyncError(null);
     } catch (e) {
+      if (lastIdRef.current !== requestNodeId) return;
       setSyncError(String(e));
       setSyncLoaded(true);
     }
@@ -457,7 +460,7 @@ function DetailPaneBody({
   };
 
   const handleCreateFile = async () => {
-    const name = window.prompt("Název nového souboru (např. poznamky.md):");
+    const name = window.prompt("Název nového souboru (např. poznamky.md):")?.trim();
     if (!name) return;
     try {
       const f = await createFile(node.id, { filename: name, section: "wip" });
@@ -469,7 +472,7 @@ function DetailPaneBody({
   };
 
   const handleRenameFile = async (fileId: string, currentName: string) => {
-    const name = window.prompt("Nový název souboru:", currentName);
+    const name = window.prompt("Nový název souboru:", currentName)?.trim();
     if (!name || name === currentName) return;
     try {
       await renameFile(node.id, fileId, name);
