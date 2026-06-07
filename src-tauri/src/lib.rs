@@ -350,10 +350,29 @@ async fn launch_claude_for_node(cwd: String, command: String) -> Result<(), Stri
     // Single quotes (used heavily by buildAgentCommand's shellQuote) need
     // no escaping inside an AppleScript double-quoted string.
     let escaped = command.replace('\\', "\\\\").replace('"', "\\\"");
+    // Two-windows bug: if Terminal isn't already running, launching it
+    // opens the user's default startup window AND `do script` opens a
+    // second window for the command. Detect the cold-start case, wait
+    // for the startup window, and reuse it via `in window 1`. Swapping
+    // the order of `activate` and `do script` does NOT help — the
+    // startup window appears regardless.
     let script = format!(
-        "tell application \"Terminal\"\n\
+        "set wasRunning to application \"Terminal\" is running\n\
+         tell application \"Terminal\"\n\
          \tactivate\n\
-         \tdo script \"{escaped}\"\n\
+         \tif not wasRunning then\n\
+         \t\trepeat 40 times\n\
+         \t\t\tif (count windows) > 0 then exit repeat\n\
+         \t\t\tdelay 0.05\n\
+         \t\tend repeat\n\
+         \t\tif (count windows) > 0 then\n\
+         \t\t\tdo script \"{escaped}\" in window 1\n\
+         \t\telse\n\
+         \t\t\tdo script \"{escaped}\"\n\
+         \t\tend if\n\
+         \telse\n\
+         \t\tdo script \"{escaped}\"\n\
+         \tend if\n\
          end tell"
     );
     let status = std::process::Command::new("osascript")

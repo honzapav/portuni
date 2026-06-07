@@ -24,6 +24,7 @@ import type {
   SyncStatusFile,
 } from "../types";
 import { buildAgentCommand } from "../lib/prompt";
+import { agentDisplayName } from "../lib/settings";
 import { createNodeMirror } from "../api";
 import { isTauri } from "../lib/backend-url";
 
@@ -536,6 +537,7 @@ export function ActionButtons({
     }
   };
 
+  const agentName = agentDisplayName(agentCommand);
   const label = (() => {
     switch (state.kind) {
       case "pending":
@@ -547,7 +549,7 @@ export function ActionButtons({
       case "error":
         return state.message;
       default:
-        return "Spustit Claude";
+        return `Spustit ${agentName}`;
     }
   })();
 
@@ -573,8 +575,8 @@ export function ActionButtons({
         disabled={state.kind === "pending"}
         title={
           isTauri()
-            ? "Otevře Terminal.app v pracovní složce a spustí Claude. Pracovní složka bude vytvořena, pokud ještě neexistuje."
-            : "Zkopíruje shell příkaz pro vstup do složky a spuštění Claude. V desktopové aplikaci spustí Terminal.app přímo."
+            ? `Otevře Terminal.app v pracovní složce a spustí ${agentName}. Pracovní složka bude vytvořena, pokud ještě neexistuje.`
+            : `Zkopíruje shell příkaz pro vstup do složky a spuštění ${agentName}. V desktopové aplikaci spustí Terminal.app přímo.`
         }
         className="group flex flex-1 items-center justify-center gap-2 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)] disabled:opacity-60"
       >

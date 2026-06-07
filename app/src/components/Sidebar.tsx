@@ -5,6 +5,8 @@ import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
 import type { Theme } from "../lib/theme";
 import { foldForSearch } from "../lib/normalize";
+import type { TerminalSession } from "../lib/sessions";
+import WorkspaceNodeList from "./WorkspaceNodeList";
 
 export type AppView = "graph" | "workspace" | "settings";
 
@@ -31,6 +33,18 @@ type Props = {
   // graph view so it's the first action a user sees.
   onCreateNode: () => void;
   workspaceBadge?: number;
+  // Workspace session state -- the left column of the workspace view
+  // (the list of nodes-with-sessions + their tabs) lives here so the
+  // layout collapses to "left column / terminal / right detail" without
+  // a separate aside in WorkspaceView.
+  workspaceSessions: TerminalSession[];
+  workspaceSelectedNodeId: string | null;
+  workspaceActiveSessionIdByNode: Record<string, string>;
+  workspaceNow: number;
+  onWorkspaceSelectNode: (id: string) => void;
+  onWorkspaceSelectSession: (nodeId: string, sessionId: string) => void;
+  onWorkspaceCloseSession: (sessionId: string) => void;
+  onWorkspaceNewSession: (nodeId: string) => void;
 };
 
 function nodeTypeVar(type: string): string {
@@ -70,6 +84,14 @@ export default function Sidebar({
   onOpenSettings,
   onCreateNode,
   workspaceBadge,
+  workspaceSessions,
+  workspaceSelectedNodeId,
+  workspaceActiveSessionIdByNode,
+  workspaceNow,
+  onWorkspaceSelectNode,
+  onWorkspaceSelectSession,
+  onWorkspaceCloseSession,
+  onWorkspaceNewSession,
 }: Props) {
   return (
     <aside className="flex h-full w-[300px] shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-bg)]">
@@ -125,6 +147,21 @@ export default function Sidebar({
         <div className="flex-1 px-5 py-5 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
           Konfigurace Portuni: příkaz agenta pro spouštění z uzlů a
           parametry MCP serveru pro Claude Code a Codex.
+        </div>
+      )}
+
+      {view === "workspace" && (
+        <div className="flex-1 overflow-y-auto scroll-thin">
+          <WorkspaceNodeList
+            sessions={workspaceSessions}
+            selectedNodeId={workspaceSelectedNodeId}
+            activeSessionIdByNode={workspaceActiveSessionIdByNode}
+            onSelectNode={onWorkspaceSelectNode}
+            onSelectSession={onWorkspaceSelectSession}
+            onCloseSession={onWorkspaceCloseSession}
+            onNewSession={onWorkspaceNewSession}
+            now={workspaceNow}
+          />
         </div>
       )}
 

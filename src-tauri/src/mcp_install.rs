@@ -57,14 +57,29 @@ pub fn write_claude_config(claude_json: &Path, url: &str, token: &str) -> Result
 /// hand-edited user file and refuse to clobber it.
 const CODEX_MARKER: &str = "# portuni-managed: mcp_servers.portuni";
 
+/// Env var name Codex reads to obtain the Portuni MCP bearer token at
+/// runtime. Codex's streamable_http transport refuses a literal
+/// `bearer_token` field (it fails the entire config load with "not
+/// supported for streamable_http"); only `bearer_token_env_var` is
+/// accepted. The user must `export PORTUNI_MCP_TOKEN=<token>` in their
+/// shell rc, or run codex from a session Portuni itself spawned (which
+/// inherits the var from the Portuni host process).
+const CODEX_TOKEN_ENV: &str = "PORTUNI_MCP_TOKEN";
+
 /// Inserts or replaces the [mcp_servers.portuni] block in a Codex
 /// config.toml document. Operates on the raw text so we don't need a
 /// TOML parser dependency: the block is always emitted between the
 /// marker comment and the next blank line, making it cheap to find and
 /// replace without tripping over the rest of the file.
-pub fn upsert_codex_config(existing: Option<&str>, url: &str, token: &str) -> Result<String, String> {
+///
+/// The `_token` argument is accepted but intentionally not written into
+/// the file — Codex requires bearer_token_env_var (env var indirection),
+/// not a literal. The argument stays in the signature so callers can
+/// keep the same wiring as the Claude installer and so a future move to
+/// in-process env injection has the value at hand.
+pub fn upsert_codex_config(existing: Option<&str>, url: &str, _token: &str) -> Result<String, String> {
     let block = format!(
-        "{CODEX_MARKER}\n[mcp_servers.portuni]\nurl = \"{url}\"\nbearer_token = \"{token}\"\n"
+        "{CODEX_MARKER}\n[mcp_servers.portuni]\nurl = \"{url}\"\nbearer_token_env_var = \"{CODEX_TOKEN_ENV}\"\n"
     );
 
     let body = match existing {
@@ -171,7 +186,13 @@ mod codex_tests {
         assert!(out.contains(CODEX_MARKER));
         assert!(out.contains("[mcp_servers.portuni]"));
         assert!(out.contains("url = \"http://127.0.0.1:47011/mcp\""));
-        assert!(out.contains("bearer_token = \"tok\""));
+        // Codex rejects literal bearer_token for streamable_http (fails
+        // the whole config load). Must be env-var indirection.
+        assert!(out.contains("bearer_token_env_var = \"PORTUNI_MCP_TOKEN\""));
+        assert!(!out.contains("bearer_token = "));
+        // Token value must never end up in the file — only the env var
+        // name does. This is the load-bearing invariant.
+        assert!(!out.contains("\"tok\""));
     }
 
     #[test]
@@ -189,7 +210,6 @@ mod codex_tests {
         let second = upsert_codex_config(Some(&first), "http://new/mcp", "new").unwrap();
         assert!(second.contains("http://new/mcp"));
         assert!(!second.contains("http://old/mcp"));
-        assert!(!second.contains("\"old\""));
         // Marker must remain exactly once.
         assert_eq!(second.matches(CODEX_MARKER).count(), 1);
     }

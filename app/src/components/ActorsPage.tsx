@@ -76,10 +76,8 @@ export default function ActorsPage(_props: Props) {
   };
 
   const handleDelete = async (actor: Actor) => {
-    const ok = window.confirm(
-      `Opravdu smazat aktéra „${actor.name}“?\n\nTato akce je nevratná. Budou smazána i všechna přiřazení k úlohám.`,
-    );
-    if (!ok) return;
+    // window.confirm() is a no-op in the Tauri webview (see d229d84).
+    // Archive is reversible at the DB level.
     try {
       await archiveActor(actor.id);
       await loadActors();

@@ -17,6 +17,7 @@ import {
   Lock,
   ChevronUp,
   ChevronDown,
+  ChevronRight,
   Building2,
   Info,
   ExternalLink,
@@ -107,6 +108,10 @@ type Props = {
   // 40vw / min-w-440 sizing, and the left border so the parent's layout
   // controls the geometry.
   embedded?: boolean;
+  // Optional collapse handler for embedded mode. When provided, the
+  // PaneShell header renders a chevron-right button on the LEFT so the
+  // parent can hide the pane without overlapping the Upravit button.
+  onCollapse?: () => void;
 };
 
 export default function DetailPane({
@@ -121,6 +126,7 @@ export default function DetailPane({
   agentCommand,
   onOpenTerminal,
   embedded,
+  onCollapse,
 }: Props) {
   if (loading && !node) {
     return (
@@ -129,6 +135,7 @@ export default function DetailPane({
         canGoBack={false}
         onBack={onBack}
         embedded={embedded}
+        onCollapse={onCollapse}
       >
         <div className="flex h-full items-center justify-center text-[13.5px] text-[var(--color-text-dim)]">
           Načítám...
@@ -144,6 +151,7 @@ export default function DetailPane({
         canGoBack={false}
         onBack={onBack}
         embedded={embedded}
+        onCollapse={onCollapse}
       >
         <div
           className="flex h-full items-center justify-center text-[13.5px]"
@@ -168,6 +176,7 @@ export default function DetailPane({
       agentCommand={agentCommand}
       onOpenTerminal={onOpenTerminal}
       embedded={embedded}
+      onCollapse={onCollapse}
     />
   );
 }
@@ -182,6 +191,7 @@ function DetailPaneBody({
   agentCommand,
   onOpenTerminal,
   embedded,
+  onCollapse,
 }: {
   node: NodeDetail;
   graph: GraphPayload | null;
@@ -192,6 +202,7 @@ function DetailPaneBody({
   agentCommand: string;
   onOpenTerminal: (nodeId: string) => void;
   embedded?: boolean;
+  onCollapse?: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
@@ -474,6 +485,7 @@ function DetailPaneBody({
       editing={editing}
       onEdit={startEdit}
       embedded={embedded}
+      onCollapse={onCollapse}
     >
       {/* Header */}
       <div className="border-b border-[var(--color-border)] px-6 py-5">
@@ -871,6 +883,7 @@ function PaneShell({
   editing,
   onEdit,
   embedded,
+  onCollapse,
 }: {
   children: React.ReactNode;
   canGoBack: boolean;
@@ -882,6 +895,9 @@ function PaneShell({
   // column), drop the slide-in animation, the fixed-width / min-width
   // sizing, and the left border — the parent supplies all of those.
   embedded?: boolean;
+  // When provided in embedded mode, render a chevron-right collapse
+  // button on the left of the header so it doesn't overlap Upravit.
+  onCollapse?: () => void;
 }) {
   return (
     <aside
@@ -893,12 +909,20 @@ function PaneShell({
     >
       <div className="flex items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2">
         {embedded ? (
-          // Embedded inside WorkspaceView: the parent column owns
-          // collapse (chevron) and there's no back-stack to unwind.
-          // Render an empty spacer so the Upravit button stays
-          // right-aligned without a "Zpět" affordance that would
-          // confuse the user (it can't navigate anywhere).
-          <span />
+          onCollapse ? (
+            <button
+              onClick={onCollapse}
+              title="Skrýt detail"
+              aria-label="Skrýt detail"
+              className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
+            >
+              <ChevronRight size={14} />
+            </button>
+          ) : (
+            // Embedded but no collapse handler -- keep the layout
+            // balanced so Upravit stays right-aligned.
+            <span />
+          )
         ) : (
           <button
             disabled={!canGoBack}

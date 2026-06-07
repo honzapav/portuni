@@ -437,6 +437,18 @@ export default function App() {
           onOpenSettings={() => setView("settings")}
           onCreateNode={() => openCreateModal()}
           workspaceBadge={sessions.length}
+          workspaceSessions={sessions}
+          workspaceSelectedNodeId={selectedWorkspaceNodeId}
+          workspaceActiveSessionIdByNode={activeSessionIdByNode}
+          workspaceNow={now}
+          onWorkspaceSelectNode={setSelectedWorkspaceNodeId}
+          onWorkspaceSelectSession={(nodeId, sessionId) =>
+            setActiveSessionIdByNode((p) => ({ ...p, [nodeId]: sessionId }))
+          }
+          onWorkspaceCloseSession={closeSession}
+          onWorkspaceNewSession={(nodeId) => {
+            void openSessionForNodeId(nodeId);
+          }}
         />
       )}
 
@@ -504,20 +516,13 @@ export default function App() {
             <WorkspaceView
               graph={graph}
               sessions={sessions}
-              now={now}
               theme={theme}
               selectedNodeId={selectedWorkspaceNodeId}
               onSelectNode={setSelectedWorkspaceNodeId}
               activeSessionIdByNode={activeSessionIdByNode}
-              onSetActiveSession={(nodeId, sessionId) =>
-                setActiveSessionIdByNode((p) => ({ ...p, [nodeId]: sessionId }))
-              }
               onCloseSession={closeSession}
               onOpenSessionFromPicker={(node) => {
                 void openSessionForNodeId(node.id);
-              }}
-              onNewSessionForCurrentNode={(nodeId) => {
-                void openSessionForNodeId(nodeId);
               }}
               nodeDetail={workspaceNodeDetail}
               nodeDetailLoading={workspaceDetailLoading}

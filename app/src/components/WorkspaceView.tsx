@@ -1,14 +1,14 @@
-// 3-column layout shell: workspace node list on the left, terminal tabs
-// in the middle, the selected node's detail (the existing DetailPane in
-// embedded mode) on the right. The detail-collapse state lives here so
-// the layout owns its own UI state.
+// 2-column layout shell: terminal tabs on the left, the selected node's
+// detail (the existing DetailPane in embedded mode) on the right. The
+// node-with-sessions list moved into the global Sidebar (workspace
+// view), so this component no longer owns a left column. The
+// detail-collapse state lives here so the layout owns its own UI state.
 
 import { useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { GraphPayload, GraphNode, NodeDetail } from "../types";
 import type { TerminalSession } from "../lib/sessions";
 import type { Theme } from "../lib/theme";
-import WorkspaceNodeList from "./WorkspaceNodeList";
 import TerminalTabs from "./TerminalTabs";
 import WorkspaceEmpty from "./WorkspaceEmpty";
 import DetailPane from "./DetailPane";
@@ -16,7 +16,6 @@ import DetailPane from "./DetailPane";
 type Props = {
   graph: GraphPayload | null;
   sessions: TerminalSession[];
-  now: number;
   // Theme drives xterm colors inside TerminalPane; the rest of the
   // workspace uses CSS variables, but xterm holds a snapshot of those
   // colors that has to be re-applied imperatively when the user
@@ -25,10 +24,8 @@ type Props = {
   selectedNodeId: string | null;
   onSelectNode: (id: string | null) => void;
   activeSessionIdByNode: Record<string, string>;
-  onSetActiveSession: (nodeId: string, sessionId: string) => void;
   onCloseSession: (sessionId: string) => void;
   onOpenSessionFromPicker: (node: GraphNode) => void;
-  onNewSessionForCurrentNode: (nodeId: string) => void;
   // Detail data for the right column. Fetched in App.tsx whenever
   // selectedNodeId changes.
   nodeDetail: NodeDetail | null;
@@ -45,14 +42,11 @@ export default function WorkspaceView({
   sessions,
   selectedNodeId,
   onSelectNode,
-  now,
   theme,
   graph,
   activeSessionIdByNode,
-  onSetActiveSession,
   onCloseSession,
   onOpenSessionFromPicker,
-  onNewSessionForCurrentNode,
   nodeDetail,
   nodeDetailLoading,
   nodeDetailError,
@@ -72,23 +66,6 @@ export default function WorkspaceView({
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-[var(--color-bg)]">
-      <aside className="flex w-[260px] shrink-0 flex-col border-r border-[var(--color-border)]">
-        <div className="px-4 py-3 text-[12px] font-semibold uppercase tracking-wider text-[var(--color-text-dim)]">
-          Práce
-        </div>
-        <div className="flex-1 overflow-y-auto scroll-thin">
-          <WorkspaceNodeList
-            sessions={sessions}
-            selectedNodeId={selectedNodeId}
-            activeSessionIdByNode={activeSessionIdByNode}
-            onSelectNode={onSelectNode}
-            onSelectSession={onSetActiveSession}
-            onCloseSession={onCloseSession}
-            onNewSession={onNewSessionForCurrentNode}
-            now={now}
-          />
-        </div>
-      </aside>
       <main className="flex min-w-0 flex-1 flex-col">
         {sessions.length === 0 ? (
           <WorkspaceEmpty graph={graph} onPick={(n) => onOpenSessionFromPicker(n)} />
@@ -97,8 +74,8 @@ export default function WorkspaceView({
           // internally which pane is visible. Mounting all panes across
           // node switches keeps each xterm's scrollback intact — see
           // the comment at the top of TerminalTabs.tsx. Per-node tab
-          // controls (select / close / new) live in WorkspaceNodeList
-          // now, not in this component.
+          // controls (select / close / new) live in the global Sidebar
+          // (workspace view) now, not in this component.
           <TerminalTabs
             sessions={sessions}
             selectedNodeId={selectedNodeId}
@@ -109,20 +86,10 @@ export default function WorkspaceView({
         )}
       </main>
       {detailVisible ? (
-        <aside className="relative flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)]">
-          {/*
-            Floating collapse handle so the detail body matches the graph
-            view 1:1 without a separate header bar eating vertical space.
-          */}
-          <button
-            onClick={toggleDetail}
-            title="Skrýt detail"
-            aria-label="Skrýt detail"
-            className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
-          >
-            <ChevronRight size={14} />
-          </button>
+        <aside className="flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)]">
           {selectedNodeId ? (
+            // Collapse chevron is rendered inside DetailPane's header
+            // (left side) so it doesn't overlap the Upravit button.
             <DetailPane
               node={nodeDetail}
               graph={graph}
@@ -137,9 +104,18 @@ export default function WorkspaceView({
               agentCommand={agentCommand}
               onOpenTerminal={onOpenTerminal}
               embedded
+              onCollapse={toggleDetail}
             />
           ) : (
-            <div className="flex h-full items-center justify-center px-4 text-center text-[13px] text-[var(--color-text-dim)]">
+            <div className="relative flex h-full items-center justify-center px-4 text-center text-[13px] text-[var(--color-text-dim)]">
+              <button
+                onClick={toggleDetail}
+                title="Skrýt detail"
+                aria-label="Skrýt detail"
+                className="absolute left-2 top-2 flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
+              >
+                <ChevronRight size={14} />
+              </button>
               Vyber uzel vlevo nebo otevři terminál.
             </div>
           )}

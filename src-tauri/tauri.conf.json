@@ -27,6 +27,11 @@
     },
     "withGlobalTauri": true
   },
+  "plugins": {
+    "shell": {
+      "open": "(https?|file|mailto):.+"
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

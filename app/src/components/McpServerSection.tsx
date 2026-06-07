@@ -29,6 +29,11 @@ export default function McpServerSection() {
   const [tokenVisible, setTokenVisible] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  // Persistent "set the env var" hint shown after a successful Codex
+  // install. Sticky (no timeout) because it carries an action the user
+  // still needs to take. Cleared when the user dismisses it or runs a
+  // different install.
+  const [codexHint, setCodexHint] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -105,11 +110,21 @@ export default function McpServerSection() {
       return;
     }
     setBusy(target);
+    setCodexHint(null);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const cmd = target === "claude" ? "install_claude_global" : "install_codex_global";
       const path = await invoke<string>(cmd);
-      flash("ok", `Zapsáno do ${path}`);
+      if (target === "codex") {
+        // Codex requires bearer_token_env_var (env var indirection) for
+        // streamable_http servers. Make sure the user is told to set
+        // PORTUNI_MCP_TOKEN in their shell rc — without it codex will
+        // see the server but fail every tool call with 401.
+        setCodexHint(path);
+        setMessage(null);
+      } else {
+        flash("ok", `Zapsáno do ${path}`);
+      }
     } catch (e) {
       flash("err", `Chyba: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -122,11 +137,11 @@ export default function McpServerSection() {
       flash("err", "Rotace tokenu je dostupná jen z desktop appky.");
       return;
     }
-    const ok = window.confirm(
-      "Vygenerovat nový MCP token? Všechny existující .mcp.json a externí konfigurace přestanou fungovat, dokud znovu neklikneš \"Přidat do Claude Code\" / \"Přidat do Codexu\".",
-    );
-    if (!ok) return;
+    // window.confirm() is a no-op in the Tauri webview (see d229d84).
+    // The button is labelled explicitly and only visible in the desktop
+    // shell, so a single click is a deliberate gesture.
     setBusy("regenerate");
+    setCodexHint(null);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const fresh = await invoke<string>("regenerate_mcp_token");
@@ -238,6 +253,15 @@ export default function McpServerSection() {
               jsou vypnuté.
             </div>
           )}
+
+          {codexHint && (
+            <CodexInstallHint
+              path={codexHint}
+              loadToken={loadToken}
+              onCopy={(text, label) => void copy(text, label)}
+              onDismiss={() => setCodexHint(null)}
+            />
+          )}
         </div>
       )}
 
@@ -254,6 +278,71 @@ export default function McpServerSection() {
         </div>
       )}
     </section>
+  );
+}
+
+// Sticky post-install hint for Codex. Codex's streamable_http MCP
+// transport refuses a literal bearer_token in config.toml ("not
+// supported for streamable_http"), it must be passed through an env
+// var. We write `bearer_token_env_var = "PORTUNI_MCP_TOKEN"` on disk,
+// so the user has to set PORTUNI_MCP_TOKEN once in their shell rc.
+function CodexInstallHint({
+  path,
+  loadToken,
+  onCopy,
+  onDismiss,
+}: {
+  path: string;
+  loadToken: () => Promise<string | null>;
+  onCopy: (text: string, label: string) => void;
+  onDismiss: () => void;
+}) {
+  const [exportLine, setExportLine] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const t = await loadToken();
+      if (cancelled) return;
+      if (t) setExportLine(`export PORTUNI_MCP_TOKEN='${t}'`);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadToken]);
+
+  return (
+    <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-3 text-[12.5px] text-[var(--color-text-muted)]">
+      <div className="mb-2 font-medium text-[var(--color-text)]">
+        Zapsáno do {path}
+      </div>
+      <p className="mb-2 leading-relaxed">
+        Codex načítá bearer token z proměnné prostředí — sám token v
+        config.toml odmítne. Přidej tohle řádek na konec{" "}
+        <code className="font-mono text-[12px]">~/.zshrc</code> (nebo svého
+        shell rc) a otevři nový terminál:
+      </p>
+      <div className="flex items-center gap-2">
+        <code className="flex-1 truncate rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 font-mono text-[12px] text-[var(--color-text)]">
+          {exportLine ?? "Načítám token..."}
+        </code>
+        <IconButton
+          title="Kopírovat export"
+          onClick={() => {
+            if (exportLine) onCopy(exportLine, "Export");
+          }}
+        >
+          <Copy size={12} />
+        </IconButton>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="rounded px-2 py-1 text-[12px] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+        >
+          Skrýt
+        </button>
+      </div>
+    </div>
   );
 }
 
