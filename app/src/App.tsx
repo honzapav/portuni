@@ -162,19 +162,6 @@ export default function App() {
     if (nodeRes) setNodeDetail(nodeRes);
   }, [selectedId]);
 
-  // Refetch on window focus. Solves the "I created a node via MCP / Claude
-  // and the graph never sees it" symptom universally — every time the
-  // user comes back to the window, we re-pull the truth. The listener is
-  // bound once; the closure captures `refetchAll`, which itself captures
-  // selectedId so the current detail stays in sync too.
-  useEffect(() => {
-    const handler = () => {
-      refetchAll().catch((err) => setGraphError(String(err)));
-    };
-    window.addEventListener("focus", handler);
-    return () => window.removeEventListener("focus", handler);
-  }, [refetchAll]);
-
   const setSelectedId = useCallback(
     (id: string | null) => {
       setSelectedIdRaw((prev) => {
@@ -282,6 +269,40 @@ export default function App() {
       setWorkspaceDetailError(String(err));
     }
   }, [selectedWorkspaceNodeId]);
+
+  // Refetch on focus AND tab-visible. Covers BOTH the graph selection and
+  // the workspace selection so files registered elsewhere (MCP / another
+  // window) show up without a manual reselect.
+  useEffect(() => {
+    const handler = () => {
+      if (document.hidden) return;
+      refetchAll().catch((err) => setGraphError(String(err)));
+      refetchWorkspaceDetail().catch(() => undefined);
+    };
+    window.addEventListener("focus", handler);
+    document.addEventListener("visibilitychange", handler);
+    return () => {
+      window.removeEventListener("focus", handler);
+      document.removeEventListener("visibilitychange", handler);
+    };
+  }, [refetchAll, refetchWorkspaceDetail]);
+
+  // Poll the active node detail so externally-registered files appear within
+  // seconds. Node-detail only (the graph poll stays on focus). Paused when
+  // the tab is hidden to avoid background churn against Turso.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (document.hidden) return;
+      if (view === "workspace" && selectedWorkspaceNodeId) {
+        refetchWorkspaceDetail().catch(() => undefined);
+      } else if (selectedId) {
+        fetchNode(selectedId)
+          .then((n) => setNodeDetail(n))
+          .catch(() => undefined);
+      }
+    }, 5000);
+    return () => clearInterval(id);
+  }, [view, selectedWorkspaceNodeId, selectedId, refetchWorkspaceDetail]);
 
   // 1s tick so the activity-indicator color flips green->orange as the
   // 1.5s threshold passes without further output. Cheap; the only state
