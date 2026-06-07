@@ -725,3 +725,111 @@ export async function deleteFile(
 
   return { file_id: a.fileId, mode, deleted_at: now, status: "ok" };
 }
+
+// --- renameFile ---
+
+export interface RenameFileArgs {
+  userId: string;
+  fileId: string;
+  newFilename: string;
+}
+
+export interface RenameFileResult {
+  file_id: string;
+  new_filename: string;
+  new_remote_path: string;
+  new_local_path: string | null;
+  renamed_at: string;
+}
+
+// Rename just the filename, keeping the file in its current section/subpath
+// and node. Computed by swapping the basename of remote_path so the location
+// is preserved exactly (unlike moveFile, which is about relocation).
+export async function renameFile(
+  db: Client,
+  a: RenameFileArgs,
+): Promise<RenameFileResult> {
+  const fn = a.newFilename;
+  if (
+    !fn ||
+    fn.includes("/") ||
+    fn.includes("\\") ||
+    fn.includes("\0") ||
+    fn === "." ||
+    fn === ".."
+  ) {
+    throw new Error(`Invalid filename: ${a.newFilename}`);
+  }
+
+  const r = await db.execute({
+    sql: "SELECT id, node_id, filename, remote_name, remote_path FROM files WHERE id = ?",
+    args: [a.fileId],
+  });
+  if (r.rows.length === 0) throw new Error(`File ${a.fileId} not found`);
+  const f = r.rows[0];
+  const nodeId = f.node_id as string;
+  const oldFilename = f.filename as string;
+  const remoteName = f.remote_name as string | null;
+  const oldRemotePath = f.remote_path as string | null;
+  if (!remoteName || !oldRemotePath) throw new Error(`File ${a.fileId} has no remote binding`);
+  if (!oldRemotePath.endsWith(oldFilename)) {
+    throw new Error(`Remote path ${oldRemotePath} does not end with ${oldFilename}`);
+  }
+  const newRemotePath = oldRemotePath.slice(0, oldRemotePath.length - oldFilename.length) + fn;
+
+  let oldLocalPath: string | null = null;
+  let newLocalPath: string | null = null;
+  const mirrorRoot = await getMirrorPath(a.userId, nodeId);
+  if (mirrorRoot) {
+    try {
+      const nodeRoot = buildNodeRoot(await resolveNodeInfo(db, nodeId));
+      oldLocalPath = deriveLocalPath({ mirrorRoot, nodeRoot, remotePath: oldRemotePath });
+      newLocalPath = deriveLocalPath({ mirrorRoot, nodeRoot, remotePath: newRemotePath });
+    } catch {
+      oldLocalPath = null;
+      newLocalPath = null;
+    }
+  }
+
+  const adapter = await getAdapter(db, remoteName);
+  await adapter.rename(oldRemotePath, newRemotePath);
+
+  if (oldLocalPath && newLocalPath && oldLocalPath !== newLocalPath) {
+    try {
+      await mkdir(dirname(newLocalPath), { recursive: true });
+      await fsRename(oldLocalPath, newLocalPath);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
+  }
+
+  const now = new Date().toISOString();
+  await db.execute({
+    sql: `UPDATE files SET filename = ?, remote_path = ?, updated_at = ? WHERE id = ?`,
+    args: [fn, newRemotePath, now, a.fileId],
+  });
+  await db.execute({
+    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+          VALUES (?, ?, 'sync_rename', 'file', ?, ?, ?)`,
+    args: [
+      ulid(),
+      a.userId,
+      a.fileId,
+      JSON.stringify({
+        old_filename: oldFilename,
+        new_filename: fn,
+        old_remote_path: oldRemotePath,
+        new_remote_path: newRemotePath,
+      }),
+      now,
+    ],
+  });
+
+  return {
+    file_id: a.fileId,
+    new_filename: fn,
+    new_remote_path: newRemotePath,
+    new_local_path: newLocalPath,
+    renamed_at: now,
+  };
+}
