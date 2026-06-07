@@ -276,7 +276,7 @@ export async function handleSyncStatus(
     push(result.orphan, "orphan");
     push(result.native, "native");
     push(result.deleted_local, "deleted_local");
-    const payload: SyncStatusResponse = { files: tagged };
+    const payload: SyncStatusResponse = { files: tagged, untracked: [] };
     respondJson(res, 200, payload);
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sync-status`, err);
@@ -372,6 +372,7 @@ export async function handleSyncRun(
     const result: SyncRunResponse = {
       pushed: [],
       pulled: [],
+      adopted: [],
       conflicts: [],
       errors: [],
       skipped: [],

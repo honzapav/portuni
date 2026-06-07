@@ -79,6 +79,26 @@ export type DetailFile = {
   mime_type: string | null;
 };
 
+// A file present on disk in the node mirror but not yet registered in the
+// `files` table. Surfaced so the UI tree reflects disk truth; adopted by the
+// sync run. No file_id (it isn't tracked yet).
+export type UntrackedFile = {
+  relative_path: string; // "wip/docs/x.md" -- same shape as DetailFile.relative_path
+  section: string; // wip | outputs | resources
+  subpath: string | null;
+  filename: string;
+  local_path: string;
+  mime_type: string | null;
+};
+
+// Response of GET /nodes/:nodeId/file?path=<rel>.
+export type FileContentResponse = {
+  content: string;
+  version: string; // sha256 of the on-disk bytes; pass back as baseVersion on save
+  filename: string;
+  mime_type: string | null;
+};
+
 // Per-file sync state classified by the engine's statusScan. Untracked
 // discovery results (new_local / new_remote) are intentionally omitted
 // here -- the UI tab listing is built from tracked `files` rows, so a
@@ -105,6 +125,7 @@ export type SyncStatusFile = {
 
 export type SyncStatusResponse = {
   files: SyncStatusFile[];
+  untracked: UntrackedFile[];
 };
 
 // Result of triggering a node-wide sync. The endpoint runs storeFile for
@@ -123,6 +144,7 @@ export type SyncRunSkippedFile = SyncRunFile & { sync_class: SyncClass };
 export type SyncRunResponse = {
   pushed: SyncRunFile[];
   pulled: SyncRunFile[];
+  adopted: SyncRunFile[];
   conflicts: SyncRunFile[];
   errors: SyncRunErrorFile[];
   skipped: SyncRunSkippedFile[];
