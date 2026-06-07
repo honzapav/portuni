@@ -1,4 +1,7 @@
 // Distraction-free, full-window editor overlay (Option A). Slim top bar.
+// Rendered via a portal to document.body so the `fixed inset-0` overlay can
+// never be clipped or contained by an ancestor's overflow/transform.
+import { createPortal } from "react-dom";
 import { Minimize2, Save, X } from "lucide-react";
 import { useFileEditor } from "../lib/use-file-editor";
 import { EditorBody } from "./EditorPane";
@@ -17,7 +20,7 @@ export default function EditorFullscreen({
   const ed = useFileEditor(nodeId, relPath);
   const filename = relPath.split("/").pop() ?? relPath;
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex flex-col bg-[var(--color-bg)]">
       <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-4 py-2">
         <button
@@ -50,6 +53,7 @@ export default function EditorFullscreen({
         </span>
       </div>
       <EditorBody ed={ed} />
-    </div>
+    </div>,
+    document.body,
   );
 }
