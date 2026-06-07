@@ -1,17 +1,18 @@
 // Path-based read/write of file content inside a node's local mirror.
 // Serves both tracked and untracked files (it only resolves a mirror-relative
-// path to disk; registration is a separate concern). Save is local-only: it
-// writes the mirror file and never pushes -- the sync run / statusScan picks
-// up the change as a push candidate. Conflict detection compares the on-disk
-// sha256 against the caller's baseVersion so a concurrent terminal-agent edit
-// is never silently clobbered.
+// path to disk; registration is a separate concern).
+// writeFileContent is local-only: it writes the mirror file and never pushes
+// -- the sync run / statusScan picks up the change as a push candidate.
+// createFile registers + pushes immediately via storeFile (a new tracked
+// file needs a remote binding). Conflict detection on writeFileContent
+// compares the on-disk sha256 against the caller's baseVersion so a
+// concurrent terminal-agent edit is never silently clobbered.
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import type { Client } from "@libsql/client";
 import { getMirrorPath } from "./mirror-registry.js";
-import { storeFile } from "./engine.js";
-import { mimeFor } from "./engine.js";
+import { mimeFor, storeFile } from "./engine.js";
 import { sha256Buffer } from "./hash.js";
 import { safeMirrorJoin, type Section } from "./remote-path.js";
 
@@ -183,7 +184,7 @@ export async function createFile(
 
   const relative_path = abs.startsWith(mirrorRoot + "/")
     ? abs.slice(mirrorRoot.length + 1)
-    : fn;
+    : [section, ...subSegs, fn].join("/");
   return {
     id: stored.file_id,
     filename: fn,
