@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import {
   ArrowRight,
   ArrowLeft,
@@ -31,6 +38,7 @@ import type {
   GraphPayload,
   SyncStatusFile,
   SyncRunResponse,
+  UntrackedFile,
 } from "../types";
 import {
   RELATION_TYPES,
@@ -62,6 +70,9 @@ import {
   fetchNodeSyncStatus,
   runNodeSync,
   fetchNodeFolderUrl,
+  createFile,
+  renameFile,
+  deleteFile,
 } from "../api";
 // Sub-modules: file-tree + sync UI and event card live in sibling files;
 // DetailPane composes them with its own state.
@@ -112,6 +123,9 @@ type Props = {
   // PaneShell header renders a chevron-right button on the LEFT so the
   // parent can hide the pane without overlapping the Upravit button.
   onCollapse?: () => void;
+  // Open a file (mirror-relative path) in the editor. Provided by the
+  // workspace; absent in contexts without an editor surface.
+  onOpenFile?: (nodeId: string, relPath: string) => void;
 };
 
 export default function DetailPane({
@@ -127,6 +141,7 @@ export default function DetailPane({
   onOpenTerminal,
   embedded,
   onCollapse,
+  onOpenFile,
 }: Props) {
   if (loading && !node) {
     return (
@@ -177,6 +192,7 @@ export default function DetailPane({
       onOpenTerminal={onOpenTerminal}
       embedded={embedded}
       onCollapse={onCollapse}
+      onOpenFile={onOpenFile}
     />
   );
 }
@@ -192,6 +208,7 @@ function DetailPaneBody({
   onOpenTerminal,
   embedded,
   onCollapse,
+  onOpenFile,
 }: {
   node: NodeDetail;
   graph: GraphPayload | null;
@@ -203,6 +220,7 @@ function DetailPaneBody({
   onOpenTerminal: (nodeId: string) => void;
   embedded?: boolean;
   onCollapse?: () => void;
+  onOpenFile?: (nodeId: string, relPath: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
@@ -227,6 +245,7 @@ function DetailPaneBody({
   const [syncRunResult, setSyncRunResult] = useState<SyncRunResponse | null>(
     null,
   );
+  const [untracked, setUntracked] = useState<UntrackedFile[]>([]);
 
   // Reset edit drafts whenever we switch to a different node.
   const lastIdRef = useRef(node.id);
@@ -298,27 +317,35 @@ function DetailPaneBody({
   // Only node.id is in the deps. Adding syncLoading would re-fire the
   // effect on the very setState below, the previous run's cleanup would
   // mark its own response cancelled, and nothing would ever land.
+  const loadSyncStatus = useCallback(async () => {
+    try {
+      const res = await fetchNodeSyncStatus(node.id);
+      const m = new Map<string, SyncStatusFile>();
+      for (const f of res.files) m.set(f.file_id, f);
+      SYNC_STATUS_CACHE.set(node.id, m);
+      setSyncStatus(m);
+      setUntracked(res.untracked ?? []);
+      setSyncLoaded(true);
+      setSyncError(null);
+    } catch (e) {
+      setSyncError(String(e));
+      setSyncLoaded(true);
+    }
+  }, [node.id]);
+
   useEffect(() => {
     let cancelled = false;
-    setSyncError(null);
-    fetchNodeSyncStatus(node.id)
-      .then((res) => {
-        if (cancelled) return;
-        const m = new Map<string, SyncStatusFile>();
-        for (const f of res.files) m.set(f.file_id, f);
-        SYNC_STATUS_CACHE.set(node.id, m);
-        setSyncStatus(m);
-        setSyncLoaded(true);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setSyncError(String(e));
-        setSyncLoaded(true);
-      });
+    void loadSyncStatus();
+    // Poll while visible so agent-written (untracked) and MCP-registered
+    // files appear without a manual refresh. ~5s; paused when hidden.
+    const id = setInterval(() => {
+      if (!document.hidden && !cancelled) void loadSyncStatus();
+    }, 5000);
     return () => {
       cancelled = true;
+      clearInterval(id);
     };
-  }, [node.id]);
+  }, [loadSyncStatus]);
 
   const startEdit = () => {
     setDraftName(node.name);
@@ -426,6 +453,41 @@ function DetailPaneBody({
       setErrorMsg(String(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleCreateFile = async () => {
+    const name = window.prompt("Název nového souboru (např. poznamky.md):");
+    if (!name) return;
+    try {
+      const f = await createFile(node.id, { filename: name, section: "wip" });
+      await Promise.all([onMutate(), loadSyncStatus()]);
+      if (onOpenFile && f.relative_path) onOpenFile(node.id, f.relative_path);
+    } catch (e) {
+      window.alert(`Soubor se nepodařilo vytvořit: ${String(e)}`);
+    }
+  };
+
+  const handleRenameFile = async (fileId: string, currentName: string) => {
+    const name = window.prompt("Nový název souboru:", currentName);
+    if (!name || name === currentName) return;
+    try {
+      await renameFile(node.id, fileId, name);
+      await Promise.all([onMutate(), loadSyncStatus()]);
+    } catch (e) {
+      window.alert(`Přejmenování selhalo: ${String(e)}`);
+    }
+  };
+
+  const handleDeleteFile = async (fileId: string, filename: string) => {
+    if (!window.confirm(`Smazat soubor "${filename}"? Odstraní se i z remote úložiště.`)) {
+      return;
+    }
+    try {
+      await deleteFile(node.id, fileId);
+      await Promise.all([onMutate(), loadSyncStatus()]);
+    } catch (e) {
+      window.alert(`Smazání selhalo: ${String(e)}`);
     }
   };
 
@@ -767,21 +829,36 @@ function DetailPaneBody({
 
         {tab === "files" && (
           <div className="px-5 py-4">
-            {node.files.length > 0 && (
-              <SyncBar
-                running={syncRunning}
-                result={syncRunResult}
-                error={syncError}
-                statusLoaded={syncLoaded}
-                statusMap={syncStatus}
-                onRun={handleRunSync}
-              />
-            )}
-            {node.files.length > 0 ? (
+            <div className="mb-3 flex items-center justify-between">
+              {(node.files.length > 0 || untracked.length > 0) ? (
+                <SyncBar
+                  running={syncRunning}
+                  result={syncRunResult}
+                  error={syncError}
+                  statusLoaded={syncLoaded}
+                  statusMap={syncStatus}
+                  onRun={handleRunSync}
+                />
+              ) : (
+                <span />
+              )}
+              <button
+                type="button"
+                onClick={handleCreateFile}
+                className="ml-2 shrink-0 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text)] hover:border-[var(--color-border-strong)]"
+              >
+                + Nový soubor
+              </button>
+            </div>
+            {node.files.length > 0 || untracked.length > 0 ? (
               <FileTree
                 files={node.files}
+                untracked={untracked}
                 syncStatus={syncStatus}
                 syncLoaded={syncLoaded}
+                onOpenFile={(rel) => onOpenFile?.(node.id, rel)}
+                onRename={handleRenameFile}
+                onDelete={handleDeleteFile}
               />
             ) : (
               <div className="text-[14px] text-[var(--color-text-dim)]">

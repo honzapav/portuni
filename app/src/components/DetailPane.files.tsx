@@ -22,6 +22,7 @@ import type {
   SyncClass,
   SyncRunResponse,
   SyncStatusFile,
+  UntrackedFile,
 } from "../types";
 import { buildAgentCommand } from "../lib/prompt";
 import { agentDisplayName } from "../lib/settings";
@@ -32,22 +33,34 @@ import { isTauri } from "../lib/backend-url";
 // File tree (Files tab)
 // ---------------------------------------------------------------------------
 
-type TreeNode = {
-  name: string;
-  // Full path from the mirror root, used as React key + collapse map key.
-  // For the synthetic top-level "(root)" wrapper, this is "".
-  path: string;
-  // A folder node has children; a file node has file.
-  children?: Map<string, TreeNode>;
-  file?: DetailFile;
+// Unified leaf model: registered DetailFile or an untracked disk file.
+type TreeFile = {
+  relative_path: string;
+  filename: string;
+  description: string | null;
+  mime_type: string | null;
+  fileId: string | null; // null = untracked (not in `files`)
 };
 
-function buildFileTree(files: DetailFile[]): TreeNode {
+type TreeNode = {
+  name: string;
+  path: string;
+  children?: Map<string, TreeNode>;
+  file?: TreeFile;
+};
+
+// Text-ish files are clickable to edit. Mirrors the backend editable rule.
+export function isEditableFile(mime: string | null): boolean {
+  if (mime === null) return true;
+  if (mime.startsWith("text/")) return true;
+  if (mime === "application/json") return true;
+  return false;
+}
+
+function buildFileTree(files: TreeFile[]): TreeNode {
   const root: TreeNode = { name: "", path: "", children: new Map() };
   for (const f of files) {
-    // Files without a derivable in-mirror path land at the root with just
-    // their filename, so they stay visible instead of disappearing.
-    const rel = f.relative_path ?? f.filename;
+    const rel = f.relative_path;
     const parts = rel.split("/").filter((p) => p.length > 0);
     if (parts.length === 0) continue;
     let cur = root;
@@ -67,6 +80,32 @@ function buildFileTree(files: DetailFile[]): TreeNode {
   return root;
 }
 
+// Merge registered + untracked into one row list. Registered wins if a path
+// appears in both (a freshly-adopted file may briefly show in both).
+function toTreeFiles(files: DetailFile[], untracked: UntrackedFile[]): TreeFile[] {
+  const byPath = new Map<string, TreeFile>();
+  for (const u of untracked) {
+    byPath.set(u.relative_path, {
+      relative_path: u.relative_path,
+      filename: u.filename,
+      description: null,
+      mime_type: u.mime_type,
+      fileId: null,
+    });
+  }
+  for (const f of files) {
+    const rel = f.relative_path ?? f.filename;
+    byPath.set(rel, {
+      relative_path: rel,
+      filename: f.filename,
+      description: f.description,
+      mime_type: f.mime_type,
+      fileId: f.id,
+    });
+  }
+  return Array.from(byPath.values());
+}
+
 // Walk a folder subtree and aggregate sync classes of all files inside.
 // Returns the worst color, mirroring the per-tab dot logic. Returns null
 // if no file inside is mapped yet (so the folder shows no dot during
@@ -84,8 +123,9 @@ function aggregateFolderSync(
   while (stack.length > 0) {
     const cur = stack.pop()!;
     if (cur.file) {
-      const sync = map.get(cur.file.id);
-      if (sync) {
+      const sync = cur.file.fileId ? map.get(cur.file.fileId) : undefined;
+      if (!sync) continue;
+      {
         any = true;
         if (sync.sync_class === "conflict") hasConflict = true;
         else if (
@@ -148,17 +188,23 @@ function sortChildren(node: TreeNode, isRoot: boolean): TreeNode[] {
 
 export function FileTree({
   files,
+  untracked,
   syncStatus,
   syncLoaded,
+  onOpenFile,
+  onRename,
+  onDelete,
 }: {
   files: DetailFile[];
+  untracked: UntrackedFile[];
   syncStatus: Map<string, SyncStatusFile>;
   syncLoaded: boolean;
+  onOpenFile: (relPath: string) => void;
+  onRename: (fileId: string, currentName: string) => void;
+  onDelete: (fileId: string, filename: string) => void;
 }) {
-  const root = useMemo(() => buildFileTree(files), [files]);
-  // Collapsed folder paths. Default = everything expanded; the user
-  // collapses what they don't want to see. Using "collapsed" rather than
-  // "expanded" means a freshly-added folder is visible by default.
+  const treeFiles = useMemo(() => toTreeFiles(files, untracked), [files, untracked]);
+  const root = useMemo(() => buildFileTree(treeFiles), [treeFiles]);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const toggle = (path: string) =>
     setCollapsed((prev) => {
@@ -180,6 +226,9 @@ export function FileTree({
           onToggle={toggle}
           syncStatus={syncStatus}
           syncLoaded={syncLoaded}
+          onOpenFile={onOpenFile}
+          onRename={onRename}
+          onDelete={onDelete}
         />
       ))}
     </div>
@@ -193,6 +242,9 @@ function FileTreeNode({
   onToggle,
   syncStatus,
   syncLoaded,
+  onOpenFile,
+  onRename,
+  onDelete,
 }: {
   node: TreeNode;
   depth: number;
@@ -200,29 +252,69 @@ function FileTreeNode({
   onToggle: (path: string) => void;
   syncStatus: Map<string, SyncStatusFile>;
   syncLoaded: boolean;
+  onOpenFile: (relPath: string) => void;
+  onRename: (fileId: string, currentName: string) => void;
+  onDelete: (fileId: string, filename: string) => void;
 }) {
   const indent = depth * 14;
   if (node.file) {
     const f = node.file;
-    const sync = syncStatus.get(f.id);
+    const sync = f.fileId ? syncStatus.get(f.fileId) : undefined;
+    const editable = isEditableFile(f.mime_type);
     return (
       <div
-        className="flex items-start gap-2 rounded px-2 py-1 hover:bg-[var(--color-surface)]"
+        className="group flex items-start gap-2 rounded px-2 py-1 hover:bg-[var(--color-surface)]"
         style={{ paddingLeft: indent + 8 }}
       >
-        <FileText
-          size={12}
-          className="mt-0.5 shrink-0 text-[var(--color-text-dim)]"
-        />
+        <FileText size={12} className="mt-0.5 shrink-0 text-[var(--color-text-dim)]" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="truncate text-[13.5px] text-[var(--color-text)]">
+            <button
+              type="button"
+              disabled={!editable}
+              onClick={() => editable && onOpenFile(f.relative_path)}
+              title={editable ? "Otevřít v editoru" : "Tento soubor nelze editovat"}
+              className={
+                "truncate text-left text-[13.5px] text-[var(--color-text)] " +
+                (editable ? "hover:underline" : "cursor-default opacity-70")
+              }
+            >
               {f.filename}
-            </span>
+            </button>
             {sync && <SyncStatusBadge sync={sync} />}
-            {!sync && !syncLoaded && (
-              <span className="font-mono text-[8.5px] uppercase tracking-wider text-[var(--color-text-dim)]">
-                ...
+            {!f.fileId && (
+              <span
+                title="Soubor je na disku, ale ještě není zaregistrovaný. Zaregistruje se při synchronizaci."
+                className="rounded px-1.5 py-0.5 font-mono text-[8.5px] uppercase tracking-wider"
+                style={{
+                  color: "var(--color-status-archived)",
+                  background:
+                    "color-mix(in srgb, var(--color-status-archived) 12%, transparent)",
+                  border:
+                    "1px solid color-mix(in srgb, var(--color-status-archived) 25%, transparent)",
+                }}
+              >
+                neregistrováno
+              </span>
+            )}
+            {f.fileId && (
+              <span className="ml-auto hidden gap-1 group-hover:flex">
+                <button
+                  type="button"
+                  onClick={() => onRename(f.fileId!, f.filename)}
+                  title="Přejmenovat"
+                  className="text-[11px] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+                >
+                  Přejmenovat
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDelete(f.fileId!, f.filename)}
+                  title="Smazat"
+                  className="text-[11px] text-[var(--color-text-dim)] hover:text-[var(--color-danger)]"
+                >
+                  Smazat
+                </button>
               </span>
             )}
           </div>
@@ -280,6 +372,9 @@ function FileTreeNode({
               onToggle={onToggle}
               syncStatus={syncStatus}
               syncLoaded={syncLoaded}
+              onOpenFile={onOpenFile}
+              onRename={onRename}
+              onDelete={onDelete}
             />
           ))}
         </div>
