@@ -772,8 +772,8 @@ export async function renameFile(
   const remoteName = f.remote_name as string | null;
   const oldRemotePath = f.remote_path as string | null;
   if (!remoteName || !oldRemotePath) throw new Error(`File ${a.fileId} has no remote binding`);
-  if (!oldRemotePath.endsWith(oldFilename)) {
-    throw new Error(`Remote path ${oldRemotePath} does not end with ${oldFilename}`);
+  if (!oldRemotePath.endsWith("/" + oldFilename) && oldRemotePath !== oldFilename) {
+    throw new Error(`Remote path ${oldRemotePath} does not end with /${oldFilename}`);
   }
   const newRemotePath = oldRemotePath.slice(0, oldRemotePath.length - oldFilename.length) + fn;
 

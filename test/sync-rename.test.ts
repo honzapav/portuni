@@ -77,8 +77,9 @@ describe("renameFile", () => {
     await mkdir(join(mirrorRoot, "wip"), { recursive: true });
     await writeFile(src, "x");
     const { file_id } = await storeFile(db, { userId: "U1", nodeId, localPath: src });
-    await assert.rejects(() =>
-      renameFile(db, { userId: "U1", fileId: file_id, newFilename: "../evil.md" }),
+    await assert.rejects(
+      () => renameFile(db, { userId: "U1", fileId: file_id, newFilename: "../evil.md" }),
+      (e: unknown) => e instanceof Error && /Invalid filename/i.test((e as Error).message),
     );
   });
 });
