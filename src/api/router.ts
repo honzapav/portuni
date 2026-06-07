@@ -70,8 +70,10 @@ type SubRouter = (
   method: string,
 ) => Promise<boolean>;
 
-// Dispatch table. Order matters only when prefixes overlap; today each group
-// owns a disjoint pathname prefix, so any order works.
+// Dispatch table. Order matters where prefixes overlap: routeFiles MUST come
+// before routeNodes because both own the /nodes/ prefix -- routeNodes' bare
+// `/nodes/:id` matcher would otherwise swallow `/nodes/:id/file(s)` paths and
+// treat "id/file" as a node id. The other groups own disjoint prefixes.
 const SUB_ROUTERS: SubRouter[] = [
   routeSystem,
   routeActors,
