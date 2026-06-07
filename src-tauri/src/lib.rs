@@ -270,6 +270,36 @@ fn get_backend_port(state: tauri::State<BackendPort>) -> Option<u16> {
     port
 }
 
+// Open a URL (or path) in the OS default handler — browser, Finder, mail
+// client. External links used to be routed through the JS shell plugin
+// (`plugin:shell|open`), which is a silent no-op inside the macOS webview and
+// swallowed its own errors, so a click on the Google Drive folder link or an
+// actor's external link did nothing with no diagnostic trail. Doing it
+// natively is reliable and logs every attempt to sidecar.log, so a failure is
+// visible instead of vanishing.
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    // Scheme allowlist mirrors the frontend's safe-url.ts: only ever hand the
+    // OS a web or mail link. Without this, a crafted node/actor link could ask
+    // the opener to launch file:// or some registered custom-scheme handler.
+    let parsed = url::Url::parse(&url).map_err(|e| {
+        error!("open_external rejected unparseable url {url}: {e}");
+        e.to_string()
+    })?;
+    match parsed.scheme() {
+        "http" | "https" | "mailto" => {}
+        other => {
+            error!("open_external refusing scheme {other} for {url}");
+            return Err(format!("refusing to open scheme: {other}"));
+        }
+    }
+    info!("open_external: {url}");
+    open::that(parsed.as_str()).map_err(|e| {
+        error!("open_external failed for {url}: {e}");
+        e.to_string()
+    })
+}
+
 #[derive(Serialize)]
 struct ApiResponse {
     status: u16,
@@ -714,6 +744,7 @@ pub fn run() {
         .manage(pty::PtyState::default())
         .invoke_handler(tauri::generate_handler![
             get_backend_port,
+            open_external,
             api_request,
             set_turso_token,
             clear_turso_token,

@@ -30,23 +30,27 @@ export function isTauri(): boolean {
 
 // Open an external URL in the OS default handler. A plain <a target="_blank">
 // (or window.open) works in a browser, but inside the Tauri webview such a
-// click is a silent no-op -- the same wall TerminalPane's WebLinksAddon hits,
-// which is why it routes link clicks through tauri-plugin-shell. This is the
-// shared equivalent for React anchors: keep the href so the browser build and
-// middle-click still work, but call this from onClick (preventDefault first)
-// so under Tauri the URL opens in the user's real browser / Finder / mail
-// client instead of dying.
+// click is a silent no-op. The previous attempt routed through the JS
+// `tauri-plugin-shell` `open` (`plugin:shell|open`), but that stayed a no-op
+// in the macOS webview and -- worse -- swallowed its own error, leaving no
+// trail to debug. We now invoke a native `open_external` command instead,
+// which is reliable and logs every attempt to sidecar.log. The invoke is
+// also our Tauri-detection: if it throws because there is no IPC bridge
+// (real browser build), we fall back to window.open. Errors are surfaced to
+// the console rather than silently dropped.
 export async function openExternal(url: string): Promise<void> {
-  if (!isTauri()) {
-    window.open(url, "_blank", "noopener,noreferrer");
-    return;
+  if (isTauri()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("open_external", { url });
+      return;
+    } catch (e) {
+      // Real failure (not "we're in a browser") -- surface it, then fall
+      // through to window.open as a last resort.
+      console.error("[openExternal] native open_external failed:", e);
+    }
   }
-  try {
-    const { open } = await import("@tauri-apps/plugin-shell");
-    await open(url);
-  } catch {
-    // shell plugin missing or URL blocked by capability allow-list -- ignore
-  }
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 // Wait until the sidecar has announced its port via `get_backend_port`

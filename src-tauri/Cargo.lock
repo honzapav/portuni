@@ -82,6 +82,7 @@ dependencies = [
  "base64 0.22.1",
  "keyring",
  "log",
+ "open",
  "portable-pty",
  "rand 0.8.6",
  "reqwest",
@@ -91,6 +92,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-log",
  "tauri-plugin-shell",
+ "url",
 ]
 
 [[package]]

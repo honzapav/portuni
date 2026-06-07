@@ -45,3 +45,13 @@ portable-pty = "0.9"
 # (visible as duplicated rows and offset glyphs after Unicode chars).
 # xterm.js' write() accepts Uint8Array and handles streaming UTF-8.
 base64 = "0.22"
+# Open external URLs/paths in the OS default handler. The JS shell plugin's
+# `open` proved to be a silent no-op inside the macOS webview, so external
+# links (Google Drive folder, actor links) are opened natively via the
+# open_external command instead. Already present transitively via
+# tauri-plugin-shell (Cargo.lock pins 5.3.4); promoted to a direct dep.
+open = "5"
+# Parse + scheme-validate URLs before handing them to the OS opener, so
+# open_external can't be coaxed into launching file:// or arbitrary custom
+# URL handlers. Already present transitively (Cargo.lock pins 2.5.x).
+url = "2"
