@@ -473,6 +473,9 @@ export function SyncBar({
           {result.pulled.length > 0 && (
             <div>Pull: {result.pulled.length} souborů</div>
           )}
+          {result.adopted.length > 0 && (
+            <div>Zaregistrováno: {result.adopted.length} souborů</div>
+          )}
           {result.conflicts.length > 0 && (
             <div style={{ color: "var(--color-danger)" }}>
               Konflikty (přeskočeno): {result.conflicts.length}
@@ -486,6 +489,7 @@ export function SyncBar({
           )}
           {result.pushed.length === 0 &&
             result.pulled.length === 0 &&
+            result.adopted.length === 0 &&
             result.conflicts.length === 0 &&
             result.errors.length === 0 && <div>Nic k synchronizaci.</div>}
         </div>
