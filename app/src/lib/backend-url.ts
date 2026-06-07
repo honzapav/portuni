@@ -28,6 +28,27 @@ export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+// Open an external URL in the OS default handler. A plain <a target="_blank">
+// (or window.open) works in a browser, but inside the Tauri webview such a
+// click is a silent no-op -- the same wall TerminalPane's WebLinksAddon hits,
+// which is why it routes link clicks through tauri-plugin-shell. This is the
+// shared equivalent for React anchors: keep the href so the browser build and
+// middle-click still work, but call this from onClick (preventDefault first)
+// so under Tauri the URL opens in the user's real browser / Finder / mail
+// client instead of dying.
+export async function openExternal(url: string): Promise<void> {
+  if (!isTauri()) {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return;
+  }
+  try {
+    const { open } = await import("@tauri-apps/plugin-shell");
+    await open(url);
+  } catch {
+    // shell plugin missing or URL blocked by capability allow-list -- ignore
+  }
+}
+
 // Wait until the sidecar has announced its port via `get_backend_port`
 // or the `backend-ready` event. Mirrors the previous polling logic but
 // resolves to void — callers don't construct URLs anymore, the Rust

@@ -45,6 +45,10 @@ type Props = {
   onWorkspaceSelectSession: (nodeId: string, sessionId: string) => void;
   onWorkspaceCloseSession: (sessionId: string) => void;
   onWorkspaceNewSession: (nodeId: string) => void;
+  // Create a brand-new node and immediately open a terminal session for it.
+  // The graph view has its own "Nový uzel" button; the workspace view needs
+  // its own so a session can be started for a node that does not exist yet.
+  onWorkspaceCreateNode: () => void;
 };
 
 function nodeTypeVar(type: string): string {
@@ -92,6 +96,7 @@ export default function Sidebar({
   onWorkspaceSelectSession,
   onWorkspaceCloseSession,
   onWorkspaceNewSession,
+  onWorkspaceCreateNode,
 }: Props) {
   return (
     <aside className="flex h-full w-[300px] shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-bg)]">
@@ -151,17 +156,30 @@ export default function Sidebar({
       )}
 
       {view === "workspace" && (
-        <div className="flex-1 overflow-y-auto scroll-thin">
-          <WorkspaceNodeList
-            sessions={workspaceSessions}
-            selectedNodeId={workspaceSelectedNodeId}
-            activeSessionIdByNode={workspaceActiveSessionIdByNode}
-            onSelectNode={onWorkspaceSelectNode}
-            onSelectSession={onWorkspaceSelectSession}
-            onCloseSession={onWorkspaceCloseSession}
-            onNewSession={onWorkspaceNewSession}
-            now={workspaceNow}
-          />
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="px-4 pt-4">
+            <button
+              type="button"
+              onClick={onWorkspaceCreateNode}
+              title="Vytvoří nový uzel a rovnou v něm otevře terminál"
+              className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-3 py-2 text-[13px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-text)]"
+            >
+              <Plus size={13} />
+              Nový uzel + terminál
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto scroll-thin">
+            <WorkspaceNodeList
+              sessions={workspaceSessions}
+              selectedNodeId={workspaceSelectedNodeId}
+              activeSessionIdByNode={workspaceActiveSessionIdByNode}
+              onSelectNode={onWorkspaceSelectNode}
+              onSelectSession={onWorkspaceSelectSession}
+              onCloseSession={onWorkspaceCloseSession}
+              onNewSession={onWorkspaceNewSession}
+              now={workspaceNow}
+            />
+          </div>
         </div>
       )}
 

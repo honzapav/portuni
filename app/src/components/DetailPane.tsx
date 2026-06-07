@@ -28,6 +28,7 @@ import {
   Building2,
   Info,
   ExternalLink,
+  Loader2,
 } from "lucide-react";
 import type {
   NodeDetail,
@@ -47,6 +48,7 @@ import {
   NODE_VISIBILITIES,
 } from "../types";
 import { safeHref } from "../lib/safe-url";
+import { isTauri, openExternal } from "../lib/backend-url";
 import { agentDisplayName } from "../lib/settings";
 import type { Actor } from "../api";
 import {
@@ -113,7 +115,7 @@ type Props = {
   onBack: () => void;
   onMutate: () => Promise<void>;
   agentCommand: string;
-  onOpenTerminal: (nodeId: string) => void;
+  onOpenTerminal: (nodeId: string) => void | Promise<void>;
   // True when this pane is rendered inside another column (e.g. the
   // workspace's right-side detail). Drops the slide-in animation, the
   // 40vw / min-w-440 sizing, and the left border so the parent's layout
@@ -217,7 +219,7 @@ function DetailPaneBody({
   onBack: () => void;
   onMutate: () => Promise<void>;
   agentCommand: string;
-  onOpenTerminal: (nodeId: string) => void;
+  onOpenTerminal: (nodeId: string) => void | Promise<void>;
   embedded?: boolean;
   onCollapse?: () => void;
   onOpenFile?: (nodeId: string, relPath: string) => void;
@@ -246,6 +248,10 @@ function DetailPaneBody({
     null,
   );
   const [untracked, setUntracked] = useState<UntrackedFile[]>([]);
+  // Opening a terminal does two sequential round-trips (fetch node +
+  // create mirror) before the view switches, so guard the button with a
+  // visible pending state -- otherwise the click looks like a no-op.
+  const [launchingTerminal, setLaunchingTerminal] = useState(false);
 
   // Reset edit drafts whenever we switch to a different node.
   const lastIdRef = useRef(node.id);
@@ -268,8 +274,14 @@ function DetailPaneBody({
     }
   }, [node.id, node.name]);
 
-  const openEmbeddedTerminal = () => {
-    onOpenTerminal(node.id);
+  const openEmbeddedTerminal = async () => {
+    if (launchingTerminal) return;
+    setLaunchingTerminal(true);
+    try {
+      await onOpenTerminal(node.id);
+    } finally {
+      setLaunchingTerminal(false);
+    }
   };
 
   // Trigger node-wide sync. Pushes push_candidates, pulls pull_candidates,
@@ -958,10 +970,18 @@ function DetailPaneBody({
             {node.type !== "organization" && (
               <button
                 onClick={openEmbeddedTerminal}
+                disabled={launchingTerminal}
                 title={`Otevře terminál v Práci a spustí v něm ${agentDisplayName(agentCommand)}. Pracovní složka bude vytvořena, pokud ještě neexistuje.`}
-                className="flex items-center justify-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+                className="flex items-center justify-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:cursor-default disabled:opacity-60 disabled:hover:border-[var(--color-border)] disabled:hover:text-[var(--color-text-muted)]"
               >
-                Otevřít terminál v Portuni
+                {launchingTerminal ? (
+                  <>
+                    <Loader2 size={13} className="animate-spin" />
+                    Spouštím terminál…
+                  </>
+                ) : (
+                  "Otevřít terminál v Portuni"
+                )}
               </button>
             )}
           </div>
@@ -3018,6 +3038,15 @@ function EntityAttributeItem<TItem extends EntityAttributeItem>({
             href={safeLink}
             target="_blank"
             rel="noreferrer"
+            onClick={(e) => {
+              // In the Tauri webview a target="_blank" click is a no-op;
+              // route through the OS handler instead. The browser build
+              // keeps native anchor behaviour (middle-click, cmd-click).
+              if (isTauri()) {
+                e.preventDefault();
+                void openExternal(safeLink);
+              }
+            }}
             className="text-[var(--color-accent)] hover:underline"
           >
             {item.name}
@@ -3347,7 +3376,15 @@ function FolderLink({ nodeId }: { nodeId: string }) {
       href={info.url}
       target="_blank"
       rel="noopener noreferrer"
-      onClick={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        // Tauri webview swallows target="_blank"; hand the Drive URL to
+        // the OS handler. Browser build keeps the native anchor.
+        if (isTauri()) {
+          e.preventDefault();
+          void openExternal(info.url);
+        }
+      }}
       title={`Otevřít na ${info.remote_name ?? "remote"}`}
       className="inline-flex items-center justify-center rounded text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text-muted)]"
     >

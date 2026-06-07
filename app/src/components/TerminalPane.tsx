@@ -265,6 +265,41 @@ export default function TerminalPane({
           if (event.type === "keydown") void writePty("\x1b\r");
           return false;
         }
+        // Cmd (Meta) + Arrow — macOS line/document navigation. The webview
+        // otherwise swallows these chords (Cmd+Left/Right would even trigger
+        // history back/forward), so the shell's line editor never sees them.
+        // Map Cmd+Left/Right onto readline's Ctrl-A / Ctrl-E (line start/end)
+        // and Cmd+Up/Down onto scrollback top/bottom — the closest terminal
+        // analogue of "document start/end". Only when Cmd is the sole
+        // modifier, so Cmd+C / Cmd+V / Cmd+Shift+Arrow stay untouched.
+        if (
+          event.metaKey &&
+          !event.ctrlKey &&
+          !event.altKey &&
+          !event.shiftKey
+        ) {
+          let handled = true;
+          switch (event.key) {
+            case "ArrowLeft":
+              if (event.type === "keydown") void writePty("\x01");
+              break;
+            case "ArrowRight":
+              if (event.type === "keydown") void writePty("\x05");
+              break;
+            case "ArrowUp":
+              if (event.type === "keydown") term.scrollToTop();
+              break;
+            case "ArrowDown":
+              if (event.type === "keydown") term.scrollToBottom();
+              break;
+            default:
+              handled = false;
+          }
+          if (handled) {
+            event.preventDefault();
+            return false;
+          }
+        }
         // Option (Alt) + navigation chord. Only intercept when Option is
         // the ONLY modifier so we don't fight system shortcuts like
         // Cmd+Option+anything.

@@ -228,6 +228,10 @@ export default function App() {
   const [activeSessionIdByNode, setActiveSessionIdByNode] = useState<Record<string, string>>({});
   const [now, setNow] = useState<number>(() => Date.now());
   const openingSessionNodeIdsRef = useRef<Set<string>>(new Set());
+  // Set when the create-node modal is opened from the workspace view, so that
+  // on success we also open a terminal session for the freshly created node
+  // (one-click "Nový uzel + terminál"). Reset on close or after handling.
+  const createFromWorkspaceRef = useRef(false);
 
   // Detail for the workspace's selected node. Kept separate from
   // graph-view's `nodeDetail` so the two views can have independent
@@ -499,6 +503,10 @@ export default function App() {
           onWorkspaceNewSession={(nodeId) => {
             void openSessionForNodeId(nodeId);
           }}
+          onWorkspaceCreateNode={() => {
+            createFromWorkspaceRef.current = true;
+            openCreateModal();
+          }}
         />
       )}
 
@@ -654,11 +662,23 @@ export default function App() {
                   )?.peer_id
               : undefined
           }
-          onClose={() => setCreateModalOpen(false)}
+          onClose={() => {
+            createFromWorkspaceRef.current = false;
+            setCreateModalOpen(false);
+          }}
           onCreated={(node) => {
             setCreateModalOpen(false);
             setSelectedId(node.id);
             refetchAll().catch((err) => setGraphError(String(err)));
+            // Opened from the workspace "Nový uzel + terminál" button: also
+            // launch a session for it. Organizations have no terminal, so
+            // only nodes that support one get the auto-open.
+            if (createFromWorkspaceRef.current) {
+              createFromWorkspaceRef.current = false;
+              if (node.type !== "organization") {
+                void openSessionForNodeId(node.id);
+              }
+            }
           }}
         />
       )}

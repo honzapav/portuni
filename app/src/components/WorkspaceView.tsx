@@ -34,7 +34,7 @@ type Props = {
   nodeDetailLoading: boolean;
   nodeDetailError: string | null;
   agentCommand: string;
-  onOpenTerminal: (nodeId: string) => void;
+  onOpenTerminal: (nodeId: string) => void | Promise<void>;
   // Refetch graph + this view's node detail after an edit. DetailPane's
   // edit / lifecycle / sync flows all funnel through this.
   onMutate: () => Promise<void>;
