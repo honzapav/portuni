@@ -1,8 +1,10 @@
 // Compact source editor for the workspace right column. Swaps in for the
 // node detail (Option C). "← zpět" returns to detail; ⤢ expands to fullscreen.
-import { ChevronLeft, Maximize2, Save } from "lucide-react";
+import { useState } from "react";
+import { ChevronLeft, Eye, Maximize2, Pencil, Save } from "lucide-react";
 import type { FileEditor } from "../lib/use-file-editor";
 import MarkdownEditor from "./MarkdownEditor";
+import MarkdownPreview from "./MarkdownPreview";
 
 export default function EditorPane({
   editor,
@@ -55,8 +57,11 @@ export default function EditorPane({
   );
 }
 
-// Shared body: loading / error / conflict banner / editor. Reused by fullscreen.
+// Shared body: loading / error / conflict banner / editor or preview. Reused by
+// fullscreen. The edit/preview toggle lives here so both shells get it for free.
 export function EditorBody({ ed }: { ed: FileEditor }) {
+  const [mode, setMode] = useState<"edit" | "preview">("edit");
+
   if (ed.status.kind === "loading") {
     return (
       <div className="flex flex-1 items-center justify-center text-[13px] text-[var(--color-text-dim)]">
@@ -84,8 +89,47 @@ export function EditorBody({ ed }: { ed: FileEditor }) {
           </button>
         </div>
       )}
+      <ModeToggle mode={mode} onChange={setMode} />
       <div className="min-h-0 flex-1 overflow-auto">
-        <MarkdownEditor value={ed.content} onChange={ed.onChange} onSave={(v) => ed.save(v)} />
+        {mode === "edit" ? (
+          <MarkdownEditor value={ed.content} onChange={ed.onChange} onSave={(v) => ed.save(v)} />
+        ) : (
+          <MarkdownPreview value={ed.content} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Segmented edit/preview switch, right-aligned in a slim bar above the content.
+function ModeToggle({
+  mode,
+  onChange,
+}: {
+  mode: "edit" | "preview";
+  onChange: (m: "edit" | "preview") => void;
+}) {
+  const base =
+    "flex items-center gap-1 rounded px-2 py-0.5 text-[11.5px] transition-colors";
+  const active = "bg-[var(--color-surface-2)] text-[var(--color-text)]";
+  const idle = "text-[var(--color-text-dim)] hover:text-[var(--color-text)]";
+  return (
+    <div className="flex justify-end border-b border-[var(--color-border)] px-2 py-1">
+      <div className="flex items-center gap-0.5 rounded border border-[var(--color-border)] p-0.5">
+        <button
+          onClick={() => onChange("edit")}
+          className={`${base} ${mode === "edit" ? active : idle}`}
+          title="Editace"
+        >
+          <Pencil size={11} /> Editace
+        </button>
+        <button
+          onClick={() => onChange("preview")}
+          className={`${base} ${mode === "preview" ? active : idle}`}
+          title="Náhled"
+        >
+          <Eye size={11} /> Náhled
+        </button>
       </div>
     </div>
   );
