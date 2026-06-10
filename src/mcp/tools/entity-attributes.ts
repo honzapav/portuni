@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Client } from "@libsql/client";
 import { getDb } from "../../infra/db.js";
 import {
   ExternalLinkSchema,
@@ -16,6 +17,17 @@ import {
 import { nodeVisibleTo } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
+async function guardNodeAccess(
+  db: Client,
+  nodeId: string,
+  identity: SessionCtx["identity"],
+): Promise<{ allowed: true } | { allowed: false; error: string }> {
+  if (!(await nodeVisibleTo(db, identity, nodeId))) {
+    return { allowed: false, error: `Error: node ${nodeId} not found` };
+  }
+  return { allowed: true };
+}
+
 export function registerEntityAttributeTools(server: McpServer, ctx: SessionCtx): void {
   server.tool(
     "portuni_add_data_source",
@@ -28,7 +40,15 @@ export function registerEntityAttributeTools(server: McpServer, ctx: SessionCtx)
     },
     async (args) => {
       try {
-        const row = await addDataSource(getDb(), ctx.identity.userId, args);
+        const db = getDb();
+        const guard = await guardNodeAccess(db, args.node_id, ctx.identity);
+        if (!guard.allowed) {
+          return {
+            content: [{ type: "text" as const, text: guard.error }],
+            isError: true,
+          };
+        }
+        const row = await addDataSource(db, ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
       } catch (err) {
         return {
@@ -97,7 +117,15 @@ export function registerEntityAttributeTools(server: McpServer, ctx: SessionCtx)
     },
     async (args) => {
       try {
-        const row = await addTool(getDb(), ctx.identity.userId, args);
+        const db = getDb();
+        const guard = await guardNodeAccess(db, args.node_id, ctx.identity);
+        if (!guard.allowed) {
+          return {
+            content: [{ type: "text" as const, text: guard.error }],
+            isError: true,
+          };
+        }
+        const row = await addTool(db, ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
       } catch (err) {
         return {

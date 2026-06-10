@@ -8,6 +8,7 @@ import {
   removeDataSource,
   updateDataSource,
 } from "../domain/entity-attributes.js";
+import { nodeVisibleTo } from "../auth/node-access.js";
 import { parseBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 
 export async function handleListDataSources(
@@ -39,8 +40,18 @@ export async function handleCreateDataSource(
       respondJson(res, 400, { error: "body required" });
       return;
     }
+    const nodeId = body.node_id as string | undefined;
+    if (!nodeId) {
+      respondJson(res, 400, { error: "node_id required" });
+      return;
+    }
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: `node ${nodeId} not found` });
+      return;
+    }
     const row = await addDataSource(
-      getDb(),
+      db,
       identity.userId,
       body as Parameters<typeof addDataSource>[2],
     );
@@ -57,7 +68,21 @@ export async function handleDeleteDataSource(
   dsId: string,
 ): Promise<void> {
   try {
-    await removeDataSource(getDb(), identity.userId, dsId);
+    const db = getDb();
+    const dsRow = await db.execute({
+      sql: "SELECT node_id FROM data_sources WHERE id = ?",
+      args: [dsId],
+    });
+    if (dsRow.rows.length === 0) {
+      respondJson(res, 404, { error: `data source ${dsId} not found` });
+      return;
+    }
+    const nodeId = String(dsRow.rows[0].node_id);
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: `data source ${dsId} not found` });
+      return;
+    }
+    await removeDataSource(db, identity.userId, dsId);
     respondJson(res, 200, { deleted: dsId });
   } catch (err) {
     respondError(res, `${req.method} /data-sources/${dsId}`, err);
@@ -76,8 +101,22 @@ export async function handleUpdateDataSource(
       respondJson(res, 400, { error: "no fields to update" });
       return;
     }
+    const db = getDb();
+    const dsRow = await db.execute({
+      sql: "SELECT node_id FROM data_sources WHERE id = ?",
+      args: [dsId],
+    });
+    if (dsRow.rows.length === 0) {
+      respondJson(res, 404, { error: `data source ${dsId} not found` });
+      return;
+    }
+    const nodeId = String(dsRow.rows[0].node_id);
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: `data source ${dsId} not found` });
+      return;
+    }
     const row = await updateDataSource(
-      getDb(),
+      db,
       identity.userId,
       dsId,
       body as Parameters<typeof updateDataSource>[3],

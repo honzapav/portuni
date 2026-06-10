@@ -432,3 +432,132 @@ describe("Fix #10: expand_scope treats restricted node as not-found", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Data source/tool/responsibility write-path guards
+// ---------------------------------------------------------------------------
+
+describe("Write-path guards: data_sources, tools, responsibilities", () => {
+  let db: DbClient;
+  let workspace: string;
+  let visibleNodeId: string;
+  let restrictedNodeId: string;
+
+  before(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-write-guards-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+
+    db = await makeTestDb();
+    setDbForTesting(db);
+
+    const orgId = await insertOrg(db);
+    visibleNodeId = await insertNode(db, orgId, { name: "VisibleNode" });
+    restrictedNodeId = await insertNode(db, orgId, {
+      visibility: "group",
+      accessGroup: "restricted@x.com",
+      name: "RestrictedNode",
+    });
+  });
+
+  after(async () => {
+    setDbForTesting(null);
+    resetLocalDbForTests();
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  test("outsider MCP portuni_add_data_source on restricted node returns not-found error, DB row NOT created", async () => {
+    const outsider = makeOutsider(["other@x.com"]);
+    const { server, scope } = createMcpServer(outsider);
+
+    scope.add(restrictedNodeId);
+
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    const mcpClient = new McpClient(
+      { name: "test-write-guard-ds", version: "0.0.1" },
+      { capabilities: {} },
+    );
+    await server.connect(serverT);
+    await mcpClient.connect(clientT);
+
+    const result = await mcpClient.callTool({
+      name: "portuni_add_data_source",
+      arguments: {
+        node_id: restrictedNodeId,
+        name: "Attempted Data Source",
+        description: "Should not be created",
+      },
+    });
+
+    await mcpClient.close();
+
+    // Must be an error with "not found" message
+    assert.equal(result.isError, true, "outsider should get an error");
+    const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+    assert.ok(
+      text.includes("not found"),
+      `error message should mention "not found", got: ${text}`,
+    );
+
+    // Verify DB row was NOT created
+    const rows = await db.execute({
+      sql: "SELECT COUNT(*) as cnt FROM data_sources WHERE node_id = ?",
+      args: [restrictedNodeId],
+    });
+    assert.equal(
+      rows.rows[0].cnt as number,
+      0,
+      "no data source should have been created on the restricted node",
+    );
+  });
+
+  test("member MCP portuni_add_data_source on restricted node succeeds and creates DB row", async () => {
+    const member: RequestIdentity = {
+      userId: SOLO,
+      email: "member@x.com",
+      name: "Member",
+      globalScope: "manage",
+      groups: ["restricted@x.com"],
+      via: "env",
+    };
+    const { server, scope } = createMcpServer(member);
+
+    scope.add(restrictedNodeId);
+
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    const mcpClient = new McpClient(
+      { name: "test-write-guard-ds-member", version: "0.0.1" },
+      { capabilities: {} },
+    );
+    await server.connect(serverT);
+    await mcpClient.connect(clientT);
+
+    const result = await mcpClient.callTool({
+      name: "portuni_add_data_source",
+      arguments: {
+        node_id: restrictedNodeId,
+        name: "CRM Airtable",
+        description: "Sales data",
+      },
+    });
+
+    await mcpClient.close();
+
+    // Must succeed (no error)
+    assert.notEqual(result.isError, true, "member should be able to add data source");
+
+    const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+    const payload = JSON.parse(text) as { node_id?: string; name?: string };
+
+    assert.equal(payload.node_id, restrictedNodeId, "returned row should have correct node_id");
+    assert.equal(payload.name, "CRM Airtable", "returned row should have correct name");
+
+    // Verify DB row was created
+    const rows = await db.execute({
+      sql: "SELECT id, name FROM data_sources WHERE node_id = ?",
+      args: [restrictedNodeId],
+    });
+    assert.equal(rows.rows.length, 1, "exactly one data source should exist on restricted node");
+    assert.equal(rows.rows[0].name as string, "CRM Airtable", "data source name should match");
+  });
+});
