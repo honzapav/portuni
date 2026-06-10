@@ -7,7 +7,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { handleHealth } from "./health.js";
 import { handleGraph } from "./graph.js";
-import { handleWriteScope } from "./write-scope.js";
+import { handleSandboxProfileByCwd, handleWriteScope } from "./write-scope.js";
 import { handleListUsers } from "./users.js";
 import {
   handleCreateActor,
@@ -119,6 +119,10 @@ async function routeSystem(
   }
   if (pathname === "/scope" && method === "GET") {
     await handleWriteScope(req, res, url);
+    return true;
+  }
+  if (pathname === "/sandbox-profile" && method === "GET") {
+    await handleSandboxProfileByCwd(req, res, url);
     return true;
   }
   if (pathname === "/users" && method === "GET") {

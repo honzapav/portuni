@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { ulid } from "ulid";
 import {
   buildSeatbeltProfile,
+  resolveSandboxScopeForCwd,
   resolveSandboxScopeForNode,
 } from "../src/domain/sandbox-profile.js";
 import { registerMirror } from "../src/domain/sync/mirror-registry.js";
@@ -119,5 +120,30 @@ describe("resolveSandboxScopeForNode", () => {
     const { db } = await makeSharedDb();
     const scope = await resolveSandboxScopeForNode(db, SOLO_USER, ulid());
     assert.equal(scope, null);
+  });
+
+  it("resolves by cwd: deepest containing mirror wins", async () => {
+    const { db, nodeId, orgId } = await makeSharedDb();
+    const orgDir = join(workspace, "org");
+    const homeDir = join(orgDir, "projects", "p1");
+    await mkdir(join(homeDir, "wip"), { recursive: true });
+    await registerMirror(SOLO_USER, orgId, orgDir);
+    await registerMirror(SOLO_USER, nodeId, homeDir);
+
+    const r = await resolveSandboxScopeForCwd(db, SOLO_USER, join(homeDir, "wip"));
+
+    assert.ok(r, "cwd inside a mirror must resolve");
+    assert.equal(r.nodeId, nodeId, "nested mirror must beat its ancestor");
+    assert.ok(r.scope.homeMirror.endsWith(join("projects", "p1")));
+  });
+
+  it("resolves by cwd: returns null outside every mirror", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const homeDir = join(workspace, "p1");
+    await mkdir(homeDir, { recursive: true });
+    await registerMirror(SOLO_USER, nodeId, homeDir);
+
+    const r = await resolveSandboxScopeForCwd(db, SOLO_USER, join(workspace, "elsewhere"));
+    assert.equal(r, null);
   });
 });

@@ -3,12 +3,41 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getDb } from "../../infra/db.js";
 import { SOLO_USER } from "../../infra/schema.js";
 import { logAudit } from "../../infra/audit.js";
+import { getMirrorPath } from "../../domain/sync/mirror-registry.js";
+import { stageNodeIntoMirror } from "../../domain/scope-staging.js";
 import {
   loadNodeScopeMeta,
   type SessionScope,
   seedScopeFromHome,
   violatesHardFloor,
 } from "../scope.js";
+
+// Mirror an approved scope expansion onto disk. Sandboxed terminals get
+// their Seatbelt boundary at spawn time, so a mid-session expansion only
+// reaches the agent's filesystem if the (unsandboxed) server stages the
+// node's files inside the home mirror. Best-effort: nodes without a
+// local mirror, or a session without a home mirror, simply stage nothing.
+async function stageAcceptedNodes(
+  homeNodeId: string | null,
+  acceptedIds: string[],
+): Promise<{ node_id: string; staged_path: string; files: number }[]> {
+  if (!homeNodeId) return [];
+  const homeMirror = await getMirrorPath(SOLO_USER, homeNodeId);
+  if (!homeMirror) return [];
+  const staged: { node_id: string; staged_path: string; files: number }[] = [];
+  for (const id of acceptedIds) {
+    if (id === homeNodeId) continue;
+    const nodeMirror = await getMirrorPath(SOLO_USER, id);
+    if (!nodeMirror) continue;
+    try {
+      const r = await stageNodeIntoMirror({ homeMirror, nodeId: id, nodeMirror });
+      staged.push({ node_id: id, ...r });
+    } catch {
+      /* best-effort — graph scope is already expanded; disk copy is a bonus */
+    }
+  }
+  return staged;
+}
 
 // portuni_session_init is the manual fallback for seeding the scope set.
 // Auto-seed normally fires on connect when the MCP URL carries
@@ -202,6 +231,11 @@ export function registerScopeTools(server: McpServer, scope: SessionScope): void
         });
       }
 
+      // Sandboxed terminals cannot see newly approved mirrors — stage
+      // read-only copies inside the home mirror so the disk view matches
+      // the just-expanded graph scope.
+      const staged = await stageAcceptedNodes(scope.homeNodeId, accepted);
+
       return {
         content: [
           {
@@ -211,9 +245,12 @@ export function registerScopeTools(server: McpServer, scope: SessionScope): void
               unknown: rejected_unknown,
               refused_hard_floor,
               scope_size: scope.size(),
+              staged: staged.length > 0 ? staged : undefined,
               hint: refused_hard_floor.length > 0
                 ? "Re-call portuni_expand_scope with confirmed_hard_floor=true only after the user explicitly authorises the hard-floor node."
-                : undefined,
+                : staged.length > 0
+                  ? "Expanded nodes' files are staged read-only under .portuni-scope/<node_id>/ in the current mirror."
+                  : undefined,
             }),
           },
         ],

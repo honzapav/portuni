@@ -107,3 +107,30 @@ describe("GET /nodes/:id/sandbox-profile", () => {
     assert.equal(res.status, 404);
   });
 });
+
+describe("GET /sandbox-profile?cwd=", () => {
+  it("resolves the node from cwd and returns the same payload shape", async () => {
+    const cwd = join(workspace, "acme", "projects", "proj", "wip");
+    await mkdir(cwd, { recursive: true });
+    const res = await fetch(`${BASE}/sandbox-profile?cwd=${encodeURIComponent(cwd)}`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { node_id: string; profile: string; home_mirror: string };
+    assert.equal(body.node_id, projId);
+    assert.ok(body.profile.startsWith("(version 1)"));
+    assert.ok(body.home_mirror.endsWith(join("acme", "projects", "proj")));
+  });
+
+  it("409 NO_MIRROR when cwd is outside every mirror", async () => {
+    const res = await fetch(
+      `${BASE}/sandbox-profile?cwd=${encodeURIComponent(join(workspace, "nowhere"))}`,
+    );
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { code?: string };
+    assert.equal(body.code, "NO_MIRROR");
+  });
+
+  it("400 without a cwd param", async () => {
+    const res = await fetch(`${BASE}/sandbox-profile`);
+    assert.equal(res.status, 400);
+  });
+});

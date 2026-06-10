@@ -16,7 +16,7 @@
 import { realpath } from "node:fs/promises";
 import type { Client } from "@libsql/client";
 import { getMirrorPath, listUserMirrors } from "./sync/mirror-registry.js";
-import { normalize, resolvePortuniRoot } from "./write-scope.js";
+import { findContainingMirror, normalize, resolvePortuniRoot } from "./write-scope.js";
 
 // Seatbelt string literal: double-quoted, backslash and quote escaped.
 function sbQuote(path: string): string {
@@ -107,4 +107,32 @@ export async function resolveSandboxScopeForNode(
     homeMirror: await resolveReal(home),
     neighborMirrors,
   };
+}
+
+// Resolve the disk scope from a working directory instead of a node id —
+// the entry point for `portuni run`, which is invoked from a shell inside
+// a mirror and only knows where it stands. The deepest registered mirror
+// containing cwd wins (same longest-prefix rule findContainingMirror
+// implements for write classification). Returns null when cwd is outside
+// every mirror.
+export async function resolveSandboxScopeForCwd(
+  db: Client,
+  userId: string,
+  cwd: string,
+): Promise<{ nodeId: string; scope: SandboxScope } | null> {
+  const mirrors = await listUserMirrors(userId);
+  // Match against the paths as registered (normalized, NOT realpath'd):
+  // the registry stores whatever path the mirror was created with, and
+  // realpathing only one side of the comparison would break the prefix
+  // match whenever that path crosses a symlink (/tmp, /var, ...).
+  const containing = findContainingMirror(
+    mirrors.map((m) => m.local_path),
+    normalize(cwd),
+  );
+  if (!containing) return null;
+  const row = mirrors.find((m) => normalize(m.local_path) === containing);
+  if (!row) return null;
+  const scope = await resolveSandboxScopeForNode(db, userId, row.node_id);
+  if (!scope) return null;
+  return { nodeId: row.node_id, scope };
 }
