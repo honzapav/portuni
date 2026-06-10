@@ -8,6 +8,7 @@ import { getDb } from "../../infra/db.js";
 import { logAudit } from "../../infra/audit.js";
 import { EDGE_RELATIONS } from "../../infra/schema.js";
 import { moveNodeToOrganization } from "../../domain/edges.js";
+import { nodeVisibleTo } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
@@ -27,7 +28,7 @@ export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
         sql: "SELECT id, type FROM nodes WHERE id = ?",
         args: [args.source_id],
       });
-      if (sourceCheck.rows.length === 0) {
+      if (sourceCheck.rows.length === 0 || !(await nodeVisibleTo(db, ctx.identity, args.source_id))) {
         return {
           content: [{ type: "text" as const, text: `Error: source node ${args.source_id} not found` }],
           isError: true,
@@ -39,7 +40,7 @@ export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
         sql: "SELECT id, type FROM nodes WHERE id = ?",
         args: [args.target_id],
       });
-      if (targetCheck.rows.length === 0) {
+      if (targetCheck.rows.length === 0 || !(await nodeVisibleTo(db, ctx.identity, args.target_id))) {
         return {
           content: [{ type: "text" as const, text: `Error: target node ${args.target_id} not found` }],
           isError: true,
@@ -149,6 +150,20 @@ export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
     async (args) => {
       const db = getDb();
 
+      // Group-visibility: both endpoints must be visible to the caller.
+      if (!(await nodeVisibleTo(db, ctx.identity, args.source_id))) {
+        return {
+          content: [{ type: "text" as const, text: `Error: source node ${args.source_id} not found` }],
+          isError: true,
+        };
+      }
+      if (!(await nodeVisibleTo(db, ctx.identity, args.target_id))) {
+        return {
+          content: [{ type: "text" as const, text: `Error: target node ${args.target_id} not found` }],
+          isError: true,
+        };
+      }
+
       const removingBelongsToOrg =
         args.relation === undefined || args.relation === "belongs_to";
       if (removingBelongsToOrg) {
@@ -226,9 +241,17 @@ export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
       new_org_id: z.string().describe("Target organization ID (ULID). Must be type 'organization'."),
     },
     async (args) => {
+      const db = getDb();
+      // Group-visibility: node being moved must be visible to caller.
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
+        return {
+          content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
+          isError: true,
+        };
+      }
       try {
         const result = await moveNodeToOrganization(
-          getDb(),
+          db,
           ctx.identity.userId,
           args.node_id,
           args.new_org_id,

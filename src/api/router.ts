@@ -161,7 +161,7 @@ async function routeSystem(
     return true;
   }
   if (pathname === "/graph" && method === "GET") {
-    await handleGraph(req, res);
+    await handleGraph(req, res, identity);
     return true;
   }
   if (pathname === "/scope" && method === "GET") {

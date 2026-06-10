@@ -7,6 +7,7 @@ import { EventRow } from "../../shared/types.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardListScope } from "../list-scope-gate.js";
+import { nodeVisibleTo, filterVisibleNodeIds } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
@@ -25,12 +26,18 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
     async (args) => {
       const db = getDb();
 
-      // Verify node exists
+      // Verify node exists and is visible
       const nodeCheck = await db.execute({
         sql: "SELECT id FROM nodes WHERE id = ?",
         args: [args.node_id],
       });
       if (nodeCheck.rows.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
+          isError: true,
+        };
+      }
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
         return {
           content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
           isError: true,
@@ -118,6 +125,13 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
       }
 
       const row = EventRow.parse(existing.rows[0]);
+      // Group-visibility: if the event's node is hidden, deny as not-found.
+      if (!(await nodeVisibleTo(db, ctx.identity, row.node_id))) {
+        return {
+          content: [{ type: "text" as const, text: `Error: event ${args.event_id} not found` }],
+          isError: true,
+        };
+      }
       if (row.status !== "active") {
         return {
           content: [{ type: "text" as const, text: `Error: event ${args.event_id} is not active (status: ${row.status})` }],
@@ -174,6 +188,13 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
       }
 
       const oldRow = EventRow.parse(existing.rows[0]);
+      // Group-visibility: if the event's node is hidden, deny as not-found.
+      if (!(await nodeVisibleTo(db, ctx.identity, oldRow.node_id))) {
+        return {
+          content: [{ type: "text" as const, text: `Error: event ${args.event_id} not found` }],
+          isError: true,
+        };
+      }
 
       // Mark old event as superseded
       await db.execute({
@@ -249,6 +270,7 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
           since: args.since ?? null,
         },
         ctx.identity.userId,
+        ctx.identity,
       );
       if (gate.kind === "error") return gate.response;
 
@@ -300,9 +322,9 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
         args: [...values, limit],
       });
 
-      const events = result.rows.map((row) => ({
+      const allEvents = result.rows.map((row) => ({
         id: row.id,
-        node_id: row.node_id,
+        node_id: row.node_id as string,
         node_name: row.node_name,
         type: row.type,
         content: row.content,
@@ -312,6 +334,11 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
         task_ref: row.task_ref,
         created_at: row.created_at,
       }));
+
+      // Filter by group visibility: drop events from hidden nodes.
+      const eventNodeIds = [...new Set(allEvents.map((e) => e.node_id))];
+      const visibleNodeSet = await filterVisibleNodeIds(db, ctx.identity, eventNodeIds);
+      const events = allEvents.filter((e) => visibleNodeSet.has(e.node_id));
 
       return {
         content: [

@@ -16,6 +16,7 @@ import { buildNodeRoot, deriveLocalPath } from "../../domain/sync/remote-path.js
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardListScope } from "../list-scope-gate.js";
+import { filterVisibleNodeIds } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
@@ -99,6 +100,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         "list_files",
         { status: args.status ?? null },
         ctx.identity.userId,
+        ctx.identity,
       );
       if (gate.kind === "error") return gate.response;
 
@@ -141,8 +143,13 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         args: params,
       });
 
+      // Filter rows by group visibility before enrichment.
+      const distinctNodeIds = [...new Set(result.rows.map((r) => r.node_id as string))];
+      const visibleFileNodeSet = await filterVisibleNodeIds(db, ctx.identity, distinctNodeIds);
+      const visibleRows = result.rows.filter((r) => visibleFileNodeSet.has(r.node_id as string));
+
       const enriched = await Promise.all(
-        result.rows.map(async (row) => {
+        visibleRows.map(async (row) => {
           const nodeId = row.node_id as string;
           const rp = row.remote_path as string | null;
           let localPath: string | null = null;

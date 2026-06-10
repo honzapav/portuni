@@ -23,6 +23,7 @@ import {
 } from "../domain/sync/mirror-create.js";
 import type { SyncStatusResponse, SyncRunResponse, UntrackedFile } from "../shared/api-types.js";
 import { parseBody, parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
+import { nodeVisibleTo } from "../auth/node-access.js";
 import { z } from "zod";
 
 export async function handleGetNode(
@@ -36,7 +37,12 @@ export async function handleGetNode(
     return;
   }
   try {
-    const node = await loadNodeDetail(getDb(), identity.userId, nodeId);
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    const node = await loadNodeDetail(db, identity.userId, nodeId);
     if (!node) {
       respondJson(res, 404, { error: "node not found" });
       return;
@@ -116,6 +122,10 @@ export async function handlePatchNode(
       respondJson(res, 400, { error: "no fields to update" });
       return;
     }
+    if (!(await nodeVisibleTo(getDb(), identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
     await updateNodeInternal(getDb(), identity.userId, update);
     const node = await loadNodeDetail(getDb(), identity.userId, nodeId);
     if (!node) {
@@ -142,6 +152,10 @@ export async function handleMoveNode(
     const body = (await parseBody(req)) as { new_org_id?: string } | undefined;
     if (!body?.new_org_id || typeof body.new_org_id !== "string") {
       respondJson(res, 400, { error: "new_org_id required" });
+      return;
+    }
+    if (!(await nodeVisibleTo(getDb(), identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
       return;
     }
     const result = await moveNodeToOrganization(
@@ -214,7 +228,7 @@ export async function handleDeleteNode(
       sql: "SELECT id FROM nodes WHERE id = ?",
       args: [nodeId],
     });
-    if (existing.rows.length === 0) {
+    if (existing.rows.length === 0 || !(await nodeVisibleTo(db, identity, nodeId))) {
       respondJson(res, 404, { error: "node not found" });
       return;
     }

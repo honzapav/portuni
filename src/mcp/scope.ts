@@ -7,6 +7,7 @@
 // See docs/superpowers/specs/2026-04-24-scope-model.md.
 
 import type { Client } from "@libsql/client";
+import { nodeVisibleTo, type GroupIdentityView } from "../auth/node-access.js";
 
 export type ScopeMode = "strict" | "balanced" | "permissive";
 
@@ -275,15 +276,27 @@ export type ReadGuardOutcome =
 //
 // auditFn is the audit-writer to use. Pass logAudit so this module stays
 // independent of the audit module's import cycle.
+//
+// identity is optional for backwards compatibility with callers that only
+// need the classic scope-mode gate. When provided, a group-visibility check
+// runs FIRST (before scope): non-members see not_found, never an elicit.
 export async function guardNodeRead(
   db: Client,
   scope: SessionScope,
   nodeId: string,
   sessionUserId: string,
   auditFn: (action: string, targetId: string, detail: Record<string, unknown>) => Promise<void>,
+  identity?: GroupIdentityView,
 ): Promise<ReadGuardOutcome> {
   const meta = await loadNodeScopeMeta(db, nodeId);
   if (!meta.exists) return { kind: "not_found" };
+
+  // Group-visibility gate: runs before scope so non-members cannot probe
+  // existence via the scope-expansion elicit.
+  if (identity !== undefined) {
+    const visible = await nodeVisibleTo(db, identity, nodeId);
+    if (!visible) return { kind: "not_found" };
+  }
 
   const decision = decideRead(
     scope,

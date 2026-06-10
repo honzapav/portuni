@@ -5,6 +5,7 @@ import type { Client, InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardNodeRead } from "../scope.js";
 import { logAudit } from "../../infra/audit.js";
+import { filterVisibleNodeIds, type GroupIdentityView } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
 // --- Task E3: enriched context payload shape ---
@@ -191,6 +192,7 @@ export async function buildContextPayload(
   nodeId: string,
   depth: number,
   userId: string,
+  identity?: GroupIdentityView,
 ): Promise<ContextPayload> {
   // 1. Load the root node row. owner_id / goal / lifecycle_state columns are
   //    added by migration 006; fall back to nulls if not present (shouldn't
@@ -389,6 +391,26 @@ export async function buildContextPayload(
     });
   }
 
+  // 7. Filter connected nodes and root edges for group visibility.
+  //    Hidden nodes are silently dropped; edges touching hidden nodes are
+  //    pruned so the caller cannot infer their existence from the edge list.
+  if (identity !== undefined) {
+    const allConnectedIds = connected.map((n) => n.id);
+    const visibleSet = await filterVisibleNodeIds(db, identity, allConnectedIds);
+    const visibleConnected = connected.filter((n) => visibleSet.has(n.id));
+    const visibleIds = new Set([nodeId, ...visibleSet]);
+    const prunedRootEdges = root.edges.filter(
+      (e) => visibleIds.has(e.peer_id),
+    );
+    return {
+      root: { ...root, edges: prunedRootEdges },
+      connected: visibleConnected.map((n) => ({
+        ...n,
+        edges: n.edges.filter((e) => visibleIds.has(e.peer_id)),
+      })),
+    };
+  }
+
   return { root, connected };
 }
 
@@ -418,10 +440,11 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
     async (args) => {
       const db = getDb();
 
-      // Scope gate on the start node via the central helper.
+      // Scope gate on the start node. Passing identity enables group-
+      // visibility check: non-members get not_found, never an elicit.
       const guard = await guardNodeRead(db, scope, args.node_id, ctx.identity.userId, async (action, targetId, detail) => {
         await logAudit(ctx.identity.userId, action, "scope", targetId, detail);
-      });
+      }, ctx.identity);
       if (guard.kind === "not_found") {
         return {
           content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
@@ -460,7 +483,7 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
       }
 
       try {
-        const payload = await buildContextPayload(db, args.node_id, args.depth, ctx.identity.userId);
+        const payload = await buildContextPayload(db, args.node_id, args.depth, ctx.identity.userId, ctx.identity);
         // depth=0/1 reads everything within one hop of an in-scope start
         // node, which is consistent with the "home + depth-1" seed rule.
         // permissive mode also auto-adds depth>=2 results. We never auto-add

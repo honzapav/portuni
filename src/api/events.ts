@@ -7,6 +7,7 @@ import { getDb } from "../infra/db.js";
 import { logAudit } from "../infra/audit.js";
 import { EVENT_TYPES } from "../infra/schema.js";
 import { parseBody, parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
+import { nodeVisibleTo } from "../auth/node-access.js";
 
 const CreateEventBody = z.object({
   node_id: z.string().min(1),
@@ -27,7 +28,7 @@ export async function handleCreateEvent(
       sql: "SELECT id FROM nodes WHERE id = ?",
       args: [body.node_id],
     });
-    if (nodeCheck.rows.length === 0) {
+    if (nodeCheck.rows.length === 0 || !(await nodeVisibleTo(db, identity, body.node_id))) {
       respondJson(res, 404, { error: "node not found" });
       return;
     }

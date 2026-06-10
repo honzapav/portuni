@@ -7,6 +7,7 @@
 import type { Client } from "@libsql/client";
 import { logAudit } from "../infra/audit.js";
 import { decideGlobalQuery, guardNodeRead, type SessionScope } from "./scope.js";
+import type { GroupIdentityView } from "../auth/node-access.js";
 
 type ToolErrorResponse = {
   content: Array<{ type: "text"; text: string }>;
@@ -25,6 +26,7 @@ export async function guardListScope(
   auditTarget: string,
   filters: Record<string, unknown>,
   userId: string,
+  identity?: GroupIdentityView,
 ): Promise<ListScopeGateResult> {
   if (nodeId !== undefined) {
     const guard = await guardNodeRead(
@@ -35,6 +37,7 @@ export async function guardListScope(
       async (action, targetId, detail) => {
         await logAudit(userId, action, "scope", targetId, detail);
       },
+      identity,
     );
     if (guard.kind === "not_found") {
       return {

@@ -5,6 +5,7 @@ import {
   MirrorCreateError,
 } from "../../domain/sync/mirror-create.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { nodeVisibleTo } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerMirrorTools(server: McpServer, ctx: SessionCtx): void {
@@ -22,8 +23,16 @@ export function registerMirrorTools(server: McpServer, ctx: SessionCtx): void {
         .describe("Optional override for default path ({root}/{org-slug}/{type-plural}/{node-slug})"),
     },
     async (args) => {
+      const db = getDb();
+      // Group-visibility guard: non-members cannot mirror hidden nodes.
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
+        return {
+          content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
+          isError: true,
+        };
+      }
       try {
-        const result = await createMirrorForNode(getDb(), ctx.identity.userId, {
+        const result = await createMirrorForNode(db, ctx.identity.userId, {
           nodeId: args.node_id,
           customPath: args.custom_path,
         });

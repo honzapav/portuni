@@ -18,6 +18,7 @@ import {
   updateNodeInternal,
 } from "../../domain/nodes.js";
 import { decideGlobalQuery } from "../scope.js";
+import { filterVisibleNodeIds, nodeVisibleTo } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
@@ -97,6 +98,13 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
         args: [args.node_id],
       });
       if (current.rows.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "Error: node not found" }],
+          isError: true,
+        };
+      }
+      // Group-visibility write guard: non-members see not-found.
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
         return {
           content: [{ type: "text" as const, text: "Error: node not found" }],
           isError: true,
@@ -209,7 +217,12 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
         args: values,
       });
 
-      const nodes = result.rows.map((row) => NodeSummaryRow.parse(row));
+      const allNodes = result.rows.map((row) => NodeSummaryRow.parse(row));
+
+      // Filter by group visibility: non-members never see group-restricted nodes.
+      const rawIds = allNodes.map((n) => n.id);
+      const visibleSet = await filterVisibleNodeIds(db, ctx.identity, rawIds);
+      const nodes = allNodes.filter((n) => visibleSet.has(n.id));
 
       return { content: [{ type: "text" as const, text: JSON.stringify(nodes, null, 2) }] };
     },
@@ -233,6 +246,13 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
         args: [args.node_id],
       });
       if (existing.rows.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
+          isError: true,
+        };
+      }
+      // Group-visibility write guard: non-members see not-found.
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
         return {
           content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
           isError: true,
