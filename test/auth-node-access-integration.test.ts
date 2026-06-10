@@ -561,3 +561,63 @@ describe("Write-path guards: data_sources, tools, responsibilities", () => {
     assert.equal(rows.rows[0].name as string, "CRM Airtable", "data source name should match");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fix #11: handlePositions – bulk position updates must filter hidden nodes
+// ---------------------------------------------------------------------------
+
+describe("Fix #11: handlePositions filters hidden nodes from bulk updates", () => {
+  let db: DbClient;
+  let workspace: string;
+  let restrictedId: string;
+
+  before(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-fix11-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+
+    db = await makeTestDb();
+    setDbForTesting(db);
+
+    const orgId = await insertOrg(db);
+    restrictedId = await insertNode(db, orgId, { visibility: "group", accessGroup: "secret@x.com" });
+  });
+
+  after(async () => {
+    setDbForTesting(null);
+    resetLocalDbForTests();
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  test("outsider POST /positions returns OK but restricted node position is NOT updated", async () => {
+    const outsider = makeOutsider(["other@x.com"]);
+
+    const { req, res, captured } = makeMockReqRes(
+      "POST",
+      "/positions",
+      {
+        updates: [
+          { id: restrictedId, x: 100, y: 200 },
+        ],
+      },
+    );
+
+    const url = new URL("http://localhost/positions");
+    await routeApiRequest(req, res, url, outsider);
+
+    assert.equal(captured.statusCode, 200, `expected 200 but got ${captured.statusCode}; body: ${captured.body}`);
+
+    // Parse the response to check updated count
+    const body = JSON.parse(captured.body) as { updated?: number };
+    assert.equal(body.updated, 0, "updated count should be 0 (hidden node not accessible)");
+
+    // Verify the position was NOT modified in the DB
+    const row = await db.execute({
+      sql: "SELECT pos_x, pos_y FROM nodes WHERE id = ?",
+      args: [restrictedId],
+    });
+    assert.equal(row.rows.length, 1, "restricted node should still exist");
+    assert.equal(row.rows[0].pos_x, null, "pos_x must remain unset");
+    assert.equal(row.rows[0].pos_y, null, "pos_y must remain unset");
+  });
+});

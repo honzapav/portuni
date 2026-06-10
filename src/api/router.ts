@@ -413,7 +413,7 @@ async function routeNodes(
     return true;
   }
   if (pathname === "/positions" && method === "POST") {
-    await handlePositions(req, res);
+    await handlePositions(req, res, identity);
     return true;
   }
   if (pathname === "/nodes" && method === "POST") {

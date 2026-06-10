@@ -23,7 +23,7 @@ import {
 } from "../domain/sync/mirror-create.js";
 import type { SyncStatusResponse, SyncRunResponse, UntrackedFile } from "../shared/api-types.js";
 import { parseBody, parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
-import { nodeVisibleTo } from "../auth/node-access.js";
+import { nodeVisibleTo, filterVisibleNodeIds } from "../auth/node-access.js";
 import { z } from "zod";
 
 export async function handleGetNode(
@@ -579,11 +579,12 @@ async function resolveRemoteFolderUrl(
 }
 
 // Batch-save persisted node positions. Called by the frontend after layout
-// settles and after the user drops a dragged node. No auth/audit -- positions
-// are purely UI state and the MCP tool layer never touches them.
+// settles and after the user drops a dragged node. Enforces group-visibility:
+// only updates positions for nodes visible to the requesting identity.
 export async function handlePositions(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
 ): Promise<void> {
   try {
     const body = (await parseBody(req)) as
@@ -595,6 +596,13 @@ export async function handlePositions(
       return;
     }
     const db = getDb();
+
+    // Extract node IDs from the request and filter for visibility
+    const requestedIds = updates
+      .filter((entry) => typeof entry?.id === "string")
+      .map((entry) => entry!.id as string);
+    const visibleIds = await filterVisibleNodeIds(db, identity, requestedIds);
+
     let updated = 0;
     for (const entry of updates) {
       if (
@@ -605,6 +613,10 @@ export async function handlePositions(
         !Number.isFinite(entry.x) ||
         !Number.isFinite(entry.y)
       ) {
+        continue;
+      }
+      // Only apply position updates to visible nodes
+      if (!visibleIds.has(entry.id)) {
         continue;
       }
       const result = await db.execute({
