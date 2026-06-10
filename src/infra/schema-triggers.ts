@@ -42,6 +42,8 @@ export const DDL_DEVICE_TOKENS = `CREATE TABLE IF NOT EXISTS device_tokens (
     last_used_at DATETIME
   )`;
 
+export const INDEX_DEVICE_TOKENS_USER = `CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_id)`;
+
 // Ground-truth DDL for fresh installs. Includes all CHECK constraints.
 // Existing installs get constraints via migrations.
 export const DDL = [
@@ -52,6 +54,7 @@ export const DDL = [
     created_at DATETIME NOT NULL DEFAULT (datetime('now'))
   )`,
   DDL_DEVICE_TOKENS,
+  INDEX_DEVICE_TOKENS_USER,
   `CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY CHECK(length(id) = 26),
     type TEXT NOT NULL CHECK(type IN (${NODE_TYPES_SQL})),

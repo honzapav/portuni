@@ -41,6 +41,7 @@ import {
   INDEX_REMOTE_ROUTING_PRIORITY,
   SEED_LIFECYCLE_STATE_FROM_STATUS,
   DDL_DEVICE_TOKENS,
+  INDEX_DEVICE_TOKENS_USER,
 } from "./schema-triggers.js";
 
 interface Migration {
@@ -908,6 +909,7 @@ const MIGRATIONS: Migration[] = [
         await db.execute("ALTER TABLE users ADD COLUMN last_login_at DATETIME");
       }
       await db.execute(DDL_DEVICE_TOKENS);
+      await db.execute(INDEX_DEVICE_TOKENS_USER);
     },
   },
 
