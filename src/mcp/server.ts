@@ -21,6 +21,8 @@ import { registerActorTools } from "./tools/actors.js";
 import { registerResponsibilityTools } from "./tools/responsibilities.js";
 import { registerEntityAttributeTools } from "./tools/entity-attributes.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
+import { TOOL_MIN_SCOPE } from "../auth/min-scopes.js";
+import { scopeAtLeast } from "../auth/roles.js";
 
 // Top-level server brief. Kept short -- many MCP clients truncate this
 // field at ~2 KB. Anything load-bearing for an individual tool lives in
@@ -52,6 +54,44 @@ export function buildDefaultEnvIdentity(): RequestIdentity {
   };
 }
 
+// Wrap server.tool so every registered tool is guarded by the caller's
+// globalScope. Installed once before any registerXxxTools call.
+// The registration-time throw (missing map entry) ensures gaps are caught
+// immediately rather than at call time.
+function gateToolsByScope(server: McpServer, identity: RequestIdentity): void {
+  const original = server.tool.bind(server);
+  (server as unknown as { tool: (...a: unknown[]) => unknown }).tool = (
+    ...args: unknown[]
+  ) => {
+    const name = args[0] as string;
+    const min = TOOL_MIN_SCOPE[name];
+    if (min === undefined) {
+      throw new Error(`Tool ${name} missing from TOOL_MIN_SCOPE — add it to src/auth/min-scopes.ts`);
+    }
+    const handlerIdx = args.length - 1;
+    const handler = args[handlerIdx] as (...h: unknown[]) => Promise<unknown>;
+    args[handlerIdx] = async (...h: unknown[]) => {
+      if (!scopeAtLeast(identity.globalScope, min)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: "forbidden",
+                required_scope: min,
+                your_scope: identity.globalScope,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      return handler(...h);
+    };
+    return original(...(args as Parameters<typeof original>));
+  };
+}
+
 export function createMcpServer(
   identity: RequestIdentity,
 ): { server: McpServer; scope: SessionScope } {
@@ -61,6 +101,7 @@ export function createMcpServer(
     { name: "portuni", version: "0.1.0" },
     { instructions: INSTRUCTIONS },
   );
+  gateToolsByScope(server, identity);
   registerResources(server);
   registerScopeTools(server, ctx);
   registerNodeTools(server, ctx);

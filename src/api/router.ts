@@ -6,6 +6,9 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { RequestIdentity } from "../auth/request-identity.js";
+import { minScopeForRoute } from "../auth/min-scopes.js";
+import { scopeAtLeast } from "../auth/roles.js";
+import { respondJson } from "../http/middleware.js";
 import {
   handleLogin,
   handleMe,
@@ -127,6 +130,14 @@ export async function routeApiRequest(
   }
 
   const method = req.method ?? "GET";
+
+  // Global role gate: check minimum scope for this route before dispatching.
+  const required = minScopeForRoute(method, url.pathname);
+  if (!scopeAtLeast(identity.globalScope, required)) {
+    respondJson(res, 403, { error: "forbidden", required_scope: required });
+    return true;
+  }
+
   for (const sub of SUB_ROUTERS) {
     if (await sub(req, res, url, method, identity)) return true;
   }
