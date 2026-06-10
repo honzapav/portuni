@@ -20,7 +20,7 @@ npm run build                                       # tsc -> dist/, ~2 s
 tmux send-keys -t portuni-mcp C-c Up Enter          # restart server
 ```
 
-Started once: `tmux new -d -s portuni-mcp 'varlock run -- node dist/server.js 2>&1 | tee /tmp/portuni-mcp.log'`.
+Started once: `tmux new -d -s portuni-mcp 'varlock run -- node dist/index.js 2>&1 | tee /tmp/portuni-mcp.log'`.
 
 Logs at `/tmp/portuni-mcp.log` and in the tmux pane.
 
@@ -69,9 +69,30 @@ loop for backend iteration.
   is the desktop sidecar's embedded replica and can be stale. To answer
   "does node X exist?" hit Turso, the MCP server, or the desktop app –
   never the local file.
-- **Mirror `.mcp.json` is Portuni-managed** and rewritten on every
-  `portuni_mirror` call. Don't hand-edit. If `Authorization` is missing,
-  the regen ran without `PORTUNI_AUTH_TOKEN` in env – rerun under varlock.
+- **Mirror scope configs are Portuni-managed.** `portuni_mirror` materializes
+  `.mcp.json`, `.claude/settings.local.json`, `.codex/config.toml`,
+  `.cursor/rules`, `PORTUNI_SCOPE.md` and marker blocks in CLAUDE.md/AGENTS.md
+  – don't hand-edit those blocks (`src/domain/scope-materialize.ts`). The
+  per-mirror `.mcp.json` carries `?home_node_id=…` (scope auto-seed) and
+  references the token as `${PORTUNI_MCP_TOKEN:-}` – never a literal value.
+  The desktop app injects that env var into spawned terminals; manual shells
+  outside the app must export it themselves (Settings → Copy token). The
+  user-scoped `~/.claude.json` entry (`install_claude_global`) remains the
+  fallback for sessions outside any mirror.
 - **Auto-seed runs on MCP connect** when the URL carries `?home_node_id=...`.
   Failures (DB unreachable, network) return 503 with the underlying reason
   rather than serving an empty-scope session – see `src/mcp/transport.ts`.
+
+- **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
+  keys; `.env.schema` declares only the 6 core ones. Full inventory with
+  defaults: `docs/env-vars.md`. Watch out: `PORTUNI_ROOT` (write-scope
+  tiering) is a different thing than `PORTUNI_WORKSPACE_ROOT` (mirrors).
+
+## Security rules (from the auth refactor post-mortem)
+
+1. **No secret in webview JS, ever.** If a JS module needs to know it, it
+   can be exfiltrated trivially. The webview calls the `api_request` Tauri
+   command; the Rust proxy injects the bearer header.
+2. **No secret in plaintext on disk.** OS keychain (or varlock) only.
+3. **Webview ↔ backend through Tauri commands, not direct HTTP.** Tauri's
+   capabilities allowlist already enforces the trust boundary.

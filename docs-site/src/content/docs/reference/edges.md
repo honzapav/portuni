@@ -47,4 +47,6 @@ Move a non-organization node from its current organization to another. Rebinds t
 
 Use this instead of `portuni_disconnect` + `portuni_connect` when relocating a node between organizations — single agent turn, single audit row, no transient invariant break.
 
-Returns: `{ moved: boolean, edge_id, from_org_id, to_org_id }` — `moved: false` when the node was already in `new_org_id` (no-op).
+Tracked files move with the node: every `remote_path` is rooted at the org `sync_key`, so the move renames each remote file under the new org root and updates the rows. The move is refused up front when the new organization routes to a **different remote** than the node's files live on — move the files individually (`portuni_move_file`) or adjust the routing first.
+
+Returns: `{ moved: boolean, edge_id, from_org_id, to_org_id, files_migrated, files_repair_needed }` — `moved: false` when the node was already in `new_org_id` (no-op). `files_repair_needed` lists files whose remote rename failed (`{ file_id, error }`); re-run or repair manually.

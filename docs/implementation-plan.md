@@ -1,5 +1,14 @@
 # Portuni – Implementacni plan
 
+> **Historicky dokument (stav k 2026-04-09).** Pokrývá vývoj po Phase 3
+> (file sync); všechno pozdější (aktéři, responsibilities, entity
+> attributes, scope gating, lifecycle, desktop shell, migrace 006–014)
+> tu chybí. Zdrojem pravdy je kód a docs-site. Známé drifty: port je
+> 4011 (ne 3001), zdrojový strom je `src/{api,domain,http,infra,mcp,shared}`,
+> CI gate (`.github/workflows/ci.yml`) existuje, bulk skripty
+> `bulk-promote.ts`/`cleanup-ignored-files.ts`/`move-rogue-files.ts`
+> neexistují (viz `scripts/oneshot/`).
+
 Posledni aktualizace: 2026-04-09. Overeno vuci aktualnimu kodu a DB.
 
 ---

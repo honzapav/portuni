@@ -2,6 +2,14 @@
 
 Kompletni institucionalni znalost nasbirana behem vyvoje. Koncepty, rozhodnuti, chyby a pouceni.
 
+> **Historicky log.** Sekce 4–5 popisují mechanismy, které už neexistují
+> (port 3001, `/context` endpoint, `scripts/portuni-context.sh`,
+> SessionStart hook) – nahradil je auto-seed přes `?home_node_id` na
+> portu 4011 a materializované scope configy. Registrace toolů je dnes
+> v `src/mcp/server.ts` (45 toolů). Testy běží v CI
+> (`.github/workflows/ci.yml`). Aktuální chování: docs-site + MCP
+> resources (`portuni://architecture` apod.).
+
 ---
 
 ## 1. Koncepty

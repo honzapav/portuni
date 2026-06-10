@@ -1,5 +1,19 @@
 # Portuni
 
+> **Spec, not reference (banner added 2026-06-09).** This is the design
+> document the build started from; several sections have drifted from the
+> implementation. For current behavior trust, in order: the code, the
+> docs-site (`docs-site/` — its tool reference matches all 45 registered
+> MCP tools one-for-one), and the MCP resources (`portuni://architecture`,
+> `portuni://sync-model`, `portuni://scope-rules`, `portuni://enums`).
+> Known drift: the "MCP tools" section below predates the actor /
+> responsibility / entity-attribute / scope / sync tool families and lists
+> a few tools that were never built (`portuni_search`, `portuni_promote`,
+> `portuni_refresh_summary`, `portuni_sync_mirrors`, `max_tokens` on
+> `portuni_get_context`); embeddings/FTS/summaries are design-only; the
+> nodes/files/users table sketches predate migrations 003–014
+> (`lifecycle_state`, `goal`, `owner_id`, `sync_key`, remote_* columns).
+
 Portuni is a shared map of how your organization works – its processes, projects, areas, and principles – held as one graph that every tool and every AI agent can read. People and agents draw from the same picture instead of rebuilding context from scratch in every app.
 
 It doesn't compete with Google Drive, Asana, or any other tool. It's the connective layer that mirrors your organizational structure (POPP) consistently across all of them, so every tool and every agent sees the same map. MCP is how agents plug in.
@@ -217,7 +231,7 @@ Phase 1 (solo): everything is `team`, only global scope matters. Phase 2 (team):
 ### What agents can NOT do
 
 - **Read secrets** — Varlock ensures no credentials in agent context
-- **Delete nodes or events** — events are append-only, nodes can be archived but not deleted (audit trail)
+- **Hard-delete events** — events are append-only; supersede/resolve, never rewrite. (Nodes: the original "archive only" rule was relaxed — `portuni_delete_node` purges with an explicit `confirm` flag and audit entry; REST `DELETE /nodes/:id` still only archives.)
 - **Modify other users' events** — you can supersede, but the original stays with its author
 - **Access stored files directly** — agents get file URLs from Portuni, but actual file access goes through the storage provider's own auth
 - **Bypass scope restrictions** — MCP tool calls are validated server-side, not client-side
@@ -307,7 +321,7 @@ Relation types (strictly enforced, four flat relations):
 | Relation | Meaning | Example |
 |---|---|---|
 | related_to | lateral, semantically light connection. Near-default -- use when no more specific relation fits | "Stellar project" → "Atlas project" (similar client type) |
-| belongs_to | entity is scoped to a larger scope. Multi-parent allowed -- not a tree | "License procurement" → "Area: Google Workspace services" |
+| belongs_to | entity is scoped to a larger scope. For organization targets exactly ONE parent is enforced by trigger (`prevent_multi_parent_org`); see the org-invariant section below | "License procurement" → "Area: Google Workspace services" |
 | applies | concrete work uses a repeatable pattern | "Apollo" → "AI competency assessment process" |
 | informed_by | knowledge transfer (learned from, drew on, referenced) | "New GWS project" → "Stellar project" |
 
@@ -394,7 +408,7 @@ References to shared files in file storage, attached to nodes. Intentionally pub
 
 ### File sync state
 
-> **Implementation note (2026-04):** the actual Phase 1 implementation diverged from the per-user `file_sync` table sketched here. Sync state is now split across two layers — Turso holds canonical remote state on `files` (`current_remote_hash`, `last_pushed_by`, `last_pushed_at`), and each device keeps "what I last saw" in a local SQLite at `~/.portuni/sync.db`. There is no `device_id` column in Turso. The pluggable `FileAdapter` interface (gdrive / dropbox / s3 / fs / webdav / sftp), routing via `remotes` + `remote_routing`, and `sync_key`-anchored paths replace the Drive-only assumptions in the schema below. See `docs/architecture/file-sync.md` for the live design and `src/sync/README.md` for the user-facing summary.
+> **Implementation note (2026-04):** the actual Phase 1 implementation diverged from the per-user `file_sync` table sketched here. Sync state is now split across two layers — Turso holds canonical remote state on `files` (`current_remote_hash`, `last_pushed_by`, `last_pushed_at`), and each device keeps "what I last saw" in a local SQLite at `$PORTUNI_WORKSPACE_ROOT/.portuni/sync.db`. There is no `device_id` column in Turso. The pluggable `FileAdapter` interface (gdrive / dropbox / s3 / fs / webdav / sftp), routing via `remotes` + `remote_routing`, and `sync_key`-anchored paths replace the Drive-only assumptions in the schema below. See `docs/architecture/file-sync.md` for the live design and `src/domain/sync/README.md` for the user-facing summary.
 
 Per-user tracking of when each file was last synced (pulled or pushed). Used for conflict detection.
 
@@ -546,6 +560,13 @@ Depth controls detail level:
 This keeps context size manageable while still surfacing connected knowledge.
 
 ## MCP tools
+
+> **Outdated section.** The server registers 45 tools
+> (`src/mcp/server.ts`); the canonical reference is the docs-site. This
+> section misses the actor, responsibility, data-source/tool, scope/session
+> and sync tool families entirely, and `portuni_search`,
+> `portuni_promote`, `portuni_refresh_summary`, `portuni_sync_mirrors`
+> and the `max_tokens` parameter were never implemented.
 
 ### Graph
 
@@ -904,7 +925,7 @@ This is not a full management dashboard — it's a read-mostly view with a few a
 
 CLI is not enough for this. A team member joining an existing project needs to see the landscape, not type commands.
 
-**4. Context budget** Status: RESOLVED — `max_tokens` parameter added to `portuni_get_context`. A depth 2 traversal on a well-connected node could return 50K+ tokens. Server truncates intelligently: summaries before full events, deeper depths before shallow, older before newer. Agent controls the budget based on its available context window.
+**4. Context budget** Status: OPEN (the earlier "RESOLVED" note was wrong — no `max_tokens` parameter exists on `portuni_get_context`; budget control today is the `depth` parameter only). A depth 2 traversal on a well-connected node could return 50K+ tokens. Server truncates intelligently: summaries before full events, deeper depths before shallow, older before newer. Agent controls the budget based on its available context window.
 
 ### Important — will hurt within weeks
 

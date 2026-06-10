@@ -4,9 +4,14 @@ Self-contained spec for the next round of UX work on the desktop app.
 Written so a fresh Claude/Codex session can execute it without re-doing
 the conversation that produced it.
 
-## Status (as of 2026-05-06)
+## Status (as of 2026-06-09)
 
-Not started. This document is the scope agreement.
+**Done — historical planning artifact.** All three phases shipped:
+Phase 1 (`POST /nodes/:id/mirror`, `CreateNodeModal`, `WorkspaceEmpty`),
+Phase 2 (`launch_claude_for_node` in `src-tauri/src/lib.rs`),
+Phase 3 (embedded terminal: `src-tauri/src/pty.rs`, `TerminalPane`,
+`TerminalTabs`). Kept for design rationale; the code is the source of
+truth.
 
 ## Why this exists
 

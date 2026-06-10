@@ -87,6 +87,14 @@ Two modes:
 |-----------|------|----------|-------------|
 | `file_id` | string | one of | File ID (download mode) |
 | `node_id` | string | one of | Node ID (preview mode) |
+| `force` | boolean | no | Download mode only. Overwrite the local file even when it has unpushed local changes. Default `false` |
+
+:::note
+Download mode refuses to overwrite a local file whose content was never
+pushed from this device (or that diverged from the last synced state).
+Push the local changes with `portuni_store` first, or pass
+`force: true` to overwrite them deliberately.
+:::
 
 ## portuni_list_files
 
@@ -98,6 +106,7 @@ List files across all nodes with optional filtering. Each row includes a
 |-----------|------|----------|-------------|
 | `node_id` | string | no | Filter by node |
 | `status` | enum | no | Filter by status (`wip` or `output`) |
+| `limit` | number | no | Max rows, newest first (default 500, max 2000) |
 
 Returns: Array of files, each with: `id`, `node_id`, `node_name`,
 `filename`, `status`, `description`, `remote_name`, `remote_path`,

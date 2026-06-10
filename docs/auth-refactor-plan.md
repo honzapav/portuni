@@ -3,7 +3,13 @@
 Self-contained spec for the upcoming PR. Written so a fresh Claude/Codex
 session can execute it without re-doing the research that produced it.
 
-## Status (as of 2026-05-05)
+## Status (as of 2026-06-09)
+
+**Done — historical planning artifact.** All three phases are merged to
+`main`; the three rules of thumb at the bottom now live in AGENTS.md
+("Security rules"). Kept for design rationale.
+
+## Original status (2026-05-05)
 
 - **Phase A — Keychain for Turso secrets.** Shipped on
   `auth-refactor-phase-a` (commit `bc88ec3`). Plaintext
@@ -322,4 +328,4 @@ To not repeat this:
    capabilities allowlist already enforces the trust boundary; HTTP
    plus a hand-rolled bearer duplicates that worse.
 
-These should be in CLAUDE.md as project-level rules (next pass).
+Upstreamed to AGENTS.md → "Security rules" (2026-06-09).
