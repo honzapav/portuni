@@ -14,7 +14,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ensureSchemaOn } from "../src/infra/schema.js";
 import { setDbForTesting } from "../src/infra/db.js";
 import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
-import { createMcpServer } from "../src/mcp/server.js";
+import { createMcpServer, buildDefaultEnvIdentity } from "../src/mcp/server.js";
 
 const SOLO_USER_ID = "01SOLO0000000000000000000";
 
@@ -38,7 +38,7 @@ before(async () => {
     args: [orgId, "organization", "Acme", "acme", SOLO_USER_ID],
   });
 
-  const { server } = createMcpServer();
+  const { server } = createMcpServer(buildDefaultEnvIdentity());
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   mcpClient = new Client(
     { name: "portuni-identity-test-client", version: "0.0.1" },

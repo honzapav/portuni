@@ -41,7 +41,7 @@ export interface SessionCtx {
 // (e.g. in-process test harnesses and stdio mode). The userId string is the
 // canonical SOLO_USER value; we use the literal here so this file does not
 // import SOLO_USER -- the env-mode binding point is stdio-entry.ts.
-function buildDefaultEnvIdentity(): RequestIdentity {
+export function buildDefaultEnvIdentity(): RequestIdentity {
   return {
     userId: "01SOLO0000000000000000000",
     email: process.env.PORTUNI_USER_EMAIL ?? "solo@localhost",
@@ -53,7 +53,7 @@ function buildDefaultEnvIdentity(): RequestIdentity {
 }
 
 export function createMcpServer(
-  identity: RequestIdentity = buildDefaultEnvIdentity(),
+  identity: RequestIdentity,
 ): { server: McpServer; scope: SessionScope } {
   const scope = new SessionScope(parseScopeMode(process.env.PORTUNI_SCOPE_MODE));
   const ctx: SessionCtx = { scope, identity };

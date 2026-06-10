@@ -190,7 +190,7 @@ export async function buildContextPayload(
   db: Client,
   nodeId: string,
   depth: number,
-  userId = "01SOLO0000000000000000000",
+  userId: string,
 ): Promise<ContextPayload> {
   // 1. Load the root node row. owner_id / goal / lifecycle_state columns are
   //    added by migration 006; fall back to nulls if not present (shouldn't
