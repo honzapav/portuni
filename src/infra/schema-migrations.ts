@@ -910,6 +910,75 @@ const MIGRATIONS: Migration[] = [
       await db.execute(DDL_DEVICE_TOKENS);
     },
   },
+
+  // Migration 016: extend nodes.visibility CHECK with 'group'.
+  // SQLite cannot ALTER a CHECK constraint; rebuild the nodes table following
+  // the migration-004 recreate sequence with the current full column set.
+  // After the rebuild, recreate the sync_key index and the two sync_key
+  // NOT-NULL enforcement triggers (they fire ON nodes and are dropped with
+  // the table), plus the lifecycle-derivation/validation triggers.
+  {
+    id: "016_nodes_visibility_group",
+    isApplied: async (db) => {
+      const r = await db.execute({
+        sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name='nodes'",
+        args: [],
+      });
+      return String(r.rows[0]?.sql ?? "").includes("'group'");
+    },
+    up: async (db) => {
+      await db.execute("PRAGMA foreign_keys = OFF");
+      try {
+        await db.execute(`CREATE TABLE nodes_new (
+          id TEXT PRIMARY KEY CHECK(length(id) = 26),
+          type TEXT NOT NULL CHECK(type IN (${NODE_TYPES_SQL})),
+          name TEXT NOT NULL,
+          description TEXT,
+          summary TEXT,
+          summary_updated_at DATETIME,
+          meta TEXT,
+          status TEXT NOT NULL DEFAULT 'active' CHECK(status IN (${NODE_STATUSES_SQL})),
+          visibility TEXT NOT NULL DEFAULT 'team' CHECK(visibility IN (${NODE_VISIBILITIES_SQL})),
+          pos_x REAL,
+          pos_y REAL,
+          owner_id TEXT,
+          lifecycle_state TEXT,
+          goal TEXT,
+          sync_key TEXT NOT NULL,
+          created_by TEXT NOT NULL,
+          created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+          updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
+          CHECK(updated_at >= created_at)
+        )`);
+        await db.execute(`INSERT INTO nodes_new (
+          id, type, name, description, summary, summary_updated_at, meta,
+          status, visibility, pos_x, pos_y, owner_id, lifecycle_state, goal,
+          sync_key, created_by, created_at, updated_at
+        ) SELECT
+          id, type, name, description, summary, summary_updated_at, meta,
+          status, visibility, pos_x, pos_y, owner_id, lifecycle_state, goal,
+          sync_key, created_by, created_at, updated_at
+        FROM nodes`);
+        await db.execute("DROP TABLE nodes");
+        await db.execute("ALTER TABLE nodes_new RENAME TO nodes");
+
+        // Recreate the partial unique index on sync_key (migration 013 pattern).
+        await db.execute(
+          "CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_sync_key ON nodes(sync_key) WHERE sync_key IS NOT NULL",
+        );
+
+        // Recreate the sync_key NOT-NULL enforcement triggers dropped with the table.
+        await db.execute(TRIGGER_NODES_SYNC_KEY_NOT_NULL_INSERT);
+        await db.execute(TRIGGER_NODES_SYNC_KEY_NOT_NULL_UPDATE);
+
+        // Recreate the lifecycle-state triggers dropped with the table.
+        await db.execute(TRIGGER_NODES_DERIVE_STATUS_FROM_LIFECYCLE);
+        await db.execute(TRIGGER_NODES_VALIDATE_LIFECYCLE_STATE);
+      } finally {
+        await db.execute("PRAGMA foreign_keys = ON");
+      }
+    },
+  },
 ];
 
 export async function runMigrations(db: Client): Promise<void> {
