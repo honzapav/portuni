@@ -106,6 +106,18 @@ export async function routeApiRequest(
   url: URL,
   identity: RequestIdentity,
 ): Promise<boolean> {
+  const method = req.method ?? "GET";
+
+  // Global role gate: check minimum scope for this route before dispatching.
+  // This must be checked BEFORE all route handlers, including /auth/login, /me,
+  // and device token operations. /auth/login requires "read" scope, which the
+  // placeholder identity has, so login remains reachable.
+  const required = minScopeForRoute(method, url.pathname);
+  if (!scopeAtLeast(identity.globalScope, required)) {
+    respondJson(res, 403, { error: "forbidden", required_scope: required });
+    return true;
+  }
+
   // Auth routes handled first (login is public in google mode, others need identity).
   if (url.pathname === "/auth/login" && req.method === "POST") {
     await handleLogin(req, res);
@@ -126,15 +138,6 @@ export async function routeApiRequest(
   const dtMatch = url.pathname.match(/^\/device-tokens\/([^/]+)$/);
   if (dtMatch && req.method === "DELETE") {
     await handleRevokeDeviceToken(req, res, identity, dtMatch[1]);
-    return true;
-  }
-
-  const method = req.method ?? "GET";
-
-  // Global role gate: check minimum scope for this route before dispatching.
-  const required = minScopeForRoute(method, url.pathname);
-  if (!scopeAtLeast(identity.globalScope, required)) {
-    respondJson(res, 403, { error: "forbidden", required_scope: required });
     return true;
   }
 

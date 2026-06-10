@@ -31,7 +31,7 @@ import type { RequestIdentity } from "../src/auth/request-identity.js";
 
 describe("TOOL_MIN_SCOPE map", () => {
   it("every registered MCP tool has an explicit min scope", () => {
-    assert.ok(Object.keys(TOOL_MIN_SCOPE).length >= 40);
+    assert.equal(Object.keys(TOOL_MIN_SCOPE).length, 46);
     assert.equal(TOOL_MIN_SCOPE.portuni_get_node, "read");
     assert.equal(TOOL_MIN_SCOPE.portuni_log, "write");
     assert.equal(TOOL_MIN_SCOPE.portuni_create_node, "manage");
@@ -135,6 +135,13 @@ describe("gateRoute (REST gate unit test)", () => {
     const r = gateRoute({ globalScope: "manage" }, "GET", "/secret-admin-panel");
     assert.equal(r.allowed, false);
     assert.equal(r.required, "admin");
+  });
+
+  it("read identity cannot mint or revoke device tokens", () => {
+    assert.equal(gateRoute({ globalScope: "read" }, "POST", "/device-tokens").allowed, false);
+    assert.equal(gateRoute({ globalScope: "read" }, "DELETE", "/device-tokens/01ABC").allowed, false);
+    assert.equal(gateRoute({ globalScope: "read" }, "GET", "/device-tokens").allowed, true);
+    assert.equal(gateRoute({ globalScope: "read" }, "POST", "/auth/login").allowed, true);
   });
 });
 
