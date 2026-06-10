@@ -6,6 +6,13 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { RequestIdentity } from "../auth/request-identity.js";
+import {
+  handleLogin,
+  handleMe,
+  handleMintDeviceToken,
+  handleListDeviceTokens,
+  handleRevokeDeviceToken,
+} from "./auth.js";
 import { handleHealth } from "./health.js";
 import { handleGraph } from "./graph.js";
 import { handleWriteScope } from "./write-scope.js";
@@ -93,8 +100,31 @@ export async function routeApiRequest(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
-  _identity: RequestIdentity,
+  identity: RequestIdentity,
 ): Promise<boolean> {
+  // Auth routes handled first (login is public in google mode, others need identity).
+  if (url.pathname === "/auth/login" && req.method === "POST") {
+    await handleLogin(req, res);
+    return true;
+  }
+  if (url.pathname === "/me" && req.method === "GET") {
+    await handleMe(req, res, identity);
+    return true;
+  }
+  if (url.pathname === "/device-tokens" && req.method === "POST") {
+    await handleMintDeviceToken(req, res, identity);
+    return true;
+  }
+  if (url.pathname === "/device-tokens" && req.method === "GET") {
+    await handleListDeviceTokens(req, res, identity);
+    return true;
+  }
+  const dtMatch = url.pathname.match(/^\/device-tokens\/([^/]+)$/);
+  if (dtMatch && req.method === "DELETE") {
+    await handleRevokeDeviceToken(req, res, identity, dtMatch[1]);
+    return true;
+  }
+
   const method = req.method ?? "GET";
   for (const sub of SUB_ROUTERS) {
     if (await sub(req, res, url, method)) return true;

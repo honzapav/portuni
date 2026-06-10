@@ -67,3 +67,14 @@ test("unknown identity creates a new user", async () => {
   assert.equal(r.rows[0].name, "New");
   assert.equal(r.rows[0].google_sub, "sub-new");
 });
+
+test("sub-match login does not crash when another row owns the email", async () => {
+  const { db } = await makeSharedDb();
+  const a = await upsertUserFromIdentity(db, { email: "a@x.com", name: "A", sub: "sub-A" }, null);
+  await upsertUserFromIdentity(db, { email: "b@x.com", name: "B", sub: "sub-B" }, null);
+  // user A's Google account email changes to b@x.com (owned by B's row)
+  const again = await upsertUserFromIdentity(db, { email: "b@x.com", name: "A", sub: "sub-A" }, null);
+  assert.equal(again, a);
+  const r = await db.execute({ sql: "SELECT email FROM users WHERE id = ?", args: [a] });
+  assert.equal(r.rows[0].email, "a@x.com", "old email kept, no constraint crash");
+});

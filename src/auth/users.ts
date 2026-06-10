@@ -17,11 +17,28 @@ export async function upsertUserFromIdentity(
   });
   if (bySub.rows.length > 0) {
     const id = String(bySub.rows[0].id);
-    await db.execute({
-      sql: `UPDATE users SET email = ?, name = ?, avatar_url = COALESCE(?, avatar_url),
-                   last_login_at = datetime('now') WHERE id = ?`,
-      args: [identity.email, identity.name, avatarUrl, id],
+    // Guard against UNIQUE(email) collision: if a different row already owns
+    // identity.email (e.g. a stale row from before this sub claimed that
+    // address), skip the email update to avoid a constraint crash. The old
+    // email on this row remains valid; the collision row is stale.
+    const emailOwner = await db.execute({
+      sql: "SELECT id FROM users WHERE email = ? AND id != ?",
+      args: [identity.email, id],
     });
+    if (emailOwner.rows.length > 0) {
+      // Another row owns the email — update everything except email.
+      await db.execute({
+        sql: `UPDATE users SET name = ?, avatar_url = COALESCE(?, avatar_url),
+                     last_login_at = datetime('now') WHERE id = ?`,
+        args: [identity.name, avatarUrl, id],
+      });
+    } else {
+      await db.execute({
+        sql: `UPDATE users SET email = ?, name = ?, avatar_url = COALESCE(?, avatar_url),
+                     last_login_at = datetime('now') WHERE id = ?`,
+        args: [identity.email, identity.name, avatarUrl, id],
+      });
+    }
     return id;
   }
 
