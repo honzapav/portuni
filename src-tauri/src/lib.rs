@@ -119,9 +119,11 @@ fn get_mcp_token(app: AppHandle) -> Result<String, String> {
 }
 
 // Rotates the MCP auth token: writes a fresh value to Keychain and into
-// the shared AuthToken state. Note that any external configs (per-mirror
-// .mcp.json, ~/.claude.json, ~/.codex/config.toml) become stale until the
-// user re-runs the corresponding "Install …" command.
+// the shared AuthToken state. Per-mirror .mcp.json and .codex/config.toml
+// reference the token via the PORTUNI_MCP_TOKEN env var, so they survive
+// rotation (already-running terminals keep the old value until respawned).
+// Only ~/.claude.json embeds the literal token and goes stale until the
+// user re-runs "Install Claude (global)".
 #[tauri::command]
 fn regenerate_mcp_token(app: AppHandle) -> Result<String, String> {
     let fresh = random_token();

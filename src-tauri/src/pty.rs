@@ -141,6 +141,16 @@ pub fn pty_spawn(
     // copies the parent env by default, which is what we want here so
     // the user's shell rc files have what they expect.
     cmd.env("TERM", "xterm-256color");
+    // The per-mirror .mcp.json references the MCP bearer token as
+    // `${PORTUNI_MCP_TOKEN:-}` (env expansion); the agent harness running
+    // in this PTY resolves it from the shell env. Best-effort: a poisoned
+    // mutex means no token, and the MCP connect fails with a clear 401
+    // instead of blocking the terminal spawn.
+    if let Ok(token) = app.state::<crate::AuthToken>().0.lock() {
+        if !token.is_empty() {
+            cmd.env("PORTUNI_MCP_TOKEN", token.clone());
+        }
+    }
 
     let child = pair
         .slave

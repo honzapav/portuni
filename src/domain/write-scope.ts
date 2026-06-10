@@ -237,28 +237,32 @@ export function resolvePortuniMcpUrl(): string {
   return `http://${host}:${port}/mcp`;
 }
 
-// Build the Claude Code project-scoped .mcp.json content. The user is
-// prompted once on first session whether to trust the server. The auth
-// token is embedded literally only when PORTUNI_AUTH_TOKEN is set; users
-// running auth-enabled deployments should gitignore .mcp.json.
+// Build the Claude Code project-scoped .mcp.json content. Claude Code
+// merges this over the user-scoped ~/.claude.json entry of the same name,
+// so inside a mirror the connection carries ?home_node_id=... and the MCP
+// session auto-seeds its read scope on connect (src/mcp/auto-seed.ts).
+//
+// The bearer token is referenced via ${PORTUNI_MCP_TOKEN:-} env expansion
+// (same variable Codex uses), never embedded literally — the file content
+// is static across token rotations and safe to leave on disk.
 export function buildClaudeMcpJson(args: {
   url: string;
-  authToken?: string | null;
+  homeNodeId: string | null;
 }): Record<string, unknown> {
-  const server: Record<string, unknown> = {
-    type: "http",
-    url: args.url,
-  };
-  if (args.authToken && args.authToken.length > 0) {
-    server.headers = { Authorization: `Bearer ${args.authToken}` };
-  }
   return {
     portuni_managed: {
       generated_at: new Date().toISOString(),
-      note: "Portuni-managed file; will be regenerated when mirrors change. Gitignore if you store an auth token here.",
+      note: "Portuni-managed file; regenerated on sidecar boot and mirror changes. Token comes from the PORTUNI_MCP_TOKEN env var, never stored here.",
     },
     mcpServers: {
-      portuni: server,
+      portuni: {
+        type: "http",
+        url: appendHomeNodeIdToUrl(args.url, args.homeNodeId),
+        // Claude Code expands ${VAR:-default} at config load; the :- form
+        // degrades to an empty header instead of a config load failure
+        // when the variable is unset (e.g. a shell outside the app).
+        headers: { Authorization: "Bearer ${PORTUNI_MCP_TOKEN:-}" },
+      },
     },
   };
 }
@@ -333,9 +337,16 @@ export function buildClaudeSettings(args: {
       portuni_root: normalize(args.portuniRoot),
       generated_at: new Date().toISOString(),
     },
+    // Pre-approve the mirror's own .mcp.json server (and only that one)
+    // so the per-mirror connection works without a trust prompt.
+    enabledMcpjsonServers: ["portuni"],
     permissions: {
       allow,
       deny,
+      // Scope expansion must stay a human decision: "ask" forces a manual
+      // prompt even in auto-accept modes, so an agent cannot silently
+      // self-approve an out-of-scope read by calling expand_scope itself.
+      ask: ["mcp__portuni__portuni_expand_scope"],
     },
   };
 

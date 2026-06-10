@@ -1,6 +1,10 @@
 // Materialize per-harness scope config inside a mirror folder.
 //
 // Generated artifacts (overlay-style, never overwriting user-owned files):
+//   - .mcp.json — project-scoped MCP connection with ?home_node_id=... so
+//     the session auto-seeds its read scope on connect. Written only when
+//     missing or when the existing file carries the `portuni_managed`
+//     marker. Token via ${PORTUNI_MCP_TOKEN:-} env expansion, never literal.
 //   - .claude/settings.local.json — Claude Code merges this on top of the
 //     user's settings.json, so we own this file completely and refresh it
 //     on every call. The file carries a `portuni_managed` marker.
@@ -18,14 +22,16 @@
 // so register_mirror itself doesn't fail when, say, .cursor/ has restrictive
 // permissions.
 
-import { mkdir, readFile, writeFile, stat, unlink } from "node:fs/promises";
+import { mkdir, readFile, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  buildClaudeMcpJson,
   buildClaudeSettings,
   buildCodexSandboxConfig,
   buildSoftHint,
   normalize,
   resolveGuardScriptPath,
+  resolvePortuniMcpUrl,
   resolvePortuniRoot,
 } from "./write-scope.js";
 import { listUserMirrors } from "./sync/mirror-registry.js";
@@ -38,6 +44,13 @@ export interface MaterializeArgs {
   // Path of the mirror being materialized (the "current mirror" from the
   // perspective of any agent invoked inside it).
   currentMirror: string;
+  // Node the mirror belongs to. Written into .mcp.json as
+  // ?home_node_id=... so the MCP session auto-seeds its read scope.
+  // Null skips the .mcp.json write (caller has no node association).
+  nodeId?: string | null;
+  // MCP server URL (without home_node_id). Defaults to
+  // resolvePortuniMcpUrl() — pass explicitly only in tests.
+  mcpUrl?: string | null;
   // All other mirror paths known to this device. Used to populate the deny
   // lists for tier 2.
   otherMirrors: readonly string[];
@@ -181,24 +194,38 @@ export async function materializeScopeConfig(
     result.errors.push({ path: ".codex/config.toml", message: (e as Error).message });
   }
 
-  // 3. Active cleanup: legacy per-mirror `.mcp.json` files written by
-  //    earlier Portuni versions. Connection now lives in user-scoped
-  //    ~/.claude.json (install_claude_global Tauri command); the soft
-  //    hint below tells agents to call portuni_session_init for scope.
-  //    Best-effort: if the file isn't ours, skip silently.
-  try {
-    const legacyMcpPath = join(cur, ".mcp.json");
-    if (await exists(legacyMcpPath)) {
-      const raw = await readFile(legacyMcpPath, "utf8");
-      // Only remove files that carry our marker; leave hand-written
-      // .mcp.json files untouched.
-      if (raw.includes("portuni_managed") || raw.includes('"portuni"')) {
-        await unlink(legacyMcpPath);
-        result.written.push(`removed:${legacyMcpPath}`);
+  // 3. Project-scoped .mcp.json with ?home_node_id=... — Claude Code
+  //    merges it over the user-scoped ~/.claude.json entry of the same
+  //    name, so sessions started inside the mirror auto-seed their read
+  //    scope on connect. The token is referenced via ${PORTUNI_MCP_TOKEN:-}
+  //    env expansion, so the file stays valid across token rotations.
+  //    Only write when the file is missing or carries our marker; a
+  //    hand-written .mcp.json is never clobbered (surfaced as a note).
+  if (args.nodeId) {
+    const mcpPath = join(cur, ".mcp.json");
+    try {
+      let mayWrite = true;
+      if (await exists(mcpPath)) {
+        const raw = await readFile(mcpPath, "utf8");
+        if (!raw.includes("portuni_managed")) {
+          mayWrite = false;
+          result.errors.push({
+            path: mcpPath,
+            message: "existing .mcp.json is user-owned (no portuni marker); skipped",
+          });
+        }
       }
+      if (mayWrite) {
+        const mcpJson = buildClaudeMcpJson({
+          url: args.mcpUrl ?? resolvePortuniMcpUrl(),
+          homeNodeId: args.nodeId,
+        });
+        await safeWrite(mcpPath, JSON.stringify(mcpJson, null, 2) + "\n");
+        result.written.push(mcpPath);
+      }
+    } catch (e) {
+      result.errors.push({ path: mcpPath, message: (e as Error).message });
     }
-  } catch (e) {
-    result.errors.push({ path: ".mcp.json", message: (e as Error).message });
   }
 
   // 4. .cursor/rules (always written, plain text)
@@ -251,12 +278,15 @@ export async function materializeAllRegisteredMirrors(): Promise<MaterializeResu
   if (!portuniRoot) return aggregated;
 
   const guardScriptPath = resolveGuardScriptPath();
+  const mcpUrl = resolvePortuniMcpUrl();
 
   for (const m of mirrors) {
     const others = paths.filter((p) => p !== m.local_path);
     try {
       const r = await materializeScopeConfig({
         currentMirror: m.local_path,
+        nodeId: m.node_id,
+        mcpUrl,
         otherMirrors: others,
         portuniRoot,
         guardScriptPath,

@@ -136,6 +136,7 @@ async function materializeAndRegen(
     const others = paths.filter((p) => p !== m.local_path);
     const r = await materializeScopeConfig({
       currentMirror: m.local_path,
+      nodeId: m.node_id,
       otherMirrors: others,
       portuniRoot,
       guardScriptPath,
@@ -147,6 +148,7 @@ async function materializeAndRegen(
     const others = paths.filter((p) => p !== newMirrorPath);
     const r = await materializeScopeConfig({
       currentMirror: newMirrorPath,
+      nodeId: newNodeId,
       otherMirrors: others,
       portuniRoot,
       guardScriptPath,
