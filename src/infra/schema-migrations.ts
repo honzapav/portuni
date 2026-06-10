@@ -959,9 +959,16 @@ const MIGRATIONS: Migration[] = [
       return String(r.rows[0]?.sql ?? "").includes("'group'");
     },
     up: async (db) => {
-      await db.execute("PRAGMA foreign_keys = OFF");
-      try {
-        await db.execute(`CREATE TABLE nodes_new (
+      // The whole rebuild runs as ONE script over ONE connection via
+      // executeMultiple. Per-statement db.execute() calls are unsafe for
+      // this on Turso/libsql over HTTP: each statement may hit a different
+      // connection, so `PRAGMA foreign_keys = OFF` does not stick and the
+      // DROP TABLE fires FK cascades into the edges triggers mid-rebuild
+      // (incident 2026-06-10: nodes emptied on production, recovered from
+      // nodes_new). executeMultiple keeps the PRAGMA scoped to the script.
+      await db.executeMultiple(`
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE nodes_new (
           id TEXT PRIMARY KEY CHECK(length(id) = 26),
           type TEXT NOT NULL CHECK(type IN (${NODE_TYPES_SQL})),
           name TEXT NOT NULL,
@@ -981,8 +988,8 @@ const MIGRATIONS: Migration[] = [
           created_at DATETIME NOT NULL DEFAULT (datetime('now')),
           updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
           CHECK(updated_at >= created_at)
-        )`);
-        await db.execute(`INSERT INTO nodes_new (
+        );
+        INSERT INTO nodes_new (
           id, type, name, description, summary, summary_updated_at, meta,
           status, visibility, pos_x, pos_y, owner_id, lifecycle_state, goal,
           sync_key, created_by, created_at, updated_at
@@ -990,25 +997,16 @@ const MIGRATIONS: Migration[] = [
           id, type, name, description, summary, summary_updated_at, meta,
           status, visibility, pos_x, pos_y, owner_id, lifecycle_state, goal,
           sync_key, created_by, created_at, updated_at
-        FROM nodes`);
-        await db.execute("DROP TABLE nodes");
-        await db.execute("ALTER TABLE nodes_new RENAME TO nodes");
-
-        // Recreate the partial unique index on sync_key (migration 013 pattern).
-        await db.execute(
-          "CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_sync_key ON nodes(sync_key) WHERE sync_key IS NOT NULL",
-        );
-
-        // Recreate the sync_key NOT-NULL enforcement triggers dropped with the table.
-        await db.execute(TRIGGER_NODES_SYNC_KEY_NOT_NULL_INSERT);
-        await db.execute(TRIGGER_NODES_SYNC_KEY_NOT_NULL_UPDATE);
-
-        // Recreate the lifecycle-state triggers dropped with the table.
-        await db.execute(TRIGGER_NODES_DERIVE_STATUS_FROM_LIFECYCLE);
-        await db.execute(TRIGGER_NODES_VALIDATE_LIFECYCLE_STATE);
-      } finally {
-        await db.execute("PRAGMA foreign_keys = ON");
-      }
+        FROM nodes;
+        DROP TABLE nodes;
+        ALTER TABLE nodes_new RENAME TO nodes;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_sync_key ON nodes(sync_key) WHERE sync_key IS NOT NULL;
+        ${TRIGGER_NODES_SYNC_KEY_NOT_NULL_INSERT};
+        ${TRIGGER_NODES_SYNC_KEY_NOT_NULL_UPDATE};
+        ${TRIGGER_NODES_DERIVE_STATUS_FROM_LIFECYCLE};
+        ${TRIGGER_NODES_VALIDATE_LIFECYCLE_STATE};
+        PRAGMA foreign_keys = ON;
+      `);
     },
   },
 ];
