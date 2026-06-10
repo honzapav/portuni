@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer } from "./server.js";
 import { parseBody, RequestBodyTooLargeError } from "../http/middleware.js";
+import type { RequestIdentity } from "../auth/request-identity.js";
 import { autoSeedFromHome, parseHomeNodeIdFromUrl } from "./auto-seed.js";
 import { logAudit } from "../infra/audit.js";
 import { getDb } from "../infra/db.js";
@@ -24,7 +25,7 @@ interface SessionEntry {
 }
 
 export interface McpTransport {
-  handle: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+  handle: (req: IncomingMessage, res: ServerResponse, _identity: RequestIdentity) => Promise<void>;
   shutdown: () => void;
 }
 
@@ -42,7 +43,7 @@ export function createMcpTransport(): McpTransport {
   }, SESSION_GC_INTERVAL_MS);
   sessionGc.unref?.();
 
-  async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handle(req: IncomingMessage, res: ServerResponse, _identity: RequestIdentity): Promise<void> {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
     let body: unknown;

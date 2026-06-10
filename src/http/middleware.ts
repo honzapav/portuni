@@ -6,6 +6,17 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { ZodType } from "zod";
 import { checkAuthRequiredForConfig } from "../infra/server-config.js";
+import { getDb } from "../infra/db.js";
+import { SOLO_USER } from "../infra/schema.js";
+import { EnvAdapter } from "../auth/env-adapter.js";
+import { createGoogleAdapter } from "../auth/google-adapter.js";
+import {
+  resolveRequestIdentity,
+  type IdentityContext,
+  type RequestIdentity,
+} from "../auth/request-identity.js";
+
+export type { RequestIdentity } from "../auth/request-identity.js";
 
 const MAX_BODY_BYTES = Number(process.env.PORTUNI_MAX_BODY_BYTES ?? 5 * 1024 * 1024);
 
@@ -71,6 +82,32 @@ function getAllowedHosts(): Set<string> {
 export function resetGateCachesForTesting(): void {
   allowedHostsCache = null;
   allowedOriginsCache = null;
+  identityCtxCache = null;
+}
+
+// Identity context: resolved lazily on first applyGates call and cached
+// for the process lifetime (same lifetime as the gate caches above).
+let identityCtxCache: IdentityContext | null = null;
+
+export function getIdentityContext(): IdentityContext {
+  if (identityCtxCache) return identityCtxCache;
+  const mode = (process.env.PORTUNI_AUTH_MODE ?? "env") === "google" ? "google" : "env";
+  const ctx: IdentityContext = {
+    db: getDb(),
+    mode,
+    jwtSecret: process.env.PORTUNI_JWT_SECRET ?? "",
+    adapter: mode === "google" ? createGoogleAdapter() : new EnvAdapter(),
+    soloUserId: SOLO_USER,
+  };
+  if (mode === "google" && ctx.jwtSecret.length < 32) {
+    throw new Error("PORTUNI_JWT_SECRET (>=32 chars) is required in google auth mode");
+  }
+  identityCtxCache = ctx;
+  return ctx;
+}
+
+export function resetIdentityContextForTesting(): void {
+  identityCtxCache = null;
 }
 
 // Bearer-token auth. When PORTUNI_AUTH_TOKEN is set, every route except
@@ -216,11 +253,27 @@ export function respondError(res: ServerResponse, ctx: string, err: unknown): vo
   res.end(JSON.stringify({ error: "Internal server error", request_id: id }));
 }
 
+function bearer(req: IncomingMessage): string {
+  const header = (req.headers.authorization as string | undefined) ?? "";
+  return header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
+}
+
+function respondUnauthorized(res: ServerResponse): void {
+  res.writeHead(401, {
+    "Content-Type": "application/json",
+    "WWW-Authenticate": 'Bearer realm="portuni"',
+  });
+  res.end(JSON.stringify({ error: "Unauthorized" }));
+}
+
 // Apply the global gates: host allowlist, origin allowlist, CORS headers,
-// preflight, bearer auth. Returns true when the request was already
-// answered (preflight, blocked by gate, or unauthorized) and the caller
-// should stop processing.
-export function applyGates(req: IncomingMessage, res: ServerResponse): boolean {
+// preflight, bearer auth, identity resolution. Returns "handled" when the
+// request was already answered (preflight, blocked, or unauthorized); returns
+// the resolved RequestIdentity otherwise for the caller to forward.
+export async function applyGates(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<RequestIdentity | "handled"> {
   const hostHeader = (req.headers.host ?? "").toLowerCase();
   const url = new URL(req.url ?? "/", `http://${hostHeader || "localhost"}`);
   const origin = (req.headers.origin as string | undefined) ?? null;
@@ -228,13 +281,13 @@ export function applyGates(req: IncomingMessage, res: ServerResponse): boolean {
   if (!getAllowedHosts().has(hostHeader)) {
     res.writeHead(403, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Host header not allowed" }));
-    return true;
+    return "handled";
   }
 
   if (origin !== null && !getAllowedOrigins().has(origin)) {
     res.writeHead(403, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Origin not allowed" }));
-    return true;
+    return "handled";
   }
 
   if (origin !== null) {
@@ -251,23 +304,50 @@ export function applyGates(req: IncomingMessage, res: ServerResponse): boolean {
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     res.end();
-    return true;
+    return "handled";
   }
 
-  if (AUTH_ENABLED && !AUTH_PUBLIC_PATHS.has(url.pathname)) {
-    const header = (req.headers.authorization as string | undefined) ?? "";
-    const presented = header.startsWith("Bearer ")
-      ? header.slice("Bearer ".length).trim()
-      : "";
-    if (presented === "" || !timingSafeStringEqual(presented, AUTH_TOKEN)) {
-      res.writeHead(401, {
-        "Content-Type": "application/json",
-        "WWW-Authenticate": 'Bearer realm="portuni"',
-      });
-      res.end(JSON.stringify({ error: "Unauthorized" }));
-      return true;
+  const ctx = getIdentityContext();
+
+  if (ctx.mode === "env") {
+    if (AUTH_ENABLED && !AUTH_PUBLIC_PATHS.has(url.pathname)) {
+      const presented = bearer(req);
+      if (presented === "" || !timingSafeStringEqual(presented, AUTH_TOKEN)) {
+        respondUnauthorized(res);
+        return "handled";
+      }
     }
+    const identity = await resolveRequestIdentity(
+      ctx,
+      req.headers.authorization as string | undefined,
+    );
+    if (!identity) {
+      respondUnauthorized(res);
+      return "handled";
+    }
+    return identity;
   }
 
-  return false;
+  // google mode: /health and /mcp/info stay public; /auth/login is public
+  // by design (it carries the credential in the body). These get a
+  // minimal read-only placeholder identity.
+  if (AUTH_PUBLIC_PATHS.has(url.pathname) || url.pathname === "/auth/login") {
+    return {
+      userId: "",
+      email: "",
+      name: "",
+      globalScope: "read",
+      groups: [],
+      via: "session_jwt",
+    };
+  }
+  const identity = await resolveRequestIdentity(
+    ctx,
+    req.headers.authorization as string | undefined,
+  );
+  if (!identity) {
+    respondUnauthorized(res);
+    return "handled";
+  }
+  return identity;
 }

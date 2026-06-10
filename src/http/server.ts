@@ -49,13 +49,15 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
       });
     }
 
-    if (applyGates(req, res)) return;
+    const gate = await applyGates(req, res);
+    if (gate === "handled") return;
+    const identity = gate;
 
     const hostHeader = (req.headers.host ?? "").toLowerCase();
     const url = new URL(req.url ?? "/", `http://${hostHeader || "localhost"}`);
 
     if (url.pathname === "/mcp" || url.pathname === "/mcp/") {
-      await mcp.handle(req, res);
+      await mcp.handle(req, res, identity);
       return;
     }
 
@@ -76,7 +78,7 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
       return;
     }
 
-    const handled = await routeApiRequest(req, res, url);
+    const handled = await routeApiRequest(req, res, url, identity);
     if (!handled) {
       res.writeHead(404);
       res.end("Not found");

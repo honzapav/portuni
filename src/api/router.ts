@@ -5,6 +5,7 @@
 // /responsibilities/:id handlers — live in one place.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { RequestIdentity } from "../auth/request-identity.js";
 import { handleHealth } from "./health.js";
 import { handleGraph } from "./graph.js";
 import { handleWriteScope } from "./write-scope.js";
@@ -92,6 +93,7 @@ export async function routeApiRequest(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
+  _identity: RequestIdentity,
 ): Promise<boolean> {
   const method = req.method ?? "GET";
   for (const sub of SUB_ROUTERS) {
