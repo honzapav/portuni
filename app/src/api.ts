@@ -56,7 +56,7 @@ export async function fetchNodeSyncStatus(
   id: string,
 ): Promise<SyncStatusResponse> {
   const res = await apiFetch(`/nodes/${encodeURIComponent(id)}/sync-status`);
-  if (!res.ok) throw new Error(`sync-status: ${res.status}`);
+  await throwForStatus(res, "sync-status");
   return res.json();
 }
 
@@ -73,7 +73,7 @@ export async function fetchNodeFolderUrl(
   id: string,
 ): Promise<FolderUrlResponse> {
   const res = await apiFetch(`/nodes/${encodeURIComponent(id)}/folder-url`);
-  if (!res.ok) throw new Error(`folder-url: ${res.status}`);
+  await throwForStatus(res, "folder-url");
   return res.json();
 }
 
@@ -133,6 +133,34 @@ export function createNode(input: {
   return jsonRequest<NodeDetail>("POST", "/nodes", input);
 }
 
+// Thrown when the backend returns 501 local_only — the operation is not
+// available in central mode. Components can catch this specific type to
+// show the friendly modal instead of a generic error toast.
+export class LocalOnlyError extends Error {
+  constructor() {
+    super("Dostupné jen v lokálním režimu (fáze B).");
+    this.name = "LocalOnlyError";
+  }
+}
+
+// Parses a Response and throws LocalOnlyError for 501 local_only or a
+// generic Error for other non-ok statuses.
+async function throwForStatus(res: Response, label: string): Promise<void> {
+  if (res.ok) return;
+  if (res.status === 501) {
+    let isLocalOnly = false;
+    try {
+      const j = (await res.clone().json()) as { error?: string };
+      if (j.error === "local_only") isLocalOnly = true;
+    } catch {
+      /* body not JSON — fall through */
+    }
+    if (isLocalOnly) throw new LocalOnlyError();
+  }
+  const text = await res.text().catch(() => "");
+  throw new Error(`${label}: ${res.status} ${text}`);
+}
+
 async function jsonRequest<T>(
   method: string,
   path: string,
@@ -143,10 +171,7 @@ async function jsonRequest<T>(
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${method} ${path}: ${res.status} ${text}`);
-  }
+  await throwForStatus(res, `${method} ${path}`);
   return res.json();
 }
 
@@ -420,10 +445,7 @@ export async function fetchFileContent(
   const res = await apiFetch(
     `/nodes/${encodeURIComponent(nodeId)}/file?path=${encodeURIComponent(relPath)}`,
   );
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`file content: ${res.status} ${text}`);
-  }
+  await throwForStatus(res, "file content");
   return res.json();
 }
 
@@ -440,6 +462,16 @@ export async function saveFileContent(
       body: JSON.stringify(body),
     },
   );
+  if (res.status === 501) {
+    let isLocalOnly = false;
+    try {
+      const j = (await res.clone().json()) as { error?: string };
+      if (j.error === "local_only") isLocalOnly = true;
+    } catch {
+      /* not JSON */
+    }
+    if (isLocalOnly) throw new LocalOnlyError();
+  }
   if (res.status === 409) {
     // Both CONFLICT (stale base version) and NO_MIRROR map to 409 on the
     // backend. Only the former is an editor conflict the user can resolve

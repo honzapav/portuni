@@ -50,6 +50,7 @@ import {
 } from "../types";
 import { safeHref } from "../lib/safe-url";
 import { isTauri, openExternal } from "../lib/backend-url";
+import { useDataMode } from "../lib/central";
 import { agentDisplayName } from "../lib/settings";
 import type { Actor } from "../api";
 import {
@@ -229,6 +230,9 @@ function DetailPaneBody({
   onCollapse?: () => void;
   onOpenFile?: (nodeId: string, relPath: string) => void;
 }) {
+  const dataMode = useDataMode();
+  const isCentral = dataMode?.mode === "central";
+
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
   const [saving, setSaving] = useState(false);
@@ -305,7 +309,10 @@ function DetailPaneBody({
   // The lastIdRef gate ignores responses that arrive after the user has
   // already navigated away, so a slow sync on node A does not paint
   // results into node B's pane.
+  // In central mode sync is not available (local_only) — the SyncBar is
+  // hidden so this should never be called, but guard here as belt-and-braces.
   const handleRunSync = async () => {
+    if (isCentral) return;
     setSyncRunning(true);
     setSyncError(null);
     setSyncRunResult(null);
@@ -346,6 +353,12 @@ function DetailPaneBody({
   // effect on the very setState below, the previous run's cleanup would
   // mark its own response cancelled, and nothing would ever land.
   const loadSyncStatus = useCallback(async () => {
+    // In central mode the sync-status endpoint returns 501 local_only.
+    // Skip silently — sync features are not available in this mode.
+    if (isCentral) {
+      setSyncLoaded(true);
+      return;
+    }
     const requestNodeId = node.id;
     try {
       const res = await fetchNodeSyncStatus(requestNodeId);
@@ -362,7 +375,7 @@ function DetailPaneBody({
       setSyncError(String(e));
       setSyncLoaded(true);
     }
-  }, [node.id]);
+  }, [node.id, isCentral]);
 
   useEffect(() => {
     let cancelled = false;
@@ -642,7 +655,7 @@ function DetailPaneBody({
           <IdCopy id={node.id} />
           <MetaInfo meta={node.meta} />
           <FolderLink nodeId={node.id} />
-          {node.type !== "organization" && (
+          {node.type !== "organization" && !isCentral && (
             <>
               <span className="text-[var(--color-border-strong)]">·</span>
               {node.local_mirror ? (
@@ -875,58 +888,85 @@ function DetailPaneBody({
 
         {tab === "files" && (
           <div className="px-5 py-4">
-            <div className="mb-3 flex items-center justify-between">
-              {(node.files.length > 0 || untracked.length > 0) ? (
-                <SyncBar
-                  running={syncRunning}
-                  result={syncRunResult}
-                  error={syncError}
-                  statusLoaded={syncLoaded}
-                  statusMap={syncStatus}
-                  onRun={handleRunSync}
-                />
-              ) : (
-                <span />
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  setFileOpError(null);
-                  setCreatingFile((v) => !v);
-                }}
-                className="ml-2 shrink-0 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text)] hover:border-[var(--color-border-strong)]"
-              >
-                + Nový soubor
-              </button>
-            </div>
-            {creatingFile && (
-              <NewFileForm
-                onSubmit={handleCreateFile}
-                onCancel={() => {
-                  setCreatingFile(false);
-                  setFileOpError(null);
-                }}
-              />
-            )}
-            {fileOpError && (
-              <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px]">
-                <span style={{ color: "var(--color-danger)" }}>{fileOpError}</span>
+            {isCentral ? (
+              <div className="flex flex-col gap-4">
+                <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
+                  Soubory, synchronizace a pracovní složky jsou dostupné jen v lokálním režimu (fáze B).
+                </div>
+                {node.files.length > 0 && (
+                  <FileTree
+                    files={node.files}
+                    untracked={[]}
+                    syncStatus={syncStatus}
+                    syncLoaded={true}
+                    onOpenFile={(rel) => onOpenFile?.(node.id, rel)}
+                    onRename={async () => { /* hidden in central mode */ }}
+                    onDelete={async () => { /* hidden in central mode */ }}
+                    readOnly
+                  />
+                )}
+                {node.files.length === 0 && (
+                  <div className="text-[14px] text-[var(--color-text-dim)]">
+                    Zatím žádné soubory.
+                  </div>
+                )}
               </div>
-            )}
-            {node.files.length > 0 || untracked.length > 0 ? (
-              <FileTree
-                files={node.files}
-                untracked={untracked}
-                syncStatus={syncStatus}
-                syncLoaded={syncLoaded}
-                onOpenFile={(rel) => onOpenFile?.(node.id, rel)}
-                onRename={handleRenameFile}
-                onDelete={handleDeleteFile}
-              />
             ) : (
-              <div className="text-[14px] text-[var(--color-text-dim)]">
-                Zatím žádné soubory.
-              </div>
+              <>
+                <div className="mb-3 flex items-center justify-between">
+                  {(node.files.length > 0 || untracked.length > 0) ? (
+                    <SyncBar
+                      running={syncRunning}
+                      result={syncRunResult}
+                      error={syncError}
+                      statusLoaded={syncLoaded}
+                      statusMap={syncStatus}
+                      onRun={handleRunSync}
+                    />
+                  ) : (
+                    <span />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFileOpError(null);
+                      setCreatingFile((v) => !v);
+                    }}
+                    className="ml-2 shrink-0 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text)] hover:border-[var(--color-border-strong)]"
+                  >
+                    + Nový soubor
+                  </button>
+                </div>
+                {creatingFile && (
+                  <NewFileForm
+                    onSubmit={handleCreateFile}
+                    onCancel={() => {
+                      setCreatingFile(false);
+                      setFileOpError(null);
+                    }}
+                  />
+                )}
+                {fileOpError && (
+                  <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px]">
+                    <span style={{ color: "var(--color-danger)" }}>{fileOpError}</span>
+                  </div>
+                )}
+                {node.files.length > 0 || untracked.length > 0 ? (
+                  <FileTree
+                    files={node.files}
+                    untracked={untracked}
+                    syncStatus={syncStatus}
+                    syncLoaded={syncLoaded}
+                    onOpenFile={(rel) => onOpenFile?.(node.id, rel)}
+                    onRename={handleRenameFile}
+                    onDelete={handleDeleteFile}
+                  />
+                ) : (
+                  <div className="text-[14px] text-[var(--color-text-dim)]">
+                    Zatím žádné soubory.
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
@@ -998,8 +1038,12 @@ function DetailPaneBody({
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            <ActionButtons node={node} agentCommand={agentCommand} />
-            {node.type !== "organization" && (
+            {isCentral ? (
+              <LocalOnlyNote />
+            ) : (
+              <ActionButtons node={node} agentCommand={agentCommand} />
+            )}
+            {node.type !== "organization" && !isCentral && (
               <button
                 onClick={openEmbeddedTerminal}
                 disabled={launchingTerminal}
@@ -1112,6 +1156,15 @@ function PaneShell({
       </div>
       <div className="flex flex-1 flex-col overflow-hidden">{children}</div>
     </aside>
+  );
+}
+
+// Muted note shown in place of local-only affordances when in central mode.
+function LocalOnlyNote() {
+  return (
+    <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
+      Dostupné jen v lokálním režimu (fáze B).
+    </div>
   );
 }
 

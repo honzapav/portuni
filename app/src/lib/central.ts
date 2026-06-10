@@ -7,9 +7,56 @@
 //   - In a plain browser (Vite dev) isTauri() is false; all functions throw or
 //     return gracefully so the UI can show a "desktop only" message.
 
+import { useEffect, useState } from "react";
 import { isTauri } from "./backend-url";
 
 export { isTauri };
+
+// Shape returned by the get_data_mode Tauri command.
+export type DataMode = {
+  mode: "local" | "central";
+  server_url: string | null;
+};
+
+// Invoke get_data_mode; non-Tauri environments always return local mode.
+export async function getDataMode(): Promise<DataMode> {
+  if (!isTauri()) return { mode: "local", server_url: null };
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<DataMode>("get_data_mode");
+}
+
+// Module-level cache so all callers share one fetch per app lifetime.
+// Resets on HMR in dev (module reload), which is fine.
+let dataModeCache: DataMode | null = null;
+let dataModePending: Promise<DataMode> | null = null;
+
+async function getDataModeCached(): Promise<DataMode> {
+  if (dataModeCache) return dataModeCache;
+  if (!dataModePending) {
+    dataModePending = getDataMode().then((m) => {
+      dataModeCache = m;
+      return m;
+    });
+  }
+  return dataModePending;
+}
+
+// Hook: resolves data mode once on mount and caches the result.
+// Returns null while loading (central mode features should be optimistically
+// hidden during loading to avoid flicker on initial render).
+export function useDataMode(): DataMode | null {
+  const [mode, setMode] = useState<DataMode | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void getDataModeCached().then((m) => {
+      if (!cancelled) setMode(m);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return mode;
+}
 
 // Shape returned by auth_status (JWT claims or /me fields depending on path).
 export type UserInfo = {

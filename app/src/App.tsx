@@ -10,6 +10,7 @@ import CreateNodeModal from "./components/CreateNodeModal";
 import { fetchGraph, fetchNode, createNodeMirror, fetchSandboxProfile } from "./api";
 import { useFileEditor } from "./lib/use-file-editor";
 import { buildAgentCommand } from "./lib/prompt";
+import { useDataMode } from "./lib/central";
 import {
   type TerminalSession,
   createSession,
@@ -40,6 +41,9 @@ export default function App() {
     if (sessionErrorTimer.current) clearTimeout(sessionErrorTimer.current);
     sessionErrorTimer.current = setTimeout(() => setSessionError(null), 8000);
   }, []);
+
+  const dataMode = useDataMode();
+  const isCentral = dataMode?.mode === "central";
 
   const [theme, setTheme] = useState<Theme>(() => loadTheme());
   const [agentCommand, setAgentCommandRaw] = useState<string>(() =>
@@ -560,6 +564,10 @@ export default function App() {
 
   const openSessionForNodeId = useCallback(
     async (nodeId: string) => {
+      if (isCentral) {
+        showSessionError("Terminál v Portuni je dostupný jen v lokálním režimu (fáze B).");
+        return;
+      }
       if (openingSessionNodeIdsRef.current.has(nodeId)) return;
       openingSessionNodeIdsRef.current.add(nodeId);
       try {
@@ -602,7 +610,7 @@ export default function App() {
         openingSessionNodeIdsRef.current.delete(nodeId);
       }
     },
-    [agentCommand, openSession, showSessionError],
+    [agentCommand, isCentral, openSession, showSessionError],
   );
 
   const workspaceNewSession = useCallback(
