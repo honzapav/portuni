@@ -222,12 +222,23 @@ export function respondError(res: ServerResponse, ctx: string, err: unknown): vo
 // should stop processing.
 export function applyGates(req: IncomingMessage, res: ServerResponse): boolean {
   const hostHeader = (req.headers.host ?? "").toLowerCase();
-  const url = new URL(req.url ?? "/", `http://${hostHeader || "localhost"}`);
   const origin = (req.headers.origin as string | undefined) ?? null;
 
+  // Host allowlist BEFORE URL parsing: a malformed Host header (e.g. "[")
+  // makes `new URL()` throw, which used to escape the async handler as an
+  // unhandled rejection and kill the process.
   if (!getAllowedHosts().has(hostHeader)) {
     res.writeHead(403, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Host header not allowed" }));
+    return true;
+  }
+
+  let url: URL;
+  try {
+    url = new URL(req.url ?? "/", `http://${hostHeader || "localhost"}`);
+  } catch {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Malformed request target" }));
     return true;
   }
 
@@ -241,6 +252,11 @@ export function applyGates(req: IncomingMessage, res: ServerResponse): boolean {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
   }
+  // Baseline security headers. Mostly moot behind the Tauri api_request
+  // proxy, but they matter in Vite dev / any browser-facing deployment.
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",

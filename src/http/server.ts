@@ -2,13 +2,19 @@
 // gates (host/origin/CORS/auth) once, and dispatches to either the MCP
 // transport or the REST router.
 
-import { createServer, type Server } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import { createMcpTransport } from "../mcp/transport.js";
 import { routeApiRequest } from "../api/router.js";
 import {
   AUTH_ENABLED,
   applyGates,
   assertAuthRequiredIfNotLoopback,
+  respondError,
 } from "./middleware.js";
 
 export interface HttpServerHandle {
@@ -39,6 +45,16 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
   const requestLogging = process.env.PORTUNI_LOG_REQUESTS === "1";
 
   const httpServer = createServer(async (req, res) => {
+    try {
+      await handleRequest(req, res);
+    } catch (err) {
+      // Last-resort guard: an exception escaping the async handler would
+      // otherwise become an unhandled rejection and kill the process.
+      respondError(res, `${req.method} ${req.url}`, err);
+    }
+  });
+
+  async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const startedAt = requestLogging ? Date.now() : 0;
     if (requestLogging) {
       res.on("finish", () => {
@@ -81,7 +97,7 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
       res.writeHead(404);
       res.end("Not found");
     }
-  });
+  }
 
   httpServer.listen(port, host, () => {
     console.log(`Portuni MCP server listening on http://${host}:${port}`);
