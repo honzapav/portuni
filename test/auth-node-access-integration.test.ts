@@ -440,7 +440,7 @@ describe("Fix #10: expand_scope treats restricted node as not-found", () => {
 describe("Write-path guards: data_sources, tools, responsibilities", () => {
   let db: DbClient;
   let workspace: string;
-  let visibleNodeId: string;
+  let _visibleNodeId: string;
   let restrictedNodeId: string;
 
   before(async () => {
@@ -452,7 +452,7 @@ describe("Write-path guards: data_sources, tools, responsibilities", () => {
     setDbForTesting(db);
 
     const orgId = await insertOrg(db);
-    visibleNodeId = await insertNode(db, orgId, { name: "VisibleNode" });
+    _visibleNodeId = await insertNode(db, orgId, { name: "VisibleNode" });
     restrictedNodeId = await insertNode(db, orgId, {
       visibility: "group",
       accessGroup: "restricted@x.com",

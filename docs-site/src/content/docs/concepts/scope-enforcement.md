@@ -136,7 +136,7 @@ Every expansion is logged to the audit trail with the reason (the user's quoted 
 
 ## Why this is its own page (and not a permission system)
 
-Scope is **orthogonal** to permissions. Permissions (visibility, Google Groups membership) decide what a user is allowed to see at all. Scope decides what an in-progress session is currently focused on – a second, intentionality-shaped filter applied on top of permissions.
+Scope is **orthogonal** to permissions. Permissions (visibility, including group-based access via Google Groups) are enforced server-side in `src/auth/` — every tool call and HTTP route passes through identity resolution, global scope gates (TOOL_MIN_SCOPE), and node-level access checks before scope is consulted. Scope decides what an in-progress session is currently focused on — a second, intentionality-shaped filter applied on top of permissions.
 
 A user with read access to every node in their org still gets a narrow scope set when they start a session in one project. The agent isn't omniscient by default; it's focused, and expansion is auditable.
 
