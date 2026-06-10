@@ -38,8 +38,7 @@ export class GoogleAdapter implements IdentityAdapter {
     this.now = deps.now ?? (() => Date.now());
   }
 
-  async verify(credential: string): Promise<Identity> {
-    const payload = await this.deps.verifyIdToken(credential);
+  private assertAllowedIdentity(payload: GoogleIdTokenPayload | null): Identity {
     if (!payload) throw new Error("Invalid Google ID token");
     if (!payload.email_verified) throw new Error("Google email not verified");
     const domain = payload.email.split("@")[1]?.toLowerCase() ?? "";
@@ -55,14 +54,18 @@ export class GoogleAdapter implements IdentityAdapter {
     };
   }
 
+  async verify(credential: string): Promise<Identity> {
+    const payload = await this.deps.verifyIdToken(credential);
+    return this.assertAllowedIdentity(payload);
+  }
+
   // Exposed so /auth/login can pass the avatar through to upsertUser.
   async verifyWithProfile(
     credential: string,
   ): Promise<{ identity: Identity; avatarUrl: string | null }> {
     const payload = await this.deps.verifyIdToken(credential);
-    if (!payload) throw new Error("Invalid Google ID token");
-    const identity = await this.verify(credential);
-    return { identity, avatarUrl: payload.picture ?? null };
+    const identity = this.assertAllowedIdentity(payload);
+    return { identity, avatarUrl: payload?.picture ?? null };
   }
 
   async resolveAccess(email: string): Promise<AccessResolution> {

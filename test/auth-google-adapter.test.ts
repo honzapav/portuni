@@ -80,3 +80,20 @@ test("resolveAccess caches for 15 minutes", async () => {
   await adapter.resolveAccess("a@workflow.ooo");
   assert.equal(groupCalls(), 2, "expired cache refetches");
 });
+
+test("verifyWithProfile verifies the token exactly once and returns avatar", async () => {
+  let verifyCalls = 0;
+  const adapter = new GoogleAdapter({
+    verifyIdToken: async () => {
+      verifyCalls += 1;
+      return basePayload;
+    },
+    listGroups: async () => [],
+    allowedDomain: "workflow.ooo",
+    roleConfig: { admin: [], manage: [], write: [] },
+  });
+  const r = await adapter.verifyWithProfile("token");
+  assert.equal(verifyCalls, 1);
+  assert.equal(r.identity.email, "a@workflow.ooo");
+  assert.equal(r.avatarUrl, "https://p/x.png");
+});
