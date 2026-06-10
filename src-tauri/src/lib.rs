@@ -258,7 +258,11 @@ fn migrate_turso_token_to_keychain(data_dir: &PathBuf) {
 }
 
 fn random_token() -> String {
-    rand::thread_rng()
+    // OsRng draws every byte from the OS CSPRNG. thread_rng would be a
+    // userspace PRNG whose state survives process forks/coredumps; this
+    // token is the bearer credential for the whole backend API, so take
+    // the direct route.
+    rand::rngs::OsRng
         .sample_iter(&Alphanumeric)
         .take(48)
         .map(char::from)

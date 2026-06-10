@@ -23,13 +23,13 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: asset: http://asset.localhost; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
     },
-    "withGlobalTauri": true
+    "withGlobalTauri": false
   },
   "plugins": {
     "shell": {
-      "open": "(https?|file|mailto):.+"
+      "open": "(https?|mailto):.+"
     }
   },
   "bundle": {

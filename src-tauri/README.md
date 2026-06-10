@@ -1,10 +1,10 @@
 # Portuni Desktop App – Build & Configuration
 
-This branch (`desktop-shell`) packages Portuni as a native macOS app via
-Tauri 2 with the Node backend running as a Bun-compiled sidecar.
-Everything still works standalone (HTTP MCP server on port 4011, REST
-API, etc.); the desktop shell is an additional shipping target, not a
-replacement.
+Portuni packaged as a native macOS app via Tauri 2 with the Node backend
+running as a Bun-compiled sidecar. Lives on `main` (originally developed
+on the `desktop-shell` branch). Everything still works standalone (HTTP
+MCP server on port 4011, REST API, etc.); the desktop shell is an
+additional shipping target, not a replacement.
 
 ## Architecture
 
@@ -22,7 +22,7 @@ replacement.
 │            ↑                                    ↑           │
 │            └─── Tauri commands ─────────────────┤           │
 │                 get_backend_port                │           │
-│                 get_auth_token                  │           │
+│                 api_request (auth proxy)        │           │
 └──────────────────────────────────────────────────┼──────────┘
                                                    │
                                   ┌────────────────┴──────────┐
@@ -58,7 +58,7 @@ Existing Node 20 + npm are still required for the React build.
 ## Building the DMG
 
 ```bash
-# From the repo root, on the desktop-shell branch:
+# From the repo root:
 . "$HOME/.cargo/env"
 cargo tauri build --bundles dmg
 ```
@@ -111,13 +111,12 @@ paste it, click "Uložit a restartovat", the sidecar reboots with
 the token and the modal goes away forever (until the keychain entry
 is removed).
 
-For scripted setup or to overwrite an existing entry, the same Tauri
-commands are also available from the webview dev tools:
-
-```js
-await window.__TAURI__.core.invoke('set_turso_token', { token: '<jwt>' })
-await window.__TAURI__.core.invoke('clear_turso_token')
-```
+For scripted setup or to overwrite an existing entry, use the token modal
+in the app (Settings) or call the `set_turso_token` / `clear_turso_token`
+Tauri commands from application code. (`withGlobalTauri` is disabled, so
+`window.__TAURI__` is not available from the dev-tools console; the
+commands are reachable only through `@tauri-apps/api` imports in the
+frontend bundle.)
 
 Installs that still carry a plaintext `turso_auth_token` in
 `config.json` are migrated automatically on first launch — the value
@@ -130,10 +129,14 @@ to Keychain` in `~/Library/Logs/ooo.workflow.portuni/sidecar.log`.
 The HTTP middleware auth gate (`src/infra/server-config.ts`) refuses to
 boot in any team-shaped configuration without a bearer token. For
 desktop mode this matters when `turso_url` is a remote `libsql://` —
-the Tauri host generates a random 48-char token at every launch, sets
-it as `PORTUNI_AUTH_TOKEN` in the sidecar env, and exposes it to the
-frontend via the `get_auth_token` Tauri command. The React `apiFetch`
-helper attaches it as `Authorization: Bearer <token>` on every request.
+the Tauri host generates a random 48-char token (OS CSPRNG) at every
+launch and sets it as `PORTUNI_AUTH_TOKEN` in the sidecar env. The
+webview never sees the token: the React `apiFetch` helper calls the
+`api_request` Tauri command, and the Rust proxy injects the
+`Authorization: Bearer <token>` header (and strips any caller-supplied
+one) before forwarding to the loopback port (`src-tauri/src/lib.rs`).
+The old `get_auth_token` command that handed the token to the webview
+was removed in the auth refactor (see `docs/auth-refactor-plan.md`).
 
 Local-only desktop installs (no `turso_url` configured) still get the
 token — small extra defense against other local processes hitting the
@@ -162,9 +165,9 @@ preflight succeeds), and allow-methods includes `PATCH` (used by
 ./src-tauri/target/release/bundle/macos/Portuni.app/Contents/MacOS/app
 ```
 
-DevTools are enabled for the release build (`tauri = { features =
-["devtools"] }`). Right-click in the window → Inspect Element opens
-Web Inspector — useful when fetches behave oddly.
+DevTools are available in debug builds (`cargo tauri dev`) only; the
+release build does not compile the `devtools` feature, so the installed
+app exposes no inspector socket.
 
 The sidecar's stderr is captured and prefixed with `[sidecar:err]` in
 the parent process's stdout. With `PORTUNI_LOG_REQUESTS=1` (set
@@ -227,17 +230,10 @@ or bundle Node as a separate binary alongside `dist/desktop.js` as a
 resource. The naming convention for `externalBin` is preserved either
 way.
 
-## Rolling back
+## Removing local desktop data
 
-The whole desktop stack lives on the `desktop-shell` branch in the
-`portuni-desktop` worktree. To remove:
-
-```bash
-cd /Users/honzapav/Dev/projekty/portuni
-git worktree remove --force ../portuni-desktop
-git branch -D desktop-shell
-```
-
-`main` is untouched. Local data — `~/Library/Application
-Support/ooo.workflow.portuni/` — survives the worktree removal; delete
-it manually if you also want the desktop's local DB and config gone.
+Local data lives in `~/Library/Application
+Support/ooo.workflow.portuni/` (config.json, local DB, logs). Deleting
+the `.app` does not remove it; delete the directory manually if you
+want the desktop's local DB and config gone. The Turso token lives in
+the macOS Keychain under the app identifier and must be removed there.
