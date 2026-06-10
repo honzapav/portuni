@@ -2,14 +2,13 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getDb } from "../infra/db.js";
-import { SOLO_USER } from "../infra/schema.js";
 import {
   addTool,
   listTools,
   removeTool,
   updateTool,
 } from "../domain/entity-attributes.js";
-import { parseBody, respondError , respondJson} from "../http/middleware.js";
+import { parseBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 
 export async function handleListTools(
   req: IncomingMessage,
@@ -32,6 +31,7 @@ export async function handleListTools(
 export async function handleCreateTool(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
 ): Promise<void> {
   try {
     const body = (await parseBody(req)) as Record<string, unknown> | undefined;
@@ -39,7 +39,7 @@ export async function handleCreateTool(
       respondJson(res, 400, { error: "body required" });
       return;
     }
-    const row = await addTool(getDb(), SOLO_USER, body as Parameters<typeof addTool>[2]);
+    const row = await addTool(getDb(), identity.userId, body as Parameters<typeof addTool>[2]);
     respondJson(res, 201, row);
   } catch (err) {
     respondError(res, `${req.method} /tools`, err);
@@ -49,10 +49,11 @@ export async function handleCreateTool(
 export async function handleDeleteTool(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   toolId: string,
 ): Promise<void> {
   try {
-    await removeTool(getDb(), SOLO_USER, toolId);
+    await removeTool(getDb(), identity.userId, toolId);
     respondJson(res, 200, { deleted: toolId });
   } catch (err) {
     respondError(res, `${req.method} /tools/${toolId}`, err);
@@ -62,6 +63,7 @@ export async function handleDeleteTool(
 export async function handleUpdateTool(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   toolId: string,
 ): Promise<void> {
   try {
@@ -72,7 +74,7 @@ export async function handleUpdateTool(
     }
     const row = await updateTool(
       getDb(),
-      SOLO_USER,
+      identity.userId,
       toolId,
       body as Parameters<typeof updateTool>[3],
     );

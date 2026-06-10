@@ -8,8 +8,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { getDb } from "../infra/db.js";
-import { SOLO_USER } from "../infra/schema.js";
-import { parseJsonBody, respondJson, respondError } from "../http/middleware.js";
+import { parseJsonBody, respondJson, respondError, type RequestIdentity } from "../http/middleware.js";
 import {
   readFileContent,
   writeFileContent,
@@ -45,6 +44,7 @@ function handleFileContentError(res: ServerResponse, err: unknown): boolean {
 export async function handleGetFileContent(
   _req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
   url: URL,
 ): Promise<void> {
@@ -54,7 +54,7 @@ export async function handleGetFileContent(
     return;
   }
   try {
-    const r = await readFileContent(getDb(), { userId: SOLO_USER, nodeId, relPath });
+    const r = await readFileContent(getDb(), { userId: identity.userId, nodeId, relPath });
     const payload: FileContentResponse = {
       content: r.content,
       version: r.version,
@@ -77,6 +77,7 @@ const putSchema = z.object({
 export async function handlePutFileContent(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
   url: URL,
 ): Promise<void> {
@@ -89,7 +90,7 @@ export async function handlePutFileContent(
   if (!body) return;
   try {
     const r = await writeFileContent(getDb(), {
-      userId: SOLO_USER,
+      userId: identity.userId,
       nodeId,
       relPath,
       content: body.content,
@@ -113,13 +114,14 @@ const createSchema = z.object({
 export async function handleCreateFile(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   const body = await parseJsonBody(req, res, createSchema);
   if (!body) return;
   try {
     const f = await createFile(getDb(), {
-      userId: SOLO_USER,
+      userId: identity.userId,
       nodeId,
       filename: body.filename,
       section: body.section,
@@ -138,6 +140,7 @@ const renameSchema = z.object({ new_filename: z.string().min(1) });
 export async function handleRenameFile(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
   fileId: string,
 ): Promise<void> {
@@ -145,7 +148,7 @@ export async function handleRenameFile(
   if (!body) return;
   try {
     const r = await renameFile(getDb(), {
-      userId: SOLO_USER,
+      userId: identity.userId,
       fileId,
       newFilename: body.new_filename,
     });
@@ -158,6 +161,7 @@ export async function handleRenameFile(
 export async function handleDeleteFile(
   _req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
   fileId: string,
   url: URL,
@@ -165,7 +169,7 @@ export async function handleDeleteFile(
   const confirmed = url.searchParams.get("confirmed") === "true";
   try {
     const r = await deleteFile(getDb(), {
-      userId: SOLO_USER,
+      userId: identity.userId,
       fileId,
       mode: "complete",
       confirmed,

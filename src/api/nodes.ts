@@ -7,7 +7,6 @@ import { logAudit } from "../infra/audit.js";
 import {
   NODE_TYPES,
   NODE_VISIBILITIES,
-  SOLO_USER,
 } from "../infra/schema.js";
 import { buildNodeRoot } from "../domain/sync/remote-path.js";
 import { resolveRemote } from "../domain/sync/routing.js";
@@ -23,12 +22,13 @@ import {
   MirrorCreateError,
 } from "../domain/sync/mirror-create.js";
 import type { SyncStatusResponse, SyncRunResponse, UntrackedFile } from "../shared/api-types.js";
-import { parseBody, parseJsonBody, respondError , respondJson} from "../http/middleware.js";
+import { parseBody, parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 import { z } from "zod";
 
 export async function handleGetNode(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   if (!nodeId) {
@@ -36,7 +36,7 @@ export async function handleGetNode(
     return;
   }
   try {
-    const node = await loadNodeDetail(getDb(), SOLO_USER, nodeId);
+    const node = await loadNodeDetail(getDb(), identity.userId, nodeId);
     if (!node) {
       respondJson(res, 404, { error: "node not found" });
       return;
@@ -53,6 +53,7 @@ export async function handleGetNode(
 export async function handlePatchNode(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   try {
@@ -115,8 +116,8 @@ export async function handlePatchNode(
       respondJson(res, 400, { error: "no fields to update" });
       return;
     }
-    await updateNodeInternal(getDb(), SOLO_USER, update);
-    const node = await loadNodeDetail(getDb(), SOLO_USER, nodeId);
+    await updateNodeInternal(getDb(), identity.userId, update);
+    const node = await loadNodeDetail(getDb(), identity.userId, nodeId);
     if (!node) {
       respondJson(res, 404, { error: "node not found" });
       return;
@@ -134,6 +135,7 @@ export async function handlePatchNode(
 export async function handleMoveNode(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   try {
@@ -144,11 +146,11 @@ export async function handleMoveNode(
     }
     const result = await moveNodeToOrganization(
       getDb(),
-      SOLO_USER,
+      identity.userId,
       nodeId,
       body.new_org_id,
     );
-    const node = await loadNodeDetail(getDb(), SOLO_USER, nodeId);
+    const node = await loadNodeDetail(getDb(), identity.userId, nodeId);
     if (!node) {
       respondJson(res, 404, { error: "node not found" });
       return;
@@ -179,11 +181,12 @@ const CreateNodeBody = z
 export async function handleCreateNode(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
 ): Promise<void> {
   const body = await parseJsonBody(req, res, CreateNodeBody);
   if (!body) return;
   try {
-    const id = await createNodeInternal(getDb(), SOLO_USER, {
+    const id = await createNodeInternal(getDb(), identity.userId, {
       type: body.type,
       name: body.name,
       description: body.description ?? undefined,
@@ -191,7 +194,7 @@ export async function handleCreateNode(
       goal: body.goal ?? undefined,
       lifecycle_state: body.lifecycle_state ?? undefined,
     });
-    const node = await loadNodeDetail(getDb(), SOLO_USER, id);
+    const node = await loadNodeDetail(getDb(), identity.userId, id);
     respondJson(res, 201, node);
   } catch (err) {
     respondError(res, `${req.method} /nodes`, err);
@@ -202,6 +205,7 @@ export async function handleCreateNode(
 export async function handleDeleteNode(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   try {
@@ -218,7 +222,7 @@ export async function handleDeleteNode(
       sql: "UPDATE nodes SET status = 'archived', updated_at = ? WHERE id = ?",
       args: [new Date().toISOString(), nodeId],
     });
-    await logAudit(SOLO_USER, "archive_node", "node", nodeId, {});
+    await logAudit(identity.userId, "archive_node", "node", nodeId, {});
     respondJson(res, 200, { archived: nodeId });
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}`, err);
@@ -232,11 +236,12 @@ export async function handleDeleteNode(
 export async function handleSyncStatus(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   try {
     const result = await statusScan(getDb(), {
-      userId: SOLO_USER,
+      userId: identity.userId,
       nodeId,
       includeDiscovery: false,
       // DB-only fast path: no fs.stat, no Drive .stat() calls. The UI
@@ -278,7 +283,7 @@ export async function handleSyncStatus(
     push(result.orphan, "orphan");
     push(result.native, "native");
     push(result.deleted_local, "deleted_local");
-    const untrackedRaw = await listUntrackedLocal(getDb(), { userId: SOLO_USER, nodeId });
+    const untrackedRaw = await listUntrackedLocal(getDb(), { userId: identity.userId, nodeId });
     const untracked: UntrackedFile[] = untrackedRaw.map((u) => ({
       relative_path: u.subpath
         ? `${u.section}/${u.subpath}/${u.filename}`
@@ -373,12 +378,13 @@ export async function handleFolderUrl(
 export async function handleSyncRun(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   try {
     const db = getDb();
     const scan = await statusScan(db, {
-      userId: SOLO_USER,
+      userId: identity.userId,
       nodeId,
       includeDiscovery: false,
     });
@@ -401,7 +407,7 @@ export async function handleSyncRun(
       }
       try {
         await storeFile(db, {
-          userId: SOLO_USER,
+          userId: identity.userId,
           nodeId: e.node_id,
           localPath: e.local_path,
         });
@@ -419,7 +425,7 @@ export async function handleSyncRun(
     // intact -- pull restores it. Both go through pullFile.
     for (const e of [...scan.pull_candidates, ...scan.deleted_local]) {
       try {
-        await pullFile(db, { userId: SOLO_USER, fileId: e.file_id });
+        await pullFile(db, { userId: identity.userId, fileId: e.file_id });
         result.pulled.push({ file_id: e.file_id, filename: e.filename });
       } catch (err) {
         result.errors.push({
@@ -441,11 +447,11 @@ export async function handleSyncRun(
     }
     // Deterministic registration: adopt any file the agent wrote to the
     // mirror but never registered. Each storeFile registers + pushes.
-    const untracked = await listUntrackedLocal(db, { userId: SOLO_USER, nodeId });
+    const untracked = await listUntrackedLocal(db, { userId: identity.userId, nodeId });
     for (const u of untracked) {
       try {
         const sr = await storeFile(db, {
-          userId: SOLO_USER,
+          userId: identity.userId,
           nodeId: u.node_id,
           localPath: u.local_path,
         });
@@ -467,6 +473,7 @@ export async function handleSyncRun(
 export async function handleCreateNodeMirror(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   if (!nodeId) {
@@ -474,7 +481,7 @@ export async function handleCreateNodeMirror(
     return;
   }
   try {
-    const result = await createMirrorForNode(getDb(), SOLO_USER, { nodeId });
+    const result = await createMirrorForNode(getDb(), identity.userId, { nodeId });
     // Best-effort folder URL on the routed remote — not part of the
     // happy-path mirror creation. We don't await any heavy listing here;
     // folderUrl returns null when the folder hasn't been synced yet.

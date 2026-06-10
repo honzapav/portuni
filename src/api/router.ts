@@ -76,6 +76,7 @@ type SubRouter = (
   res: ServerResponse,
   url: URL,
   method: string,
+  identity: RequestIdentity,
 ) => Promise<boolean>;
 
 // Dispatch table. Order matters where prefixes overlap: routeFiles MUST come
@@ -127,7 +128,7 @@ export async function routeApiRequest(
 
   const method = req.method ?? "GET";
   for (const sub of SUB_ROUTERS) {
-    if (await sub(req, res, url, method)) return true;
+    if (await sub(req, res, url, method, identity)) return true;
   }
   return false;
 }
@@ -138,6 +139,7 @@ async function routeSystem(
   res: ServerResponse,
   url: URL,
   method: string,
+  identity: RequestIdentity,
 ): Promise<boolean> {
   const { pathname } = url;
   if (pathname === "/health") {
@@ -149,7 +151,7 @@ async function routeSystem(
     return true;
   }
   if (pathname === "/scope" && method === "GET") {
-    await handleWriteScope(req, res, url);
+    await handleWriteScope(req, res, identity, url);
     return true;
   }
   if (pathname === "/users" && method === "GET") {
@@ -165,6 +167,7 @@ async function routeActors(
   res: ServerResponse,
   url: URL,
   method: string,
+  identity: RequestIdentity,
 ): Promise<boolean> {
   const { pathname } = url;
   if (pathname === "/actors" && method === "GET") {
@@ -172,17 +175,17 @@ async function routeActors(
     return true;
   }
   if (pathname === "/actors" && method === "POST") {
-    await handleCreateActor(req, res);
+    await handleCreateActor(req, res, identity);
     return true;
   }
   if (pathname.startsWith("/actors/")) {
     const id = decodeURIComponent(pathname.slice("/actors/".length));
     if (method === "PATCH") {
-      await handleUpdateActor(req, res, id);
+      await handleUpdateActor(req, res, identity, id);
       return true;
     }
     if (method === "DELETE") {
-      await handleDeleteActor(req, res, id);
+      await handleDeleteActor(req, res, identity, id);
       return true;
     }
   }
@@ -197,6 +200,7 @@ async function routeResponsibilities(
   res: ServerResponse,
   url: URL,
   method: string,
+  identity: RequestIdentity,
 ): Promise<boolean> {
   const { pathname } = url;
   const assignMatch = pathname.match(
@@ -208,11 +212,11 @@ async function routeResponsibilities(
       ? decodeURIComponent(assignMatch[2])
       : undefined;
     if (method === "POST" && !actorIdFromPath) {
-      await handleAssignResponsibility(req, res, respId);
+      await handleAssignResponsibility(req, res, identity, respId);
       return true;
     }
     if (method === "DELETE" && actorIdFromPath) {
-      await handleUnassignResponsibility(req, res, respId, actorIdFromPath);
+      await handleUnassignResponsibility(req, res, identity, respId, actorIdFromPath);
       return true;
     }
   }
@@ -221,17 +225,17 @@ async function routeResponsibilities(
     return true;
   }
   if (pathname === "/responsibilities" && method === "POST") {
-    await handleCreateResponsibility(req, res);
+    await handleCreateResponsibility(req, res, identity);
     return true;
   }
   if (pathname.startsWith("/responsibilities/")) {
     const id = decodeURIComponent(pathname.slice("/responsibilities/".length));
     if (method === "PATCH") {
-      await handleUpdateResponsibility(req, res, id);
+      await handleUpdateResponsibility(req, res, identity, id);
       return true;
     }
     if (method === "DELETE") {
-      await handleDeleteResponsibility(req, res, id);
+      await handleDeleteResponsibility(req, res, identity, id);
       return true;
     }
   }
@@ -244,6 +248,7 @@ async function routeDataSources(
   res: ServerResponse,
   url: URL,
   method: string,
+  identity: RequestIdentity,
 ): Promise<boolean> {
   const { pathname } = url;
   if (pathname === "/data-sources" && method === "GET") {
@@ -251,17 +256,17 @@ async function routeDataSources(
     return true;
   }
   if (pathname === "/data-sources" && method === "POST") {
-    await handleCreateDataSource(req, res);
+    await handleCreateDataSource(req, res, identity);
     return true;
   }
   if (pathname.startsWith("/data-sources/")) {
     const id = decodeURIComponent(pathname.slice("/data-sources/".length));
     if (method === "DELETE") {
-      await handleDeleteDataSource(req, res, id);
+      await handleDeleteDataSource(req, res, identity, id);
       return true;
     }
     if (method === "PATCH") {
-      await handleUpdateDataSource(req, res, id);
+      await handleUpdateDataSource(req, res, identity, id);
       return true;
     }
   }
@@ -274,6 +279,7 @@ async function routeTools(
   res: ServerResponse,
   url: URL,
   method: string,
+  identity: RequestIdentity,
 ): Promise<boolean> {
   const { pathname } = url;
   if (pathname === "/tools" && method === "GET") {
@@ -281,17 +287,17 @@ async function routeTools(
     return true;
   }
   if (pathname === "/tools" && method === "POST") {
-    await handleCreateTool(req, res);
+    await handleCreateTool(req, res, identity);
     return true;
   }
   if (pathname.startsWith("/tools/")) {
     const id = decodeURIComponent(pathname.slice("/tools/".length));
     if (method === "DELETE") {
-      await handleDeleteTool(req, res, id);
+      await handleDeleteTool(req, res, identity, id);
       return true;
     }
     if (method === "PATCH") {
-      await handleUpdateTool(req, res, id);
+      await handleUpdateTool(req, res, identity, id);
       return true;
     }
   }
@@ -306,6 +312,7 @@ async function routeFiles(
   res: ServerResponse,
   url: URL,
   method: string,
+  identity: RequestIdentity,
 ): Promise<boolean> {
   const { pathname } = url;
 
@@ -313,11 +320,11 @@ async function routeFiles(
   if (contentMatch) {
     const nodeId = decodeURIComponent(contentMatch[1]);
     if (method === "GET") {
-      await handleGetFileContent(req, res, nodeId, url);
+      await handleGetFileContent(req, res, identity, nodeId, url);
       return true;
     }
     if (method === "PUT") {
-      await handlePutFileContent(req, res, nodeId, url);
+      await handlePutFileContent(req, res, identity, nodeId, url);
       return true;
     }
   }
@@ -327,6 +334,7 @@ async function routeFiles(
     await handleRenameFile(
       req,
       res,
+      identity,
       decodeURIComponent(renameMatch[1]),
       decodeURIComponent(renameMatch[2]),
     );
@@ -335,7 +343,7 @@ async function routeFiles(
 
   const createMatch = pathname.match(/^\/nodes\/([^/]+)\/files$/);
   if (createMatch && method === "POST") {
-    await handleCreateFile(req, res, decodeURIComponent(createMatch[1]));
+    await handleCreateFile(req, res, identity, decodeURIComponent(createMatch[1]));
     return true;
   }
 
@@ -344,6 +352,7 @@ async function routeFiles(
     await handleDeleteFile(
       req,
       res,
+      identity,
       decodeURIComponent(fileMatch[1]),
       decodeURIComponent(fileMatch[2]),
       url,
@@ -360,12 +369,13 @@ async function routeNodes(
   res: ServerResponse,
   url: URL,
   method: string,
+  identity: RequestIdentity,
 ): Promise<boolean> {
   const { pathname } = url;
 
   const syncStatusMatch = pathname.match(/^\/nodes\/([^/]+)\/sync-status$/);
   if (syncStatusMatch && method === "GET") {
-    await handleSyncStatus(req, res, decodeURIComponent(syncStatusMatch[1]));
+    await handleSyncStatus(req, res, identity, decodeURIComponent(syncStatusMatch[1]));
     return true;
   }
   const folderUrlMatch = pathname.match(/^\/nodes\/([^/]+)\/folder-url$/);
@@ -375,17 +385,17 @@ async function routeNodes(
   }
   const syncRunMatch = pathname.match(/^\/nodes\/([^/]+)\/sync$/);
   if (syncRunMatch && method === "POST") {
-    await handleSyncRun(req, res, decodeURIComponent(syncRunMatch[1]));
+    await handleSyncRun(req, res, identity, decodeURIComponent(syncRunMatch[1]));
     return true;
   }
   const mirrorMatch = pathname.match(/^\/nodes\/([^/]+)\/mirror$/);
   if (mirrorMatch && method === "POST") {
-    await handleCreateNodeMirror(req, res, decodeURIComponent(mirrorMatch[1]));
+    await handleCreateNodeMirror(req, res, identity, decodeURIComponent(mirrorMatch[1]));
     return true;
   }
   const moveMatch = pathname.match(/^\/nodes\/([^/]+)\/move$/);
   if (moveMatch && method === "POST") {
-    await handleMoveNode(req, res, decodeURIComponent(moveMatch[1]));
+    await handleMoveNode(req, res, identity, decodeURIComponent(moveMatch[1]));
     return true;
   }
   if (pathname === "/positions" && method === "POST") {
@@ -393,21 +403,21 @@ async function routeNodes(
     return true;
   }
   if (pathname === "/nodes" && method === "POST") {
-    await handleCreateNode(req, res);
+    await handleCreateNode(req, res, identity);
     return true;
   }
   if (pathname.startsWith("/nodes/")) {
     const id = decodeURIComponent(pathname.slice("/nodes/".length));
     if (method === "GET") {
-      await handleGetNode(req, res, id);
+      await handleGetNode(req, res, identity, id);
       return true;
     }
     if (method === "PATCH") {
-      await handlePatchNode(req, res, id);
+      await handlePatchNode(req, res, identity, id);
       return true;
     }
     if (method === "DELETE") {
-      await handleDeleteNode(req, res, id);
+      await handleDeleteNode(req, res, identity, id);
       return true;
     }
   }
@@ -420,16 +430,18 @@ async function routeEdges(
   res: ServerResponse,
   url: URL,
   method: string,
+  identity: RequestIdentity,
 ): Promise<boolean> {
   const { pathname } = url;
   if (pathname === "/edges" && method === "POST") {
-    await handleCreateEdge(req, res);
+    await handleCreateEdge(req, res, identity);
     return true;
   }
   if (pathname.startsWith("/edges/") && method === "DELETE") {
     await handleDeleteEdge(
       req,
       res,
+      identity,
       decodeURIComponent(pathname.slice("/edges/".length)),
     );
     return true;
@@ -443,20 +455,21 @@ async function routeEvents(
   res: ServerResponse,
   url: URL,
   method: string,
+  identity: RequestIdentity,
 ): Promise<boolean> {
   const { pathname } = url;
   if (pathname === "/events" && method === "POST") {
-    await handleCreateEvent(req, res);
+    await handleCreateEvent(req, res, identity);
     return true;
   }
   if (pathname.startsWith("/events/")) {
     const id = decodeURIComponent(pathname.slice("/events/".length));
     if (method === "PATCH") {
-      await handleUpdateEvent(req, res, id);
+      await handleUpdateEvent(req, res, identity, id);
       return true;
     }
     if (method === "DELETE") {
-      await handleArchiveEvent(req, res, id);
+      await handleArchiveEvent(req, res, identity, id);
       return true;
     }
   }

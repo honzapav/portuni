@@ -2,7 +2,6 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getDb } from "../infra/db.js";
-import { SOLO_USER } from "../infra/schema.js";
 import {
   assignResponsibility,
   createResponsibility,
@@ -11,7 +10,7 @@ import {
   unassignResponsibility,
   updateResponsibility,
 } from "../domain/responsibilities.js";
-import { parseBody, respondError , respondJson} from "../http/middleware.js";
+import { parseBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 
 export async function handleListResponsibilities(
   req: IncomingMessage,
@@ -34,6 +33,7 @@ export async function handleListResponsibilities(
 export async function handleCreateResponsibility(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
 ): Promise<void> {
   try {
     const body = (await parseBody(req)) as Record<string, unknown> | undefined;
@@ -43,7 +43,7 @@ export async function handleCreateResponsibility(
     }
     const row = await createResponsibility(
       getDb(),
-      SOLO_USER,
+      identity.userId,
       body as Parameters<typeof createResponsibility>[2],
     );
     respondJson(res, 201, row);
@@ -55,6 +55,7 @@ export async function handleCreateResponsibility(
 export async function handleUpdateResponsibility(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   respId: string,
 ): Promise<void> {
   try {
@@ -63,7 +64,7 @@ export async function handleUpdateResponsibility(
       respondJson(res, 400, { error: "no fields to update" });
       return;
     }
-    const row = await updateResponsibility(getDb(), SOLO_USER, {
+    const row = await updateResponsibility(getDb(), identity.userId, {
       responsibility_id: respId,
       ...(body as object),
     } as Parameters<typeof updateResponsibility>[2]);
@@ -76,10 +77,11 @@ export async function handleUpdateResponsibility(
 export async function handleDeleteResponsibility(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   respId: string,
 ): Promise<void> {
   try {
-    await deleteResponsibility(getDb(), SOLO_USER, respId);
+    await deleteResponsibility(getDb(), identity.userId, respId);
     respondJson(res, 200, { deleted: respId });
   } catch (err) {
     respondError(res, `${req.method} /responsibilities/${respId}`, err);
@@ -89,6 +91,7 @@ export async function handleDeleteResponsibility(
 export async function handleAssignResponsibility(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   respId: string,
 ): Promise<void> {
   try {
@@ -97,7 +100,7 @@ export async function handleAssignResponsibility(
       respondJson(res, 400, { error: "actor_id required" });
       return;
     }
-    await assignResponsibility(getDb(), SOLO_USER, {
+    await assignResponsibility(getDb(), identity.userId, {
       responsibility_id: respId,
       actor_id: body.actor_id,
     });
@@ -114,11 +117,12 @@ export async function handleAssignResponsibility(
 export async function handleUnassignResponsibility(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   respId: string,
   actorId: string,
 ): Promise<void> {
   try {
-    await unassignResponsibility(getDb(), SOLO_USER, {
+    await unassignResponsibility(getDb(), identity.userId, {
       responsibility_id: respId,
       actor_id: actorId,
     });

@@ -4,14 +4,14 @@
 // a uniform decision surface.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { SOLO_USER } from "../infra/schema.js";
 import { listUserMirrors } from "../domain/sync/mirror-registry.js";
 import { classifyWrite, resolvePortuniRoot } from "../domain/write-scope.js";
-import { respondError , respondJson} from "../http/middleware.js";
+import { respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 
 export async function handleWriteScope(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   url: URL,
 ): Promise<void> {
   const cwd = url.searchParams.get("cwd");
@@ -21,7 +21,7 @@ export async function handleWriteScope(
     return;
   }
   try {
-    const mirrors = (await listUserMirrors(SOLO_USER)).map((m) => m.local_path);
+    const mirrors = (await listUserMirrors(identity.userId)).map((m) => m.local_path);
     const portuniRoot = resolvePortuniRoot({
       envValue: process.env.PORTUNI_ROOT ?? null,
       knownMirrors: mirrors,

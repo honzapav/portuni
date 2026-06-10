@@ -5,8 +5,8 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import { getDb } from "../infra/db.js";
 import { logAudit } from "../infra/audit.js";
-import { EVENT_TYPES, SOLO_USER } from "../infra/schema.js";
-import { parseBody, parseJsonBody, respondError , respondJson} from "../http/middleware.js";
+import { EVENT_TYPES } from "../infra/schema.js";
+import { parseBody, parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 
 const CreateEventBody = z.object({
   node_id: z.string().min(1),
@@ -17,6 +17,7 @@ const CreateEventBody = z.object({
 export async function handleCreateEvent(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
 ): Promise<void> {
   const body = await parseJsonBody(req, res, CreateEventBody);
   if (!body) return;
@@ -35,9 +36,9 @@ export async function handleCreateEvent(
     await db.execute({
       sql: `INSERT INTO events (id, node_id, type, content, meta, status, refs, task_ref, created_by, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [id, body.node_id, body.type, body.content, null, "active", null, null, SOLO_USER, now],
+      args: [id, body.node_id, body.type, body.content, null, "active", null, null, identity.userId, now],
     });
-    await logAudit(SOLO_USER, "log_event", "event", id, {
+    await logAudit(identity.userId, "log_event", "event", id, {
       node_id: body.node_id,
       type: body.type,
     });
@@ -57,6 +58,7 @@ export async function handleCreateEvent(
 export async function handleUpdateEvent(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   eventId: string,
 ): Promise<void> {
   try {
@@ -114,7 +116,7 @@ export async function handleUpdateEvent(
       sql: `UPDATE events SET ${updates.join(", ")} WHERE id = ?`,
       args: values,
     });
-    await logAudit(SOLO_USER, "update_event", "event", eventId, {
+    await logAudit(identity.userId, "update_event", "event", eventId, {
       fields: Object.keys(body),
     });
     const updated = await db.execute({
@@ -130,6 +132,7 @@ export async function handleUpdateEvent(
 export async function handleArchiveEvent(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   eventId: string,
 ): Promise<void> {
   try {
@@ -141,7 +144,7 @@ export async function handleArchiveEvent(
       respondJson(res, 404, { error: "event not found or already archived" });
       return;
     }
-    await logAudit(SOLO_USER, "archive_event", "event", eventId, {});
+    await logAudit(identity.userId, "archive_event", "event", eventId, {});
     respondJson(res, 200, { archived: eventId });
   } catch (err) {
     respondError(res, `${req.method} /events/${eventId}`, err);
