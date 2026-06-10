@@ -277,3 +277,27 @@ DDL pole v `schema.ts` – spousti se na startu pres `ensureSchema()`. `CREATE T
 - Event supersede: originalni event zustava, nebo se skryva?
 - Sdilene procesy: ktera org "vlastni" sdileny proces?
 - Search ranking: keyword vs semantic, nebo merged mode?
+
+## 7. Incident 2026-06-10: migrace 017 vyprazdnila nodes na produkci
+
+**Co se stalo:** Prvni start serveru na VPS spustil migraci `017_nodes_visibility_group`
+(rebuild tabulky nodes kvuli rozsireni CHECK constraintu). Na lokalnim SQLite prosla,
+ale Turso pres HTTP nedrzi `PRAGMA foreign_keys = OFF` mezi jednotlivymi `db.execute()`
+voláními (kazdy statement muze jit jinym spojenim). `DROP TABLE nodes` tak vystrelil FK
+kaskadu do triggeru na edges a migrace spadla uprostred; pozdejsi restart pres DDL
+vytvoril prazdnou `nodes` a migrace se zapsala jako aplikovana.
+
+**Obnova:** Data prezila v `nodes_new` (kopie z migrace). Postup: stop service, dump,
+fork DB (`turso db create --from-db`), obnova na forku, validace (FK check, orphan
+edges, org invariant), pak identicke prikazy na produkci. Nulova ztrata.
+
+**Pouceni:**
+1. **Table-rebuild migrace musi byt jeden `executeMultiple` skript** — jedine tak drzi
+   PRAGMA na jednom spojeni (fix v 017). Plati pro vsechny budouci rebuildy.
+2. **Migrace testovat proti realne Turso DB (fork), ne jen `:memory:`** — HTTP vrstva
+   ma jinou semantiku spojeni nez embedded SQLite.
+3. **Pred kazdym deploym s migraci: `npm run backup`** — dnesni zaloha ze 04:10 byla
+   zachranna sit, i kdyz nakonec nebyla potreba.
+4. `CREATE TABLE IF NOT EXISTS` v DDL umi maskovat selhanou migraci (prazdna tabulka
+   + isApplied probe na novy CHECK = migrace "aplikovana"). isApplied proby psat tak,
+   aby selhaly i na prazdnem torzu.
