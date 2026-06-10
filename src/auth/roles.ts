@@ -11,6 +11,8 @@ export function scopeAtLeast(actual: GlobalScope, required: GlobalScope): boolea
   return RANK[actual] >= RANK[required];
 }
 
+// 'read' is the implicit floor — no group needed. Only roles above read
+// are explicitly configured.
 export interface GroupRoleConfig {
   admin: string[];
   manage: string[];
