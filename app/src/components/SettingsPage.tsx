@@ -3,13 +3,14 @@ import { Check } from "lucide-react";
 import { AGENT_PRESETS, DEFAULT_AGENT_COMMAND } from "../lib/settings";
 import McpServerSection from "./McpServerSection";
 import SettingsActorsPanel from "./SettingsPage.actors";
+import AccountSection from "./AccountSection";
 
 type Props = {
   agentCommand: string;
   onAgentCommandChange: (value: string) => void;
 };
 
-type SubTab = "general" | "actors";
+type SubTab = "general" | "actors" | "account";
 
 export default function SettingsPage({
   agentCommand,
@@ -17,7 +18,10 @@ export default function SettingsPage({
 }: Props) {
   const [tab, setTab] = useState<SubTab>(() => {
     const p = new URLSearchParams(window.location.search);
-    return p.get("settingsTab") === "actors" ? "actors" : "general";
+    const t = p.get("settingsTab");
+    if (t === "actors") return "actors";
+    if (t === "account") return "account";
+    return "general";
   });
   useEffect(() => {
     const url = new URL(window.location.href);
@@ -25,6 +29,8 @@ export default function SettingsPage({
     else url.searchParams.set("settingsTab", tab);
     window.history.replaceState(null, "", url.toString());
   }, [tab]);
+
+  const isGeneralTab = tab === "general";
 
   const [draft, setDraft] = useState(agentCommand);
 
@@ -77,7 +83,7 @@ export default function SettingsPage({
           <h1 className="text-[20px] font-semibold tracking-tight text-[var(--color-text)]">
             Nastavení
           </h1>
-          {tab === "general" && (
+          {isGeneralTab && (
             <p className="mt-1 text-[13px] text-[var(--color-text-dim)]">
               Změny se ukládají automaticky.
             </p>
@@ -103,10 +109,22 @@ export default function SettingsPage({
             >
               Aktéři
             </button>
+            <button
+              onClick={() => setTab("account")}
+              className={`rounded px-3 py-1 text-[13px] transition-colors ${
+                tab === "account"
+                  ? "bg-[var(--color-bg)] text-[var(--color-text)]"
+                  : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+              }`}
+            >
+              Účet
+            </button>
           </div>
         </header>
 
         {tab === "actors" && <SettingsActorsPanel />}
+
+        {tab === "account" && <AccountSection />}
 
         {tab === "general" && (
           <>
