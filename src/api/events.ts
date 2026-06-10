@@ -72,10 +72,15 @@ export async function handleUpdateEvent(
     }
     const db = getDb();
     const existing = await db.execute({
-      sql: "SELECT id, status FROM events WHERE id = ?",
+      sql: "SELECT id, status, node_id FROM events WHERE id = ?",
       args: [eventId],
     });
     if (existing.rows.length === 0) {
+      respondJson(res, 404, { error: "event not found" });
+      return;
+    }
+    const eventNodeId = existing.rows[0].node_id as string;
+    if (!(await nodeVisibleTo(db, identity, eventNodeId))) {
       respondJson(res, 404, { error: "event not found" });
       return;
     }
@@ -137,7 +142,21 @@ export async function handleArchiveEvent(
   eventId: string,
 ): Promise<void> {
   try {
-    const result = await getDb().execute({
+    const db = getDb();
+    const eventRow = await db.execute({
+      sql: "SELECT node_id FROM events WHERE id = ?",
+      args: [eventId],
+    });
+    if (eventRow.rows.length === 0) {
+      respondJson(res, 404, { error: "event not found or already archived" });
+      return;
+    }
+    const eventNodeId = eventRow.rows[0].node_id as string;
+    if (!(await nodeVisibleTo(db, identity, eventNodeId))) {
+      respondJson(res, 404, { error: "event not found or already archived" });
+      return;
+    }
+    const result = await db.execute({
       sql: "UPDATE events SET status = 'archived' WHERE id = ? AND status != 'archived'",
       args: [eventId],
     });

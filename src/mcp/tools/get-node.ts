@@ -112,7 +112,7 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
       //    this tool returns that the context payload does not: files,
       //    visibility, created_by/at, updated_at, meta, local_mirror
       //    (registered_at).
-      const { root } = await buildContextPayload(db, row.id, 0, ctx.identity.userId);
+      const { root } = await buildContextPayload(db, row.id, 0, ctx.identity.userId, ctx.identity);
 
       // 3. Fetch local mirror from per-device sync.db (the context payload
       //    only exposes local_path; this tool returns the richer pair).

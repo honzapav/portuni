@@ -7,6 +7,7 @@ import {
   seedScopeFromHome,
   violatesHardFloor,
 } from "../scope.js";
+import { nodeVisibleTo } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
 // portuni_session_init is the manual fallback for seeding the scope set.
@@ -85,7 +86,7 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
         };
       }
 
-      const seedIds = await seedScopeFromHome(db, scope, homeId);
+      const seedIds = await seedScopeFromHome(db, scope, homeId, ctx.identity);
       scope.recordExpansion({
         at: new Date().toISOString(),
         node_ids: seedIds,
@@ -164,6 +165,14 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
 
       for (const id of args.node_ids) {
         if (!knownIds.has(id)) {
+          rejected_unknown.push(id);
+          continue;
+        }
+        // Group-visibility gate: hidden nodes are treated identically to
+        // nonexistent nodes. This prevents existence-oracle probing via
+        // expand_scope.
+        const visible = await nodeVisibleTo(db, ctx.identity, id);
+        if (!visible) {
           rejected_unknown.push(id);
           continue;
         }

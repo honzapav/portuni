@@ -396,7 +396,19 @@ export async function buildContextPayload(
   //    pruned so the caller cannot infer their existence from the edge list.
   if (identity !== undefined) {
     const allConnectedIds = connected.map((n) => n.id);
-    const visibleSet = await filterVisibleNodeIds(db, identity, allConnectedIds);
+    // Collect all unique peer IDs that appear in any edge (including those
+    // not present in the walk, which can occur at depth=0). We need to check
+    // their visibility so edges are pruned correctly regardless of depth.
+    const allEdgePeerIds = new Set<string>();
+    for (const e of root.edges) allEdgePeerIds.add(e.peer_id);
+    for (const n of connected) {
+      for (const e of n.edges) allEdgePeerIds.add(e.peer_id);
+    }
+    allEdgePeerIds.delete(nodeId); // root is always visible to itself
+
+    // Union of walked connected IDs + edge peers; filter all at once.
+    const candidateIds = [...new Set([...allConnectedIds, ...allEdgePeerIds])];
+    const visibleSet = await filterVisibleNodeIds(db, identity, candidateIds);
     const visibleConnected = connected.filter((n) => visibleSet.has(n.id));
     const visibleIds = new Set([nodeId, ...visibleSet]);
     const prunedRootEdges = root.edges.filter(

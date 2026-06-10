@@ -254,7 +254,12 @@ export async function handleSyncStatus(
   nodeId: string,
 ): Promise<void> {
   try {
-    const result = await statusScan(getDb(), {
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    const result = await statusScan(db, {
       userId: identity.userId,
       nodeId,
       includeDiscovery: false,
@@ -322,10 +327,15 @@ export async function handleSyncStatus(
 export async function handleFolderUrl(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   try {
     const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
     const nodeRow = await db.execute({
       sql: "SELECT id, type, sync_key FROM nodes WHERE id = ?",
       args: [nodeId],

@@ -12,6 +12,7 @@ import {
   listActors,
   updateActor,
 } from "../../domain/actors.js";
+import { filterVisibleNodeIds } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerActorTools(server: McpServer, ctx: SessionCtx): void {
@@ -99,7 +100,11 @@ export function registerActorTools(server: McpServer, ctx: SessionCtx): void {
             isError: true,
           };
         }
-        const assignments = await getActorAssignments(db, args.actor_id);
+        const allAssignments = await getActorAssignments(db, args.actor_id);
+        // Filter out assignments on nodes the caller cannot see (group-visibility).
+        const assignmentNodeIds = allAssignments.map((a) => a.node_id);
+        const visibleNodeIds = await filterVisibleNodeIds(db, ctx.identity, assignmentNodeIds);
+        const assignments = allAssignments.filter((a) => visibleNodeIds.has(a.node_id));
         return {
           content: [
             { type: "text" as const, text: JSON.stringify({ actor, assignments }, null, 2) },

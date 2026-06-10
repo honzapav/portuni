@@ -394,7 +394,7 @@ async function routeNodes(
   }
   const folderUrlMatch = pathname.match(/^\/nodes\/([^/]+)\/folder-url$/);
   if (folderUrlMatch && method === "GET") {
-    await handleFolderUrl(req, res, decodeURIComponent(folderUrlMatch[1]));
+    await handleFolderUrl(req, res, identity, decodeURIComponent(folderUrlMatch[1]));
     return true;
   }
   const syncRunMatch = pathname.match(/^\/nodes\/([^/]+)\/sync$/);

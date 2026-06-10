@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getDb } from "../../infra/db.js";
 import { statusScan } from "../../domain/sync/engine.js";
+import { nodeVisibleTo } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerSyncStatusTools(server: McpServer, ctx: SessionCtx): void {
@@ -18,6 +19,14 @@ export function registerSyncStatusTools(server: McpServer, ctx: SessionCtx): voi
     },
     async (args) => {
       const db = getDb();
+      if (args.node_id !== undefined) {
+        if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
+          return {
+            content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
+            isError: true,
+          };
+        }
+      }
       const result = await statusScan(db, {
         userId: ctx.identity.userId,
         nodeId: args.node_id,

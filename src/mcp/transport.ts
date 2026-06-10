@@ -123,6 +123,7 @@ export function createMcpTransport(): McpTransport {
             db: getDb(),
             auditFn: (action, targetId, detail) =>
               logAudit(identity.userId, action, "node", targetId, detail),
+            identity,
           });
         } catch (err) {
           const reason = err instanceof Error ? err.message : String(err);

@@ -13,6 +13,7 @@ import {
   removeDataSource,
   removeTool,
 } from "../../domain/entity-attributes.js";
+import { nodeVisibleTo } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerEntityAttributeTools(server: McpServer, ctx: SessionCtx): void {
@@ -67,7 +68,14 @@ export function registerEntityAttributeTools(server: McpServer, ctx: SessionCtx)
     },
     async (args) => {
       try {
-        const rows = await listDataSources(getDb(), args.node_id);
+        const db = getDb();
+        if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
+          return {
+            content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
+            isError: true,
+          };
+        }
+        const rows = await listDataSources(db, args.node_id);
         return { content: [{ type: "text" as const, text: JSON.stringify(rows, null, 2) }] };
       } catch (err) {
         return {
@@ -129,7 +137,14 @@ export function registerEntityAttributeTools(server: McpServer, ctx: SessionCtx)
     },
     async (args) => {
       try {
-        const rows = await listTools(getDb(), args.node_id);
+        const db = getDb();
+        if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
+          return {
+            content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
+            isError: true,
+          };
+        }
+        const rows = await listTools(db, args.node_id);
         return { content: [{ type: "text" as const, text: JSON.stringify(rows, null, 2) }] };
       } catch (err) {
         return {

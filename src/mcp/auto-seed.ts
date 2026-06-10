@@ -9,6 +9,7 @@
 
 import type { Client } from "@libsql/client";
 import { type SessionScope, seedScopeFromHome } from "./scope.js";
+import type { GroupIdentityView } from "../auth/node-access.js";
 
 type AuditFn = (
   action: string,
@@ -46,6 +47,7 @@ interface AutoSeedArgs {
   homeNodeId: string | null;
   db: Client;
   auditFn: AuditFn;
+  identity?: GroupIdentityView;
 }
 
 interface AutoSeedResult {
@@ -72,7 +74,7 @@ export async function autoSeedFromHome(args: AutoSeedArgs): Promise<AutoSeedResu
   });
   if (exists.rows.length === 0) return { seeded: false, nodeIds: [] };
 
-  const seeded = await seedScopeFromHome(args.db, args.scope, args.homeNodeId);
+  const seeded = await seedScopeFromHome(args.db, args.scope, args.homeNodeId, args.identity);
   args.scope.recordExpansion({
     at: new Date().toISOString(),
     node_ids: seeded,
