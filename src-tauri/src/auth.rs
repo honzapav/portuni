@@ -30,7 +30,7 @@ use tauri::{AppHandle, Manager};
 
 const KEYCHAIN_SERVICE: &str = "ooo.workflow.portuni";
 const KEYCHAIN_GOOGLE_REFRESH: &str = "google_refresh_token";
-const KEYCHAIN_SESSION_JWT: &str = "portuni_session_jwt";
+pub const KEYCHAIN_SESSION_JWT: &str = "portuni_session_jwt";
 
 pub fn keychain_get(account: &str) -> Option<String> {
     keyring::Entry::new(KEYCHAIN_SERVICE, account)
@@ -491,8 +491,8 @@ pub fn auth_logout() {
 
 #[derive(Serialize)]
 pub struct CentralResponse {
-    status: u16,
-    body: String,
+    pub status: u16,
+    pub body: String,
 }
 
 /// Proxy a request to the central server with the session JWT.
@@ -531,6 +531,19 @@ pub async fn central_request(
     }
 
     Ok(resp)
+}
+
+/// Public alias so lib.rs and pty.rs can call the central request helper
+/// directly (e.g. for api_request routing and device-token minting) without
+/// going through the full central_request Tauri command.
+pub async fn do_central_request_raw(
+    server_url: &str,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    jwt: &str,
+) -> Result<CentralResponse, String> {
+    do_central_request(server_url, method, path, body, jwt).await
 }
 
 async fn do_central_request(

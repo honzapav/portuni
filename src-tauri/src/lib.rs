@@ -34,7 +34,7 @@ struct AuthToken(Mutex<String>);
 // bundle-id-shaped so entries show up under "ooo.workflow.portuni" in
 // Keychain Access on macOS; account is the secret's role within that
 // service.
-const KEYCHAIN_SERVICE: &str = "ooo.workflow.portuni";
+pub(crate) const KEYCHAIN_SERVICE: &str = "ooo.workflow.portuni";
 const KEYCHAIN_TURSO_ACCOUNT: &str = "turso_auth_token";
 const KEYCHAIN_MCP_ACCOUNT: &str = "mcp_auth_token";
 
@@ -72,6 +72,12 @@ pub(crate) struct DesktopConfig {
     /// public clients (no client_secret needed).
     #[serde(default)]
     pub(crate) google_client_id: Option<String>,
+    /// Data mode: "central" routes api_request to server_url with the user's
+    /// JWT; anything else (including absent) is treated as "local" (sidecar).
+    /// Set to "central" on teammate desktops that should never touch a local
+    /// Turso replica directly.
+    #[serde(default)]
+    pub(crate) data_mode: Option<String>,
 }
 
 /// Default loopback port for the bundled MCP server. Picked high enough
@@ -169,9 +175,31 @@ fn snapshot_mcp_endpoint(app: &AppHandle) -> Result<(String, String), String> {
 // Claude Code session on this machine can connect without per-project
 // .mcp.json. Returns the absolute path of the written file for the UI
 // to surface back to the user.
+//
+// In central data_mode: writes {server_url}/mcp as the URL and uses the
+// PORTUNI_MCP_TOKEN env-reference pattern (same as mirror configs) so the
+// token is never hardcoded in the file.
 #[tauri::command]
 fn install_claude_global(app: AppHandle) -> Result<String, String> {
-    let (url, token) = snapshot_mcp_endpoint(&app)?;
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config = load_config(&data_dir);
+    let is_central = config.data_mode.as_deref() == Some("central");
+
+    let (url, token) = if is_central {
+        let server_url = config
+            .server_url
+            .ok_or_else(|| "central mode requires server_url in config.json".to_string())?;
+        let mcp_url = format!("{}/mcp", server_url.trim_end_matches('/'));
+        // Use the env-reference pattern so the token is never hardcoded.
+        // Claude Code resolves ${PORTUNI_MCP_TOKEN:-} from the shell env at
+        // session start — the terminal inject path ensures it is set for
+        // sessions spawned by Portuni.
+        (mcp_url, "${PORTUNI_MCP_TOKEN:-}".to_string())
+    } else {
+        // Local mode: snapshot live sidecar endpoint (url, token).
+        snapshot_mcp_endpoint(&app)?
+    };
+
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
     let path = PathBuf::from(home).join(".claude.json");
     mcp_install::write_claude_config(&path, &url, &token)?;
@@ -318,6 +346,80 @@ fn open_external(url: String) -> Result<(), String> {
     })
 }
 
+/// Returns true when `path` is a LOCAL_ONLY route that requires the sidecar
+/// (mirrors, sync, file content, write-scope helpers). These paths either do
+/// not exist on the central server or require local filesystem access; in
+/// central data_mode they return 501 local_only.
+///
+/// Rules derived from src/api/router.ts:
+///   /scope                      — write-scope gate (local filesystem check)
+///   /sandbox-profile            — global sandbox profile (local cwd lookup)
+///   /nodes/:id/sandbox-profile  — per-node sandbox profile
+///   /nodes/:id/file             — file content GET / PUT (local mirror read/write)
+///   /nodes/:id/files            — file create/delete/rename (local mirror)
+///   /nodes/:id/files/*          — same (rename, delete sub-paths)
+///   /nodes/:id/mirror           — create mirror (local filesystem operation)
+///   /nodes/:id/sync-status      — sync status (local sync DB)
+///   /nodes/:id/sync             — sync run (local sync engine)
+///
+/// /nodes/:id/folder-url stays central (drive URL lookup on the server).
+/// All graph, actor, responsibility, etc. routes are central.
+pub(crate) fn is_local_only_path(path: &str) -> bool {
+    // Strip query string for matching.
+    let p = path.split('?').next().unwrap_or(path);
+
+    // Exact top-level paths.
+    if p == "/scope" || p == "/sandbox-profile" {
+        return true;
+    }
+
+    // Node sub-paths that are local-only.
+    // Matches: /nodes/<id>/file, /nodes/<id>/files, /nodes/<id>/files/*,
+    //          /nodes/<id>/mirror, /nodes/<id>/sync-status, /nodes/<id>/sync,
+    //          /nodes/<id>/sandbox-profile
+    if let Some(rest) = p.strip_prefix("/nodes/") {
+        // rest = "<id>/<sub>" or "<id>/<sub>/..."
+        if let Some(slash) = rest.find('/') {
+            let sub = &rest[slash + 1..];
+            if sub == "file"
+                || sub.starts_with("files")
+                || sub == "mirror"
+                || sub == "sync-status"
+                || sub == "sync"
+                || sub == "sandbox-profile"
+            {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+#[derive(Serialize)]
+struct DataModeResponse {
+    mode: String,
+    server_url: Option<String>,
+}
+
+/// Return the current data mode and server URL. Used by the React frontend
+/// to adapt its UI (hide mirror/sync affordances in central mode).
+#[tauri::command]
+fn get_data_mode(app: AppHandle) -> Result<DataModeResponse, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config = load_config(&data_dir);
+    let mode = config
+        .data_mode
+        .as_deref()
+        .filter(|s| *s == "central")
+        .unwrap_or("local")
+        .to_string();
+    Ok(DataModeResponse {
+        mode,
+        server_url: config.server_url,
+    })
+}
+
 #[derive(Serialize)]
 struct ApiResponse {
     status: u16,
@@ -454,6 +556,11 @@ async fn restart_sidecar(app: AppHandle) -> Result<(), String> {
 // domain as the sidecar (the Tauri host that spawned it) and therefore
 // is the right place to attach the per-launch bearer. Keeps the
 // PORTUNI_AUTH_TOKEN out of webview JS entirely.
+//
+// In central data_mode the command routes to server_url instead of the
+// local sidecar:
+//   - LOCAL_ONLY paths (mirror, sync, file content, write-scope) → 501
+//   - everything else → do_central_request with JWT + silent 401 refresh
 #[tauri::command]
 async fn api_request(
     app: AppHandle,
@@ -462,6 +569,87 @@ async fn api_request(
     body: Option<String>,
     headers: Option<HashMap<String, String>>,
 ) -> Result<ApiResponse, String> {
+    // Check data_mode from persisted config.
+    let is_central = {
+        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let config = load_config(&data_dir);
+        config.data_mode.as_deref() == Some("central")
+    };
+
+    if is_central {
+        // LOCAL_ONLY paths cannot be served by the central server.
+        if is_local_only_path(&path) {
+            return Ok(ApiResponse {
+                status: 501,
+                body: "{\"error\":\"local_only\"}".to_string(),
+            });
+        }
+
+        // Route to the central server using the JWT + silent refresh logic.
+        let config = {
+            let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            load_config(&data_dir)
+        };
+        let server_url = config
+            .server_url
+            .ok_or_else(|| "central mode requires server_url in config.json".to_string())?;
+
+        let jwt = auth::keychain_get(auth::KEYCHAIN_SESSION_JWT)
+            .ok_or_else(|| "central mode: not logged in (no session JWT)".to_string())?;
+
+        // Convert body: api_request takes Option<String>, do_central_request
+        // takes Option<&serde_json::Value>. Parse if present, fall through as
+        // raw string if not valid JSON (shouldn't happen but be defensive).
+        let body_value: Option<serde_json::Value> = body.as_deref().and_then(|b| {
+            serde_json::from_str(b).ok()
+        });
+
+        let resp = auth::do_central_request_raw(
+            &server_url,
+            &method,
+            &path,
+            body_value.as_ref(),
+            &jwt,
+        )
+        .await?;
+
+        if resp.status == 401 {
+            // Silent refresh + retry once.
+            info!("api_request central: got 401, attempting silent refresh");
+            match auth::auth_refresh(app.clone()).await {
+                Err(e) => {
+                    warn!("api_request central: silent refresh failed: {e}");
+                    return Ok(ApiResponse {
+                        status: resp.status,
+                        body: resp.body,
+                    });
+                }
+                Ok(_) => {
+                    let new_jwt = auth::keychain_get(auth::KEYCHAIN_SESSION_JWT)
+                        .ok_or_else(|| "not logged in after refresh".to_string())?;
+                    let resp2 = auth::do_central_request_raw(
+                        &server_url,
+                        &method,
+                        &path,
+                        body_value.as_ref(),
+                        &new_jwt,
+                    )
+                    .await?;
+                    return Ok(ApiResponse {
+                        status: resp2.status,
+                        body: resp2.body,
+                    });
+                }
+            }
+        }
+
+        return Ok(ApiResponse {
+            status: resp.status,
+            body: resp.body,
+        });
+    }
+
+    // Local mode: proxy to the bundled sidecar.
     // Snapshot port + token from state, then drop the guard before
     // awaiting — holding a std::sync::Mutex across .await deadlocks
     // the executor on contention.
@@ -581,6 +769,24 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&data_dir).ok();
     let data_dir_str = data_dir.to_string_lossy().to_string();
+
+    // In central mode the webview communicates with the remote server via
+    // api_request, not the local sidecar. Skip the spawn entirely and signal
+    // "ready" immediately so frontend code that polls get_backend_port / listens
+    // for backend-ready is unblocked. Use a sentinel port value (0) that
+    // api_request never reads in central mode.
+    let config = load_config(&data_dir);
+    if config.data_mode.as_deref() == Some("central") {
+        info!("central data_mode: skipping sidecar spawn");
+        if let Ok(mut guard) = app.state::<BackendPort>().0.lock() {
+            // Port 0 is a sentinel — central mode api_request never uses it.
+            // Setting it unblocks any frontend that polls get_backend_port.
+            *guard = Some(0);
+        }
+        let _ = app.emit("backend-ready", 0u16);
+        return Ok(());
+    }
+
     info!("spawn_sidecar: data_dir={data_dir_str}");
 
     // Move any legacy plaintext token into Keychain before we read either —
@@ -762,6 +968,7 @@ pub fn run() {
         .manage(pty::PtyState::default())
         .invoke_handler(tauri::generate_handler![
             get_backend_port,
+            get_data_mode,
             open_external,
             api_request,
             set_turso_token,
@@ -825,4 +1032,86 @@ pub fn run() {
                 kill_managed_sidecar(app);
             }
         });
+}
+
+#[cfg(test)]
+mod local_only_path_tests {
+    use super::is_local_only_path;
+
+    #[test]
+    fn scope_is_local_only() {
+        assert!(is_local_only_path("/scope"));
+    }
+
+    #[test]
+    fn sandbox_profile_top_level_is_local_only() {
+        assert!(is_local_only_path("/sandbox-profile"));
+    }
+
+    #[test]
+    fn node_sandbox_profile_is_local_only() {
+        assert!(is_local_only_path("/nodes/abc123/sandbox-profile"));
+    }
+
+    #[test]
+    fn node_file_content_is_local_only() {
+        assert!(is_local_only_path("/nodes/abc123/file"));
+    }
+
+    #[test]
+    fn node_files_create_is_local_only() {
+        assert!(is_local_only_path("/nodes/abc123/files"));
+    }
+
+    #[test]
+    fn node_files_sub_path_is_local_only() {
+        assert!(is_local_only_path("/nodes/abc123/files/somefile.md/rename"));
+    }
+
+    #[test]
+    fn node_mirror_is_local_only() {
+        assert!(is_local_only_path("/nodes/abc123/mirror"));
+    }
+
+    #[test]
+    fn node_sync_status_is_local_only() {
+        assert!(is_local_only_path("/nodes/abc123/sync-status"));
+    }
+
+    #[test]
+    fn node_sync_run_is_local_only() {
+        assert!(is_local_only_path("/nodes/abc123/sync"));
+    }
+
+    #[test]
+    fn graph_is_not_local_only() {
+        assert!(!is_local_only_path("/graph"));
+    }
+
+    #[test]
+    fn nodes_get_is_not_local_only() {
+        assert!(!is_local_only_path("/nodes/abc123"));
+    }
+
+    #[test]
+    fn folder_url_is_not_local_only() {
+        assert!(!is_local_only_path("/nodes/abc123/folder-url"));
+    }
+
+    #[test]
+    fn actors_is_not_local_only() {
+        assert!(!is_local_only_path("/actors"));
+    }
+
+    #[test]
+    fn health_is_not_local_only() {
+        assert!(!is_local_only_path("/health"));
+    }
+
+    #[test]
+    fn query_string_stripped_before_matching() {
+        assert!(is_local_only_path("/scope?cwd=/foo/bar"));
+        assert!(is_local_only_path("/nodes/abc/file?encoding=utf8"));
+        assert!(!is_local_only_path("/graph?filter=all"));
+    }
 }
