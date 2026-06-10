@@ -83,6 +83,11 @@ loop for backend iteration.
   Failures (DB unreachable, network) return 503 with the underlying reason
   rather than serving an empty-scope session – see `src/mcp/transport.ts`.
 - **Auth mode**: `PORTUNI_AUTH_MODE=env` (default) = solo bearer token; `google` = Google OAuth + Groups. Enforcement lives server-side in `src/auth/` (min-scopes per tool, node-access for group visibility).
+- **Desktop central-server config**: `server_url` + `google_client_id` in
+  `config.json` (non-secret) enable Settings → Účet (Google login, device
+  tokens). Refresh token + session JWT live in Keychain; webview reaches the
+  central server only via the `central_request` Tauri command. E2E login
+  requires the Workspace OAuth client (admin checklist in the design spec §6).
 
 - **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
   keys; `.env.schema` declares only the 6 core ones. Full inventory with
