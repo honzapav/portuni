@@ -88,6 +88,9 @@ loop for backend iteration.
   tokens). Refresh token + session JWT live in Keychain; webview reaches the
   central server only via the `central_request` Tauri command. E2E login
   requires the Workspace OAuth client (admin checklist in the design spec §6).
+  `data_mode: "central"` přepne desktop plně na centrální server (sidecar se
+  nespouští, mirror/sync/file content = fáze B, "local only"); teammate setup =
+  config.json se `server_url`, `google_client_id`, `data_mode`.
 
 - **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
   keys; `.env.schema` declares only the 6 core ones. Full inventory with

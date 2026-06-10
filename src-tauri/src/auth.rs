@@ -484,6 +484,7 @@ pub async fn auth_refresh(app: AppHandle) -> Result<Value, String> {
 pub fn auth_logout() {
     keychain_delete(KEYCHAIN_GOOGLE_REFRESH);
     keychain_delete(KEYCHAIN_SESSION_JWT);
+    keychain_delete("portuni_device_token");
     info!("auth_logout: Keychain entries removed");
 }
 

@@ -211,7 +211,25 @@ fn install_claude_global(app: AppHandle) -> Result<String, String> {
 // can refresh idempotently without clobbering surrounding user config.
 #[tauri::command]
 fn install_codex_global(app: AppHandle) -> Result<String, String> {
-    let (url, token) = snapshot_mcp_endpoint(&app)?;
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config = load_config(&data_dir);
+    let is_central = config.data_mode.as_deref() == Some("central");
+
+    let (url, token) = if is_central {
+        let server_url = config
+            .server_url
+            .ok_or_else(|| "central mode requires server_url in config.json".to_string())?;
+        let mcp_url = format!("{}/mcp", server_url.trim_end_matches('/'));
+        // Use the env-reference pattern so the token is never hardcoded.
+        // Codex resolves ${PORTUNI_MCP_TOKEN:-} from the shell env at
+        // session start — the terminal inject path ensures it is set for
+        // sessions spawned by Portuni.
+        (mcp_url, "${PORTUNI_MCP_TOKEN:-}".to_string())
+    } else {
+        // Local mode: snapshot live sidecar endpoint (url, token).
+        snapshot_mcp_endpoint(&app)?
+    };
+
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
     let path = PathBuf::from(home).join(".codex").join("config.toml");
     mcp_install::write_codex_config(&path, &url, &token)?;
