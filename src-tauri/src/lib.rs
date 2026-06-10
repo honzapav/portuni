@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+mod auth;
 mod mcp_install;
 mod pty;
 
@@ -38,7 +39,7 @@ const KEYCHAIN_TURSO_ACCOUNT: &str = "turso_auth_token";
 const KEYCHAIN_MCP_ACCOUNT: &str = "mcp_auth_token";
 
 #[derive(Default, Serialize, Deserialize, Clone)]
-struct DesktopConfig {
+pub(crate) struct DesktopConfig {
     /// Optional libSQL URL. When unset, defaults to a file: URL inside
     /// PORTUNI_DATA_DIR. Leave the file: variant for purely local use,
     /// set a libsql:// URL to point the desktop at a Turso database. The
@@ -60,6 +61,17 @@ struct DesktopConfig {
     /// in config.json if it collides with another local service.
     #[serde(default)]
     mcp_port: Option<u16>,
+    /// Base URL of the Portuni central server (e.g. "https://api.portuni.com").
+    /// Required for Google login and central_request. Non-secret; read from
+    /// config.json. Leave unset for purely local/Turso-only installations.
+    #[serde(default)]
+    pub(crate) server_url: Option<String>,
+    /// Google OAuth client ID (Desktop application type). Non-secret; read
+    /// from config.json. Required together with server_url for Google login.
+    /// The matching client secret is NOT used — Desktop PKCE flows are
+    /// public clients (no client_secret needed).
+    #[serde(default)]
+    pub(crate) google_client_id: Option<String>,
 }
 
 /// Default loopback port for the bundled MCP server. Picked high enough
@@ -71,7 +83,7 @@ fn config_path(data_dir: &PathBuf) -> PathBuf {
     data_dir.join("config.json")
 }
 
-fn load_config(data_dir: &PathBuf) -> DesktopConfig {
+pub(crate) fn load_config(data_dir: &PathBuf) -> DesktopConfig {
     let path = config_path(data_dir);
     std::fs::read_to_string(&path)
         .ok()
@@ -766,6 +778,11 @@ pub fn run() {
             pty::pty_write,
             pty::pty_resize,
             pty::pty_kill,
+            auth::auth_status,
+            auth::google_login,
+            auth::auth_refresh,
+            auth::auth_logout,
+            auth::central_request,
         ])
         .setup(|app| {
             info!(
