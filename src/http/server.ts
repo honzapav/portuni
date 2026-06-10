@@ -16,6 +16,7 @@ import {
   assertAuthRequiredIfNotLoopback,
   respondError,
 } from "./middleware.js";
+import { getOrCreateLimiter, rateLimitKey } from "./rate-limit.js";
 
 export interface HttpServerHandle {
   server: Server;
@@ -63,6 +64,26 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
           `[req] ${req.method} ${req.url} origin=${req.headers.origin ?? "-"} host=${req.headers.host ?? "-"} -> ${res.statusCode} ${took}ms`,
         );
       });
+    }
+
+    // Rate limiting: checked before gates so we can short-circuit early.
+    // /health is always exempt so uptime monitors are never blocked.
+    const rawPath = (req.url ?? "/").split("?")[0];
+    if (rawPath !== "/health") {
+      const limiter = getOrCreateLimiter();
+      const key = rateLimitKey(
+        req.headers.authorization as string | undefined,
+        req.socket.remoteAddress,
+      );
+      const result = limiter.check(key);
+      if (!result.allowed) {
+        res.writeHead(429, {
+          "Content-Type": "application/json",
+          "Retry-After": String(result.retryAfterSeconds),
+        });
+        res.end(JSON.stringify({ error: "rate limited" }));
+        return;
+      }
     }
 
     const gate = await applyGates(req, res);
