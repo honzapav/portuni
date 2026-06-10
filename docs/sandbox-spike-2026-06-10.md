@@ -47,11 +47,25 @@ specificky znalostní graf, nestavíme obecný jail.
    (Seatbelt na macOS, bubblewrap na Linuxu), který je kandidát pro
    krok 4 místo ručních profilů.
 
-## Otevřené pro krok 4
+## Stav implementace (krok 4)
 
-- Expanze za běhu: hranice profilu je statická → server materializuje
-  soubory expandované node do read-only staging uvnitř home mirroru
-  (`<mirror>/.portuni-scope/<node>/`).
+Hotovo (commity `c2ff47f`, `9a0b9a4`):
+
+- `src/domain/sandbox-profile.ts` — generátor profilu + resolver scope
+  (per node i per cwd), realpath handling.
+- `GET /nodes/:id/sandbox-profile` a `GET /sandbox-profile?cwd=…`.
+- `pty_spawn` umí `sandbox_profile` (zápis do temp souboru,
+  `sandbox-exec -f`, fail-closed, úklid při zániku session).
+- Expanze za běhu: `portuni_expand_scope` staguje read-only kopie do
+  `<home>/.portuni-scope/<node_id>/` (`src/domain/scope-staging.ts`);
+  dot-segment pravidlo v sync walkerech zaručuje, že staging nikdy
+  neodteče do remote.
+- `scripts/portuni-run.sh` — wrapper pro terminály mimo appku,
+  fail-closed.
+
+Zbývá:
+
+- Frontend wiring v appce (fetch profilu v `openSessionForNodeId`,
+  předání do `pty_spawn`) — čeká na usazení paralelní práce v `app/src`.
 - Allowlist systémových cest doladit podle reálného provozu (cache,
   toolchainy) — s `allow default` by třecích ploch mělo být minimum.
-- `portuni run <agent>` wrapper pro terminály spuštěné mimo appku.
