@@ -305,12 +305,12 @@ fn send_html_response(stream: &mut TcpStream, body: &str) {
 const SUCCESS_HTML: &str = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Portuni</title>\
 <style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;\
 min-height:100vh;margin:0;background:#0a0f1e;color:#e0e6f0;}</style></head>\
-<body><p>Prihlaseni dokonceno, vratte se do aplikace.</p></body></html>";
+<body><p>Přihlášení dokončeno, vraťte se do aplikace.</p></body></html>";
 
 const ERROR_HTML: &str = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Portuni</title>\
 <style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;\
 min-height:100vh;margin:0;background:#0a0f1e;color:#e0e6f0;}</style></head>\
-<body><p>Prihlaseni selhalo. Zkuste to znovu.</p></body></html>";
+<body><p>Přihlášení selhalo.</p></body></html>";
 
 /// Spin up a loopback TCP listener, return (port, receiver).
 /// The receiver yields Result<(code, state), error_string> exactly once,
@@ -323,10 +323,10 @@ fn start_loopback() -> Result<(u16, mpsc::Receiver<Result<(String, String), Stri
         .local_addr()
         .map_err(|e| e.to_string())?
         .port();
-    // Set a read timeout so accept() unblocks if the browser never connects
-    // (e.g. user closed the browser tab without completing the flow).
-    // This ensures the background thread doesn't leak indefinitely.
-    let _ = listener.set_nonblocking(false);
+    // accept() blocks until the browser connects. The caller's 120 s recv_timeout
+    // returns control to the UI. The background thread lingers until the next
+    // connection or app exit. On timeout, the caller connects to the port itself
+    // to unblock accept() and let the thread exit cleanly.
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         match listener.accept() {
@@ -421,12 +421,19 @@ pub async fn google_login(app: AppHandle) -> Result<Value, String> {
     // Wait up to 120 s for the browser callback. Use recv_timeout so the
     // async executor isn't held and the user gets a clear timeout message.
     let timeout = Duration::from_secs(120);
-    let (code, returned_state) = tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         rx.recv_timeout(timeout)
             .unwrap_or_else(|_| Err("login timed out waiting for browser callback (120 s)".to_string()))
     })
     .await
-    .map_err(|e| format!("thread join failed: {e}"))??;
+    .map_err(|e| format!("thread join failed: {e}"))?;
+
+    // If timeout, connect to the listener to unblock the background accept() thread.
+    if result.is_err() {
+        let _ = TcpStream::connect(format!("127.0.0.1:{port}").as_str());
+    }
+
+    let (code, returned_state) = result?;
 
     if returned_state != state_param {
         return Err("CSRF: state parameter mismatch".to_string());

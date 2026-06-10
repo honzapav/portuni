@@ -86,7 +86,7 @@ export async function centralFetch<T>(
   const res = await invoke<CentralResponse>("central_request", {
     method: method.toUpperCase(),
     path,
-    body: body !== undefined ? JSON.stringify(body) : null,
+    body: body ?? null,
   });
   let parsed: unknown;
   try {
