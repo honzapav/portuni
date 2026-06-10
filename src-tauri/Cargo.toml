@@ -35,7 +35,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 # Used by the api_request command to proxy webview HTTP calls into the
 # sidecar. Version pinned to match what tauri already pulls in transitively
 # (Cargo.lock) so we don't bring a second copy along.
-reqwest = "0.13"
+reqwest = { version = "0.13", features = ["json", "form"] }
 # Cross-platform pseudo-terminal for the embedded terminal pane. Spawns
 # the user's shell in a true PTY (so curses apps, prompts, color, resize
 # all work correctly) and exposes read/write/resize/kill — same code
@@ -58,3 +58,8 @@ open = "5"
 # open_external can't be coaxed into launching file:// or arbitrary custom
 # URL handlers. Already present transitively (Cargo.lock pins 2.5.x).
 url = "2"
+# SHA-256 for PKCE S256 challenge computation (Google OAuth).
+# Already present transitively (Cargo.lock pins 0.10.x); promoted to a
+# direct dep so the auth module can use it without relying on transitive
+# availability.
+sha2 = "0.10"
