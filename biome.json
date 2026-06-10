@@ -12,6 +12,7 @@
       "scripts/**/*.ts",
       "app/src/**/*.{ts,tsx}",
       "!**/node_modules",
+      "!**/.claude",
       "!**/dist",
       "!**/env.d.ts",
       "!**/.varlock-types.d.ts",

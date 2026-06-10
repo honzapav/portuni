@@ -273,6 +273,7 @@ describe("buildClaudeMcpJson", () => {
     });
     const portuni = (j as { mcpServers: { portuni: { headers?: Record<string, string> } } })
       .mcpServers.portuni;
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded by Claude Code, not JS
     assert.equal(portuni.headers?.Authorization, "Bearer ${PORTUNI_MCP_TOKEN:-}");
   });
 

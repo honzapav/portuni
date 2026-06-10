@@ -261,6 +261,7 @@ export function buildClaudeMcpJson(args: {
         // Claude Code expands ${VAR:-default} at config load; the :- form
         // degrades to an empty header instead of a config load failure
         // when the variable is unset (e.g. a shell outside the app).
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded by Claude Code, not JS
         headers: { Authorization: "Bearer ${PORTUNI_MCP_TOKEN:-}" },
       },
     },

@@ -59,6 +59,7 @@ describe("materializeAllRegisteredMirrors", () => {
     );
     assert.equal(
       parsed.mcpServers.portuni.headers.Authorization,
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded by Claude Code, not JS
       "Bearer ${PORTUNI_MCP_TOKEN:-}",
     );
     assert.ok(r.written.includes(join(mirror, ".mcp.json")));
