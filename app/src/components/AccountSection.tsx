@@ -14,6 +14,7 @@ import {
   googleLogin,
   authLogout,
   centralFetch,
+  useDataMode,
   type AuthStatus,
   type UserInfo,
   type DeviceToken,
@@ -31,6 +32,7 @@ export default function AccountSection() {
   const [state, setState] = useState<SectionState>({ kind: "loading" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const dataMode = useDataMode();
 
   const loadStatus = useCallback(async () => {
     if (!isTauri()) {
@@ -106,6 +108,23 @@ export default function AccountSection() {
       <p className="mb-4 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
         Přihlášení k centrálnímu Portuni serveru přes Google OAuth.
       </p>
+      {dataMode && (
+        <div className="mb-4 flex items-center gap-2 text-[13px] text-[var(--color-text-dim)]">
+          <span>Režim dat:</span>
+          {dataMode.mode === "central" ? (
+            <span className="font-mono text-[var(--color-text-muted)]">
+              centrální server
+              {dataMode.server_url ? (
+                <span className="ml-1 text-[var(--color-text-dim)]">
+                  ({dataMode.server_url})
+                </span>
+              ) : null}
+            </span>
+          ) : (
+            <span className="font-mono text-[var(--color-text-muted)]">lokální</span>
+          )}
+        </div>
+      )}
 
       {state.kind === "loading" && (
         <div className="text-[13px] text-[var(--color-text-dim)]">

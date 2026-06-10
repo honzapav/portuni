@@ -28,6 +28,7 @@ import { buildAgentCommand } from "../lib/prompt";
 import { agentDisplayName } from "../lib/settings";
 import { createNodeMirror } from "../api";
 import { isTauri } from "../lib/backend-url";
+import { useDataMode } from "../lib/central";
 
 // ---------------------------------------------------------------------------
 // File tree (Files tab)
@@ -247,6 +248,7 @@ export function FileTree({
   onOpenFile,
   onRename,
   onDelete,
+  readOnly,
 }: {
   files: DetailFile[];
   untracked: UntrackedFile[];
@@ -255,6 +257,8 @@ export function FileTree({
   onOpenFile: (relPath: string) => void;
   onRename: (fileId: string, newName: string) => Promise<void>;
   onDelete: (fileId: string) => Promise<void>;
+  // When true, hide rename/delete actions (e.g. central mode).
+  readOnly?: boolean;
 }) {
   const treeFiles = useMemo(() => toTreeFiles(files, untracked), [files, untracked]);
   const root = useMemo(() => buildFileTree(treeFiles), [treeFiles]);
@@ -282,6 +286,7 @@ export function FileTree({
           onOpenFile={onOpenFile}
           onRename={onRename}
           onDelete={onDelete}
+          readOnly={readOnly}
         />
       ))}
     </div>
@@ -298,6 +303,7 @@ function FileTreeNode({
   onOpenFile,
   onRename,
   onDelete,
+  readOnly,
 }: {
   node: TreeNode;
   depth: number;
@@ -308,6 +314,7 @@ function FileTreeNode({
   onOpenFile: (relPath: string) => void;
   onRename: (fileId: string, newName: string) => Promise<void>;
   onDelete: (fileId: string) => Promise<void>;
+  readOnly?: boolean;
 }) {
   const indent = depth * 14;
   if (node.file) {
@@ -319,6 +326,7 @@ function FileTreeNode({
         onOpenFile={onOpenFile}
         onRename={onRename}
         onDelete={onDelete}
+        readOnly={readOnly}
       />
     );
   }
@@ -370,6 +378,7 @@ function FileTreeNode({
               onOpenFile={onOpenFile}
               onRename={onRename}
               onDelete={onDelete}
+              readOnly={readOnly}
             />
           ))}
         </div>
@@ -388,6 +397,7 @@ function FileRow({
   onOpenFile,
   onRename,
   onDelete,
+  readOnly,
 }: {
   file: TreeFile;
   indent: number;
@@ -395,6 +405,7 @@ function FileRow({
   onOpenFile: (relPath: string) => void;
   onRename: (fileId: string, newName: string) => Promise<void>;
   onDelete: (fileId: string) => Promise<void>;
+  readOnly?: boolean;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(f.filename);
@@ -495,7 +506,7 @@ function FileRow({
               neregistrováno
             </span>
           )}
-          {f.fileId && !renaming && (
+          {f.fileId && !renaming && !readOnly && (
             <span
               className={
                 "ml-auto gap-1 " +
@@ -765,10 +776,21 @@ export function ActionButtons({
   agentCommand: string;
 }) {
   const [state, setState] = useState<LaunchState>({ kind: "idle" });
+  const dataMode = useDataMode();
+  const isCentral = dataMode?.mode === "central";
 
   // Organizations are workspace roots, not work locations -- nobody runs an
   // agent at org scope, so the launch command is pointless here.
   if (node.type === "organization") return null;
+
+  // In central mode, mirror creation is not available — replace with a note.
+  if (isCentral) {
+    return (
+      <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
+        Dostupné jen v lokálním režimu (fáze B).
+      </div>
+    );
+  }
 
   const handleLaunch = async () => {
     setState({ kind: "pending" });
