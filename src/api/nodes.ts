@@ -391,6 +391,7 @@ export async function handleSyncRun(
       pulled: [],
       adopted: [],
       conflicts: [],
+      deleted_local: [],
       errors: [],
       skipped: [],
     };
@@ -418,10 +419,12 @@ export async function handleSyncRun(
         });
       }
     }
-    // pull_candidates: remote moved forward, local at last-synced.
-    // deleted_local: local file is gone but remote + last_synced_hash are
-    // intact -- pull restores it. Both go through pullFile.
-    for (const e of [...scan.pull_candidates, ...scan.deleted_local]) {
+    // pull_candidates: remote moved forward, local at last-synced -- safe
+    // to download. deleted_local is NOT pulled: the local deletion may be
+    // intentional, and auto-restoring made it impossible to ever remove a
+    // file from the mirror. It is reported for an explicit decision
+    // (portuni_pull restores, portuni_delete_file removes everywhere).
+    for (const e of scan.pull_candidates) {
       try {
         await pullFile(db, { userId: SOLO_USER, fileId: e.file_id });
         result.pulled.push({ file_id: e.file_id, filename: e.filename });
@@ -432,6 +435,9 @@ export async function handleSyncRun(
           error: String(err),
         });
       }
+    }
+    for (const e of scan.deleted_local) {
+      result.deleted_local.push({ file_id: e.file_id, filename: e.filename });
     }
     for (const e of scan.conflicts) {
       result.conflicts.push({ file_id: e.file_id, filename: e.filename });
@@ -613,24 +619,27 @@ export async function handlePositions(
       return;
     }
     const db = getDb();
+    // One batch instead of a round trip per node -- this fires after every
+    // drag/layout settle, often with dozens of nodes.
+    const valid = updates.filter(
+      (entry): entry is { id: string; x: number; y: number } =>
+        !!entry &&
+        typeof entry.id === "string" &&
+        typeof entry.x === "number" &&
+        typeof entry.y === "number" &&
+        Number.isFinite(entry.x) &&
+        Number.isFinite(entry.y),
+    );
     let updated = 0;
-    for (const entry of updates) {
-      if (
-        !entry ||
-        typeof entry.id !== "string" ||
-        typeof entry.x !== "number" ||
-        typeof entry.y !== "number" ||
-        !Number.isFinite(entry.x) ||
-        !Number.isFinite(entry.y)
-      ) {
-        continue;
-      }
-      const result = await db.execute({
-        sql: `UPDATE nodes SET pos_x = ?, pos_y = ?
-               WHERE id = ?`,
-        args: [entry.x, entry.y, entry.id],
-      });
-      updated += result.rowsAffected;
+    if (valid.length > 0) {
+      const results = await db.batch(
+        valid.map((entry) => ({
+          sql: "UPDATE nodes SET pos_x = ?, pos_y = ? WHERE id = ?",
+          args: [entry.x, entry.y, entry.id],
+        })),
+        "write",
+      );
+      for (const r of results) updated += r.rowsAffected;
     }
     respondJson(res, 200, { updated });
   } catch (err) {

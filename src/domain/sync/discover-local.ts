@@ -15,6 +15,7 @@ import {
   subpathFromMirror,
   type Section,
 } from "./remote-path.js";
+import { loadMirrorIgnore, type MirrorIgnore } from "./mirror-ignore.js";
 
 export interface UntrackedLocalEntry {
   node_id: string;
@@ -48,15 +49,18 @@ export async function listUntrackedLocal(
     const rp = r.remote_path as string | null;
     if (!rp) continue;
     try {
-      known.add(deriveLocalPath({ mirrorRoot, nodeRoot, remotePath: rp }));
+      // NFC keys; the walker normalizes readdir results the same way so a
+      // logical file is never re-listed under its other unicode byte form.
+      known.add(deriveLocalPath({ mirrorRoot, nodeRoot, remotePath: rp }).normalize("NFC"));
     } catch {
       /* ignore */
     }
   }
 
   const out: UntrackedLocalEntry[] = [];
+  const isIgnored = await loadMirrorIgnore(mirrorRoot);
   for (const section of ["wip", "outputs", "resources"] as Section[]) {
-    await walk(join(mirrorRoot, section), mirrorRoot, a.nodeId, known, out);
+    await walk(join(mirrorRoot, section), mirrorRoot, a.nodeId, known, isIgnored, out);
   }
   return out;
 }
@@ -66,6 +70,7 @@ async function walk(
   mirrorRoot: string,
   nodeId: string,
   known: Set<string>,
+  isIgnored: MirrorIgnore,
   out: UntrackedLocalEntry[],
 ): Promise<void> {
   let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }> = [];
@@ -76,10 +81,11 @@ async function walk(
   }
   for (const ent of entries) {
     const p = join(dir, ent.name);
+    if (isIgnored(p)) continue;
     if (ent.isDirectory()) {
-      await walk(p, mirrorRoot, nodeId, known, out);
+      await walk(p, mirrorRoot, nodeId, known, isIgnored, out);
     } else if (ent.isFile()) {
-      if (known.has(p)) continue;
+      if (known.has(p.normalize("NFC"))) continue;
       const sub = subpathFromMirror(mirrorRoot, p);
       if (!sub) continue;
       out.push({

@@ -158,7 +158,7 @@ describe("setupRemoteService gdrive validation", () => {
             type: "service_account",
             client_email: "x@y",
             private_key: "k",
-            token_uri: "t",
+            token_uri: "https://oauth2.googleapis.com/token",
           }),
         }),
       /shared_drive_id/,
@@ -179,7 +179,7 @@ describe("setupRemoteService gdrive validation", () => {
       type: "service_account",
       client_email: "a@b",
       private_key: "k",
-      token_uri: "t",
+      token_uri: "https://oauth2.googleapis.com/token",
     });
     try {
       await setupRemoteService(db, {

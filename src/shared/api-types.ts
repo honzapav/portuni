@@ -146,6 +146,11 @@ export type SyncRunResponse = {
   pulled: SyncRunFile[];
   adopted: SyncRunFile[];
   conflicts: SyncRunFile[];
+  // Locally deleted but still tracked + on the remote. Reported, never
+  // auto-restored: the deletion may be intentional, and resurrecting it
+  // on every sync makes the mirror impossible to clean up. Restore via
+  // portuni_pull { file_id }, or remove via portuni_delete_file.
+  deleted_local: SyncRunFile[];
   errors: SyncRunErrorFile[];
   skipped: SyncRunSkippedFile[];
 };

@@ -70,9 +70,20 @@ export interface MoveFileSuccess extends OpResult {
   moved_at: string;
 }
 
+// Section is the FIRST path segment after the node root
+// (org/<type-plural>/<node-key>/<section>/... or org/<section>/... for
+// organizations). A substring match would misread wip/sub/outputs/x as
+// "outputs". Segment 1 is checked first: for non-org nodes it is the type
+// plural (never a section name), so the check falls through to segment 3
+// unambiguously.
 function inferSectionFromPath(p: string): Section {
-  if (p.includes("/outputs/")) return "outputs";
-  if (p.includes("/resources/")) return "resources";
+  const parts = p.split("/");
+  for (const idx of [1, 3]) {
+    const seg = parts[idx];
+    if (seg === "outputs" || seg === "resources" || seg === "wip") {
+      return seg;
+    }
+  }
   return "wip";
 }
 
@@ -155,7 +166,11 @@ export async function moveFile(
   }
 
   // Best-effort ordered execution.
-  // 1. Remote move.
+  // 1. Remote move. Track which sub-step failed: in the cross-remote copy
+  // the destination put can succeed before the source delete fails, and
+  // then "No state changed" would be a lie -- the file exists on BOTH
+  // remotes and the user must clean up the source copy.
+  let remoteSubStep: "copy" | "delete_source" = "copy";
   try {
     if (!crossRemote) {
       const adapter = await getAdapter(db, oldRemoteName);
@@ -165,9 +180,11 @@ export async function moveFile(
       const dst = await getAdapter(db, newRemoteName);
       const bytes = await src.get(oldRemotePath);
       await dst.put(newRemotePath, bytes);
+      remoteSubStep = "delete_source";
       await src.delete(oldRemotePath);
     }
   } catch (e) {
+    const copied = remoteSubStep === "delete_source";
     return {
       status: "repair_needed",
       file_id: a.fileId,
@@ -177,24 +194,29 @@ export async function moveFile(
       moved_at: new Date().toISOString(),
       detail: {
         phase: "remote",
+        sub_step: remoteSubStep,
         error: (e as Error).message,
         old_remote_path: oldRemotePath,
         new_remote_path: newRemotePath,
       },
-      repair_hint:
-        "Remote move failed. No state changed. Retry the tool; if it still fails, inspect the remote manually.",
+      repair_hint: copied
+        ? `The file was copied to ${newRemoteName}:${newRemotePath}, but deleting the source copy at ${oldRemoteName}:${oldRemotePath} failed. The DB still tracks the source. Delete the source copy manually (or retry), then re-run the move.`
+        : "Remote move failed. No state changed. Retry the tool; if it still fails, inspect the remote manually.",
     };
   }
 
   // 2. Local move.
-  let localDone = true;
+  let localDone = false;
   if (oldLocalPath && newLocalPath && oldLocalPath !== newLocalPath) {
     try {
       await mkdir(dirname(newLocalPath), { recursive: true });
       await fsRename(oldLocalPath, newLocalPath);
+      localDone = true;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-        localDone = true;
+        // No local copy to move -- nothing was done locally; report that
+        // honestly instead of pretending the move happened.
+        localDone = false;
       } else {
         const now = new Date().toISOString();
         await db.execute({
@@ -331,13 +353,17 @@ export async function renameFolder(
   const newAbs = `${nodeRoot}/${a.newPrefix}`;
   const mirrorRoot = await getMirrorPath(a.userId, a.nodeId);
 
+  // Escape LIKE metacharacters in the prefix: "_" (common in folder names)
+  // matches any single character, so wip/my_notes would also select
+  // wip/myXnotes/... and "rename" those rows to themselves.
+  const likePrefix = oldAbs.replace(/[\\%_]/g, (ch) => `\\${ch}`);
   const rows = await db.execute({
-    sql: "SELECT id, filename, remote_name, remote_path FROM files WHERE node_id = ? AND remote_path LIKE ?",
-    args: [a.nodeId, `${oldAbs}/%`],
+    sql: "SELECT id, filename, remote_name, remote_path FROM files WHERE node_id = ? AND remote_path LIKE ? ESCAPE '\\'",
+    args: [a.nodeId, `${likePrefix}/%`],
   });
   const affected = rows.rows.map((r) => {
     const oldRemote = r.remote_path as string;
-    const newRemote = oldRemote.replace(oldAbs, newAbs);
+    const newRemote = `${newAbs}${oldRemote.slice(oldAbs.length)}`;
     return {
       file_id: r.id as string,
       filename: r.filename as string,
@@ -521,9 +547,15 @@ export async function adoptFiles(
     const id = ulid();
     const now = new Date().toISOString();
     const filename = p.split("/").pop() ?? p;
-    await db.execute({
+    // DO NOTHING + RETURNING: a concurrent adopt/store of the same path
+    // between the pre-check above and this INSERT degrades to a skip
+    // instead of a duplicate row (idx_files_unique_remote).
+    const inserted = await db.execute({
       sql: `INSERT INTO files (id, node_id, filename, status, remote_name, remote_path, current_remote_hash, is_native_format, last_pushed_by, last_pushed_at, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL
+            DO NOTHING
+            RETURNING id`,
       args: [
         id,
         a.nodeId,
@@ -540,6 +572,10 @@ export async function adoptFiles(
         now,
       ],
     });
+    if (inserted.rows.length === 0) {
+      skipped.push({ remote_path: p, reason: "already tracked" });
+      continue;
+    }
     await db.execute({
       sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
             VALUES (?, ?, 'sync_adopt', 'file', ?, ?, ?)`,
@@ -740,6 +776,10 @@ export interface RenameFileResult {
   new_remote_path: string;
   new_local_path: string | null;
   renamed_at: string;
+  // "repair_needed": the remote object and the DB row are at the new path,
+  // but the local mirror copy could not be renamed -- see repair_hint.
+  status: "ok" | "repair_needed";
+  repair_hint?: string;
 }
 
 // Rename just the filename, keeping the file in its current section/subpath
@@ -794,12 +834,19 @@ export async function renameFile(
   const adapter = await getAdapter(db, remoteName);
   await adapter.rename(oldRemotePath, newRemotePath);
 
+  // From here on the remote object lives at the new path. A local failure
+  // must NOT abort before the DB UPDATE below -- that would leave the row
+  // pointing at the old remote path (every scan classifies it orphan).
+  // Record the failure and report repair_needed instead, like moveFile.
+  let localError: string | null = null;
   if (oldLocalPath && newLocalPath && oldLocalPath !== newLocalPath) {
     try {
       await mkdir(dirname(newLocalPath), { recursive: true });
       await fsRename(oldLocalPath, newLocalPath);
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+        localError = (e as Error).message;
+      }
     }
   }
 
@@ -831,5 +878,11 @@ export async function renameFile(
     new_remote_path: newRemotePath,
     new_local_path: newLocalPath,
     renamed_at: now,
+    status: localError === null ? "ok" : "repair_needed",
+    ...(localError !== null
+      ? {
+          repair_hint: `Remote and DB renamed, but the local mirror copy could not be moved (${localError}). Rename ${oldLocalPath} to ${newLocalPath} manually, or delete the local copy and pull.`,
+        }
+      : {}),
   };
 }

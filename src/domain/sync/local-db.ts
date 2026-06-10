@@ -5,8 +5,11 @@ import { homedir } from "node:os";
 
 export interface FileStateRow {
   file_id: string;
-  last_synced_hash: string;
-  last_synced_at: string;
+  // NULL = this device has never synced the file; the row only carries the
+  // local hash cache. Never guess a baseline -- unknown must classify as
+  // conflict, not clean/pull/push.
+  last_synced_hash: string | null;
+  last_synced_at: string | null;
   cached_local_hash: string | null;
   cached_mtime: number | null;
   cached_size: number | null;
@@ -38,12 +41,13 @@ function workspaceRoot(): string {
 async function ensureSchema(db: Client): Promise<void> {
   await db.execute(`CREATE TABLE IF NOT EXISTS file_state (
     file_id TEXT PRIMARY KEY,
-    last_synced_hash TEXT NOT NULL,
-    last_synced_at DATETIME NOT NULL,
+    last_synced_hash TEXT,
+    last_synced_at DATETIME,
     cached_local_hash TEXT,
     cached_mtime INTEGER,
     cached_size INTEGER
   )`);
+  await migrateFileStateNullableBaseline(db);
   await db.execute(
     "CREATE INDEX IF NOT EXISTS idx_file_state_cached_hash ON file_state(cached_local_hash)",
   );
@@ -62,12 +66,48 @@ async function ensureSchema(db: Client): Promise<void> {
   )`);
 }
 
+// sync.db files created before 2026-06 declared last_synced_hash /
+// last_synced_at NOT NULL, which made it impossible to store a cache-only
+// row for a file this device has never synced. SQLite cannot drop NOT NULL
+// in place, so rebuild the table once, preserving rows.
+async function migrateFileStateNullableBaseline(db: Client): Promise<void> {
+  const info = await db.execute("PRAGMA table_info(file_state)");
+  const col = info.rows.find((r) => r.name === "last_synced_hash");
+  if (!col || Number(col.notnull) === 0) return;
+  await db.batch(
+    [
+      `CREATE TABLE file_state_new (
+        file_id TEXT PRIMARY KEY,
+        last_synced_hash TEXT,
+        last_synced_at DATETIME,
+        cached_local_hash TEXT,
+        cached_mtime INTEGER,
+        cached_size INTEGER
+      )`,
+      `INSERT INTO file_state_new SELECT file_id, last_synced_hash, last_synced_at,
+        cached_local_hash, cached_mtime, cached_size FROM file_state`,
+      "DROP TABLE file_state",
+      "ALTER TABLE file_state_new RENAME TO file_state",
+      "CREATE INDEX IF NOT EXISTS idx_file_state_cached_hash ON file_state(cached_local_hash)",
+    ],
+    "write",
+  );
+}
+
 export async function getLocalDb(): Promise<Client> {
   const dir = join(workspaceRoot(), ".portuni");
   const path = join(dir, "sync.db");
   if (cached && cachedPath === path) return cached;
   await mkdir(dir, { recursive: true });
   const db = createClient({ url: `file:${path}` });
+  // Two processes share this file (desktop sidecar + tmux MCP server).
+  // Without a busy timeout a write lock in one makes the other's reads
+  // fail instantly with SQLITE_BUSY -- files then flicker to "orphan".
+  try {
+    await db.execute("PRAGMA busy_timeout = 5000");
+  } catch {
+    /* older driver without pragma support -- timeouts stay default */
+  }
   await ensureSchema(db);
   cached = db;
   cachedPath = path;
@@ -81,10 +121,17 @@ export function resetLocalDbForTests(): void {
 
 // file_state CRUD
 export async function upsertFileState(
-  row: Omit<FileStateRow, "last_synced_at"> & { last_synced_at?: string },
+  row: Omit<FileStateRow, "last_synced_at"> & { last_synced_at?: string | null },
 ): Promise<void> {
   const db = await getLocalDb();
-  const ts = row.last_synced_at ?? new Date().toISOString();
+  // Default the timestamp to now only when there is an actual baseline;
+  // cache-only rows (last_synced_hash null) carry no synced-at either.
+  const ts =
+    row.last_synced_at !== undefined
+      ? row.last_synced_at
+      : row.last_synced_hash !== null
+        ? new Date().toISOString()
+        : null;
   await db.execute({
     sql: `INSERT INTO file_state (file_id, last_synced_hash, last_synced_at, cached_local_hash, cached_mtime, cached_size)
           VALUES (?, ?, ?, ?, ?, ?)
@@ -115,8 +162,8 @@ export async function getFileState(fileId: string): Promise<FileStateRow | null>
   const row = r.rows[0];
   return {
     file_id: row.file_id as string,
-    last_synced_hash: row.last_synced_hash as string,
-    last_synced_at: row.last_synced_at as string,
+    last_synced_hash: (row.last_synced_hash as string | null) ?? null,
+    last_synced_at: (row.last_synced_at as string | null) ?? null,
     cached_local_hash: (row.cached_local_hash as string | null) ?? null,
     cached_mtime: row.cached_mtime === null ? null : Number(row.cached_mtime),
     cached_size: row.cached_size === null ? null : Number(row.cached_size),

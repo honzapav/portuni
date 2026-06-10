@@ -87,20 +87,23 @@ export function createOpenDALAdapter(
       return statToRef(path);
     },
     async list(prefix) {
-      // OpenDAL requires the prefix path to end with "/" for non-recursive
-      // listing. Empty prefix means root.
+      // OpenDAL requires the prefix path to end with "/". Empty prefix
+      // means root. Recursive: callers (runDiscovery) expect the whole
+      // node subtree -- synced files always live under section dirs
+      // (wip/, outputs/, resources/), so a one-level list would make
+      // new_remote discovery blind. Mirrors the Drive adapter's walk.
       const normalized =
         prefix === "" ? "" : prefix.endsWith("/") ? prefix : `${prefix}/`;
       let entries: Awaited<ReturnType<typeof op.list>>;
       try {
-        entries = await op.list(normalized);
+        entries = await op.list(normalized, { recursive: true });
       } catch {
         return [];
       }
       const out: FileRef[] = [];
       for (const entry of entries) {
         const p = entry.path();
-        // Listing returns the directory itself plus children; skip dirs.
+        // Listing returns directories too; skip them.
         if (p.endsWith("/") || p === normalized) continue;
         const meta = entry.metadata();
         if (typeof meta.isFile === "function" && !meta.isFile()) continue;

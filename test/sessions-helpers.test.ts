@@ -15,6 +15,7 @@ const baseNode = {
   nodeType: "project" as const,
   cwd: "/tmp/a",
   command: "claude 'hello'",
+  sandboxProfile: "(version 1)\n(allow default)\n",
 };
 
 describe("sessions helpers", () => {
@@ -25,6 +26,11 @@ describe("sessions helpers", () => {
     assert.equal(s.createdAt, now);
     assert.equal(s.lastOutputAt, now);
     assert.match(s.id, /^term_node_a_/);
+  });
+
+  it("createSession carries the sandbox profile through to the session", () => {
+    const s = createSession(baseNode, 1);
+    assert.equal(s.sandboxProfile, "(version 1)\n(allow default)\n");
   });
 
   it("removeSession returns a new array without the matching id", () => {
@@ -40,6 +46,19 @@ describe("sessions helpers", () => {
     const out = markActivity([a, b], a.id, 999);
     assert.equal(out.find((s) => s.id === a.id)!.lastOutputAt, 999);
     assert.equal(out.find((s) => s.id === b.id)!.lastOutputAt, 2);
+  });
+
+  it("markActivity returns the same array reference within the throttle window", () => {
+    const a = createSession(baseNode, 1000);
+    const sessions = [a];
+    // Within 250ms of the last recorded output the update is skipped --
+    // pty-data fires per byte chunk and each fresh array re-renders every
+    // consumer of the sessions state.
+    const throttled = markActivity(sessions, a.id, 1100);
+    assert.equal(throttled, sessions, "update within throttle window must be skipped");
+    const after = markActivity(sessions, a.id, 1300);
+    assert.notEqual(after, sessions);
+    assert.equal(after.find((s) => s.id === a.id)!.lastOutputAt, 1300);
   });
 
   it("isSessionActive uses 1500ms threshold by default", () => {

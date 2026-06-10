@@ -4,6 +4,7 @@ import { getDb } from "../../infra/db.js";
 import { logAudit } from "../../infra/audit.js";
 import { SOLO_USER, EVENT_TYPES, EVENT_STATUSES } from "../../infra/schema.js";
 import { EventRow } from "../../shared/types.js";
+import { supersedeEventInternal } from "../../domain/events.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { SessionScope } from "../scope.js";
@@ -160,63 +161,28 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
     },
     async (args) => {
       const db = getDb();
-
-      const existing = await db.execute({
-        sql: "SELECT * FROM events WHERE id = ?",
-        args: [args.event_id],
-      });
-      if (existing.rows.length === 0) {
-        return {
-          content: [{ type: "text" as const, text: `Error: event ${args.event_id} not found` }],
-          isError: true,
-        };
+      let result: Awaited<ReturnType<typeof supersedeEventInternal>>;
+      try {
+        result = await supersedeEventInternal(db, SOLO_USER, {
+          eventId: args.event_id,
+          newContent: args.new_content,
+          meta: args.meta,
+        });
+      } catch (e) {
+        if (e instanceof Error && /not found/.test(e.message)) {
+          return {
+            content: [{ type: "text" as const, text: `Error: event ${args.event_id} not found` }],
+            isError: true,
+          };
+        }
+        throw e;
       }
-
-      const oldRow = EventRow.parse(existing.rows[0]);
-
-      // Mark old event as superseded
-      await db.execute({
-        sql: "UPDATE events SET status = ? WHERE id = ?",
-        args: ["superseded", args.event_id],
-      });
-
-      // Create new event
-      const newId = ulid();
-      const now = new Date().toISOString();
-      const newMeta = args.meta ? JSON.stringify(args.meta) : oldRow.meta;
-
-      await db.execute({
-        sql: `INSERT INTO events (id, node_id, type, content, meta, status, refs, task_ref, created_by, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [
-          newId,
-          oldRow.node_id,
-          oldRow.type,
-          args.new_content,
-          newMeta,
-          "active",
-          JSON.stringify([args.event_id]),
-          oldRow.task_ref,
-          SOLO_USER,
-          now,
-        ],
-      });
-
-      await logAudit(SOLO_USER, "supersede_event", "event", newId, {
-        superseded_id: args.event_id,
-        node_id: oldRow.node_id,
-      });
 
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({
-              new_id: newId,
-              superseded_id: args.event_id,
-              node_id: oldRow.node_id,
-              status: "active",
-            }),
+            text: JSON.stringify({ ...result, status: "active" }),
           },
         ],
       };

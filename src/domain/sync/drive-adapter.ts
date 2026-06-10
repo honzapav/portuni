@@ -67,8 +67,12 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
       walked = walked ? `${walked}/${seg}` : seg;
       if (pathCache.has(walked)) { parentId = pathCache.get(walked)!; continue; }
       const q = `name = '${seg.replace(/'/g, "\\'")}' and '${parentId}' in parents and trashed = false`;
+      // orderBy pins the winner when same-name siblings exist (concurrent
+      // puts from two devices): the oldest copy resolves consistently
+      // instead of files[0] flapping between duplicates per call.
       const params = withSAD(new URLSearchParams({
         q, fields: "files(id,name,mimeType)",
+        orderBy: "createdTime",
         includeItemsFromAllDrives: "true",
         driveId: cfg.shared_drive_id, corpora: "drive",
       }));
@@ -93,6 +97,7 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
       const q = `name = '${seg.replace(/'/g, "\\'")}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
       const params = withSAD(new URLSearchParams({
         q, fields: "files(id,name)",
+        orderBy: "createdTime",
         includeItemsFromAllDrives: "true",
         driveId: cfg.shared_drive_id, corpora: "drive",
       }));

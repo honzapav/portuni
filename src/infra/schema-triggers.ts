@@ -110,6 +110,12 @@ export const DDL = [
     updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_files_node ON files(node_id)`,
+  // One files row per remote object. Concurrent writers (sidecar + tmux
+  // server + agents) do SELECT-then-INSERT; without this index a lost race
+  // registers the same remote file twice and a later delete of either row
+  // trashes the remote while stranding the other.
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_files_unique_remote
+     ON files(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,
     node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,

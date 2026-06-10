@@ -5,7 +5,7 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import { getDb } from "../infra/db.js";
 import { logAudit } from "../infra/audit.js";
-import { EVENT_TYPES, SOLO_USER } from "../infra/schema.js";
+import { EVENT_TYPES, EVENT_STATUSES, SOLO_USER } from "../infra/schema.js";
 import { parseBody, parseJsonBody, respondError , respondJson} from "../http/middleware.js";
 
 const CreateEventBody = z.object({
@@ -93,6 +93,14 @@ export async function handleUpdateEvent(
       values.push(body.type);
     }
     if (typeof body.status === "string") {
+      // Validate up front like `type` -- relying on the DB CHECK produced
+      // an opaque 409 instead of an actionable 400.
+      if (!(EVENT_STATUSES as readonly string[]).includes(body.status)) {
+        respondJson(res, 400, {
+          error: `invalid status; must be one of ${EVENT_STATUSES.join(", ")}`,
+        });
+        return;
+      }
       updates.push("status = ?");
       values.push(body.status);
     }

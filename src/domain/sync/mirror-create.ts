@@ -50,7 +50,8 @@ export class MirrorCreateError extends Error {
     readonly code:
       | "NODE_NOT_FOUND"
       | "WORKSPACE_ROOT_UNSET"
-      | "PATH_TRAVERSAL",
+      | "PATH_TRAVERSAL"
+      | "PATH_IN_USE",
   ) {
     super(message);
     this.name = "MirrorCreateError";
@@ -69,15 +70,6 @@ export type CreateMirrorResult = {
     portuni_root: string | null;
   };
 };
-
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-}
 
 async function scaffoldRemoteStructure(
   db: Client,
@@ -160,12 +152,16 @@ async function materializeAndRegen(
   return { ...aggregated, portuni_root: portuniRoot };
 }
 
-// Resolve {root}/{org-slug}/{type-plural}/{node-slug} (or {root}/{org-slug}
+// Resolve {root}/{org-key}/{type-plural}/{node-key} (or {root}/{org-key}
 // for organizations themselves), honouring an optional safe override path.
+// Leafs come from sync_key, NOT slugify(name): sync_key is unique (collision
+// names get a numeric suffix at create time), while two names can slug to
+// the same leaf and would silently register one directory for two nodes --
+// every status scan afterwards cross-attributes their files.
 async function resolveMirrorPath(
   db: Client,
   nodeId: string,
-  nodeName: string,
+  nodeSyncKey: string,
   nodeType: string,
   customPath: string | undefined,
   workspaceRoot: string,
@@ -183,22 +179,21 @@ async function resolveMirrorPath(
       throw e;
     }
   }
-  const slug = slugify(nodeName);
   if (nodeType === "organization") {
-    return join(workspaceRoot, slug);
+    return join(workspaceRoot, nodeSyncKey);
   }
   const orgRow = await db.execute({
-    sql: `SELECT n.name FROM edges e JOIN nodes n ON n.id = e.target_id
+    sql: `SELECT n.sync_key FROM edges e JOIN nodes n ON n.id = e.target_id
           WHERE e.source_id = ? AND e.relation = 'belongs_to' AND n.type = 'organization'
           LIMIT 1`,
     args: [nodeId],
   });
   const typePlural = TYPE_PLURAL[nodeType] ?? nodeType;
   if (orgRow.rows.length > 0) {
-    const orgSlug = slugify(orgRow.rows[0].name as string);
-    return join(workspaceRoot, orgSlug, typePlural, slug);
+    const orgKey = orgRow.rows[0].sync_key as string;
+    return join(workspaceRoot, orgKey, typePlural, nodeSyncKey);
   }
-  return join(workspaceRoot, typePlural, slug);
+  return join(workspaceRoot, typePlural, nodeSyncKey);
 }
 
 // Idempotent. If a mirror is already registered for (userId, nodeId), the
@@ -209,7 +204,7 @@ export async function createMirrorForNode(
   args: { nodeId: string; customPath?: string },
 ): Promise<CreateMirrorResult> {
   const nodeResult = await db.execute({
-    sql: "SELECT id, name, type FROM nodes WHERE id = ?",
+    sql: "SELECT id, name, type, sync_key FROM nodes WHERE id = ?",
     args: [args.nodeId],
   });
   if (nodeResult.rows.length === 0) {
@@ -219,8 +214,8 @@ export async function createMirrorForNode(
     );
   }
   const row = nodeResult.rows[0];
-  const nodeName = row.name as string;
   const nodeType = row.type as string;
+  const nodeSyncKey = row.sync_key as string;
 
   // Already mirrored on this device — short-circuit. We do not re-validate
   // the directory on disk; reconciling that is the registry's job and
@@ -249,11 +244,25 @@ export async function createMirrorForNode(
   const localPath = await resolveMirrorPath(
     db,
     args.nodeId,
-    nodeName,
+    nodeSyncKey,
     nodeType,
     args.customPath,
     root,
   );
+
+  // One directory, one node. Registering a second node at an existing
+  // mirror path (via customPath, or a stale registry) would make every
+  // status scan attribute one folder's files to two nodes.
+  const mirrors = await listUserMirrors(userId);
+  const taken = mirrors.find(
+    (m) => m.local_path === localPath && m.node_id !== args.nodeId,
+  );
+  if (taken) {
+    throw new MirrorCreateError(
+      `path ${localPath} is already registered as the mirror of node ${taken.node_id}`,
+      "PATH_IN_USE",
+    );
+  }
 
   const subdirs = ["outputs", "wip", "resources"];
   for (const subdir of subdirs) {

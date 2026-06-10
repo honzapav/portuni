@@ -5,12 +5,22 @@
 
 import type { Client } from "@libsql/client";
 import { writeAudit } from "../infra/audit.js";
+import { resolveNodeInfo } from "./sync/node-info.js";
+import { buildNodeRoot } from "./sync/remote-path.js";
+import { resolveRemote } from "./sync/routing.js";
+import { getAdapter } from "./sync/adapter-cache.js";
 
 export type MoveNodeResult = {
   moved: boolean;
   edge_id: string;
   from_org_id: string;
   to_org_id: string;
+  // File migration outcome. Every tracked remote path is rooted at the
+  // org sync_key, so the move rewrites them; failures stay listed here
+  // (the rows keep their new path, the remote object may need a manual
+  // re-run / repair).
+  files_migrated: number;
+  files_repair_needed: Array<{ file_id: string; error: string }>;
 };
 
 // Disconnect an edge by id. Pre-checks the org-invariant before letting
@@ -131,7 +141,69 @@ export async function moveNodeToOrganization(
   const fromOrgId = existing.rows[0].target_id as string;
 
   if (fromOrgId === newOrgId) {
-    return { moved: false, edge_id: edgeId, from_org_id: fromOrgId, to_org_id: newOrgId };
+    return {
+      moved: false,
+      edge_id: edgeId,
+      from_org_id: fromOrgId,
+      to_org_id: newOrgId,
+      files_migrated: 0,
+      files_repair_needed: [],
+    };
+  }
+
+  // Every tracked file's remote_path starts with the org sync_key
+  // (org/<type-plural>/<node-key>/...), so rebinding the edge without
+  // touching the files would orphan all of them: deriveLocalPath rejects
+  // paths outside the new node root and new stores would split into a
+  // different subtree. Plan the migration up front and refuse moves the
+  // sync layer cannot carry out (different remote for the new org).
+  const tracked = await db.execute({
+    sql: "SELECT id, remote_name, remote_path FROM files WHERE node_id = ? AND remote_path IS NOT NULL",
+    args: [nodeId],
+  });
+
+  const migration: Array<{
+    file_id: string;
+    remote_name: string;
+    old_remote_path: string;
+    new_remote_path: string;
+  }> = [];
+  if (tracked.rows.length > 0) {
+    const oldInfo = await resolveNodeInfo(db, nodeId);
+    const oldRoot = buildNodeRoot(oldInfo);
+    const newOrgKeyRes = await db.execute({
+      sql: "SELECT sync_key FROM nodes WHERE id = ?",
+      args: [newOrgId],
+    });
+    const newOrgKey = newOrgKeyRes.rows[0].sync_key as string;
+    const newRoot = buildNodeRoot({ ...oldInfo, orgSyncKey: newOrgKey });
+
+    const targetRemote = await resolveRemote(db, oldInfo.nodeType, newOrgKey);
+    for (const r of tracked.rows) {
+      const remoteName = r.remote_name as string;
+      if (targetRemote !== null && targetRemote !== remoteName) {
+        throw new Error(
+          `cannot move node ${nodeId} to organization ${newOrgId}: its files live on remote "${remoteName}" but the new organization routes to remote "${targetRemote}". Move the files individually (portuni_move_file) or adjust the routing first.`,
+        );
+      }
+      const oldRemote = r.remote_path as string;
+      if (!oldRemote.startsWith(`${oldRoot}/`)) {
+        // Already inconsistent before the move; leave it alone and report.
+        migration.push({
+          file_id: r.id as string,
+          remote_name: remoteName,
+          old_remote_path: oldRemote,
+          new_remote_path: oldRemote,
+        });
+        continue;
+      }
+      migration.push({
+        file_id: r.id as string,
+        remote_name: remoteName,
+        old_remote_path: oldRemote,
+        new_remote_path: `${newRoot}${oldRemote.slice(oldRoot.length)}`,
+      });
+    }
   }
 
   await db.execute({
@@ -139,11 +211,47 @@ export async function moveNodeToOrganization(
     args: [newOrgId, edgeId],
   });
 
+  // Per-file remote rename + row update, after the edge rebind so a crash
+  // mid-loop leaves files visibly orphaned under the *new* org (repairable,
+  // and reported below) rather than silently split across two orgs.
+  let migrated = 0;
+  const repairNeeded: Array<{ file_id: string; error: string }> = [];
+  const now = new Date().toISOString();
+  for (const f of migration) {
+    if (f.old_remote_path === f.new_remote_path) {
+      repairNeeded.push({
+        file_id: f.file_id,
+        error: `remote_path did not start with the old node root; left unchanged (${f.old_remote_path})`,
+      });
+      continue;
+    }
+    try {
+      const adapter = await getAdapter(db, f.remote_name);
+      await adapter.rename(f.old_remote_path, f.new_remote_path);
+      await db.execute({
+        sql: "UPDATE files SET remote_path = ?, updated_at = ? WHERE id = ?",
+        args: [f.new_remote_path, now, f.file_id],
+      });
+      migrated++;
+    } catch (e) {
+      repairNeeded.push({ file_id: f.file_id, error: String(e) });
+    }
+  }
+
   await writeAudit(db, userId, "move_node", "node", nodeId, {
     edge_id: edgeId,
     from_org_id: fromOrgId,
     to_org_id: newOrgId,
+    files_migrated: migrated,
+    files_repair_needed: repairNeeded.length,
   });
 
-  return { moved: true, edge_id: edgeId, from_org_id: fromOrgId, to_org_id: newOrgId };
+  return {
+    moved: true,
+    edge_id: edgeId,
+    from_org_id: fromOrgId,
+    to_org_id: newOrgId,
+    files_migrated: migrated,
+    files_repair_needed: repairNeeded,
+  };
 }

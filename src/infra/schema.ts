@@ -67,6 +67,17 @@ async function seedSoloUser(db: Client): Promise<void> {
 // run all idempotent migrations) against an arbitrary libsql client.
 // Used by ensureSchema() at startup and by tests against :memory: DBs.
 export async function ensureSchemaOn(db: Client): Promise<void> {
+  // SQLite defaults to foreign_keys OFF per connection, which silently
+  // disables every ON DELETE CASCADE in the schema on local file:/:memory:
+  // databases (Turso/sqld enforces FKs server-side regardless). The pragma
+  // is connection-scoped and this is the funnel every entry point and test
+  // routes its client through. Remote HTTP clients may reject PRAGMA --
+  // fine, enforcement is already on over there.
+  try {
+    await db.execute("PRAGMA foreign_keys = ON");
+  } catch {
+    /* remote connection; FKs enforced server-side */
+  }
   // Migration 013 sync_key NOT-NULL triggers are intentionally NOT in this
   // loop — they reference the sync_key column, which on existing pre-013
   // DBs does not yet exist when ensureSchema runs. The 013 migration

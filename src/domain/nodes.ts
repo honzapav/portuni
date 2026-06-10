@@ -36,6 +36,35 @@ export async function purgeNodeLocalCleanup(
   }
 }
 
+// Hard-delete a node and every row hanging off it. The node row goes first:
+// the prevent_orphan_on_edge_delete trigger aborts when a belongs_to edge of
+// a still-existing non-org node is deleted, so deleting edges before the node
+// (the old order) made purge fail for every non-organization node. With the
+// node gone the trigger's type-subquery is NULL and stays quiet. The explicit
+// child deletes back up the FK CASCADEs for connections where the
+// foreign_keys pragma is not (yet) enabled.
+export async function purgeNodeRows(db: Client, nodeId: string): Promise<void> {
+  await db.batch(
+    [
+      { sql: "DELETE FROM nodes WHERE id = ?", args: [nodeId] },
+      {
+        sql: "DELETE FROM edges WHERE source_id = ? OR target_id = ?",
+        args: [nodeId, nodeId],
+      },
+      { sql: "DELETE FROM files WHERE node_id = ?", args: [nodeId] },
+      { sql: "DELETE FROM events WHERE node_id = ?", args: [nodeId] },
+      {
+        sql: "DELETE FROM responsibility_assignments WHERE responsibility_id IN (SELECT id FROM responsibilities WHERE node_id = ?)",
+        args: [nodeId],
+      },
+      { sql: "DELETE FROM responsibilities WHERE node_id = ?", args: [nodeId] },
+      { sql: "DELETE FROM data_sources WHERE node_id = ?", args: [nodeId] },
+      { sql: "DELETE FROM tools WHERE node_id = ?", args: [nodeId] },
+    ],
+    "write",
+  );
+}
+
 const CreateNodeInput = z.object({
   type: z.enum(NODE_TYPES),
   name: z.string(),

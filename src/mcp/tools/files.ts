@@ -46,8 +46,13 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
         status: args.status,
         subpath: args.subpath ?? null,
       });
+      // local_path intentionally excluded: the audit log lives in Turso
+      // and absolute machine paths should not leave the device.
       await logAudit(SOLO_USER, "portuni_store", "file", result.file_id, {
-        ...result,
+        file_id: result.file_id,
+        remote_name: result.remote_name,
+        remote_path: result.remote_path,
+        hash: result.hash,
       });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
@@ -61,6 +66,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
     {
       file_id: z.string().optional().describe("File ID (ULID). Download mode — fetches the remote version into the mirror."),
       node_id: z.string().optional().describe("Node ID (ULID). Preview mode — classifies each file without modifying anything."),
+      force: z.boolean().optional().describe("Download mode only: overwrite the local file even when it has unpushed local changes. Default false — such pulls are refused to protect local edits."),
     },
     async (args) => {
       if (!args.file_id && !args.node_id) {
@@ -68,7 +74,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
       }
       const db = getDb();
       if (args.file_id) {
-        const r = await pullFile(db, { userId: SOLO_USER, fileId: args.file_id });
+        const r = await pullFile(db, { userId: SOLO_USER, fileId: args.file_id, force: args.force });
         return {
           content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }],
         };
@@ -86,6 +92,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
     {
       node_id: z.string().optional(),
       status: z.enum(FILE_STATUSES).optional(),
+      limit: z.number().int().min(1).max(2000).optional().describe("Max rows (default 500, newest first)"),
     },
     async (args) => {
       const db = getDb();
@@ -135,9 +142,20 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
                        WHERE e.source_id = f.node_id AND e.relation = 'belongs_to' AND org.type = 'organization' LIMIT 1) AS org_sync_key
               FROM files f JOIN nodes n ON f.node_id = n.id
               ${where}
-              ORDER BY f.updated_at DESC`,
-        args: params,
+              ORDER BY f.updated_at DESC
+              LIMIT ?`,
+        args: [...params, args.limit ?? 500],
       });
+
+      // One mirror lookup per node, not per file row (it hits the local
+      // sync.db each time).
+      const mirrorByNode = new Map<string, string | null>();
+      for (const row of result.rows) {
+        const nodeId = row.node_id as string;
+        if (!mirrorByNode.has(nodeId)) {
+          mirrorByNode.set(nodeId, await getMirrorPath(SOLO_USER, nodeId));
+        }
+      }
 
       const enriched = await Promise.all(
         result.rows.map(async (row) => {
@@ -145,7 +163,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
           const rp = row.remote_path as string | null;
           let localPath: string | null = null;
           if (rp) {
-            const mirror = await getMirrorPath(SOLO_USER, nodeId);
+            const mirror = mirrorByNode.get(nodeId) ?? null;
             if (mirror) {
               const nodeRoot = buildNodeRoot({
                 orgSyncKey: (row.org_sync_key as string | null) ?? null,

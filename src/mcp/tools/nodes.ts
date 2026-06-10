@@ -16,6 +16,7 @@ import type { InValue } from "@libsql/client";
 import {
   createNodeInternal,
   purgeNodeLocalCleanup,
+  purgeNodeRows,
   updateNodeInternal,
 } from "../../domain/nodes.js";
 import { decideGlobalQuery, type SessionScope } from "../scope.js";
@@ -300,16 +301,7 @@ export function registerNodeTools(server: McpServer, scope: SessionScope): void 
 
       const mirrorPath = await getMirrorPath(SOLO_USER, args.node_id);
 
-      // Delete edges first so the orphan-prevention trigger does not fire
-      // during CASCADE. Then delete the node (remaining CASCADE covers
-      // files, events, mirrors).
-      await db.batch(
-        [
-          { sql: "DELETE FROM edges WHERE source_id = ? OR target_id = ?", args: [args.node_id, args.node_id] },
-          { sql: "DELETE FROM nodes WHERE id = ?", args: [args.node_id] },
-        ],
-        "write",
-      );
+      await purgeNodeRows(db, args.node_id);
 
       await purgeNodeLocalCleanup(db, SOLO_USER, args.node_id);
 

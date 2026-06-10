@@ -85,12 +85,27 @@ export type ContextPayload = {
 
 // --- Helpers (pure, take Client) ---
 
+// Cached per client: tables are only ever created (by migrations at boot),
+// never dropped at runtime, and this used to be re-queried for every
+// connected node on the hot get-context path -- one Turso round trip each.
+const tableExistsCache = new WeakMap<Client, Map<string, boolean>>();
+
 async function tableExists(db: Client, name: string): Promise<boolean> {
+  let perDb = tableExistsCache.get(db);
+  if (perDb?.has(name)) return perDb.get(name)!;
   const res = await db.execute({
     sql: "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
     args: [name],
   });
-  return res.rows.length > 0;
+  const exists = res.rows.length > 0;
+  if (!perDb) {
+    perDb = new Map();
+    tableExistsCache.set(db, perDb);
+  }
+  // Only cache positive answers: a missing table will appear after the
+  // migration that creates it, and we must notice.
+  if (exists) perDb.set(name, true);
+  return exists;
 }
 
 async function fetchOwner(db: Client, ownerId: string | null): Promise<ContextOwner | null> {
@@ -174,15 +189,6 @@ async function fetchAttrRows(db: Client, table: "data_sources" | "tools", nodeId
   }));
 }
 
-async function fetchResponsibilitiesCount(db: Client, nodeId: string): Promise<number> {
-  const has = await tableExists(db, "responsibilities");
-  if (!has) return 0;
-  const res = await db.execute({
-    sql: "SELECT COUNT(*) AS c FROM responsibilities WHERE node_id = ?",
-    args: [nodeId],
-  });
-  return Number(res.rows[0].c ?? 0);
-}
 
 // --- Main entry point ---
 
@@ -340,53 +346,83 @@ export async function buildContextPayload(
   };
 
   // 6. Build connected nodes (depth >= 1) with lightweight enrichment.
-  const connected: ContextConnectedNode[] = [];
-  for (const row of walkResult.rows) {
-    const id = row.node_id as string;
-    if (id === nodeId) continue; // root handled above
-    const nodeDepth = row.d as number;
+  // Batched: the previous per-node loop ran up to 4 sequential queries per
+  // connected node -- 100+ Turso round trips for a well-connected node on
+  // the hot "start work" path. Three IN() queries replace all of them.
+  const connectedRows = walkResult.rows.filter((row) => (row.node_id as string) !== nodeId);
+  const depth1Ids = connectedRows
+    .filter((row) => (row.d as number) === 1)
+    .map((row) => row.node_id as string);
+  const ownerIds = [
+    ...new Set(
+      connectedRows
+        .map((row) => (row.owner_id as string | null) ?? null)
+        .filter((v): v is string => v !== null),
+    ),
+  ];
 
-    let events: Array<Record<string, unknown>> = [];
-    if (nodeDepth === 1) {
-      const evRes = await db.execute({
-        sql: `SELECT id, type, content, status, created_at
-                FROM events WHERE node_id = ? AND status = 'active'
-                ORDER BY created_at DESC LIMIT 5`,
-        args: [id],
-      });
-      events = evRes.rows.map((e) => ({
+  const eventsByNode = new Map<string, Array<Record<string, unknown>>>();
+  if (depth1Ids.length > 0) {
+    const ph = depth1Ids.map(() => "?").join(",");
+    const evRes = await db.execute({
+      sql: `SELECT node_id, id, type, content, created_at FROM (
+              SELECT node_id, id, type, content, created_at,
+                     ROW_NUMBER() OVER (PARTITION BY node_id ORDER BY created_at DESC) AS rn
+                FROM events WHERE node_id IN (${ph}) AND status = 'active'
+            ) WHERE rn <= 5 ORDER BY created_at DESC`,
+      args: depth1Ids,
+    });
+    for (const e of evRes.rows) {
+      const nid = e.node_id as string;
+      if (!eventsByNode.has(nid)) eventsByNode.set(nid, []);
+      eventsByNode.get(nid)!.push({
         id: e.id as string,
         type: e.type as string,
         content: e.content as string,
         created_at: e.created_at as string,
-      }));
+      });
     }
-    // depth >= 2: no events
+  }
 
-    const ownerName = await (async () => {
-      const oid = (row.owner_id as string | null) ?? null;
-      if (!oid) return null;
-      const o = await fetchOwner(db, oid);
-      return o ? o.name : null;
-    })();
+  const ownerNameById = new Map<string, string>();
+  if (ownerIds.length > 0 && (await tableExists(db, "actors"))) {
+    const ph = ownerIds.map(() => "?").join(",");
+    const oRes = await db.execute({
+      sql: `SELECT id, name FROM actors WHERE id IN (${ph})`,
+      args: ownerIds,
+    });
+    for (const o of oRes.rows) ownerNameById.set(o.id as string, o.name as string);
+  }
 
-    const respCount = await fetchResponsibilitiesCount(db, id);
+  const respCountByNode = new Map<string, number>();
+  if (connectedRows.length > 0 && (await tableExists(db, "responsibilities"))) {
+    const ids = connectedRows.map((row) => row.node_id as string);
+    const ph = ids.map(() => "?").join(",");
+    const rRes = await db.execute({
+      sql: `SELECT node_id, COUNT(*) AS c FROM responsibilities WHERE node_id IN (${ph}) GROUP BY node_id`,
+      args: ids,
+    });
+    for (const r of rRes.rows) respCountByNode.set(r.node_id as string, Number(r.c));
+  }
 
-    connected.push({
+  const connected: ContextConnectedNode[] = connectedRows.map((row) => {
+    const id = row.node_id as string;
+    const ownerId = (row.owner_id as string | null) ?? null;
+    return {
       id,
       type: row.type as string,
       name: row.name as string,
       description: (row.description as string | null) ?? null,
       lifecycle_state: (row.lifecycle_state as string | null) ?? null,
       status: row.status as string,
-      owner_name: ownerName,
-      responsibilities_count: respCount,
+      owner_name: ownerId ? (ownerNameById.get(ownerId) ?? null) : null,
+      responsibilities_count: respCountByNode.get(id) ?? 0,
       edges: edgesByNode.get(id) ?? [],
-      events,
+      events: (row.d as number) === 1 ? (eventsByNode.get(id) ?? []) : [],
       local_path: mirrorMap.get(id) ?? null,
-      depth: nodeDepth,
-    });
-  }
+      depth: row.d as number,
+    };
+  });
 
   return { root, connected };
 }

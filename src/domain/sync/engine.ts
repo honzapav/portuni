@@ -22,6 +22,7 @@ import {
   type NodeInfo,
 } from "./remote-path.js";
 import { resolveNodeInfo } from "./node-info.js";
+import { loadMirrorIgnore } from "./mirror-ignore.js";
 
 // Re-export so existing imports `from "./engine.js"` keep working.
 export { resolveNodeInfo };
@@ -79,19 +80,22 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
     );
   }
 
-  // Detect section + subpath + filename.
+  // Detect section + subpath + filename. Identity segments are normalized
+  // to NFC: Finder and some pickers hand over NFD ("r" + combining hacek),
+  // and a mixed-normalization DB splits one logical file into two -- the
+  // walkers and remote paths all compare NFC.
   let section: Section;
   let subpath: string | null = null;
   let filename: string;
   const inside = subpathFromMirror(mirrorRoot, a.localPath);
   if (inside !== null) {
     section = inside.section;
-    subpath = inside.subpath;
-    filename = inside.filename;
+    subpath = inside.subpath?.normalize("NFC") ?? null;
+    filename = inside.filename.normalize("NFC");
   } else {
     section = a.status === "output" ? "outputs" : "wip";
-    subpath = a.subpath ?? null;
-    filename = basename(a.localPath);
+    subpath = a.subpath?.normalize("NFC") ?? null;
+    filename = basename(a.localPath).normalize("NFC");
   }
 
   // Compute mirror destination via the safe joiner — the inner segments
@@ -114,7 +118,21 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
   }
   if (mirroredAbs !== a.localPath) {
     await mkdir(dirname(mirroredAbs), { recursive: true });
-    await copyFile(a.localPath, mirroredAbs);
+    // On APFS (normalization- and case-insensitive) a byte-different path
+    // can still be the same physical file -- e.g. the NFD-named source vs
+    // its NFC mirror target. copyFile opens the destination with O_TRUNC,
+    // so copying a file onto itself zeroes it. Compare inodes first.
+    let samePhysicalFile = false;
+    try {
+      const destStat = await fsStat(mirroredAbs);
+      samePhysicalFile =
+        destStat.ino === sourceStat.ino && destStat.dev === sourceStat.dev;
+    } catch {
+      /* destination absent -- normal copy */
+    }
+    if (!samePhysicalFile) {
+      await copyFile(a.localPath, mirroredAbs);
+    }
   }
 
   const content = await readFile(mirroredAbs);
@@ -148,60 +166,48 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
     // Adapter may not support stat or may have transient failure - treat as soft warning.
   }
 
-  // Upsert files row.
+  // Upsert files row. Single statement against the idx_files_unique_remote
+  // partial index -- a concurrent store of the same path becomes an UPDATE
+  // instead of a duplicate row (the old SELECT-then-INSERT could interleave).
+  // RETURNING gives us the surviving row id either way. status/description
+  // only overwrite when explicitly provided.
   const now = new Date().toISOString();
-  const existing = await db.execute({
-    sql: "SELECT id FROM files WHERE node_id = ? AND remote_name = ? AND remote_path = ? LIMIT 1",
-    args: [a.nodeId, remoteName, remotePath],
+  const upsert = await db.execute({
+    sql: `INSERT INTO files (id, node_id, filename, status, description, mime_type,
+                              remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
+                              is_native_format, created_by, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+          ON CONFLICT(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL
+          DO UPDATE SET
+            filename = excluded.filename,
+            status = COALESCE(?, files.status),
+            description = COALESCE(?, files.description),
+            current_remote_hash = excluded.current_remote_hash,
+            last_pushed_by = excluded.last_pushed_by,
+            last_pushed_at = excluded.last_pushed_at,
+            mime_type = excluded.mime_type,
+            updated_at = excluded.updated_at
+          RETURNING id`,
+    args: [
+      ulid(),
+      a.nodeId,
+      filename,
+      a.status ?? "wip",
+      a.description ?? null,
+      mt,
+      remoteName,
+      remotePath,
+      hash,
+      a.userId,
+      now,
+      a.userId,
+      now,
+      now,
+      a.status ?? null,
+      a.description ?? null,
+    ],
   });
-  let fileId: string;
-  if (existing.rows.length > 0) {
-    fileId = existing.rows[0].id as string;
-    await db.execute({
-      sql: `UPDATE files SET filename = ?, status = COALESCE(?, status), description = COALESCE(?, description),
-                               remote_name = ?, remote_path = ?, current_remote_hash = ?,
-                               last_pushed_by = ?, last_pushed_at = ?, mime_type = ?,
-                               updated_at = ?
-                               WHERE id = ?`,
-      args: [
-        filename,
-        a.status ?? null,
-        a.description ?? null,
-        remoteName,
-        remotePath,
-        hash,
-        a.userId,
-        now,
-        mt,
-        now,
-        fileId,
-      ],
-    });
-  } else {
-    fileId = ulid();
-    await db.execute({
-      sql: `INSERT INTO files (id, node_id, filename, status, description, mime_type,
-                                remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
-                                is_native_format, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
-      args: [
-        fileId,
-        a.nodeId,
-        filename,
-        a.status ?? "wip",
-        a.description ?? null,
-        mt,
-        remoteName,
-        remotePath,
-        hash,
-        a.userId,
-        now,
-        a.userId,
-        now,
-        now,
-      ],
-    });
-  }
+  const fileId = upsert.rows[0].id as string;
 
   // Audit.
   await db.execute({
@@ -238,6 +244,9 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
 export interface PullFileArgs {
   userId: string;
   fileId: string;
+  // Overwrite the local file even when it has changes that were never
+  // pushed from this device. Without force such a pull is refused.
+  force?: boolean;
 }
 
 export interface PullFileResult {
@@ -274,13 +283,34 @@ export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileRes
 
   const adapter = await getAdapter(db, remoteName);
   const content = await adapter.get(remotePath);
-  await mkdir(dirname(localPath), { recursive: true });
-  await writeFile(localPath, content);
 
   // Use the same hash algorithm the backend reports, so file_state stays
   // comparable with adapter.stat() in subsequent statusScans.
   const useMd5 = knownRemoteHash !== null && knownRemoteHash.length === 32;
   const hash = useMd5 ? md5Buffer(content) : sha256Buffer(content);
+
+  // Dirty-local guard: overwriting is only safe when the local copy matches
+  // the last state this device synced, or already equals the remote bytes.
+  // A local file with unpushed edits (or with no baseline at all) must not
+  // be silently destroyed.
+  if (!a.force && (await fileExistsAt(localPath))) {
+    const state = await getFileState(a.fileId);
+    const baseline = state?.last_synced_hash ?? null;
+    const localCur = useMd5
+      ? md5Buffer(await readFile(localPath))
+      : await sha256File(localPath);
+    const dirty =
+      localCur !== hash && (baseline === null || localCur !== baseline);
+    if (dirty) {
+      throw new Error(
+        `File ${a.fileId} has local changes that were never pushed from this device ` +
+          `(${localPath}). Push them with portuni_store, or pass force: true to overwrite.`,
+      );
+    }
+  }
+
+  await mkdir(dirname(localPath), { recursive: true });
+  await writeFile(localPath, content);
   const fsInfo = await statForCache(localPath);
   const now = new Date().toISOString();
   await upsertFileState({
@@ -409,10 +439,13 @@ async function localHashFor(
   const h = useMd5
     ? md5Buffer(await readFile(path))
     : await sha256File(path);
+  // Only refresh the hash cache. Never invent a baseline: a file this
+  // device has not synced must keep last_synced_hash NULL so the scan
+  // classifies it as conflict instead of silently clean/pull/push.
   await upsertFileState({
     file_id: fileId,
-    last_synced_hash: cached?.last_synced_hash ?? h,
-    last_synced_at: cached?.last_synced_at,
+    last_synced_hash: cached?.last_synced_hash ?? null,
+    last_synced_at: cached?.last_synced_at ?? null,
     cached_local_hash: h,
     cached_mtime: now.mtime,
     cached_size: now.size,
@@ -443,9 +476,24 @@ async function cachedRemoteStat(
       fetched_at: new Date().toISOString(),
     });
     return stat === null ? { hash: null, exists: false } : { hash: stat.hash, exists: true };
-  } catch {
+  } catch (e) {
+    // Returning null classifies the file as orphan -- when the cause is a
+    // transient SQLITE_BUSY on the shared sync.db (sidecar + tmux server)
+    // or an adapter hiccup, a silent catch makes those flickers
+    // undiagnosable. Log once per remote+error to keep scans quiet.
+    warnOncePerKey(
+      `${remoteName}:${e instanceof Error ? e.message.slice(0, 80) : String(e)}`,
+      `[portuni:sync] remote stat failed (files will show as orphan until it recovers): remote=${remoteName} err=${String(e)}`,
+    );
     return null;
   }
+}
+
+const warnedKeys = new Set<string>();
+function warnOncePerKey(key: string, message: string): void {
+  if (warnedKeys.has(key)) return;
+  warnedKeys.add(key);
+  console.warn(message);
 }
 
 type ScanBucket = "clean" | "push_candidates" | "pull_candidates" | "conflicts" | "orphan" | "native" | "deleted_local";
@@ -540,6 +588,18 @@ async function scanRow(
   }
 
   const last = base.last_synced_hash;
+
+  // No baseline on this device (fresh sync.db, restored backup, second
+  // device): never guess. Identical content is provably clean; anything
+  // else needs a human decision (pull force / store) -- classifying it as
+  // pull or push here is exactly how local or remote edits get destroyed.
+  if (last === null) {
+    if (rs.hash !== null && rs.hash === localHash) {
+      return { bucket: "clean", entry: { ...base, class: "clean" } };
+    }
+    return { bucket: "conflicts", entry: { ...base, class: "conflict" } };
+  }
+
   const remoteUnknown = rs.hash === null;
   const remoteMatchesLast = rs.hash !== null ? rs.hash === last : last !== null;
   const localMatchesLast = localHash === last;
@@ -658,17 +718,23 @@ async function moveDetectionPhase(
   out: StatusResult,
 ): Promise<void> {
   if (out.deleted_local.length === 0 || out.new_local.length === 0) return;
-  const byHash = new Map<string, { file_id: string; old_local_path: string }>();
+  // Queue per hash: several deleted files can share content (templates,
+  // empty files), and several new files can too. A single-slot map would
+  // drop all but the last deleted entry and propose moving the SAME
+  // file_id to every new location. Each candidate pairs exactly once.
+  const byHash = new Map<string, Array<{ file_id: string; old_local_path: string }>>();
   for (const dl of out.deleted_local) {
     if (dl.last_synced_hash && dl.local_path) {
-      byHash.set(dl.last_synced_hash, {
+      if (!byHash.has(dl.last_synced_hash)) byHash.set(dl.last_synced_hash, []);
+      byHash.get(dl.last_synced_hash)!.push({
         file_id: dl.file_id,
         old_local_path: dl.local_path,
       });
     }
   }
   for (const nl of out.new_local) {
-    const match = byHash.get(nl.hash);
+    const queue = byHash.get(nl.hash);
+    const match = queue?.shift();
     if (match) {
       out.moved.push({
         file_id: match.file_id,
@@ -697,9 +763,25 @@ async function runDiscovery(db: Client, a: StatusArgs, out: StatusResult): Promi
   // subtree -- files registered on child nodes are still "known", not new.
   const knownRemoteByNode = new Map<string, { remoteName: string; remotePath: string }[]>();
   const knownRemoteGlobal = new Set<string>();
-  const filesRes = await db.execute({
-    sql: `SELECT node_id, remote_name, remote_path FROM files`,
-  });
+  // Scope the known-files query to the node subtree when scanning a single
+  // mirror -- the full-table scan only pays off for the all-mirrors case.
+  // The prefix (not node_id alone) matters for org mirrors: their remote
+  // listing covers the whole org subtree, and child nodes' files must stay
+  // "known" or they would all surface as new_remote.
+  let filesSql = "SELECT node_id, remote_name, remote_path FROM files";
+  let filesArgs: Array<string> = [];
+  if (a.nodeId && mirrors.length === 1) {
+    try {
+      const info = await resolveNodeInfo(db, a.nodeId);
+      const root = buildNodeRoot(info);
+      const likePrefix = root.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+      filesSql += " WHERE node_id = ? OR remote_path LIKE ? ESCAPE '\\'";
+      filesArgs = [a.nodeId, `${likePrefix}/%`];
+    } catch {
+      /* node info unavailable -- fall back to the full scan */
+    }
+  }
+  const filesRes = await db.execute({ sql: filesSql, args: filesArgs });
   for (const r of filesRes.rows) {
     const nid = r.node_id as string;
     const rn = r.remote_name as string | null;
@@ -707,7 +789,9 @@ async function runDiscovery(db: Client, a: StatusArgs, out: StatusResult): Promi
     if (rn && rp) {
       if (!knownRemoteByNode.has(nid)) knownRemoteByNode.set(nid, []);
       knownRemoteByNode.get(nid)!.push({ remoteName: rn, remotePath: rp });
-      knownRemoteGlobal.add(`${rn}::${rp}`);
+      // NFC-normalized keys: remote backends may return either byte form
+      // for the same logical name (Drive normalizes, fs preserves).
+      knownRemoteGlobal.add(`${rn}::${rp.normalize("NFC")}`);
     }
   }
 
@@ -727,7 +811,9 @@ async function runDiscovery(db: Client, a: StatusArgs, out: StatusResult): Promi
     const knownForNode = knownRemoteByNode.get(m.node_id) ?? [];
     for (const { remotePath } of knownForNode) {
       try {
-        localSet.add(deriveLocalPath({ mirrorRoot: m.local_path, nodeRoot, remotePath }));
+        localSet.add(
+          deriveLocalPath({ mirrorRoot: m.local_path, nodeRoot, remotePath }).normalize("NFC"),
+        );
       } catch {
         /* ok */
       }
@@ -747,7 +833,7 @@ async function runDiscovery(db: Client, a: StatusArgs, out: StatusResult): Promi
       const adapter = await getAdapter(db, remoteName);
       const entries = await adapter.list(nodeRoot);
       for (const e of entries) {
-        if (!knownRemoteGlobal.has(`${remoteName}::${e.path}`)) {
+        if (!knownRemoteGlobal.has(`${remoteName}::${e.path.normalize("NFC")}`)) {
           out.new_remote.push({
             node_id: m.node_id,
             remote_name: remoteName,
@@ -771,6 +857,7 @@ async function walkMirror(
   knownLocal: Set<string>,
 ): Promise<void> {
   const sectionAbs = join(mirrorRoot, section);
+  const isIgnored = await loadMirrorIgnore(mirrorRoot);
 
   async function walk(dir: string): Promise<void> {
     let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }> = [];
@@ -781,10 +868,14 @@ async function walkMirror(
     }
     for (const ent of entries) {
       const p = join(dir, ent.name);
+      if (isIgnored(p)) continue;
       if (ent.isDirectory()) {
         await walk(p);
       } else if (ent.isFile()) {
-        if (knownLocal.has(p)) continue;
+        // readdir preserves on-disk bytes (possibly NFD); the known set is
+        // derived from the DB (NFC). Compare normalized so one logical file
+        // does not get re-discovered under its other byte form.
+        if (knownLocal.has(p.normalize("NFC"))) continue;
         const sub = subpathFromMirror(mirrorRoot, p);
         if (!sub) continue;
         try {

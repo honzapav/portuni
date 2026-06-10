@@ -1,5 +1,5 @@
 import { createSign, type KeyObject } from "node:crypto";
-import type { ServiceAccountKey } from "./drive-config.js";
+import { assertSafeTokenUri, type ServiceAccountKey } from "./drive-config.js";
 
 const SAFETY_WINDOW_S = 120;
 const cache = new Map<string, { access_token: string; expires_at: number }>();
@@ -44,6 +44,10 @@ let tokenFetch: (url: string, jwt: string) => Promise<{ access_token: string; ex
 export function __setTokenFetchForTests(f: typeof tokenFetch): void { tokenFetch = f; }
 
 export async function getDriveAccessToken(sa: ServiceAccountKey): Promise<string> {
+  // Defense in depth: parseServiceAccountJson already validates, but a
+  // ServiceAccountKey can also be constructed directly -- never sign a
+  // grant for (or POST it to) a non-Google endpoint.
+  assertSafeTokenUri(sa.token_uri);
   const now = Math.floor(Date.now() / 1000);
   const hit = cache.get(sa.client_email);
   if (hit && hit.expires_at - now > SAFETY_WINDOW_S) return hit.access_token;

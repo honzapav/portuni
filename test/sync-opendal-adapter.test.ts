@@ -47,6 +47,22 @@ describe("opendal-adapter (memory backend)", () => {
     assert.deepEqual(names, ["dir/a.txt", "dir/b.txt"]);
   });
 
+  it("list recurses into subdirectories (discovery walks whole node subtrees)", async () => {
+    // Synced files always live under section dirs (wip/, outputs/, ...),
+    // so a one-level list makes new_remote discovery blind on fs remotes.
+    const a = createOpenDALAdapter(memRemote(), noTokens);
+    await a.put("org/projects/web/wip/note.md", Buffer.from("n"));
+    await a.put("org/projects/web/outputs/deep/report.pdf", Buffer.from("r"));
+    await a.put("org/projects/web/top.txt", Buffer.from("t"));
+    const entries = await a.list("org/projects/web");
+    const names = entries.map((e) => e.path).sort();
+    assert.deepEqual(names, [
+      "org/projects/web/outputs/deep/report.pdf",
+      "org/projects/web/top.txt",
+      "org/projects/web/wip/note.md",
+    ]);
+  });
+
   it("delete removes file; subsequent stat returns null", async () => {
     const a = createOpenDALAdapter(memRemote(), noTokens);
     await a.put("toDelete.txt", Buffer.from("x"));

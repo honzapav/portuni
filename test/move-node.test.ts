@@ -22,6 +22,9 @@ async function freshEnv() {
   await db.execute(`CREATE TABLE nodes (id TEXT PRIMARY KEY CHECK(length(id)=26), type TEXT NOT NULL, name TEXT NOT NULL, description TEXT, summary TEXT, summary_updated_at DATETIME, meta TEXT, status TEXT NOT NULL DEFAULT 'active', visibility TEXT NOT NULL DEFAULT 'team', pos_x REAL, pos_y REAL, created_by TEXT NOT NULL, created_at DATETIME DEFAULT (datetime('now')), updated_at DATETIME DEFAULT (datetime('now')))`);
   await db.execute(`CREATE TABLE edges (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, target_id TEXT NOT NULL, relation TEXT NOT NULL, meta TEXT, created_by TEXT NOT NULL, created_at DATETIME DEFAULT (datetime('now')))`);
   await db.execute(`CREATE TABLE audit_log (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, action TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, detail TEXT, timestamp DATETIME DEFAULT (datetime('now')))`);
+  // moveNodeToOrganization migrates tracked files; the fixture has none,
+  // but the table must exist for the planning query.
+  await db.execute(`CREATE TABLE files (id TEXT PRIMARY KEY, node_id TEXT NOT NULL, filename TEXT NOT NULL, remote_name TEXT, remote_path TEXT, updated_at DATETIME DEFAULT (datetime('now')))`);
   await db.execute(TRIGGER_PREVENT_MULTI_PARENT_ORG);
   await db.execute(TRIGGER_PREVENT_ORPHAN_ON_EDGE_DELETE);
   await db.execute(`INSERT INTO users (id, email, name) VALUES ('U1','t@t','T')`);

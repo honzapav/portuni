@@ -31,6 +31,29 @@ export interface ServiceAccountKey {
 
 const SA_REQUIRED: Array<keyof ServiceAccountKey> = ["client_email", "private_key", "token_uri"];
 
+// token_uri receives a JWT *signed with the service-account private key*.
+// Sending that assertion anywhere but Google's OAuth endpoint hands an
+// attacker a replayable token grant, so the host is allowlisted (classic
+// SSRF defense -- the value comes from a user-supplied JSON blob).
+const ALLOWED_TOKEN_URI_HOSTS = new Set(["oauth2.googleapis.com", "accounts.google.com"]);
+
+export function assertSafeTokenUri(uri: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(uri);
+  } catch {
+    throw new Error(`Service account JSON: token_uri is not a valid URL (${uri})`);
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error("Service account JSON: token_uri must be https");
+  }
+  if (!ALLOWED_TOKEN_URI_HOSTS.has(parsed.hostname)) {
+    throw new Error(
+      `Service account JSON: token_uri host '${parsed.hostname}' is not a Google OAuth endpoint`,
+    );
+  }
+}
+
 export function parseServiceAccountJson(raw: string): ServiceAccountKey {
   let obj: Record<string, unknown>;
   try { obj = JSON.parse(raw) as Record<string, unknown>; }
@@ -41,6 +64,7 @@ export function parseServiceAccountJson(raw: string): ServiceAccountKey {
       throw new Error(`Service account JSON: missing required field '${f}'`);
     }
   }
+  assertSafeTokenUri(obj.token_uri as string);
   return {
     type: "service_account",
     client_email: obj.client_email as string,

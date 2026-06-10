@@ -885,6 +885,36 @@ const MIGRATIONS: Migration[] = [
       await db.execute("DROP TRIGGER IF EXISTS nodes_owner_must_be_real_person");
     },
   },
+
+  // Migration 015: one files row per remote object. Dedupe first (keep the
+  // most recently updated row per (node_id, remote_name, remote_path), ULID
+  // tie-break = newest), then add the partial unique index that prevents the
+  // SELECT-then-INSERT race from recreating duplicates.
+  {
+    id: "015_files_unique_remote",
+    isApplied: async (db) => {
+      const idx = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_files_unique_remote'",
+      );
+      return idx.rows.length > 0;
+    },
+    up: async (db) => {
+      await db.execute(`
+        DELETE FROM files WHERE remote_path IS NOT NULL AND id NOT IN (
+          SELECT id FROM (
+            SELECT id, ROW_NUMBER() OVER (
+              PARTITION BY node_id, remote_name, remote_path
+              ORDER BY updated_at DESC, id DESC
+            ) AS rn
+            FROM files WHERE remote_path IS NOT NULL
+          ) WHERE rn = 1
+        )`);
+      await db.execute(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_files_unique_remote
+           ON files(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL`,
+      );
+    },
+  },
 ];
 
 export async function runMigrations(db: Client): Promise<void> {

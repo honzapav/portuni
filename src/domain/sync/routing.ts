@@ -79,8 +79,23 @@ export async function listRules(db: Client): Promise<RoutingRule[]> {
 }
 
 export async function replaceRules(db: Client, rules: RoutingRule[]): Promise<void> {
-  await db.execute("DELETE FROM remote_routing");
-  for (const rule of rules) await addRule(db, rule);
+  // One transaction: a failed insert (or a crash between statements) must
+  // not leave the table empty -- resolveRemote on an empty table makes
+  // every storeFile fail with "No remote routing configured".
+  await db.batch(
+    [
+      "DELETE FROM remote_routing",
+      ...rules.map((rule) => ({
+        sql: "INSERT INTO remote_routing (priority, node_type, org_slug, remote_name) VALUES (?, ?, ?, ?)",
+        args: [rule.priority, rule.node_type, rule.org_slug, rule.remote_name] as (
+          | string
+          | number
+          | null
+        )[],
+      })),
+    ],
+    "write",
+  );
 }
 
 // Resolve which remote applies to (nodeType, orgSlug). The spec algorithm:

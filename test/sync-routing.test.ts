@@ -112,6 +112,23 @@ describe("routing -- rules CRUD", () => {
     assert.equal(rules[0].node_type, "project");
     assert.equal(rules[1].priority, 2);
   });
+
+  it("replaceRules keeps the old rules when an insert fails", async () => {
+    // The old DELETE-then-INSERT-loop left the routing table EMPTY when an
+    // insert failed (or when a crash hit between the statements) -- every
+    // storeFile then errored with "No remote routing configured". The whole
+    // replacement must be one transaction.
+    const db = await dbWithRemote();
+    await addRule(db, { priority: 10, node_type: null, org_slug: null, remote_name: "fallback" });
+    await assert.rejects(() =>
+      replaceRules(db, [
+        { priority: 1, node_type: null, org_slug: null, remote_name: "no-such-remote" },
+      ]),
+    );
+    const rules = await listRules(db);
+    assert.equal(rules.length, 1, "previous rules must survive a failed replace");
+    assert.equal(rules[0].remote_name, "fallback");
+  });
 });
 
 describe("routing -- resolveRemote", () => {

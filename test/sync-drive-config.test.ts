@@ -37,4 +37,27 @@ describe("drive-config", () => {
   it("isDriveRemote", () => {
     assert.ok(isDriveRemote({ name: "d", type: "gdrive", config: {} }));
   });
+
+  // token_uri receives a JWT signed with the SA private key. An attacker
+  // who can plant a crafted SA JSON must not be able to redirect that
+  // signed assertion to their own server (SSRF + token-grant replay).
+  it("parseServiceAccountJson rejects a non-Google token_uri", () => {
+    const bad = JSON.stringify({
+      type: "service_account",
+      client_email: "x@p.iam.gserviceaccount.com",
+      private_key: "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----\n",
+      token_uri: "https://attacker.example.com/token",
+    });
+    assert.throws(() => parseServiceAccountJson(bad), /token_uri/);
+  });
+
+  it("parseServiceAccountJson rejects a plain-http token_uri", () => {
+    const bad = JSON.stringify({
+      type: "service_account",
+      client_email: "x@p.iam.gserviceaccount.com",
+      private_key: "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----\n",
+      token_uri: "http://oauth2.googleapis.com/token",
+    });
+    assert.throws(() => parseServiceAccountJson(bad), /token_uri/);
+  });
 });

@@ -44,6 +44,20 @@ describe("DriveAdapter REST contract", () => {
     assert.ok(search!.url.includes("corpora=drive"));
   });
 
+  it("path resolution orders by createdTime so duplicate siblings resolve deterministically", async () => {
+    // Drive allows same-name siblings (created by concurrent puts from two
+    // devices). Without a stable order Drive returns them in arbitrary
+    // order and files[0] flaps between the copies on every stat/get.
+    const adapter = createDriveAdapter(remote, tokens);
+    await adapter.stat("projects/stan-gws/wip/doc.md").catch(() => undefined);
+    const search = calls.find((c) => c.url.includes("/files?q="));
+    assert.ok(search, "expected a files search call");
+    assert.ok(
+      search!.url.includes("orderBy=createdTime"),
+      `search must pin an order, got ${search!.url}`,
+    );
+  });
+
   it("rename invalidates descendant paths from the cache", async () => {
     __setDriveFetchForTests(async (url) => {
       const u = url.toString();
