@@ -6,7 +6,6 @@
 
 import type { Client } from "@libsql/client";
 import { logAudit } from "../infra/audit.js";
-import { SOLO_USER } from "../infra/schema.js";
 import { decideGlobalQuery, guardNodeRead, type SessionScope } from "./scope.js";
 
 type ToolErrorResponse = {
@@ -25,15 +24,16 @@ export async function guardListScope(
   toolName: string,
   auditTarget: string,
   filters: Record<string, unknown>,
+  userId: string,
 ): Promise<ListScopeGateResult> {
   if (nodeId !== undefined) {
     const guard = await guardNodeRead(
       db,
       scope,
       nodeId,
-      SOLO_USER,
+      userId,
       async (action, targetId, detail) => {
-        await logAudit(SOLO_USER, action, "scope", targetId, detail);
+        await logAudit(userId, action, "scope", targetId, detail);
       },
     );
     if (guard.kind === "not_found") {
@@ -77,7 +77,7 @@ export async function guardListScope(
     };
   }
   scope.globalQuerySeen = true;
-  await logAudit(SOLO_USER, "scope_global_query", "scope", auditTarget, {
+  await logAudit(userId, "scope_global_query", "scope", auditTarget, {
     tool: toolName,
     filters,
     mode: scope.mode,

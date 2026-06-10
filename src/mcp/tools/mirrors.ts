@@ -1,13 +1,13 @@
 import { z } from "zod";
 import { getDb } from "../../infra/db.js";
-import { SOLO_USER } from "../../infra/schema.js";
 import {
   createMirrorForNode,
   MirrorCreateError,
 } from "../../domain/sync/mirror-create.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { SessionCtx } from "../server.js";
 
-export function registerMirrorTools(server: McpServer): void {
+export function registerMirrorTools(server: McpServer, ctx: SessionCtx): void {
   server.tool(
     "portuni_mirror",
     "Create a local folder for a node and register it. Use the first time you want to store files for a node on this device. Default path: {root}/{org-slug}/{type-plural}/{node-slug}/ (e.g. workflow/processes/gws-implementation). Organizations mirror directly to {root}/{org-slug}/. Creates outputs/, wip/, resources/ subfolders. Targets: only 'local' supported in Phase 1.",
@@ -23,7 +23,7 @@ export function registerMirrorTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        const result = await createMirrorForNode(getDb(), SOLO_USER, {
+        const result = await createMirrorForNode(getDb(), ctx.identity.userId, {
           nodeId: args.node_id,
           customPath: args.custom_path,
         });

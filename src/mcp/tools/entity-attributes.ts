@@ -4,7 +4,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getDb } from "../../infra/db.js";
-import { SOLO_USER } from "../../infra/schema.js";
 import {
   ExternalLinkSchema,
   addDataSource,
@@ -14,8 +13,9 @@ import {
   removeDataSource,
   removeTool,
 } from "../../domain/entity-attributes.js";
+import type { SessionCtx } from "../server.js";
 
-export function registerEntityAttributeTools(server: McpServer): void {
+export function registerEntityAttributeTools(server: McpServer, ctx: SessionCtx): void {
   server.tool(
     "portuni_add_data_source",
     "Attach a data source (where the entity gets information: CRM, data warehouse, report, dashboard) to a project/process/area. Create only when the user explicitly asks. The name and description should identify what the source is, not duplicate live state from it (row counts, last refresh, current values) — Portuni does not auto-sync, so any such state goes stale.",
@@ -27,7 +27,7 @@ export function registerEntityAttributeTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        const row = await addDataSource(getDb(), SOLO_USER, args);
+        const row = await addDataSource(getDb(), ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
       } catch (err) {
         return {
@@ -46,7 +46,7 @@ export function registerEntityAttributeTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        await removeDataSource(getDb(), SOLO_USER, args.data_source_id);
+        await removeDataSource(getDb(), ctx.identity.userId, args.data_source_id);
         return {
           content: [{ type: "text" as const, text: JSON.stringify({ id: args.data_source_id, action: "removed" }) }],
         };
@@ -89,7 +89,7 @@ export function registerEntityAttributeTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        const row = await addTool(getDb(), SOLO_USER, args);
+        const row = await addTool(getDb(), ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
       } catch (err) {
         return {
@@ -108,7 +108,7 @@ export function registerEntityAttributeTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        await removeTool(getDb(), SOLO_USER, args.tool_id);
+        await removeTool(getDb(), ctx.identity.userId, args.tool_id);
         return {
           content: [{ type: "text" as const, text: JSON.stringify({ id: args.tool_id, action: "removed" }) }],
         };

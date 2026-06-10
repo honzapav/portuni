@@ -20,6 +20,7 @@ import { registerEventTools } from "./tools/events.js";
 import { registerActorTools } from "./tools/actors.js";
 import { registerResponsibilityTools } from "./tools/responsibilities.js";
 import { registerEntityAttributeTools } from "./tools/entity-attributes.js";
+import type { RequestIdentity } from "../auth/request-identity.js";
 
 // Top-level server brief. Kept short -- many MCP clients truncate this
 // field at ~2 KB. Anything load-bearing for an individual tool lives in
@@ -31,26 +32,49 @@ When you create a new file inside a Portuni mirror via Write/Edit/MultiEdit, you
 After any file-state mutation (portuni_store, portuni_move_file, portuni_delete_file, portuni_rename_folder, portuni_adopt_files), call portuni_status before ending the turn so disk, DB, and remote stay consistent.
 For semantics, contracts, and enums fetch resources: portuni://architecture, portuni://sync-model, portuni://scope-rules, portuni://enums.`;
 
-export function createMcpServer(): { server: McpServer; scope: SessionScope } {
+export interface SessionCtx {
+  scope: SessionScope;
+  identity: RequestIdentity;
+}
+
+// Default identity used when createMcpServer() is called without arguments
+// (e.g. in-process test harnesses and stdio mode). The userId string is the
+// canonical SOLO_USER value; we use the literal here so this file does not
+// import SOLO_USER -- the env-mode binding point is stdio-entry.ts.
+function buildDefaultEnvIdentity(): RequestIdentity {
+  return {
+    userId: "01SOLO0000000000000000000",
+    email: process.env.PORTUNI_USER_EMAIL ?? "solo@localhost",
+    name: process.env.PORTUNI_USER_NAME ?? "Solo User",
+    globalScope: "admin",
+    groups: [],
+    via: "env",
+  };
+}
+
+export function createMcpServer(
+  identity: RequestIdentity = buildDefaultEnvIdentity(),
+): { server: McpServer; scope: SessionScope } {
   const scope = new SessionScope(parseScopeMode(process.env.PORTUNI_SCOPE_MODE));
+  const ctx: SessionCtx = { scope, identity };
   const server = new McpServer(
     { name: "portuni", version: "0.1.0" },
     { instructions: INSTRUCTIONS },
   );
   registerResources(server);
-  registerScopeTools(server, scope);
-  registerNodeTools(server, scope);
-  registerGetNodeTool(server, scope);
-  registerEdgeTools(server);
-  registerContextTools(server, scope);
-  registerMirrorTools(server);
-  registerFileTools(server, scope);
-  registerSyncStatusTools(server);
-  registerSyncRemoteTools(server);
-  registerSyncSnapshotTools(server);
-  registerEventTools(server, scope);
-  registerActorTools(server);
-  registerResponsibilityTools(server);
-  registerEntityAttributeTools(server);
+  registerScopeTools(server, ctx);
+  registerNodeTools(server, ctx);
+  registerGetNodeTool(server, ctx);
+  registerEdgeTools(server, ctx);
+  registerContextTools(server, ctx);
+  registerMirrorTools(server, ctx);
+  registerFileTools(server, ctx);
+  registerSyncStatusTools(server, ctx);
+  registerSyncRemoteTools(server, ctx);
+  registerSyncSnapshotTools(server, ctx);
+  registerEventTools(server, ctx);
+  registerActorTools(server, ctx);
+  registerResponsibilityTools(server, ctx);
+  registerEntityAttributeTools(server, ctx);
   return { server, scope };
 }

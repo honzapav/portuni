@@ -1,10 +1,10 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getDb } from "../../infra/db.js";
-import { SOLO_USER } from "../../infra/schema.js";
 import { statusScan } from "../../domain/sync/engine.js";
+import type { SessionCtx } from "../server.js";
 
-export function registerSyncStatusTools(server: McpServer): void {
+export function registerSyncStatusTools(server: McpServer, ctx: SessionCtx): void {
   server.tool(
     "portuni_status",
     "Scan tracked files (and optionally new local / new remote) for one node or across all mirrors. Classifies each tracked file as clean/push/pull/conflict/orphan/native and, with includeDiscovery (default true), reports new_local + new_remote + deleted_local. Call after any local file modification (git mv, git rm, edits, plain mv) in a Portuni-mirrored repo and before ending the turn -- the report tells you what to reconcile via portuni_store, portuni_delete_file, or portuni_adopt_files. See portuni://sync-model.",
@@ -19,7 +19,7 @@ export function registerSyncStatusTools(server: McpServer): void {
     async (args) => {
       const db = getDb();
       const result = await statusScan(db, {
-        userId: SOLO_USER,
+        userId: ctx.identity.userId,
         nodeId: args.node_id,
         remoteName: args.remote_name,
         includeDiscovery: args.include_discovery !== false,

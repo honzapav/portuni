@@ -2,14 +2,15 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import { getDb } from "../../infra/db.js";
 import { logAudit } from "../../infra/audit.js";
-import { SOLO_USER, EVENT_TYPES, EVENT_STATUSES } from "../../infra/schema.js";
+import { EVENT_TYPES, EVENT_STATUSES } from "../../infra/schema.js";
 import { EventRow } from "../../shared/types.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { SessionScope } from "../scope.js";
 import { guardListScope } from "../list-scope-gate.js";
+import type { SessionCtx } from "../server.js";
 
-export function registerEventTools(server: McpServer, scope: SessionScope): void {
+export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
+  const { scope } = ctx;
   server.tool(
     "portuni_log",
     "Log a time-ordered knowledge event to a node. Log substantive knowledge — real decisions, discoveries, blockers, milestones. Skip operational chatter (mirror moves, file renames, tool actions, narration of recent steps). Events are organizational memory, not an activity log.",
@@ -66,12 +67,12 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
           "active",
           args.refs ? JSON.stringify(args.refs) : null,
           args.task_ref ?? null,
-          SOLO_USER,
+          ctx.identity.userId,
           now,
         ],
       });
 
-      await logAudit(SOLO_USER, "log_event", "event", id, {
+      await logAudit(ctx.identity.userId, "log_event", "event", id, {
         node_id: args.node_id,
         type: args.type,
       });
@@ -135,7 +136,7 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
         args: ["resolved", JSON.stringify(existingMeta), args.event_id],
       });
 
-      await logAudit(SOLO_USER, "resolve_event", "event", args.event_id, {
+      await logAudit(ctx.identity.userId, "resolve_event", "event", args.event_id, {
         resolution: args.resolution ?? null,
       });
 
@@ -197,12 +198,12 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
           "active",
           JSON.stringify([args.event_id]),
           oldRow.task_ref,
-          SOLO_USER,
+          ctx.identity.userId,
           now,
         ],
       });
 
-      await logAudit(SOLO_USER, "supersede_event", "event", newId, {
+      await logAudit(ctx.identity.userId, "supersede_event", "event", newId, {
         superseded_id: args.event_id,
         node_id: oldRow.node_id,
       });
@@ -247,6 +248,7 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
           status: args.status ?? null,
           since: args.since ?? null,
         },
+        ctx.identity.userId,
       );
       if (gate.kind === "error") return gate.response;
 

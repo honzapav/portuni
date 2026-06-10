@@ -2,7 +2,6 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Client } from "@libsql/client";
 import { getDb } from "../../infra/db.js";
-import { SOLO_USER } from "../../infra/schema.js";
 import {
   upsertRemote,
   listRemotes,
@@ -11,6 +10,7 @@ import {
 } from "../../domain/sync/routing.js";
 import { readDeviceTokens } from "../../domain/sync/device-tokens.js";
 import { invalidateAdapter } from "../../domain/sync/adapter-cache.js";
+import type { SessionCtx } from "../server.js";
 
 export interface SetupRemoteArgs {
   userId: string;
@@ -79,7 +79,7 @@ export async function listRemotesService(db: Client): Promise<RemoteListing[]> {
   }));
 }
 
-export function registerSyncRemoteTools(server: McpServer): void {
+export function registerSyncRemoteTools(server: McpServer, ctx: SessionCtx): void {
   server.tool(
     "portuni_setup_remote",
     "Create or update a named remote (fs, gdrive, dropbox, s3, webdav, sftp). Use when the user is configuring a sync backend. For gdrive, pass service_account_json — other types ignore it.",
@@ -92,7 +92,7 @@ export function registerSyncRemoteTools(server: McpServer): void {
     async (args) => {
       const db = getDb();
       await setupRemoteService(db, {
-        userId: SOLO_USER,
+        userId: ctx.identity.userId,
         name: args.name,
         type: args.type,
         config: args.config,

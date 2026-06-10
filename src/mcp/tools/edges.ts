@@ -6,10 +6,11 @@ import { ulid } from "ulid";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getDb } from "../../infra/db.js";
 import { logAudit } from "../../infra/audit.js";
-import { EDGE_RELATIONS, SOLO_USER } from "../../infra/schema.js";
+import { EDGE_RELATIONS } from "../../infra/schema.js";
 import { moveNodeToOrganization } from "../../domain/edges.js";
+import type { SessionCtx } from "../server.js";
 
-export function registerEdgeTools(server: McpServer): void {
+export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
   server.tool(
     "portuni_connect",
     "Create a directed edge between two nodes. Connect only when the user explicitly asks or when creating a node that needs its initial belongs_to edge — speculative connections clutter the graph and mislead later readers. Relations (strictly enforced): related_to (lateral connection), belongs_to (scope; one per non-organization node), applies (concrete work uses a pattern, e.g. project applies process), informed_by (knowledge transfer). To move a node between organizations, call portuni_move_node — it rebinds the existing belongs_to atomically. A disconnect-then-connect across organizations is rejected because it would transiently orphan the node. See portuni://architecture.",
@@ -110,12 +111,12 @@ export function registerEdgeTools(server: McpServer): void {
           args.target_id,
           args.relation,
           args.meta ? JSON.stringify(args.meta) : null,
-          SOLO_USER,
+          ctx.identity.userId,
           now,
         ],
       });
 
-      await logAudit(SOLO_USER, "connect", "edge", id, {
+      await logAudit(ctx.identity.userId, "connect", "edge", id, {
         source_id: args.source_id,
         target_id: args.target_id,
         relation: args.relation,
@@ -200,7 +201,7 @@ export function registerEdgeTools(server: McpServer): void {
         });
       }
 
-      await logAudit(SOLO_USER, "disconnect", "edge", `${args.source_id}->${args.target_id}`, {
+      await logAudit(ctx.identity.userId, "disconnect", "edge", `${args.source_id}->${args.target_id}`, {
         source_id: args.source_id,
         target_id: args.target_id,
         relation: args.relation ?? "all",
@@ -228,7 +229,7 @@ export function registerEdgeTools(server: McpServer): void {
       try {
         const result = await moveNodeToOrganization(
           getDb(),
-          SOLO_USER,
+          ctx.identity.userId,
           args.node_id,
           args.new_org_id,
         );

@@ -4,7 +4,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getDb } from "../../infra/db.js";
-import { SOLO_USER } from "../../infra/schema.js";
 import {
   assignResponsibility,
   createResponsibility,
@@ -13,8 +12,9 @@ import {
   unassignResponsibility,
   updateResponsibility,
 } from "../../domain/responsibilities.js";
+import type { SessionCtx } from "../server.js";
 
-export function registerResponsibilityTools(server: McpServer): void {
+export function registerResponsibilityTools(server: McpServer, ctx: SessionCtx): void {
   server.tool(
     "portuni_create_responsibility",
     "Create a responsibility on a project/process/area node. Responsibilities are concrete duties ('Review kódu', 'Ops on-call') attached to entities; they are not nodes themselves. Optionally pass a list of actor IDs to assign immediately. Create only when the user explicitly asks.",
@@ -27,7 +27,7 @@ export function registerResponsibilityTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        const row = await createResponsibility(getDb(), SOLO_USER, args);
+        const row = await createResponsibility(getDb(), ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
       } catch (err) {
         return {
@@ -49,7 +49,7 @@ export function registerResponsibilityTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        const row = await updateResponsibility(getDb(), SOLO_USER, args);
+        const row = await updateResponsibility(getDb(), ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
       } catch (err) {
         return {
@@ -68,7 +68,7 @@ export function registerResponsibilityTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        await deleteResponsibility(getDb(), SOLO_USER, args.responsibility_id);
+        await deleteResponsibility(getDb(), ctx.identity.userId, args.responsibility_id);
         return {
           content: [{ type: "text" as const, text: JSON.stringify({ id: args.responsibility_id, action: "deleted" }) }],
         };
@@ -110,7 +110,7 @@ export function registerResponsibilityTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        await assignResponsibility(getDb(), SOLO_USER, args);
+        await assignResponsibility(getDb(), ctx.identity.userId, args);
         return {
           content: [
             {
@@ -141,7 +141,7 @@ export function registerResponsibilityTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        await unassignResponsibility(getDb(), SOLO_USER, args);
+        await unassignResponsibility(getDb(), ctx.identity.userId, args);
         return {
           content: [
             {

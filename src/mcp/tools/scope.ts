@@ -1,14 +1,13 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getDb } from "../../infra/db.js";
-import { SOLO_USER } from "../../infra/schema.js";
 import { logAudit } from "../../infra/audit.js";
 import {
   loadNodeScopeMeta,
-  type SessionScope,
   seedScopeFromHome,
   violatesHardFloor,
 } from "../scope.js";
+import type { SessionCtx } from "../server.js";
 
 // portuni_session_init is the manual fallback for seeding the scope set.
 // Auto-seed normally fires on connect when the MCP URL carries
@@ -30,7 +29,8 @@ async function loadNodeIdFromMaybeName(
   return r.rows[0].id as string;
 }
 
-export function registerScopeTools(server: McpServer, scope: SessionScope): void {
+export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
+  const { scope } = ctx;
   server.tool(
     "portuni_session_init",
     "Manually initialize the read-scope set for this MCP session. Auto-seed normally runs on connect when the URL carries ?home_node_id=…; use this tool only when that is absent (legacy client, ad-hoc connection). Seeds the scope set with the home node and its depth-1 neighbors. Call without home_node_id when cwd is outside any mirror — the scope set stays empty and every read requires explicit expansion.",
@@ -52,7 +52,7 @@ export function registerScopeTools(server: McpServer, scope: SessionScope): void
 
       if (!homeId) {
         // cwd outside any mirror: scope stays empty.
-        await logAudit(SOLO_USER, "session_init", "scope", "session", {
+        await logAudit(ctx.identity.userId, "session_init", "scope", "session", {
           home: null,
           mode: scope.mode,
         });
@@ -93,7 +93,7 @@ export function registerScopeTools(server: McpServer, scope: SessionScope): void
         triggered_by: "init",
       });
 
-      await logAudit(SOLO_USER, "session_init", "scope", homeId, {
+      await logAudit(ctx.identity.userId, "session_init", "scope", homeId, {
         home: homeId,
         seeded: seedIds,
         mode: scope.mode,
@@ -168,7 +168,7 @@ export function registerScopeTools(server: McpServer, scope: SessionScope): void
           continue;
         }
         const meta = await loadNodeScopeMeta(db, id);
-        if (violatesHardFloor(meta, SOLO_USER) && !args.confirmed_hard_floor) {
+        if (violatesHardFloor(meta, ctx.identity.userId) && !args.confirmed_hard_floor) {
           refused_hard_floor.push({
             node_id: id,
             reason: meta.scopeSensitive
@@ -188,7 +188,7 @@ export function registerScopeTools(server: McpServer, scope: SessionScope): void
           reason: args.reason,
           triggered_by: args.triggered_by,
         });
-        await logAudit(SOLO_USER, "expand_scope", "scope", accepted.join(","), {
+        await logAudit(ctx.identity.userId, "expand_scope", "scope", accepted.join(","), {
           node_ids: accepted,
           reason: args.reason,
           triggered_by: args.triggered_by,
@@ -196,7 +196,7 @@ export function registerScopeTools(server: McpServer, scope: SessionScope): void
         });
       }
       if (refused_hard_floor.length > 0) {
-        await logAudit(SOLO_USER, "scope_hard_floor_refusal", "scope", refused_hard_floor.map((r) => r.node_id).join(","), {
+        await logAudit(ctx.identity.userId, "scope_hard_floor_refusal", "scope", refused_hard_floor.map((r) => r.node_id).join(","), {
           refused: refused_hard_floor,
           reason: args.reason,
         });
