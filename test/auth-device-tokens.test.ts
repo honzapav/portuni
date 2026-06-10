@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { makeSharedDb } from "./helpers/shared-db.js";
 import {
   mintDeviceToken,
@@ -27,7 +28,8 @@ test("plaintext token is not stored", async () => {
     sql: "SELECT token_hash FROM device_tokens WHERE id = ?",
     args: [minted.id],
   });
-  assert.notEqual(r.rows[0].token_hash, minted.token);
+  const expected = createHash("sha256").update(minted.token).digest("hex");
+  assert.equal(r.rows[0].token_hash, expected);
 });
 
 test("revoked token stops verifying; list shows revoked_at", async () => {
@@ -49,4 +51,16 @@ test("expired token stops verifying", async () => {
 test("unknown token verifies to null", async () => {
   const { db } = await makeSharedDb();
   assert.equal(await verifyDeviceToken(db, "ptk_does-not-exist"), null);
+});
+
+test("revoke is ownership-scoped", async () => {
+  const { db } = await makeSharedDb();
+  const minted = await mintDeviceToken(db, USER, "x");
+  await db.execute({
+    sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+    args: ["01OTHER000000000000000000", "other@x.com", "Other"],
+  });
+  const ok = await revokeDeviceToken(db, "01OTHER000000000000000000", minted.id);
+  assert.equal(ok, false);
+  assert.ok(await verifyDeviceToken(db, minted.token), "token still valid");
 });
