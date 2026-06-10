@@ -61,6 +61,31 @@ pub struct SpawnArgs {
     pub command: String,
     pub cols: u16,
     pub rows: u16,
+    /// Seatbelt profile text (from GET /nodes/:id/sandbox-profile). When
+    /// set on macOS, the shell is wrapped in `sandbox-exec -f <profile>`
+    /// so every process in the terminal — any agent binary included —
+    /// gets the node's disk scope enforced by the kernel. Absent/empty
+    /// spawns unsandboxed (older frontends, nodes without mirrors).
+    #[serde(default)]
+    pub sandbox_profile: Option<String>,
+}
+
+/// Compute the (program, argv) pair for the PTY child. Pure so the
+/// sandbox wrapping is unit-testable: with a profile path the shell is
+/// wrapped in sandbox-exec, without one it runs directly.
+fn spawn_program(
+    shell: &str,
+    shell_args: &[String],
+    profile_path: Option<&str>,
+) -> (String, Vec<String>) {
+    match profile_path {
+        Some(p) => {
+            let mut argv = vec!["-f".to_string(), p.to_string(), shell.to_string()];
+            argv.extend(shell_args.iter().cloned());
+            ("/usr/bin/sandbox-exec".to_string(), argv)
+        }
+        None => (shell.to_string(), shell_args.to_vec()),
+    }
 }
 
 // POSIX-safe single-quote escape for embedding a path into a shell
@@ -132,8 +157,41 @@ pub fn pty_spawn(
         .map_err(|e| format!("openpty failed: {e}"))?;
 
     let (shell, shell_args) = pick_shell();
-    let mut cmd = CommandBuilder::new(&shell);
-    for a in &shell_args {
+
+    // Materialise the Seatbelt profile to a temp file and wrap the shell
+    // in sandbox-exec. Fail-closed: when the caller asked for a sandbox
+    // and we cannot apply it, refuse the spawn rather than silently
+    // running the agent without the disk boundary. Non-macOS platforms
+    // have no sandbox-exec; the profile is ignored with a warning there.
+    let mut sandbox_profile_path: Option<std::path::PathBuf> = None;
+    if let Some(profile) = args
+        .sandbox_profile
+        .as_deref()
+        .filter(|p| !p.trim().is_empty())
+    {
+        if cfg!(target_os = "macos") {
+            let path = std::env::temp_dir().join(format!(
+                "portuni-sbx-{}.sb",
+                args.session_id.replace('/', "_"),
+            ));
+            std::fs::write(&path, profile)
+                .map_err(|e| format!("sandbox profile write failed: {e}"))?;
+            sandbox_profile_path = Some(path);
+        } else {
+            warn!("sandbox_profile supplied on a non-macOS platform — spawning unsandboxed");
+        }
+    }
+
+    let (program, argv) = spawn_program(
+        &shell,
+        &shell_args,
+        sandbox_profile_path
+            .as_ref()
+            .map(|p| p.to_string_lossy())
+            .as_deref(),
+    );
+    let mut cmd = CommandBuilder::new(&program);
+    for a in &argv {
         cmd.arg(a);
     }
     cmd.cwd(&args.cwd);
@@ -224,6 +282,7 @@ pub fn pty_spawn(
     // events. Exits when read returns 0 (pty closed) or errors.
     let app_for_reader = app.clone();
     let sid_for_reader = session_id.clone();
+    let profile_for_cleanup = sandbox_profile_path.clone();
     thread::spawn(move || {
         let mut reader = reader;
         // 16 KB buffer reduces per-chunk overhead (event serialization
@@ -268,6 +327,11 @@ pub fn pty_spawn(
             if let Ok(mut sessions) = state.sessions.lock() {
                 sessions.remove(&sid_for_reader);
             }
+        }
+        // The sandbox profile tempfile is only needed at exec time;
+        // remove it once the session is gone.
+        if let Some(p) = profile_for_cleanup {
+            let _ = std::fs::remove_file(p);
         }
     });
 
@@ -332,4 +396,27 @@ pub fn pty_kill(state: State<'_, PtyState>, args: KillArgs) -> Result<(), String
     // exits naturally.
     sessions.remove(&args.session_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod spawn_program_tests {
+    use super::*;
+
+    #[test]
+    fn wraps_shell_in_sandbox_exec_when_profile_given() {
+        let (program, argv) = spawn_program(
+            "/bin/zsh",
+            &["-l".to_string(), "-i".to_string()],
+            Some("/tmp/portuni-sbx-s1.sb"),
+        );
+        assert_eq!(program, "/usr/bin/sandbox-exec");
+        assert_eq!(argv, vec!["-f", "/tmp/portuni-sbx-s1.sb", "/bin/zsh", "-l", "-i"]);
+    }
+
+    #[test]
+    fn runs_shell_directly_without_profile() {
+        let (program, argv) = spawn_program("/bin/zsh", &["-l".to_string()], None);
+        assert_eq!(program, "/bin/zsh");
+        assert_eq!(argv, vec!["-l"]);
+    }
 }

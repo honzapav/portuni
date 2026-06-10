@@ -49,6 +49,7 @@ import {
   handleFolderUrl,
   handleGetNode,
   handleMoveNode,
+  handleNodeSandboxProfile,
   handlePatchNode,
   handlePositions,
   handleSyncRun,
@@ -349,6 +350,11 @@ async function routeNodes(
   const mirrorMatch = pathname.match(/^\/nodes\/([^/]+)\/mirror$/);
   if (mirrorMatch && method === "POST") {
     await handleCreateNodeMirror(req, res, decodeURIComponent(mirrorMatch[1]));
+    return true;
+  }
+  const sandboxProfileMatch = pathname.match(/^\/nodes\/([^/]+)\/sandbox-profile$/);
+  if (sandboxProfileMatch && method === "GET") {
+    await handleNodeSandboxProfile(req, res, decodeURIComponent(sandboxProfileMatch[1]));
     return true;
   }
   const moveMatch = pathname.match(/^\/nodes\/([^/]+)\/move$/);

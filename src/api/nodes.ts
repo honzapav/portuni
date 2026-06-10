@@ -22,6 +22,10 @@ import {
   createMirrorForNode,
   MirrorCreateError,
 } from "../domain/sync/mirror-create.js";
+import {
+  buildSeatbeltProfile,
+  resolveSandboxScopeForNode,
+} from "../domain/sandbox-profile.js";
 import type { SyncStatusResponse, SyncRunResponse, UntrackedFile } from "../shared/api-types.js";
 import { parseBody, parseJsonBody, respondError , respondJson} from "../http/middleware.js";
 import { z } from "zod";
@@ -505,6 +509,51 @@ export async function handleCreateNodeMirror(
       return;
     }
     respondError(res, `${req.method} /nodes/${nodeId}/mirror`, err);
+  }
+}
+
+// Disk-scope profile for spawning an agent terminal inside the node's
+// mirror. The desktop app fetches this right before pty_spawn and wraps
+// the shell in `sandbox-exec -f <profile>`, so any agent binary gets the
+// same boundary the MCP session scope enforces on the graph: home mirror
+// read+write, depth-1 neighbor mirrors read-only, rest of PORTUNI_ROOT
+// denied by the kernel. 409 NO_MIRROR mirrors the create-mirror-first
+// flow the app already follows.
+export async function handleNodeSandboxProfile(
+  req: IncomingMessage,
+  res: ServerResponse,
+  nodeId: string,
+): Promise<void> {
+  if (!nodeId) {
+    respondJson(res, 400, { error: "node id required" });
+    return;
+  }
+  try {
+    const db = getDb();
+    const exists = await db.execute({
+      sql: "SELECT 1 FROM nodes WHERE id = ?",
+      args: [nodeId],
+    });
+    if (exists.rows.length === 0) {
+      respondJson(res, 404, { error: `node ${nodeId} not found` });
+      return;
+    }
+    const scope = await resolveSandboxScopeForNode(db, SOLO_USER, nodeId);
+    if (!scope) {
+      respondJson(res, 409, {
+        error: `node ${nodeId} has no local mirror on this device`,
+        code: "NO_MIRROR",
+      });
+      return;
+    }
+    respondJson(res, 200, {
+      profile: buildSeatbeltProfile(scope),
+      portuni_root: scope.portuniRoot,
+      home_mirror: scope.homeMirror,
+      neighbor_mirrors: scope.neighborMirrors,
+    });
+  } catch (err) {
+    respondError(res, `${req.method} /nodes/${nodeId}/sandbox-profile`, err);
   }
 }
 
