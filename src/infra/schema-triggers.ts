@@ -29,6 +29,19 @@ export const NODE_VISIBILITIES_SQL = sqlEnumList(NODE_VISIBILITIES);
 export const EVENT_STATUSES_SQL = sqlEnumList(EVENT_STATUSES);
 export const FILE_STATUSES_SQL = sqlEnumList(FILE_STATUSES);
 
+// Migration 015: device_tokens table for agent/MCP auth (Google sub + PATs).
+// Declared before DDL so it can be referenced in the array below.
+export const DDL_DEVICE_TOKENS = `CREATE TABLE IF NOT EXISTS device_tokens (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    label TEXT NOT NULL,
+    token_hash TEXT UNIQUE NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    expires_at DATETIME,
+    revoked_at DATETIME,
+    last_used_at DATETIME
+  )`;
+
 // Ground-truth DDL for fresh installs. Includes all CHECK constraints.
 // Existing installs get constraints via migrations.
 export const DDL = [
@@ -38,6 +51,7 @@ export const DDL = [
     name TEXT NOT NULL,
     created_at DATETIME NOT NULL DEFAULT (datetime('now'))
   )`,
+  DDL_DEVICE_TOKENS,
   `CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY CHECK(length(id) = 26),
     type TEXT NOT NULL CHECK(type IN (${NODE_TYPES_SQL})),

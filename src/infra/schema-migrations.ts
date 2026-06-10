@@ -40,6 +40,7 @@ import {
   DDL_REMOTE_ROUTING_TABLE,
   INDEX_REMOTE_ROUTING_PRIORITY,
   SEED_LIFECYCLE_STATE_FROM_STATUS,
+  DDL_DEVICE_TOKENS,
 } from "./schema-triggers.js";
 
 interface Migration {
@@ -883,6 +884,30 @@ const MIGRATIONS: Migration[] = [
     },
     up: async (db) => {
       await db.execute("DROP TRIGGER IF EXISTS nodes_owner_must_be_real_person");
+    },
+  },
+
+  // Migration 015: per-user identity (Google) columns on users +
+  // device_tokens table for agent/MCP auth. Spec:
+  // docs/superpowers/specs/2026-06-09-google-groups-auth-design.md §4.
+  {
+    id: "015_users_identity",
+    up: async (db) => {
+      const cols = await db.execute("PRAGMA table_info(users)");
+      const names = new Set(cols.rows.map((r) => String(r.name)));
+      if (!names.has("google_sub")) {
+        await db.execute("ALTER TABLE users ADD COLUMN google_sub TEXT");
+        await db.execute(
+          "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL",
+        );
+      }
+      if (!names.has("avatar_url")) {
+        await db.execute("ALTER TABLE users ADD COLUMN avatar_url TEXT");
+      }
+      if (!names.has("last_login_at")) {
+        await db.execute("ALTER TABLE users ADD COLUMN last_login_at DATETIME");
+      }
+      await db.execute(DDL_DEVICE_TOKENS);
     },
   },
 ];
