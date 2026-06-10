@@ -1024,15 +1024,12 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Cover both lifecycle points: CloseRequested fires for Cmd+W /
-            // clicking the close button, Destroyed fires once the window is
-            // gone. Either is enough on its own; handling both is defensive
-            // against the orphan-sidecar leak that happens when only one
-            // path actually fires.
-            if matches!(
-                event,
-                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
-            ) {
+            // Only Destroyed, not CloseRequested: the webview registers an
+            // onCloseRequested listener (dirty-editor guard), so a close
+            // request may be cancelled in JS. Killing the sidecar on the
+            // request would leave a live window with a dead backend.
+            // Cmd+Q / app exit is covered by ExitRequested/Exit below.
+            if matches!(event, tauri::WindowEvent::Destroyed) {
                 kill_managed_sidecar(window.app_handle());
             }
         })
