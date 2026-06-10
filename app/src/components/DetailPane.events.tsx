@@ -24,9 +24,13 @@ export function EventCard({
   const [type, setType] = useState(evt.type);
   const [date, setDate] = useState(evt.created_at.slice(0, 10));
   const [saving, setSaving] = useState(false);
+  // A failed mutation used to be swallowed (try/finally without catch):
+  // the button snapped back to idle and the edit silently was not saved.
+  const [error, setError] = useState<string | null>(null);
 
   const save = async () => {
     setSaving(true);
+    setError(null);
     try {
       const patch: Record<string, string> = {};
       if (content.trim() !== evt.content) patch.content = content.trim();
@@ -39,6 +43,8 @@ export function EventCard({
         await onMutate();
       }
       setEditing(false);
+    } catch (e) {
+      setError(`Uložení selhalo: ${String(e)}`);
     } finally {
       setSaving(false);
     }
@@ -46,9 +52,12 @@ export function EventCard({
 
   const archive = async () => {
     setSaving(true);
+    setError(null);
     try {
       await archiveEvent(evt.id);
       await onMutate();
+    } catch (e) {
+      setError(`Archivace selhala: ${String(e)}`);
     } finally {
       setSaving(false);
     }
@@ -56,13 +65,22 @@ export function EventCard({
 
   const resolve = async () => {
     setSaving(true);
+    setError(null);
     try {
       await updateEvent(evt.id, { status: "resolved" });
       await onMutate();
+    } catch (e) {
+      setError(`Označení selhalo: ${String(e)}`);
     } finally {
       setSaving(false);
     }
   };
+
+  const errorLine = error && (
+    <div className="mt-1.5 text-[12px]" style={{ color: "var(--color-danger)" }}>
+      {error}
+    </div>
+  );
 
   if (editing) {
     return (
@@ -106,6 +124,7 @@ export function EventCard({
             {saving ? "Ukládám..." : "Uložit"}
           </button>
         </div>
+        {errorLine}
       </div>
     );
   }
@@ -158,6 +177,7 @@ export function EventCard({
       <div className="text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
         {evt.content}
       </div>
+      {errorLine}
     </div>
   );
 }
@@ -175,6 +195,7 @@ export function AddEventForm({
   const [type, setType] = useState<string>("note");
   const [content, setContent] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   if (!open) {
     return (
@@ -191,12 +212,15 @@ export function AddEventForm({
   const submit = async () => {
     if (!content.trim()) return;
     setSubmitting(true);
+    setError(null);
     try {
       await createEvent({ node_id: nodeId, type, content: content.trim() });
       await onMutate();
       setOpen(false);
       setContent("");
       setType("note");
+    } catch (e) {
+      setError(`Událost se nepodařilo přidat: ${String(e)}`);
     } finally {
       setSubmitting(false);
     }
@@ -243,6 +267,11 @@ export function AddEventForm({
           {submitting ? "Přidávám..." : "Přidat událost"}
         </button>
       </div>
+      {error && (
+        <div className="mt-1.5 text-[12px]" style={{ color: "var(--color-danger)" }}>
+          {error}
+        </div>
+      )}
     </div>
   );
 }

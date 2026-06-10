@@ -12,6 +12,7 @@
 // remount only ever saw new output — the user saw the terminal "go
 // blank" when bouncing between nodes. Keeping every pane mounted means
 // the xterm buffer survives node switches too.
+import { memo } from "react";
 import TerminalPane from "./TerminalPane";
 import type { TerminalSession } from "../lib/sessions";
 import type { Theme } from "../lib/theme";
@@ -26,7 +27,12 @@ type Props = {
   theme: Theme;
 };
 
-export default function TerminalTabs({
+// Memoized: App re-renders on every editor keystroke and session-activity
+// tick; without memo all mounted xterm wrappers re-render along with it.
+// Props change only on session lifecycle / selection / theme events.
+export default memo(TerminalTabs);
+
+function TerminalTabs({
   sessions,
   selectedNodeId,
   activeSessionIdByNode,
@@ -62,6 +68,7 @@ export default function TerminalTabs({
               sessionId={s.id}
               cwd={s.cwd}
               command={s.command}
+              sandboxProfile={s.sandboxProfile}
               active={visible}
               theme={theme}
               onExit={() => onCloseSession(s.id)}

@@ -24,19 +24,38 @@ export function useMcpStatus(): McpStatus {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
+    // Skip identical updates: a fresh object every 5s re-renders the
+    // footer forever even when nothing changed.
+    function apply(next: McpStatus) {
+      const prev = stateRef.current;
+      const same =
+        prev.state === next.state &&
+        (next.state !== "running" ||
+          (prev.state === "running" && prev.url === next.url && prev.port === next.port)) &&
+        (next.state !== "down" ||
+          (prev.state === "down" && prev.reason === next.reason));
+      if (!same) setStatus(next);
+    }
+
     async function tick() {
+      // No polling while the tab/window is hidden -- the indicator is not
+      // visible and the requests just churn the backend.
+      if (document.hidden) {
+        timer = setTimeout(() => void tick(), POLL_RUNNING_MS);
+        return;
+      }
       try {
         const res = await apiFetch("/mcp/info");
         if (cancelled) return;
         if (!res.ok) {
-          setStatus({ state: "down", reason: `HTTP ${res.status}` });
+          apply({ state: "down", reason: `HTTP ${res.status}` });
         } else {
           const body = (await res.json()) as { url: string; port: number };
-          setStatus({ state: "running", url: body.url, port: body.port });
+          apply({ state: "running", url: body.url, port: body.port });
         }
       } catch (e) {
         if (cancelled) return;
-        setStatus({
+        apply({
           state: "down",
           reason: e instanceof Error ? e.message : String(e),
         });

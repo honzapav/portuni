@@ -21,7 +21,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
-import { isTauri } from "../lib/backend-url";
+import { isTauri, openExternal } from "../lib/backend-url";
 import type { Theme } from "../lib/theme";
 
 type Props = {
@@ -30,6 +30,11 @@ type Props = {
   sessionId: string;
   cwd: string;
   command: string;
+  // Seatbelt profile text; pty_spawn wraps the shell in sandbox-exec
+  // with it so every process in the terminal gets the node's disk scope.
+  // Null spawns unsandboxed (legacy sessions only — new launches always
+  // carry a profile).
+  sandboxProfile: string | null;
   // True when the pane is the active tab. False for background panes
   // that are mounted but display:none — those skip resize-IPC since
   // their measurements would be wrong anyway.
@@ -81,6 +86,7 @@ export default function TerminalPane({
   sessionId,
   cwd,
   command,
+  sandboxProfile,
   active,
   theme,
   onExit,
@@ -160,24 +166,21 @@ export default function TerminalPane({
       // term.open(), FitAddon.fit() throws because there's no DOM.
       fitRef.current = fit;
       // WebLinksAddon's default handler is window.open(), which is a no-op
-      // inside the Tauri webview. Re-load with an explicit handler that
-      // routes through tauri-plugin-shell so links open in the OS handler
-      // (browser for http(s), Finder for file://, mail client for mailto:).
-      // Default urlRegex only covers http(s); widen it to file/mailto too.
+      // inside the Tauri webview. Route through openExternal -- the native
+      // open_external command with scheme allowlist + logging. The old
+      // tauri-plugin-shell `open` was itself a silent no-op in the macOS
+      // webview (same bug commit 1f927a1 fixed for app links), so links
+      // clicked in the terminal did nothing. Regex matches the allowlist:
+      // http(s) and mailto only.
       term.loadAddon(
         new WebLinksAddon(
-          async (event, uri) => {
+          (event, uri) => {
             event.preventDefault();
-            try {
-              const { open } = await import("@tauri-apps/plugin-shell");
-              await open(uri);
-            } catch {
-              // shell plugin missing or URL blocked by regex — ignore
-            }
+            void openExternal(uri);
           },
           {
             urlRegex:
-              /((https?|HTTPS?):\/\/|file:\/\/|mailto:)[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~[\]`()<>]/,
+              /((https?|HTTPS?):\/\/|mailto:)[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~[\]`()<>]/,
           },
         ),
       );
@@ -225,7 +228,14 @@ export default function TerminalPane({
       if (cancelled) return;
       try {
         await invoke("pty_spawn", {
-          args: { session_id: id, cwd, command, cols: term.cols, rows: term.rows },
+          args: {
+            session_id: id,
+            cwd,
+            command,
+            cols: term.cols,
+            rows: term.rows,
+            sandbox_profile: sandboxProfile,
+          },
         });
       } catch (err) {
         term.writeln(`\x1b[31mFailed to spawn pty: ${String(err)}\x1b[0m`);

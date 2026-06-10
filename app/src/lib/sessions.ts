@@ -16,6 +16,11 @@ export type TerminalSessionInput = {
   nodeType: NodeTypeLite;
   cwd: string;
   command: string;
+  // Seatbelt profile text from GET /nodes/:id/sandbox-profile. Passed to
+  // pty_spawn so the shell (and any agent in it) runs under the node's
+  // disk scope. Null only for sessions created before the profile fetch
+  // existed; new sessions always carry one (launch is fail-closed).
+  sandboxProfile: string | null;
 };
 
 export type TerminalSession = TerminalSessionInput & {
@@ -25,6 +30,11 @@ export type TerminalSession = TerminalSessionInput & {
 };
 
 const ACTIVITY_THRESHOLD_MS = 1500;
+// pty-data fires per byte chunk -- during heavy agent output that is many
+// times per second, and every accepted update re-renders all consumers of
+// the sessions state. The indicator threshold is 1500ms, so recording at
+// most one timestamp per 250ms loses nothing visible.
+const ACTIVITY_THROTTLE_MS = 250;
 
 export function createSession(
   input: TerminalSessionInput,
@@ -54,6 +64,7 @@ export function markActivity(
   let mutated = false;
   const next = sessions.map((s) => {
     if (s.id !== id) return s;
+    if (at - s.lastOutputAt < ACTIVITY_THROTTLE_MS) return s;
     mutated = true;
     return { ...s, lastOutputAt: at };
   });

@@ -15,6 +15,7 @@ import {
   nodeIsActive,
   type TerminalSession,
 } from "../lib/sessions";
+import { useNowTick } from "../lib/use-now-tick";
 
 type NodeRow = {
   id: string;
@@ -30,7 +31,6 @@ type Props = {
   onSelectSession: (nodeId: string, sessionId: string) => void;
   onCloseSession: (id: string) => void;
   onNewSession: (nodeId: string) => void;
-  now: number;
 };
 
 function nodeTypeVar(type: string): string {
@@ -46,8 +46,10 @@ export default function WorkspaceNodeList({
   onSelectSession,
   onCloseSession,
   onNewSession,
-  now,
 }: Props) {
+  // Tick locally -- only this list needs a clock for the activity dots.
+  // In App the same interval used to re-render the entire tree every second.
+  const now = useNowTick();
   const counts = countSessionsByNode(sessions);
 
   // Stable order: first-seen wins. We can derive this from sessions[]

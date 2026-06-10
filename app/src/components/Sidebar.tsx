@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Search, Sun, Moon, X, Settings, Waypoints, Terminal } from "lucide-react";
 import type { GraphPayload, GraphNode } from "../types";
 import { RELATION_TYPES } from "../types";
@@ -40,14 +40,18 @@ type Props = {
   workspaceSessions: TerminalSession[];
   workspaceSelectedNodeId: string | null;
   workspaceActiveSessionIdByNode: Record<string, string>;
-  workspaceNow: number;
   onWorkspaceSelectNode: (id: string) => void;
   onWorkspaceSelectSession: (nodeId: string, sessionId: string) => void;
   onWorkspaceCloseSession: (sessionId: string) => void;
   onWorkspaceNewSession: (nodeId: string) => void;
+  // Open a terminal for an EXISTING node (the primary workspace action).
+  // Driven by the inline search-first picker at the top of the workspace
+  // column -- type a node name, click it, terminal opens. No modal hop.
+  onWorkspaceOpenTerminalForNode: (nodeId: string) => void;
   // Create a brand-new node and immediately open a terminal session for it.
   // The graph view has its own "Nový uzel" button; the workspace view needs
-  // its own so a session can be started for a node that does not exist yet.
+  // its own. Secondary to the search-first picker -- rendered as a quiet
+  // "Nebo vytvoř nový uzel…" link below the search field.
   onWorkspaceCreateNode: () => void;
 };
 
@@ -63,11 +67,27 @@ function nodeTypeVar(type: string): string {
   return "var(--color-node-default)";
 }
 
+// Global shortcuts (Cmd+K, Cmd+T) must not steal focus while the user is
+// typing -- in a DetailPane textarea, the CodeMirror editor (contenteditable)
+// or the embedded terminal (xterm's hidden textarea). Cmd+T in a shell is a
+// common readline binding, so the terminal case is not theoretical.
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  return target.isContentEditable;
+}
+
 function nodeTypeGlow(type: string, alpha: number = 0.4): string {
   return `color-mix(in srgb, ${nodeTypeVar(type)} ${alpha * 100}%, transparent)`;
 }
 
-export default function Sidebar({
+// Memoized: the sidebar renders org/type/status filter lists plus the
+// workspace node list; App re-renders frequently (sessions state, editor)
+// while these props rarely change. All handlers are useCallback-stable.
+export default memo(Sidebar);
+
+function Sidebar({
   graph,
   query,
   onQuery,
@@ -91,11 +111,11 @@ export default function Sidebar({
   workspaceSessions,
   workspaceSelectedNodeId,
   workspaceActiveSessionIdByNode,
-  workspaceNow,
   onWorkspaceSelectNode,
   onWorkspaceSelectSession,
   onWorkspaceCloseSession,
   onWorkspaceNewSession,
+  onWorkspaceOpenTerminalForNode,
   onWorkspaceCreateNode,
 }: Props) {
   return (
@@ -157,17 +177,11 @@ export default function Sidebar({
 
       {view === "workspace" && (
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className="px-4 pt-4">
-            <button
-              type="button"
-              onClick={onWorkspaceCreateNode}
-              title="Vytvoří nový uzel a rovnou v něm otevře terminál"
-              className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-3 py-2 text-[13px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-text)]"
-            >
-              <Plus size={13} />
-              Nový uzel + terminál
-            </button>
-          </div>
+          <WorkspaceActions
+            graph={graph}
+            onOpenTerminalForNode={onWorkspaceOpenTerminalForNode}
+            onCreateNode={onWorkspaceCreateNode}
+          />
           <div className="flex-1 overflow-y-auto scroll-thin">
             <WorkspaceNodeList
               sessions={workspaceSessions}
@@ -177,7 +191,6 @@ export default function Sidebar({
               onSelectSession={onWorkspaceSelectSession}
               onCloseSession={onWorkspaceCloseSession}
               onNewSession={onWorkspaceNewSession}
-              now={workspaceNow}
             />
           </div>
         </div>
@@ -222,6 +235,154 @@ export default function Sidebar({
             : "Změny se ukládají automaticky."}
       </div>
     </aside>
+  );
+}
+
+// Search-first workspace actions. The primary action is opening a terminal
+// for an EXISTING node: type a name, the list filters inline, click (or
+// Enter) opens the session -- no modal hop. ⌘T focuses the field from
+// anywhere in the workspace. Creating a brand-new node is the secondary,
+// quiet "Nebo vytvoř nový uzel…" link below.
+function WorkspaceActions({
+  graph,
+  onOpenTerminalForNode,
+  onCreateNode,
+}: {
+  graph: GraphPayload;
+  onOpenTerminalForNode: (nodeId: string) => void;
+  onCreateNode: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [query, setQuery] = useState("");
+  const [focused, setFocused] = useState(false);
+
+  const isMac =
+    typeof navigator !== "undefined" &&
+    /mac|iphone|ipad|ipod/i.test(navigator.platform || navigator.userAgent);
+
+  // ⌘T (mac) / Ctrl+T elsewhere focuses the picker. preventDefault stops the
+  // browser's new-tab during Vite dev; in the Tauri shell there's no conflict.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (mod && e.key.toLowerCase() === "t") {
+        e.preventDefault();
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [isMac]);
+
+  const q = foldForSearch(query.trim());
+  const matches = q
+    ? graph.nodes
+        .filter((n) => n.type !== "organization")
+        .filter(
+          (n) =>
+            foldForSearch(n.name).includes(q) ||
+            foldForSearch(n.description ?? "").includes(q) ||
+            foldForSearch(n.type).includes(q),
+        )
+        .slice(0, 30)
+    : [];
+
+  const pick = (id: string) => {
+    onOpenTerminalForNode(id);
+    setQuery("");
+    inputRef.current?.blur();
+  };
+
+  return (
+    <div className="px-4 pt-4">
+      <div className="relative">
+        <Search
+          size={13}
+          className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-dim)]"
+        />
+        <input
+          ref={inputRef}
+          name="workspace-open-terminal"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setQuery("");
+              inputRef.current?.blur();
+            } else if (e.key === "Enter" && matches.length > 0) {
+              pick(matches[0].id);
+            }
+          }}
+          placeholder="Hledat uzel a otevřít terminál…"
+          className="w-full rounded-lg border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] py-2.5 pl-8 pr-12 text-[13px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] transition-colors focus:border-[var(--color-accent)] focus:bg-[var(--color-surface)]"
+        />
+        {query.length > 0 ? (
+          <button
+            onClick={() => {
+              setQuery("");
+              inputRef.current?.focus();
+            }}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-sm p-0.5 text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)]"
+            title="Vymazat"
+          >
+            <X size={12} />
+          </button>
+        ) : (
+          !focused && (
+            <kbd className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--color-text-dim)]">
+              {isMac ? "⌘T" : "Ctrl T"}
+            </kbd>
+          )
+        )}
+      </div>
+
+      {q.length > 0 && (
+        <ul className="scroll-thin mt-2 max-h-[280px] overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)]">
+          {matches.length === 0 ? (
+            <li className="px-3 py-4 text-center text-[12.5px] text-[var(--color-text-dim)]">
+              Žádné výsledky
+            </li>
+          ) : (
+            matches.map((n) => (
+              <li
+                key={n.id}
+                className="border-b border-[var(--color-border)] last:border-b-0"
+              >
+                <button
+                  type="button"
+                  onClick={() => pick(n.id)}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
+                >
+                  <span
+                    className="inline-block h-1.5 w-1.5 rounded-full"
+                    style={{ background: nodeTypeVar(n.type) }}
+                    aria-hidden
+                  />
+                  <span className="flex-1 truncate">{n.name}</span>
+                  <span className="font-mono text-[11px] text-[var(--color-text-dim)]">
+                    {n.type}
+                  </span>
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+      )}
+
+      <button
+        type="button"
+        onClick={onCreateNode}
+        title="Vytvoří nový uzel a rovnou v něm otevře terminál"
+        className="mt-2 flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-[12.5px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)]"
+      >
+        <Plus size={13} />
+        Nebo vytvoř nový uzel…
+      </button>
+    </div>
   );
 }
 
@@ -306,6 +467,21 @@ function GraphSidebarContent({
     typeCounts.set(n.type, (typeCounts.get(n.type) ?? 0) + 1);
   }
 
+  // Child count per organization in one pass over the edges. The previous
+  // inline version was O(orgs * nodes * edges) on every render.
+  const orgChildCounts = useMemo(() => {
+    const nonOrg = new Set(
+      graph.nodes.filter((n) => n.type !== "organization").map((n) => n.id),
+    );
+    const counts = new Map<string, number>();
+    for (const e of graph.edges) {
+      if (e.relation === "belongs_to" && nonOrg.has(e.source_id)) {
+        counts.set(e.target_id, (counts.get(e.target_id) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }, [graph]);
+
   const orderedTypes = [
     ...TYPE_ORDER.filter((t) => typeCounts.has(t)),
     ...Array.from(typeCounts.keys()).filter((t) => !TYPE_ORDER.includes(t)),
@@ -348,16 +524,7 @@ function GraphSidebarContent({
                 .sort((a, b) => a.name.localeCompare(b.name))
                 .map((org) => {
                   const enabled = !disabledOrgs.has(org.id);
-                  const childCount = graph.nodes.filter(
-                    (n) =>
-                      n.type !== "organization" &&
-                      graph.edges.some(
-                        (e) =>
-                          e.source_id === n.id &&
-                          e.target_id === org.id &&
-                          e.relation === "belongs_to",
-                      ),
-                  ).length;
+                  const childCount = orgChildCounts.get(org.id) ?? 0;
                   return (
                     <FilterRow
                       key={org.id}
@@ -473,6 +640,7 @@ function SearchBox({
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
       const mod = isMac ? e.metaKey : e.ctrlKey;
       if (mod && e.key.toLowerCase() === "k") {
         e.preventDefault();

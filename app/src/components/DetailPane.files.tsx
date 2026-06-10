@@ -4,7 +4,7 @@
 // class, summarise pending sync state in a banner, and expose the
 // "open in agent" / archive node action buttons.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   ChevronDown,
@@ -184,6 +184,61 @@ function sortChildren(node: TreeNode, isRoot: boolean): TreeNode[] {
   });
 }
 
+// Inline replacement for window.prompt on file creation -- the prompt is a
+// silent no-op in the Tauri macOS webview, so the form lives in the pane.
+export function NewFileForm({
+  onSubmit,
+  onCancel,
+}: {
+  onSubmit: (name: string) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    const trimmed = name.trim();
+    if (!trimmed || busy) return;
+    setBusy(true);
+    try {
+      await onSubmit(trimmed);
+    } catch {
+      /* error surfaced by the caller's error line; keep the form open */
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mb-3 flex items-center gap-2">
+      <input
+        autoFocus
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void submit();
+          if (e.key === "Escape") onCancel();
+        }}
+        placeholder="Název nového souboru (např. poznamky.md)"
+        className="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-border-strong)]"
+      />
+      <button
+        type="button"
+        disabled={!name.trim() || busy}
+        onClick={() => void submit()}
+        className="shrink-0 rounded-md border border-[var(--color-accent-dim)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-accent)] hover:border-[var(--color-accent)] disabled:opacity-50"
+      >
+        {busy ? "Vytvářím…" : "Vytvořit"}
+      </button>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="shrink-0 rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
+      >
+        Zrušit
+      </button>
+    </div>
+  );
+}
+
 export function FileTree({
   files,
   untracked,
@@ -198,8 +253,8 @@ export function FileTree({
   syncStatus: Map<string, SyncStatusFile>;
   syncLoaded: boolean;
   onOpenFile: (relPath: string) => void;
-  onRename: (fileId: string, currentName: string) => void;
-  onDelete: (fileId: string, filename: string) => void;
+  onRename: (fileId: string, newName: string) => Promise<void>;
+  onDelete: (fileId: string) => Promise<void>;
 }) {
   const treeFiles = useMemo(() => toTreeFiles(files, untracked), [files, untracked]);
   const root = useMemo(() => buildFileTree(treeFiles), [treeFiles]);
@@ -251,78 +306,20 @@ function FileTreeNode({
   syncStatus: Map<string, SyncStatusFile>;
   syncLoaded: boolean;
   onOpenFile: (relPath: string) => void;
-  onRename: (fileId: string, currentName: string) => void;
-  onDelete: (fileId: string, filename: string) => void;
+  onRename: (fileId: string, newName: string) => Promise<void>;
+  onDelete: (fileId: string) => Promise<void>;
 }) {
   const indent = depth * 14;
   if (node.file) {
-    const f = node.file;
-    const sync = f.fileId ? syncStatus.get(f.fileId) : undefined;
-    const editable = isEditableFile(f.mime_type);
     return (
-      <div
-        className="group flex items-start gap-2 rounded px-2 py-1 hover:bg-[var(--color-surface)]"
-        style={{ paddingLeft: indent + 8 }}
-      >
-        <FileText size={12} className="mt-0.5 shrink-0 text-[var(--color-text-dim)]" />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              disabled={!editable}
-              onClick={() => editable && onOpenFile(f.relative_path)}
-              title={editable ? "Otevřít v editoru" : "Tento soubor nelze editovat"}
-              className={
-                "truncate text-left text-[13.5px] text-[var(--color-text)] " +
-                (editable ? "hover:underline" : "cursor-default opacity-70")
-              }
-            >
-              {f.filename}
-            </button>
-            {sync && <SyncStatusBadge sync={sync} />}
-            {!f.fileId && (
-              <span
-                title="Soubor je na disku, ale ještě není zaregistrovaný. Zaregistruje se při synchronizaci."
-                className="rounded px-1.5 py-0.5 font-mono text-[8.5px] uppercase tracking-wider"
-                style={{
-                  color: "var(--color-status-archived)",
-                  background:
-                    "color-mix(in srgb, var(--color-status-archived) 12%, transparent)",
-                  border:
-                    "1px solid color-mix(in srgb, var(--color-status-archived) 25%, transparent)",
-                }}
-              >
-                neregistrováno
-              </span>
-            )}
-            {f.fileId && (
-              <span className="ml-auto hidden gap-1 group-hover:flex">
-                <button
-                  type="button"
-                  onClick={() => onRename(f.fileId!, f.filename)}
-                  title="Přejmenovat"
-                  className="text-[11px] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-                >
-                  Přejmenovat
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onDelete(f.fileId!, f.filename)}
-                  title="Smazat"
-                  className="text-[11px] text-[var(--color-text-dim)] hover:text-[var(--color-danger)]"
-                >
-                  Smazat
-                </button>
-              </span>
-            )}
-          </div>
-          {f.description && (
-            <div className="mt-0.5 line-clamp-2 text-[13.5px] leading-relaxed text-[var(--color-text-dim)]">
-              {f.description}
-            </div>
-          )}
-        </div>
-      </div>
+      <FileRow
+        file={node.file}
+        indent={indent}
+        syncStatus={syncStatus}
+        onOpenFile={onOpenFile}
+        onRename={onRename}
+        onDelete={onDelete}
+      />
     );
   }
   const isCollapsed = collapsed.has(node.path);
@@ -381,6 +378,173 @@ function FileTreeNode({
   );
 }
 
+// One file row. Rename is an inline input (Enter saves, Escape cancels);
+// delete is a two-step confirm that auto-resets after a few seconds. Both
+// replace window.prompt/confirm, which are no-ops in the Tauri webview.
+function FileRow({
+  file: f,
+  indent,
+  syncStatus,
+  onOpenFile,
+  onRename,
+  onDelete,
+}: {
+  file: TreeFile;
+  indent: number;
+  syncStatus: Map<string, SyncStatusFile>;
+  onOpenFile: (relPath: string) => void;
+  onRename: (fileId: string, newName: string) => Promise<void>;
+  onDelete: (fileId: string) => Promise<void>;
+}) {
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(f.filename);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    },
+    [],
+  );
+
+  const sync = f.fileId ? syncStatus.get(f.fileId) : undefined;
+  const editable = isEditableFile(f.mime_type);
+
+  const submitRename = async () => {
+    const name = draft.trim();
+    if (!name || name === f.filename) {
+      setRenaming(false);
+      setDraft(f.filename);
+      return;
+    }
+    setBusy(true);
+    try {
+      await onRename(f.fileId!, name);
+      setRenaming(false);
+    } catch {
+      /* error surfaced by the pane's error line; keep editing */
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDeleteClick = () => {
+    if (!confirmingDelete) {
+      setConfirmingDelete(true);
+      confirmTimer.current = setTimeout(() => setConfirmingDelete(false), 4000);
+      return;
+    }
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    setConfirmingDelete(false);
+    setBusy(true);
+    void onDelete(f.fileId!).finally(() => setBusy(false));
+  };
+
+  return (
+    <div
+      className="group flex items-start gap-2 rounded px-2 py-1 hover:bg-[var(--color-surface)]"
+      style={{ paddingLeft: indent + 8 }}
+    >
+      <FileText size={12} className="mt-0.5 shrink-0 text-[var(--color-text-dim)]" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          {renaming ? (
+            <input
+              autoFocus
+              value={draft}
+              disabled={busy}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void submitRename();
+                if (e.key === "Escape") {
+                  setRenaming(false);
+                  setDraft(f.filename);
+                }
+              }}
+              onBlur={() => void submitRename()}
+              className="min-w-0 flex-1 rounded border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-1.5 py-0.5 text-[13.5px] text-[var(--color-text)] outline-none"
+            />
+          ) : (
+            <button
+              type="button"
+              disabled={!editable}
+              onClick={() => editable && onOpenFile(f.relative_path)}
+              title={editable ? "Otevřít v editoru" : "Tento soubor nelze editovat"}
+              className={
+                "truncate text-left text-[13.5px] text-[var(--color-text)] " +
+                (editable ? "hover:underline" : "cursor-default opacity-70")
+              }
+            >
+              {f.filename}
+            </button>
+          )}
+          {sync && <SyncStatusBadge sync={sync} />}
+          {!f.fileId && (
+            <span
+              title="Soubor je na disku, ale ještě není zaregistrovaný. Zaregistruje se při synchronizaci."
+              className="rounded px-1.5 py-0.5 font-mono text-[8.5px] uppercase tracking-wider"
+              style={{
+                color: "var(--color-status-archived)",
+                background:
+                  "color-mix(in srgb, var(--color-status-archived) 12%, transparent)",
+                border:
+                  "1px solid color-mix(in srgb, var(--color-status-archived) 25%, transparent)",
+              }}
+            >
+              neregistrováno
+            </span>
+          )}
+          {f.fileId && !renaming && (
+            <span
+              className={
+                "ml-auto gap-1 " +
+                (confirmingDelete ? "flex" : "hidden group-hover:flex")
+              }
+            >
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setDraft(f.filename);
+                  setRenaming(true);
+                }}
+                title="Přejmenovat"
+                className="text-[11px] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+              >
+                Přejmenovat
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={handleDeleteClick}
+                title={
+                  confirmingDelete
+                    ? "Smaže soubor i z remote úložiště"
+                    : "Smazat"
+                }
+                className={
+                  "text-[11px] " +
+                  (confirmingDelete
+                    ? "font-medium text-[var(--color-danger)]"
+                    : "text-[var(--color-text-dim)] hover:text-[var(--color-danger)]")
+                }
+              >
+                {confirmingDelete ? "Opravdu smazat?" : "Smazat"}
+              </button>
+            </span>
+          )}
+        </div>
+        {f.description && (
+          <div className="mt-0.5 line-clamp-2 text-[13.5px] leading-relaxed text-[var(--color-text-dim)]">
+            {f.description}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Pluralization for the work-pending counter ("3 soubory ke synchronizaci"
 // vs. "1 soubor ke synchronizaci"). Czech grammar: 1 -> singular,
 // 2-4 -> few, 5+ -> many. Used to label the action button.
@@ -406,18 +570,17 @@ export function SyncBar({
   onRun: () => void;
 }) {
   // Count work-to-do straight from the badge map, so the button label
-  // matches what the user sees. deleted_local is pull-restorable, so it
-  // counts as pending work; conflicts are reported separately because
-  // they need manual resolve.
+  // matches what the user sees. deleted_local and conflicts are reported
+  // separately: the sync run never acts on them automatically (the local
+  // deletion may be intentional; conflicts need a human).
   let pending = 0;
   let conflicts = 0;
+  let deletedLocal = 0;
   for (const f of statusMap.values()) {
-    if (
-      f.sync_class === "push" ||
-      f.sync_class === "pull" ||
-      f.sync_class === "deleted_local"
-    ) {
+    if (f.sync_class === "push" || f.sync_class === "pull") {
       pending++;
+    } else if (f.sync_class === "deleted_local") {
+      deletedLocal++;
     } else if (f.sync_class === "conflict") {
       conflicts++;
     }
@@ -464,6 +627,21 @@ export function SyncBar({
             {conflicts} konflikt{conflicts === 1 ? "" : "y"}
           </span>
         )}
+        {deletedLocal > 0 && (
+          <span
+            className="rounded px-1.5 py-0.5 font-mono text-[8.5px] uppercase tracking-wider"
+            style={{
+              color: "var(--color-status-archived)",
+              background:
+                "color-mix(in srgb, var(--color-status-archived) 12%, transparent)",
+              border:
+                "1px solid color-mix(in srgb, var(--color-status-archived) 25%, transparent)",
+            }}
+            title="Soubor byl smazán lokálně, ale na remote existuje. Obnov přes portuni_pull, nebo smaž všude přes portuni_delete_file -- synchronizace ho neobnovuje automaticky."
+          >
+            {deletedLocal} smazáno lokálně
+          </span>
+        )}
       </div>
       {result && (
         <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px] text-[var(--color-text-dim)]">
@@ -481,6 +659,12 @@ export function SyncBar({
               Konflikty (přeskočeno): {result.conflicts.length}
             </div>
           )}
+          {(result.deleted_local?.length ?? 0) > 0 && (
+            <div>
+              Smazáno lokálně (neobnovuje se):{" "}
+              {result.deleted_local.map((f) => f.filename).join(", ")}
+            </div>
+          )}
           {result.errors.length > 0 && (
             <div style={{ color: "var(--color-danger)" }}>
               Chyby: {result.errors.length} (
@@ -491,6 +675,7 @@ export function SyncBar({
             result.pulled.length === 0 &&
             result.adopted.length === 0 &&
             result.conflicts.length === 0 &&
+            (result.deleted_local?.length ?? 0) === 0 &&
             result.errors.length === 0 && <div>Nic k synchronizaci.</div>}
         </div>
       )}

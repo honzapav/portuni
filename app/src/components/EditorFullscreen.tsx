@@ -4,16 +4,20 @@
 import { createPortal } from "react-dom";
 import { Minimize2, Save, X } from "lucide-react";
 import type { FileEditor } from "../lib/use-file-editor";
-import { EditorBody } from "./EditorPane";
+import { EditorBody, type EditorMode } from "./EditorPane";
 
 export default function EditorFullscreen({
   editor,
   relPath,
+  mode,
+  onModeChange,
   onCollapse,
   onClose,
 }: {
   editor: FileEditor;
   relPath: string;
+  mode: EditorMode;
+  onModeChange: (m: EditorMode) => void;
   onCollapse: () => void; // back to pane
   onClose: () => void; // close editor entirely
 }) {
@@ -52,7 +56,7 @@ export default function EditorFullscreen({
           </button>
         </span>
       </div>
-      <EditorBody ed={ed} />
+      <EditorBody ed={ed} mode={mode} onModeChange={onModeChange} />
     </div>,
     document.body,
   );

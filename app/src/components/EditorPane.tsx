@@ -1,19 +1,24 @@
 // Compact source editor for the workspace right column. Swaps in for the
 // node detail (Option C). "← zpět" returns to detail; ⤢ expands to fullscreen.
-import { useState } from "react";
 import { ChevronLeft, Eye, Maximize2, Pencil, Save } from "lucide-react";
 import type { FileEditor } from "../lib/use-file-editor";
 import MarkdownEditor from "./MarkdownEditor";
 import MarkdownPreview from "./MarkdownPreview";
 
+export type EditorMode = "edit" | "preview";
+
 export default function EditorPane({
   editor,
   relPath,
+  mode,
+  onModeChange,
   onClose,
   onExpand,
 }: {
   editor: FileEditor;
   relPath: string;
+  mode: EditorMode;
+  onModeChange: (m: EditorMode) => void;
   onClose: () => void;
   onExpand: () => void;
 }) {
@@ -52,16 +57,24 @@ export default function EditorPane({
           </button>
         </span>
       </div>
-      <EditorBody ed={ed} />
+      <EditorBody ed={ed} mode={mode} onModeChange={onModeChange} />
     </div>
   );
 }
 
 // Shared body: loading / error / conflict banner / editor or preview. Reused by
-// fullscreen. The edit/preview toggle lives here so both shells get it for free.
-export function EditorBody({ ed }: { ed: FileEditor }) {
-  const [mode, setMode] = useState<"edit" | "preview">("edit");
-
+// fullscreen. Mode state is LIFTED (App owns it next to editorFile): the pane
+// and fullscreen mount separate EditorBody instances, so local state here used
+// to reset Náhled back to Editace on every expand/collapse.
+export function EditorBody({
+  ed,
+  mode,
+  onModeChange,
+}: {
+  ed: FileEditor;
+  mode: EditorMode;
+  onModeChange: (m: EditorMode) => void;
+}) {
   if (ed.status.kind === "loading") {
     return (
       <div className="flex flex-1 items-center justify-center text-[13px] text-[var(--color-text-dim)]">
@@ -89,7 +102,7 @@ export function EditorBody({ ed }: { ed: FileEditor }) {
           </button>
         </div>
       )}
-      <ModeToggle mode={mode} onChange={setMode} />
+      <ModeToggle mode={mode} onChange={onModeChange} />
       <div className="min-h-0 flex-1 overflow-auto">
         {mode === "edit" ? (
           <MarkdownEditor value={ed.content} onChange={ed.onChange} onSave={(v) => ed.save(v)} />
@@ -106,8 +119,8 @@ function ModeToggle({
   mode,
   onChange,
 }: {
-  mode: "edit" | "preview";
-  onChange: (m: "edit" | "preview") => void;
+  mode: EditorMode;
+  onChange: (m: EditorMode) => void;
 }) {
   const base =
     "flex items-center gap-1 rounded px-2 py-0.5 text-[11.5px] transition-colors";

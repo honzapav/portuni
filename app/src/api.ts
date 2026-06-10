@@ -102,6 +102,25 @@ export function createNodeMirror(id: string): Promise<CreateMirrorResponse> {
   );
 }
 
+// Seatbelt disk-scope profile for spawning an agent terminal inside the
+// node's mirror: home mirror read+write, depth-1 neighbor mirrors
+// read-only, the rest of PORTUNI_ROOT denied by the kernel. Fetched right
+// before pty_spawn; the terminal launch is fail-closed on errors so an
+// agent never starts without the boundary by accident.
+export type SandboxProfileResponse = {
+  profile: string;
+  portuni_root: string;
+  home_mirror: string;
+  neighbor_mirrors: string[];
+};
+
+export function fetchSandboxProfile(id: string): Promise<SandboxProfileResponse> {
+  return jsonRequest<SandboxProfileResponse>(
+    "GET",
+    `/nodes/${encodeURIComponent(id)}/sandbox-profile`,
+  );
+}
+
 // Create a node via REST. Type and name are required; organization_id is
 // required for non-organization types (the server enforces this and
 // returns 400 otherwise — kept here for clarity at the call site).

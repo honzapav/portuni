@@ -13,7 +13,7 @@ import type { FileEditor } from "../lib/use-file-editor";
 import TerminalTabs from "./TerminalTabs";
 import WorkspaceEmpty from "./WorkspaceEmpty";
 import DetailPane from "./DetailPane";
-import EditorPane from "./EditorPane";
+import EditorPane, { type EditorMode } from "./EditorPane";
 
 type Props = {
   graph: GraphPayload | null;
@@ -46,6 +46,8 @@ type Props = {
   // edits across the expand/collapse transition (and avoids a double GET).
   editor: FileEditor;
   editorFullscreen: boolean;
+  editorMode: EditorMode;
+  onEditorModeChange: (m: EditorMode) => void;
   onOpenFile: (nodeId: string, relPath: string) => void;
   onCloseEditor: () => void;
   onExpandEditor: () => void;
@@ -69,6 +71,8 @@ export default function WorkspaceView({
   editorFile,
   editor,
   editorFullscreen,
+  editorMode,
+  onEditorModeChange,
   onOpenFile,
   onCloseEditor,
   onExpandEditor,
@@ -120,6 +124,8 @@ export default function WorkspaceView({
             <EditorPane
               editor={editor}
               relPath={editorFile.relPath}
+              mode={editorMode}
+              onModeChange={onEditorModeChange}
               onClose={onCloseEditor}
               onExpand={onExpandEditor}
             />

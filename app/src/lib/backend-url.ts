@@ -152,5 +152,7 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
     body,
     headers: Object.keys(headers).length > 0 ? headers : null,
   });
-  return new Response(res.body, { status: res.status });
+  // Null-body statuses: new Response("", { status: 204 }) throws TypeError.
+  const nullBody = res.status === 204 || res.status === 205 || res.status === 304;
+  return new Response(nullBody ? null : res.body, { status: res.status });
 }

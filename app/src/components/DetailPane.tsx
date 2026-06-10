@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -79,7 +80,7 @@ import {
 // Sub-modules: file-tree + sync UI and event card live in sibling files;
 // DetailPane composes them with its own state.
 import { EventCard, AddEventForm } from "./DetailPane.events";
-import { FileTree, SyncBar, ActionButtons } from "./DetailPane.files";
+import { FileTree, NewFileForm, SyncBar, ActionButtons } from "./DetailPane.files";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
 // node shows the last-known badges instantly while the background
@@ -130,7 +131,11 @@ type Props = {
   onOpenFile?: (nodeId: string, relPath: string) => void;
 };
 
-export default function DetailPane({
+// Memoized: 3.5k lines of pane re-rendered wholesale on every App render
+// (editor keystrokes, terminal activity) even when its props are unchanged.
+export default memo(DetailPane);
+
+function DetailPane({
   node,
   graph,
   loading,
@@ -248,6 +253,11 @@ function DetailPaneBody({
     null,
   );
   const [untracked, setUntracked] = useState<UntrackedFile[]>([]);
+  // Inline new-file form + shared error line for file create/rename/delete.
+  // window.prompt/confirm/alert are silent no-ops in the Tauri macOS
+  // webview (commit d229d84), so all file operations use inline UI.
+  const [creatingFile, setCreatingFile] = useState(false);
+  const [fileOpError, setFileOpError] = useState<string | null>(null);
   // Opening a terminal does two sequential round-trips (fetch node +
   // create mirror) before the view switches, so guard the button with a
   // visible pending state -- otherwise the click looks like a no-op.
@@ -271,6 +281,12 @@ function DetailPaneBody({
       setSyncError(null);
       setSyncRunning(false);
       setSyncRunResult(null);
+      // Untracked files belong to the previous node until the new node's
+      // status fetch lands; leaving them painted would let a click open a
+      // wrong-node path (404 in the editor).
+      setUntracked([]);
+      setCreatingFile(false);
+      setFileOpError(null);
     }
   }, [node.id, node.name]);
 
@@ -471,33 +487,32 @@ function DetailPaneBody({
     }
   };
 
-  const handleCreateFile = async () => {
-    const name = window.prompt("Název nového souboru (např. poznamky.md):")?.trim();
-    if (!name) return;
+  const handleCreateFile = async (name: string) => {
+    setFileOpError(null);
     try {
       const f = await createFile(node.id, { filename: name, section: "wip" });
       await Promise.all([onMutate(), loadSyncStatus()]);
+      setCreatingFile(false);
       if (onOpenFile && f.relative_path) onOpenFile(node.id, f.relative_path);
     } catch (e) {
-      window.alert(`Soubor se nepodařilo vytvořit: ${String(e)}`);
+      setFileOpError(`Soubor se nepodařilo vytvořit: ${String(e)}`);
+      throw e;
     }
   };
 
-  const handleRenameFile = async (fileId: string, currentName: string) => {
-    const name = window.prompt("Nový název souboru:", currentName)?.trim();
-    if (!name || name === currentName) return;
+  const handleRenameFile = async (fileId: string, name: string) => {
+    setFileOpError(null);
     try {
       await renameFile(node.id, fileId, name);
       await Promise.all([onMutate(), loadSyncStatus()]);
     } catch (e) {
-      window.alert(`Přejmenování selhalo: ${String(e)}`);
+      setFileOpError(`Přejmenování selhalo: ${String(e)}`);
+      throw e;
     }
   };
 
-  const handleDeleteFile = async (fileId: string, filename: string) => {
-    if (!window.confirm(`Smazat soubor "${filename}"? Odstraní se i z remote úložiště.`)) {
-      return;
-    }
+  const handleDeleteFile = async (fileId: string) => {
+    setFileOpError(null);
     try {
       // deleteFile returns 200 even when the remote delete failed; in that
       // case the body is { status: "repair_needed", repair_hint } and the
@@ -511,14 +526,14 @@ function DetailPaneBody({
         (res as { status?: unknown }).status === "repair_needed"
       ) {
         const hint = (res as { repair_hint?: unknown }).repair_hint;
-        window.alert(
+        setFileOpError(
           typeof hint === "string" && hint
             ? hint
             : "Soubor se nepodařilo smazat z remote úložiště. Lokální kopie i záznam zůstaly zachovány.",
         );
       }
     } catch (e) {
-      window.alert(`Smazání selhalo: ${String(e)}`);
+      setFileOpError(`Smazání selhalo: ${String(e)}`);
     }
   };
 
@@ -875,12 +890,29 @@ function DetailPaneBody({
               )}
               <button
                 type="button"
-                onClick={handleCreateFile}
+                onClick={() => {
+                  setFileOpError(null);
+                  setCreatingFile((v) => !v);
+                }}
                 className="ml-2 shrink-0 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text)] hover:border-[var(--color-border-strong)]"
               >
                 + Nový soubor
               </button>
             </div>
+            {creatingFile && (
+              <NewFileForm
+                onSubmit={handleCreateFile}
+                onCancel={() => {
+                  setCreatingFile(false);
+                  setFileOpError(null);
+                }}
+              />
+            )}
+            {fileOpError && (
+              <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px]">
+                <span style={{ color: "var(--color-danger)" }}>{fileOpError}</span>
+              </div>
+            )}
             {node.files.length > 0 || untracked.length > 0 ? (
               <FileTree
                 files={node.files}
