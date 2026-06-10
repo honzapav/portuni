@@ -35,7 +35,7 @@ The roadmap is grouped by intent, not by version number. Each gap is stated once
 
 ### Later (committed direction, not yet scheduled)
 
-- **Multi-user mode.** The server today assumes a single user (`SOLO_USER`) and trusts whoever reaches the HTTP port – do not expose it to the public internet without a reverse proxy. Plan: Google OAuth replacing `SOLO_USER`, a permission model based on Google Groups, and rate limiting on the HTTP server.
+- **Multi-user mode.** Server-side Google OAuth identity and Google Groups permission model are implemented (`PORTUNI_AUTH_MODE=google`): per-request identity, session JWTs, global role enforcement, and node-level group visibility are all enforced server-side. Still pending: hosted deployment flow, desktop login UI for OAuth, and per-user client cutover. Rate limiting on the HTTP server is also outstanding.
 - **Migrations and backups.** Schema auto-applies via `CREATE TABLE IF NOT EXISTS`; there is no proper migration framework, and backups aren't automated. Plan: a real migration tool and documented disaster recovery.
 - **More file backends.** The adapter interface is ready; only Google Drive (Service Account) ships today. Concrete adapters for Dropbox, S3, WebDAV, and SFTP are committed.
 - **Drive OAuth and domain-wide delegation.** Service Account is the only Drive auth path today. Per-user OAuth and DWD for Workspace deployments are planned.

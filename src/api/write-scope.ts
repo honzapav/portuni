@@ -10,18 +10,19 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getDb } from "../infra/db.js";
-import { SOLO_USER } from "../infra/schema.js";
 import { listUserMirrors } from "../domain/sync/mirror-registry.js";
 import { classifyWrite, resolvePortuniRoot } from "../domain/write-scope.js";
 import {
   buildSeatbeltProfile,
   resolveSandboxScopeForCwd,
 } from "../domain/sandbox-profile.js";
-import { respondError , respondJson} from "../http/middleware.js";
+import { respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
+import { nodeVisibleTo } from "../auth/node-access.js";
 
 export async function handleWriteScope(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   url: URL,
 ): Promise<void> {
   const cwd = url.searchParams.get("cwd");
@@ -31,7 +32,7 @@ export async function handleWriteScope(
     return;
   }
   try {
-    const mirrors = (await listUserMirrors(SOLO_USER)).map((m) => m.local_path);
+    const mirrors = (await listUserMirrors(identity.userId)).map((m) => m.local_path);
     const portuniRoot = resolvePortuniRoot({
       envValue: process.env.PORTUNI_ROOT ?? null,
       knownMirrors: mirrors,
@@ -56,6 +57,7 @@ export async function handleWriteScope(
 export async function handleSandboxProfileByCwd(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   url: URL,
 ): Promise<void> {
   const cwd = url.searchParams.get("cwd");
@@ -64,8 +66,19 @@ export async function handleSandboxProfileByCwd(
     return;
   }
   try {
-    const r = await resolveSandboxScopeForCwd(getDb(), SOLO_USER, cwd);
+    const db = getDb();
+    const r = await resolveSandboxScopeForCwd(db, identity.userId, cwd);
     if (!r) {
+      respondJson(res, 409, {
+        error: `cwd is not inside any registered mirror: ${cwd}`,
+        code: "NO_MIRROR",
+      });
+      return;
+    }
+    // Group-visibility guard: a mirror cwd resolving to a hidden node must
+    // not leak its sandbox profile / node id. Same NO_MIRROR shape as an
+    // unregistered cwd so visibility is not distinguishable.
+    if (!(await nodeVisibleTo(db, identity, r.nodeId))) {
       respondJson(res, 409, {
         error: `cwd is not inside any registered mirror: ${cwd}`,
         code: "NO_MIRROR",

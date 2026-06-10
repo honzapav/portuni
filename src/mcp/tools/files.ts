@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { getDb } from "../../infra/db.js";
 import { logAudit } from "../../infra/audit.js";
-import { SOLO_USER, FILE_STATUSES } from "../../infra/schema.js";
+import { FILE_STATUSES } from "../../infra/schema.js";
 import {
   storeFile,
   pullFile,
@@ -15,10 +15,12 @@ import { getMirrorPath } from "../../domain/sync/mirror-registry.js";
 import { buildNodeRoot, deriveLocalPath } from "../../domain/sync/remote-path.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { SessionScope } from "../scope.js";
 import { guardListScope } from "../list-scope-gate.js";
+import { filterVisibleNodeIds } from "../../auth/node-access.js";
+import type { SessionCtx } from "../server.js";
 
-export function registerFileTools(server: McpServer, scope: SessionScope): void {
+export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
+  const { scope } = ctx;
   server.tool(
     "portuni_store",
     "Register a file with Portuni: copies into the node's local mirror (if not already there), uploads to the routed remote, and creates the files row. Use this IMMEDIATELY after you create a new file inside any mirror via Write, Edit, MultiEdit, or shell cp/mv -- treat 'create file in wip/outputs/resources' and 'call portuni_store' as a single atomic step. Write alone places bytes on disk but does not register the file; the next session, the remote, and teammates will not see it. Also use for files surfaced as new_local by portuni_status. For files surfaced as new_remote (created elsewhere, already on the remote), use portuni_adopt_files instead. Uses sync_key-based paths so renaming nodes does not break remote storage. See portuni://sync-model.",
@@ -39,7 +41,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
     async (args) => {
       const db = getDb();
       const result = await storeFile(db, {
-        userId: SOLO_USER,
+        userId: ctx.identity.userId,
         nodeId: args.node_id,
         localPath: args.local_path,
         description: args.description ?? null,
@@ -48,7 +50,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
       });
       // local_path intentionally excluded: the audit log lives in Turso
       // and absolute machine paths should not leave the device.
-      await logAudit(SOLO_USER, "portuni_store", "file", result.file_id, {
+      await logAudit(ctx.identity.userId, "portuni_store", "file", result.file_id, {
         file_id: result.file_id,
         remote_name: result.remote_name,
         remote_path: result.remote_path,
@@ -74,12 +76,12 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
       }
       const db = getDb();
       if (args.file_id) {
-        const r = await pullFile(db, { userId: SOLO_USER, fileId: args.file_id, force: args.force });
+        const r = await pullFile(db, { userId: ctx.identity.userId, fileId: args.file_id, force: args.force });
         return {
           content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }],
         };
       }
-      const p = await previewNode(db, { userId: SOLO_USER, nodeId: args.node_id! });
+      const p = await previewNode(db, { userId: ctx.identity.userId, nodeId: args.node_id! });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(p, null, 2) }],
       };
@@ -104,6 +106,8 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
         "portuni_list_files",
         "list_files",
         { status: args.status ?? null },
+        ctx.identity.userId,
+        ctx.identity,
       );
       if (gate.kind === "error") return gate.response;
 
@@ -147,18 +151,23 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
         args: [...params, args.limit ?? 500],
       });
 
-      // One mirror lookup per node, not per file row (it hits the local
-      // sync.db each time).
+      // Filter rows by group visibility before enrichment.
+      const distinctNodeIds = [...new Set(result.rows.map((r) => r.node_id as string))];
+      const visibleFileNodeSet = await filterVisibleNodeIds(db, ctx.identity, distinctNodeIds);
+      const visibleRows = result.rows.filter((r) => visibleFileNodeSet.has(r.node_id as string));
+
+      // One mirror lookup per visible node, not per file row (it hits the
+      // local sync.db each time).
       const mirrorByNode = new Map<string, string | null>();
-      for (const row of result.rows) {
+      for (const row of visibleRows) {
         const nodeId = row.node_id as string;
         if (!mirrorByNode.has(nodeId)) {
-          mirrorByNode.set(nodeId, await getMirrorPath(SOLO_USER, nodeId));
+          mirrorByNode.set(nodeId, await getMirrorPath(ctx.identity.userId, nodeId));
         }
       }
 
       const enriched = await Promise.all(
-        result.rows.map(async (row) => {
+        visibleRows.map(async (row) => {
           const nodeId = row.node_id as string;
           const rp = row.remote_path as string | null;
           let localPath: string | null = null;
@@ -218,7 +227,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
     async (args) => {
       const db = getDb();
       const r = await moveFile(db, {
-        userId: SOLO_USER,
+        userId: ctx.identity.userId,
         fileId: args.file_id,
         newSubpath: args.new_subpath ?? null,
         newSection: args.new_section,
@@ -241,7 +250,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
     async (args) => {
       const db = getDb();
       const r = await renameFolder(db, {
-        userId: SOLO_USER,
+        userId: ctx.identity.userId,
         nodeId: args.node_id,
         oldPrefix: args.old_prefix,
         newPrefix: args.new_prefix,
@@ -262,7 +271,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
     async (args) => {
       const db = getDb();
       const r = await adoptFiles(db, {
-        userId: SOLO_USER,
+        userId: ctx.identity.userId,
         nodeId: args.node_id,
         paths: args.paths,
         status: args.status,
@@ -282,7 +291,7 @@ export function registerFileTools(server: McpServer, scope: SessionScope): void 
     async (args) => {
       const db = getDb();
       const r = await deleteFile(db, {
-        userId: SOLO_USER,
+        userId: ctx.identity.userId,
         fileId: args.file_id,
         mode: args.mode,
         confirmed: args.confirmed,

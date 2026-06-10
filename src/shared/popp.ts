@@ -48,7 +48,7 @@ export const EVENT_TYPES = [
 export const NODE_STATUSES = ["active", "completed", "archived"] as const;
 export type NodeStatus = (typeof NODE_STATUSES)[number];
 
-// Canonical node visibilities. "group" is planned but not yet implemented.
+// Canonical node visibilities.
 //
 // IMPORTANT — visibility is currently a UI/metadata hint, NOT an access
 // control list. Phase 1 has no per-user identity (all routes share a
@@ -57,7 +57,9 @@ export type NodeStatus = (typeof NODE_STATUSES)[number];
 // queries do not filter on this column. Treat `private` as a label
 // meaning "I do not want this in shared exports", not as a security
 // guarantee. Real ACL enforcement is gated on multi-user auth.
-export const NODE_VISIBILITIES = ["team", "private"] as const;
+// "group" means visible to members of the assigned group (enforced in
+// a future phase when group membership is implemented).
+export const NODE_VISIBILITIES = ["team", "private", "group"] as const;
 
 // Canonical event statuses.
 export const EVENT_STATUSES = [

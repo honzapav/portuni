@@ -82,6 +82,7 @@ loop for backend iteration.
 - **Auto-seed runs on MCP connect** when the URL carries `?home_node_id=...`.
   Failures (DB unreachable, network) return 503 with the underlying reason
   rather than serving an empty-scope session – see `src/mcp/transport.ts`.
+- **Auth mode**: `PORTUNI_AUTH_MODE=env` (default) = solo bearer token; `google` = Google OAuth + Groups. Enforcement lives server-side in `src/auth/` (min-scopes per tool, node-access for group visibility).
 
 - **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
   keys; `.env.schema` declares only the 6 core ones. Full inventory with

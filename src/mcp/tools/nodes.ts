@@ -8,7 +8,6 @@ import {
   NODE_TYPES,
   NODE_STATUSES,
   NODE_VISIBILITIES,
-  SOLO_USER,
 } from "../../infra/schema.js";
 import { getMirrorPath } from "../../domain/sync/mirror-registry.js";
 import { NodeRow, NodeSummaryRow } from "../../shared/types.js";
@@ -19,9 +18,12 @@ import {
   purgeNodeRows,
   updateNodeInternal,
 } from "../../domain/nodes.js";
-import { decideGlobalQuery, type SessionScope } from "../scope.js";
+import { decideGlobalQuery } from "../scope.js";
+import { filterVisibleNodeIds, nodeVisibleTo } from "../../auth/node-access.js";
+import type { SessionCtx } from "../server.js";
 
-export function registerNodeTools(server: McpServer, scope: SessionScope): void {
+export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
+  const { scope } = ctx;
   server.tool(
     "portuni_create_node",
     "Create a new node in the Portuni knowledge graph. Create only when the user explicitly asks — agent-initiative nodes pollute the graph and the user cannot easily distinguish them later. Non-organization nodes must specify organization_id; the node and its belongs_to edge are inserted atomically. Optionally set goal (textual purpose) and lifecycle_state — status is derived. See portuni://architecture for the invariant and portuni://enums for the closed type / lifecycle sets.",
@@ -52,7 +54,7 @@ export function registerNodeTools(server: McpServer, scope: SessionScope): void 
 
       let id: string;
       try {
-        id = await createNodeInternal(db, SOLO_USER, args);
+        id = await createNodeInternal(db, ctx.identity.userId, args);
       } catch (err) {
         return {
           content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }],
@@ -102,6 +104,13 @@ export function registerNodeTools(server: McpServer, scope: SessionScope): void 
           isError: true,
         };
       }
+      // Group-visibility write guard: non-members see not-found.
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
+        return {
+          content: [{ type: "text" as const, text: "Error: node not found" }],
+          isError: true,
+        };
+      }
       NodeRow.parse(current.rows[0]);
 
       const provided = [
@@ -122,7 +131,7 @@ export function registerNodeTools(server: McpServer, scope: SessionScope): void 
       }
 
       try {
-        await updateNodeInternal(db, SOLO_USER, args);
+        await updateNodeInternal(db, ctx.identity.userId, args);
       } catch (err) {
         return {
           content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }],
@@ -188,7 +197,7 @@ export function registerNodeTools(server: McpServer, scope: SessionScope): void 
           };
         }
         scope.globalQuerySeen = true;
-        await logAudit(SOLO_USER, "scope_global_query", "scope", "list_nodes", {
+        await logAudit(ctx.identity.userId, "scope_global_query", "scope", "list_nodes", {
           tool: "portuni_list_nodes",
           filters: { type: args.type ?? null, status: args.status ?? null },
           mode: scope.mode,
@@ -209,7 +218,12 @@ export function registerNodeTools(server: McpServer, scope: SessionScope): void 
         args: values,
       });
 
-      const nodes = result.rows.map((row) => NodeSummaryRow.parse(row));
+      const allNodes = result.rows.map((row) => NodeSummaryRow.parse(row));
+
+      // Filter by group visibility: non-members never see group-restricted nodes.
+      const rawIds = allNodes.map((n) => n.id);
+      const visibleSet = await filterVisibleNodeIds(db, ctx.identity, rawIds);
+      const nodes = allNodes.filter((n) => visibleSet.has(n.id));
 
       return { content: [{ type: "text" as const, text: JSON.stringify(nodes, null, 2) }] };
     },
@@ -238,6 +252,13 @@ export function registerNodeTools(server: McpServer, scope: SessionScope): void 
           isError: true,
         };
       }
+      // Group-visibility write guard: non-members see not-found.
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
+        return {
+          content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
+          isError: true,
+        };
+      }
       const node = existing.rows[0];
       const nodeType = node.type as string;
       const nodeName = node.name as string;
@@ -258,7 +279,7 @@ export function registerNodeTools(server: McpServer, scope: SessionScope): void 
           sql: "UPDATE nodes SET status = 'archived', updated_at = ? WHERE id = ?",
           args: [now, args.node_id],
         });
-        await logAudit(SOLO_USER, "archive_node", "node", args.node_id, {
+        await logAudit(ctx.identity.userId, "archive_node", "node", args.node_id, {
           type: nodeType,
           name: nodeName,
         });
@@ -299,13 +320,13 @@ export function registerNodeTools(server: McpServer, scope: SessionScope): void 
         }
       }
 
-      const mirrorPath = await getMirrorPath(SOLO_USER, args.node_id);
+      const mirrorPath = await getMirrorPath(ctx.identity.userId, args.node_id);
 
       await purgeNodeRows(db, args.node_id);
 
-      await purgeNodeLocalCleanup(db, SOLO_USER, args.node_id);
+      await purgeNodeLocalCleanup(db, ctx.identity.userId, args.node_id);
 
-      await logAudit(SOLO_USER, "purge_node", "node", args.node_id, {
+      await logAudit(ctx.identity.userId, "purge_node", "node", args.node_id, {
         type: nodeType,
         name: nodeName,
       });

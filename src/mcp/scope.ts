@@ -7,6 +7,7 @@
 // See docs/superpowers/specs/2026-04-24-scope-model.md.
 
 import type { Client } from "@libsql/client";
+import { nodeVisibleTo, filterVisibleNodeIds, type GroupIdentityView } from "../auth/node-access.js";
 
 export type ScopeMode = "strict" | "balanced" | "permissive";
 
@@ -99,10 +100,15 @@ export class SessionScope {
 // `portuni_session_init` invokes this as a manual fallback for clients that
 // connect without the query param. Returns the seed node IDs so callers can
 // audit / display them.
+//
+// When identity is provided, neighbor IDs are filtered through
+// filterVisibleNodeIds so restricted neighbors are never added to scope.
+// The home node itself is always added (it is the user's own mirror anchor).
 export async function seedScopeFromHome(
   db: Client,
   scope: SessionScope,
   homeNodeId: string,
+  identity?: GroupIdentityView,
 ): Promise<string[]> {
   scope.homeNodeId = homeNodeId;
   scope.add(homeNodeId);
@@ -114,13 +120,20 @@ export async function seedScopeFromHome(
           WHERE e.source_id = ? OR e.target_id = ?`,
     args: [homeNodeId, homeNodeId, homeNodeId],
   });
-  const neighborIds: string[] = [];
-  for (const row of neighbors.rows) {
-    const id = row.peer_id as string;
-    if (id) {
-      neighborIds.push(id);
-      scope.add(id);
-    }
+  const rawNeighborIds: string[] = neighbors.rows
+    .map((row) => row.peer_id as string)
+    .filter(Boolean);
+
+  let neighborIds: string[];
+  if (identity !== undefined) {
+    const visibleSet = await filterVisibleNodeIds(db, identity, rawNeighborIds);
+    neighborIds = rawNeighborIds.filter((id) => visibleSet.has(id));
+  } else {
+    neighborIds = rawNeighborIds;
+  }
+
+  for (const id of neighborIds) {
+    scope.add(id);
   }
   return [homeNodeId, ...neighborIds];
 }
@@ -275,15 +288,27 @@ export type ReadGuardOutcome =
 //
 // auditFn is the audit-writer to use. Pass logAudit so this module stays
 // independent of the audit module's import cycle.
+//
+// identity is optional for backwards compatibility with callers that only
+// need the classic scope-mode gate. When provided, a group-visibility check
+// runs FIRST (before scope): non-members see not_found, never an elicit.
 export async function guardNodeRead(
   db: Client,
   scope: SessionScope,
   nodeId: string,
   sessionUserId: string,
   auditFn: (action: string, targetId: string, detail: Record<string, unknown>) => Promise<void>,
+  identity?: GroupIdentityView,
 ): Promise<ReadGuardOutcome> {
   const meta = await loadNodeScopeMeta(db, nodeId);
   if (!meta.exists) return { kind: "not_found" };
+
+  // Group-visibility gate: runs before scope so non-members cannot probe
+  // existence via the scope-expansion elicit.
+  if (identity !== undefined) {
+    const visible = await nodeVisibleTo(db, identity, nodeId);
+    if (!visible) return { kind: "not_found" };
+  }
 
   const decision = decideRead(
     scope,

@@ -68,7 +68,7 @@ describe("buildContextPayload at depth 0", () => {
     await addDataSource(db, "U1", { node_id: projectId, name: "CRM" });
     await addTool(db, "U1", { node_id: projectId, name: "Asana" });
 
-    const payload = await buildContextPayload(db, projectId, 0);
+    const payload = await buildContextPayload(db, projectId, 0, "U1");
     assert.equal(payload.root.goal, "G");
     assert.equal(payload.root.lifecycle_state, "in_progress");
     assert.ok(payload.root.owner);
@@ -85,13 +85,13 @@ describe("buildContextPayload at depth 0", () => {
 
   it("owner is null when no owner set", async () => {
     const { db, projectId } = await freshEnv();
-    const payload = await buildContextPayload(db, projectId, 0);
+    const payload = await buildContextPayload(db, projectId, 0, "U1");
     assert.equal(payload.root.owner, null);
   });
 
   it("empty arrays when no responsibilities/data_sources/tools", async () => {
     const { db, projectId } = await freshEnv();
-    const payload = await buildContextPayload(db, projectId, 0);
+    const payload = await buildContextPayload(db, projectId, 0, "U1");
     assert.deepEqual(payload.root.responsibilities, []);
     assert.deepEqual(payload.root.data_sources, []);
     assert.deepEqual(payload.root.tools, []);

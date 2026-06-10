@@ -2,15 +2,17 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import { getDb } from "../../infra/db.js";
 import { logAudit } from "../../infra/audit.js";
-import { SOLO_USER, EVENT_TYPES, EVENT_STATUSES } from "../../infra/schema.js";
+import { EVENT_TYPES, EVENT_STATUSES } from "../../infra/schema.js";
 import { EventRow } from "../../shared/types.js";
 import { supersedeEventInternal } from "../../domain/events.js";
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { SessionScope } from "../scope.js";
 import { guardListScope } from "../list-scope-gate.js";
+import { nodeVisibleTo, filterVisibleNodeIds } from "../../auth/node-access.js";
+import type { SessionCtx } from "../server.js";
 
-export function registerEventTools(server: McpServer, scope: SessionScope): void {
+export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
+  const { scope } = ctx;
   server.tool(
     "portuni_log",
     "Log a time-ordered knowledge event to a node. Log substantive knowledge — real decisions, discoveries, blockers, milestones. Skip operational chatter (mirror moves, file renames, tool actions, narration of recent steps). Events are organizational memory, not an activity log.",
@@ -25,12 +27,18 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
     async (args) => {
       const db = getDb();
 
-      // Verify node exists
+      // Verify node exists and is visible
       const nodeCheck = await db.execute({
         sql: "SELECT id FROM nodes WHERE id = ?",
         args: [args.node_id],
       });
       if (nodeCheck.rows.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
+          isError: true,
+        };
+      }
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
         return {
           content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
           isError: true,
@@ -67,12 +75,12 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
           "active",
           args.refs ? JSON.stringify(args.refs) : null,
           args.task_ref ?? null,
-          SOLO_USER,
+          ctx.identity.userId,
           now,
         ],
       });
 
-      await logAudit(SOLO_USER, "log_event", "event", id, {
+      await logAudit(ctx.identity.userId, "log_event", "event", id, {
         node_id: args.node_id,
         type: args.type,
       });
@@ -118,6 +126,13 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
       }
 
       const row = EventRow.parse(existing.rows[0]);
+      // Group-visibility: if the event's node is hidden, deny as not-found.
+      if (!(await nodeVisibleTo(db, ctx.identity, row.node_id))) {
+        return {
+          content: [{ type: "text" as const, text: `Error: event ${args.event_id} not found` }],
+          isError: true,
+        };
+      }
       if (row.status !== "active") {
         return {
           content: [{ type: "text" as const, text: `Error: event ${args.event_id} is not active (status: ${row.status})` }],
@@ -136,7 +151,7 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
         args: ["resolved", JSON.stringify(existingMeta), args.event_id],
       });
 
-      await logAudit(SOLO_USER, "resolve_event", "event", args.event_id, {
+      await logAudit(ctx.identity.userId, "resolve_event", "event", args.event_id, {
         resolution: args.resolution ?? null,
       });
 
@@ -161,9 +176,30 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
     },
     async (args) => {
       const db = getDb();
+
+      // Group-visibility: resolve the event's node first and deny (as
+      // not-found) before any mutation if the identity cannot see it.
+      const existing = await db.execute({
+        sql: "SELECT node_id FROM events WHERE id = ?",
+        args: [args.event_id],
+      });
+      if (existing.rows.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: `Error: event ${args.event_id} not found` }],
+          isError: true,
+        };
+      }
+      const oldRow = EventRow.pick({ node_id: true }).parse(existing.rows[0]);
+      if (!(await nodeVisibleTo(db, ctx.identity, oldRow.node_id))) {
+        return {
+          content: [{ type: "text" as const, text: `Error: event ${args.event_id} not found` }],
+          isError: true,
+        };
+      }
+
       let result: Awaited<ReturnType<typeof supersedeEventInternal>>;
       try {
-        result = await supersedeEventInternal(db, SOLO_USER, {
+        result = await supersedeEventInternal(db, ctx.identity.userId, {
           eventId: args.event_id,
           newContent: args.new_content,
           meta: args.meta,
@@ -213,6 +249,8 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
           status: args.status ?? null,
           since: args.since ?? null,
         },
+        ctx.identity.userId,
+        ctx.identity,
       );
       if (gate.kind === "error") return gate.response;
 
@@ -264,9 +302,9 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
         args: [...values, limit],
       });
 
-      const events = result.rows.map((row) => ({
+      const allEvents = result.rows.map((row) => ({
         id: row.id,
-        node_id: row.node_id,
+        node_id: row.node_id as string,
         node_name: row.node_name,
         type: row.type,
         content: row.content,
@@ -276,6 +314,11 @@ export function registerEventTools(server: McpServer, scope: SessionScope): void
         task_ref: row.task_ref,
         created_at: row.created_at,
       }));
+
+      // Filter by group visibility: drop events from hidden nodes.
+      const eventNodeIds = [...new Set(allEvents.map((e) => e.node_id))];
+      const visibleNodeSet = await filterVisibleNodeIds(db, ctx.identity, eventNodeIds);
+      const events = allEvents.filter((e) => visibleNodeSet.has(e.node_id));
 
       return {
         content: [

@@ -6,9 +6,10 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import { getDb } from "../infra/db.js";
 import { logAudit } from "../infra/audit.js";
-import { EDGE_RELATIONS, SOLO_USER } from "../infra/schema.js";
+import { EDGE_RELATIONS } from "../infra/schema.js";
 import { disconnectEdgeById } from "../domain/edges.js";
-import { parseJsonBody, respondError , respondJson} from "../http/middleware.js";
+import { parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
+import { nodeVisibleTo } from "../auth/node-access.js";
 
 const CreateEdgeBody = z
   .object({
@@ -24,6 +25,7 @@ const CreateEdgeBody = z
 export async function handleCreateEdge(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
 ): Promise<void> {
   const body = await parseJsonBody(req, res, CreateEdgeBody);
   if (!body) return;
@@ -34,6 +36,14 @@ export async function handleCreateEdge(
       args: [body.source_id, body.target_id],
     });
     if (check.rows.length < 2) {
+      respondJson(res, 404, { error: "one or both nodes not found" });
+      return;
+    }
+    // Group-visibility: both endpoints must be visible to caller.
+    if (
+      !(await nodeVisibleTo(db, identity, body.source_id)) ||
+      !(await nodeVisibleTo(db, identity, body.target_id))
+    ) {
       respondJson(res, 404, { error: "one or both nodes not found" });
       return;
     }
@@ -49,9 +59,9 @@ export async function handleCreateEdge(
     await db.execute({
       sql: `INSERT INTO edges (id, source_id, target_id, relation, meta, created_by, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      args: [id, body.source_id, body.target_id, body.relation, null, SOLO_USER, new Date().toISOString()],
+      args: [id, body.source_id, body.target_id, body.relation, null, identity.userId, new Date().toISOString()],
     });
-    await logAudit(SOLO_USER, "connect", "edge", id, {
+    await logAudit(identity.userId, "connect", "edge", id, {
       source_id: body.source_id,
       target_id: body.target_id,
       relation: body.relation,
@@ -70,10 +80,28 @@ export async function handleCreateEdge(
 export async function handleDeleteEdge(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   edgeId: string,
 ): Promise<void> {
   try {
-    const result = await disconnectEdgeById(getDb(), SOLO_USER, edgeId);
+    const db = getDb();
+    // Group-visibility: check both edge endpoints before deleting.
+    const edgeRow = await db.execute({
+      sql: "SELECT source_id, target_id FROM edges WHERE id = ?",
+      args: [edgeId],
+    });
+    if (edgeRow.rows.length > 0) {
+      const src = edgeRow.rows[0].source_id as string;
+      const tgt = edgeRow.rows[0].target_id as string;
+      if (
+        !(await nodeVisibleTo(db, identity, src)) ||
+        !(await nodeVisibleTo(db, identity, tgt))
+      ) {
+        respondJson(res, 404, { error: "edge not found" });
+        return;
+      }
+    }
+    const result = await disconnectEdgeById(db, identity.userId, edgeId);
     respondJson(res, 200, result);
   } catch (err) {
     const code = (err as Error & { code?: string }).code;

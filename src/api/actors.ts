@@ -2,9 +2,8 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getDb } from "../infra/db.js";
-import { SOLO_USER } from "../infra/schema.js";
 import { archiveActor, createActor, updateActor } from "../domain/actors.js";
-import { parseBody, respondError , respondJson} from "../http/middleware.js";
+import { parseBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 
 export async function handleListActors(
   req: IncomingMessage,
@@ -40,6 +39,7 @@ export async function handleListActors(
 export async function handleCreateActor(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
 ): Promise<void> {
   try {
     const body = (await parseBody(req)) as Record<string, unknown> | undefined;
@@ -47,7 +47,7 @@ export async function handleCreateActor(
       respondJson(res, 400, { error: "body required" });
       return;
     }
-    const row = await createActor(getDb(), SOLO_USER, body as Parameters<typeof createActor>[2]);
+    const row = await createActor(getDb(), identity.userId, body as Parameters<typeof createActor>[2]);
     respondJson(res, 201, row);
   } catch (err) {
     respondError(res, `${req.method} /actors`, err);
@@ -57,6 +57,7 @@ export async function handleCreateActor(
 export async function handleUpdateActor(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   actorId: string,
 ): Promise<void> {
   try {
@@ -65,7 +66,7 @@ export async function handleUpdateActor(
       respondJson(res, 400, { error: "no fields to update" });
       return;
     }
-    const row = await updateActor(getDb(), SOLO_USER, {
+    const row = await updateActor(getDb(), identity.userId, {
       actor_id: actorId,
       ...(body as object),
     } as Parameters<typeof updateActor>[2]);
@@ -78,10 +79,11 @@ export async function handleUpdateActor(
 export async function handleDeleteActor(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   actorId: string,
 ): Promise<void> {
   try {
-    await archiveActor(getDb(), SOLO_USER, actorId);
+    await archiveActor(getDb(), identity.userId, actorId);
     respondJson(res, 200, { archived: actorId });
   } catch (err) {
     respondError(res, `${req.method} /actors/${actorId}`, err);

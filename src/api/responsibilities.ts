@@ -2,7 +2,6 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getDb } from "../infra/db.js";
-import { SOLO_USER } from "../infra/schema.js";
 import {
   assignResponsibility,
   createResponsibility,
@@ -11,7 +10,8 @@ import {
   unassignResponsibility,
   updateResponsibility,
 } from "../domain/responsibilities.js";
-import { parseBody, respondError , respondJson} from "../http/middleware.js";
+import { nodeVisibleTo } from "../auth/node-access.js";
+import { parseBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 
 export async function handleListResponsibilities(
   req: IncomingMessage,
@@ -34,6 +34,7 @@ export async function handleListResponsibilities(
 export async function handleCreateResponsibility(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
 ): Promise<void> {
   try {
     const body = (await parseBody(req)) as Record<string, unknown> | undefined;
@@ -41,9 +42,19 @@ export async function handleCreateResponsibility(
       respondJson(res, 400, { error: "body required" });
       return;
     }
+    const nodeId = body.node_id as string | undefined;
+    if (!nodeId) {
+      respondJson(res, 400, { error: "node_id required" });
+      return;
+    }
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: `node ${nodeId} not found` });
+      return;
+    }
     const row = await createResponsibility(
-      getDb(),
-      SOLO_USER,
+      db,
+      identity.userId,
       body as Parameters<typeof createResponsibility>[2],
     );
     respondJson(res, 201, row);
@@ -55,6 +66,7 @@ export async function handleCreateResponsibility(
 export async function handleUpdateResponsibility(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   respId: string,
 ): Promise<void> {
   try {
@@ -63,7 +75,21 @@ export async function handleUpdateResponsibility(
       respondJson(res, 400, { error: "no fields to update" });
       return;
     }
-    const row = await updateResponsibility(getDb(), SOLO_USER, {
+    const db = getDb();
+    const respRow = await db.execute({
+      sql: "SELECT node_id FROM responsibilities WHERE id = ?",
+      args: [respId],
+    });
+    if (respRow.rows.length === 0) {
+      respondJson(res, 404, { error: `responsibility ${respId} not found` });
+      return;
+    }
+    const nodeId = String(respRow.rows[0].node_id);
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: `responsibility ${respId} not found` });
+      return;
+    }
+    const row = await updateResponsibility(db, identity.userId, {
       responsibility_id: respId,
       ...(body as object),
     } as Parameters<typeof updateResponsibility>[2]);
@@ -76,10 +102,25 @@ export async function handleUpdateResponsibility(
 export async function handleDeleteResponsibility(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   respId: string,
 ): Promise<void> {
   try {
-    await deleteResponsibility(getDb(), SOLO_USER, respId);
+    const db = getDb();
+    const respRow = await db.execute({
+      sql: "SELECT node_id FROM responsibilities WHERE id = ?",
+      args: [respId],
+    });
+    if (respRow.rows.length === 0) {
+      respondJson(res, 404, { error: `responsibility ${respId} not found` });
+      return;
+    }
+    const nodeId = String(respRow.rows[0].node_id);
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: `responsibility ${respId} not found` });
+      return;
+    }
+    await deleteResponsibility(db, identity.userId, respId);
     respondJson(res, 200, { deleted: respId });
   } catch (err) {
     respondError(res, `${req.method} /responsibilities/${respId}`, err);
@@ -89,6 +130,7 @@ export async function handleDeleteResponsibility(
 export async function handleAssignResponsibility(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   respId: string,
 ): Promise<void> {
   try {
@@ -97,7 +139,21 @@ export async function handleAssignResponsibility(
       respondJson(res, 400, { error: "actor_id required" });
       return;
     }
-    await assignResponsibility(getDb(), SOLO_USER, {
+    const db = getDb();
+    const respRow = await db.execute({
+      sql: "SELECT node_id FROM responsibilities WHERE id = ?",
+      args: [respId],
+    });
+    if (respRow.rows.length === 0) {
+      respondJson(res, 404, { error: `responsibility ${respId} not found` });
+      return;
+    }
+    const nodeId = String(respRow.rows[0].node_id);
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: `responsibility ${respId} not found` });
+      return;
+    }
+    await assignResponsibility(db, identity.userId, {
       responsibility_id: respId,
       actor_id: body.actor_id,
     });
@@ -114,11 +170,26 @@ export async function handleAssignResponsibility(
 export async function handleUnassignResponsibility(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   respId: string,
   actorId: string,
 ): Promise<void> {
   try {
-    await unassignResponsibility(getDb(), SOLO_USER, {
+    const db = getDb();
+    const respRow = await db.execute({
+      sql: "SELECT node_id FROM responsibilities WHERE id = ?",
+      args: [respId],
+    });
+    if (respRow.rows.length === 0) {
+      respondJson(res, 404, { error: `responsibility ${respId} not found` });
+      return;
+    }
+    const nodeId = String(respRow.rows[0].node_id);
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: `responsibility ${respId} not found` });
+      return;
+    }
+    await unassignResponsibility(db, identity.userId, {
       responsibility_id: respId,
       actor_id: actorId,
     });

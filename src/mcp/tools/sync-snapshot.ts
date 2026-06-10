@@ -5,8 +5,8 @@ import { writeFile, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getDb } from "../../infra/db.js";
-import { SOLO_USER } from "../../infra/schema.js";
 import { storeFile } from "../../domain/sync/engine.js";
+import type { SessionCtx } from "../server.js";
 
 export interface SnapshotArgs {
   userId: string;
@@ -79,7 +79,7 @@ export async function snapshotService(db: Client, a: SnapshotArgs): Promise<Snap
   }
 }
 
-export function registerSyncSnapshotTools(server: McpServer): void {
+export function registerSyncSnapshotTools(server: McpServer, ctx: SessionCtx): void {
   server.tool(
     "portuni_snapshot",
     "Export a Google Docs/Sheets/Slides URL to PDF/Markdown/DOCX and store it as a tracked file on the node. Use when the user wants a point-in-time copy of a native Google doc tracked on a node — e.g. archiving a spec snapshot before continuing edits. Uses the Drive file ID extracted from the URL (/d/<id>).",
@@ -93,7 +93,7 @@ export function registerSyncSnapshotTools(server: McpServer): void {
     async (args) => {
       const db = getDb();
       const r = await snapshotService(db, {
-        userId: SOLO_USER,
+        userId: ctx.identity.userId,
         nodeId: args.node_id,
         docUrl: args.doc_url,
         format: args.format,

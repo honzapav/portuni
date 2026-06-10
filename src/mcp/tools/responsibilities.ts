@@ -3,8 +3,8 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Client } from "@libsql/client";
 import { getDb } from "../../infra/db.js";
-import { SOLO_USER } from "../../infra/schema.js";
 import {
   assignResponsibility,
   createResponsibility,
@@ -13,8 +13,33 @@ import {
   unassignResponsibility,
   updateResponsibility,
 } from "../../domain/responsibilities.js";
+import { nodeVisibleTo } from "../../auth/node-access.js";
+import type { SessionCtx } from "../server.js";
 
-export function registerResponsibilityTools(server: McpServer): void {
+async function guardNodeAccess(
+  db: Client,
+  nodeId: string,
+  identity: SessionCtx["identity"],
+): Promise<{ allowed: true } | { allowed: false; error: string }> {
+  if (!(await nodeVisibleTo(db, identity, nodeId))) {
+    return { allowed: false, error: `Error: node ${nodeId} not found` };
+  }
+  return { allowed: true };
+}
+
+async function loadResponsibilityNodeId(
+  db: Client,
+  responsibilityId: string,
+): Promise<string | null> {
+  const res = await db.execute({
+    sql: "SELECT node_id FROM responsibilities WHERE id = ?",
+    args: [responsibilityId],
+  });
+  if (res.rows.length === 0) return null;
+  return String(res.rows[0].node_id);
+}
+
+export function registerResponsibilityTools(server: McpServer, ctx: SessionCtx): void {
   server.tool(
     "portuni_create_responsibility",
     "Create a responsibility on a project/process/area node. Responsibilities are concrete duties ('Review kódu', 'Ops on-call') attached to entities; they are not nodes themselves. Optionally pass a list of actor IDs to assign immediately. Create only when the user explicitly asks.",
@@ -27,7 +52,15 @@ export function registerResponsibilityTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        const row = await createResponsibility(getDb(), SOLO_USER, args);
+        const db = getDb();
+        const guard = await guardNodeAccess(db, args.node_id, ctx.identity);
+        if (!guard.allowed) {
+          return {
+            content: [{ type: "text" as const, text: guard.error }],
+            isError: true,
+          };
+        }
+        const row = await createResponsibility(db, ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
       } catch (err) {
         return {
@@ -49,7 +82,22 @@ export function registerResponsibilityTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        const row = await updateResponsibility(getDb(), SOLO_USER, args);
+        const db = getDb();
+        const nodeId = await loadResponsibilityNodeId(db, args.responsibility_id);
+        if (!nodeId) {
+          return {
+            content: [{ type: "text" as const, text: `Error: ${args.responsibility_id} not found` }],
+            isError: true,
+          };
+        }
+        const guard = await guardNodeAccess(db, nodeId, ctx.identity);
+        if (!guard.allowed) {
+          return {
+            content: [{ type: "text" as const, text: guard.error }],
+            isError: true,
+          };
+        }
+        const row = await updateResponsibility(db, ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
       } catch (err) {
         return {
@@ -68,7 +116,22 @@ export function registerResponsibilityTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        await deleteResponsibility(getDb(), SOLO_USER, args.responsibility_id);
+        const db = getDb();
+        const nodeId = await loadResponsibilityNodeId(db, args.responsibility_id);
+        if (!nodeId) {
+          return {
+            content: [{ type: "text" as const, text: `Error: ${args.responsibility_id} not found` }],
+            isError: true,
+          };
+        }
+        const guard = await guardNodeAccess(db, nodeId, ctx.identity);
+        if (!guard.allowed) {
+          return {
+            content: [{ type: "text" as const, text: guard.error }],
+            isError: true,
+          };
+        }
+        await deleteResponsibility(db, ctx.identity.userId, args.responsibility_id);
         return {
           content: [{ type: "text" as const, text: JSON.stringify({ id: args.responsibility_id, action: "deleted" }) }],
         };
@@ -110,7 +173,22 @@ export function registerResponsibilityTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        await assignResponsibility(getDb(), SOLO_USER, args);
+        const db = getDb();
+        const nodeId = await loadResponsibilityNodeId(db, args.responsibility_id);
+        if (!nodeId) {
+          return {
+            content: [{ type: "text" as const, text: `Error: ${args.responsibility_id} not found` }],
+            isError: true,
+          };
+        }
+        const guard = await guardNodeAccess(db, nodeId, ctx.identity);
+        if (!guard.allowed) {
+          return {
+            content: [{ type: "text" as const, text: guard.error }],
+            isError: true,
+          };
+        }
+        await assignResponsibility(db, ctx.identity.userId, args);
         return {
           content: [
             {
@@ -141,7 +219,22 @@ export function registerResponsibilityTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        await unassignResponsibility(getDb(), SOLO_USER, args);
+        const db = getDb();
+        const nodeId = await loadResponsibilityNodeId(db, args.responsibility_id);
+        if (!nodeId) {
+          return {
+            content: [{ type: "text" as const, text: `Error: ${args.responsibility_id} not found` }],
+            isError: true,
+          };
+        }
+        const guard = await guardNodeAccess(db, nodeId, ctx.identity);
+        if (!guard.allowed) {
+          return {
+            content: [{ type: "text" as const, text: guard.error }],
+            isError: true,
+          };
+        }
+        await unassignResponsibility(db, ctx.identity.userId, args);
         return {
           content: [
             {

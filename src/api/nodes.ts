@@ -7,7 +7,6 @@ import { logAudit } from "../infra/audit.js";
 import {
   NODE_TYPES,
   NODE_VISIBILITIES,
-  SOLO_USER,
 } from "../infra/schema.js";
 import { buildNodeRoot } from "../domain/sync/remote-path.js";
 import { resolveRemote } from "../domain/sync/routing.js";
@@ -27,12 +26,14 @@ import {
   resolveSandboxScopeForNode,
 } from "../domain/sandbox-profile.js";
 import type { SyncStatusResponse, SyncRunResponse, UntrackedFile } from "../shared/api-types.js";
-import { parseBody, parseJsonBody, respondError , respondJson} from "../http/middleware.js";
+import { parseBody, parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
+import { nodeVisibleTo, filterVisibleNodeIds } from "../auth/node-access.js";
 import { z } from "zod";
 
 export async function handleGetNode(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   if (!nodeId) {
@@ -40,7 +41,12 @@ export async function handleGetNode(
     return;
   }
   try {
-    const node = await loadNodeDetail(getDb(), SOLO_USER, nodeId);
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    const node = await loadNodeDetail(db, identity.userId, nodeId);
     if (!node) {
       respondJson(res, 404, { error: "node not found" });
       return;
@@ -57,6 +63,7 @@ export async function handleGetNode(
 export async function handlePatchNode(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   try {
@@ -119,8 +126,12 @@ export async function handlePatchNode(
       respondJson(res, 400, { error: "no fields to update" });
       return;
     }
-    await updateNodeInternal(getDb(), SOLO_USER, update);
-    const node = await loadNodeDetail(getDb(), SOLO_USER, nodeId);
+    if (!(await nodeVisibleTo(getDb(), identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    await updateNodeInternal(getDb(), identity.userId, update);
+    const node = await loadNodeDetail(getDb(), identity.userId, nodeId);
     if (!node) {
       respondJson(res, 404, { error: "node not found" });
       return;
@@ -138,6 +149,7 @@ export async function handlePatchNode(
 export async function handleMoveNode(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   try {
@@ -146,13 +158,17 @@ export async function handleMoveNode(
       respondJson(res, 400, { error: "new_org_id required" });
       return;
     }
+    if (!(await nodeVisibleTo(getDb(), identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
     const result = await moveNodeToOrganization(
       getDb(),
-      SOLO_USER,
+      identity.userId,
       nodeId,
       body.new_org_id,
     );
-    const node = await loadNodeDetail(getDb(), SOLO_USER, nodeId);
+    const node = await loadNodeDetail(getDb(), identity.userId, nodeId);
     if (!node) {
       respondJson(res, 404, { error: "node not found" });
       return;
@@ -183,11 +199,12 @@ const CreateNodeBody = z
 export async function handleCreateNode(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
 ): Promise<void> {
   const body = await parseJsonBody(req, res, CreateNodeBody);
   if (!body) return;
   try {
-    const id = await createNodeInternal(getDb(), SOLO_USER, {
+    const id = await createNodeInternal(getDb(), identity.userId, {
       type: body.type,
       name: body.name,
       description: body.description ?? undefined,
@@ -195,7 +212,7 @@ export async function handleCreateNode(
       goal: body.goal ?? undefined,
       lifecycle_state: body.lifecycle_state ?? undefined,
     });
-    const node = await loadNodeDetail(getDb(), SOLO_USER, id);
+    const node = await loadNodeDetail(getDb(), identity.userId, id);
     respondJson(res, 201, node);
   } catch (err) {
     respondError(res, `${req.method} /nodes`, err);
@@ -206,6 +223,7 @@ export async function handleCreateNode(
 export async function handleDeleteNode(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   try {
@@ -214,7 +232,7 @@ export async function handleDeleteNode(
       sql: "SELECT id FROM nodes WHERE id = ?",
       args: [nodeId],
     });
-    if (existing.rows.length === 0) {
+    if (existing.rows.length === 0 || !(await nodeVisibleTo(db, identity, nodeId))) {
       respondJson(res, 404, { error: "node not found" });
       return;
     }
@@ -222,7 +240,7 @@ export async function handleDeleteNode(
       sql: "UPDATE nodes SET status = 'archived', updated_at = ? WHERE id = ?",
       args: [new Date().toISOString(), nodeId],
     });
-    await logAudit(SOLO_USER, "archive_node", "node", nodeId, {});
+    await logAudit(identity.userId, "archive_node", "node", nodeId, {});
     respondJson(res, 200, { archived: nodeId });
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}`, err);
@@ -236,11 +254,17 @@ export async function handleDeleteNode(
 export async function handleSyncStatus(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   try {
-    const result = await statusScan(getDb(), {
-      userId: SOLO_USER,
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    const result = await statusScan(db, {
+      userId: identity.userId,
       nodeId,
       includeDiscovery: false,
       // DB-only fast path: no fs.stat, no Drive .stat() calls. The UI
@@ -282,7 +306,7 @@ export async function handleSyncStatus(
     push(result.orphan, "orphan");
     push(result.native, "native");
     push(result.deleted_local, "deleted_local");
-    const untrackedRaw = await listUntrackedLocal(getDb(), { userId: SOLO_USER, nodeId });
+    const untrackedRaw = await listUntrackedLocal(getDb(), { userId: identity.userId, nodeId });
     const untracked: UntrackedFile[] = untrackedRaw.map((u) => ({
       relative_path: u.subpath
         ? `${u.section}/${u.subpath}/${u.filename}`
@@ -307,10 +331,15 @@ export async function handleSyncStatus(
 export async function handleFolderUrl(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   try {
     const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
     const nodeRow = await db.execute({
       sql: "SELECT id, type, sync_key FROM nodes WHERE id = ?",
       args: [nodeId],
@@ -377,12 +406,13 @@ export async function handleFolderUrl(
 export async function handleSyncRun(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   try {
     const db = getDb();
     const scan = await statusScan(db, {
-      userId: SOLO_USER,
+      userId: identity.userId,
       nodeId,
       includeDiscovery: false,
     });
@@ -406,7 +436,7 @@ export async function handleSyncRun(
       }
       try {
         await storeFile(db, {
-          userId: SOLO_USER,
+          userId: identity.userId,
           nodeId: e.node_id,
           localPath: e.local_path,
         });
@@ -426,7 +456,7 @@ export async function handleSyncRun(
     // (portuni_pull restores, portuni_delete_file removes everywhere).
     for (const e of scan.pull_candidates) {
       try {
-        await pullFile(db, { userId: SOLO_USER, fileId: e.file_id });
+        await pullFile(db, { userId: identity.userId, fileId: e.file_id });
         result.pulled.push({ file_id: e.file_id, filename: e.filename });
       } catch (err) {
         result.errors.push({
@@ -451,11 +481,11 @@ export async function handleSyncRun(
     }
     // Deterministic registration: adopt any file the agent wrote to the
     // mirror but never registered. Each storeFile registers + pushes.
-    const untracked = await listUntrackedLocal(db, { userId: SOLO_USER, nodeId });
+    const untracked = await listUntrackedLocal(db, { userId: identity.userId, nodeId });
     for (const u of untracked) {
       try {
         const sr = await storeFile(db, {
-          userId: SOLO_USER,
+          userId: identity.userId,
           nodeId: u.node_id,
           localPath: u.local_path,
         });
@@ -477,6 +507,7 @@ export async function handleSyncRun(
 export async function handleCreateNodeMirror(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   if (!nodeId) {
@@ -484,7 +515,7 @@ export async function handleCreateNodeMirror(
     return;
   }
   try {
-    const result = await createMirrorForNode(getDb(), SOLO_USER, { nodeId });
+    const result = await createMirrorForNode(getDb(), identity.userId, { nodeId });
     // Best-effort folder URL on the routed remote — not part of the
     // happy-path mirror creation. We don't await any heavy listing here;
     // folderUrl returns null when the folder hasn't been synced yet.
@@ -528,6 +559,7 @@ export async function handleCreateNodeMirror(
 export async function handleNodeSandboxProfile(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
   nodeId: string,
 ): Promise<void> {
   if (!nodeId) {
@@ -540,11 +572,13 @@ export async function handleNodeSandboxProfile(
       sql: "SELECT 1 FROM nodes WHERE id = ?",
       args: [nodeId],
     });
-    if (exists.rows.length === 0) {
+    // Group-visibility guard: a hidden node returns the same not-found shape
+    // so its sandbox profile / mirror layout never leaks.
+    if (exists.rows.length === 0 || !(await nodeVisibleTo(db, identity, nodeId))) {
       respondJson(res, 404, { error: `node ${nodeId} not found` });
       return;
     }
-    const scope = await resolveSandboxScopeForNode(db, SOLO_USER, nodeId);
+    const scope = await resolveSandboxScopeForNode(db, identity.userId, nodeId);
     if (!scope) {
       respondJson(res, 409, {
         error: `node ${nodeId} has no local mirror on this device`,
@@ -603,11 +637,12 @@ async function resolveRemoteFolderUrl(
 }
 
 // Batch-save persisted node positions. Called by the frontend after layout
-// settles and after the user drops a dragged node. No auth/audit -- positions
-// are purely UI state and the MCP tool layer never touches them.
+// settles and after the user drops a dragged node. Enforces group-visibility:
+// only updates positions for nodes visible to the requesting identity.
 export async function handlePositions(
   req: IncomingMessage,
   res: ServerResponse,
+  identity: RequestIdentity,
 ): Promise<void> {
   try {
     const body = (await parseBody(req)) as
@@ -619,8 +654,8 @@ export async function handlePositions(
       return;
     }
     const db = getDb();
-    // One batch instead of a round trip per node -- this fires after every
-    // drag/layout settle, often with dozens of nodes.
+    // Validate shape first, then drop any node the identity cannot see so
+    // hidden nodes never get position writes (group-visibility guard).
     const valid = updates.filter(
       (entry): entry is { id: string; x: number; y: number } =>
         !!entry &&
@@ -630,10 +665,18 @@ export async function handlePositions(
         Number.isFinite(entry.x) &&
         Number.isFinite(entry.y),
     );
+    const visibleIds = await filterVisibleNodeIds(
+      db,
+      identity,
+      valid.map((entry) => entry.id),
+    );
+    const writable = valid.filter((entry) => visibleIds.has(entry.id));
     let updated = 0;
-    if (valid.length > 0) {
+    if (writable.length > 0) {
+      // One batch instead of a round trip per node -- this fires after every
+      // drag/layout settle, often with dozens of nodes.
       const results = await db.batch(
-        valid.map((entry) => ({
+        writable.map((entry) => ({
           sql: "UPDATE nodes SET pos_x = ?, pos_y = ? WHERE id = ?",
           args: [entry.x, entry.y, entry.id],
         })),

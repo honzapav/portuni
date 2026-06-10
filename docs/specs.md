@@ -160,19 +160,22 @@ This applies to all MCP connections: Portuni server credentials, external tool A
 
 ## Security model
 
-> **Current state (Phase 1.5, 2026-05-05):** Phase 1.5 ships with a
-> single shared Turso service token per org, distributed by the org
-> admin to each teammate; the desktop app stores it in the OS
-> keychain (see `docs/auth-refactor-plan.md` and
-> `docs/vision/portuni-as-workspace.md`). There is no per-user
-> identity in the backend yet — every change recorded by the sidecar
-> looks like "the org" did it.
+> **Current state (2026-06-09):** Server-side identity and enforcement
+> are implemented and gated behind `PORTUNI_AUTH_MODE` (default `env` =
+> legacy solo behavior; `google` = Google OAuth + Workspace Groups).
+> The full implementation — IdentityAdapter, session JWT, device tokens,
+> per-request identity, global role enforcement (TOOL_MIN_SCOPE + route
+> gates), and node-level group visibility — is described in
+> `docs/superpowers/specs/2026-06-09-google-groups-auth-design.md`.
 >
-> The model below is the **Phase 2 target**: pluggable identity
-> adapters (Google OAuth + Workspace Groups is the first/canonical
-> adapter; future orgs may want Microsoft, Okta, GitHub, SAML, …)
-> with per-user attribution. Land before opening Portuni outside
-> trusted-circle distribution.
+> The `env` default preserves the Phase 1.5 single-shared-token behavior
+> so existing desktop installs continue to work. Switching to `google`
+> requires the env vars listed in `docs/env-vars.md` (Google Client IDs,
+> service-account key, impersonation target, role group emails).
+>
+> Still pending (not yet implemented): hosted deployment flow, desktop
+> login UI for OAuth, and per-user client cutover. The model below
+> describes what `PORTUNI_AUTH_MODE=google` enforces today.
 
 ### Authentication
 
@@ -212,21 +215,21 @@ Nodes have a `visibility` field:
 |---|---|
 | team | All authenticated users (default) |
 | private | Only the creator |
-| group | **Planned, not yet implemented.** Members of a specified Google Group (stored in node `meta.access_group`). Not included in the current CHECK constraint -- will be added when the feature is built. |
+| group | Members of the Google Group stored in `meta.access_group`; membership is inherited via the `belongs_to` chain (a child node without its own `access_group` inherits the nearest ancestor's group). Implemented in `src/auth/node-access.ts`. |
 
-Portuni checks (planned for group visibility): does the user's Google Group list include the node's access group? If yes, access granted. If no, fall back to global scope (read-only unless they have manage/admin globally).
+Non-members do not see `group`-visibility nodes at all: the node is excluded from list, search, context expansion, and direct get. Admins (`PORTUNI_GROUPS_ADMIN`) bypass all node-level checks and see everything. This "hide entirely, no read-only fallback" decision is documented in the design spec at `docs/superpowers/specs/2026-06-09-google-groups-auth-design.md`.
 
-The flow:
+The flow (implemented in `PORTUNI_AUTH_MODE=google`):
 
-1. User connects via Google OAuth
-2. Portuni calls Admin SDK Directory API → list user's groups
-3. Cache group memberships (refresh every 15 min)
-4. JWT issued with: user identity + resolved global scope + list of project groups
-5. Every tool call validated:
-   - Global scope check (can they do this action at all?)
-   - Node-level check (can they access this specific node?)
+1. User connects via Google OAuth (POST /auth/login with IdP credential)
+2. Portuni calls Admin SDK Directory API → list user's groups (15-min cache)
+3. Global scope resolved: highest matching group among PORTUNI_GROUPS_ADMIN/MANAGE/WRITE; any authenticated user gets `read`
+4. Short-lived session JWT issued: user identity + global scope + group list
+5. Every tool call validated server-side:
+   - Global scope gate: each MCP tool has a TOOL_MIN_SCOPE floor; route middleware enforces minimum for HTTP routes
+   - Node-level gate: for `visibility='group'` nodes, server checks whether the user's group list includes `meta.access_group` (walking up the `belongs_to` chain if the node has no direct `access_group`)
 
-Phase 1 (solo): everything is `team`, only global scope matters. Phase 2 (team): enable node-level group checks.
+`PORTUNI_AUTH_MODE=env` (default): a single bearer token (`PORTUNI_AUTH_TOKEN`) grants the solo user `admin` scope; node-level group checks are skipped.
 
 ### What agents can NOT do
 

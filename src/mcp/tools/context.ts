@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { getDb } from "../../infra/db.js";
-import { SOLO_USER } from "../../infra/schema.js";
 import { listUserMirrors, unregisterMirror } from "../../domain/sync/mirror-registry.js";
 import type { Client, InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { guardNodeRead, type SessionScope } from "../scope.js";
+import { guardNodeRead } from "../scope.js";
 import { logAudit } from "../../infra/audit.js";
+import { filterVisibleNodeIds, type GroupIdentityView } from "../../auth/node-access.js";
+import type { SessionCtx } from "../server.js";
 
 // --- Task E3: enriched context payload shape ---
 //
@@ -196,6 +197,8 @@ export async function buildContextPayload(
   db: Client,
   nodeId: string,
   depth: number,
+  userId: string,
+  identity?: GroupIdentityView,
 ): Promise<ContextPayload> {
   // 1. Load the root node row. owner_id / goal / lifecycle_state columns are
   //    added by migration 006; fall back to nulls if not present (shouldn't
@@ -286,7 +289,7 @@ export async function buildContextPayload(
   const mirrorMap = new Map<string, string>();
   if (nodeIds.length > 0) {
     const wanted = new Set(nodeIds);
-    const allMirrors = await listUserMirrors(SOLO_USER);
+    const allMirrors = await listUserMirrors(userId);
     for (const m of allMirrors) {
       if (!wanted.has(m.node_id)) continue;
       const e = await db.execute({
@@ -296,7 +299,7 @@ export async function buildContextPayload(
       if (e.rows.length > 0) {
         mirrorMap.set(m.node_id, m.local_path);
       } else {
-        void unregisterMirror(SOLO_USER, m.node_id).catch(() => undefined);
+        void unregisterMirror(userId, m.node_id).catch(() => undefined);
       }
     }
   }
@@ -424,6 +427,38 @@ export async function buildContextPayload(
     };
   });
 
+  // 7. Filter connected nodes and root edges for group visibility.
+  //    Hidden nodes are silently dropped; edges touching hidden nodes are
+  //    pruned so the caller cannot infer their existence from the edge list.
+  if (identity !== undefined) {
+    const allConnectedIds = connected.map((n) => n.id);
+    // Collect all unique peer IDs that appear in any edge (including those
+    // not present in the walk, which can occur at depth=0). We need to check
+    // their visibility so edges are pruned correctly regardless of depth.
+    const allEdgePeerIds = new Set<string>();
+    for (const e of root.edges) allEdgePeerIds.add(e.peer_id);
+    for (const n of connected) {
+      for (const e of n.edges) allEdgePeerIds.add(e.peer_id);
+    }
+    allEdgePeerIds.delete(nodeId); // root is always visible to itself
+
+    // Union of walked connected IDs + edge peers; filter all at once.
+    const candidateIds = [...new Set([...allConnectedIds, ...allEdgePeerIds])];
+    const visibleSet = await filterVisibleNodeIds(db, identity, candidateIds);
+    const visibleConnected = connected.filter((n) => visibleSet.has(n.id));
+    const visibleIds = new Set([nodeId, ...visibleSet]);
+    const prunedRootEdges = root.edges.filter(
+      (e) => visibleIds.has(e.peer_id),
+    );
+    return {
+      root: { ...root, edges: prunedRootEdges },
+      connected: visibleConnected.map((n) => ({
+        ...n,
+        edges: n.edges.filter((e) => visibleIds.has(e.peer_id)),
+      })),
+    };
+  }
+
   return { root, connected };
 }
 
@@ -434,7 +469,8 @@ function serializeForMcp(payload: ContextPayload): unknown[] {
   return [payload.root, ...payload.connected];
 }
 
-export function registerContextTools(server: McpServer, scope: SessionScope): void {
+export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
+  const { scope } = ctx;
   server.tool(
     "portuni_get_context",
     "Traverse the graph from a node. Call this before starting work on a node to load it plus its neighbourhood. Returns the starting node (depth 0) with full detail (owner, responsibilities with assignees, data_sources, tools, goal, lifecycle_state, events, files, edges) and connected nodes (depth 1+) with lighter detail (lifecycle_state, owner_name, responsibilities_count, edges, recent events at depth 1). The starting node must be in session scope; nodes revealed by traversal are added to scope automatically and recorded in the expansion log. For single-node detail without traversal use portuni_get_node.",
@@ -452,10 +488,11 @@ export function registerContextTools(server: McpServer, scope: SessionScope): vo
     async (args) => {
       const db = getDb();
 
-      // Scope gate on the start node via the central helper.
-      const guard = await guardNodeRead(db, scope, args.node_id, SOLO_USER, async (action, targetId, detail) => {
-        await logAudit(SOLO_USER, action, "scope", targetId, detail);
-      });
+      // Scope gate on the start node. Passing identity enables group-
+      // visibility check: non-members get not_found, never an elicit.
+      const guard = await guardNodeRead(db, scope, args.node_id, ctx.identity.userId, async (action, targetId, detail) => {
+        await logAudit(ctx.identity.userId, action, "scope", targetId, detail);
+      }, ctx.identity);
       if (guard.kind === "not_found") {
         return {
           content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
@@ -494,7 +531,7 @@ export function registerContextTools(server: McpServer, scope: SessionScope): vo
       }
 
       try {
-        const payload = await buildContextPayload(db, args.node_id, args.depth);
+        const payload = await buildContextPayload(db, args.node_id, args.depth, ctx.identity.userId, ctx.identity);
         // depth=0/1 reads everything within one hop of an in-scope start
         // node, which is consistent with the "home + depth-1" seed rule.
         // permissive mode also auto-adds depth>=2 results. We never auto-add
@@ -510,7 +547,7 @@ export function registerContextTools(server: McpServer, scope: SessionScope): vo
             reason: `traversal from ${args.node_id} depth ${args.depth}`,
             triggered_by: "traversal",
           });
-          await logAudit(SOLO_USER, "expand_scope", "scope", added.join(","), {
+          await logAudit(ctx.identity.userId, "expand_scope", "scope", added.join(","), {
             node_ids: added,
             reason: "traversal",
             triggered_by: "traversal",

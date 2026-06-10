@@ -1,15 +1,16 @@
 import { z } from "zod";
 import { getDb } from "../../infra/db.js";
-import { SOLO_USER } from "../../infra/schema.js";
 import { NodeRow } from "../../shared/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { buildContextPayload } from "./context.js";
 import { getLocalMirror } from "../../domain/sync/local-db.js";
 import { deriveLocalPath, buildNodeRoot } from "../../domain/sync/remote-path.js";
-import { guardNodeRead, scopeExpansionError, type SessionScope } from "../scope.js";
+import { guardNodeRead, scopeExpansionError } from "../scope.js";
 import { logAudit } from "../../infra/audit.js";
+import type { SessionCtx } from "../server.js";
 
-export function registerGetNodeTool(server: McpServer, scope: SessionScope): void {
+export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
+  const { scope } = ctx;
   server.tool(
     "portuni_get_node",
     "Get a single node from the Portuni knowledge graph by ID or name. Use when the user names a specific node or you need rich single-node detail (files, visibility, timestamps, mirror metadata) that portuni_get_context's depth-0 root does not include. For neighbourhood / traversal use portuni_get_context with depth>=1. Returns the node's core fields plus owner, responsibilities (with assignees), data_sources, tools, goal, lifecycle_state, direct edges (both directions), files, events, and local mirror path. Subject to the session's read scope: if the target is outside scope and not user-confirmed, the call returns scope_expansion_required and the agent must call portuni_expand_scope first. Name-based lookups are filtered to in-scope candidates so unscoped name probing cannot surface neighbouring node metadata.",
@@ -87,10 +88,11 @@ export function registerGetNodeTool(server: McpServer, scope: SessionScope): voi
 
       const row = NodeRow.parse(result.rows[0]);
 
-      // Scope gate via central helper.
-      const guard = await guardNodeRead(db, scope, row.id, SOLO_USER, async (action, targetId, detail) => {
-        await logAudit(SOLO_USER, action, "scope", targetId, detail);
-      });
+      // Scope gate via central helper. Passing identity enables group-
+      // visibility check: non-members get not_found, never an elicit.
+      const guard = await guardNodeRead(db, scope, row.id, ctx.identity.userId, async (action, targetId, detail) => {
+        await logAudit(ctx.identity.userId, action, "scope", targetId, detail);
+      }, ctx.identity);
       if (guard.kind === "not_found") {
         return {
           content: [{ type: "text" as const, text: "Node not found" }],
@@ -110,11 +112,11 @@ export function registerGetNodeTool(server: McpServer, scope: SessionScope): voi
       //    this tool returns that the context payload does not: files,
       //    visibility, created_by/at, updated_at, meta, local_mirror
       //    (registered_at).
-      const { root } = await buildContextPayload(db, row.id, 0);
+      const { root } = await buildContextPayload(db, row.id, 0, ctx.identity.userId, ctx.identity);
 
       // 3. Fetch local mirror from per-device sync.db (the context payload
       //    only exposes local_path; this tool returns the richer pair).
-      const mirror = await getLocalMirror(SOLO_USER, row.id);
+      const mirror = await getLocalMirror(ctx.identity.userId, row.id);
       const mirrorPath = mirror?.local_path ?? null;
       const localMirror = mirror
         ? { local_path: mirror.local_path, registered_at: mirror.registered_at }

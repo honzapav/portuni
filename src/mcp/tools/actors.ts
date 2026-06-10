@@ -3,7 +3,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getDb } from "../../infra/db.js";
-import { SOLO_USER } from "../../infra/schema.js";
 import {
   ACTOR_TYPES,
   archiveActor,
@@ -13,8 +12,10 @@ import {
   listActors,
   updateActor,
 } from "../../domain/actors.js";
+import { filterVisibleNodeIds } from "../../auth/node-access.js";
+import type { SessionCtx } from "../server.js";
 
-export function registerActorTools(server: McpServer): void {
+export function registerActorTools(server: McpServer, ctx: SessionCtx): void {
   server.tool(
     "portuni_create_actor",
     "Create an actor (person or automation) in the global actor registry. Actors are cross-organizational — a single person can be assigned to responsibilities or own nodes across any number of organizations. Create only when the user explicitly asks — agent-spawned actors clutter the registry. Person: a human collaborator; either a real person (link via user_id) or a placeholder role (is_placeholder=true) such as 'need a lawyer' before anyone is hired. Automation: a script, bot, or integration; cannot be a placeholder and cannot have user_id.",
@@ -28,7 +29,7 @@ export function registerActorTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        const row = await createActor(getDb(), SOLO_USER, args);
+        const row = await createActor(getDb(), ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
       } catch (err) {
         return {
@@ -52,7 +53,7 @@ export function registerActorTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        const row = await updateActor(getDb(), SOLO_USER, args);
+        const row = await updateActor(getDb(), ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
       } catch (err) {
         return {
@@ -99,7 +100,11 @@ export function registerActorTools(server: McpServer): void {
             isError: true,
           };
         }
-        const assignments = await getActorAssignments(db, args.actor_id);
+        const allAssignments = await getActorAssignments(db, args.actor_id);
+        // Filter out assignments on nodes the caller cannot see (group-visibility).
+        const assignmentNodeIds = allAssignments.map((a) => a.node_id);
+        const visibleNodeIds = await filterVisibleNodeIds(db, ctx.identity, assignmentNodeIds);
+        const assignments = allAssignments.filter((a) => visibleNodeIds.has(a.node_id));
         return {
           content: [
             { type: "text" as const, text: JSON.stringify({ actor, assignments }, null, 2) },
@@ -122,7 +127,7 @@ export function registerActorTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        await archiveActor(getDb(), SOLO_USER, args.actor_id);
+        await archiveActor(getDb(), ctx.identity.userId, args.actor_id);
         return {
           content: [
             { type: "text" as const, text: JSON.stringify({ id: args.actor_id, action: "deleted" }) },

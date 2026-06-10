@@ -7,10 +7,10 @@ import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer } from "./server.js";
 import { parseBody, RequestBodyTooLargeError } from "../http/middleware.js";
+import type { RequestIdentity } from "../auth/request-identity.js";
 import { autoSeedFromHome, parseHomeNodeIdFromUrl } from "./auto-seed.js";
 import { logAudit } from "../infra/audit.js";
 import { getDb } from "../infra/db.js";
-import { SOLO_USER } from "../infra/schema.js";
 
 const MAX_SESSIONS = Number(process.env.PORTUNI_MAX_SESSIONS ?? 100);
 const SESSION_TTL_MS = Number(process.env.PORTUNI_SESSION_TTL_MS ?? 30 * 60 * 1000);
@@ -21,10 +21,11 @@ const SESSION_GC_INTERVAL_MS = Number(
 interface SessionEntry {
   transport: StreamableHTTPServerTransport;
   lastUsedAt: number;
+  userId: string;
 }
 
 export interface McpTransport {
-  handle: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+  handle: (req: IncomingMessage, res: ServerResponse, identity: RequestIdentity) => Promise<void>;
   shutdown: () => void;
 }
 
@@ -42,7 +43,7 @@ export function createMcpTransport(): McpTransport {
   }, SESSION_GC_INTERVAL_MS);
   sessionGc.unref?.();
 
-  async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handle(req: IncomingMessage, res: ServerResponse, identity: RequestIdentity): Promise<void> {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
     let body: unknown;
@@ -62,6 +63,12 @@ export function createMcpTransport(): McpTransport {
     try {
       const existing = sessionId ? sessions.get(sessionId) : undefined;
       if (existing) {
+        // Session pinning: reject cross-user session reuse.
+        if (existing.userId !== identity.userId) {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Session belongs to a different user" }));
+          return;
+        }
         existing.lastUsedAt = Date.now();
         await existing.transport.handleRequest(req, res, body);
         return;
@@ -82,7 +89,7 @@ export function createMcpTransport(): McpTransport {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (newSessionId) => {
-          sessions.set(newSessionId, { transport, lastUsedAt: Date.now() });
+          sessions.set(newSessionId, { transport, lastUsedAt: Date.now(), userId: identity.userId });
         },
       });
 
@@ -92,7 +99,7 @@ export function createMcpTransport(): McpTransport {
         }
       };
 
-      const { server, scope } = createMcpServer();
+      const { server, scope } = createMcpServer(identity);
 
       // Auto-seed scope from `?home_node_id=...` on the connection URL.
       // This is what `portuni_mirror` writes into per-mirror configs so
@@ -115,7 +122,8 @@ export function createMcpTransport(): McpTransport {
             homeNodeId,
             db: getDb(),
             auditFn: (action, targetId, detail) =>
-              logAudit(SOLO_USER, action, "node", targetId, detail),
+              logAudit(identity.userId, action, "node", targetId, detail),
+            identity,
           });
         } catch (err) {
           const reason = err instanceof Error ? err.message : String(err);

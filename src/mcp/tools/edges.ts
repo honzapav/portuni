@@ -6,10 +6,12 @@ import { ulid } from "ulid";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getDb } from "../../infra/db.js";
 import { logAudit } from "../../infra/audit.js";
-import { EDGE_RELATIONS, SOLO_USER } from "../../infra/schema.js";
+import { EDGE_RELATIONS } from "../../infra/schema.js";
 import { moveNodeToOrganization } from "../../domain/edges.js";
+import { nodeVisibleTo } from "../../auth/node-access.js";
+import type { SessionCtx } from "../server.js";
 
-export function registerEdgeTools(server: McpServer): void {
+export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
   server.tool(
     "portuni_connect",
     "Create a directed edge between two nodes. Connect only when the user explicitly asks or when creating a node that needs its initial belongs_to edge — speculative connections clutter the graph and mislead later readers. Relations (strictly enforced): related_to (lateral connection), belongs_to (scope; one per non-organization node), applies (concrete work uses a pattern, e.g. project applies process), informed_by (knowledge transfer). To move a node between organizations, call portuni_move_node — it rebinds the existing belongs_to atomically. A disconnect-then-connect across organizations is rejected because it would transiently orphan the node. See portuni://architecture.",
@@ -26,7 +28,7 @@ export function registerEdgeTools(server: McpServer): void {
         sql: "SELECT id, type FROM nodes WHERE id = ?",
         args: [args.source_id],
       });
-      if (sourceCheck.rows.length === 0) {
+      if (sourceCheck.rows.length === 0 || !(await nodeVisibleTo(db, ctx.identity, args.source_id))) {
         return {
           content: [{ type: "text" as const, text: `Error: source node ${args.source_id} not found` }],
           isError: true,
@@ -38,7 +40,7 @@ export function registerEdgeTools(server: McpServer): void {
         sql: "SELECT id, type FROM nodes WHERE id = ?",
         args: [args.target_id],
       });
-      if (targetCheck.rows.length === 0) {
+      if (targetCheck.rows.length === 0 || !(await nodeVisibleTo(db, ctx.identity, args.target_id))) {
         return {
           content: [{ type: "text" as const, text: `Error: target node ${args.target_id} not found` }],
           isError: true,
@@ -110,12 +112,12 @@ export function registerEdgeTools(server: McpServer): void {
           args.target_id,
           args.relation,
           args.meta ? JSON.stringify(args.meta) : null,
-          SOLO_USER,
+          ctx.identity.userId,
           now,
         ],
       });
 
-      await logAudit(SOLO_USER, "connect", "edge", id, {
+      await logAudit(ctx.identity.userId, "connect", "edge", id, {
         source_id: args.source_id,
         target_id: args.target_id,
         relation: args.relation,
@@ -147,6 +149,20 @@ export function registerEdgeTools(server: McpServer): void {
     },
     async (args) => {
       const db = getDb();
+
+      // Group-visibility: both endpoints must be visible to the caller.
+      if (!(await nodeVisibleTo(db, ctx.identity, args.source_id))) {
+        return {
+          content: [{ type: "text" as const, text: `Error: source node ${args.source_id} not found` }],
+          isError: true,
+        };
+      }
+      if (!(await nodeVisibleTo(db, ctx.identity, args.target_id))) {
+        return {
+          content: [{ type: "text" as const, text: `Error: target node ${args.target_id} not found` }],
+          isError: true,
+        };
+      }
 
       const removingBelongsToOrg =
         args.relation === undefined || args.relation === "belongs_to";
@@ -200,7 +216,7 @@ export function registerEdgeTools(server: McpServer): void {
         });
       }
 
-      await logAudit(SOLO_USER, "disconnect", "edge", `${args.source_id}->${args.target_id}`, {
+      await logAudit(ctx.identity.userId, "disconnect", "edge", `${args.source_id}->${args.target_id}`, {
         source_id: args.source_id,
         target_id: args.target_id,
         relation: args.relation ?? "all",
@@ -225,10 +241,18 @@ export function registerEdgeTools(server: McpServer): void {
       new_org_id: z.string().describe("Target organization ID (ULID). Must be type 'organization'."),
     },
     async (args) => {
+      const db = getDb();
+      // Group-visibility: node being moved must be visible to caller.
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
+        return {
+          content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
+          isError: true,
+        };
+      }
       try {
         const result = await moveNodeToOrganization(
-          getDb(),
-          SOLO_USER,
+          db,
+          ctx.identity.userId,
           args.node_id,
           args.new_org_id,
         );

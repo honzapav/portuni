@@ -20,6 +20,9 @@ import { registerEventTools } from "./tools/events.js";
 import { registerActorTools } from "./tools/actors.js";
 import { registerResponsibilityTools } from "./tools/responsibilities.js";
 import { registerEntityAttributeTools } from "./tools/entity-attributes.js";
+import type { RequestIdentity } from "../auth/request-identity.js";
+import { TOOL_MIN_SCOPE } from "../auth/min-scopes.js";
+import { scopeAtLeast } from "../auth/roles.js";
 
 // Top-level server brief. Kept short -- many MCP clients truncate this
 // field at ~2 KB. Anything load-bearing for an individual tool lives in
@@ -31,26 +34,88 @@ When you create a new file inside a Portuni mirror via Write/Edit/MultiEdit, you
 After any file-state mutation (portuni_store, portuni_move_file, portuni_delete_file, portuni_rename_folder, portuni_adopt_files), call portuni_status before ending the turn so disk, DB, and remote stay consistent.
 For semantics, contracts, and enums fetch resources: portuni://architecture, portuni://sync-model, portuni://scope-rules, portuni://enums.`;
 
-export function createMcpServer(): { server: McpServer; scope: SessionScope } {
+export interface SessionCtx {
+  scope: SessionScope;
+  identity: RequestIdentity;
+}
+
+// Default identity used when createMcpServer() is called without arguments
+// (e.g. in-process test harnesses and stdio mode). The userId string is the
+// canonical SOLO_USER value; we use the literal here so this file does not
+// import SOLO_USER -- the env-mode binding point is stdio-entry.ts.
+export function buildDefaultEnvIdentity(): RequestIdentity {
+  return {
+    userId: "01SOLO0000000000000000000",
+    email: process.env.PORTUNI_USER_EMAIL ?? "solo@localhost",
+    name: process.env.PORTUNI_USER_NAME ?? "Solo User",
+    globalScope: "admin",
+    groups: [],
+    via: "env",
+  };
+}
+
+// Wrap server.tool so every registered tool is guarded by the caller's
+// globalScope. Installed once before any registerXxxTools call.
+// The registration-time throw (missing map entry) ensures gaps are caught
+// immediately rather than at call time.
+function gateToolsByScope(server: McpServer, identity: RequestIdentity): void {
+  const original = server.tool.bind(server);
+  (server as unknown as { tool: (...a: unknown[]) => unknown }).tool = (
+    ...args: unknown[]
+  ) => {
+    const name = args[0] as string;
+    const min = TOOL_MIN_SCOPE[name];
+    if (min === undefined) {
+      throw new Error(`Tool ${name} missing from TOOL_MIN_SCOPE — add it to src/auth/min-scopes.ts`);
+    }
+    const handlerIdx = args.length - 1;
+    const handler = args[handlerIdx] as (...h: unknown[]) => Promise<unknown>;
+    args[handlerIdx] = async (...h: unknown[]) => {
+      if (!scopeAtLeast(identity.globalScope, min)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: "forbidden",
+                required_scope: min,
+                your_scope: identity.globalScope,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      return handler(...h);
+    };
+    return original(...(args as Parameters<typeof original>));
+  };
+}
+
+export function createMcpServer(
+  identity: RequestIdentity,
+): { server: McpServer; scope: SessionScope } {
   const scope = new SessionScope(parseScopeMode(process.env.PORTUNI_SCOPE_MODE));
+  const ctx: SessionCtx = { scope, identity };
   const server = new McpServer(
     { name: "portuni", version: "0.1.0" },
     { instructions: INSTRUCTIONS },
   );
+  gateToolsByScope(server, identity);
   registerResources(server);
-  registerScopeTools(server, scope);
-  registerNodeTools(server, scope);
-  registerGetNodeTool(server, scope);
-  registerEdgeTools(server);
-  registerContextTools(server, scope);
-  registerMirrorTools(server);
-  registerFileTools(server, scope);
-  registerSyncStatusTools(server);
-  registerSyncRemoteTools(server);
-  registerSyncSnapshotTools(server);
-  registerEventTools(server, scope);
-  registerActorTools(server);
-  registerResponsibilityTools(server);
-  registerEntityAttributeTools(server);
+  registerScopeTools(server, ctx);
+  registerNodeTools(server, ctx);
+  registerGetNodeTool(server, ctx);
+  registerEdgeTools(server, ctx);
+  registerContextTools(server, ctx);
+  registerMirrorTools(server, ctx);
+  registerFileTools(server, ctx);
+  registerSyncStatusTools(server, ctx);
+  registerSyncRemoteTools(server, ctx);
+  registerSyncSnapshotTools(server, ctx);
+  registerEventTools(server, ctx);
+  registerActorTools(server, ctx);
+  registerResponsibilityTools(server, ctx);
+  registerEntityAttributeTools(server, ctx);
   return { server, scope };
 }
