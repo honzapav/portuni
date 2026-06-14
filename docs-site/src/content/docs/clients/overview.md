@@ -1,13 +1,14 @@
 ---
 title: MCP Clients
-description: How to connect Portuni from Claude Code, Codex CLI, and Gemini CLI, and how each client handles filesystem permissions.
+description: How to connect Portuni from Claude Code, Codex CLI, Gemini CLI, and Mistral Vibe, and how each client handles filesystem permissions.
 ---
 
-Portuni is a plain HTTP server that speaks MCP – which means any AI client that speaks MCP over HTTP can talk to it. The three clients most teams are running today each have their own page here:
+Portuni is a plain HTTP server that speaks MCP – which means any AI client that speaks MCP over HTTP can talk to it. The clients most teams are running today each have their own page here:
 
 - [Claude Code](/clients/claude-code/) – Anthropic's terminal agent
 - [Codex CLI](/clients/codex-cli/) – OpenAI's terminal agent
 - [Gemini CLI](/clients/gemini-cli/) – Google's terminal agent
+- [Mistral Vibe](/clients/mistral-vibe/) – Mistral's terminal agent
 
 If you're using something else that speaks MCP, the same ideas apply – you just have to hunt down the equivalent settings yourself.
 
@@ -28,6 +29,7 @@ The friendlier approach is to hand the path to the client at launch time. The sc
 | Claude Code | `claude --add-dir <path>` | `/add-dir <path>` | `permissions.additionalDirectories` |
 | Codex CLI | `codex --add-dir <path>` | — requires restart | `[sandbox_workspace_write].writable_roots` |
 | Gemini CLI | `gemini --include-directories <path>` | `/directory add <path>` | `context.includeDirectories` |
+| Mistral Vibe | `vibe --trust --add-dir <path>` | — | `trusted_folders.toml` |
 
 Codex CLI is a little different. It locks the sandbox at the operating-system level, so once it's running there's no way to widen access without restarting. Worth deciding which roots you'll need before you launch it.
 

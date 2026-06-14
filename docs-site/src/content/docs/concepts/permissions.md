@@ -40,6 +40,7 @@ The safer habit is to grant access when you launch the client. The scope is obvi
 | Claude Code | `claude --add-dir <path>` | `/add-dir <path>` | `permissions.additionalDirectories` |
 | Codex CLI | `codex --add-dir <path>` | — requires restart | `[sandbox_workspace_write].writable_roots` |
 | Gemini CLI | `gemini --include-directories <path>` | `/directory add <path>` | `context.includeDirectories` |
+| Mistral Vibe | `vibe --trust --add-dir <path>` | — | `trusted_folders.toml` |
 
 A few practical notes:
 

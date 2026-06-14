@@ -65,6 +65,7 @@ Portuni does **not** intercept filesystem operations at runtime – cross-harnes
   - `[mcp_servers.portuni]` with `type = "http"`, `url = <PORTUNI_URL>/mcp`, optional bearer headers. Codex CLI auto-connects.
 
   Portuni writes this file only when it is missing or already carries the Portuni marker comment; a hand-edited Codex config is preserved.
+- **`.vibe/config.toml`** – project-scoped MCP server for Mistral Vibe: an `[[mcp_servers]]` entry named `portuni` (transport `streamable-http`, `url = <PORTUNI_URL>?home_node_id=<id>`) plus a `[mcp_servers.auth]` block using `api_key_env = "PORTUNI_MCP_TOKEN"`. Vibe merges this over `~/.vibe/config.toml` (union-merge by `name`), so it adds only the Portuni server. Vibe loads project config **only in trusted folders**, so launch it with `vibe --trust` (the desktop preset does). Marker-guarded like Codex. See [Mistral Vibe](/clients/mistral-vibe/).
 - **`PORTUNI_SCOPE.md`, `.cursor/rules`** – plain-text rules so the agent has the same picture even if the harness config is missing.
 - **`CLAUDE.md` / `AGENTS.md`** – refreshed only if they already exist, between BEGIN/END `portuni-scope` markers. User content outside the markers is preserved.
 
@@ -82,7 +83,7 @@ When the registry changes (mirror added, removed, or renamed), every affected mi
 |----------|------------------|---------|
 | `PORTUNI_ROOT` | Tier 1/2 boundary. The directory containing every Portuni mirror on this machine. | Nearest common ancestor of every registered mirror |
 | `PORTUNI_GUARD_SCRIPT` | Absolute path of `portuni-guard.sh` written into `.claude/settings.local.json` as the PreToolUse hook command. | Resolved relative to the Portuni install (`scripts/portuni-guard.sh`) |
-| `PORTUNI_URL` | MCP server base URL written into `.mcp.json` and `.codex/config.toml`. The `/mcp` suffix is appended if missing. | `http://${HOST}:${PORT}/mcp`, defaulting to `http://127.0.0.1:4011/mcp` |
+| `PORTUNI_URL` | MCP server base URL written into `.mcp.json`, `.codex/config.toml`, and `.vibe/config.toml`. The `/mcp` suffix is appended if missing. | `http://${HOST}:${PORT}/mcp`, defaulting to `http://127.0.0.1:4011/mcp` |
 | `PORTUNI_AUTH_TOKEN` | Bearer token embedded in MCP `Authorization` headers. When set, `.mcp.json` should be gitignored. | unset (no headers emitted) |
 | `PORTUNI_SCOPE_MODE` | Read-scope elicitation strictness (`strict` / `balanced` / `permissive`). | `strict` |
 

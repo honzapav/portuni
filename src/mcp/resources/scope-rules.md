@@ -11,9 +11,10 @@ expanded only through user confirmation.
 
 - **Seed** at session start. The MCP server reads `?home_node_id=…`
   from the connection URL (every mirror's `.mcp.json` /
-  `.codex/config.toml` carries it, written by `portuni_mirror`) and
-  seeds the scope set with the home node + its depth-1 graph
-  neighbors. No explicit tool call required. For clients connecting
+  `.codex/config.toml` / `.vibe/config.toml` carries it, written by
+  `portuni_mirror`) and seeds the scope set with the home node + its
+  depth-1 graph neighbors. No explicit tool call required. For clients
+  connecting
   without that query param, `portuni_session_init(home_node_id)` is
   the manual fallback.
 - **Expand** explicitly. `portuni_expand_scope(node_ids, reason,

@@ -236,6 +236,39 @@ fn install_codex_global(app: AppHandle) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+// Same idea for Mistral Vibe: writes the Portuni [[mcp_servers]] entry
+// into ~/.vibe/config.toml between Portuni-managed marker comments. Vibe
+// pulls the bearer token from the PORTUNI_MCP_TOKEN env var (api_key_env),
+// so — like Codex — the literal token never lands in the file in either
+// data mode.
+#[tauri::command]
+fn install_vibe_global(app: AppHandle) -> Result<String, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config = load_config(&data_dir);
+    let is_central = config.data_mode.as_deref() == Some("central");
+
+    let (url, token) = if is_central {
+        let server_url = config
+            .server_url
+            .ok_or_else(|| "central mode requires server_url in config.json".to_string())?;
+        let mcp_url = format!("{}/mcp", server_url.trim_end_matches('/'));
+        // Token resolved from the env var at runtime (api_key_env), so the
+        // value is never written to disk. The terminal inject path ensures
+        // PORTUNI_MCP_TOKEN is set for sessions Portuni spawns.
+        (mcp_url, "${PORTUNI_MCP_TOKEN:-}".to_string())
+    } else {
+        // Local mode: snapshot live sidecar endpoint (url, token). The
+        // token is ignored by the writer (env-var indirection) but the URL
+        // carries the live sidecar port.
+        snapshot_mcp_endpoint(&app)?
+    };
+
+    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
+    let path = PathBuf::from(home).join(".vibe").join("config.toml");
+    mcp_install::write_vibe_config(&path, &url, &token)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 fn keychain_get_mcp_token() -> Option<String> {
     keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_MCP_ACCOUNT)
         .ok()
@@ -998,6 +1031,7 @@ pub fn run() {
             regenerate_mcp_token,
             install_claude_global,
             install_codex_global,
+            install_vibe_global,
             launch_claude_for_node,
             pty::pty_spawn,
             pty::pty_write,

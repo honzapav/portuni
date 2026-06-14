@@ -26,6 +26,7 @@ export default defineConfig({
 						{ label: 'Claude Code', slug: 'clients/claude-code' },
 						{ label: 'Codex CLI', slug: 'clients/codex-cli' },
 						{ label: 'Gemini CLI', slug: 'clients/gemini-cli' },
+						{ label: 'Mistral Vibe', slug: 'clients/mistral-vibe' },
 					],
 				},
 				{

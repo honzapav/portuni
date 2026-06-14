@@ -93,6 +93,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-log",
  "tauri-plugin-shell",
+ "toml_edit 0.25.11+spec-1.1.0",
  "url",
 ]
 
@@ -4739,6 +4740,7 @@ dependencies = [
  "indexmap 2.14.0",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.2",
 ]
 

@@ -71,14 +71,23 @@ loop for backend iteration.
   never the local file.
 - **Mirror scope configs are Portuni-managed.** `portuni_mirror` materializes
   `.mcp.json`, `.claude/settings.local.json`, `.codex/config.toml`,
-  `.cursor/rules`, `PORTUNI_SCOPE.md` and marker blocks in CLAUDE.md/AGENTS.md
-  – don't hand-edit those blocks (`src/domain/scope-materialize.ts`). The
-  per-mirror `.mcp.json` carries `?home_node_id=…` (scope auto-seed) and
-  references the token as `${PORTUNI_MCP_TOKEN:-}` – never a literal value.
-  The desktop app injects that env var into spawned terminals; manual shells
-  outside the app must export it themselves (Settings → Copy token). The
-  user-scoped `~/.claude.json` entry (`install_claude_global`) remains the
-  fallback for sessions outside any mirror.
+  `.vibe/config.toml`, `.cursor/rules`, `PORTUNI_SCOPE.md` and marker blocks
+  in CLAUDE.md/AGENTS.md – don't hand-edit those blocks
+  (`src/domain/scope-materialize.ts`). The per-mirror `.mcp.json` (Claude)
+  and `.vibe/config.toml` (Mistral Vibe) carry `?home_node_id=…` (scope
+  auto-seed) and reference the token via env var – never a literal. The
+  desktop app injects `PORTUNI_MCP_TOKEN` into spawned terminals; manual
+  shells outside the app must export it themselves (Settings → Copy token).
+  User-scoped fallbacks for sessions outside any mirror:
+  `~/.claude.json` (`install_claude_global`), `~/.codex/config.toml`
+  (`install_codex_global`), `~/.vibe/config.toml` (`install_vibe_global`).
+- **Mistral Vibe needs `--trust`.** Vibe only loads the per-mirror
+  `.vibe/config.toml` (and thus auto-seeds) when the folder is trusted, so
+  the desktop "Mistral Vibe" preset launches `vibe --trust {prompt}`
+  (session-only trust). Without it Vibe falls back to `~/.vibe/config.toml`
+  (no `home_node_id`) and starts unscoped. Vibe merges project over user
+  config (union-merge of `mcp_servers` by `name`), so the per-mirror file is
+  minimal and never clobbers the user's models/providers.
 - **Auto-seed runs on MCP connect** when the URL carries `?home_node_id=...`.
   Failures (DB unreachable, network) return 503 with the underlying reason
   rather than serving an empty-scope session – see `src/mcp/transport.ts`.

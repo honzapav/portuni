@@ -132,6 +132,92 @@ pub fn write_codex_config(toml_path: &Path, url: &str, token: &str) -> Result<()
     std::fs::write(toml_path, next).map_err(|e| e.to_string())
 }
 
+/// Env var Mistral Vibe reads for the Portuni MCP bearer token. Vibe's
+/// `api_key_env` mechanism assembles the header at runtime
+/// (`Authorization: Bearer <token>`) so the literal token never lands in
+/// the file — same invariant as Codex, and the same var the terminal
+/// spawn path injects, so it works in both local and central data modes.
+const VIBE_TOKEN_ENV: &str = "PORTUNI_MCP_TOKEN";
+
+/// Inserts or replaces the Portuni MCP entry in a Mistral Vibe
+/// config.toml. Vibe stores MCP servers as a value array
+/// (`mcp_servers = [ { name = "...", ... } ]`), NOT [[mcp_servers]]
+/// blocks — its default config writes the empty `mcp_servers = []`. Naive
+/// text appending of an [[mcp_servers]] block would therefore produce a
+/// duplicate-key TOML error and Vibe would refuse to load its whole
+/// config. We use toml_edit to push our inline table into the existing
+/// array, de-duplicating by `name == "portuni"` so re-running the
+/// installer is idempotent and never clobbers the user's other servers or
+/// the rest of the (large, default) config.
+///
+/// The `_token` argument is accepted for signature parity with the other
+/// installers but intentionally not written — Vibe resolves the token
+/// from VIBE_TOKEN_ENV at runtime via `api_key_env`.
+pub fn upsert_vibe_config(existing: Option<&str>, url: &str, _token: &str) -> Result<String, String> {
+    use toml_edit::{Array, DocumentMut, InlineTable, Item, Value};
+
+    let mut doc: DocumentMut = match existing {
+        Some(raw) if !raw.trim().is_empty() => raw
+            .parse()
+            .map_err(|e| format!("invalid TOML in ~/.vibe/config.toml: {e}"))?,
+        _ => DocumentMut::new(),
+    };
+
+    let mut portuni = InlineTable::new();
+    portuni.insert("name", Value::from("portuni"));
+    portuni.insert("transport", Value::from("streamable-http"));
+    portuni.insert("url", Value::from(url));
+    portuni.insert("api_key_env", Value::from(VIBE_TOKEN_ENV));
+    portuni.insert("api_key_header", Value::from("Authorization"));
+    portuni.insert("api_key_format", Value::from("Bearer {token}"));
+
+    let item = doc
+        .as_table_mut()
+        .entry("mcp_servers")
+        .or_insert(Item::Value(Value::Array(Array::new())));
+    let arr = match item {
+        Item::Value(Value::Array(a)) => a,
+        // Empty/None slot we just inserted resolves to the arm above; any
+        // other shape means the user has mcp_servers as [[table]] blocks
+        // or a scalar — refuse rather than silently corrupt their config.
+        _ => {
+            return Err(
+                "~/.vibe/config.toml has mcp_servers in an unexpected form (expected an array); \
+                 refusing to edit automatically — add the Portuni server manually"
+                    .to_string(),
+            )
+        }
+    };
+
+    // Drop any prior Portuni entry so re-installs don't accumulate.
+    let mut i = 0;
+    while i < arr.len() {
+        let is_portuni = arr
+            .get(i)
+            .and_then(Value::as_inline_table)
+            .and_then(|t| t.get("name"))
+            .and_then(Value::as_str)
+            == Some("portuni");
+        if is_portuni {
+            arr.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+    arr.push(portuni);
+
+    Ok(doc.to_string())
+}
+
+pub fn write_vibe_config(toml_path: &Path, url: &str, token: &str) -> Result<(), String> {
+    let existing = std::fs::read_to_string(toml_path).ok();
+    let next = upsert_vibe_config(existing.as_deref(), url, token)?;
+    if let Some(parent) = toml_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(toml_path, next).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod claude_tests {
     use super::*;
@@ -212,5 +298,75 @@ mod codex_tests {
         assert!(!second.contains("http://old/mcp"));
         // Marker must remain exactly once.
         assert_eq!(second.matches(CODEX_MARKER).count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod vibe_tests {
+    use super::*;
+    use toml_edit::{DocumentMut, Value};
+
+    // Helper: parse output and return the mcp_servers array entries with
+    // name == "portuni".
+    fn portuni_entries(out: &str) -> Vec<toml_edit::InlineTable> {
+        let doc: DocumentMut = out.parse().expect("output must be valid TOML");
+        let arr = doc["mcp_servers"].as_array().expect("mcp_servers is array");
+        arr.iter()
+            .filter_map(Value::as_inline_table)
+            .filter(|t| t.get("name").and_then(Value::as_str) == Some("portuni"))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn writes_valid_toml_into_empty_file() {
+        let out = upsert_vibe_config(None, "http://127.0.0.1:47011/mcp", "tok").unwrap();
+        let entries = portuni_entries(&out);
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.get("transport").and_then(Value::as_str), Some("streamable-http"));
+        assert_eq!(e.get("url").and_then(Value::as_str), Some("http://127.0.0.1:47011/mcp"));
+        assert_eq!(e.get("api_key_env").and_then(Value::as_str), Some("PORTUNI_MCP_TOKEN"));
+        assert_eq!(e.get("api_key_format").and_then(Value::as_str), Some("Bearer {token}"));
+        // The literal token value must never end up in the file.
+        assert!(!out.contains("\"tok\""));
+    }
+
+    #[test]
+    fn merges_into_existing_empty_array_preserving_other_keys() {
+        // Mirrors Vibe's real default: lots of keys plus `mcp_servers = []`.
+        let existing = "active_model = \"mistral-medium-3.5\"\nmcp_servers = []\n\n[project_context]\ndefault_commit_count = 5\n";
+        let out = upsert_vibe_config(Some(existing), "http://x/mcp", "tok").unwrap();
+        assert_eq!(portuni_entries(&out).len(), 1);
+        let doc: DocumentMut = out.parse().unwrap();
+        assert_eq!(doc["active_model"].as_str(), Some("mistral-medium-3.5"));
+        assert!(doc.get("project_context").is_some());
+    }
+
+    #[test]
+    fn reinstall_is_idempotent() {
+        let first = upsert_vibe_config(Some("mcp_servers = []\n"), "http://old/mcp", "old").unwrap();
+        let second = upsert_vibe_config(Some(&first), "http://new/mcp", "new").unwrap();
+        let entries = portuni_entries(&second);
+        assert_eq!(entries.len(), 1, "no duplicate portuni entries");
+        assert_eq!(entries[0].get("url").and_then(Value::as_str), Some("http://new/mcp"));
+        assert!(!second.contains("http://old/mcp"));
+    }
+
+    #[test]
+    fn preserves_user_other_servers() {
+        let existing = "mcp_servers = [{ name = \"mine\", transport = \"stdio\", command = \"x\" }]\n";
+        let out = upsert_vibe_config(Some(existing), "http://new/mcp", "tok").unwrap();
+        let doc: DocumentMut = out.parse().unwrap();
+        let arr = doc["mcp_servers"].as_array().unwrap();
+        assert_eq!(arr.len(), 2, "user server kept, portuni added");
+        assert_eq!(portuni_entries(&out).len(), 1);
+        // The user's own server survives untouched.
+        let names: Vec<_> = arr
+            .iter()
+            .filter_map(Value::as_inline_table)
+            .filter_map(|t| t.get("name").and_then(Value::as_str))
+            .collect();
+        assert!(names.contains(&"mine"));
     }
 }

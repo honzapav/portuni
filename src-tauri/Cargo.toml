@@ -63,3 +63,10 @@ url = "2"
 # direct dep so the auth module can use it without relying on transitive
 # availability.
 sha2 = "0.10"
+# Comment- and format-preserving TOML editor. Used by the Mistral Vibe MCP
+# installer: Vibe's ~/.vibe/config.toml carries `mcp_servers = []` as a
+# value array (not [[mcp_servers]] blocks), so naive text appending would
+# produce a duplicate-key TOML error. toml_edit lets us push our server
+# into the existing array idempotently without clobbering the rest of the
+# (large, default) config. Already present transitively (Cargo.lock).
+toml_edit = "0.25"

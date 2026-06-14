@@ -22,6 +22,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { isTauri, openExternal } from "../lib/backend-url";
+import { reportError } from "../lib/error-overlay";
 import type { Theme } from "../lib/theme";
 
 type Props = {
@@ -209,7 +210,17 @@ export default function TerminalPane({
 
       unlistenData = await listen<PtyDataPayload>("pty-data", (e) => {
         if (e.payload.session_id === id) {
-          term.write(b64ToBytes(e.payload.data_b64));
+          // Defensive: a malformed escape sequence from a full-screen TUI
+          // agent can make xterm (or the WebGL renderer) throw. This
+          // listener is async, so an uncaught throw here escapes to
+          // window.onerror and historically white-screened the whole app.
+          // Swallow it into the diagnostic overlay so one bad byte stream
+          // can't take down the session — or the app.
+          try {
+            term.write(b64ToBytes(e.payload.data_b64));
+          } catch (err) {
+            reportError("xterm.write", err, `session=${id}`);
+          }
           onOutputRef.current?.();
         }
       });

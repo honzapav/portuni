@@ -90,8 +90,8 @@ Every file has one of two statuses:
 
 ## Auto-seed on connect
 
-Each mirror's `.mcp.json` and `.codex/config.toml` (written by
-`portuni_mirror`) point the MCP URL at the Portuni server with
+Each mirror's `.mcp.json`, `.codex/config.toml`, and `.vibe/config.toml`
+(written by `portuni_mirror`) point the MCP URL at the Portuni server with
 `?home_node_id=<id>` baked in. When any MCP-capable harness opens a
 session against that URL from inside the mirror, the server seeds the
 read scope with the home node and its depth-1 neighbors before the
