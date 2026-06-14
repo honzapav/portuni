@@ -117,6 +117,7 @@ type Props = {
   onBack: () => void;
   onMutate: () => Promise<void>;
   agentCommand: string;
+  terminalLaunch: string;
   onOpenTerminal: (nodeId: string) => void | Promise<void>;
   // True when this pane is rendered inside another column (e.g. the
   // workspace's right-side detail). Drops the slide-in animation, the
@@ -146,6 +147,7 @@ function DetailPane({
   onBack,
   onMutate,
   agentCommand,
+  terminalLaunch,
   onOpenTerminal,
   embedded,
   onCollapse,
@@ -197,6 +199,7 @@ function DetailPane({
       onBack={onBack}
       onMutate={onMutate}
       agentCommand={agentCommand}
+      terminalLaunch={terminalLaunch}
       onOpenTerminal={onOpenTerminal}
       embedded={embedded}
       onCollapse={onCollapse}
@@ -213,6 +216,7 @@ function DetailPaneBody({
   onBack,
   onMutate,
   agentCommand,
+  terminalLaunch,
   onOpenTerminal,
   embedded,
   onCollapse,
@@ -225,6 +229,7 @@ function DetailPaneBody({
   onBack: () => void;
   onMutate: () => Promise<void>;
   agentCommand: string;
+  terminalLaunch: string;
   onOpenTerminal: (nodeId: string) => void | Promise<void>;
   embedded?: boolean;
   onCollapse?: () => void;
@@ -1041,7 +1046,11 @@ function DetailPaneBody({
             {isCentral ? (
               <LocalOnlyNote />
             ) : (
-              <ActionButtons node={node} agentCommand={agentCommand} />
+              <ActionButtons
+                node={node}
+                agentCommand={agentCommand}
+                terminalLaunch={terminalLaunch}
+              />
             )}
             {node.type !== "organization" && !isCentral && (
               <button

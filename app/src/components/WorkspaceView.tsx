@@ -34,6 +34,7 @@ type Props = {
   nodeDetailLoading: boolean;
   nodeDetailError: string | null;
   agentCommand: string;
+  terminalLaunch: string;
   onOpenTerminal: (nodeId: string) => void | Promise<void>;
   // Refetch graph + this view's node detail after an edit. DetailPane's
   // edit / lifecycle / sync flows all funnel through this.
@@ -66,6 +67,7 @@ export default function WorkspaceView({
   nodeDetailLoading,
   nodeDetailError,
   agentCommand,
+  terminalLaunch,
   onOpenTerminal,
   onMutate,
   editorFile,
@@ -139,6 +141,7 @@ export default function WorkspaceView({
               error={nodeDetailError}
               onSelect={(id) => onSelectNode(id)}
               canGoBack={false}
+              terminalLaunch={terminalLaunch}
               onBack={() => {
                 // No-op: workspace doesn't keep a back-stack like graph does.
               }}
