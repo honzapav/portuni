@@ -25,7 +25,7 @@ The app bundles the Portuni MCP server as an embedded binary (`binaries/portuni-
 - Install Node.js or Varlock.
 - Run `npm start` in a tmux session.
 
-The sidecar listens on `http://localhost:4011` (same port as the CLI build), so any MCP client — Claude Code, Codex CLI, Gemini CLI — can point at it the same way. The app passes an auth token to the sidecar per-launch; if you want external MCP clients to connect, copy the token from the Settings → MCP Server section into your client config.
+The sidecar listens on `http://localhost:4011` (same port as the CLI build), so any MCP client — Claude Code, Codex CLI, Gemini CLI, Mistral Vibe — can point at it the same way. The app passes an auth token to the sidecar per-launch; if you want external MCP clients to connect, copy the token from the Settings → MCP Server section into your client config.
 
 ## Install
 
@@ -53,13 +53,13 @@ Releases are tag-driven (`v*`). When a new release lands, download the new DMG a
 
 ## Connecting external MCP clients to the app's sidecar
 
-The desktop app and an external MCP client (Claude Code, Codex CLI, Gemini CLI) can share the same backend:
+The desktop app and an external MCP client (Claude Code, Codex CLI, Gemini CLI, Mistral Vibe) can share the same backend:
 
 1. Open the app and grab the auth token from Settings → MCP Server.
 2. Point the external client at `http://localhost:4011/mcp` with that token as a bearer header.
 3. Reads and writes from the external client land in the same graph as the app — keep the app open or the sidecar will exit with it.
 
-For the per-client configuration details see [Claude Code](/clients/claude-code/), [Codex CLI](/clients/codex-cli/), [Gemini CLI](/clients/gemini-cli/).
+For the per-client configuration details see [Claude Code](/clients/claude-code/), [Codex CLI](/clients/codex-cli/), [Gemini CLI](/clients/gemini-cli/), [Mistral Vibe](/clients/mistral-vibe/).
 
 ## When to use the CLI server instead
 

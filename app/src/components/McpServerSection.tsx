@@ -29,11 +29,12 @@ export default function McpServerSection() {
   const [tokenVisible, setTokenVisible] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-  // Persistent "set the env var" hint shown after a successful Codex
-  // install. Sticky (no timeout) because it carries an action the user
-  // still needs to take. Cleared when the user dismisses it or runs a
-  // different install.
-  const [codexHint, setCodexHint] = useState<string | null>(null);
+  // Persistent "set the env var" hint shown after a successful Codex or
+  // Vibe install — both read the bearer token from PORTUNI_MCP_TOKEN
+  // rather than a literal in the config file. Sticky (no timeout) because
+  // it carries an action the user still needs to take. Cleared when the
+  // user dismisses it or runs a different install.
+  const [envHint, setEnvHint] = useState<{ agent: string; path: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,23 +105,29 @@ export default function McpServerSection() {
     if (t) await copy(t, "Token");
   }
 
-  async function install(target: "claude" | "codex") {
+  async function install(target: "claude" | "codex" | "vibe") {
     if (!isTauri()) {
       flash("err", "Instalaci konfigurace lze spustit jen z desktop appky.");
       return;
     }
     setBusy(target);
-    setCodexHint(null);
+    setEnvHint(null);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const cmd = target === "claude" ? "install_claude_global" : "install_codex_global";
+      const cmd =
+        target === "claude"
+          ? "install_claude_global"
+          : target === "codex"
+            ? "install_codex_global"
+            : "install_vibe_global";
       const path = await invoke<string>(cmd);
-      if (target === "codex") {
-        // Codex requires bearer_token_env_var (env var indirection) for
-        // streamable_http servers. Make sure the user is told to set
-        // PORTUNI_MCP_TOKEN in their shell rc — without it codex will
-        // see the server but fail every tool call with 401.
-        setCodexHint(path);
+      if (target === "codex" || target === "vibe") {
+        // Both Codex and Vibe resolve the bearer token from an env var
+        // (env var indirection), not a literal in the config file. Make
+        // sure the user is told to set PORTUNI_MCP_TOKEN in their shell rc
+        // — without it the agent sees the server but fails every tool
+        // call with 401.
+        setEnvHint({ agent: target === "codex" ? "Codex" : "Vibe", path });
         setMessage(null);
       } else {
         flash("ok", `Zapsáno do ${path}`);
@@ -141,7 +148,7 @@ export default function McpServerSection() {
     // The button is labelled explicitly and only visible in the desktop
     // shell, so a single click is a deliberate gesture.
     setBusy("regenerate");
-    setCodexHint(null);
+    setEnvHint(null);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const fresh = await invoke<string>("regenerate_mcp_token");
@@ -149,7 +156,7 @@ export default function McpServerSection() {
       setTokenVisible(true);
       flash(
         "ok",
-        "Nový token vygenerován. Nezapomeň znovu spustit instalaci pro Claude Code i Codex.",
+        "Nový token vygenerován. Nezapomeň znovu spustit instalaci pro Claude Code, Codex i Vibe.",
       );
     } catch (e) {
       flash("err", `Chyba: ${e instanceof Error ? e.message : String(e)}`);
@@ -164,8 +171,8 @@ export default function McpServerSection() {
         MCP server
       </div>
       <p className="mb-4 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-        Endpoint, ke kterému se připojuje Claude Code a Codex. Token žije
-        v macOS Keychain a přežívá restarty appky.
+        Endpoint, ke kterému se připojuje Claude Code, Codex a Mistral Vibe.
+        Token žije v macOS Keychain a přežívá restarty appky.
       </p>
 
       {status.kind === "loading" && (
@@ -237,6 +244,13 @@ export default function McpServerSection() {
               Přidat do Codexu (~/.codex/config.toml)
             </ActionButton>
             <ActionButton
+              busy={busy === "vibe"}
+              disabled={busy !== null || !isTauri()}
+              onClick={() => void install("vibe")}
+            >
+              Přidat do Vibu (~/.vibe/config.toml)
+            </ActionButton>
+            <ActionButton
               busy={busy === "regenerate"}
               disabled={busy !== null || !isTauri()}
               onClick={() => void regenerate()}
@@ -254,12 +268,13 @@ export default function McpServerSection() {
             </div>
           )}
 
-          {codexHint && (
-            <CodexInstallHint
-              path={codexHint}
+          {envHint && (
+            <EnvTokenInstallHint
+              agent={envHint.agent}
+              path={envHint.path}
               loadToken={loadToken}
               onCopy={(text, label) => void copy(text, label)}
-              onDismiss={() => setCodexHint(null)}
+              onDismiss={() => setEnvHint(null)}
             />
           )}
         </div>
@@ -281,17 +296,20 @@ export default function McpServerSection() {
   );
 }
 
-// Sticky post-install hint for Codex. Codex's streamable_http MCP
-// transport refuses a literal bearer_token in config.toml ("not
-// supported for streamable_http"), it must be passed through an env
-// var. We write `bearer_token_env_var = "PORTUNI_MCP_TOKEN"` on disk,
-// so the user has to set PORTUNI_MCP_TOKEN once in their shell rc.
-function CodexInstallHint({
+// Sticky post-install hint for agents that read the bearer token from an
+// env var rather than a literal in their config file. Codex's
+// streamable_http transport refuses a literal bearer_token ("not
+// supported for streamable_http"); Vibe uses `api_key_env` by design.
+// In both cases we write the env-var reference on disk, so the user has
+// to set PORTUNI_MCP_TOKEN once in their shell rc.
+function EnvTokenInstallHint({
+  agent,
   path,
   loadToken,
   onCopy,
   onDismiss,
 }: {
+  agent: string;
   path: string;
   loadToken: () => Promise<string | null>;
   onCopy: (text: string, label: string) => void;
@@ -317,8 +335,8 @@ function CodexInstallHint({
         Zapsáno do {path}
       </div>
       <p className="mb-2 leading-relaxed">
-        Codex načítá bearer token z proměnné prostředí — sám token v
-        config.toml odmítne. Přidej tohle řádek na konec{" "}
+        {agent} načítá bearer token z proměnné prostředí — token v
+        config.toml nepoužije. Přidej tenhle řádek na konec{" "}
         <code className="font-mono text-[12px]">~/.zshrc</code> (nebo svého
         shell rc) a otevři nový terminál:
       </p>

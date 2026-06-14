@@ -45,12 +45,40 @@ export const AGENT_PRESETS: AgentPreset[] = [
     command: "opencode run {prompt}",
     hint: "OpenCode CLI, one-shot run with the prompt.",
   },
+  {
+    id: "vibe",
+    // --trust force-trusts the mirror for this session so Vibe loads the
+    // per-mirror ./.vibe/config.toml (which carries ?home_node_id=... for
+    // scope auto-seed). Without it, Vibe ignores project config in folders
+    // not on its persistent trust list and the session starts unscoped.
+    // Session-only: never written to the user's trusted_folders.toml.
+    command: "vibe --trust {prompt}",
+    label: "Mistral Vibe",
+    hint: "Mistral Vibe CLI; trusts the mirror so it auto-seeds Portuni scope.",
+  },
 ];
+
+// One-shot migrations for agent commands stored before a preset gained a
+// required flag. Selecting a preset persists its command string verbatim,
+// so a later change to AGENT_PRESETS does NOT reach users who already
+// picked it — we upgrade the stored value on load instead. Keyed by exact
+// old string so a user's hand-customised command is never touched.
+const AGENT_COMMAND_MIGRATIONS: Record<string, string> = {
+  // Vibe needs --trust so Portuni-spawned terminals load the per-mirror
+  // ./.vibe/config.toml (scope auto-seed). Stored before that was added.
+  "vibe {prompt}": "vibe --trust {prompt}",
+};
 
 export function loadAgentCommand(): string {
   if (typeof window === "undefined") return DEFAULT_AGENT_COMMAND;
   const stored = window.localStorage.getItem(AGENT_COMMAND_KEY);
-  return stored?.trim() ? stored : DEFAULT_AGENT_COMMAND;
+  if (!stored?.trim()) return DEFAULT_AGENT_COMMAND;
+  const migrated = AGENT_COMMAND_MIGRATIONS[stored.trim()];
+  if (migrated) {
+    window.localStorage.setItem(AGENT_COMMAND_KEY, migrated);
+    return migrated;
+  }
+  return stored;
 }
 
 export function saveAgentCommand(template: string): void {

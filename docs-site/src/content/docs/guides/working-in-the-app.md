@@ -85,8 +85,8 @@ Every mutating action calls back through `onMutate` which refetches the graph an
 Three sections worth highlighting:
 
 - **Theme** — light / dark; the choice persists in `localStorage` and is reapplied on launch.
-- **Agent command preset** — pick which CLI agent your "Copy launch command" / new-terminal default uses. Built-in presets: Claude Code (`claude {prompt}`), Codex CLI (`codex {prompt}`), Gemini CLI (`gemini -p {prompt}`), Cursor Agent (`cursor-agent {prompt}`), OpenCode (`opencode run {prompt}`). You can also type a custom template; `{prompt}` is the placeholder for the shell-escaped prompt.
-- **MCP server** — shows the sidecar's URL (typically `http://localhost:4011/mcp`), port, and whether an auth token is set. The bearer token itself lives in macOS Keychain (Tauri-only); reveal it on demand or rotate with one click. The two install buttons write the URL + token into `~/.claude.json` and `~/.codex/config.toml` so external clients can talk to the app's sidecar without manual config editing.
+- **Agent command preset** — pick which CLI agent your "Copy launch command" / new-terminal default uses. Built-in presets: Claude Code (`claude {prompt}`), Codex CLI (`codex {prompt}`), Gemini CLI (`gemini -p {prompt}`), Cursor Agent (`cursor-agent {prompt}`), OpenCode (`opencode run {prompt}`), Mistral Vibe (`vibe --trust {prompt}`). You can also type a custom template; `{prompt}` is the placeholder for the shell-escaped prompt. (The Vibe preset passes `--trust` so it loads the mirror's project config and auto-seeds scope — see [Mistral Vibe](/clients/mistral-vibe/).)
+- **MCP server** — shows the sidecar's URL (typically `http://localhost:4011/mcp`), port, and whether an auth token is set. The bearer token itself lives in macOS Keychain (Tauri-only); reveal it on demand or rotate with one click. The install buttons write the URL + token into `~/.claude.json`, `~/.codex/config.toml`, and `~/.vibe/config.toml` so external clients can talk to the app's sidecar without manual config editing.
 
 ## Recommended daily flow
 

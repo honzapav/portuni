@@ -10,6 +10,16 @@ const AUTH_TOKEN = (process.env.PORTUNI_AUTH_TOKEN ?? "").trim();
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    // Use terser, not the default esbuild minifier. esbuild miscompiles
+    // xterm 6.0.0's `requestMode` (DECRQM handler): it drops the unused
+    // `let r` binding but leaves a dangling `i = {}` assignment to an
+    // UNDECLARED variable, throwing "ReferenceError: Can't find variable:
+    // i" in strict-mode ESM the moment a full-screen TUI agent (e.g.
+    // Mistral Vibe) sends a request-mode escape sequence. terser handles
+    // the dead-store correctly. See the terminal blank-screen post-mortem.
+    minify: "terser",
+  },
   server: {
     port: 4010,
     strictPort: true,

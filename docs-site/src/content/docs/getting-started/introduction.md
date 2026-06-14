@@ -42,10 +42,10 @@ Portuni.app (desktop UI)
    │
    ├─ embedded sidecar ─┐
    │                    │
-Claude Code <--MCP-->   Portuni Server <-->  Turso (shared, team)
+Claude Code  <--MCP-->  Portuni Server <-->  Turso (shared, team)
 Codex CLI               (HTTP, port 4011)    or SQLite (local, solo)
 Gemini CLI                    │
-                       Local mirrors
+Mistral Vibe           Local mirrors
                      (workspace folders)
 ```
 

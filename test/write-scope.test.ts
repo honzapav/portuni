@@ -12,6 +12,8 @@ import {
   buildCodexMcpServer,
   buildCodexSandboxConfig,
   buildSoftHint,
+  buildVibeMcpToml,
+  VIBE_PROJECT_MARKER,
   classifyWrite,
   commonAncestor,
   findContainingMirror,
@@ -254,6 +256,30 @@ describe("appendHomeNodeIdToUrl", () => {
   });
 });
 
+describe("buildVibeMcpToml", () => {
+  it("emits a portuni mcp_server with seeded url and env-var auth", () => {
+    const toml = buildVibeMcpToml({
+      url: "http://127.0.0.1:47011/mcp",
+      homeNodeId: "01HOME",
+    });
+    assert.ok(toml.includes(VIBE_PROJECT_MARKER));
+    assert.match(toml, /\[\[mcp_servers\]\]/);
+    assert.match(toml, /name = "portuni"/);
+    assert.match(toml, /transport = "streamable-http"/);
+    assert.match(toml, /url = "http:\/\/127\.0\.0\.1:47011\/mcp\?home_node_id=01HOME"/);
+    assert.match(toml, /\[mcp_servers\.auth\]/);
+    assert.match(toml, /type = "static"/);
+    assert.match(toml, /api_key_env = "PORTUNI_MCP_TOKEN"/);
+    assert.match(toml, /api_key_format = "Bearer \{token\}"/);
+  });
+
+  it("omits the query param when no home node is given", () => {
+    const toml = buildVibeMcpToml({ url: "http://x/mcp", homeNodeId: null });
+    assert.match(toml, /url = "http:\/\/x\/mcp"/);
+    assert.ok(!toml.includes("home_node_id"));
+  });
+});
+
 describe("buildClaudeMcpJson", () => {
   it("appends home_node_id to the URL so auto-seed runs on connect", () => {
     const j = buildClaudeMcpJson({
@@ -444,6 +470,14 @@ describe("materializeScopeConfig", () => {
       parsed.mcpServers.portuni.url,
       "http://127.0.0.1:47011/mcp?home_node_id=01HOME",
     );
+
+    // Vibe gets a project-scoped .vibe/config.toml with the same seeded URL
+    // so a session launched in the mirror auto-seeds its scope (no expand).
+    const vibe = await readFile(join(cur, ".vibe", "config.toml"), "utf8");
+    assert.ok(vibe.includes(VIBE_PROJECT_MARKER), "carries portuni marker");
+    assert.match(vibe, /url = "http:\/\/127\.0\.0\.1:47011\/mcp\?home_node_id=01HOME"/);
+    assert.match(vibe, /api_key_env = "PORTUNI_MCP_TOKEN"/);
+    assert.ok(!vibe.includes("Bearer ey"), "no literal token in file");
 
     // The Codex per-mirror toml still carries only the sandbox config; its
     // MCP registration lives in the user-scoped ~/.codex/config.toml.

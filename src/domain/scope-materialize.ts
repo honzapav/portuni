@@ -11,6 +11,10 @@
 //   - .codex/config.toml — written ONLY when missing or when the existing
 //     file already carries the Portuni marker comment (we don't clobber a
 //     hand-edited Codex config).
+//   - .vibe/config.toml — project-scoped MCP server for Mistral Vibe, with
+//     ?home_node_id=... so a `vibe` session in the mirror auto-seeds its
+//     scope. Vibe merges this over ~/.vibe/config.toml (union-merge by
+//     name), so it adds only the Portuni server. Marker-guarded like Codex.
 //   - .cursor/rules — soft hint, plain text, refreshed.
 //   - PORTUNI_SCOPE.md — soft hint, harness-agnostic, refreshed.
 //
@@ -29,10 +33,12 @@ import {
   buildClaudeSettings,
   buildCodexSandboxConfig,
   buildSoftHint,
+  buildVibeMcpToml,
   normalize,
   resolveGuardScriptPath,
   resolvePortuniMcpUrl,
   resolvePortuniRoot,
+  VIBE_PROJECT_MARKER,
 } from "./write-scope.js";
 import { listUserMirrors } from "./sync/mirror-registry.js";
 import { SOLO_USER } from "../infra/schema.js";
@@ -225,6 +231,39 @@ export async function materializeScopeConfig(
       }
     } catch (e) {
       result.errors.push({ path: mcpPath, message: (e as Error).message });
+    }
+
+    // 3b. Project-scoped .vibe/config.toml — Vibe merges this over the
+    //     user's ~/.vibe/config.toml (union-merge of mcp_servers by name),
+    //     so a `vibe` session started inside the mirror auto-seeds its read
+    //     scope from ?home_node_id=... — same effect as Claude's .mcp.json,
+    //     no portuni_expand_scope dance. Marker-guarded: refresh only when
+    //     missing or carrying our marker (never clobber a hand-edited file).
+    const vibePath = join(cur, ".vibe", "config.toml");
+    try {
+      let mayWrite = true;
+      if (await exists(vibePath)) {
+        const raw = await readFile(vibePath, "utf8");
+        if (!raw.includes(VIBE_PROJECT_MARKER)) {
+          mayWrite = false;
+          result.errors.push({
+            path: vibePath,
+            message: "existing .vibe/config.toml is user-owned (no portuni marker); skipped",
+          });
+        }
+      }
+      if (mayWrite) {
+        await safeWrite(
+          vibePath,
+          buildVibeMcpToml({
+            url: args.mcpUrl ?? resolvePortuniMcpUrl(),
+            homeNodeId: args.nodeId,
+          }),
+        );
+        result.written.push(vibePath);
+      }
+    } catch (e) {
+      result.errors.push({ path: vibePath, message: (e as Error).message });
     }
   }
 

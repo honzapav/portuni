@@ -268,6 +268,46 @@ export function buildClaudeMcpJson(args: {
   };
 }
 
+// Marker comment that identifies a Portuni-managed per-mirror Vibe config.
+// Mirrors the .codex/config.toml guard: refresh only when this line is
+// present (or the file is absent), never clobber a hand-edited file.
+export const VIBE_PROJECT_MARKER =
+  "# portuni-managed: project-scoped MCP for Mistral Vibe; regenerated on sidecar boot. Token from $PORTUNI_MCP_TOKEN, never stored here.";
+
+// Build the project-scoped .vibe/config.toml content for Mistral Vibe.
+//
+// Vibe loads ./.vibe/config.toml as a layer that MERGES over the user's
+// ~/.vibe/config.toml (union-merge of mcp_servers by `name`), so this
+// minimal file adds the Portuni server WITHOUT disturbing the user's
+// models/providers/keys. Carrying ?home_node_id=... means a `vibe` session
+// started inside the mirror auto-seeds its read scope on connect — the
+// same mechanism Claude gets from the per-mirror .mcp.json, so the agent
+// never has to call portuni_expand_scope just to see its own node.
+//
+// The token is supplied via api_key_env indirection (PORTUNI_MCP_TOKEN),
+// never written literally. Emitted in Vibe's canonical [[mcp_servers]] +
+// [mcp_servers.auth] shape so Vibe accepts it without rewriting.
+export function buildVibeMcpToml(args: {
+  url: string;
+  homeNodeId: string | null;
+}): string {
+  const url = appendHomeNodeIdToUrl(args.url, args.homeNodeId);
+  return [
+    VIBE_PROJECT_MARKER,
+    "[[mcp_servers]]",
+    'name = "portuni"',
+    'transport = "streamable-http"',
+    `url = ${JSON.stringify(url)}`,
+    "",
+    "[mcp_servers.auth]",
+    'type = "static"',
+    'api_key_env = "PORTUNI_MCP_TOKEN"',
+    'api_key_header = "Authorization"',
+    'api_key_format = "Bearer {token}"',
+    "",
+  ].join("\n");
+}
+
 // Build the hooks block for .claude/settings.local.json. Returns null when
 // no guard script is available so callers know to omit the block.
 function buildClaudeHooksBlock(args: {
