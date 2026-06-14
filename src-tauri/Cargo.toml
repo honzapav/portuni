@@ -24,7 +24,7 @@ log = "0.4"
 # No `devtools` feature: debug builds (cargo tauri dev) get the inspector
 # automatically; shipping it in release would let any local process attach
 # to the webview inspector of the installed app.
-tauri = { version = "2.10.3", features = [] }
+tauri = { version = "2.11.1", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2.3.5"
 rand = "0.8"
