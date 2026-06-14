@@ -771,9 +771,11 @@ type LaunchState =
 export function ActionButtons({
   node,
   agentCommand,
+  terminalLaunch,
 }: {
   node: NodeDetail;
   agentCommand: string;
+  terminalLaunch: string;
 }) {
   const [state, setState] = useState<LaunchState>({ kind: "idle" });
   const dataMode = useDataMode();
@@ -816,6 +818,7 @@ export function ActionButtons({
           await invoke("launch_claude_for_node", {
             cwd: local_path,
             command: cmd,
+            template: terminalLaunch,
           });
           setState({ kind: "launched" });
           setTimeout(() => setState({ kind: "idle" }), 2000);

@@ -536,7 +536,11 @@ fn save_config(app: AppHandle, turso_url: Option<String>) -> Result<(), String> 
 // path surfaces as a clear error before AppleScript sees it.
 #[cfg(target_os = "macos")]
 #[tauri::command]
-async fn launch_claude_for_node(cwd: String, command: String) -> Result<(), String> {
+async fn launch_claude_for_node(
+    cwd: String,
+    command: String,
+    template: String,
+) -> Result<(), String> {
     if cwd.trim().is_empty() {
         return Err("cwd is required".to_string());
     }
@@ -546,50 +550,52 @@ async fn launch_claude_for_node(cwd: String, command: String) -> Result<(), Stri
     if command.trim().is_empty() {
         return Err("command is required".to_string());
     }
-    // AppleScript string literal uses double quotes; escape backslashes
-    // first so subsequent quote-escaping doesn't double-escape them.
-    // Single quotes (used heavily by buildAgentCommand's shellQuote) need
-    // no escaping inside an AppleScript double-quoted string.
-    let escaped = command.replace('\\', "\\\\").replace('"', "\\\"");
-    // Two-windows bug: if Terminal isn't already running, launching it
-    // opens the user's default startup window AND `do script` opens a
-    // second window for the command. Detect the cold-start case, wait
-    // for the startup window, and reuse it via `in window 1`. Swapping
-    // the order of `activate` and `do script` does NOT help — the
-    // startup window appears regardless.
-    let script = format!(
-        "set wasRunning to application \"Terminal\" is running\n\
-         tell application \"Terminal\"\n\
-         \tactivate\n\
-         \tif not wasRunning then\n\
-         \t\trepeat 40 times\n\
-         \t\t\tif (count windows) > 0 then exit repeat\n\
-         \t\t\tdelay 0.05\n\
-         \t\tend repeat\n\
-         \t\tif (count windows) > 0 then\n\
-         \t\t\tdo script \"{escaped}\" in window 1\n\
-         \t\telse\n\
-         \t\t\tdo script \"{escaped}\"\n\
-         \t\tend if\n\
-         \telse\n\
-         \t\tdo script \"{escaped}\"\n\
-         \tend if\n\
-         end tell"
-    );
-    let status = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .status()
-        .map_err(|e| format!("osascript failed: {e}"))?;
-    if !status.success() {
-        return Err(format!("osascript exited with {status}"));
+    if template.trim().is_empty() {
+        return Err("template is required".to_string());
+    }
+    // The terminal-launch template (Settings -> Terminal) runs as `sh -c`.
+    // The default uses Terminal.app via osascript and carries the cold-start
+    // two-window fix; users can pick iTerm2 / Ghostty / Warp / cmux or write
+    // their own. We expose three env vars: PORTUNI_COMMAND (the full
+    // `cd <path> && <agent> ...` from buildAgentCommand), PORTUNI_CWD, and
+    // PORTUNI_COMMAND_AS (AppleScript-escaped: \ -> \\, " -> \" so it drops
+    // straight into a `do script "..."` double-quoted string).
+    let command_as = command.replace('\\', "\\\\").replace('"', "\\\"");
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&template)
+        .env("PORTUNI_CWD", &cwd)
+        .env("PORTUNI_COMMAND", &command)
+        .env("PORTUNI_COMMAND_AS", &command_as)
+        .output()
+        .map_err(|e| format!("template run failed: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut detail = String::new();
+        if !stderr.trim().is_empty() {
+            detail.push_str(" stderr=");
+            detail.push_str(stderr.trim());
+        }
+        if !stdout.trim().is_empty() {
+            detail.push_str(" stdout=");
+            detail.push_str(stdout.trim());
+        }
+        let msg = format!("template exited with {}{}", output.status, detail);
+        // Mirror to the file logger — the UI toast truncates long messages.
+        error!("launch_claude_for_node: {msg}");
+        return Err(msg);
     }
     Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
 #[tauri::command]
-async fn launch_claude_for_node(_cwd: String, _command: String) -> Result<(), String> {
+async fn launch_claude_for_node(
+    _cwd: String,
+    _command: String,
+    _template: String,
+) -> Result<(), String> {
     Err("UNSUPPORTED_OS".to_string())
 }
 
