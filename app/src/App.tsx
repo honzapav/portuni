@@ -19,6 +19,8 @@ import {
   markForegroundBusy,
 } from "./lib/sessions";
 import { isTauri } from "./lib/backend-url";
+import { useSyncPending } from "./lib/use-sync-pending";
+import SyncOverview from "./components/SyncOverview";
 
 // Lazy chunks: cytoscape (the GraphView dep) is the main reason the app
 // bundle blew past 500 kB. Splitting GraphView and ActorsPage cuts the
@@ -369,6 +371,9 @@ export default function App() {
   useEffect(() => {
     editorDirtyRef.current = editorDirty;
   }, [editorDirty]);
+
+  const { pending: syncPending, refresh: refreshSyncPending } = useSyncPending();
+  const [syncOverviewOpen, setSyncOverviewOpen] = useState(false);
 
   const reallyOpenFile = useCallback((nodeId: string, relPath: string) => {
     // Always open in the right-side pane first (replacing the detail pane in
@@ -860,6 +865,8 @@ export default function App() {
         onOpenSettings={openSettingsView}
         sessionCount={sessions.length}
         onOpenWorkspace={openWorkspaceView}
+        pendingCount={syncPending.total}
+        onOpenSyncOverview={() => setSyncOverviewOpen(true)}
       />
       {createModalOpen && graph && (
         <CreateNodeModal
@@ -948,6 +955,20 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+      {syncOverviewOpen && (
+        <SyncOverview
+          pending={syncPending}
+          onClose={() => setSyncOverviewOpen(false)}
+          onMutated={() => {
+            refreshSyncPending();
+            refetchAll().catch(() => undefined);
+          }}
+          onSelectNode={(id) => {
+            setSyncOverviewOpen(false);
+            setSelectedId(id);
+          }}
+        />
       )}
     </div>
   );
