@@ -41,6 +41,7 @@ type TreeFile = {
   description: string | null;
   mime_type: string | null;
   fileId: string | null; // null = untracked (not in `files`)
+  local_path: string | null;
 };
 
 type TreeNode = {
@@ -92,6 +93,7 @@ function toTreeFiles(files: DetailFile[], untracked: UntrackedFile[]): TreeFile[
       description: null,
       mime_type: u.mime_type,
       fileId: null,
+      local_path: u.local_path,
     });
   }
   for (const f of files) {
@@ -102,6 +104,7 @@ function toTreeFiles(files: DetailFile[], untracked: UntrackedFile[]): TreeFile[
       description: f.description,
       mime_type: f.mime_type,
       fileId: f.id,
+      local_path: f.local_path,
     });
   }
   return Array.from(byPath.values());
@@ -387,6 +390,27 @@ function FileTreeNode({
   );
 }
 
+// Click-to-copy with a brief check confirmation. stopPropagation so the
+// click doesn't also open/select the file row.
+function CopyPathButton({ value, title }: { value: string; title: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={async (e) => {
+        e.stopPropagation();
+        await navigator.clipboard.writeText(value);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1200);
+      }}
+      className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+    >
+      {copied ? <Check size={11} /> : <Copy size={11} />}
+    </button>
+  );
+}
+
 // One file row. Rename is an inline input (Enter saves, Escape cancels);
 // delete is a two-step confirm that auto-resets after a few seconds. Both
 // replace window.prompt/confirm, which are no-ops in the Tauri webview.
@@ -489,6 +513,11 @@ function FileRow({
             >
               {f.filename}
             </button>
+          )}
+          {f.local_path && (
+            <span className="opacity-0 group-hover:opacity-100">
+              <CopyPathButton value={f.local_path} title="Kopírovat cestu k souboru" />
+            </span>
           )}
           {sync && <SyncStatusBadge sync={sync} />}
           {!f.fileId && (
