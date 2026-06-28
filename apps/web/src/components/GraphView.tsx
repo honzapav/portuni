@@ -184,7 +184,7 @@ function buildElements(graph: GraphPayload): cytoscape.ElementDefinition[] {
   for (const edge of graph.edges) {
     if (edge.relation !== "belongs_to") continue;
     const target = nodesById.get(edge.target_id);
-    if (!target || target.type !== "organization") continue;
+    if (target?.type !== "organization") continue;
     if (!parentOfChild.has(edge.source_id)) {
       parentOfChild.set(edge.source_id, edge.target_id);
     }
