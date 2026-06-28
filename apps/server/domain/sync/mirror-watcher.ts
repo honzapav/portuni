@@ -81,7 +81,7 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
   const watchFactory = deps.watchFactory ?? defaultWatchFactory;
   const wantBackfill = deps.backfill ?? true;
   const debounceMs = deps.debounceMs ?? 300;
-  const onError = deps.onError ?? (() => {});
+  const onError = deps.onError ?? (() => undefined);
 
   let mirrors: LocalMirrorRow[] = [];
   const handles: WatchHandle[] = [];

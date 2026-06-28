@@ -55,7 +55,9 @@ describe("createMirrorWatcher dispatch", () => {
       backfill: false,
       watchFactory: (_root, onPath) => {
         emit = onPath;
-        return { close() {} };
+        return { close() {
+        /* no-op */
+      } };
       },
       debounceMs: 20,
     });
@@ -87,7 +89,9 @@ describe("createMirrorWatcher dispatch", () => {
       backfill: false,
       watchFactory: (_root, onPath) => {
         emit = onPath;
-        return { close() {} };
+        return { close() {
+        /* no-op */
+      } };
       },
       debounceMs: 10,
     });
@@ -127,7 +131,9 @@ describe("createMirrorWatcher backfill", () => {
     const watcher = createMirrorWatcher({
       db,
       userId: "U1",
-      watchFactory: () => ({ close() {} }), // no real fs.watch in tests
+      watchFactory: () => ({ close() {
+        /* no-op */
+      } }), // no real fs.watch in tests
     });
     await watcher.start();
     watcher.stop();
