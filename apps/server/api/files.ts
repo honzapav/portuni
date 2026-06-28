@@ -16,11 +16,18 @@ import {
   FileContentError,
   type FileContentErrorCode,
 } from "../domain/sync/file-content.js";
+import {
+  readFileContentRemote,
+  writeFileContentRemote,
+} from "../domain/sync/file-content-remote.js";
+import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { renameFile, deleteFile } from "../domain/sync/engine-mutations.js";
+import { nodeVisibleTo } from "../auth/node-access.js";
 import type { FileContentResponse } from "../shared/api-types.js";
 
 const CODE_STATUS: Record<FileContentErrorCode, number> = {
   NO_MIRROR: 409,
+  NO_REMOTE: 409,
   NOT_FOUND: 404,
   NOT_EDITABLE: 415,
   CONFLICT: 409,
@@ -54,7 +61,19 @@ export async function handleGetFileContent(
     return;
   }
   try {
-    const r = await readFileContent(getDb(), { userId: identity.userId, nodeId, relPath });
+    const db = getDb();
+    // Same node-access enforcement as graph routes: a hidden node looks
+    // not-found so its file content never leaks.
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    // Mirror present -> local read (unchanged). No mirror (central / VPS)
+    // -> Drive-direct read against the routed remote.
+    const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
+    const r = mirrorRoot
+      ? await readFileContent(db, { userId: identity.userId, nodeId, relPath })
+      : await readFileContentRemote(db, { userId: identity.userId, nodeId, relPath });
     const payload: FileContentResponse = {
       content: r.content,
       version: r.version,
@@ -89,14 +108,32 @@ export async function handlePutFileContent(
   const body = await parseJsonBody(req, res, putSchema);
   if (!body) return;
   try {
-    const r = await writeFileContent(getDb(), {
-      userId: identity.userId,
-      nodeId,
-      relPath,
-      content: body.content,
-      baseVersion: body.baseVersion,
-      force: body.force,
-    });
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    // Mirror present -> local write (unchanged, push deferred to sync). No
+    // mirror (central / VPS) -> Drive-direct write against the routed remote
+    // with conflict-on-remote-hash; the Turso canonical hash is refreshed.
+    const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
+    const r = mirrorRoot
+      ? await writeFileContent(db, {
+          userId: identity.userId,
+          nodeId,
+          relPath,
+          content: body.content,
+          baseVersion: body.baseVersion,
+          force: body.force,
+        })
+      : await writeFileContentRemote(db, {
+          userId: identity.userId,
+          nodeId,
+          relPath,
+          content: body.content,
+          baseVersion: body.baseVersion,
+          force: body.force,
+        });
     respondJson(res, 200, { version: r.version });
   } catch (err) {
     if (handleFileContentError(res, err)) return;
@@ -120,6 +157,10 @@ export async function handleCreateFile(
   const body = await parseJsonBody(req, res, createSchema);
   if (!body) return;
   try {
+    if (!(await nodeVisibleTo(getDb(), identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
     const f = await createFile(getDb(), {
       userId: identity.userId,
       nodeId,
@@ -147,6 +188,10 @@ export async function handleRenameFile(
   const body = await parseJsonBody(req, res, renameSchema);
   if (!body) return;
   try {
+    if (!(await nodeVisibleTo(getDb(), identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
     const r = await renameFile(getDb(), {
       userId: identity.userId,
       fileId,
@@ -168,6 +213,10 @@ export async function handleDeleteFile(
 ): Promise<void> {
   const confirmed = url.searchParams.get("confirmed") === "true";
   try {
+    if (!(await nodeVisibleTo(getDb(), identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
     const r = await deleteFile(getDb(), {
       userId: identity.userId,
       fileId,
