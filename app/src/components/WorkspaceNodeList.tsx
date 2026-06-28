@@ -11,8 +11,8 @@
 import { Plus, X } from "lucide-react";
 import {
   countSessionsByNode,
-  isSessionActive,
-  nodeIsActive,
+  nodeHasWorkingAgent,
+  sessionIsAgentWorking,
   type TerminalSession,
 } from "../lib/sessions";
 import { useNowTick } from "../lib/use-now-tick";
@@ -74,7 +74,7 @@ export default function WorkspaceNodeList({
     <ul className="flex flex-col gap-0.5 px-2 py-2">
       {rows.map((r) => {
         const count = counts.get(r.id) ?? 0;
-        const active = nodeIsActive(sessions, r.id, now);
+        const active = nodeHasWorkingAgent(sessions, r.id, now);
         const selected = r.id === selectedNodeId;
         const nodeSessions = selected
           ? sessions.filter((s) => s.nodeId === r.id)
@@ -100,32 +100,44 @@ export default function WorkspaceNodeList({
               <span
                 role="img"
                 className={`inline-block h-1.5 w-1.5 rounded-full ${active ? "bg-emerald-500" : "bg-amber-500/70"}`}
-                title={active ? "Agent píše" : "Idle"}
+                title={active ? "Agent pracuje" : "Idle"}
                 aria-label={active ? "active" : "idle"}
               />
             </button>
             {selected && nodeSessions.length > 0 ? (
               <ul className="ml-3 flex flex-col gap-0.5 border-l border-[var(--color-border)] pl-1 py-0.5">
                 {nodeSessions.map((s, idx) => {
-                  const sessActive = isSessionActive(now, s.lastOutputAt);
+                  const sessActive = sessionIsAgentWorking(s, now);
                   const sessSelected = s.id === activeSessionId;
                   return (
                     <li key={s.id} className="flex">
                       <button
                         type="button"
                         onClick={() => onSelectSession(r.id, s.id)}
+                        style={
+                          sessSelected
+                            ? { boxShadow: "inset 2px 0 0 0 var(--color-accent)" }
+                            : undefined
+                        }
                         className={`group flex flex-1 items-center gap-2 rounded-md px-2 py-1 text-left text-[12.5px] transition-colors ${
                           sessSelected
-                            ? "bg-[var(--color-bg)] text-[var(--color-text)]"
+                            ? "bg-[var(--color-surface)] font-medium text-[var(--color-text)]"
                             : "text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
                         }`}
                       >
                         <span
                           role="img"
                           aria-label={sessActive ? "active" : "idle"}
+                          title={sessActive ? "Agent pracuje" : "Idle"}
                           className={`inline-block h-1.5 w-1.5 rounded-full ${sessActive ? "bg-emerald-500" : "bg-amber-500/70"}`}
                         />
-                        <span className="font-mono text-[11.5px]">#{idx + 1}</span>
+                        <span
+                          className={`font-mono text-[11.5px] ${
+                            sessSelected ? "font-semibold text-[var(--color-accent)]" : ""
+                          }`}
+                        >
+                          #{idx + 1}
+                        </span>
                         <span className="flex-1" />
                         {/*
                           The X icon is rendered inline so we don't need a
