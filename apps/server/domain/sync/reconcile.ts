@@ -37,12 +37,12 @@ export interface ReconcileResult {
   file_id?: string;
 }
 
-async function fileExistsAt(path: string): Promise<boolean> {
+async function statKind(path: string): Promise<{ exists: boolean; isFile: boolean }> {
   try {
-    await fsStat(path);
-    return true;
+    const st = await fsStat(path);
+    return { exists: true, isFile: st.isFile() };
   } catch {
-    return false;
+    return { exists: false, isFile: false };
   }
 }
 
@@ -79,12 +79,13 @@ export async function reconcilePath(
   });
   const row = rowRes.rows.length > 0 ? rowRes.rows[0] : null;
   const fileId = row ? (row.id as string) : null;
-  const exists = await fileExistsAt(a.absPath);
+  const { exists, isFile } = await statKind(a.absPath);
 
   if (!fileId) {
-    // A create event whose file already vanished (editor temp churn) is a
-    // no-op; otherwise auto-register, leaving the upload to a deliberate sync.
-    if (!exists) return { action: "noop" };
+    // Register only an actual file that is present. A directory event (fs.watch
+    // fires for new subdirs) or a create whose temp file already vanished is a
+    // no-op. Upload is left to a deliberate sync.
+    if (!exists || !isFile) return { action: "noop" };
     const r = await registerLocalFile(db, {
       userId: a.userId,
       nodeId: a.nodeId,
@@ -93,7 +94,7 @@ export async function reconcilePath(
     return { action: "registered", file_id: r.file_id };
   }
 
-  if (exists) {
+  if (exists && isFile) {
     await localHashFor(
       a.absPath,
       fileId,

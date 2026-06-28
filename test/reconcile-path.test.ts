@@ -101,6 +101,22 @@ describe("reconcilePath", () => {
     );
   });
 
+  it("is a no-op for a newly created directory (not a file)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const dirPath = join(mirrorRoot, "wip", "subdir");
+    await mkdir(dirPath, { recursive: true });
+
+    const res = await reconcilePath(db, { userId: "U1", nodeId, absPath: dirPath });
+    assert.equal(res.action, "noop");
+
+    const rows = await db.execute({
+      sql: "SELECT COUNT(*) AS c FROM files WHERE node_id = ?",
+      args: [nodeId],
+    });
+    assert.equal(Number(rows.rows[0].c), 0);
+  });
+
   it("is a no-op for ignored dotfiles and files outside tracked sections", async () => {
     const { db, nodeId } = await makeSharedDb();
     await registerMirror("U1", nodeId, mirrorRoot);
