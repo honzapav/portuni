@@ -27,7 +27,7 @@ log = "0.4"
 tauri = { version = "2.11.1", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2.3.5"
-rand = "0.8"
+rand = "0.9"
 # v3 has no default features; pick platform-native stores explicitly. macOS
 # is the only smoke-tested target for this PR but cross-platform features
 # stay enabled so cargo builds on Linux/Windows without code changes.
