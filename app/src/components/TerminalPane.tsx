@@ -21,7 +21,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
-import { isTauri, openExternal } from "../lib/backend-url";
+import { isTauri, openExternal, clipboardFilePath } from "../lib/backend-url";
 import { reportError } from "../lib/error-overlay";
 import { THEMES, type Theme } from "../lib/theme";
 
@@ -472,6 +472,63 @@ export default function TerminalPane({
     return () => {
       cancelled = true;
       if (unlisten) unlisten();
+    };
+  }, [active, sessionId]);
+
+  // (E) Finder paste interceptor. When the user pastes a file copied from
+  // Finder (Cmd+C on a file, then Cmd+V in the terminal), insert its
+  // shell-quoted path instead of letting the webview paste a raw file
+  // reference (which would be garbled or empty in xterm).
+  //
+  // Detection: check clipboardData.files.length and
+  // clipboardData.types.includes("Files") synchronously. In the Tauri
+  // macOS WKWebView these flags may not always be set for OS file references
+  // (the webview exposes UTI types rather than "Files"). If neither flag
+  // fires, we fall through to the async fallback: call clipboardFilePath()
+  // regardless — if it returns a path the clipboard held a file and we write
+  // the shell-quoted path on top of whatever xterm may have pasted; if it
+  // returns null the clipboard had text and xterm already handled it cleanly.
+  useEffect(() => {
+    if (!isTauri() || !active) return;
+    const container = containerRef.current;
+    if (!container) return;
+
+    const id = sessionId;
+
+    const handlePaste = (e: ClipboardEvent) => {
+      const hasFile =
+        (e.clipboardData?.files?.length ?? 0) > 0 ||
+        (e.clipboardData?.types?.includes("Files") ?? false);
+
+      if (hasFile) {
+        // Synchronously block xterm from seeing the paste event.
+        e.preventDefault();
+        e.stopPropagation();
+        void (async () => {
+          const path = await clipboardFilePath();
+          if (!path) return;
+          const data = shellQuote(path) + " ";
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("pty_write", { args: { session_id: id, data } }).catch(() => undefined);
+        })();
+        return;
+      }
+
+      // Synchronous detection did not fire — try the async fallback.
+      // Do NOT preventDefault here; xterm handles the paste normally.
+      // If clipboardFilePath() finds a file path we write it additionally.
+      void (async () => {
+        const path = await clipboardFilePath();
+        if (!path) return;
+        const data = shellQuote(path) + " ";
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("pty_write", { args: { session_id: id, data } }).catch(() => undefined);
+      })();
+    };
+
+    container.addEventListener("paste", handlePaste, { capture: true });
+    return () => {
+      container.removeEventListener("paste", handlePaste, { capture: true });
     };
   }, [active, sessionId]);
 
