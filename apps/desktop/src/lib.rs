@@ -406,15 +406,17 @@ fn open_external(url: String) -> Result<(), String> {
 ///   /scope                      — write-scope gate (local filesystem check)
 ///   /sandbox-profile            — global sandbox profile (local cwd lookup)
 ///   /nodes/:id/sandbox-profile  — per-node sandbox profile
-///   /nodes/:id/file             — file content GET / PUT (local mirror read/write)
-///   /nodes/:id/files            — file create/delete/rename (local mirror)
+///   /nodes/:id/files            — file create/delete/rename (B3, still local mirror)
 ///   /nodes/:id/files/*          — same (rename, delete sub-paths)
 ///   /nodes/:id/mirror           — create mirror (local filesystem operation)
 ///   /nodes/:id/sync-status      — sync status (local sync DB)
 ///   /nodes/:id/sync             — sync run (local sync engine)
 ///
-/// /nodes/:id/folder-url stays central (drive URL lookup on the server).
-/// All graph, actor, responsibility, etc. routes are central.
+/// /nodes/:id/file (file CONTENT GET / PUT) is NOT local-only: Phase B serves
+/// it from the central server (Drive-direct), so it forwards in central mode.
+/// /nodes/:id/folder-url and /nodes/:id/file-url also stay central (Drive URL
+/// lookups on the server). All graph, actor, responsibility, etc. routes are
+/// central.
 pub(crate) fn is_local_only_path(path: &str) -> bool {
     // Strip query string for matching.
     let p = path.split('?').next().unwrap_or(path);
@@ -425,15 +427,19 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
     }
 
     // Node sub-paths that are local-only.
-    // Matches: /nodes/<id>/file, /nodes/<id>/files, /nodes/<id>/files/*,
-    //          /nodes/<id>/mirror, /nodes/<id>/sync-status, /nodes/<id>/sync,
+    // Matches: /nodes/<id>/files, /nodes/<id>/files/*, /nodes/<id>/mirror,
+    //          /nodes/<id>/sync-status, /nodes/<id>/sync,
     //          /nodes/<id>/sandbox-profile
+    //
+    // NOT matched (Phase B serves these centrally): /nodes/<id>/file (content),
+    // /nodes/<id>/file-url, /nodes/<id>/folder-url. Note `file-url` must not be
+    // swallowed by the `files` prefix check below — "file-url" does not start
+    // with "files", and the exact-`file` content route is deliberately absent.
     if let Some(rest) = p.strip_prefix("/nodes/") {
         // rest = "<id>/<sub>" or "<id>/<sub>/..."
         if let Some(slash) = rest.find('/') {
             let sub = &rest[slash + 1..];
-            if sub == "file"
-                || sub.starts_with("files")
+            if sub.starts_with("files")
                 || sub == "mirror"
                 || sub == "sync-status"
                 || sub == "sync"
@@ -1184,12 +1190,16 @@ mod local_only_path_tests {
     }
 
     #[test]
-    fn node_file_content_is_local_only() {
-        assert!(is_local_only_path("/nodes/abc123/file"));
+    fn node_file_content_is_central_phase_b() {
+        // Phase B: file CONTENT (GET/PUT /nodes/:id/file) is served by the
+        // central server (Drive-direct), so it must NOT be gated local-only.
+        assert!(!is_local_only_path("/nodes/abc123/file"));
     }
 
     #[test]
     fn node_files_create_is_local_only() {
+        // /nodes/:id/files (create/rename/delete = B3) stays local-only:
+        // not yet reimplemented adapter-direct over the server.
         assert!(is_local_only_path("/nodes/abc123/files"));
     }
 
@@ -1229,6 +1239,14 @@ mod local_only_path_tests {
     }
 
     #[test]
+    fn file_url_is_not_local_only() {
+        // "file-url" must not be swallowed by the "files" prefix check; it is
+        // a central Drive-URL lookup.
+        assert!(!is_local_only_path("/nodes/abc123/file-url"));
+        assert!(!is_local_only_path("/nodes/abc123/file-url?file_id=F1"));
+    }
+
+    #[test]
     fn actors_is_not_local_only() {
         assert!(!is_local_only_path("/actors"));
     }
@@ -1241,7 +1259,9 @@ mod local_only_path_tests {
     #[test]
     fn query_string_stripped_before_matching() {
         assert!(is_local_only_path("/scope?cwd=/foo/bar"));
-        assert!(is_local_only_path("/nodes/abc/file?encoding=utf8"));
+        // file CONTENT is central in Phase B even with a query string.
+        assert!(!is_local_only_path("/nodes/abc/file?encoding=utf8"));
+        assert!(is_local_only_path("/nodes/abc/sync-status?fast=1"));
         assert!(!is_local_only_path("/graph?filter=all"));
     }
 }
