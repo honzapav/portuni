@@ -53,6 +53,24 @@ export async function openExternal(url: string): Promise<void> {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
+// Open a local path in Finder. When reveal=true uses `open -R` so Finder
+// selects the file in its parent folder; when false opens the folder itself.
+// No-op in browser mode (not running in Tauri).
+export async function openInFinder(path: string, reveal: boolean): Promise<void> {
+  if (!isTauri()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("open_in_finder", { path, reveal });
+}
+
+// Returns the POSIX path of the file currently in the macOS clipboard
+// (copied from Finder), or null if the clipboard does not hold a file or
+// the command is not running in Tauri / on macOS.
+export async function clipboardFilePath(): Promise<string | null> {
+  if (!isTauri()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string | null>("clipboard_file_path");
+}
+
 // Wait until the sidecar has announced its port via `get_backend_port`
 // or the `backend-ready` event. Mirrors the previous polling logic but
 // resolves to void — callers don't construct URLs anymore, the Rust

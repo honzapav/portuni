@@ -12,6 +12,7 @@ import {
   ArrowLeft,
   Copy,
   Folder,
+  FolderOpen,
   X,
   Check,
   Pencil,
@@ -49,7 +50,7 @@ import {
 } from "../types";
 import { safeHref } from "../lib/safe-url";
 import { groupEventsByDate } from "../lib/events";
-import { isTauri, openExternal } from "../lib/backend-url";
+import { isTauri, openExternal, openInFinder } from "../lib/backend-url";
 import { useDataMode } from "../lib/central";
 import { agentDisplayName } from "../lib/settings";
 import type { Actor } from "../api";
@@ -680,7 +681,19 @@ function DetailPaneBody({
             <>
               <span className="text-[var(--color-border-strong)]">·</span>
               {node.local_mirror ? (
-                <PathCopy path={node.local_mirror.local_path} />
+                <>
+                  <PathCopy path={node.local_mirror.local_path} />
+                  {isTauri() && (
+                    <button
+                      type="button"
+                      title="Otevřít složku"
+                      onClick={() => void openInFinder(node.local_mirror!.local_path, false)}
+                      className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+                    >
+                      <FolderOpen size={13} />
+                    </button>
+                  )}
+                </>
               ) : (
                 <MirrorPlaceholder agentCommand={agentCommand} />
               )}

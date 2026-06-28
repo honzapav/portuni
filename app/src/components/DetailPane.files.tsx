@@ -13,6 +13,7 @@ import {
   ExternalLink,
   FileText,
   Folder,
+  FolderOpen,
   Link2,
   Loader2,
   Play,
@@ -29,7 +30,7 @@ import type {
 import { buildAgentCommand } from "../lib/prompt";
 import { agentDisplayName } from "../lib/settings";
 import { createNodeMirror, fetchNodeFileUrl } from "../api";
-import { isTauri } from "../lib/backend-url";
+import { isTauri, openInFinder } from "../lib/backend-url";
 import { useDataMode } from "../lib/central";
 
 // ---------------------------------------------------------------------------
@@ -562,6 +563,21 @@ function FileRow({
           {f.local_path && (
             <span className="opacity-0 group-hover:opacity-100">
               <CopyPathButton value={f.local_path} title="Kopírovat cestu k souboru" />
+            </span>
+          )}
+          {f.local_path && isTauri() && (
+            <span className="opacity-0 group-hover:opacity-100">
+              <button
+                type="button"
+                title="Otevřít na disku"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void openInFinder(f.local_path!, true);
+                }}
+                className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+              >
+                <FolderOpen size={11} />
+              </button>
             </span>
           )}
           {f.fileId && (
