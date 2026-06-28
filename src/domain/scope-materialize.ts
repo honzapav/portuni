@@ -42,6 +42,9 @@ import {
 } from "./write-scope.js";
 import { listUserMirrors } from "./sync/mirror-registry.js";
 import { SOLO_USER } from "../infra/schema.js";
+import type { DataSourceRow } from "../shared/types.js";
+import { getDb } from "../infra/db.js";
+import { listDataSources } from "./entity-attributes.js";
 
 const BEGIN_MARKER = "<!-- BEGIN portuni-scope (auto-generated, do not edit) -->";
 const END_MARKER = "<!-- END portuni-scope -->";
@@ -66,6 +69,11 @@ export interface MaterializeArgs {
   // generated .claude/settings.local.json wires it as a PreToolUse hook;
   // when null, no hook is generated (declarative deny list still applies).
   guardScriptPath?: string | null;
+  // The node's registered data sources, surfaced in the soft hint so the
+  // agent knows where the node gets its information. Caller-fetched and
+  // passed in (keeps this module DB-free and pure). Omit/empty -> the hint
+  // falls back to a "call portuni_list_data_sources" instruction.
+  dataSources?: readonly DataSourceRow[];
 }
 
 export interface MaterializeResult {
@@ -271,6 +279,7 @@ export async function materializeScopeConfig(
   const hint = buildSoftHint({
     currentMirror: cur,
     portuniRoot: args.portuniRoot,
+    dataSources: args.dataSources,
   });
   try {
     const path = join(cur, ".cursor", "rules");
@@ -295,6 +304,20 @@ export async function materializeScopeConfig(
   await refreshMarkdownHint(join(cur, "AGENTS.md"), hint, result);
 
   return result;
+}
+
+// Best-effort fetch of a node's data sources for the soft hint. A read
+// failure (DB unreachable, no such node) must never block config
+// materialization, so we degrade to an empty list rather than throwing.
+export async function dataSourcesForNode(
+  nodeId: string | null | undefined,
+): Promise<DataSourceRow[]> {
+  if (!nodeId) return [];
+  try {
+    return await listDataSources(getDb(), nodeId);
+  } catch {
+    return [];
+  }
 }
 
 // Re-materialise every mirror registered for the solo user, picking up
@@ -322,6 +345,7 @@ export async function materializeAllRegisteredMirrors(): Promise<MaterializeResu
   for (const m of mirrors) {
     const others = paths.filter((p) => p !== m.local_path);
     try {
+      const dataSources = await dataSourcesForNode(m.node_id);
       const r = await materializeScopeConfig({
         currentMirror: m.local_path,
         nodeId: m.node_id,
@@ -329,6 +353,7 @@ export async function materializeAllRegisteredMirrors(): Promise<MaterializeResu
         otherMirrors: others,
         portuniRoot,
         guardScriptPath,
+        dataSources,
       });
       aggregated.written.push(...r.written);
       aggregated.errors.push(...r.errors);

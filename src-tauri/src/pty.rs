@@ -107,11 +107,25 @@ pub struct PtyExitEvent {
     pub code: Option<i32>,
 }
 
+#[derive(Serialize, Clone)]
+pub struct ForegroundEvent {
+    pub session_id: String,
+    /// True when a subprocess owns the PTY foreground process group (agent
+    /// is computing); false when the shell is back at its prompt (idle).
+    pub busy: bool,
+}
+
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     // Kept around so dropping the session sends SIGHUP to the child.
     _child: Box<dyn portable_pty::Child + Send + Sync>,
+    // The shell's own PID, captured at spawn. On Unix, an interactive shell
+    // is its own process-group leader, so this equals its pgid. The
+    // foreground-poll thread compares tcgetpgrp(master_fd) against this to
+    // tell "shell at prompt" (same pgrp) from "subprocess running" (different
+    // pgrp). Only consumed on Unix; harmless to store on all platforms.
+    shell_pid: Option<u32>,
 }
 
 #[derive(Default)]
@@ -318,10 +332,16 @@ pub fn pty_spawn(
         .map_err(|e| format!("try_clone_reader failed: {e}"))?;
 
     let session_id = args.session_id.clone();
+    // Capture the shell's PID before moving child into PtySession.
+    // An interactive shell is its own process-group leader, so this PID
+    // equals the shell's pgid. The foreground-poll thread uses it to
+    // distinguish "shell at prompt" from "subprocess in foreground".
+    let shell_pid = child.process_id();
     let session = PtySession {
         master: pair.master,
         writer,
         _child: child,
+        shell_pid,
     };
 
     {
@@ -426,6 +446,56 @@ pub fn pty_spawn(
             let _ = std::fs::remove_file(p);
         }
     });
+
+    // (Unix only) Foreground-process poll: every 500 ms compare the PTY's
+    // foreground process group against the shell's own pgid. When they
+    // differ a subprocess (the agent or a command) owns the terminal
+    // foreground. Emit `pty-foreground` with the derived busy flag on
+    // every transition; only transitions so the frontend sees at most one
+    // event per state change. The thread exits when the session is removed
+    // from the map (session gone => break), keeping resource usage linear
+    // in the number of live sessions.
+    #[cfg(unix)]
+    {
+        let app_for_poll = app.clone();
+        let sid_for_poll = session_id.clone();
+        thread::spawn(move || {
+            let mut last_busy: Option<bool> = None;
+            loop {
+                thread::sleep(std::time::Duration::from_millis(500));
+                let busy = {
+                    let state = match app_for_poll.try_state::<PtyState>() {
+                        Some(s) => s,
+                        None => break,
+                    };
+                    let sessions = match state.sessions.lock() {
+                        Ok(s) => s,
+                        Err(_) => break,
+                    };
+                    let session = match sessions.get(&sid_for_poll) {
+                        Some(s) => s,
+                        None => break, // session removed; exit poll thread
+                    };
+                    // process_group_leader() calls tcgetpgrp(master_fd) and
+                    // returns None on error (pty closed, session ending).
+                    match (session.shell_pid, session.master.process_group_leader()) {
+                        (Some(spid), Some(fg)) => fg as u32 != spid,
+                        _ => false,
+                    }
+                };
+                if last_busy != Some(busy) {
+                    last_busy = Some(busy);
+                    let _ = app_for_poll.emit(
+                        "pty-foreground",
+                        ForegroundEvent {
+                            session_id: sid_for_poll.clone(),
+                            busy,
+                        },
+                    );
+                }
+            }
+        });
+    }
 
     Ok(())
 }

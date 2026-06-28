@@ -49,6 +49,7 @@ import {
   NODE_VISIBILITIES,
 } from "../types";
 import { safeHref } from "../lib/safe-url";
+import { groupEventsByDate } from "../lib/events";
 import { isTauri, openExternal } from "../lib/backend-url";
 import { useDataMode } from "../lib/central";
 import { agentDisplayName } from "../lib/settings";
@@ -90,6 +91,12 @@ import { FileTree, NewFileForm, SyncBar, ActionButtons } from "./DetailPane.file
 // already DB-only, but caching here also avoids the network round-trip
 // for repeat visits during a single session.
 const SYNC_STATUS_CACHE = new Map<string, Map<string, SyncStatusFile>>();
+
+type DetailTab = "overview" | "events" | "files" | "connections";
+// Survives the DetailPane unmount that happens when the editor takes over
+// the right slot (Option C). Without this, closing a file remounts the
+// pane and resets the tab to "overview" -- the bug in ukol 9.
+const TAB_CACHE = new Map<string, DetailTab>();
 
 function nodeTypeVar(type: string): string {
   const known = [
@@ -243,9 +250,18 @@ function DetailPaneBody({
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [tab, setTab] = useState<
-    "overview" | "events" | "files" | "connections"
-  >("overview");
+  const [tab, setTabState] = useState<DetailTab>(
+    () => TAB_CACHE.get(node.id) ?? "overview",
+  );
+  // Wrap setTab so the choice is remembered across an editor open/close
+  // (which unmounts this pane). Keyed by node id.
+  const setTab = useCallback(
+    (t: DetailTab) => {
+      TAB_CACHE.set(node.id, t);
+      setTabState(t);
+    },
+    [node.id],
+  );
   const [syncStatus, setSyncStatus] = useState<Map<string, SyncStatusFile>>(
     () => SYNC_STATUS_CACHE.get(node.id) ?? new Map(),
   );
@@ -280,7 +296,8 @@ function DetailPaneBody({
       setEditing(false);
       setDraftName(node.name);
       setErrorMsg(null);
-      setTab("overview");
+      TAB_CACHE.set(node.id, "overview");
+      setTabState("overview");
       // Seed sync state from the module cache so revisits feel instant.
       // The background refetch below will update cache + state when the
       // server responds.
@@ -868,14 +885,21 @@ function DetailPaneBody({
 
         {tab === "events" && (
           <div className="px-5 py-4">
-            <div className="space-y-2">
-              {node.events.map((evt) => (
-                <EventCard
-                  key={evt.id}
-                  event={evt}
-                  onMutate={onMutate}
-                  busy={busy}
-                />
+            <div className="space-y-4">
+              {groupEventsByDate(node.events).map((group) => (
+                <div key={group.date} className="space-y-2">
+                  <div className="font-mono text-[11px] uppercase tracking-wider text-[var(--color-text-dim)]">
+                    {group.date}
+                  </div>
+                  {group.events.map((evt) => (
+                    <EventCard
+                      key={evt.id}
+                      event={evt}
+                      onMutate={onMutate}
+                      busy={busy}
+                    />
+                  ))}
+                </div>
               ))}
               {node.events.length === 0 && (
                 <div className="text-[14px] text-[var(--color-text-dim)]">
@@ -902,6 +926,7 @@ function DetailPaneBody({
                   <FileTree
                     files={node.files}
                     untracked={[]}
+                    nodeId={node.id}
                     syncStatus={syncStatus}
                     syncLoaded={true}
                     onOpenFile={(rel) => onOpenFile?.(node.id, rel)}
@@ -960,6 +985,7 @@ function DetailPaneBody({
                   <FileTree
                     files={node.files}
                     untracked={untracked}
+                    nodeId={node.id}
                     syncStatus={syncStatus}
                     syncLoaded={syncLoaded}
                     onOpenFile={(rel) => onOpenFile?.(node.id, rel)}

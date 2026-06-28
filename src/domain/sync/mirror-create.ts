@@ -33,7 +33,7 @@ import {
   resolvePortuniRoot,
   resolveGuardScriptPath,
 } from "../write-scope.js";
-import { materializeScopeConfig } from "../scope-materialize.js";
+import { materializeScopeConfig, dataSourcesForNode } from "../scope-materialize.js";
 
 const ORG_PLURALS = ["projects", "processes", "areas", "principles"] as const;
 const NODE_SECTIONS = ["wip", "outputs", "resources"] as const;
@@ -132,6 +132,7 @@ async function materializeAndRegen(
       otherMirrors: others,
       portuniRoot,
       guardScriptPath,
+      dataSources: await dataSourcesForNode(m.node_id),
     });
     aggregated.written.push(...r.written);
     aggregated.errors.push(...r.errors);
@@ -144,6 +145,7 @@ async function materializeAndRegen(
       otherMirrors: others,
       portuniRoot,
       guardScriptPath,
+      dataSources: await dataSourcesForNode(newNodeId),
     });
     aggregated.written.push(...r.written);
     aggregated.errors.push(...r.errors);

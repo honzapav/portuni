@@ -77,6 +77,17 @@ export async function fetchNodeFolderUrl(
   return res.json();
 }
 
+export async function fetchNodeFileUrl(
+  id: string,
+  fileId: string,
+): Promise<FolderUrlResponse> {
+  const res = await apiFetch(
+    `/nodes/${encodeURIComponent(id)}/file-url?file_id=${encodeURIComponent(fileId)}`,
+  );
+  await throwForStatus(res, "file-url");
+  return res.json();
+}
+
 export async function runNodeSync(id: string): Promise<SyncRunResponse> {
   return jsonRequest<SyncRunResponse>(
     "POST",

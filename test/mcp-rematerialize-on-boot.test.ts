@@ -14,6 +14,8 @@ import { materializeAllRegisteredMirrors } from "../src/domain/scope-materialize
 import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
 import { SOLO_USER } from "../src/infra/schema.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
+import { setDbForTesting } from "../src/infra/db.js";
+import { addDataSource } from "../src/domain/entity-attributes.js";
 
 let workspace: string;
 let originalRoot: string | undefined;
@@ -29,6 +31,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  setDbForTesting(null);
   resetLocalDbForTests();
   if (originalRoot === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
   else process.env.PORTUNI_WORKSPACE_ROOT = originalRoot;
@@ -129,5 +132,24 @@ describe("materializeAllRegisteredMirrors", () => {
     await makeSharedDb();
     const r = await materializeAllRegisteredMirrors();
     assert.deepEqual(r, { written: [], errors: [] });
+  });
+
+  it("lists the node's registered data sources in the soft hint", async () => {
+    const shared = await makeSharedDb();
+    setDbForTesting(shared.db);
+    await addDataSource(shared.db, "U1", {
+      node_id: shared.nodeId,
+      name: "Acme CRM",
+      external_link: "https://crm.example.com",
+    });
+    const mirror = join(workspace, "mirror-ds");
+    await mkdir(mirror, { recursive: true });
+    await registerMirror(SOLO_USER, shared.nodeId, mirror);
+
+    await materializeAllRegisteredMirrors();
+
+    const scope = await readFile(join(mirror, "PORTUNI_SCOPE.md"), "utf8");
+    assert.match(scope, /Acme CRM/);
+    assert.match(scope, /https:\/\/crm\.example\.com/);
   });
 });

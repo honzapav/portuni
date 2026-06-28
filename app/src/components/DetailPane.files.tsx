@@ -12,6 +12,7 @@ import {
   Copy,
   FileText,
   Folder,
+  Link2,
   Loader2,
   Play,
   RefreshCw,
@@ -26,7 +27,7 @@ import type {
 } from "../types";
 import { buildAgentCommand } from "../lib/prompt";
 import { agentDisplayName } from "../lib/settings";
-import { createNodeMirror } from "../api";
+import { createNodeMirror, fetchNodeFileUrl } from "../api";
 import { isTauri } from "../lib/backend-url";
 import { useDataMode } from "../lib/central";
 
@@ -41,6 +42,7 @@ type TreeFile = {
   description: string | null;
   mime_type: string | null;
   fileId: string | null; // null = untracked (not in `files`)
+  local_path: string | null;
 };
 
 type TreeNode = {
@@ -92,6 +94,7 @@ function toTreeFiles(files: DetailFile[], untracked: UntrackedFile[]): TreeFile[
       description: null,
       mime_type: u.mime_type,
       fileId: null,
+      local_path: u.local_path,
     });
   }
   for (const f of files) {
@@ -102,6 +105,7 @@ function toTreeFiles(files: DetailFile[], untracked: UntrackedFile[]): TreeFile[
       description: f.description,
       mime_type: f.mime_type,
       fileId: f.id,
+      local_path: f.local_path,
     });
   }
   return Array.from(byPath.values());
@@ -243,6 +247,7 @@ export function NewFileForm({
 export function FileTree({
   files,
   untracked,
+  nodeId,
   syncStatus,
   syncLoaded,
   onOpenFile,
@@ -252,6 +257,7 @@ export function FileTree({
 }: {
   files: DetailFile[];
   untracked: UntrackedFile[];
+  nodeId: string;
   syncStatus: Map<string, SyncStatusFile>;
   syncLoaded: boolean;
   onOpenFile: (relPath: string) => void;
@@ -281,6 +287,7 @@ export function FileTree({
           depth={0}
           collapsed={collapsed}
           onToggle={toggle}
+          nodeId={nodeId}
           syncStatus={syncStatus}
           syncLoaded={syncLoaded}
           onOpenFile={onOpenFile}
@@ -298,6 +305,7 @@ function FileTreeNode({
   depth,
   collapsed,
   onToggle,
+  nodeId,
   syncStatus,
   syncLoaded,
   onOpenFile,
@@ -309,6 +317,7 @@ function FileTreeNode({
   depth: number;
   collapsed: Set<string>;
   onToggle: (path: string) => void;
+  nodeId: string;
   syncStatus: Map<string, SyncStatusFile>;
   syncLoaded: boolean;
   onOpenFile: (relPath: string) => void;
@@ -322,6 +331,7 @@ function FileTreeNode({
       <FileRow
         file={node.file}
         indent={indent}
+        nodeId={nodeId}
         syncStatus={syncStatus}
         onOpenFile={onOpenFile}
         onRename={onRename}
@@ -373,6 +383,7 @@ function FileTreeNode({
               depth={depth + 1}
               collapsed={collapsed}
               onToggle={onToggle}
+              nodeId={nodeId}
               syncStatus={syncStatus}
               syncLoaded={syncLoaded}
               onOpenFile={onOpenFile}
@@ -387,12 +398,68 @@ function FileTreeNode({
   );
 }
 
+// Click-to-copy with a brief check confirmation. stopPropagation so the
+// click doesn't also open/select the file row.
+function CopyPathButton({ value, title }: { value: string; title: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={async (e) => {
+        e.stopPropagation();
+        try {
+          await navigator.clipboard.writeText(value);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        } catch {
+          /* clipboard write rejected; skip copied state */
+        }
+      }}
+      className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+    >
+      {copied ? <Check size={11} /> : <Copy size={11} />}
+    </button>
+  );
+}
+
+// Fetches the file's Drive URL on demand (server resolves the opaque id)
+// and copies it. Only meaningful for registered, synced files.
+function CopyDriveLinkButton({ nodeId, fileId }: { nodeId: string; fileId: string }) {
+  const [state, setState] = useState<"idle" | "copied" | "none">("idle");
+  return (
+    <button
+      type="button"
+      title={state === "none" ? "Soubor zatím není na Disku" : "Kopírovat odkaz na Disk"}
+      onClick={async (e) => {
+        e.stopPropagation();
+        try {
+          const r = await fetchNodeFileUrl(nodeId, fileId);
+          if (r.url) {
+            await navigator.clipboard.writeText(r.url);
+            setState("copied");
+          } else {
+            setState("none");
+          }
+        } catch {
+          setState("none");
+        }
+        setTimeout(() => setState("idle"), 1500);
+      }}
+      className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+    >
+      {state === "copied" ? <Check size={11} /> : <Link2 size={11} />}
+    </button>
+  );
+}
+
 // One file row. Rename is an inline input (Enter saves, Escape cancels);
 // delete is a two-step confirm that auto-resets after a few seconds. Both
 // replace window.prompt/confirm, which are no-ops in the Tauri webview.
 function FileRow({
   file: f,
   indent,
+  nodeId,
   syncStatus,
   onOpenFile,
   onRename,
@@ -401,6 +468,7 @@ function FileRow({
 }: {
   file: TreeFile;
   indent: number;
+  nodeId: string;
   syncStatus: Map<string, SyncStatusFile>;
   onOpenFile: (relPath: string) => void;
   onRename: (fileId: string, newName: string) => Promise<void>;
@@ -489,6 +557,16 @@ function FileRow({
             >
               {f.filename}
             </button>
+          )}
+          {f.local_path && (
+            <span className="opacity-0 group-hover:opacity-100">
+              <CopyPathButton value={f.local_path} title="Kopírovat cestu k souboru" />
+            </span>
+          )}
+          {f.fileId && (
+            <span className="opacity-0 group-hover:opacity-100">
+              <CopyDriveLinkButton nodeId={nodeId} fileId={f.fileId} />
+            </span>
           )}
           {sync && <SyncStatusBadge sync={sync} />}
           {!f.fileId && (

@@ -57,6 +57,7 @@ import {
   handleCreateNode,
   handleCreateNodeMirror,
   handleDeleteNode,
+  handleFileUrl,
   handleFolderUrl,
   handleGetNode,
   handleMoveNode,
@@ -400,6 +401,11 @@ async function routeNodes(
   const folderUrlMatch = pathname.match(/^\/nodes\/([^/]+)\/folder-url$/);
   if (folderUrlMatch && method === "GET") {
     await handleFolderUrl(req, res, identity, decodeURIComponent(folderUrlMatch[1]));
+    return true;
+  }
+  const fileUrlMatch = pathname.match(/^\/nodes\/([^/]+)\/file-url$/);
+  if (fileUrlMatch && method === "GET") {
+    await handleFileUrl(req, res, identity, decodeURIComponent(fileUrlMatch[1]));
     return true;
   }
   const syncRunMatch = pathname.match(/^\/nodes\/([^/]+)\/sync$/);

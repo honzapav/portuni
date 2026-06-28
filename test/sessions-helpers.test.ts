@@ -4,9 +4,13 @@ import {
   createSession,
   removeSession,
   markActivity,
+  markForegroundBusy,
   isSessionActive,
   nodeIsActive,
   countSessionsByNode,
+  isAgentCommand,
+  sessionIsAgentWorking,
+  nodeHasWorkingAgent,
 } from "../app/src/lib/sessions.js";
 
 const baseNode = {
@@ -108,5 +112,60 @@ describe("sessions helpers", () => {
   it("countSessionsByNode([]) returns an empty Map", () => {
     const counts = countSessionsByNode([]);
     assert.equal(counts.size, 0);
+  });
+});
+
+describe("agent activity gating", () => {
+  const agent = { ...baseNode, command: "claude 'hello'" };
+  const shell = { ...baseNode, command: "zsh -l" };
+
+  it("isAgentCommand matches agent CLIs, not bare shells", () => {
+    assert.equal(isAgentCommand("claude 'do x'"), true);
+    assert.equal(isAgentCommand("codex"), true);
+    assert.equal(isAgentCommand("vibe --trust 'y'"), true);
+    assert.equal(isAgentCommand("zsh -l"), false);
+    assert.equal(isAgentCommand("ls -la"), false);
+    assert.equal(isAgentCommand(""), false);
+  });
+
+  it("sessionIsAgentWorking requires both an agent command and recent output", () => {
+    const a = { ...createSession(agent, 1000), lastOutputAt: 1000 };
+    const s = { ...createSession(shell, 1000), lastOutputAt: 1000 };
+    assert.equal(sessionIsAgentWorking(a, 2000), true); // agent + fresh output
+    assert.equal(sessionIsAgentWorking(s, 2000), false); // busy shell must NOT light up
+    assert.equal(sessionIsAgentWorking(a, 5000), false); // agent, stale output
+  });
+
+  it("nodeHasWorkingAgent ignores busy shell sessions", () => {
+    const a = { ...createSession({ ...agent, nodeId: "n1" }, 1000), lastOutputAt: 1000 };
+    const s = { ...createSession({ ...shell, nodeId: "n2" }, 1000), lastOutputAt: 1000 };
+    assert.equal(nodeHasWorkingAgent([a, s], "n1", 2000), true);
+    assert.equal(nodeHasWorkingAgent([a, s], "n2", 2000), false);
+  });
+
+  it("foregroundBusy=false suppresses green even with recent output", () => {
+    // When the Rust foreground signal is present it is authoritative.
+    // An agent session with fresh output but foregroundBusy=false means
+    // the shell is idle at its prompt -- must NOT show green.
+    const a = { ...createSession(agent, 1000), lastOutputAt: 1000 };
+    const idle = { ...a, foregroundBusy: false };
+    const computing = { ...a, foregroundBusy: true };
+    assert.equal(sessionIsAgentWorking(idle, 2000), false, "idle agent with fresh output must be amber");
+    assert.equal(sessionIsAgentWorking(computing, 2000), true, "computing agent must be green");
+  });
+
+  it("markForegroundBusy updates foregroundBusy for the target session", () => {
+    const a = createSession(agent, 1000);
+    const b = createSession(agent, 2000);
+    const next = markForegroundBusy([a, b], a.id, true);
+    assert.equal(next.find((s) => s.id === a.id)!.foregroundBusy, true);
+    assert.equal(next.find((s) => s.id === b.id)!.foregroundBusy, undefined);
+  });
+
+  it("markForegroundBusy returns the same array when the flag is unchanged", () => {
+    const a = { ...createSession(agent, 1000), foregroundBusy: true as const };
+    const sessions = [a];
+    const result = markForegroundBusy(sessions, a.id, true);
+    assert.equal(result, sessions, "no-op must return the same array reference");
   });
 });

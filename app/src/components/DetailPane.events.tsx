@@ -4,7 +4,7 @@
 // the rest of DetailPane.
 
 import { useState } from "react";
-import { Check, Clock, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Check, Pencil, Plus, Trash2, X } from "lucide-react";
 import type { DetailEvent } from "../types";
 import { EVENT_TYPES } from "../types";
 import { archiveEvent, createEvent, updateEvent } from "../api";
@@ -140,10 +140,6 @@ export function EventCard({
             {evt.status}
           </span>
         )}
-        <span className="flex items-center gap-1 text-[12px] text-[var(--color-text-dim)]">
-          <Clock size={9} />
-          {evt.created_at.slice(0, 10)}
-        </span>
         <span className="flex-1" />
         <span className="flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
           {evt.status === "active" && (
