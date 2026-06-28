@@ -241,6 +241,172 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
   };
 }
 
+export interface RegisterLocalFileArgs {
+  userId: string;
+  nodeId: string;
+  localPath: string;
+  description?: string | null;
+  status?: "wip" | "output";
+  subpath?: string | null;
+}
+
+export interface RegisterLocalFileResult {
+  file_id: string;
+  remote_name: string;
+  remote_path: string;
+  local_path: string;
+  hash: string;
+}
+
+// Register a local file WITHOUT uploading it. Mirrors storeFile's path
+// resolution (section/subpath/filename, mirror copy-in, remote_path) but
+// stops before the adapter: the files row keeps current_remote_hash +
+// last_pushed_* NULL and file_state keeps last_synced_hash NULL, so
+// statusScan classifies it `push` (pending upload). The next deliberate
+// sync (storeFile on the push candidate) uploads it.
+//
+// This is the deterministic "auto-register on create" path -- the mirror
+// watcher and the in-app file-create flow call it so a new file is tracked
+// the moment it exists, without an agent calling portuni_store. Idempotent:
+// re-registering an already-synced file refreshes the local-hash cache but
+// preserves its synced baseline.
+export async function registerLocalFile(
+  db: Client,
+  a: RegisterLocalFileArgs,
+): Promise<RegisterLocalFileResult> {
+  const info = await resolveNodeInfo(db, a.nodeId);
+  const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
+  if (!remoteName) {
+    throw new Error(
+      `No remote routing configured for node ${a.nodeId} (type=${info.nodeType}, org=${info.orgSyncKey ?? "null"})`,
+    );
+  }
+
+  const mirrorRoot = await getMirrorPath(a.userId, a.nodeId);
+  if (!mirrorRoot) {
+    throw new Error(
+      `Node ${a.nodeId} has no local mirror. Register via portuni_mirror first.`,
+    );
+  }
+
+  // Detect section + subpath + filename (NFC-normalized), same as storeFile.
+  let section: Section;
+  let subpath: string | null = null;
+  let filename: string;
+  const inside = subpathFromMirror(mirrorRoot, a.localPath);
+  if (inside !== null) {
+    section = inside.section;
+    subpath = inside.subpath?.normalize("NFC") ?? null;
+    filename = inside.filename.normalize("NFC");
+  } else {
+    section = a.status === "output" ? "outputs" : "wip";
+    subpath = a.subpath?.normalize("NFC") ?? null;
+    filename = basename(a.localPath).normalize("NFC");
+  }
+
+  const mirroredAbs = safeMirrorJoin(
+    mirrorRoot,
+    section,
+    ...(subpath ? [subpath] : []),
+    filename,
+  );
+
+  // Copy the source into the mirror if it is not already there (usually a
+  // no-op: the file was created in the mirror). Inode compare avoids
+  // truncating a file onto itself on case/normalization-insensitive APFS.
+  const sourceStat = await fsStat(a.localPath);
+  if (mirroredAbs !== a.localPath) {
+    await mkdir(dirname(mirroredAbs), { recursive: true });
+    let samePhysicalFile = false;
+    try {
+      const destStat = await fsStat(mirroredAbs);
+      samePhysicalFile =
+        destStat.ino === sourceStat.ino && destStat.dev === sourceStat.dev;
+    } catch {
+      /* destination absent -- normal copy */
+    }
+    if (!samePhysicalFile) {
+      await copyFile(a.localPath, mirroredAbs);
+    }
+  }
+
+  const content = await readFile(mirroredAbs);
+  const remotePath = buildRemotePath({ ...info, section, subpath, filename });
+  const hash = sha256Buffer(content);
+  const mt = mimeFor(filename);
+  const now = new Date().toISOString();
+
+  // files row: routed (stable destination) but NEVER pushed --
+  // current_remote_hash + last_pushed_* stay NULL so the file reads as a
+  // pending upload, not a synced or orphan file. On conflict (already
+  // registered) we leave those columns untouched so a synced file is not
+  // demoted.
+  const upsert = await db.execute({
+    sql: `INSERT INTO files (id, node_id, filename, status, description, mime_type,
+                              remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
+                              is_native_format, created_by, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?, ?)
+          ON CONFLICT(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL
+          DO UPDATE SET
+            filename = excluded.filename,
+            status = COALESCE(?, files.status),
+            description = COALESCE(?, files.description),
+            mime_type = excluded.mime_type,
+            updated_at = excluded.updated_at
+          RETURNING id`,
+    args: [
+      ulid(),
+      a.nodeId,
+      filename,
+      a.status ?? "wip",
+      a.description ?? null,
+      mt,
+      remoteName,
+      remotePath,
+      a.userId,
+      now,
+      now,
+      a.status ?? null,
+      a.description ?? null,
+    ],
+  });
+  const fileId = upsert.rows[0].id as string;
+
+  // Local sync.db file_state: refresh the local-hash cache, preserving any
+  // existing synced baseline (null for a genuinely new file).
+  const existing = await getFileState(fileId);
+  const fsInfo = await statForCache(mirroredAbs);
+  await upsertFileState({
+    file_id: fileId,
+    last_synced_hash: existing?.last_synced_hash ?? null,
+    last_synced_at: existing?.last_synced_at ?? null,
+    cached_local_hash: hash,
+    cached_mtime: fsInfo.mtime,
+    cached_size: fsInfo.size,
+  });
+
+  // Audit.
+  await db.execute({
+    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+          VALUES (?, ?, 'sync_register', 'file', ?, ?, ?)`,
+    args: [
+      ulid(),
+      a.userId,
+      fileId,
+      JSON.stringify({ remote_name: remoteName, remote_path: remotePath, hash }),
+      now,
+    ],
+  });
+
+  return {
+    file_id: fileId,
+    remote_name: remoteName,
+    remote_path: remotePath,
+    local_path: mirroredAbs,
+    hash,
+  };
+}
+
 export interface PullFileArgs {
   userId: string;
   fileId: string;
@@ -578,7 +744,16 @@ async function scanRow(
     : await cachedRemoteStat(db, fileId, remoteName, remotePath);
   if (rs === null) return { bucket: "orphan", entry: { ...base, class: "orphan" } };
   base.remote_hash = rs.hash;
-  if (!rs.exists) return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+  if (!rs.exists) {
+    // Registered locally but not on the remote. A brand-new file staged for
+    // the next push -- local content present, never synced -- reads as
+    // `push` (pending upload). A file whose remote vanished after a sync
+    // (baseline present) or one with no local content stays `orphan`.
+    if (localHash !== null && base.last_synced_hash === null) {
+      return { bucket: "push_candidates", entry: { ...base, class: "push" } };
+    }
+    return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+  }
 
   if (localHash === null) {
     if (base.last_synced_hash) {
