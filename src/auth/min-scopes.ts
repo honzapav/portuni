@@ -83,6 +83,7 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname === "/graph" && m === "GET") return "read";
   if (pathname === "/scope" && m === "GET") return "read";
   if (pathname === "/users" && m === "GET") return "read";
+  if (pathname === "/sync/pending" && m === "GET") return "read";
 
   // --- Device tokens ---
   if (pathname === "/device-tokens" && m === "GET") return "read";

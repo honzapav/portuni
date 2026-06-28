@@ -4,17 +4,22 @@
 // page so the user can copy URLs / install configs / regenerate token.
 
 import { useMcpStatus } from "../lib/use-mcp-status";
+import { pluralFiles } from "../lib/plural-files";
 
 type Props = {
   onOpenSettings: () => void;
   sessionCount: number;
   onOpenWorkspace: () => void;
+  pendingCount: number;
+  onOpenSyncOverview: () => void;
 };
 
 export default function StatusFooter({
   onOpenSettings,
   sessionCount,
   onOpenWorkspace,
+  pendingCount,
+  onOpenSyncOverview,
 }: Props) {
   const status = useMcpStatus();
 
@@ -62,6 +67,17 @@ export default function StatusFooter({
         >
           <span aria-hidden="true" className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
           <span className="font-mono">{sessionCount} sess</span>
+        </button>
+      )}
+      {pendingCount > 0 && (
+        <button
+          type="button"
+          title={`Nesynchronizováno: ${pendingCount} ${pluralFiles(pendingCount)}`}
+          onClick={onOpenSyncOverview}
+          className="ml-3 flex items-center gap-2 rounded px-2 py-0.5 transition-colors hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
+        >
+          <span aria-hidden="true" className="inline-block h-2 w-2 rounded-full bg-amber-500" />
+          <span className="font-mono">↑ {pendingCount} nesynced</span>
         </button>
       )}
     </footer>

@@ -19,6 +19,9 @@ import {
   markForegroundBusy,
 } from "./lib/sessions";
 import { isTauri } from "./lib/backend-url";
+import { useSyncPending } from "./lib/use-sync-pending";
+import { pluralFiles } from "./lib/plural-files";
+import SyncOverview from "./components/SyncOverview";
 
 // Lazy chunks: cytoscape (the GraphView dep) is the main reason the app
 // bundle blew past 500 kB. Splitting GraphView and ActorsPage cuts the
@@ -370,6 +373,15 @@ export default function App() {
     editorDirtyRef.current = editorDirty;
   }, [editorDirty]);
 
+  const { pending: syncPending, refresh: refreshSyncPending } = useSyncPending();
+  const [syncOverviewOpen, setSyncOverviewOpen] = useState(false);
+
+  const syncPendingRef = useRef(syncPending.total);
+  useEffect(() => {
+    syncPendingRef.current = syncPending.total;
+  }, [syncPending.total]);
+  const [syncQuitGuard, setSyncQuitGuard] = useState<{ count: number } | null>(null);
+
   const reallyOpenFile = useCallback((nodeId: string, relPath: string) => {
     // Always open in the right-side pane first (replacing the detail pane in
     // both graph and workspace views). Fullscreen is opt-in via the expand (⤢)
@@ -424,7 +436,7 @@ export default function App() {
         setEditorGuard(null);
         if (isTauri()) {
           const { getCurrentWindow } = await import("@tauri-apps/api/window");
-          await getCurrentWindow().destroy();
+          await getCurrentWindow().destroy().catch(() => undefined);
         }
       }
     },
@@ -447,6 +459,9 @@ export default function App() {
             if (editorDirtyRef.current) {
               event.preventDefault();
               setEditorGuard({ kind: "quit" });
+            } else if (syncPendingRef.current > 0) {
+              event.preventDefault();
+              setSyncQuitGuard({ count: syncPendingRef.current });
             }
           });
         } catch {
@@ -860,6 +875,8 @@ export default function App() {
         onOpenSettings={openSettingsView}
         sessionCount={sessions.length}
         onOpenWorkspace={openWorkspaceView}
+        pendingCount={syncPending.total}
+        onOpenSyncOverview={() => setSyncOverviewOpen(true)}
       />
       {createModalOpen && graph && (
         <CreateNodeModal
@@ -944,6 +961,62 @@ export default function App() {
                 className="rounded-md border border-[var(--color-accent-dim)] px-3 py-1.5 text-[12.5px] text-[var(--color-accent)] hover:border-[var(--color-accent)] disabled:opacity-60"
               >
                 {fileEditor.saving ? "Ukládám…" : "Uložit"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {syncOverviewOpen && (
+        <SyncOverview
+          pending={syncPending}
+          onClose={() => setSyncOverviewOpen(false)}
+          onMutated={() => {
+            refreshSyncPending();
+            refetchAll().catch(() => undefined);
+          }}
+          onSelectNode={(id) => {
+            setSyncOverviewOpen(false);
+            setSelectedId(id);
+          }}
+        />
+      )}
+      {syncQuitGuard && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
+          <div className="w-[440px] rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-5 shadow-xl">
+            <div className="mb-2 text-[14.5px] font-semibold text-[var(--color-text)]">
+              Nesynchronizovaná práce
+            </div>
+            <p className="mb-4 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
+              Máš {syncQuitGuard.count} {pluralFiles(syncQuitGuard.count)}, které nejsou na remote (nesynchronizováno). Pokud aplikaci zavřeš, zůstanou jen lokálně.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setSyncQuitGuard(null)}
+                className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
+              >
+                Zrušit
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSyncQuitGuard(null);
+                  setSyncOverviewOpen(true);
+                }}
+                className="rounded-md border border-[var(--color-accent-dim)] px-3 py-1.5 text-[12.5px] text-[var(--color-accent)] hover:bg-[var(--color-surface)]"
+              >
+                Zobrazit a synchronizovat
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setSyncQuitGuard(null);
+                  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+                  await getCurrentWindow().destroy().catch(() => undefined);
+                }}
+                className="rounded-md border border-[var(--color-danger-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-danger)] hover:bg-[var(--color-surface)]"
+              >
+                Zavřít bez synchronizace
               </button>
             </div>
           </div>

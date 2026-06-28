@@ -155,6 +155,25 @@ export type SyncRunResponse = {
   skipped: SyncRunSkippedFile[];
 };
 
+// Cross-mirror "what is not yet on a remote" aggregate, per node. Only the
+// local-not-on-remote classes count (push/conflict/untracked/orphan/deleted);
+// incoming pull candidates are excluded.
+export type SyncPendingNode = {
+  node_id: string;
+  node_name: string;
+  node_type: string;
+  push: number;
+  conflict: number;
+  untracked: number;
+  orphan: number;
+  deleted_local: number;
+  total: number;
+};
+export type SyncPendingResponse = {
+  nodes: SyncPendingNode[]; // only nodes with total > 0, sorted by total desc
+  total: number;            // sum of every node's total
+};
+
 export type DetailEvent = {
   id: string;
   type: string;
