@@ -406,14 +406,14 @@ fn open_external(url: String) -> Result<(), String> {
 ///   /scope                      — write-scope gate (local filesystem check)
 ///   /sandbox-profile            — global sandbox profile (local cwd lookup)
 ///   /nodes/:id/sandbox-profile  — per-node sandbox profile
-///   /nodes/:id/files            — file create/delete/rename (B3, still local mirror)
-///   /nodes/:id/files/*          — same (rename, delete sub-paths)
 ///   /nodes/:id/mirror           — create mirror (local filesystem operation)
 ///   /nodes/:id/sync-status      — sync status (local sync DB)
 ///   /nodes/:id/sync             — sync run (local sync engine)
 ///
-/// /nodes/:id/file (file CONTENT GET / PUT) is NOT local-only: Phase B serves
-/// it from the central server (Drive-direct), so it forwards in central mode.
+/// NOT local-only (Phase B serves these from the central server): file CONTENT
+/// (GET/PUT /nodes/:id/file) and the file lifecycle (POST /nodes/:id/files,
+/// POST /nodes/:id/files/:fileId/rename, DELETE /nodes/:id/files/:fileId) are
+/// adapter-direct on the server, so they forward in central mode.
 /// /nodes/:id/folder-url and /nodes/:id/file-url also stay central (Drive URL
 /// lookups on the server). All graph, actor, responsibility, etc. routes are
 /// central.
@@ -427,20 +427,17 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
     }
 
     // Node sub-paths that are local-only.
-    // Matches: /nodes/<id>/files, /nodes/<id>/files/*, /nodes/<id>/mirror,
-    //          /nodes/<id>/sync-status, /nodes/<id>/sync,
+    // Matches: /nodes/<id>/mirror, /nodes/<id>/sync-status, /nodes/<id>/sync,
     //          /nodes/<id>/sandbox-profile
     //
     // NOT matched (Phase B serves these centrally): /nodes/<id>/file (content),
-    // /nodes/<id>/file-url, /nodes/<id>/folder-url. Note `file-url` must not be
-    // swallowed by the `files` prefix check below — "file-url" does not start
-    // with "files", and the exact-`file` content route is deliberately absent.
+    // /nodes/<id>/files and /nodes/<id>/files/* (B3 lifecycle),
+    // /nodes/<id>/file-url, /nodes/<id>/folder-url.
     if let Some(rest) = p.strip_prefix("/nodes/") {
         // rest = "<id>/<sub>" or "<id>/<sub>/..."
         if let Some(slash) = rest.find('/') {
             let sub = &rest[slash + 1..];
-            if sub.starts_with("files")
-                || sub == "mirror"
+            if sub == "mirror"
                 || sub == "sync-status"
                 || sub == "sync"
                 || sub == "sandbox-profile"
@@ -1197,15 +1194,17 @@ mod local_only_path_tests {
     }
 
     #[test]
-    fn node_files_create_is_local_only() {
-        // /nodes/:id/files (create/rename/delete = B3) stays local-only:
-        // not yet reimplemented adapter-direct over the server.
-        assert!(is_local_only_path("/nodes/abc123/files"));
+    fn node_files_create_is_central_phase_b() {
+        // Phase B (B3): file lifecycle (create) is served adapter-direct by
+        // the central server, so /nodes/:id/files must NOT be gated local-only.
+        assert!(!is_local_only_path("/nodes/abc123/files"));
     }
 
     #[test]
-    fn node_files_sub_path_is_local_only() {
-        assert!(is_local_only_path("/nodes/abc123/files/somefile.md/rename"));
+    fn node_files_sub_path_is_central_phase_b() {
+        // Phase B (B3): rename + delete also forward to the central server.
+        assert!(!is_local_only_path("/nodes/abc123/files/somefile.md/rename"));
+        assert!(!is_local_only_path("/nodes/abc123/files/somefileid"));
     }
 
     #[test]
