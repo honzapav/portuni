@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  ExternalLink,
   FileText,
   Folder,
   Link2,
@@ -968,6 +969,182 @@ export function ActionButtons({
         {icon}
         <span className="truncate">{label}</span>
       </button>
+    </div>
+  );
+}
+
+// Split button that merges two terminal-launch controls into one:
+//   - Left (primary): opens an embedded terminal inside Portuni.
+//   - Right (chevron): dropdown with "Otevřít v externím terminálu" that
+//     triggers the same external-launch flow as ActionButtons.
+// Renders nothing for organization nodes (no working-folder concept there).
+export function TerminalSplitButton({
+  node,
+  agentCommand,
+  terminalLaunch,
+  onEmbeddedOpen,
+  embeddedPending,
+}: {
+  node: NodeDetail;
+  agentCommand: string;
+  terminalLaunch: string;
+  onEmbeddedOpen: () => void | Promise<void>;
+  embeddedPending: boolean;
+}) {
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [externalState, setExternalState] = useState<LaunchState>({ kind: "idle" });
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown when user clicks outside the split button.
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [dropdownOpen]);
+
+  // Close dropdown on Escape key.
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDropdownOpen(false);
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [dropdownOpen]);
+
+  const handleExternalLaunch = async () => {
+    setDropdownOpen(false);
+    setExternalState({ kind: "pending" });
+    try {
+      const { local_path } = await createNodeMirror(node.id);
+      const enriched: NodeDetail = {
+        ...node,
+        local_mirror: node.local_mirror ?? {
+          local_path,
+          registered_at: new Date().toISOString(),
+        },
+      };
+      const cmd = buildAgentCommand(enriched, agentCommand);
+
+      if (isTauri()) {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("launch_claude_for_node", {
+            cwd: local_path,
+            command: cmd,
+            template: terminalLaunch,
+          });
+          setExternalState({ kind: "launched" });
+          setTimeout(() => setExternalState({ kind: "idle" }), 2000);
+          return;
+        } catch (err) {
+          const msg = String(err);
+          if (msg.includes("UNSUPPORTED_OS")) {
+            // Linux / Windows in Tauri build — fall through to clipboard.
+          } else {
+            setExternalState({ kind: "error", message: msg });
+            setTimeout(() => setExternalState({ kind: "idle" }), 3500);
+            return;
+          }
+        }
+      }
+
+      await navigator.clipboard.writeText(cmd);
+      setExternalState({ kind: "copied" });
+      setTimeout(() => setExternalState({ kind: "idle" }), 1800);
+    } catch (err) {
+      setExternalState({ kind: "error", message: String(err) });
+      setTimeout(() => setExternalState({ kind: "idle" }), 3500);
+    }
+  };
+
+  const agentName = agentDisplayName(agentCommand);
+
+  const externalLabel = (() => {
+    switch (externalState.kind) {
+      case "pending":
+        return "Spouštím…";
+      case "launched":
+        return "Spuštěno v Terminal.app";
+      case "copied":
+        return "Zkopírováno — paste do svého terminálu";
+      case "error":
+        return externalState.message;
+      default:
+        return "Otevřít v externím terminálu";
+    }
+  })();
+
+  const externalIcon = (() => {
+    switch (externalState.kind) {
+      case "pending":
+        return <Loader2 size={12} className="animate-spin" />;
+      case "launched":
+        return <Check size={12} />;
+      case "copied":
+        return <Copy size={12} />;
+      default:
+        return <ExternalLink size={12} />;
+    }
+  })();
+
+  const primaryDisabled = embeddedPending || externalState.kind === "pending";
+
+  return (
+    <div ref={containerRef} className="relative">
+      <div className="flex">
+        {/* Primary action: open embedded terminal inside Portuni */}
+        <button
+          type="button"
+          onClick={() => void onEmbeddedOpen()}
+          disabled={primaryDisabled}
+          title={`Otevře terminál v Práci a spustí v něm ${agentName}. Pracovní složka bude vytvořena, pokud ještě neexistuje.`}
+          className="flex flex-1 items-center justify-center gap-2 rounded-l-md border border-r-0 border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)] disabled:cursor-default disabled:opacity-60 disabled:hover:border-[var(--color-accent-dim)] disabled:hover:bg-[var(--color-accent-dim)]/15"
+        >
+          {embeddedPending ? (
+            <>
+              <Loader2 size={13} className="animate-spin" />
+              Spouštím terminál…
+            </>
+          ) : (
+            "Otevřít terminál v Portuni"
+          )}
+        </button>
+        {/* Chevron trigger for the external-launch dropdown */}
+        <button
+          type="button"
+          onClick={() => setDropdownOpen((v) => !v)}
+          title="Další možnosti spuštění"
+          aria-label="Další možnosti spuštění"
+          className="flex items-center justify-center rounded-r-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-2.5 text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)]"
+        >
+          <ChevronDown size={13} />
+        </button>
+      </div>
+      {/* Dropdown: positioned above the button bar */}
+      {dropdownOpen && (
+        <div className="absolute bottom-full left-0 mb-1 min-w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
+          <button
+            type="button"
+            onClick={() => void handleExternalLaunch()}
+            disabled={externalState.kind === "pending"}
+            title={
+              isTauri()
+                ? `Otevře Terminal.app v pracovní složce a spustí ${agentName}.`
+                : `Zkopíruje shell příkaz pro vstup do složky a spuštění ${agentName}.`
+            }
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-[var(--color-text)] hover:bg-[var(--color-surface)] disabled:opacity-60"
+          >
+            <span className="text-[var(--color-text-dim)]">{externalIcon}</span>
+            <span className="truncate">{externalLabel}</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
