@@ -12,6 +12,7 @@ import { startHttpServer } from "./http/server.js";
 import { getDb } from "./infra/db.js";
 import { ensureSchema } from "./infra/schema.js";
 import { materializeAllRegisteredMirrors } from "./domain/scope-materialize.js";
+import { startMirrorWatcher } from "./boot/mirror-watch.js";
 
 // Single ping wrapped in a hard timeout. The libsql client doesn't expose a
 // connect timeout of its own, so without this a DNS hiccup or a slow Turso
@@ -92,6 +93,13 @@ async function main(): Promise<void> {
   // Parent (Tauri) reads this line from stdout to learn the bound port.
   process.stdout.write(`PORTUNI_LISTENING_PORT=${address.port}\n`);
 
+  // Deterministic file-state: watch every registered mirror and reconcile on
+  // each change so the UI's status is correct without an agent calling
+  // portuni_store / portuni_status. On by default in the desktop sidecar (the
+  // single local owner of the mirrors); set PORTUNI_WATCH_MIRRORS=0 to disable.
+  // Design: docs/superpowers/specs/2026-06-28-deterministic-file-state-design.md.
+  const watcher = startMirrorWatcher(process.env.PORTUNI_WATCH_MIRRORS !== "0");
+
   // Refresh every registered mirror's harness configs so any .mcp.json
   // pointing at an older random port / rotated token picks up the
   // current PORT + PORTUNI_AUTH_TOKEN. Fire-and-forget *after* the HTTP
@@ -120,6 +128,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (): Promise<void> => {
     try {
+      watcher?.stop();
       await handle.shutdown();
     } finally {
       process.exit(0);
