@@ -90,7 +90,6 @@ export async function handleSandboxProfileByCwd(
       profile: buildSeatbeltProfile(r.scope),
       portuni_root: r.scope.portuniRoot,
       home_mirror: r.scope.homeMirror,
-      neighbor_mirrors: r.scope.neighborMirrors,
     });
   } catch (err) {
     respondError(res, `${req.method} ${url.pathname}`, err);

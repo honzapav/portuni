@@ -1,7 +1,7 @@
 // Wire-level contract for GET /nodes/:id/sandbox-profile — the endpoint
 // the desktop app calls before spawning a terminal, to wrap the agent in
-// a Seatbelt profile matching the node's scope (home mirror rw, depth-1
-// neighbor mirrors ro, rest of PORTUNI_ROOT denied).
+// a Seatbelt profile matching the node's scope (home mirror rw,
+// rest of PORTUNI_ROOT denied; neighbors are staged under .portuni-scope/).
 
 // Pre-wire the server port BEFORE importing anything from src/ (the
 // middleware reads process.env.PORT at module load).
@@ -78,21 +78,23 @@ after(async () => {
 });
 
 describe("GET /nodes/:id/sandbox-profile", () => {
-  it("returns the profile with home rw, neighbor ro, root deny", async () => {
+  it("returns the profile with home rw and root deny (home-only model)", async () => {
     const res = await fetch(`${BASE}/nodes/${projId}/sandbox-profile`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as {
       profile: string;
       portuni_root: string;
       home_mirror: string;
-      neighbor_mirrors: string[];
     };
     assert.ok(body.home_mirror.endsWith(join("acme", "projects", "proj")));
-    assert.equal(body.neighbor_mirrors.length, 1);
     assert.ok(body.profile.startsWith("(version 1)"));
     assert.ok(body.profile.includes(`(allow file-read* file-write* (subpath "${body.home_mirror}"))`));
-    assert.ok(body.profile.includes(`(allow file-read* (subpath "${body.neighbor_mirrors[0]}"))`));
     assert.ok(body.profile.includes(`(deny file-read* file-write* (subpath "${body.portuni_root}"))`));
+    // No standalone neighbor read-allow lines — neighbors go through staging.
+    const neighborReadLines = body.profile.split("\n").filter(
+      (l) => l.startsWith("(allow file-read* (subpath"),
+    );
+    assert.equal(neighborReadLines.length, 0);
   });
 
   it("409 NO_MIRROR when the node has no local mirror", async () => {

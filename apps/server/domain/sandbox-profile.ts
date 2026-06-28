@@ -3,10 +3,15 @@
 // The MCP server gates graph reads per session scope; this module mirrors
 // the same semantics on the filesystem for ANY agent binary (claude,
 // codex, ...) spawned inside a mirror: the kernel allows read+write in
-// the home mirror, read-only in depth-1 neighbor mirrors, and denies the
-// rest of PORTUNI_ROOT. Everything outside the root stays unrestricted
-// (allow default) — this protects the knowledge graph, it is not a
-// general-purpose jail.
+// the home mirror and denies the rest of PORTUNI_ROOT. Everything outside
+// the root stays unrestricted (allow default) — this protects the
+// knowledge graph, it is not a general-purpose jail.
+//
+// Single-source model: neighbor nodes are NOT granted disk access here.
+// Instead, the ScopeReconciler (apps/server/domain/scope-reconciler.ts)
+// copies them into <home>/.portuni-scope/<id>/. Those staged paths live
+// inside the home subpath and are therefore already covered by the home
+// rw rule — no second kernel grant needed.
 //
 // Profile shape and the two gotchas (Seatbelt matches realpaths only;
 // git discovery needs file-read-metadata on the denied root) were
@@ -26,16 +31,19 @@ function sbQuote(path: string): string {
 export interface SandboxScope {
   portuniRoot: string;
   homeMirror: string;
-  neighborMirrors: string[];
 }
 
-// Render the Seatbelt profile. Paths must already be realpath-resolved —
-// Seatbelt matches resolved paths only, so a symlinked path (e.g. /tmp on
-// macOS) would silently never match. resolveSandboxScopeForNode takes
-// care of that; callers composing scopes by hand must do the same.
+// Render the Seatbelt profile. Paths must already be realpath-resolved.
+//
+// Single-source model: the home mirror is the only place the kernel grants
+// read/write. Every OTHER in-scope node is made readable not here but by
+// the ScopeReconciler, which copies it into <home>/.portuni-scope/<id>/
+// (inside the home subpath, so already covered by the home rw rule). This
+// removes the old depth-1 neighbor read-allow, which was a second,
+// spawn-frozen source of truth that drifted from the live session scope.
 //
 // Rule order is load-bearing: Seatbelt gives later rules precedence, so
-// the root deny comes first and the scope allows override it.
+// the root deny comes first and the home allow overrides it.
 export function buildSeatbeltProfile(scope: SandboxScope): string {
   const home = normalize(scope.homeMirror);
   const lines: string[] = [
@@ -47,13 +55,6 @@ export function buildSeatbeltProfile(scope: SandboxScope): string {
     `(allow file-read-metadata (subpath ${sbQuote(normalize(scope.portuniRoot))}))`,
     `(allow file-read* file-write* (subpath ${sbQuote(home)}))`,
   ];
-  const seen = new Set<string>([home]);
-  for (const raw of scope.neighborMirrors) {
-    const m = normalize(raw);
-    if (seen.has(m)) continue;
-    seen.add(m);
-    lines.push(`(allow file-read* (subpath ${sbQuote(m)}))`);
-  }
   return lines.join("\n") + "\n";
 }
 
@@ -67,33 +68,20 @@ async function resolveReal(path: string): Promise<string> {
   }
 }
 
-// Resolve the disk scope for a node: its own mirror plus the mirrors of
-// its depth-1 graph neighbors (same neighborhood seedScopeFromHome uses
-// for the MCP session scope). Returns null when the node has no local
-// mirror — there is nothing to sandbox into.
+// Resolve the disk scope for a node: its own mirror and the portuniRoot
+// that contains it. Returns null when the node has no local mirror —
+// there is nothing to sandbox into.
+//
+// The old depth-1 neighbor query has been removed. Neighbors are now
+// staged under <home>/.portuni-scope/<id>/ by the ScopeReconciler and
+// need no separate kernel grant here.
 export async function resolveSandboxScopeForNode(
-  db: Client,
+  _db: Client,
   userId: string,
   nodeId: string,
 ): Promise<SandboxScope | null> {
   const home = await getMirrorPath(userId, nodeId);
   if (!home) return null;
-
-  const peers = await db.execute({
-    sql: `SELECT DISTINCT
-            CASE WHEN e.source_id = ? THEN e.target_id ELSE e.source_id END AS peer_id
-          FROM edges e
-          WHERE e.source_id = ? OR e.target_id = ?`,
-    args: [nodeId, nodeId, nodeId],
-  });
-
-  const neighborMirrors: string[] = [];
-  for (const row of peers.rows) {
-    const peerId = row.peer_id as string | null;
-    if (!peerId) continue;
-    const mirror = await getMirrorPath(userId, peerId);
-    if (mirror) neighborMirrors.push(await resolveReal(mirror));
-  }
 
   const allMirrors = await listUserMirrors(userId);
   const portuniRoot = resolvePortuniRoot({
@@ -105,7 +93,6 @@ export async function resolveSandboxScopeForNode(
   return {
     portuniRoot: await resolveReal(portuniRoot),
     homeMirror: await resolveReal(home),
-    neighborMirrors,
   };
 }
 

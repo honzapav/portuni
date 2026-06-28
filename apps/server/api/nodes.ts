@@ -715,7 +715,6 @@ export async function handleNodeSandboxProfile(
       profile: buildSeatbeltProfile(scope),
       portuni_root: scope.portuniRoot,
       home_mirror: scope.homeMirror,
-      neighbor_mirrors: scope.neighborMirrors,
     });
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sandbox-profile`, err);
