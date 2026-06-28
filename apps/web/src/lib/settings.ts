@@ -209,3 +209,29 @@ export function loadTerminalLaunch(): string {
 export function saveTerminalLaunch(template: string): void {
   window.localStorage.setItem(TERMINAL_LAUNCH_KEY, template);
 }
+
+// --- Open workspace nodes --------------------------------------------------
+//
+// The set of nodes the user has open in the Práce view, persisted so the
+// working set survives an app restart. Terminals (PTYs) cannot be restored,
+// but the list of open nodes can. Stored as a JSON array of node ids; ids
+// that no longer exist are pruned against the graph on load (in App).
+const OPEN_NODES_KEY = "portuni:openNodes";
+
+export function loadOpenNodes(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(OPEN_NODES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((x): x is string => typeof x === "string");
+  } catch {
+    return [];
+  }
+}
+
+export function saveOpenNodes(ids: readonly string[]): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(OPEN_NODES_KEY, JSON.stringify(ids));
+}

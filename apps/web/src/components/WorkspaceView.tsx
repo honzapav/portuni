@@ -1,11 +1,17 @@
-// 2-column layout shell: terminal tabs on the left, the selected node's
-// detail (the existing DetailPane in embedded mode) on the right. The
-// node-with-sessions list moved into the global Sidebar (workspace
-// view), so this component no longer owns a left column. The
-// detail-collapse state lives here so the layout owns its own UI state.
+// Workspace layout shell. What fills the center depends on the selected node:
+//
+//   - selected node HAS terminals  -> terminal canvas center, detail aside (right)
+//   - selected node has NO terminal -> the node's detail / editor takes center
+//     stage (Option A: a node's "home" is its detail; a terminal is optional)
+//   - nothing selected, something open -> "pick a node" hint
+//   - nothing open at all            -> the search picker (WorkspaceEmpty)
+//
+// The open-node list and its terminal tabs live in the global Sidebar
+// (workspace view); this component owns only the center + right-detail layout
+// and the detail-collapse state.
 
 import { useState } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft } from "lucide-react";
 import type { GraphPayload, GraphNode, NodeDetail } from "../types";
 import type { TerminalSession } from "../lib/sessions";
 import type { Theme } from "../lib/theme";
@@ -27,8 +33,12 @@ type Props = {
   onSelectNode: (id: string | null) => void;
   activeSessionIdByNode: Record<string, string>;
   onCloseSession: (sessionId: string) => void;
-  onOpenSessionFromPicker: (node: GraphNode) => void;
-  // Detail data for the right column. Fetched in App.tsx whenever
+  // Open a node (no terminal) from the empty-state picker.
+  onOpenNodeFromPicker: (node: GraphNode) => void;
+  // How many nodes are open, so the empty-state picker only shows when the
+  // workspace is truly empty (a node can be open without any session).
+  openNodeCount: number;
+  // Detail data for the selected node. Fetched in App.tsx whenever
   // selectedNodeId changes.
   nodeDetail: NodeDetail | null;
   nodeDetailLoading: boolean;
@@ -40,7 +50,7 @@ type Props = {
   // edit / lifecycle / sync flows all funnel through this.
   onMutate: () => Promise<void>;
   // Source-editor wiring. When a file is open for the selected node, the
-  // right column swaps DetailPane for EditorPane (Option C).
+  // detail surface swaps DetailPane for EditorPane (Option C).
   editorFile: { nodeId: string; relPath: string } | null;
   // The single editor instance owned by App and shared across the pane
   // and the fullscreen shell. Lifting it here is what preserves unsaved
@@ -62,7 +72,8 @@ export default function WorkspaceView({
   graph,
   activeSessionIdByNode,
   onCloseSession,
-  onOpenSessionFromPicker,
+  onOpenNodeFromPicker,
+  openNodeCount,
   nodeDetail,
   nodeDetailLoading,
   nodeDetailError,
@@ -89,7 +100,12 @@ export default function WorkspaceView({
     });
   };
 
-  // The editor occupies the right column only when its open file belongs to
+  // Does the selected node actually have a terminal? That decides whether the
+  // center is the terminal canvas (detail to the side) or the detail itself.
+  const selectedHasSessions =
+    selectedNodeId != null && sessions.some((s) => s.nodeId === selectedNodeId);
+
+  // The editor occupies the detail surface only when its open file belongs to
   // the currently-selected node AND we're not in fullscreen. When fullscreen,
   // App renders EditorFullscreen instead and the pane must not mount a second
   // editor shell (that would double-render the shared instance's body).
@@ -99,83 +115,103 @@ export default function WorkspaceView({
     selectedNodeId != null &&
     editorFile.nodeId === selectedNodeId;
 
+  // The detail surface (DetailPane, or EditorPane when a file is open),
+  // rendered either center-stage (no terminal) or in the right aside (with a
+  // terminal). `collapsible` adds the collapse chevron used only in the aside.
+  const detailSurface = (collapsible: boolean) =>
+    showEditor && editorFile ? (
+      <EditorPane
+        editor={editor}
+        relPath={editorFile.relPath}
+        mode={editorMode}
+        onModeChange={onEditorModeChange}
+        onClose={onCloseEditor}
+        onExpand={onExpandEditor}
+      />
+    ) : (
+      <DetailPane
+        node={nodeDetail}
+        graph={graph}
+        loading={nodeDetailLoading}
+        error={nodeDetailError}
+        onSelect={(id) => onSelectNode(id)}
+        canGoBack={false}
+        terminalLaunch={terminalLaunch}
+        onBack={() => {
+          // No-op: workspace doesn't keep a back-stack like graph does.
+        }}
+        onMutate={onMutate}
+        agentCommand={agentCommand}
+        onOpenTerminal={onOpenTerminal}
+        onOpenFile={onOpenFile}
+        embedded
+        onCollapse={collapsible ? toggleDetail : undefined}
+      />
+    );
+
   return (
     <div className="flex h-full w-full overflow-hidden bg-[var(--color-bg)]">
-      <main className="flex min-w-0 flex-1 flex-col">
-        {sessions.length === 0 ? (
-          <WorkspaceEmpty graph={graph} onPick={(n) => onOpenSessionFromPicker(n)} />
-        ) : (
-          // TerminalTabs receives every live session and decides
-          // internally which pane is visible. Mounting all panes across
-          // node switches keeps each xterm's scrollback intact — see
-          // the comment at the top of TerminalTabs.tsx. Per-node tab
-          // controls (select / close / new) live in the global Sidebar
-          // (workspace view) now, not in this component.
-          <TerminalTabs
-            sessions={sessions}
-            selectedNodeId={selectedNodeId}
-            activeSessionIdByNode={activeSessionIdByNode}
-            onCloseSession={onCloseSession}
-            theme={theme}
-          />
+      <main className="relative flex min-w-0 flex-1 flex-col">
+        {/*
+          Terminal canvas. Mounted whenever ANY session exists so every
+          xterm's scrollback survives switching to a terminal-less node
+          (see the comment atop TerminalTabs.tsx); only VISIBLE when the
+          selected node actually has sessions.
+        */}
+        {sessions.length > 0 && (
+          <div
+            className={selectedHasSessions ? "absolute inset-0" : "hidden"}
+            aria-hidden={!selectedHasSessions}
+          >
+            <TerminalTabs
+              sessions={sessions}
+              selectedNodeId={selectedNodeId}
+              activeSessionIdByNode={activeSessionIdByNode}
+              onCloseSession={onCloseSession}
+              theme={theme}
+            />
+          </div>
         )}
-      </main>
-      {detailVisible ? (
-        <aside className="flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)]">
-          {showEditor && editorFile ? (
-            <EditorPane
-              editor={editor}
-              relPath={editorFile.relPath}
-              mode={editorMode}
-              onModeChange={onEditorModeChange}
-              onClose={onCloseEditor}
-              onExpand={onExpandEditor}
-            />
-          ) : selectedNodeId ? (
-            // Collapse chevron is rendered inside DetailPane's header
-            // (left side) so it doesn't overlap the Upravit button.
-            <DetailPane
-              node={nodeDetail}
-              graph={graph}
-              loading={nodeDetailLoading}
-              error={nodeDetailError}
-              onSelect={(id) => onSelectNode(id)}
-              canGoBack={false}
-              terminalLaunch={terminalLaunch}
-              onBack={() => {
-                // No-op: workspace doesn't keep a back-stack like graph does.
-              }}
-              onMutate={onMutate}
-              agentCommand={agentCommand}
-              onOpenTerminal={onOpenTerminal}
-              onOpenFile={onOpenFile}
-              embedded
-              onCollapse={toggleDetail}
-            />
-          ) : (
-            <div className="relative flex h-full items-center justify-center px-4 text-center text-[13px] text-[var(--color-text-dim)]">
-              <button
-                onClick={toggleDetail}
-                title="Skrýt detail"
-                aria-label="Skrýt detail"
-                className="absolute left-2 top-2 flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
-              >
-                <ChevronRight size={14} />
-              </button>
-              Vyber uzel vlevo nebo otevři terminál.
+
+        {/* Option A: a selected node with no terminal shows its detail /
+            files (or the editor) center-stage, in a readable column. */}
+        {!selectedHasSessions && selectedNodeId && (
+          <div className="absolute inset-0 flex justify-center">
+            <div className="flex h-full w-full max-w-[920px] flex-col border-x border-[var(--color-border)]">
+              {detailSurface(false)}
             </div>
-          )}
-        </aside>
-      ) : (
-        <button
-          onClick={toggleDetail}
-          title="Zobrazit detail"
-          aria-label="Zobrazit detail"
-          className="flex h-full w-6 shrink-0 items-center justify-center border-l border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-        >
-          <ChevronLeft size={14} />
-        </button>
-      )}
+          </div>
+        )}
+
+        {/* Nothing selected. Show the picker only when the workspace is truly
+            empty; otherwise nudge the user to pick from the left. */}
+        {!selectedNodeId &&
+          (openNodeCount === 0 ? (
+            <WorkspaceEmpty graph={graph} onPick={(n) => onOpenNodeFromPicker(n)} />
+          ) : (
+            <div className="flex h-full items-center justify-center text-[13px] text-[var(--color-text-dim)]">
+              Vyber uzel vlevo.
+            </div>
+          ))}
+      </main>
+
+      {/* Right detail aside -- only when a terminal occupies the center. For a
+          terminal-less node the detail IS the center, so there's no aside. */}
+      {selectedHasSessions &&
+        (detailVisible ? (
+          <aside className="flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)]">
+            {detailSurface(true)}
+          </aside>
+        ) : (
+          <button
+            onClick={toggleDetail}
+            title="Zobrazit detail"
+            aria-label="Zobrazit detail"
+            className="flex h-full w-6 shrink-0 items-center justify-center border-l border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+          >
+            <ChevronLeft size={14} />
+          </button>
+        ))}
     </div>
   );
 }

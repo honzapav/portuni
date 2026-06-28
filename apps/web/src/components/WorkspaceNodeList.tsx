@@ -1,36 +1,34 @@
-// Left column of the workspace view. Lists every node that currently has
-// at least one PTY session, in the order the first session was created.
-// A node disappears the instant its last session is closed (no pinning
-// in v1 — see spec).
+// Left column of the workspace view. Lists every OPEN node -- whether or not
+// it has a terminal -- in open-first order (see deriveWorkspaceNodeRows). A
+// node stays until it is explicitly closed; opening a terminal is optional.
 //
-// When a node is selected, its sessions expand inline as sub-rows so the
-// user can pick which session to view, close one, or open a new one
-// without leaving the left column. Previously these controls lived in a
-// separate tab strip at the top of the middle column; consolidating
-// here means the middle column is just the terminal canvas.
-import { Plus, X } from "lucide-react";
+// Every node's sessions are shown at once as sub-rows (not only the selected
+// node's), so any terminal in any node is a single click away without first
+// selecting its parent. Each session tab can be renamed inline; the default
+// label is "#<n>".
+import { useState } from "react";
+import { Plus, X, Pencil, Check } from "lucide-react";
 import {
-  countSessionsByNode,
   nodeHasWorkingAgent,
   sessionIsAgentWorking,
+  sessionDisplayName,
   type TerminalSession,
+  type WorkspaceNodeRow,
 } from "../lib/sessions";
 import { useNowTick } from "../lib/use-now-tick";
 
-type NodeRow = {
-  id: string;
-  name: string;
-  type: string;
-};
-
 type Props = {
+  // The open set: open nodes ∪ nodes-with-sessions, already ordered.
+  rows: WorkspaceNodeRow[];
   sessions: TerminalSession[];
   selectedNodeId: string | null;
   activeSessionIdByNode: Record<string, string>;
   onSelectNode: (id: string) => void;
   onSelectSession: (nodeId: string, sessionId: string) => void;
   onCloseSession: (id: string) => void;
+  onCloseNode: (id: string) => void;
   onNewSession: (nodeId: string) => void;
+  onRenameSession: (sessionId: string, label: string) => void;
 };
 
 function nodeTypeVar(type: string): string {
@@ -39,33 +37,40 @@ function nodeTypeVar(type: string): string {
 }
 
 export default function WorkspaceNodeList({
+  rows,
   sessions,
   selectedNodeId,
   activeSessionIdByNode,
   onSelectNode,
   onSelectSession,
   onCloseSession,
+  onCloseNode,
   onNewSession,
+  onRenameSession,
 }: Props) {
   // Tick locally -- only this list needs a clock for the activity dots.
   // In App the same interval used to re-render the entire tree every second.
   const now = useNowTick();
-  const counts = countSessionsByNode(sessions);
 
-  // Stable order: first-seen wins. We can derive this from sessions[]
-  // because they're appended chronologically.
-  const seen = new Set<string>();
-  const rows: NodeRow[] = [];
-  for (const s of sessions) {
-    if (seen.has(s.nodeId)) continue;
-    seen.add(s.nodeId);
-    rows.push({ id: s.nodeId, name: s.nodeName, type: s.nodeType });
-  }
+  // The session being renamed inline (its id) and the working draft. Only
+  // one tab is editable at a time.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+
+  const startRename = (s: TerminalSession) => {
+    setEditingId(s.id);
+    setDraft(s.label ?? "");
+  };
+  const commitRename = () => {
+    if (editingId) onRenameSession(editingId, draft);
+    setEditingId(null);
+  };
+  const cancelRename = () => setEditingId(null);
 
   if (rows.length === 0) {
     return (
       <div className="px-4 py-6 text-[13px] text-[var(--color-text-dim)]">
-        Žádné aktivní sessions.
+        Žádné otevřené uzly.
       </div>
     );
   }
@@ -73,54 +78,151 @@ export default function WorkspaceNodeList({
   return (
     <ul className="flex flex-col gap-0.5 px-2 py-2">
       {rows.map((r) => {
-        const count = counts.get(r.id) ?? 0;
+        const nodeSessions = sessions.filter((s) => s.nodeId === r.id);
         const active = nodeHasWorkingAgent(sessions, r.id, now);
         const selected = r.id === selectedNodeId;
-        const nodeSessions = selected
-          ? sessions.filter((s) => s.nodeId === r.id)
-          : [];
         const activeSessionId = activeSessionIdByNode[r.id] ?? null;
         return (
           <li key={r.id}>
-            <button
+            {/* Node row. Outer <button> selects the node; the + / × controls
+                are role=button spans so we don't nest <button> (invalid). */}
+            {/* biome-ignore lint/a11y/useSemanticElements: nested <button> is invalid HTML; role+tabIndex is the documented workaround */}
+            <div
+              role="button"
+              tabIndex={0}
               onClick={() => onSelectNode(r.id)}
-              className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors ${
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onSelectNode(r.id);
+                }
+              }}
+              className={`group flex w-full cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors ${
                 selected
                   ? "bg-[var(--color-surface)] text-[var(--color-text)]"
                   : "text-[var(--color-text-muted)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
               }`}
             >
               <span
-                className="inline-block h-1.5 w-1.5 rounded-full"
+                className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
                 style={{ background: nodeTypeVar(r.type) }}
                 aria-hidden
               />
               <span className="flex-1 truncate">{r.name}</span>
-              <span className="font-mono text-[11px] text-[var(--color-text-dim)]">{count}</span>
               <span
                 role="img"
-                className={`inline-block h-1.5 w-1.5 rounded-full ${active ? "bg-emerald-500" : "bg-amber-500/70"}`}
+                className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${active ? "bg-emerald-500" : "bg-amber-500/70"}`}
                 title={active ? "Agent pracuje" : "Idle"}
                 aria-label={active ? "active" : "idle"}
               />
-            </button>
-            {selected && nodeSessions.length > 0 ? (
-              <ul className="ml-3 flex flex-col gap-0.5 border-l border-[var(--color-border)] pl-1 py-0.5">
+              {/* biome-ignore lint/a11y/useSemanticElements: see note above */}
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onNewSession(r.id);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onNewSession(r.id);
+                  }
+                }}
+                title="Nový terminál pro tento uzel"
+                aria-label="Nový terminál"
+                className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--color-text-dim)] opacity-0 transition-opacity hover:bg-[var(--color-bg)] hover:text-[var(--color-text)] group-hover:opacity-100"
+              >
+                <Plus size={11} />
+              </span>
+              {/* biome-ignore lint/a11y/useSemanticElements: see note above */}
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCloseNode(r.id);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onCloseNode(r.id);
+                  }
+                }}
+                title="Zavřít uzel (a jeho terminály)"
+                aria-label="Zavřít uzel"
+                className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--color-text-dim)] opacity-0 transition-opacity hover:bg-[var(--color-bg)] hover:text-[var(--color-text)] group-hover:opacity-100"
+              >
+                <X size={11} />
+              </span>
+            </div>
+
+            {nodeSessions.length > 0 ? (
+              <ul className="ml-3 flex flex-col gap-0.5 border-l border-[var(--color-border)] py-0.5 pl-1">
                 {nodeSessions.map((s, idx) => {
                   const sessActive = sessionIsAgentWorking(s, now);
-                  const sessSelected = s.id === activeSessionId;
+                  // Highlight the tab that is actually on screen: the active
+                  // session of the currently-selected node.
+                  const sessVisible = selected && s.id === activeSessionId;
+                  if (editingId === s.id) {
+                    return (
+                      <li key={s.id} className="flex items-center gap-1 px-2 py-1">
+                        <input
+                          autoFocus
+                          value={draft}
+                          onChange={(e) => setDraft(e.target.value)}
+                          onBlur={commitRename}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              commitRename();
+                            } else if (e.key === "Escape") {
+                              e.preventDefault();
+                              cancelRename();
+                            }
+                          }}
+                          placeholder={`#${idx + 1}`}
+                          className="min-w-0 flex-1 rounded border border-[var(--color-accent-dim)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[12px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
+                        />
+                        {/* Mousedown (not click) so it fires before the input's blur. */}
+                        <button
+                          type="button"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            commitRename();
+                          }}
+                          title="Uložit název"
+                          aria-label="Uložit název"
+                          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+                        >
+                          <Check size={11} />
+                        </button>
+                      </li>
+                    );
+                  }
                   return (
                     <li key={s.id} className="flex">
-                      <button
-                        type="button"
+                      {/* biome-ignore lint/a11y/useSemanticElements: nested <button> is invalid HTML; role+tabIndex is the documented workaround */}
+                      <div
+                        role="button"
+                        tabIndex={0}
                         onClick={() => onSelectSession(r.id, s.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            onSelectSession(r.id, s.id);
+                          }
+                        }}
+                        onDoubleClick={() => startRename(s)}
                         style={
-                          sessSelected
+                          sessVisible
                             ? { boxShadow: "inset 2px 0 0 0 var(--color-accent)" }
                             : undefined
                         }
-                        className={`group flex flex-1 items-center gap-2 rounded-md px-2 py-1 text-left text-[12.5px] transition-colors ${
-                          sessSelected
+                        className={`group flex flex-1 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-[12.5px] transition-colors ${
+                          sessVisible
                             ? "bg-[var(--color-surface)] font-medium text-[var(--color-text)]"
                             : "text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
                         }`}
@@ -129,31 +231,44 @@ export default function WorkspaceNodeList({
                           role="img"
                           aria-label={sessActive ? "active" : "idle"}
                           title={sessActive ? "Agent pracuje" : "Idle"}
-                          className={`inline-block h-1.5 w-1.5 rounded-full ${sessActive ? "bg-emerald-500" : "bg-amber-500/70"}`}
+                          className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${sessActive ? "bg-emerald-500" : "bg-amber-500/70"}`}
                         />
                         <span
-                          className={`font-mono text-[11.5px] ${
-                            sessSelected ? "font-semibold text-[var(--color-accent)]" : ""
-                          }`}
+                          className={`flex-1 truncate text-[12px] ${
+                            s.label
+                              ? ""
+                              : "font-mono"
+                          } ${sessVisible ? "text-[var(--color-text)]" : ""}`}
                         >
-                          #{idx + 1}
+                          {sessionDisplayName(s, idx)}
                         </span>
-                        <span className="flex-1" />
-                        {/*
-                          The X icon is rendered inline so we don't need a
-                          nested <button>. We split out a span-with-role
-                          for the click target — same a11y pattern used in
-                          TerminalTabs' old strip — so the outer button's
-                          onClick (select session) and the inner click
-                          (close session) are distinct.
-                        */}
-                        {/* biome-ignore lint/a11y/useSemanticElements: nested <button> inside <button> is invalid HTML; role+tabIndex is the documented workaround */}
+                        {/* biome-ignore lint/a11y/useSemanticElements: see note above */}
                         <span
                           role="button"
                           tabIndex={0}
                           onClick={(e) => {
                             e.stopPropagation();
-                            e.preventDefault();
+                            startRename(s);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              startRename(s);
+                            }
+                          }}
+                          title="Přejmenovat"
+                          aria-label="Přejmenovat terminál"
+                          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--color-text-dim)] opacity-0 transition-opacity hover:bg-[var(--color-bg)] hover:text-[var(--color-text)] group-hover:opacity-100"
+                        >
+                          <Pencil size={10} />
+                        </span>
+                        {/* biome-ignore lint/a11y/useSemanticElements: see note above */}
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(e) => {
+                            e.stopPropagation();
                             onCloseSession(s.id);
                           }}
                           onKeyDown={(e) => {
@@ -163,27 +278,16 @@ export default function WorkspaceNodeList({
                               onCloseSession(s.id);
                             }
                           }}
-                          title="Zavřít session"
-                          aria-label="Zavřít session"
-                          className="inline-flex h-4 w-4 items-center justify-center rounded text-[var(--color-text-dim)] opacity-0 transition-opacity hover:bg-[var(--color-bg)] hover:text-[var(--color-text)] group-hover:opacity-100"
+                          title="Zavřít terminál"
+                          aria-label="Zavřít terminál"
+                          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--color-text-dim)] opacity-0 transition-opacity hover:bg-[var(--color-bg)] hover:text-[var(--color-text)] group-hover:opacity-100"
                         >
                           <X size={10} />
                         </span>
-                      </button>
+                      </div>
                     </li>
                   );
                 })}
-                <li>
-                  <button
-                    type="button"
-                    onClick={() => onNewSession(r.id)}
-                    className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
-                    title="Nová session pro tento uzel"
-                  >
-                    <Plus size={12} />
-                    Nová session
-                  </button>
-                </li>
               </ul>
             ) : null}
           </li>

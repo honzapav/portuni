@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Sidebar, { type AppView } from "./components/Sidebar";
 import DetailPane from "./components/DetailPane";
 import SettingsPage from "./components/SettingsPage";
@@ -17,6 +17,8 @@ import {
   removeSession,
   markActivity,
   markForegroundBusy,
+  renameSession,
+  deriveWorkspaceNodeRows,
 } from "./lib/sessions";
 import { isTauri } from "./lib/backend-url";
 import { useSyncPending } from "./lib/use-sync-pending";
@@ -35,6 +37,8 @@ import {
   saveAgentCommand,
   loadTerminalLaunch,
   saveTerminalLaunch,
+  loadOpenNodes,
+  saveOpenNodes,
 } from "./lib/settings";
 
 export default function App() {
@@ -287,11 +291,74 @@ export default function App() {
   const [sessions, setSessions] = useState<TerminalSession[]>([]);
   const [selectedWorkspaceNodeId, setSelectedWorkspaceNodeId] = useState<string | null>(null);
   const [activeSessionIdByNode, setActiveSessionIdByNode] = useState<Record<string, string>>({});
+  // The set of nodes open in the workspace, decoupled from sessions: a node
+  // can be open (and switched to) without ever launching a terminal, and it
+  // stays open after its last terminal closes. Persisted across restarts and
+  // pruned against the graph once it loads (the terminals themselves are
+  // never restored -- a PTY does not survive a restart).
+  const [openNodeIds, setOpenNodeIds] = useState<string[]>(() => loadOpenNodes());
+  useEffect(() => {
+    saveOpenNodes(openNodeIds);
+  }, [openNodeIds]);
+
+  // Selecting a session jumps straight to it: focus its node AND make it the
+  // node's active session. That is what lets every tab in the left column be
+  // one click away, without selecting the parent node first.
   const workspaceSelectSession = useCallback(
-    (nodeId: string, sessionId: string) =>
-      setActiveSessionIdByNode((p) => ({ ...p, [nodeId]: sessionId })),
+    (nodeId: string, sessionId: string) => {
+      setSelectedWorkspaceNodeId(nodeId);
+      setActiveSessionIdByNode((p) => ({ ...p, [nodeId]: sessionId }));
+    },
     [],
   );
+
+  // Open a node in the workspace WITHOUT launching a terminal -- the core of
+  // "open more nodes and switch between them". Idempotent; focuses the node
+  // and flips to the workspace view.
+  const openNode = useCallback((nodeId: string) => {
+    setOpenNodeIds((prev) => (prev.includes(nodeId) ? prev : [...prev, nodeId]));
+    setSelectedWorkspaceNodeId(nodeId);
+    setView("workspace");
+  }, []);
+
+  // Select a node in the workspace; selecting a not-yet-open node opens it
+  // (so navigating via the detail pane grows the open set instead of leaving
+  // a selected-but-unlisted ghost). Null clears the selection.
+  const workspaceSelectNode = useCallback(
+    (id: string | null) => {
+      if (id == null) {
+        setSelectedWorkspaceNodeId(null);
+        return;
+      }
+      openNode(id);
+    },
+    [openNode],
+  );
+
+  // The workspace's left-column rows: open nodes ∪ nodes-with-sessions,
+  // de-duplicated and ordered open-first. Name/type resolved from the graph
+  // for nodes without a live session.
+  const workspaceRows = useMemo(
+    () =>
+      deriveWorkspaceNodeRows(openNodeIds, sessions, (id) => {
+        const n = graph?.nodes.find((g) => g.id === id);
+        return n ? { name: n.name, type: n.type } : undefined;
+      }),
+    [openNodeIds, sessions, graph],
+  );
+
+  // Prune persisted open ids and the workspace selection against the graph
+  // once it loads, so a node deleted out from under a stale id disappears
+  // instead of rendering a ghost row.
+  useEffect(() => {
+    if (!graph) return;
+    const exists = new Set(graph.nodes.map((n) => n.id));
+    setOpenNodeIds((prev) => {
+      const next = prev.filter((id) => exists.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+    setSelectedWorkspaceNodeId((prev) => (prev && !exists.has(prev) ? null : prev));
+  }, [graph]);
   const openingSessionNodeIdsRef = useRef<Set<string>>(new Set());
   // Set when the create-node modal is opened from the workspace view, so that
   // on success we also open a terminal session for the freshly created node
@@ -558,12 +625,10 @@ export default function App() {
             }
             return next;
           });
-          // selectedWorkspaceNodeId may now point at a node with zero
-          // sessions. WorkspaceNodeList only renders nodes-with-sessions
-          // so a stale pointer is a render-time no-op for now; Task 9
-          // can clear it explicitly once we have a UX answer for "where
-          // does focus land when the last session for the selected node
-          // dies?".
+          // The node stays open after its last terminal closes (it lives in
+          // openNodeIds now, not only in sessions), so selectedWorkspaceNodeId
+          // remains valid -- the workspace just shows the node's detail
+          // center-stage instead of a terminal. Nothing to clear here.
         });
         // Rust foreground-poll signal (Unix only, ~500 ms cadence).
         // Authoritative "agent computing" indicator: green while a
@@ -597,6 +662,10 @@ export default function App() {
         sandboxProfile: input.sandboxProfile,
       });
       setSessions((prev) => [...prev, session]);
+      // Opening a terminal also opens the node (terminals imply an open node).
+      setOpenNodeIds((prev) =>
+        prev.includes(input.node.id) ? prev : [...prev, input.node.id],
+      );
       setSelectedWorkspaceNodeId(input.node.id);
       setActiveSessionIdByNode((prev) => ({ ...prev, [input.node.id]: session.id }));
       setView("workspace");
@@ -677,13 +746,56 @@ export default function App() {
     });
     // Best-effort: tell the backend the PTY is gone. Errors swallowed --
     // the pty-exit reader thread will clean up its own map entry once
-    // the child SIGHUPs. This is the SOLE pty_kill call site in the app.
+    // the child SIGHUPs. (closeNode kills a node's sessions the same way.)
     void (async () => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("pty_kill", { args: { session_id: sessionId } });
       } catch { /* errors swallowed -- pty-exit thread self-cleans */ }
     })();
+  }, []);
+
+  // Close a node: drop it from the open set and tear down every terminal it
+  // owns (PTYs included). Moves the workspace selection to a neighbouring
+  // open node, or clears it when nothing is left.
+  const closeNode = useCallback(
+    (nodeId: string) => {
+      setOpenNodeIds((prev) => prev.filter((id) => id !== nodeId));
+      setSessions((prev) => {
+        const doomed = prev.filter((s) => s.nodeId === nodeId);
+        if (doomed.length > 0) {
+          void (async () => {
+            try {
+              const { invoke } = await import("@tauri-apps/api/core");
+              for (const s of doomed) {
+                await invoke("pty_kill", { args: { session_id: s.id } }).catch(
+                  () => undefined,
+                );
+              }
+            } catch {
+              /* not running in Tauri */
+            }
+          })();
+        }
+        return prev.filter((s) => s.nodeId !== nodeId);
+      });
+      setActiveSessionIdByNode((prev) => {
+        if (!(nodeId in prev)) return prev;
+        const next = { ...prev };
+        delete next[nodeId];
+        return next;
+      });
+      setSelectedWorkspaceNodeId((prev) => {
+        if (prev !== nodeId) return prev;
+        const remaining = workspaceRows.filter((r) => r.id !== nodeId);
+        return remaining.length > 0 ? remaining[remaining.length - 1].id : null;
+      });
+    },
+    [workspaceRows],
+  );
+
+  const renameSessionTab = useCallback((sessionId: string, label: string) => {
+    setSessions((prev) => renameSession(prev, sessionId, label));
   }, []);
 
   return (
@@ -710,15 +822,18 @@ export default function App() {
           onViewChange={setView}
           onOpenSettings={openSettingsView}
           onCreateNode={handleCreateNodeClick}
-          workspaceBadge={sessions.length}
+          workspaceBadge={workspaceRows.length}
+          workspaceRows={workspaceRows}
           workspaceSessions={sessions}
           workspaceSelectedNodeId={selectedWorkspaceNodeId}
           workspaceActiveSessionIdByNode={activeSessionIdByNode}
-          onWorkspaceSelectNode={setSelectedWorkspaceNodeId}
+          onWorkspaceSelectNode={workspaceSelectNode}
           onWorkspaceSelectSession={workspaceSelectSession}
           onWorkspaceCloseSession={closeSession}
+          onWorkspaceCloseNode={closeNode}
           onWorkspaceNewSession={workspaceNewSession}
-          onWorkspaceOpenTerminalForNode={workspaceNewSession}
+          onWorkspaceRenameSession={renameSessionTab}
+          onWorkspaceOpenNode={openNode}
           onWorkspaceCreateNode={workspaceCreateNode}
         />
       )}
@@ -800,12 +915,11 @@ export default function App() {
               sessions={sessions}
               theme={theme}
               selectedNodeId={selectedWorkspaceNodeId}
-              onSelectNode={setSelectedWorkspaceNodeId}
+              onSelectNode={workspaceSelectNode}
               activeSessionIdByNode={activeSessionIdByNode}
               onCloseSession={closeSession}
-              onOpenSessionFromPicker={(node) => {
-                void openSessionForNodeId(node.id);
-              }}
+              onOpenNodeFromPicker={(node) => openNode(node.id)}
+              openNodeCount={workspaceRows.length}
               nodeDetail={workspaceNodeDetail}
               nodeDetailLoading={workspaceDetailLoading}
               nodeDetailError={workspaceDetailError}
@@ -904,14 +1018,12 @@ export default function App() {
             setCreateModalOpen(false);
             setSelectedId(node.id);
             refetchAll().catch((err) => setGraphError(String(err)));
-            // Opened from the workspace "Nový uzel + terminál" button: also
-            // launch a session for it. Organizations have no terminal, so
-            // only nodes that support one get the auto-open.
+            // Opened from the workspace "vytvoř nový uzel" action: open the
+            // freshly created node in the workspace (no forced terminal --
+            // terminals are optional now, and this works for orgs too).
             if (createFromWorkspaceRef.current) {
               createFromWorkspaceRef.current = false;
-              if (node.type !== "organization") {
-                void openSessionForNodeId(node.id);
-              }
+              openNode(node.id);
             }
           }}
         />

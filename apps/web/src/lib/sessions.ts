@@ -32,6 +32,10 @@ export type TerminalSession = TerminalSessionInput & {
   // false when the shell is at its prompt (idle). Absent when no signal
   // has arrived yet (before the first poll tick, or on non-Unix builds).
   foregroundBusy?: boolean;
+  // User-assigned tab label. Absent until the user renames the session;
+  // the UI falls back to "#<n>" via sessionDisplayName. In-memory only --
+  // a PTY (and therefore its label) does not survive an app restart.
+  label?: string;
 };
 
 const ACTIVITY_THRESHOLD_MS = 1500;
@@ -77,6 +81,37 @@ export function markForegroundBusy(
     return { ...s, foregroundBusy: busy };
   });
   return mutated ? next : (sessions as unknown as TerminalSession[]);
+}
+
+// Set or clear a session's custom tab label. An empty/whitespace label
+// clears it (UI then falls back to the numeric default). Returns the
+// original array reference when nothing changed so React setters
+// short-circuit on identity.
+export function renameSession(
+  sessions: readonly TerminalSession[],
+  id: string,
+  label: string,
+): TerminalSession[] {
+  const trimmed = label.trim();
+  const nextLabel = trimmed.length > 0 ? trimmed : undefined;
+  let mutated = false;
+  const next = sessions.map((s) => {
+    if (s.id !== id) return s;
+    if (s.label === nextLabel) return s;
+    mutated = true;
+    return { ...s, label: nextLabel };
+  });
+  return mutated ? next : (sessions as unknown as TerminalSession[]);
+}
+
+// Display name for a session tab: the user's label if set, else "#<n>"
+// where n is the 1-based position of the session within its node.
+export function sessionDisplayName(
+  session: Pick<TerminalSession, "label">,
+  index: number,
+): string {
+  const label = session.label?.trim();
+  return label && label.length > 0 ? label : `#${index + 1}`;
 }
 
 export function markActivity(
@@ -164,4 +199,46 @@ export function countSessionsByNode(
     out.set(s.nodeId, (out.get(s.nodeId) ?? 0) + 1);
   }
   return out;
+}
+
+// A node shown in the workspace's left column. `id` plus enough to render
+// the row without a second graph lookup at the call site.
+export type WorkspaceNodeRow = { id: string; name: string; type: string };
+
+// The set of nodes shown in the workspace: every explicitly "open" node
+// PLUS every node that has a live session, de-duplicated and ordered
+// open-first then session-only (each by first-seen). Name/type come from a
+// live session when present (always populated) and otherwise from
+// `resolve` (the graph). Ids that resolve to nothing AND have no session
+// are dropped -- e.g. a node deleted out from under a stale persisted id.
+//
+// Decoupling "open" from "has a session" is the whole point: a node can be
+// opened to view/edit without ever launching a terminal, and it stays open
+// after its last terminal closes.
+export function deriveWorkspaceNodeRows(
+  openNodeIds: readonly string[],
+  sessions: readonly TerminalSession[],
+  resolve: (id: string) => { name: string; type: string } | undefined,
+): WorkspaceNodeRow[] {
+  const order: string[] = [];
+  const seen = new Set<string>();
+  const add = (id: string) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    order.push(id);
+  };
+  for (const id of openNodeIds) add(id);
+  for (const s of sessions) add(s.nodeId);
+
+  const rows: WorkspaceNodeRow[] = [];
+  for (const id of order) {
+    const sess = sessions.find((s) => s.nodeId === id);
+    if (sess) {
+      rows.push({ id, name: sess.nodeName, type: sess.nodeType });
+    } else {
+      const r = resolve(id);
+      if (r) rows.push({ id, name: r.name, type: r.type });
+    }
+  }
+  return rows;
 }

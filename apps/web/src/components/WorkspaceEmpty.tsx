@@ -1,6 +1,6 @@
-// Shown when sessions[] is empty. A search box over graph.nodes (minus
-// organisations) so the user can type and pick a node to open a session
-// against. Mirrors the search UX from the sidebar so the muscle memory
+// Shown when the workspace has nothing open. A search box over graph.nodes
+// (all types -- terminals are optional now) so the user can type and pick a
+// node to open. Mirrors the search UX from the sidebar so the muscle memory
 // transfers.
 import { useState } from "react";
 import { Search } from "lucide-react";
@@ -23,26 +23,22 @@ export default function WorkspaceEmpty({ graph, onPick }: Props) {
   const all = graph?.nodes ?? [];
   const matches = q
     ? all
-        .filter((n) => n.type !== "organization")
         .filter(
           (n) =>
             foldForSearch(n.name).includes(q) ||
             foldForSearch(n.description ?? "").includes(q),
         )
         .slice(0, 30)
-    : all
-        .filter((n) => n.type !== "organization")
-        .slice(-15)
-        .reverse();
+    : all.slice(-15).reverse();
 
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-4 p-8">
       <div className="text-[15px] font-medium text-[var(--color-text)]">
-        Vyber uzel a otevři terminál
+        Otevři uzel v Práci
       </div>
       <p className="max-w-[420px] text-center text-[13px] text-[var(--color-text-dim)]">
-        Sessions zůstávají naživu při přepnutí pohledu. Zavři je explicitně,
-        nebo až ukončíš Portuni.
+        Otevři libovolný uzel a pracuj na něm -- terminál je volitelný. Můžeš
+        mít otevřených víc uzlů a přeskakovat mezi nimi.
       </p>
       <div className="relative w-full max-w-[480px]">
         <Search

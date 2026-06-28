@@ -11,6 +11,9 @@ import {
   isAgentCommand,
   sessionIsAgentWorking,
   nodeHasWorkingAgent,
+  renameSession,
+  sessionDisplayName,
+  deriveWorkspaceNodeRows,
 } from "../apps/web/src/lib/sessions.js";
 
 const baseNode = {
@@ -167,5 +170,80 @@ describe("agent activity gating", () => {
     const sessions = [a];
     const result = markForegroundBusy(sessions, a.id, true);
     assert.equal(result, sessions, "no-op must return the same array reference");
+  });
+});
+
+describe("session tab labels", () => {
+  it("renameSession sets a trimmed label on the target session only", () => {
+    const a = createSession(baseNode, 1);
+    const b = createSession(baseNode, 2);
+    const out = renameSession([a, b], a.id, "  Build  ");
+    assert.equal(out.find((s) => s.id === a.id)!.label, "Build");
+    assert.equal(out.find((s) => s.id === b.id)!.label, undefined);
+  });
+
+  it("renameSession with an empty/whitespace label clears it", () => {
+    const a = { ...createSession(baseNode, 1), label: "Old" };
+    const out = renameSession([a], a.id, "   ");
+    assert.equal(out[0].label, undefined);
+  });
+
+  it("renameSession returns the same array reference when unchanged", () => {
+    const a = { ...createSession(baseNode, 1), label: "Same" };
+    const sessions = [a];
+    assert.equal(renameSession(sessions, a.id, "Same"), sessions);
+    assert.equal(renameSession(sessions, "nope", "x"), sessions);
+  });
+
+  it("sessionDisplayName falls back to #<n> (1-based) and prefers a label", () => {
+    assert.equal(sessionDisplayName({ label: undefined }, 0), "#1");
+    assert.equal(sessionDisplayName({ label: "  " }, 2), "#3");
+    assert.equal(sessionDisplayName({ label: "Deploy" }, 5), "Deploy");
+  });
+});
+
+describe("deriveWorkspaceNodeRows", () => {
+  const resolve = (id: string) =>
+    (
+      {
+        n1: { name: "One", type: "project" },
+        n2: { name: "Two", type: "area" },
+        org: { name: "Org", type: "organization" },
+      } as Record<string, { name: string; type: string }>
+    )[id];
+
+  it("unions open nodes and session nodes, open-first, de-duplicated", () => {
+    const s = createSession(
+      { ...baseNode, nodeId: "n2", nodeName: "Two", nodeType: "area" },
+      1,
+    );
+    const rows = deriveWorkspaceNodeRows(["n1"], [s], resolve);
+    assert.deepEqual(rows.map((r) => r.id), ["n1", "n2"]);
+    assert.deepEqual(rows.map((r) => r.name), ["One", "Two"]);
+  });
+
+  it("prefers session-provided name/type over the resolver", () => {
+    const s = createSession(
+      { ...baseNode, nodeId: "n1", nodeName: "Live", nodeType: "process" },
+      1,
+    );
+    const rows = deriveWorkspaceNodeRows(["n1"], [s], resolve);
+    assert.deepEqual(rows, [{ id: "n1", name: "Live", type: "process" }]);
+  });
+
+  it("opens nodes with no session, including organizations, via the resolver", () => {
+    const rows = deriveWorkspaceNodeRows(["org"], [], resolve);
+    assert.deepEqual(rows, [{ id: "org", name: "Org", type: "organization" }]);
+  });
+
+  it("drops ids that resolve to nothing and have no session", () => {
+    const rows = deriveWorkspaceNodeRows(["ghost"], [], resolve);
+    assert.deepEqual(rows, []);
+  });
+
+  it("does not duplicate a node that is both open and has a session", () => {
+    const s = createSession({ ...baseNode, nodeId: "n1" }, 1);
+    const rows = deriveWorkspaceNodeRows(["n1"], [s], resolve);
+    assert.equal(rows.length, 1);
   });
 });

@@ -5,7 +5,7 @@ import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
 import type { Theme } from "../lib/theme";
 import { foldForSearch } from "../lib/normalize";
-import type { TerminalSession } from "../lib/sessions";
+import type { TerminalSession, WorkspaceNodeRow } from "../lib/sessions";
 import WorkspaceNodeList from "./WorkspaceNodeList";
 
 export type AppView = "graph" | "workspace" | "settings";
@@ -33,25 +33,28 @@ type Props = {
   // graph view so it's the first action a user sees.
   onCreateNode: () => void;
   workspaceBadge?: number;
-  // Workspace session state -- the left column of the workspace view
-  // (the list of nodes-with-sessions + their tabs) lives here so the
-  // layout collapses to "left column / terminal / right detail" without
-  // a separate aside in WorkspaceView.
+  // Workspace state -- the left column of the workspace view (the list of
+  // open nodes + their terminal tabs) lives here so the layout collapses to
+  // "left column / terminal / right detail" without a separate aside in
+  // WorkspaceView. `workspaceRows` is the open set (open nodes ∪ nodes with
+  // sessions); `workspaceSessions` carries the per-node terminals.
+  workspaceRows: WorkspaceNodeRow[];
   workspaceSessions: TerminalSession[];
   workspaceSelectedNodeId: string | null;
   workspaceActiveSessionIdByNode: Record<string, string>;
   onWorkspaceSelectNode: (id: string) => void;
   onWorkspaceSelectSession: (nodeId: string, sessionId: string) => void;
   onWorkspaceCloseSession: (sessionId: string) => void;
+  onWorkspaceCloseNode: (nodeId: string) => void;
   onWorkspaceNewSession: (nodeId: string) => void;
-  // Open a terminal for an EXISTING node (the primary workspace action).
-  // Driven by the inline search-first picker at the top of the workspace
-  // column -- type a node name, click it, terminal opens. No modal hop.
-  onWorkspaceOpenTerminalForNode: (nodeId: string) => void;
-  // Create a brand-new node and immediately open a terminal session for it.
-  // The graph view has its own "Nový uzel" button; the workspace view needs
-  // its own. Secondary to the search-first picker -- rendered as a quiet
-  // "Nebo vytvoř nový uzel…" link below the search field.
+  onWorkspaceRenameSession: (sessionId: string, label: string) => void;
+  // Open an EXISTING node in the workspace (no terminal required -- the
+  // primary workspace action). Driven by the inline search-first picker at
+  // the top of the workspace column: type a node name, click it, it opens.
+  onWorkspaceOpenNode: (nodeId: string) => void;
+  // Create a brand-new node and open it in the workspace. The graph view has
+  // its own "Nový uzel" button; the workspace view needs its own. Secondary
+  // to the search-first picker -- a quiet "Nebo vytvoř nový uzel…" link.
   onWorkspaceCreateNode: () => void;
 };
 
@@ -108,14 +111,17 @@ function Sidebar({
   onOpenSettings,
   onCreateNode,
   workspaceBadge,
+  workspaceRows,
   workspaceSessions,
   workspaceSelectedNodeId,
   workspaceActiveSessionIdByNode,
   onWorkspaceSelectNode,
   onWorkspaceSelectSession,
   onWorkspaceCloseSession,
+  onWorkspaceCloseNode,
   onWorkspaceNewSession,
-  onWorkspaceOpenTerminalForNode,
+  onWorkspaceRenameSession,
+  onWorkspaceOpenNode,
   onWorkspaceCreateNode,
 }: Props) {
   return (
@@ -179,18 +185,21 @@ function Sidebar({
         <div className="flex min-h-0 flex-1 flex-col">
           <WorkspaceActions
             graph={graph}
-            onOpenTerminalForNode={onWorkspaceOpenTerminalForNode}
+            onOpenNode={onWorkspaceOpenNode}
             onCreateNode={onWorkspaceCreateNode}
           />
           <div className="flex-1 overflow-y-auto scroll-thin">
             <WorkspaceNodeList
+              rows={workspaceRows}
               sessions={workspaceSessions}
               selectedNodeId={workspaceSelectedNodeId}
               activeSessionIdByNode={workspaceActiveSessionIdByNode}
               onSelectNode={onWorkspaceSelectNode}
               onSelectSession={onWorkspaceSelectSession}
               onCloseSession={onWorkspaceCloseSession}
+              onCloseNode={onWorkspaceCloseNode}
               onNewSession={onWorkspaceNewSession}
+              onRenameSession={onWorkspaceRenameSession}
             />
           </div>
         </div>
@@ -231,25 +240,25 @@ function Sidebar({
         {view === "graph"
           ? "Kliknutím na uzel otevřete detail. Tažením posunete pohled, kolečkem přibližujete."
           : view === "workspace"
-            ? "Sessions zůstávají naživu při přepnutí pohledu. Cmd+Q ukončí všechny."
+            ? "Otevři víc uzlů a přeskakuj mezi nimi. Terminály zůstávají naživu při přepnutí pohledu."
             : "Změny se ukládají automaticky."}
       </div>
     </aside>
   );
 }
 
-// Search-first workspace actions. The primary action is opening a terminal
-// for an EXISTING node: type a name, the list filters inline, click (or
-// Enter) opens the session -- no modal hop. ⌘T focuses the field from
-// anywhere in the workspace. Creating a brand-new node is the secondary,
-// quiet "Nebo vytvoř nový uzel…" link below.
+// Search-first workspace actions. The primary action is opening an EXISTING
+// node in the workspace (no terminal required): type a name, the list filters
+// inline, click (or Enter) opens the node. ⌘T focuses the field from anywhere
+// in the workspace. Creating a brand-new node is the secondary, quiet
+// "Nebo vytvoř nový uzel…" link below.
 function WorkspaceActions({
   graph,
-  onOpenTerminalForNode,
+  onOpenNode,
   onCreateNode,
 }: {
   graph: GraphPayload;
-  onOpenTerminalForNode: (nodeId: string) => void;
+  onOpenNode: (nodeId: string) => void;
   onCreateNode: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -277,9 +286,10 @@ function WorkspaceActions({
   }, [isMac]);
 
   const q = foldForSearch(query.trim());
+  // Any node type can be opened in the workspace now, organizations included
+  // (they never had a terminal but can still be opened to view/edit).
   const matches = q
     ? graph.nodes
-        .filter((n) => n.type !== "organization")
         .filter(
           (n) =>
             foldForSearch(n.name).includes(q) ||
@@ -290,7 +300,7 @@ function WorkspaceActions({
     : [];
 
   const pick = (id: string) => {
-    onOpenTerminalForNode(id);
+    onOpenNode(id);
     setQuery("");
     inputRef.current?.blur();
   };
@@ -304,7 +314,7 @@ function WorkspaceActions({
         />
         <input
           ref={inputRef}
-          name="workspace-open-terminal"
+          name="workspace-open-node"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => setFocused(true)}
@@ -317,7 +327,7 @@ function WorkspaceActions({
               pick(matches[0].id);
             }
           }}
-          placeholder="Hledat uzel a otevřít terminál…"
+          placeholder="Hledat a otevřít uzel…"
           className="w-full rounded-lg border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] py-2.5 pl-8 pr-12 text-[13px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] transition-colors focus:border-[var(--color-accent)] focus:bg-[var(--color-surface)]"
         />
         {query.length > 0 ? (
@@ -376,7 +386,7 @@ function WorkspaceActions({
       <button
         type="button"
         onClick={onCreateNode}
-        title="Vytvoří nový uzel a rovnou v něm otevře terminál"
+        title="Vytvoří nový uzel a otevře ho v Práci"
         className="mt-2 flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-[12.5px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)]"
       >
         <Plus size={13} />
