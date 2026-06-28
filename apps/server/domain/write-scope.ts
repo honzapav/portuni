@@ -495,6 +495,17 @@ export function buildSoftHint(args: {
     "If `portuni_status` returns `new_local` for a file you just created, you forgot this rule — register it via `portuni_store` immediately.",
     "For files that appeared from elsewhere (`new_remote` from `portuni_status`, or `new_local` left over from a prior session you didn't author), use `portuni_adopt_files` or `portuni_store` respectively.",
     "",
+    "## Reading related nodes",
+    "",
+    "Files belonging to the home node live at their real paths in this mirror.",
+    "Files of OTHER in-scope nodes (related/neighbour nodes) are read from",
+    "`<this-mirror>/.portuni-scope/<node_id>/` — the only place the sandbox lets",
+    "you read them. `portuni_get_node` and `portuni_get_context` already return",
+    "that staged path in each file's `local_path`; use the path they give you",
+    "rather than the node's original mirror path. If a related node is not yet",
+    "in scope, the read tools return `scope_expansion_required` — confirm with",
+    "the user, then `portuni_expand_scope`.",
+    "",
   );
   return lines.join("\n");
 }

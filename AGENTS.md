@@ -113,6 +113,13 @@ tmux loop for backend iteration.
   keys; `.env.schema` declares only the 6 core ones. Full inventory with
   defaults: `docs/env-vars.md`. Watch out: `PORTUNI_ROOT` (write-scope
   tiering) is a different thing than `PORTUNI_WORKSPACE_ROOT` (mirrors).
+- **Disk read scope = the session scope, projected.** The MCP `SessionScope`
+  is the single source of truth; the Seatbelt sandbox grants rw on the home
+  mirror only. Every other in-scope node is made readable by copying it into
+  `<home>/.portuni-scope/<node_id>/` (the `ScopeReconciler`, fired on every
+  `scope.add`). Read related-node files from the `local_path` the read tools
+  return (it points into `.portuni-scope/`), not the node's original mirror.
+  Model: `docs/architecture/scope-disk-projection.md`.
 
 ## Security rules (from the auth refactor post-mortem)
 

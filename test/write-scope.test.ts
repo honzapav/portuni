@@ -427,6 +427,14 @@ describe("buildSoftHint", () => {
     assert.match(hint, /Portuni data sources/);
     assert.match(hint, /portuni_list_data_sources/);
   });
+
+  it("documents the .portuni-scope read convention", () => {
+    const hint = buildSoftHint({
+      currentMirror: "/root/org/proj",
+      portuniRoot: "/root",
+    });
+    assert.match(hint, /\.portuni-scope/);
+  });
 });
 
 describe("materializeScopeConfig", () => {
