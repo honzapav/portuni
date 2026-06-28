@@ -389,6 +389,44 @@ describe("buildSoftHint", () => {
     assert.match(hint, /\/r/);
     assert.match(hint, /Portuni write scope/);
   });
+
+  it("tells the agent to save into wip/outputs/resources, not the mirror root", () => {
+    const hint = buildSoftHint({ currentMirror: "/r/a", portuniRoot: "/r" });
+    assert.match(hint, /Where to save files/);
+    assert.match(hint, /`wip\/`/);
+    assert.match(hint, /`outputs\/`/);
+    assert.match(hint, /`resources\/`/);
+    assert.match(hint, /mirror root is reserved/i);
+  });
+
+  it("lists registered data sources when provided", () => {
+    const hint = buildSoftHint({
+      currentMirror: "/r/a",
+      portuniRoot: "/r",
+      dataSources: [
+        {
+          id: "D1",
+          node_id: "N1",
+          name: "Acme CRM",
+          description: "deal pipeline",
+          external_link: "https://crm.example.com",
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+    assert.match(hint, /Portuni data sources/);
+    assert.match(hint, /Acme CRM/);
+    assert.match(hint, /https:\/\/crm\.example\.com/);
+    assert.match(hint, /deal pipeline/);
+    assert.match(hint, /portuni_list_data_sources/);
+  });
+
+  it("falls back to a list-data-sources instruction when none are provided", () => {
+    const hint = buildSoftHint({ currentMirror: "/r/a", portuniRoot: "/r" });
+    assert.match(hint, /Portuni data sources/);
+    assert.match(hint, /portuni_list_data_sources/);
+  });
 });
 
 describe("materializeScopeConfig", () => {

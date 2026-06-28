@@ -17,6 +17,7 @@ import { resolve, sep, join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import type { DataSourceRow } from "../shared/types.js";
 
 export type WriteTier = "tier1_current" | "tier2_sibling" | "tier3_outside";
 
@@ -444,14 +445,43 @@ export function buildCodexMcpServer(args: {
 export function buildSoftHint(args: {
   currentMirror: string;
   portuniRoot: string;
+  dataSources?: readonly DataSourceRow[];
 }): string {
-  return [
+  const mirror = normalize(args.currentMirror);
+  const sources = args.dataSources ?? [];
+  const lines: string[] = [
     "## Portuni write scope",
     "",
-    `This mirror (\`${normalize(args.currentMirror)}\`) is your workspace.`,
+    `This mirror (\`${mirror}\`) is your workspace.`,
     "Other mirror paths that appear in Portuni context are READ-ONLY references.",
     "Editing files in those siblings is out of scope for this session — ask the user first.",
     `Paths outside PORTUNI_ROOT (\`${normalize(args.portuniRoot)}\`) require explicit user approval for every write.`,
+    "",
+    "## Where to save files",
+    "",
+    "New files belong in one of this mirror's section folders, never the mirror root:",
+    "- `wip/` — work in progress: drafts, scratch notes, intermediate research.",
+    "- `outputs/` — finished, shareable deliverables.",
+    "- `resources/` — reference material you were given or pulled in.",
+    "The mirror root is reserved for Portuni-managed files (`PORTUNI_SCOPE.md`, `.mcp.json`, `CLAUDE.md`, `.claude/`). Do not place working files at the mirror root.",
+    "",
+    "## Portuni data sources",
+    "",
+  ];
+  if (sources.length > 0) {
+    lines.push("This node has registered data sources. Consult them before researching elsewhere:");
+    for (const s of sources) {
+      const link = s.external_link ? ` — ${s.external_link}` : "";
+      const desc = s.description ? ` (${s.description})` : "";
+      lines.push(`- ${s.name}${link}${desc}`);
+    }
+    lines.push("Call `portuni_list_data_sources` for the authoritative, current list.");
+  } else {
+    lines.push(
+      "Call `portuni_list_data_sources` (or `portuni_get_context`) to see where this node gets its information before researching elsewhere.",
+    );
+  }
+  lines.push(
     "",
     "## Portuni file registration",
     "",
@@ -461,5 +491,6 @@ export function buildSoftHint(args: {
     "If `portuni_status` returns `new_local` for a file you just created, you forgot this rule — register it via `portuni_store` immediately.",
     "For files that appeared from elsewhere (`new_remote` from `portuni_status`, or `new_local` left over from a prior session you didn't author), use `portuni_adopt_files` or `portuni_store` respectively.",
     "",
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
