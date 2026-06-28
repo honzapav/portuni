@@ -45,6 +45,7 @@ export class SessionScope {
   // to allow the second agent-initiated read of a node it has already asked
   // about. (Only nodes that were *added* via expansion populate this.)
   private readonly seenAgentExpansion = new Set<string>();
+  private readonly addListeners: ((nodeId: string) => void)[] = [];
 
   homeNodeId: string | null = null;
   readonly mode: ScopeMode;
@@ -75,10 +76,26 @@ export class SessionScope {
     return [...this.history];
   }
 
+  // Subscribe to node additions. Listeners fire synchronously, once, only
+  // when a node is newly inserted (not on a duplicate add). A throwing
+  // listener is swallowed so disk-projection failures never corrupt the
+  // authoritative in-memory scope. This is the single hook every disk
+  // projection of the scope set hangs off.
+  onAdd(listener: (nodeId: string) => void): void {
+    this.addListeners.push(listener);
+  }
+
   // Add a node to the scope set. Returns true if it was actually added.
   add(nodeId: string): boolean {
     if (this.nodes.has(nodeId)) return false;
     this.nodes.add(nodeId);
+    for (const listener of this.addListeners) {
+      try {
+        listener(nodeId);
+      } catch {
+        /* listeners are best-effort disk projections; never fail a graph add */
+      }
+    }
     return true;
   }
 

@@ -135,3 +135,32 @@ describe("SessionScope.add idempotence", () => {
     assert.equal(scope.size(), 1);
   });
 });
+
+describe("SessionScope.onAdd", () => {
+  it("fires a listener once per newly-added node, with the node id", () => {
+    const scope = new SessionScope("strict");
+    const seen: string[] = [];
+    scope.onAdd((id) => seen.push(id));
+    assert.equal(scope.add("A"), true);
+    assert.equal(scope.add("A"), false); // duplicate: no second fire
+    assert.equal(scope.add("B"), true);
+    assert.deepEqual(seen, ["A", "B"]);
+  });
+
+  it("supports multiple listeners", () => {
+    const scope = new SessionScope("strict");
+    let a = 0, b = 0;
+    scope.onAdd(() => a++);
+    scope.onAdd(() => b++);
+    scope.add("X");
+    assert.equal(a, 1);
+    assert.equal(b, 1);
+  });
+
+  it("never throws out of add() when a listener throws", () => {
+    const scope = new SessionScope("strict");
+    scope.onAdd(() => { throw new Error("boom"); });
+    assert.doesNotThrow(() => scope.add("X"));
+    assert.equal(scope.has("X"), true);
+  });
+});
