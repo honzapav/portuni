@@ -49,6 +49,7 @@ import {
   NODE_VISIBILITIES,
 } from "../types";
 import { safeHref } from "../lib/safe-url";
+import { groupEventsByDate } from "../lib/events";
 import { isTauri, openExternal } from "../lib/backend-url";
 import { useDataMode } from "../lib/central";
 import { agentDisplayName } from "../lib/settings";
@@ -884,14 +885,21 @@ function DetailPaneBody({
 
         {tab === "events" && (
           <div className="px-5 py-4">
-            <div className="space-y-2">
-              {node.events.map((evt) => (
-                <EventCard
-                  key={evt.id}
-                  event={evt}
-                  onMutate={onMutate}
-                  busy={busy}
-                />
+            <div className="space-y-4">
+              {groupEventsByDate(node.events).map((group) => (
+                <div key={group.date} className="space-y-2">
+                  <div className="font-mono text-[11px] uppercase tracking-wider text-[var(--color-text-dim)]">
+                    {group.date}
+                  </div>
+                  {group.events.map((evt) => (
+                    <EventCard
+                      key={evt.id}
+                      event={evt}
+                      onMutate={onMutate}
+                      busy={busy}
+                    />
+                  ))}
+                </div>
               ))}
               {node.events.length === 0 && (
                 <div className="text-[14px] text-[var(--color-text-dim)]">
