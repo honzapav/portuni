@@ -37,7 +37,17 @@ export function createScopeReconciler(args: {
 }): ScopeReconciler {
   const resolveMirror: MirrorResolver = args.resolveMirror ?? getMirrorPath;
 
-  async function reconcileNode(
+  // Per-node in-flight dedup: concurrent reconcileNode(id) calls for the same
+  // id share ONE stage run. Without this, expand_scope's awaited reconcile and
+  // the onAdd-fired schedule() race on the same .portuni-scope/<id>/ dir (each
+  // does rm -rf + cp), nulling the awaited result and rm+re-cp'ing the dir
+  // while the agent reads it.
+  const inFlight = new Map<
+    string,
+    Promise<{ staged_path: string; files: number } | null>
+  >();
+
+  async function doReconcile(
     nodeId: string,
   ): Promise<{ staged_path: string; files: number } | null> {
     const homeNodeId = args.scope.homeNodeId;
@@ -51,6 +61,16 @@ export function createScopeReconciler(args: {
     } catch {
       return null;
     }
+  }
+
+  async function reconcileNode(
+    nodeId: string,
+  ): Promise<{ staged_path: string; files: number } | null> {
+    const running = inFlight.get(nodeId);
+    if (running) return running;
+    const p = doReconcile(nodeId).finally(() => inFlight.delete(nodeId));
+    inFlight.set(nodeId, p);
+    return p;
   }
 
   return {

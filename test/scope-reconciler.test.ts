@@ -107,4 +107,36 @@ describe("ScopeReconciler.reconcileNode", () => {
     await rm(neighbor, { recursive: true, force: true });
     assert.equal(await r.reconcileNode("NEIGHBOR"), null);
   });
+
+  it("dedups concurrent reconcileNode calls for the same id (one stage run)", async () => {
+    const scope = new SessionScope("strict");
+    scope.homeNodeId = "HOME";
+    // Spy resolver: count how often the NEIGHBOR mirror is resolved. Each
+    // doReconcile run resolves the node mirror exactly once, so this counts
+    // stage runs. Dedup => one run => NEIGHBOR resolved once.
+    let neighborResolves = 0;
+    const r = createScopeReconciler({
+      userId: "u",
+      scope,
+      resolveMirror: async (_userId: string, nodeId: string) => {
+        if (nodeId === "NEIGHBOR") neighborResolves++;
+        return nodeId === "HOME" ? home : nodeId === "NEIGHBOR" ? neighbor : null;
+      },
+    });
+    // Fire two calls back-to-back WITHOUT awaiting the first: they must
+    // share one in-flight stage run so the rm+cp does not race itself.
+    const p1 = r.reconcileNode("NEIGHBOR");
+    const p2 = r.reconcileNode("NEIGHBOR");
+    const [r1, r2] = await Promise.all([p1, p2]);
+    assert.equal(neighborResolves, 1, "expected exactly one stage run");
+    assert.ok(r1);
+    assert.ok(r2);
+    assert.equal(r1.staged_path, join(home, ".portuni-scope", "NEIGHBOR"));
+    assert.equal(r2.staged_path, join(home, ".portuni-scope", "NEIGHBOR"));
+    const staged = await readFile(
+      join(home, ".portuni-scope", "NEIGHBOR", "wip", "method.md"),
+      "utf8",
+    );
+    assert.equal(staged, "# method\n");
+  });
 });
