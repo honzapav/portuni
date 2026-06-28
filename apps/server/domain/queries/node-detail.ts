@@ -106,9 +106,12 @@ export async function loadNodeDetail(
     };
   });
 
+  // Show active and resolved events; resolved render de-emphasized in the UI.
+  // superseded (replaced by a newer event) and archived (soft-deleted) stay
+  // hidden so the timeline isn't cluttered with stale/removed entries.
   const eventRes = await db.execute({
     sql: `SELECT id, type, content, meta, status, refs, task_ref, created_at
-          FROM events WHERE node_id = ? AND status = 'active'
+          FROM events WHERE node_id = ? AND status IN ('active', 'resolved')
           ORDER BY created_at DESC LIMIT 20`,
     args: [row.id],
   });

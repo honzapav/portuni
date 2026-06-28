@@ -129,13 +129,31 @@ export function EventCard({
     );
   }
 
+  const resolved = evt.status === "resolved";
+
   return (
-    <div className="group rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
+    <div
+      className={`group rounded-md border px-3 py-2 ${
+        resolved
+          ? "border-[var(--color-border)]/60 bg-[var(--color-surface)]/40"
+          : "border-[var(--color-border)] bg-[var(--color-surface)]"
+      }`}
+    >
       <div className="mb-0.5 flex items-center gap-2">
-        <span className="font-mono text-[12px] uppercase tracking-wider text-[var(--color-accent)]">
+        <span
+          className={`font-mono text-[12px] uppercase tracking-wider ${
+            resolved ? "text-[var(--color-text-dim)]" : "text-[var(--color-accent)]"
+          }`}
+        >
           {evt.type}
         </span>
-        {evt.status !== "active" && (
+        {resolved && (
+          <span className="inline-flex items-center gap-1 rounded-sm bg-[var(--color-surface-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-text-dim)]">
+            <Check size={9} />
+            vyřešeno
+          </span>
+        )}
+        {evt.status !== "active" && !resolved && (
           <span className="rounded-sm bg-[var(--color-surface-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-text-dim)]">
             {evt.status}
           </span>
@@ -170,7 +188,11 @@ export function EventCard({
           </button>
         </span>
       </div>
-      <div className="text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
+      <div
+        className={`text-[13.5px] leading-relaxed ${
+          resolved ? "text-[var(--color-text-dim)]" : "text-[var(--color-text-muted)]"
+        }`}
+      >
         {evt.content}
       </div>
       {errorLine}
