@@ -15,8 +15,8 @@ mod mcp_install;
 mod pty;
 
 use log::{error, info, warn};
-use rand::distributions::Alphanumeric;
-use rand::Rng;
+use rand::distr::Alphanumeric;
+use rand::{Rng, TryRngCore};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_log::{Target, TargetKind};
@@ -354,7 +354,8 @@ fn random_token() -> String {
     // token is the bearer credential for the whole backend API, so take
     // the direct route.
     rand::rngs::OsRng
-        .sample_iter(&Alphanumeric)
+        .unwrap_err()
+        .sample_iter(Alphanumeric)
         .take(48)
         .map(char::from)
         .collect()

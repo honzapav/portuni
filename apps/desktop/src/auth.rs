@@ -13,7 +13,7 @@
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use log::{info, warn};
-use rand::Rng;
+use rand::TryRngCore;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -93,11 +93,11 @@ fn decode_jwt_payload(jwt: &str) -> Option<Value> {
 
 /// Generate a 32-byte random verifier and encode it as base64url (no padding).
 pub fn pkce_verifier() -> String {
-    let bytes: Vec<u8> = rand::rngs::OsRng
-        .sample_iter(&rand::distributions::Standard)
-        .take(32)
-        .collect();
-    URL_SAFE_NO_PAD.encode(&bytes)
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng
+        .try_fill_bytes(&mut bytes)
+        .expect("OS RNG unavailable");
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// S256 challenge: base64url( SHA-256( ASCII(verifier) ) )
@@ -110,11 +110,11 @@ pub fn pkce_challenge(verifier: &str) -> String {
 
 /// Generate 16-byte random state parameter, base64url-encoded.
 fn random_state() -> String {
-    let bytes: Vec<u8> = rand::rngs::OsRng
-        .sample_iter(&rand::distributions::Standard)
-        .take(16)
-        .collect();
-    URL_SAFE_NO_PAD.encode(&bytes)
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng
+        .try_fill_bytes(&mut bytes)
+        .expect("OS RNG unavailable");
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 // ─── Google token exchange ────────────────────────────────────────────────────
