@@ -1,6 +1,12 @@
 # File Sync Adapter – design
 
-> **Status:** Phase 1 implemented April 2026. Google Drive (Service Account) is the first concrete adapter. Pluggable interface, hash identity, two-layer state, per-device sync.db, confirm-first ops are all live. See `src/sync/` for the implementation and `src/sync/README.md` for the user-facing summary.
+> **Status:** Phase 1 implemented April 2026. Google Drive (Service Account) is the first concrete adapter. Pluggable interface, hash identity, two-layer state, per-device sync.db, confirm-first ops are all live. See `apps/server/domain/sync/` for the implementation.
+
+> **See also:** this is the file-bytes plane and assumes a local mirror. For how
+> it relates to graph sync and to local vs central `data_mode` (and why central
+> teammates cannot reach file content yet), see
+> [`data-modes.md`](./data-modes.md) and
+> [`central-file-content-phase-b.md`](./central-file-content-phase-b.md).
 
 Design for a pluggable file synchronization layer in Portuni. Replaces the current Drive-only, hardcoded assumptions in `files` and `file_sync` tables with a backend-agnostic adapter model that can target Google Drive, Dropbox, S3-compatible object storage, WebDAV, SFTP, or a local filesystem through one interface.
 
