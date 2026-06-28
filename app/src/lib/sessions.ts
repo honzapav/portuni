@@ -27,6 +27,11 @@ export type TerminalSession = TerminalSessionInput & {
   id: string;
   createdAt: number;
   lastOutputAt: number;
+  // Set by the Rust foreground-poll thread via the `pty-foreground` event.
+  // True when a subprocess owns the PTY foreground (agent computing),
+  // false when the shell is at its prompt (idle). Absent when no signal
+  // has arrived yet (before the first poll tick, or on non-Unix builds).
+  foregroundBusy?: boolean;
 };
 
 const ACTIVITY_THRESHOLD_MS = 1500;
@@ -54,6 +59,24 @@ export function removeSession(
   id: string,
 ): TerminalSession[] {
   return sessions.filter((s) => s.id !== id);
+}
+
+// Update the foregroundBusy flag for one session. Emits a new array only
+// when the flag actually changes; returns the original reference otherwise
+// to short-circuit React's identity check on setState.
+export function markForegroundBusy(
+  sessions: readonly TerminalSession[],
+  id: string,
+  busy: boolean,
+): TerminalSession[] {
+  let mutated = false;
+  const next = sessions.map((s) => {
+    if (s.id !== id) return s;
+    if (s.foregroundBusy === busy) return s;
+    mutated = true;
+    return { ...s, foregroundBusy: busy };
+  });
+  return mutated ? next : (sessions as unknown as TerminalSession[]);
 }
 
 export function markActivity(
@@ -102,19 +125,22 @@ export function isAgentCommand(command: string): boolean {
   return /\b(claude|codex|vibe|opencode)\b/i.test(command);
 }
 
-// A session is "agent working" when it was launched as an agent AND it
-// produced output within the activity window. The command gate answers
-// "which kind of session", the output recency answers "is it doing
-// anything right now".
+// A session is "agent working" when it was launched as an agent AND it is
+// currently computing. The command gate answers "which kind of session".
+// When the Rust foreground-poll signal is available (foregroundBusy is set),
+// it is authoritative: green only while a subprocess owns the PTY foreground.
+// Before the first poll tick arrives, fall back to the output-recency
+// heuristic so the indicator is not dark during the first ~500 ms of a run.
 export function sessionIsAgentWorking(
-  session: Pick<TerminalSession, "command" | "lastOutputAt">,
+  session: Pick<TerminalSession, "command" | "lastOutputAt" | "foregroundBusy">,
   now: number,
   thresholdMs: number = ACTIVITY_THRESHOLD_MS,
 ): boolean {
-  return (
-    isAgentCommand(session.command) &&
-    isSessionActive(now, session.lastOutputAt, thresholdMs)
-  );
+  if (!isAgentCommand(session.command)) return false;
+  if (session.foregroundBusy !== undefined) {
+    return session.foregroundBusy;
+  }
+  return isSessionActive(now, session.lastOutputAt, thresholdMs);
 }
 
 // Node-level aggregate: green when any of the node's sessions is an agent

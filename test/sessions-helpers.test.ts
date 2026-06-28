@@ -4,6 +4,7 @@ import {
   createSession,
   removeSession,
   markActivity,
+  markForegroundBusy,
   isSessionActive,
   nodeIsActive,
   countSessionsByNode,
@@ -140,5 +141,31 @@ describe("agent activity gating", () => {
     const s = { ...createSession({ ...shell, nodeId: "n2" }, 1000), lastOutputAt: 1000 };
     assert.equal(nodeHasWorkingAgent([a, s], "n1", 2000), true);
     assert.equal(nodeHasWorkingAgent([a, s], "n2", 2000), false);
+  });
+
+  it("foregroundBusy=false suppresses green even with recent output", () => {
+    // When the Rust foreground signal is present it is authoritative.
+    // An agent session with fresh output but foregroundBusy=false means
+    // the shell is idle at its prompt -- must NOT show green.
+    const a = { ...createSession(agent, 1000), lastOutputAt: 1000 };
+    const idle = { ...a, foregroundBusy: false };
+    const computing = { ...a, foregroundBusy: true };
+    assert.equal(sessionIsAgentWorking(idle, 2000), false, "idle agent with fresh output must be amber");
+    assert.equal(sessionIsAgentWorking(computing, 2000), true, "computing agent must be green");
+  });
+
+  it("markForegroundBusy updates foregroundBusy for the target session", () => {
+    const a = createSession(agent, 1000);
+    const b = createSession(agent, 2000);
+    const next = markForegroundBusy([a, b], a.id, true);
+    assert.equal(next.find((s) => s.id === a.id)!.foregroundBusy, true);
+    assert.equal(next.find((s) => s.id === b.id)!.foregroundBusy, undefined);
+  });
+
+  it("markForegroundBusy returns the same array when the flag is unchanged", () => {
+    const a = { ...createSession(agent, 1000), foregroundBusy: true as const };
+    const sessions = [a];
+    const result = markForegroundBusy(sessions, a.id, true);
+    assert.equal(result, sessions, "no-op must return the same array reference");
   });
 });
