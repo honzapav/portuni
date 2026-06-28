@@ -918,6 +918,7 @@ function DetailPaneBody({
                   <FileTree
                     files={node.files}
                     untracked={[]}
+                    nodeId={node.id}
                     syncStatus={syncStatus}
                     syncLoaded={true}
                     onOpenFile={(rel) => onOpenFile?.(node.id, rel)}
@@ -976,6 +977,7 @@ function DetailPaneBody({
                   <FileTree
                     files={node.files}
                     untracked={untracked}
+                    nodeId={node.id}
                     syncStatus={syncStatus}
                     syncLoaded={syncLoaded}
                     onOpenFile={(rel) => onOpenFile?.(node.id, rel)}

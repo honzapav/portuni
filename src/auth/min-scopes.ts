@@ -113,6 +113,7 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (/^\/nodes\/[^/]+\/move$/.test(pathname) && m === "POST") return "manage";
   if (/^\/nodes\/[^/]+\/sync-status$/.test(pathname) && m === "GET") return "read";
   if (/^\/nodes\/[^/]+\/folder-url$/.test(pathname) && m === "GET") return "read";
+  if (/^\/nodes\/[^/]+\/file-url$/.test(pathname) && m === "GET") return "read";
   if (pathname === "/positions" && m === "POST") return "manage";
 
   // --- Edges ---

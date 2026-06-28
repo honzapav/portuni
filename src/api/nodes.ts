@@ -398,6 +398,91 @@ export async function handleFolderUrl(
   }
 }
 
+// Browser-openable URL of a single file on its routed remote. Mirrors
+// handleFolderUrl but resolves the FILE's remote_path and calls
+// adapter.url() (which handleFolderUrl's folderUrl() sibling does not).
+// Returns { url: null, reason } when the file has no remote_path (not
+// synced), no remote is routed, or the adapter can't produce a web URL.
+export async function handleFileUrl(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  nodeId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    const url = new URL(req.url ?? "", "http://internal");
+    const fileId = url.searchParams.get("file_id");
+    if (!fileId) {
+      respondJson(res, 400, { error: "file_id query param required" });
+      return;
+    }
+    const fileRow = await db.execute({
+      sql: "SELECT remote_path FROM files WHERE id = ? AND node_id = ?",
+      args: [fileId, nodeId],
+    });
+    if (fileRow.rows.length === 0) {
+      respondJson(res, 404, { error: "file not found" });
+      return;
+    }
+    const remotePath = fileRow.rows[0].remote_path as string | null;
+    if (!remotePath) {
+      respondJson(res, 200, { url: null, reason: "file not synced yet" });
+      return;
+    }
+    // Resolve the node's routed remote (same resolution as folder-url).
+    const nodeRow = await db.execute({
+      sql: "SELECT type, sync_key FROM nodes WHERE id = ?",
+      args: [nodeId],
+    });
+    if (nodeRow.rows.length === 0) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    const nodeType = nodeRow.rows[0].type as string;
+    const nodeSyncKey = nodeRow.rows[0].sync_key as string;
+    let orgSyncKey: string | null = nodeSyncKey;
+    if (nodeType !== "organization") {
+      const orgRow = await db.execute({
+        sql: `SELECT o.sync_key FROM edges e
+              JOIN nodes o ON o.id = e.target_id
+              WHERE e.source_id = ? AND e.relation = 'belongs_to'
+              LIMIT 1`,
+        args: [nodeId],
+      });
+      if (orgRow.rows.length === 0) {
+        respondJson(res, 200, { url: null, reason: "no organization" });
+        return;
+      }
+      orgSyncKey = orgRow.rows[0].sync_key as string;
+    }
+    const remoteName = await resolveRemote(db, nodeType, orgSyncKey);
+    if (!remoteName) {
+      respondJson(res, 200, { url: null, reason: "no remote routed" });
+      return;
+    }
+    const adapter = await getAdapter(db, remoteName);
+    let fileUrl: string | null = null;
+    try {
+      fileUrl = await adapter.url(remotePath);
+    } catch {
+      // Adapter can't resolve a web URL (e.g. fs/sftp, or not synced).
+      fileUrl = null;
+    }
+    respondJson(res, 200, {
+      url: fileUrl,
+      remote_name: remoteName,
+      ...(fileUrl === null ? { reason: "no web URL for this file" } : {}),
+    });
+  } catch (err) {
+    respondError(res, `${req.method} /nodes/${nodeId}/file-url`, err);
+  }
+}
+
 // Per-node sync trigger. Re-runs statusScan and acts on it: push candidates
 // are uploaded via storeFile, pull candidates downloaded via pullFile.
 // Conflicts are surfaced but never auto-resolved -- the data-safety default
