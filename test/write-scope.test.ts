@@ -639,4 +639,31 @@ describe("materializeScopeConfig", () => {
     const beginCount = (afterSecond.match(/BEGIN portuni-scope/g) ?? []).length;
     assert.equal(beginCount, 1);
   });
+
+  it("surfaces provided data sources in PORTUNI_SCOPE.md", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "portuni-scope-ds-"));
+    const cur = join(dir, "a");
+    await mkdir(cur, { recursive: true });
+
+    await materializeScopeConfig({
+      currentMirror: cur,
+      otherMirrors: [],
+      portuniRoot: dir,
+      dataSources: [
+        {
+          id: "D1",
+          node_id: "N1",
+          name: "Acme CRM",
+          description: null,
+          external_link: "https://crm.example.com",
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+
+    const scope = await readFile(join(cur, "PORTUNI_SCOPE.md"), "utf8");
+    assert.match(scope, /Acme CRM/);
+    assert.match(scope, /https:\/\/crm\.example\.com/);
+  });
 });

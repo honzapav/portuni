@@ -42,6 +42,7 @@ import {
 } from "./write-scope.js";
 import { listUserMirrors } from "./sync/mirror-registry.js";
 import { SOLO_USER } from "../infra/schema.js";
+import type { DataSourceRow } from "../shared/types.js";
 
 const BEGIN_MARKER = "<!-- BEGIN portuni-scope (auto-generated, do not edit) -->";
 const END_MARKER = "<!-- END portuni-scope -->";
@@ -66,6 +67,11 @@ export interface MaterializeArgs {
   // generated .claude/settings.local.json wires it as a PreToolUse hook;
   // when null, no hook is generated (declarative deny list still applies).
   guardScriptPath?: string | null;
+  // The node's registered data sources, surfaced in the soft hint so the
+  // agent knows where the node gets its information. Caller-fetched and
+  // passed in (keeps this module DB-free and pure). Omit/empty -> the hint
+  // falls back to a "call portuni_list_data_sources" instruction.
+  dataSources?: readonly DataSourceRow[];
 }
 
 export interface MaterializeResult {
@@ -271,6 +277,7 @@ export async function materializeScopeConfig(
   const hint = buildSoftHint({
     currentMirror: cur,
     portuniRoot: args.portuniRoot,
+    dataSources: args.dataSources,
   });
   try {
     const path = join(cur, ".cursor", "rules");
