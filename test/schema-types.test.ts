@@ -88,7 +88,8 @@ async function createTestDb() {
       refs TEXT CHECK(refs IS NULL OR json_valid(refs)),
       task_ref TEXT,
       created_by TEXT NOT NULL REFERENCES users(id),
-      created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+      created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+      logged_at DATETIME NOT NULL DEFAULT (datetime('now'))
     )`,
     `CREATE TABLE migrations (
       id TEXT PRIMARY KEY,

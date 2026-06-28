@@ -23,6 +23,7 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
       meta: z.record(z.string(), z.unknown()).optional().describe("Optional structured metadata"),
       refs: z.array(z.string()).optional().describe("Optional array of reference IDs (other events, external)"),
       task_ref: z.string().optional().describe("Optional task reference (e.g. TASK-42)"),
+      created_at: z.string().optional().describe("Optional event date/time as an ISO string (e.g. 2024-01-15 or 2024-01-15T10:30:00Z); defaults to now. Use this to log an event retroactively — do NOT put the date in `meta`, since created_at is what drives ordering and display."),
     },
     async (args) => {
       const db = getDb();
@@ -61,11 +62,27 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
       }
 
       const id = ulid();
-      const now = new Date().toISOString();
+      // loggedAt is the immutable technical timestamp (always the real now);
+      // createdAt is the event date, which defaults to now but can be set
+      // retroactively. Normalize createdAt to ISO so the stored format matches
+      // `new Date().toISOString()` (the web DatePicker and grouping slice this
+      // string positionally).
+      const loggedAt = new Date().toISOString();
+      let createdAt = loggedAt;
+      if (args.created_at !== undefined) {
+        const parsed = new Date(args.created_at);
+        if (Number.isNaN(parsed.getTime())) {
+          return {
+            content: [{ type: "text" as const, text: "Error: invalid created_at; expected ISO datetime (e.g. 2024-01-15 or 2024-01-15T10:30:00Z)" }],
+            isError: true,
+          };
+        }
+        createdAt = parsed.toISOString();
+      }
 
       await db.execute({
-        sql: `INSERT INTO events (id, node_id, type, content, meta, status, refs, task_ref, created_by, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        sql: `INSERT INTO events (id, node_id, type, content, meta, status, refs, task_ref, created_by, created_at, logged_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           id,
           args.node_id,
@@ -76,7 +93,8 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
           args.refs ? JSON.stringify(args.refs) : null,
           args.task_ref ?? null,
           ctx.identity.userId,
-          now,
+          createdAt,
+          loggedAt,
         ],
       });
 
@@ -293,7 +311,7 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
       const limit = args.limit ?? 100;
 
       const result = await db.execute({
-        sql: `SELECT e.id, e.node_id, n.name as node_name, e.type, e.content, e.meta, e.status, e.refs, e.task_ref, e.created_at
+        sql: `SELECT e.id, e.node_id, n.name as node_name, e.type, e.content, e.meta, e.status, e.refs, e.task_ref, e.created_at, e.logged_at
               FROM events e
               JOIN nodes n ON e.node_id = n.id
               ${where}
@@ -313,6 +331,7 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
         refs: row.refs ? JSON.parse(row.refs as string) : null,
         task_ref: row.task_ref,
         created_at: row.created_at,
+        logged_at: row.logged_at,
       }));
 
       // Filter by group visibility: drop events from hidden nodes.

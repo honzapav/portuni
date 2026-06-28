@@ -45,8 +45,8 @@ export async function supersedeEventInternal(
         args: [args.eventId],
       },
       {
-        sql: `INSERT INTO events (id, node_id, type, content, meta, status, refs, task_ref, created_by, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        sql: `INSERT INTO events (id, node_id, type, content, meta, status, refs, task_ref, created_by, created_at, logged_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           newId,
           nodeId,
@@ -57,6 +57,8 @@ export async function supersedeEventInternal(
           JSON.stringify([args.eventId]),
           (oldRow.task_ref as string | null) ?? null,
           userId,
+          // Preserve the original event date; logged_at records the rewrite.
+          (oldRow.created_at as string | null) ?? now,
           now,
         ],
       },

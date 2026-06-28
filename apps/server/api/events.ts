@@ -35,9 +35,9 @@ export async function handleCreateEvent(
     const id = ulid();
     const now = new Date().toISOString();
     await db.execute({
-      sql: `INSERT INTO events (id, node_id, type, content, meta, status, refs, task_ref, created_by, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [id, body.node_id, body.type, body.content, null, "active", null, null, identity.userId, now],
+      sql: `INSERT INTO events (id, node_id, type, content, meta, status, refs, task_ref, created_by, created_at, logged_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [id, body.node_id, body.type, body.content, null, "active", null, null, identity.userId, now, now],
     });
     await logAudit(identity.userId, "log_event", "event", id, {
       node_id: body.node_id,

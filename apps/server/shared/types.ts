@@ -87,6 +87,7 @@ export const EventRow = z.object({
   task_ref: z.union([z.string(), z.null()]),
   created_by: z.string(),
   created_at: z.string(),
+  logged_at: z.string(),
 });
 
 // --- Partial row schemas for SELECT subsets ---

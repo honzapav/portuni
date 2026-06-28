@@ -1009,6 +1009,27 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+
+  // Migration 018: add events.logged_at — the immutable technical timestamp
+  // (when the row was actually written), distinct from created_at which is now
+  // the editable/backdatable event date. Additive ALTER gated on table_info so
+  // it is safe to re-run. SQLite forbids a non-constant default on ADD COLUMN,
+  // so the column is added nullable and backfilled to created_at; new inserts
+  // always set it explicitly and the DDL carries the NOT NULL default for fresh
+  // installs.
+  {
+    id: "018_events_logged_at",
+    up: async (db) => {
+      const info = await db.execute("PRAGMA table_info(events)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      if (!cols.has("logged_at")) {
+        await db.execute("ALTER TABLE events ADD COLUMN logged_at DATETIME");
+      }
+      await db.execute(
+        "UPDATE events SET logged_at = created_at WHERE logged_at IS NULL",
+      );
+    },
+  },
 ];
 
 export async function runMigrations(db: Client): Promise<void> {
