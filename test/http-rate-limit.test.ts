@@ -18,12 +18,12 @@ process.env.PORTUNI_RATE_LIMIT_PER_MIN = "3";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
-import { ensureSchemaOn } from "../src/infra/schema.js";
-import { setDbForTesting } from "../src/infra/db.js";
-import { resetGateCachesForTesting } from "../src/http/middleware.js";
-import { resetRateLimiterForTesting } from "../src/http/rate-limit.js";
-import { startHttpServer, type HttpServerHandle } from "../src/http/server.js";
-import { createRateLimiter, rateLimitKey } from "../src/http/rate-limit.js";
+import { ensureSchemaOn } from "../apps/server/infra/schema.js";
+import { setDbForTesting } from "../apps/server/infra/db.js";
+import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
+import { resetRateLimiterForTesting } from "../apps/server/http/rate-limit.js";
+import { startHttpServer, type HttpServerHandle } from "../apps/server/http/server.js";
+import { createRateLimiter, rateLimitKey } from "../apps/server/http/rate-limit.js";
 
 // ---------------------------------------------------------------------------
 // Pure unit tests — no HTTP

@@ -7,7 +7,7 @@ import {
   verifyDeviceToken,
   revokeDeviceToken,
   listDeviceTokens,
-} from "../src/auth/device-tokens.js";
+} from "../apps/server/auth/device-tokens.js";
 
 const USER = "01SOLO0000000000000000000";
 

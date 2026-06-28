@@ -12,10 +12,10 @@ import { createClient as createDbClient, type Client as DbClient } from "@libsql
 import { ulid } from "ulid";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { ensureSchemaOn } from "../src/infra/schema.js";
-import { setDbForTesting } from "../src/infra/db.js";
-import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
-import { createMcpServer, buildDefaultEnvIdentity } from "../src/mcp/server.js";
+import { ensureSchemaOn } from "../apps/server/infra/schema.js";
+import { setDbForTesting } from "../apps/server/infra/db.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { createMcpServer, buildDefaultEnvIdentity } from "../apps/server/mcp/server.js";
 
 let workspace: string;
 let db: DbClient;

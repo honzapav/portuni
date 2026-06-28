@@ -8,8 +8,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getDb } from "../src/infra/db.js";
-import { dumpDatabaseSql } from "../src/infra/backup.js";
+import { getDb } from "../apps/server/infra/db.js";
+import { dumpDatabaseSql } from "../apps/server/infra/backup.js";
 
 async function main(): Promise<void> {
   const db = getDb();

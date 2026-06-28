@@ -9,7 +9,7 @@
 // Changing the sets below is a schema change. It must be accompanied by:
 //   1. A migration that updates the CHECK constraints in sqlite_master
 //   2. A data cleanup for any existing rows that would violate the new set
-//   3. Updates to the edge/relation tables in docs-site and docs/specs.md
+//   3. Updates to the edge/relation tables in sites/docs and docs/specs.md
 
 // Canonical POPP node types. The five entities that capture all work.
 export const NODE_TYPES = [

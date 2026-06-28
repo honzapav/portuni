@@ -8,7 +8,7 @@ import {
   safeMirrorJoin,
   assertSafeRelativePath,
   RemotePathError,
-} from "../src/domain/sync/remote-path.js";
+} from "../apps/server/domain/sync/remote-path.js";
 
 describe("buildNodeRoot", () => {
   it("uses sync_key for non-org nodes", () => {

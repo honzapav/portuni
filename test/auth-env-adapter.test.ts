@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { EnvAdapter } from "../src/auth/env-adapter.js";
+import { EnvAdapter } from "../apps/server/auth/env-adapter.js";
 
 test("EnvAdapter returns identity from env with defaults", async () => {
   const adapter = new EnvAdapter({

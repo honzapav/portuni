@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { ulid } from "ulid";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { supersedeEventInternal } from "../src/domain/events.js";
+import { supersedeEventInternal } from "../apps/server/domain/events.js";
 
 async function seedEvent(
   db: Awaited<ReturnType<typeof makeSharedDb>>["db"],

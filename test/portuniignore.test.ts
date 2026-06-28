@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { compileIgnorePatterns } from "../src/shared/portuniignore.js";
+import { compileIgnorePatterns } from "../apps/server/shared/portuniignore.js";
 
 describe("compileIgnorePatterns", () => {
   it("matches root-anchored pattern /foo", () => {

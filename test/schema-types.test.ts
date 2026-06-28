@@ -6,7 +6,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
-import { UserRow, NodeRow, EdgeRow, AuditLogRow, FileRow, EventRow } from "../src/shared/types.js";
+import { UserRow, NodeRow, EdgeRow, AuditLogRow, FileRow, EventRow } from "../apps/server/shared/types.js";
 import { ulid } from "ulid";
 
 async function createTestDb() {

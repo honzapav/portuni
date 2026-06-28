@@ -10,7 +10,7 @@ import {
   sha256Buffer,
   md5Buffer,
   statForCache,
-} from "../src/domain/sync/hash.js";
+} from "../apps/server/domain/sync/hash.js";
 
 async function makeTempFile(contents: string | Buffer): Promise<string> {
   const dir = await fs.mkdtemp(join(tmpdir(), "portuni-hash-"));

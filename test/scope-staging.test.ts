@@ -14,7 +14,7 @@ import { mkdtemp, rm, mkdir, writeFile, readFile, stat, access } from "node:fs/p
 import { constants } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { stageNodeIntoMirror } from "../src/domain/scope-staging.js";
+import { stageNodeIntoMirror } from "../apps/server/domain/scope-staging.js";
 
 let dir: string;
 let home: string;

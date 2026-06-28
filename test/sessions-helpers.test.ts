@@ -11,7 +11,7 @@ import {
   isAgentCommand,
   sessionIsAgentWorking,
   nodeHasWorkingAgent,
-} from "../app/src/lib/sessions.js";
+} from "../apps/web/src/lib/sessions.js";
 
 const baseNode = {
   nodeId: "node_a",

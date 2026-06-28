@@ -4,9 +4,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { adoptFiles } from "../src/domain/sync/engine.js";
-import { getAdapter, resetAdapterCacheForTests } from "../src/domain/sync/adapter-cache.js";
-import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
+import { adoptFiles } from "../apps/server/domain/sync/engine.js";
+import { getAdapter, resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 
 let workspace: string;
 let originalEnv: string | undefined;

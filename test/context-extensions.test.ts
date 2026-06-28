@@ -11,13 +11,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ulid } from "ulid";
-import { runMigration006 } from "../src/infra/schema.js";
-import { createActor } from "../src/domain/actors.js";
-import { createResponsibility } from "../src/domain/responsibilities.js";
-import { addDataSource, addTool } from "../src/domain/entity-attributes.js";
-import { updateNodeInternal } from "../src/domain/nodes.js";
-import { buildContextPayload } from "../src/mcp/tools/context.js";
-import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
+import { runMigration006 } from "../apps/server/infra/schema.js";
+import { createActor } from "../apps/server/domain/actors.js";
+import { createResponsibility } from "../apps/server/domain/responsibilities.js";
+import { addDataSource, addTool } from "../apps/server/domain/entity-attributes.js";
+import { updateNodeInternal } from "../apps/server/domain/nodes.js";
+import { buildContextPayload } from "../apps/server/mcp/tools/context.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 
 // buildContextPayload now reads mirrors from the per-device sync.db (driven
 // by PORTUNI_WORKSPACE_ROOT). Set up a temp workspace per test so

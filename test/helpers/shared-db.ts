@@ -3,8 +3,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ulid } from "ulid";
 import { createClient, type Client } from "@libsql/client";
-import { ensureSchemaOn } from "../../src/infra/schema.js";
-import { upsertRemote, addRule } from "../../src/domain/sync/routing.js";
+import { ensureSchemaOn } from "../../apps/server/infra/schema.js";
+import { upsertRemote, addRule } from "../../apps/server/domain/sync/routing.js";
 
 export interface SharedDb {
   db: Client;

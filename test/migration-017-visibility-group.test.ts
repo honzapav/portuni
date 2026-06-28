@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ulid } from "ulid";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { NODE_VISIBILITIES } from "../src/shared/popp.js";
+import { NODE_VISIBILITIES } from "../apps/server/shared/popp.js";
 
 test("NODE_VISIBILITIES includes group", () => {
   assert.ok((NODE_VISIBILITIES as readonly string[]).includes("group"));

@@ -5,14 +5,14 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createClient } from "@libsql/client";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { storeFile, pullFile, statusScan } from "../src/domain/sync/engine.js";
-import { registerMirror } from "../src/domain/sync/mirror-registry.js";
+import { storeFile, pullFile, statusScan } from "../apps/server/domain/sync/engine.js";
+import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import {
   getFileState,
   upsertFileState,
   resetLocalDbForTests,
-} from "../src/domain/sync/local-db.js";
-import { resetAdapterCacheForTests } from "../src/domain/sync/adapter-cache.js";
+} from "../apps/server/domain/sync/local-db.js";
+import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
 
 let workspaceA: string;
 let workspaceB: string;

@@ -4,12 +4,12 @@ import { mkdtemp, rm, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { storeFile, statusScan } from "../src/domain/sync/engine.js";
-import { registerMirror } from "../src/domain/sync/mirror-registry.js";
-import { moveNodeToOrganization } from "../src/domain/edges.js";
-import { addRule, upsertRemote } from "../src/domain/sync/routing.js";
-import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
-import { resetAdapterCacheForTests } from "../src/domain/sync/adapter-cache.js";
+import { storeFile, statusScan } from "../apps/server/domain/sync/engine.js";
+import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
+import { moveNodeToOrganization } from "../apps/server/domain/edges.js";
+import { addRule, upsertRemote } from "../apps/server/domain/sync/routing.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
 
 let workspace: string;
 let originalEnv: string | undefined;

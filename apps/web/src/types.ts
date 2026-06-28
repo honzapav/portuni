@@ -17,7 +17,7 @@ export type {
   SyncPendingResponse,
   UntrackedFile,
   FileContentResponse,
-} from "../../src/shared/api-types";
+} from "../../server/shared/api-types";
 
 // Lifecycle state -> UI color bucket. Any state not listed falls through to "gray".
 export const LIFECYCLE_COLORS: Record<string, "green" | "yellow" | "red" | "gray"> = {
@@ -43,11 +43,11 @@ export const LIFECYCLE_COLORS: Record<string, "green" | "yellow" | "red" | "gray
   not_implemented: "gray",
 };
 
-// Canonical POPP schema -- single source of truth lives in src/shared/popp.ts at
-// the repo root and is shared between backend and this frontend via a
-// relative import. Do NOT redefine these constants here. If a new node
-// type or edge relation is needed, add it to src/shared/popp.ts and both sides
-// will stay in sync automatically.
+// Canonical POPP schema -- single source of truth lives in
+// apps/server/shared/popp.ts and is shared between backend and this frontend
+// via a relative import. Do NOT redefine these constants here. If a new node
+// type or edge relation is needed, add it to apps/server/shared/popp.ts and
+// both sides will stay in sync automatically.
 //
 // RELATION_TYPES is the frontend's name for EDGE_RELATIONS (historical
 // naming kept to avoid churning every import site). It is the exact same
@@ -57,4 +57,4 @@ export {
   EVENT_TYPES,
   LIFECYCLE_STATES_BY_TYPE,
   NODE_VISIBILITIES,
-} from "../../src/shared/popp";
+} from "../../server/shared/popp";

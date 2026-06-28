@@ -14,10 +14,10 @@ import {
   buildSeatbeltProfile,
   resolveSandboxScopeForCwd,
   resolveSandboxScopeForNode,
-} from "../src/domain/sandbox-profile.js";
-import { registerMirror } from "../src/domain/sync/mirror-registry.js";
-import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
-import { SOLO_USER } from "../src/infra/schema.js";
+} from "../apps/server/domain/sandbox-profile.js";
+import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { SOLO_USER } from "../apps/server/infra/schema.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
 
 describe("buildSeatbeltProfile", () => {

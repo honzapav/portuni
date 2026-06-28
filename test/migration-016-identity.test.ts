@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
-import { ensureSchemaOn } from "../src/infra/schema.js";
+import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 
 test("migration 016 adds identity columns to users", async () => {
   const db = createClient({ url: ":memory:" });

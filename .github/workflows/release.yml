@@ -39,7 +39,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             package-lock.json
-            app/package-lock.json
+            apps/web/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -47,18 +47,19 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: apps/desktop
 
       - uses: oven-sh/setup-bun@v2
 
       - run: npm ci
 
-      - run: npm ci --prefix app
+      - run: npm ci --prefix apps/web
 
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
           releaseName: "Portuni ${{ github.ref_name }}"
           releaseDraft: true

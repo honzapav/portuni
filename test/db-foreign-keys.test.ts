@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { ulid } from "ulid";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { purgeNodeRows } from "../src/domain/nodes.js";
+import { purgeNodeRows } from "../apps/server/domain/nodes.js";
 
 // SQLite ships with foreign_keys OFF per connection. The schema relies on
 // ON DELETE CASCADE (files, events, responsibilities, ...) for node purge,
@@ -62,7 +62,7 @@ describe("node purge row cleanup", () => {
     const { join } = await import("node:path");
     const { tmpdir } = await import("node:os");
     const { createClient } = await import("@libsql/client");
-    const { ensureSchemaOn } = await import("../src/infra/schema.js");
+    const { ensureSchemaOn } = await import("../apps/server/infra/schema.js");
 
     const dir = await mkdtemp(join(tmpdir(), "portuni-fk-"));
     try {

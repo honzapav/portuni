@@ -27,7 +27,7 @@ Logs at `/tmp/portuni-mcp.log` and in the tmux pane.
 ### Frontend (Vite, port 4010)
 
 ```bash
-varlock run -- npm --prefix app run dev
+varlock run -- npm --prefix apps/web run dev
 ```
 
 Open `http://portuni.test` (localias) or `http://localhost:4010`. Save a
@@ -40,24 +40,29 @@ Only when shipping a new `Portuni.app` or testing desktop-specific wiring
 (sidecar boot, per-launch auth token, env passing, Tauri commands).
 
 ```bash
-cargo tauri build
-cp -R src-tauri/target/release/bundle/macos/Portuni.app /Applications/
+# run from the Tauri project dir (Tauri finds the project by cwd)
+cd apps/desktop && cargo tauri build
+cp -R apps/desktop/target/release/bundle/macos/Portuni.app /Applications/
 ```
 
-First Rust build ~10–15 min, incremental 30–60 s.
+First Rust build ~10–15 min, incremental 30–60 s. Tauri runs the
+`beforeBuildCommand` from `apps/` (the parent of `apps/desktop`), so the
+web build + `scripts/build-sidecar.mjs` are wired relative to that; the
+sidecar script resolves all paths from the repo root, so `npm run
+build:sidecar` from the repo root works too.
 
-For ad-hoc desktop dev: `cargo tauri dev` (Vite HMR for UI, sidecar binary
-already in `src-tauri/binaries/`). Backend changes need
-`npm run build:sidecar` + kill + restart `cargo tauri dev`. Prefer the tmux
-loop for backend iteration.
+For ad-hoc desktop dev: `cd apps/desktop && cargo tauri dev` (Vite HMR for
+UI, sidecar binary already in `apps/desktop/binaries/`). Backend changes
+need `npm run build:sidecar` + kill + restart `cargo tauri dev`. Prefer the
+tmux loop for backend iteration.
 
 ### Rule of thumb
 
 | Working on | Mode | Loop |
 |---|---|---|
 | MCP tools, scope, schema, REST | Backend tmux | `npm run build` + tmux restart |
-| React in `app/` | Vite | save -> HMR |
-| `src/desktop.ts`, Rust shell | Tauri dev | restart `cargo tauri dev` |
+| React in `apps/web/` | Vite | save -> HMR |
+| `apps/server/desktop.ts`, Rust shell (`apps/desktop`) | Tauri dev | restart `cargo tauri dev` |
 | Ship new `.app` | Tauri build | `cargo tauri build` + cp |
 
 ~95% of changes are the first row.
@@ -73,7 +78,7 @@ loop for backend iteration.
   `.mcp.json`, `.claude/settings.local.json`, `.codex/config.toml`,
   `.vibe/config.toml`, `.cursor/rules`, `PORTUNI_SCOPE.md` and marker blocks
   in CLAUDE.md/AGENTS.md – don't hand-edit those blocks
-  (`src/domain/scope-materialize.ts`). The per-mirror `.mcp.json` (Claude)
+  (`apps/server/domain/scope-materialize.ts`). The per-mirror `.mcp.json` (Claude)
   and `.vibe/config.toml` (Mistral Vibe) carry `?home_node_id=…` (scope
   auto-seed) and reference the token via env var – never a literal. The
   desktop app injects `PORTUNI_MCP_TOKEN` into spawned terminals; manual
@@ -90,8 +95,8 @@ loop for backend iteration.
   minimal and never clobbers the user's models/providers.
 - **Auto-seed runs on MCP connect** when the URL carries `?home_node_id=...`.
   Failures (DB unreachable, network) return 503 with the underlying reason
-  rather than serving an empty-scope session – see `src/mcp/transport.ts`.
-- **Auth mode**: `PORTUNI_AUTH_MODE=env` (default) = solo bearer token; `google` = Google OAuth + Groups. Enforcement lives server-side in `src/auth/` (min-scopes per tool, node-access for group visibility).
+  rather than serving an empty-scope session – see `apps/server/mcp/transport.ts`.
+- **Auth mode**: `PORTUNI_AUTH_MODE=env` (default) = solo bearer token; `google` = Google OAuth + Groups. Enforcement lives server-side in `apps/server/auth/` (min-scopes per tool, node-access for group visibility).
 - **Desktop central-server config**: `server_url` + `google_client_id` in
   `config.json` (non-secret) enable Settings → Účet (Google login, device
   tokens). Refresh token + session JWT live in Keychain; webview reaches the
@@ -99,7 +104,10 @@ loop for backend iteration.
   requires the Workspace OAuth client (admin checklist in the design spec §6).
   `data_mode: "central"` přepne desktop plně na centrální server (sidecar se
   nespouští, mirror/sync/file content = fáze B, "local only"); teammate setup =
-  config.json se `server_url`, `google_client_id`, `data_mode`.
+  config.json se `server_url`, `google_client_id`, `data_mode`. Pozor, je to
+  jiná osa než "sync vs Drive": "sync" = dvě roviny (graf v Turso vs. file bytes
+  na Drive), central mód umí dnes jen graf. Model: `docs/architecture/data-modes.md`;
+  scope nedostavěné buňky (file content přes server): `docs/architecture/central-file-content-phase-b.md`.
 
 - **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
   keys; `.env.schema` declares only the 6 core ones. Full inventory with

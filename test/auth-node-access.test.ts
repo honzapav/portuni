@@ -6,18 +6,18 @@ import {
   effectiveAccessGroup,
   canSeeNode,
   filterVisibleNodeIds,
-} from "../src/auth/node-access.js";
+} from "../apps/server/auth/node-access.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createClient as createDbClient } from "@libsql/client";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { ensureSchemaOn } from "../src/infra/schema.js";
-import { setDbForTesting } from "../src/infra/db.js";
-import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
-import { createMcpServer } from "../src/mcp/server.js";
-import type { RequestIdentity } from "../src/auth/request-identity.js";
+import { ensureSchemaOn } from "../apps/server/infra/schema.js";
+import { setDbForTesting } from "../apps/server/infra/db.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { createMcpServer } from "../apps/server/mcp/server.js";
+import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 
 const SOLO = "01SOLO0000000000000000000";
 

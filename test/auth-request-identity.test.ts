@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { resolveRequestIdentity } from "../src/auth/request-identity.js";
-import { mintDeviceToken } from "../src/auth/device-tokens.js";
-import { signSessionToken } from "../src/auth/session-token.js";
-import { EnvAdapter } from "../src/auth/env-adapter.js";
+import { resolveRequestIdentity } from "../apps/server/auth/request-identity.js";
+import { mintDeviceToken } from "../apps/server/auth/device-tokens.js";
+import { signSessionToken } from "../apps/server/auth/session-token.js";
+import { EnvAdapter } from "../apps/server/auth/env-adapter.js";
 
 const SECRET = "test-secret-at-least-32-chars-long!!";
 const SOLO = "01SOLO0000000000000000000";

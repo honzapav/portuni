@@ -21,8 +21,8 @@ import {
   resolveGuardScriptPath,
   resolvePortuniMcpUrl,
   resolvePortuniRoot,
-} from "../src/domain/write-scope.js";
-import { materializeScopeConfig } from "../src/domain/scope-materialize.js";
+} from "../apps/server/domain/write-scope.js";
+import { materializeScopeConfig } from "../apps/server/domain/scope-materialize.js";
 
 describe("isWithin", () => {
   it("matches strict prefix at directory boundary", () => {

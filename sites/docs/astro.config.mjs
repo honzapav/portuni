@@ -49,6 +49,7 @@ export default defineConfig({
 				{
 					label: 'Files & Sync',
 					items: [
+						{ label: 'Data Modes (Local vs Central)', slug: 'concepts/data-modes' },
 						{ label: 'Local Mirrors', slug: 'concepts/mirrors' },
 						{ label: 'Filesystem Permissions', slug: 'concepts/permissions' },
 						{ label: 'Scope Enforcement', slug: 'concepts/scope-enforcement', badge: { text: 'in design', variant: 'caution' } },

@@ -13,13 +13,13 @@ import { mkdtemp, rm, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { storeFile } from "../src/domain/sync/engine.js";
-import { registerMirror } from "../src/domain/sync/mirror-registry.js";
-import { setDbForTesting } from "../src/infra/db.js";
-import { resetGateCachesForTesting } from "../src/http/middleware.js";
-import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
-import { resetAdapterCacheForTests } from "../src/domain/sync/adapter-cache.js";
-import { startHttpServer, type HttpServerHandle } from "../src/http/server.js";
+import { storeFile } from "../apps/server/domain/sync/engine.js";
+import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
+import { setDbForTesting } from "../apps/server/infra/db.js";
+import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
+import { startHttpServer, type HttpServerHandle } from "../apps/server/http/server.js";
 
 const BASE = "http://127.0.0.1:14930";
 

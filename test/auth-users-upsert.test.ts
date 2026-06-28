@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { upsertUserFromIdentity } from "../src/auth/users.js";
+import { upsertUserFromIdentity } from "../apps/server/auth/users.js";
 
 test("existing user matched by email is enriched, id preserved", async () => {
   const { db } = await makeSharedDb();

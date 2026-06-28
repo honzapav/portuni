@@ -4,7 +4,7 @@ import {
   resolveGlobalScope,
   scopeAtLeast,
   groupRoleConfigFromEnv,
-} from "../src/auth/roles.js";
+} from "../apps/server/auth/roles.js";
 
 test("scopeAtLeast respects ordering read < write < manage < admin", () => {
   assert.equal(scopeAtLeast("admin", "read"), true);

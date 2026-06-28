@@ -75,3 +75,4 @@ Stick with the standalone CLI server (covered in [Setup](/getting-started/setup/
 - [Setup](/getting-started/setup/) — install paths and configuration
 - [MCP Clients overview](/clients/overview/) — how each client treats your local files
 - [Local Mirrors](/concepts/mirrors/) — the per-device mirror model the app surfaces in the Workspace view
+- [Data Modes (Local vs Central)](/concepts/data-modes/) — local vs central mode and what each can do with files

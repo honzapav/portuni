@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ulid } from "ulid";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { createMirrorForNode } from "../src/domain/sync/mirror-create.js";
-import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
-import { resetAdapterCacheForTests } from "../src/domain/sync/adapter-cache.js";
-import { setDbForTesting } from "../src/infra/db.js";
+import { createMirrorForNode } from "../apps/server/domain/sync/mirror-create.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
+import { setDbForTesting } from "../apps/server/infra/db.js";
 
 let workspace: string;
 let originalEnv: string | undefined;

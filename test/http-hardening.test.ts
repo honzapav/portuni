@@ -10,10 +10,10 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { connect, type Socket } from "node:net";
 import { createClient } from "@libsql/client";
-import { ensureSchemaOn } from "../src/infra/schema.js";
-import { setDbForTesting } from "../src/infra/db.js";
-import { resetGateCachesForTesting } from "../src/http/middleware.js";
-import { startHttpServer, type HttpServerHandle } from "../src/http/server.js";
+import { ensureSchemaOn } from "../apps/server/infra/schema.js";
+import { setDbForTesting } from "../apps/server/infra/db.js";
+import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
+import { startHttpServer, type HttpServerHandle } from "../apps/server/http/server.js";
 
 const PORT = 14920;
 const BASE = `http://127.0.0.1:${PORT}`;

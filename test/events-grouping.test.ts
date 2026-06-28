@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { groupEventsByDate } from "../app/src/lib/events.js";
+import { groupEventsByDate } from "../apps/web/src/lib/events.js";
 
 // Minimal event shape; groupEventsByDate only reads created_at + id.
 function evt(id: string, created_at: string) {

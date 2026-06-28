@@ -192,8 +192,11 @@ export function classifyWrite(args: {
 //
 // Resolution order:
 //   1) PORTUNI_GUARD_SCRIPT env var (must be an existing file)
-//   2) ../scripts/portuni-guard.sh relative to this module (works from
-//      both src/ during dev and dist/ when built)
+//   2) scripts/portuni-guard.sh relative to this module. The relative depth
+//      differs between layouts, so we try each known depth and return the
+//      first that exists:
+//        dist/domain/write-scope.js      -> ../../scripts      (dist at repo root)
+//        apps/server/domain/write-scope.ts -> ../../../scripts (tsx dev source)
 export function resolveGuardScriptPath(): string | null {
   const explicit = process.env.PORTUNI_GUARD_SCRIPT?.trim();
   if (explicit) {
@@ -202,10 +205,11 @@ export function resolveGuardScriptPath(): string | null {
   try {
     const here = fileURLToPath(import.meta.url);
     const dir = dirname(here);
-    // src/domain/write-scope.ts -> repo/scripts/portuni-guard.sh
-    // dist/domain/write-scope.js -> repo/scripts/portuni-guard.sh
-    const candidate = join(dir, "..", "..", "scripts", "portuni-guard.sh");
-    return existsSync(candidate) ? candidate : null;
+    const candidates = [
+      join(dir, "..", "..", "scripts", "portuni-guard.sh"),
+      join(dir, "..", "..", "..", "scripts", "portuni-guard.sh"),
+    ];
+    return candidates.find((c) => existsSync(c)) ?? null;
   } catch {
     return null;
   }

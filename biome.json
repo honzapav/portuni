@@ -7,16 +7,16 @@
   },
   "files": {
     "includes": [
-      "src/**/*.ts",
+      "apps/server/**/*.ts",
       "test/**/*.ts",
       "scripts/**/*.ts",
-      "app/src/**/*.{ts,tsx}",
+      "apps/web/src/**/*.{ts,tsx}",
       "!**/node_modules",
       "!**/.claude",
       "!**/dist",
       "!**/env.d.ts",
       "!**/.varlock-types.d.ts",
-      "!app/dist"
+      "!apps/web/dist"
     ]
   },
   "formatter": {

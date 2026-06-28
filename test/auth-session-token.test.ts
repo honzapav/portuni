@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   signSessionToken,
   verifySessionToken,
-} from "../src/auth/session-token.js";
+} from "../apps/server/auth/session-token.js";
 
 const SECRET = "test-secret-at-least-32-chars-long!!";
 

@@ -15,7 +15,7 @@ import {
   getLocalMirror,
   deleteLocalMirror,
   listLocalMirrors,
-} from "../src/domain/sync/local-db.js";
+} from "../apps/server/domain/sync/local-db.js";
 
 let workspaceRoot: string;
 let prevEnv: string | undefined;

@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createClient, type Client } from "@libsql/client";
 import { ulid } from "ulid";
-import { ensureSchemaOn } from "../src/infra/schema.js";
-import { dumpDatabaseSql } from "../src/infra/backup.js";
+import { ensureSchemaOn } from "../apps/server/infra/schema.js";
+import { dumpDatabaseSql } from "../apps/server/infra/backup.js";
 
 let dir: string;
 

@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "ooo.workflow.portuni",
   "build": {
-    "frontendDist": "../app/dist",
+    "frontendDist": "../web/dist",
     "devUrl": "http://localhost:4010",
-    "beforeDevCommand": "npm --prefix app run dev",
-    "beforeBuildCommand": "npm --prefix app run build && node scripts/build-sidecar.mjs"
+    "beforeDevCommand": "npm --prefix web run dev",
+    "beforeBuildCommand": "npm --prefix web run build && node ../scripts/build-sidecar.mjs"
   },
   "app": {
     "windows": [

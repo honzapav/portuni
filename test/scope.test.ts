@@ -11,7 +11,7 @@ import {
   decideRead,
   parseScopeMode,
   seedScopeFromHome,
-} from "../src/mcp/scope.js";
+} from "../apps/server/mcp/scope.js";
 
 async function freshGraph() {
   const db = createClient({ url: ":memory:" });

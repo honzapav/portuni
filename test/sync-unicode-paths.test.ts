@@ -4,10 +4,10 @@ import { mkdtemp, rm, writeFile, readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { storeFile, statusScan } from "../src/domain/sync/engine.js";
-import { registerMirror } from "../src/domain/sync/mirror-registry.js";
-import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
-import { resetAdapterCacheForTests } from "../src/domain/sync/adapter-cache.js";
+import { storeFile, statusScan } from "../apps/server/domain/sync/engine.js";
+import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
 
 // Czech filenames arrive in two byte forms: NFC ("ř" as one codepoint) from
 // most apps, NFD ("r" + combining hacek) from Finder drag-drop, some pickers

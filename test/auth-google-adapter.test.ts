@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GoogleAdapter } from "../src/auth/google-adapter.js";
+import { GoogleAdapter } from "../apps/server/auth/google-adapter.js";
 
 const basePayload = {
   sub: "g-sub-1",

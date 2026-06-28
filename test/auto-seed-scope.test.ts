@@ -7,11 +7,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
-import { SessionScope } from "../src/mcp/scope.js";
+import { SessionScope } from "../apps/server/mcp/scope.js";
 import {
   parseHomeNodeIdFromUrl,
   autoSeedFromHome,
-} from "../src/mcp/auto-seed.js";
+} from "../apps/server/mcp/auto-seed.js";
 
 async function freshGraph() {
   const db = createClient({ url: ":memory:" });

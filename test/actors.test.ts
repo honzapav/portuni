@@ -7,8 +7,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
 import { ulid } from "ulid";
-import { runMigration006 } from "../src/infra/schema.js";
-import { createActor, listActors, getActor, updateActor, archiveActor } from "../src/domain/actors.js";
+import { runMigration006 } from "../apps/server/infra/schema.js";
+import { createActor, listActors, getActor, updateActor, archiveActor } from "../apps/server/domain/actors.js";
 
 async function freshEnv() {
   const db = createClient({ url: ":memory:" });

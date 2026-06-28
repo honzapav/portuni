@@ -4,11 +4,11 @@ import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { statusScan } from "../src/domain/sync/engine.js";
-import { listUntrackedLocal } from "../src/domain/sync/discover-local.js";
-import { registerMirror } from "../src/domain/sync/mirror-registry.js";
-import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
-import { resetAdapterCacheForTests } from "../src/domain/sync/adapter-cache.js";
+import { statusScan } from "../apps/server/domain/sync/engine.js";
+import { listUntrackedLocal } from "../apps/server/domain/sync/discover-local.js";
+import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
 
 let workspace: string;
 let originalEnv: string | undefined;

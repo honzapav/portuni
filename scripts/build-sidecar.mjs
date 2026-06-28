@@ -1,5 +1,5 @@
 // Compiles the desktop entry into a single-file binary named with the
-// Tauri target triple, placed under src-tauri/binaries/. The naming
+// Tauri target triple, placed under apps/desktop/binaries/. The naming
 // pattern <name>-<rustc-host-triple><ext> is required by Tauri's
 // externalBin bundler.
 //
@@ -17,7 +17,7 @@
 // Finder gave cwd=/, the fallback failed, and the sidecar crashed with
 // `Cannot find module '@libsql/darwin-arm64'`.
 //
-// Fix: copy the native binding directory into src-tauri/sidecar-deps/
+// Fix: copy the native binding directory into apps/desktop/sidecar-deps/
 // next to the binaries/. Tauri's `bundle.resources` ships it inside the
 // .app at Resources/sidecar-deps/. The Tauri host (lib.rs) sets the
 // sidecar's cwd to that directory so Bun's ancestor walk finds the
@@ -25,7 +25,15 @@
 
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, renameSync, existsSync, readdirSync, rmSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Resolve every path relative to the repo root (this file lives at
+// <repo>/scripts/build-sidecar.mjs), NOT the current working directory.
+// Tauri runs this via beforeBuildCommand with cwd=<repo>/apps, while
+// `npm run build:sidecar` runs it with cwd=<repo>. Anchoring on the script
+// location makes both invocations produce identical, correct paths.
+const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function detectTargetTriple() {
   const output = execFileSync("rustc", ["-vV"], { encoding: "utf8" });
@@ -35,7 +43,7 @@ function detectTargetTriple() {
 }
 
 const triple = detectTargetTriple();
-const outDir = "src-tauri/binaries";
+const outDir = join(repoRoot, "apps/desktop/binaries");
 mkdirSync(outDir, { recursive: true });
 
 const ext = process.platform === "win32" ? ".exe" : "";
@@ -55,21 +63,21 @@ function compile(entry, name) {
 }
 
 // Copy every @libsql/<platform> native binding directory present in
-// node_modules into src-tauri/sidecar-deps/node_modules/@libsql/. We
+// node_modules into apps/desktop/sidecar-deps/node_modules/@libsql/. We
 // copy ALL platforms (not just the host) so a future cross-build can
 // pick the right one without re-running this script per target. npm
 // only installs the platforms listed in optionalDependencies for the
 // host architecture, so in practice this is just one or two dirs.
 function stageNativeBindings() {
-  const srcRoot = "node_modules/@libsql";
-  const dstRoot = "src-tauri/sidecar-deps/node_modules/@libsql";
+  const srcRoot = join(repoRoot, "node_modules/@libsql");
+  const dstRoot = join(repoRoot, "apps/desktop/sidecar-deps/node_modules/@libsql");
   if (!existsSync(srcRoot)) {
     throw new Error(
       `expected ${srcRoot} to exist after npm install; cannot stage native bindings`,
     );
   }
   // Wipe and recreate so deletions in node_modules propagate.
-  rmSync("src-tauri/sidecar-deps", { recursive: true, force: true });
+  rmSync(join(repoRoot, "apps/desktop/sidecar-deps"), { recursive: true, force: true });
   mkdirSync(dstRoot, { recursive: true });
   let staged = 0;
   for (const entry of readdirSync(srcRoot, { withFileTypes: true })) {
@@ -92,6 +100,6 @@ function stageNativeBindings() {
   }
 }
 
-compile("src/desktop.ts", "portuni-sidecar");
+compile(join(repoRoot, "apps/server/desktop.ts"), "portuni-sidecar");
 stageNativeBindings();
 // MCP stdio binary is added by the Task 7 commit.

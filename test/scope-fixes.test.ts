@@ -14,7 +14,7 @@ import {
   guardNodeRead,
   loadNodeScopeMeta,
   violatesHardFloor,
-} from "../src/mcp/scope.js";
+} from "../apps/server/mcp/scope.js";
 
 async function freshDb() {
   const db = createClient({ url: ":memory:" });

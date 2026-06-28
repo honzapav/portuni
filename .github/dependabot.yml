@@ -19,43 +19,43 @@ updates:
 
   # React + Vite frontend.
   - package-ecosystem: "npm"
-    directory: "/app"
+    directory: "/apps/web"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
     groups:
-      app-minor-patch:
+      web-minor-patch:
         update-types:
           - "minor"
           - "patch"
 
   # Marketing/landing site (Astro).
   - package-ecosystem: "npm"
-    directory: "/website"
+    directory: "/sites/marketing"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
     groups:
-      website-minor-patch:
+      marketing-minor-patch:
         update-types:
           - "minor"
           - "patch"
 
   # Documentation site (Astro).
   - package-ecosystem: "npm"
-    directory: "/docs-site"
+    directory: "/sites/docs"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
     groups:
-      docs-site-minor-patch:
+      docs-minor-patch:
         update-types:
           - "minor"
           - "patch"
 
   # Tauri 2 desktop shell (Rust).
   - package-ecosystem: "cargo"
-    directory: "/src-tauri"
+    directory: "/apps/desktop"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10

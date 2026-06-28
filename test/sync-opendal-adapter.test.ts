@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createOpenDALAdapter } from "../src/domain/sync/opendal-adapter.js";
-import type { RemoteConfig, DeviceTokens } from "../src/domain/sync/types.js";
+import { createOpenDALAdapter } from "../apps/server/domain/sync/opendal-adapter.js";
+import type { RemoteConfig, DeviceTokens } from "../apps/server/domain/sync/types.js";
 
 const noTokens: DeviceTokens = {};
 

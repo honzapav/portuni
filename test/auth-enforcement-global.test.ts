@@ -17,13 +17,13 @@ import { createClient as createDbClient, type Client as DbClient } from "@libsql
 import { ulid } from "ulid";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { TOOL_MIN_SCOPE, minScopeForRoute, gateRoute } from "../src/auth/min-scopes.js";
-import { scopeAtLeast } from "../src/auth/roles.js";
-import { ensureSchemaOn } from "../src/infra/schema.js";
-import { setDbForTesting } from "../src/infra/db.js";
-import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
-import { createMcpServer } from "../src/mcp/server.js";
-import type { RequestIdentity } from "../src/auth/request-identity.js";
+import { TOOL_MIN_SCOPE, minScopeForRoute, gateRoute } from "../apps/server/auth/min-scopes.js";
+import { scopeAtLeast } from "../apps/server/auth/roles.js";
+import { ensureSchemaOn } from "../apps/server/infra/schema.js";
+import { setDbForTesting } from "../apps/server/infra/db.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { createMcpServer } from "../apps/server/mcp/server.js";
+import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 
 // ---------------------------------------------------------------------------
 // Unit tests — no server needed

@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { registerMirror } from "../src/domain/sync/mirror-registry.js";
-import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
-import { setDbForTesting } from "../src/infra/db.js";
-import { SOLO_USER } from "../src/infra/schema.js";
-import { computeSyncPending } from "../src/domain/sync/pending.js";
+import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { setDbForTesting } from "../apps/server/infra/db.js";
+import { SOLO_USER } from "../apps/server/infra/schema.js";
+import { computeSyncPending } from "../apps/server/domain/sync/pending.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
 
 let workspace: string;

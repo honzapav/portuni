@@ -11,12 +11,16 @@ A shared map of how your organization works – its projects, processes, areas, 
 The Portuni server: a TypeScript MCP server (Streamable HTTP) backed by Turso (shared team database) or local SQLite (solo / testing), with a pluggable file-sync layer for files attached to graph nodes.
 
 ```
-src/         MCP server, schema, sync engine, tools
-scripts/     write-scope guard, maintenance scripts
+apps/
+  server/    MCP/HTTP server: schema, sync engine, tools, auth (Node)
+  web/       Desktop/web UI (React + Vite)
+  desktop/   Tauri 2 shell that bundles server + web into Portuni.app (Rust)
+sites/
+  marketing/ Marketing site, portuni.com (Astro)
+  docs/      Public documentation site, docs.portuni.com (Astro Starlight)
+scripts/     write-scope guard, sidecar build, maintenance scripts
 test/        node:test suite (no external runner)
 docs/        Internal design notes and specs
-docs-site/   Public documentation site (docs.portuni.com)
-website/     Marketing site (portuni.com)
 ```
 
 ## Quickstart

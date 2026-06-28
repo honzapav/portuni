@@ -4,16 +4,16 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createClient, type Client } from "@libsql/client";
-import { DDL_REMOTES_TABLE, DDL_REMOTE_ROUTING_TABLE, INDEX_REMOTE_ROUTING_PRIORITY } from "../src/infra/schema.js";
-import { upsertRemote, addRule, resolveRemote } from "../src/domain/sync/routing.js";
-import { createOpenDALAdapter } from "../src/domain/sync/opendal-adapter.js";
-import { buildRemotePath, buildNodeRoot } from "../src/domain/sync/remote-path.js";
-import { sha256Buffer } from "../src/domain/sync/hash.js";
+import { DDL_REMOTES_TABLE, DDL_REMOTE_ROUTING_TABLE, INDEX_REMOTE_ROUTING_PRIORITY } from "../apps/server/infra/schema.js";
+import { upsertRemote, addRule, resolveRemote } from "../apps/server/domain/sync/routing.js";
+import { createOpenDALAdapter } from "../apps/server/domain/sync/opendal-adapter.js";
+import { buildRemotePath, buildNodeRoot } from "../apps/server/domain/sync/remote-path.js";
+import { sha256Buffer } from "../apps/server/domain/sync/hash.js";
 import {
   upsertLocalMirror, listLocalMirrors,
   upsertFileState, getFileState,
   resetLocalDbForTests,
-} from "../src/domain/sync/local-db.js";
+} from "../apps/server/domain/sync/local-db.js";
 
 let workspace: string;
 let remoteRoot: string;

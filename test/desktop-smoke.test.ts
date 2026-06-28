@@ -8,10 +8,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import { startHttpServer } from "../src/http/server.js";
-import { ensureSchema } from "../src/infra/schema.js";
-import { setDbForTesting } from "../src/infra/db.js";
-import { resetGateCachesForTesting } from "../src/http/middleware.js";
+import { startHttpServer } from "../apps/server/http/server.js";
+import { ensureSchema } from "../apps/server/infra/schema.js";
+import { setDbForTesting } from "../apps/server/infra/db.js";
+import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
 
 test("backend runs end-to-end with file: libSQL URL", async (t) => {
   const tmp = mkdtempSync(join(tmpdir(), "portuni-desktop-"));

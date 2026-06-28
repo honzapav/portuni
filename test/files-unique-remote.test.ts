@@ -56,7 +56,7 @@ describe("files (node_id, remote_name, remote_path) uniqueness", () => {
       args: ["015_files_unique_remote"],
     });
 
-    const { runMigrations } = await import("../src/infra/schema-migrations.js");
+    const { runMigrations } = await import("../apps/server/infra/schema-migrations.js");
     await runMigrations(db);
 
     const rows = await db.execute({

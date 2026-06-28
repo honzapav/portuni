@@ -21,11 +21,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createClient } from "@libsql/client";
 import { ulid } from "ulid";
-import { ensureSchemaOn } from "../src/infra/schema.js";
-import { setDbForTesting } from "../src/infra/db.js";
-import { resetGateCachesForTesting } from "../src/http/middleware.js";
-import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
-import { startHttpServer, type HttpServerHandle } from "../src/http/server.js";
+import { ensureSchemaOn } from "../apps/server/infra/schema.js";
+import { setDbForTesting } from "../apps/server/infra/db.js";
+import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { startHttpServer, type HttpServerHandle } from "../apps/server/http/server.js";
 
 const BASE = "http://127.0.0.1:14910";
 

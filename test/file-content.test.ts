@@ -4,14 +4,14 @@ import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { registerMirror } from "../src/domain/sync/mirror-registry.js";
-import { resetLocalDbForTests } from "../src/domain/sync/local-db.js";
-import { resetAdapterCacheForTests } from "../src/domain/sync/adapter-cache.js";
+import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
 import {
   readFileContent,
   writeFileContent,
   FileContentError,
-} from "../src/domain/sync/file-content.js";
+} from "../apps/server/domain/sync/file-content.js";
 
 let workspace: string;
 let originalEnv: string | undefined;
@@ -165,7 +165,7 @@ describe("createFile", () => {
     const { db, nodeId, remoteRoot } = await makeSharedDb();
     const mirrorRoot = join(workspace, "mirror");
     await registerMirror("U1", nodeId, mirrorRoot);
-    const { createFile } = await import("../src/domain/sync/file-content.js");
+    const { createFile } = await import("../apps/server/domain/sync/file-content.js");
     const f = await createFile(db, {
       userId: "U1",
       nodeId,
@@ -188,7 +188,7 @@ describe("createFile", () => {
     const { db, nodeId } = await makeSharedDb();
     const mirrorRoot = join(workspace, "mirror");
     await registerMirror("U1", nodeId, mirrorRoot);
-    const { createFile } = await import("../src/domain/sync/file-content.js");
+    const { createFile } = await import("../apps/server/domain/sync/file-content.js");
     await createFile(db, { userId: "U1", nodeId, filename: "a.md", content: "x" });
     await assert.rejects(
       () => createFile(db, { userId: "U1", nodeId, filename: "a.md", content: "y" }),

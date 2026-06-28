@@ -5,10 +5,10 @@ import {
   listRemotesService,
   setupRemoteService,
   setRoutingPolicyService,
-} from "../src/mcp/tools/sync-remotes.js";
-import { upsertRemote, listRules } from "../src/domain/sync/routing.js";
-import { TOKEN_ENV_PREFIX } from "../src/domain/sync/types.js";
-import { resetTokenStoreForTests } from "../src/domain/sync/token-store.js";
+} from "../apps/server/mcp/tools/sync-remotes.js";
+import { upsertRemote, listRules } from "../apps/server/domain/sync/routing.js";
+import { TOKEN_ENV_PREFIX } from "../apps/server/domain/sync/types.js";
+import { resetTokenStoreForTests } from "../apps/server/domain/sync/token-store.js";
 
 function envKey(name: string, field: string): string {
   return `${TOKEN_ENV_PREFIX}${name.toUpperCase().replace(/-/g, "_")}__${field}`;
@@ -190,7 +190,7 @@ describe("setupRemoteService gdrive validation", () => {
         service_account_json: sa,
       });
       // Verify TokenStore has it.
-      const { getTokenStore } = await import("../src/domain/sync/token-store.js");
+      const { getTokenStore } = await import("../apps/server/domain/sync/token-store.js");
       const store = await getTokenStore();
       const t = await store.read("g2");
       assert.ok(t?.service_account_json?.includes("client_email"));
