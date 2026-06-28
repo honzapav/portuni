@@ -7,6 +7,9 @@ import {
   isSessionActive,
   nodeIsActive,
   countSessionsByNode,
+  isAgentCommand,
+  sessionIsAgentWorking,
+  nodeHasWorkingAgent,
 } from "../app/src/lib/sessions.js";
 
 const baseNode = {
@@ -108,5 +111,34 @@ describe("sessions helpers", () => {
   it("countSessionsByNode([]) returns an empty Map", () => {
     const counts = countSessionsByNode([]);
     assert.equal(counts.size, 0);
+  });
+});
+
+describe("agent activity gating", () => {
+  const agent = { ...baseNode, command: "claude 'hello'" };
+  const shell = { ...baseNode, command: "zsh -l" };
+
+  it("isAgentCommand matches agent CLIs, not bare shells", () => {
+    assert.equal(isAgentCommand("claude 'do x'"), true);
+    assert.equal(isAgentCommand("codex"), true);
+    assert.equal(isAgentCommand("vibe --trust 'y'"), true);
+    assert.equal(isAgentCommand("zsh -l"), false);
+    assert.equal(isAgentCommand("ls -la"), false);
+    assert.equal(isAgentCommand(""), false);
+  });
+
+  it("sessionIsAgentWorking requires both an agent command and recent output", () => {
+    const a = { ...createSession(agent, 1000), lastOutputAt: 1000 };
+    const s = { ...createSession(shell, 1000), lastOutputAt: 1000 };
+    assert.equal(sessionIsAgentWorking(a, 2000), true); // agent + fresh output
+    assert.equal(sessionIsAgentWorking(s, 2000), false); // busy shell must NOT light up
+    assert.equal(sessionIsAgentWorking(a, 5000), false); // agent, stale output
+  });
+
+  it("nodeHasWorkingAgent ignores busy shell sessions", () => {
+    const a = { ...createSession({ ...agent, nodeId: "n1" }, 1000), lastOutputAt: 1000 };
+    const s = { ...createSession({ ...shell, nodeId: "n2" }, 1000), lastOutputAt: 1000 };
+    assert.equal(nodeHasWorkingAgent([a, s], "n1", 2000), true);
+    assert.equal(nodeHasWorkingAgent([a, s], "n2", 2000), false);
   });
 });

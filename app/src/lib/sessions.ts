@@ -94,6 +94,42 @@ export function nodeIsActive(
   );
 }
 
+// The activity indicator means "an agent is working", not "the PTY emitted
+// bytes". A bare shell that echoes keystrokes, redraws a prompt, or runs
+// `ls` must NOT light up green. Only sessions launched as an agent CLI
+// qualify -- matched against the session's launch command.
+export function isAgentCommand(command: string): boolean {
+  return /\b(claude|codex|vibe|opencode)\b/i.test(command);
+}
+
+// A session is "agent working" when it was launched as an agent AND it
+// produced output within the activity window. The command gate answers
+// "which kind of session", the output recency answers "is it doing
+// anything right now".
+export function sessionIsAgentWorking(
+  session: Pick<TerminalSession, "command" | "lastOutputAt">,
+  now: number,
+  thresholdMs: number = ACTIVITY_THRESHOLD_MS,
+): boolean {
+  return (
+    isAgentCommand(session.command) &&
+    isSessionActive(now, session.lastOutputAt, thresholdMs)
+  );
+}
+
+// Node-level aggregate: green when any of the node's sessions is an agent
+// that is currently working.
+export function nodeHasWorkingAgent(
+  sessions: readonly TerminalSession[],
+  nodeId: string,
+  now: number,
+  thresholdMs: number = ACTIVITY_THRESHOLD_MS,
+): boolean {
+  return sessions.some(
+    (s) => s.nodeId === nodeId && sessionIsAgentWorking(s, now, thresholdMs),
+  );
+}
+
 export function countSessionsByNode(
   sessions: readonly TerminalSession[],
 ): Map<string, number> {
