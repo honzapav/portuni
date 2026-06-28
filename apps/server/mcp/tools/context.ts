@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getDb } from "../../infra/db.js";
-import { listUserMirrors, unregisterMirror } from "../../domain/sync/mirror-registry.js";
+import { listUserMirrors, unregisterMirror, getMirrorPath } from "../../domain/sync/mirror-registry.js";
+import { readableMirrorRoot } from "../scope-reconciler.js";
 import type { Client, InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardNodeRead } from "../scope.js";
@@ -556,6 +557,28 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
             mode: scope.mode,
           });
         }
+
+        // Rewrite local_path for non-home in-scope nodes to the staged copy
+        // that the Seatbelt sandbox actually allows reading. Do NOT await
+        // per-node reconciliation here — the onAdd hook already scheduled
+        // staging via reconciler.schedule(). For newly discovered nodes that
+        // were just added above, staging is in progress concurrently.
+        const homeMirror = scope.homeNodeId
+          ? await getMirrorPath(ctx.identity.userId, scope.homeNodeId)
+          : null;
+        const allPayloadNodes: Array<{ id: string; local_path: string | null }> = [
+          payload.root,
+          ...payload.connected,
+        ];
+        for (const n of allPayloadNodes) {
+          n.local_path = readableMirrorRoot({
+            scope,
+            nodeId: n.id,
+            homeMirror,
+            realMirror: n.local_path,
+          });
+        }
+
         return {
           content: [
             {

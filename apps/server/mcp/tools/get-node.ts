@@ -6,6 +6,7 @@ import { buildContextPayload } from "./context.js";
 import { getLocalMirror } from "../../domain/sync/local-db.js";
 import { deriveLocalPath, buildNodeRoot } from "../../domain/sync/remote-path.js";
 import { guardNodeRead, scopeExpansionError } from "../scope.js";
+import { readableMirrorRoot } from "../scope-reconciler.js";
 import { logAudit } from "../../infra/audit.js";
 import type { SessionCtx } from "../server.js";
 
@@ -122,6 +123,23 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
         ? { local_path: mirror.local_path, registered_at: mirror.registered_at }
         : null;
 
+      // Single-source disk projection: for a non-home in-scope node the agent
+      // can only read the staged copy, so derive file paths from there and
+      // ensure the copy is fresh first. local_mirror keeps pointing at the real
+      // mirror (it is metadata about registration, not a read path).
+      const homeMirror = scope.homeNodeId
+        ? (await getLocalMirror(ctx.identity.userId, scope.homeNodeId))?.local_path ?? null
+        : null;
+      if (row.id !== scope.homeNodeId && scope.has(row.id)) {
+        await ctx.reconciler.reconcileNode(row.id);
+      }
+      const effectiveMirrorRoot = readableMirrorRoot({
+        scope,
+        nodeId: row.id,
+        homeMirror,
+        realMirror: mirrorPath,
+      });
+
       // 4. Resolve the org_sync_key once for the per-file derivation below.
       let orgSyncKey: string | null = null;
       if (row.type !== "organization") {
@@ -151,14 +169,14 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
       const files = fileResult.rows.map((f) => {
         const remotePath = (f.remote_path as string | null) ?? null;
         let derivedLocal: string | null = null;
-        if (mirrorPath && remotePath) {
+        if (effectiveMirrorRoot && remotePath) {
           const nodeRoot = buildNodeRoot({
             orgSyncKey,
             nodeType: row.type,
             nodeSyncKey: row.sync_key,
           });
           try {
-            derivedLocal = deriveLocalPath({ mirrorRoot: mirrorPath, nodeRoot, remotePath });
+            derivedLocal = deriveLocalPath({ mirrorRoot: effectiveMirrorRoot, nodeRoot, remotePath });
           } catch {
             derivedLocal = null;
           }

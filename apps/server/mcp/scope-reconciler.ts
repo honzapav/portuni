@@ -12,6 +12,22 @@ import { stageNodeIntoMirror } from "../domain/scope-staging.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import type { SessionScope } from "./scope.js";
 
+// The mirror root to surface to the agent for a node's files: the staged
+// copy for an in-scope non-home node (what the Seatbelt sandbox actually
+// lets it read), or the real mirror for the home node and everything else.
+export function readableMirrorRoot(args: {
+  scope: SessionScope;
+  nodeId: string;
+  homeMirror: string | null;
+  realMirror: string | null;
+}): string | null {
+  const { scope, nodeId, homeMirror, realMirror } = args;
+  if (nodeId !== scope.homeNodeId && scope.has(nodeId) && homeMirror) {
+    return stagedMirrorRoot(homeMirror, nodeId);
+  }
+  return realMirror;
+}
+
 // Deterministic staged location for a node's files inside the home mirror.
 export function stagedMirrorRoot(homeMirror: string, nodeId: string): string {
   return join(homeMirror, ".portuni-scope", nodeId);
