@@ -19,6 +19,9 @@ import {
 import {
   readFileContentRemote,
   writeFileContentRemote,
+  createFileRemote,
+  renameFileRemote,
+  deleteFileRemote,
 } from "../domain/sync/file-content-remote.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { renameFile, deleteFile } from "../domain/sync/engine-mutations.js";
@@ -157,18 +160,31 @@ export async function handleCreateFile(
   const body = await parseJsonBody(req, res, createSchema);
   if (!body) return;
   try {
-    if (!(await nodeVisibleTo(getDb(), identity, nodeId))) {
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
       respondJson(res, 404, { error: "node not found" });
       return;
     }
-    const f = await createFile(getDb(), {
-      userId: identity.userId,
-      nodeId,
-      filename: body.filename,
-      section: body.section,
-      subpath: body.subpath ?? null,
-      content: body.content,
-    });
+    // Mirror present -> local create (registers + pushes). No mirror
+    // (central / VPS) -> adapter-direct create against the routed remote.
+    const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
+    const f = mirrorRoot
+      ? await createFile(db, {
+          userId: identity.userId,
+          nodeId,
+          filename: body.filename,
+          section: body.section,
+          subpath: body.subpath ?? null,
+          content: body.content,
+        })
+      : await createFileRemote(db, {
+          userId: identity.userId,
+          nodeId,
+          filename: body.filename,
+          section: body.section,
+          subpath: body.subpath ?? null,
+          content: body.content,
+        });
     respondJson(res, 201, f);
   } catch (err) {
     if (handleFileContentError(res, err)) return;
@@ -188,15 +204,24 @@ export async function handleRenameFile(
   const body = await parseJsonBody(req, res, renameSchema);
   if (!body) return;
   try {
-    if (!(await nodeVisibleTo(getDb(), identity, nodeId))) {
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
       respondJson(res, 404, { error: "node not found" });
       return;
     }
-    const r = await renameFile(getDb(), {
-      userId: identity.userId,
-      fileId,
-      newFilename: body.new_filename,
-    });
+    const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
+    const r = mirrorRoot
+      ? await renameFile(db, {
+          userId: identity.userId,
+          fileId,
+          newFilename: body.new_filename,
+        })
+      : await renameFileRemote(db, {
+          userId: identity.userId,
+          nodeId,
+          fileId,
+          newFilename: body.new_filename,
+        });
     respondJson(res, 200, r);
   } catch (err) {
     respondError(res, `POST /nodes/${nodeId}/files/${fileId}/rename`, err);
@@ -213,16 +238,26 @@ export async function handleDeleteFile(
 ): Promise<void> {
   const confirmed = url.searchParams.get("confirmed") === "true";
   try {
-    if (!(await nodeVisibleTo(getDb(), identity, nodeId))) {
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
       respondJson(res, 404, { error: "node not found" });
       return;
     }
-    const r = await deleteFile(getDb(), {
-      userId: identity.userId,
-      fileId,
-      mode: "complete",
-      confirmed,
-    });
+    const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
+    const r = mirrorRoot
+      ? await deleteFile(db, {
+          userId: identity.userId,
+          fileId,
+          mode: "complete",
+          confirmed,
+        })
+      : await deleteFileRemote(db, {
+          userId: identity.userId,
+          nodeId,
+          fileId,
+          mode: "complete",
+          confirmed,
+        });
     respondJson(res, 200, r);
   } catch (err) {
     respondError(res, `DELETE /nodes/${nodeId}/files/${fileId}`, err);

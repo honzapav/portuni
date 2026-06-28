@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable, Writable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { ulid } from "ulid";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
@@ -156,6 +157,88 @@ describe("PUT /nodes/:id/file (central, no mirror)", () => {
       args: [JSON.stringify({ access_group: "secret@x.com" }), shared.nodeId],
     });
     const r = await call("PUT", `/nodes/${shared.nodeId}/file?path=wip/x.md`, outsider(), { content: "hax" });
+    assert.equal(r.statusCode, 404, r.body);
+  });
+});
+
+async function remotePathFor(relPath: string): Promise<string> {
+  const info = await resolveNodeInfo(shared.db, shared.nodeId);
+  const segs = relPath.split("/");
+  return buildRemotePath({
+    ...info,
+    section: segs[0] as Section,
+    subpath: segs.length > 2 ? segs.slice(1, -1).join("/") : null,
+    filename: segs[segs.length - 1],
+  });
+}
+
+async function insertFileRow(relPath: string): Promise<string> {
+  const id = ulid();
+  await shared.db.execute({
+    sql: `INSERT INTO files (id, node_id, filename, remote_name, remote_path, current_remote_hash, is_native_format, created_by)
+          VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
+    args: [id, shared.nodeId, relPath.split("/").pop()!, "test-fs", await remotePathFor(relPath), "h", "U1"],
+  });
+  return id;
+}
+
+describe("B3 lifecycle over the server (central, no mirror)", () => {
+  it("POST /nodes/:id/files creates a file adapter-direct", async () => {
+    const r = await call("POST", `/nodes/${shared.nodeId}/files`, admin(), {
+      filename: "made.md",
+      content: "# made\n",
+    });
+    assert.equal(r.statusCode, 201, r.body);
+    const payload = JSON.parse(r.body) as { id: string; relative_path: string };
+    assert.equal(payload.relative_path, "wip/made.md");
+    const adapter = await getAdapter(shared.db, "test-fs");
+    assert.equal((await adapter.get(await remotePathFor("wip/made.md"))).toString("utf8"), "# made\n");
+    const row = await shared.db.execute({ sql: "SELECT id FROM files WHERE id = ?", args: [payload.id] });
+    assert.equal(row.rows.length, 1);
+  });
+
+  it("POST .../files/:fileId/rename renames adapter-direct", async () => {
+    await seedRemote("wip/old.md", "body");
+    const fileId = await insertFileRow("wip/old.md");
+    const r = await call("POST", `/nodes/${shared.nodeId}/files/${fileId}/rename`, admin(), {
+      new_filename: "renamed.md",
+    });
+    assert.equal(r.statusCode, 200, r.body);
+    const adapter = await getAdapter(shared.db, "test-fs");
+    assert.equal((await adapter.get(await remotePathFor("wip/renamed.md"))).toString("utf8"), "body");
+  });
+
+  it("DELETE .../files/:fileId?confirmed=true deletes adapter-direct", async () => {
+    await seedRemote("wip/gone.md", "body");
+    const fileId = await insertFileRow("wip/gone.md");
+    const r = await call("DELETE", `/nodes/${shared.nodeId}/files/${fileId}?confirmed=true`, admin());
+    assert.equal(r.statusCode, 200, r.body);
+    const adapter = await getAdapter(shared.db, "test-fs");
+    assert.equal(await adapter.stat(await remotePathFor("wip/gone.md")), null);
+    const row = await shared.db.execute({ sql: "SELECT id FROM files WHERE id = ?", args: [fileId] });
+    assert.equal(row.rows.length, 0);
+  });
+
+  it("DELETE without confirmed returns a confirm-first preview, nothing removed", async () => {
+    await seedRemote("wip/keep.md", "body");
+    const fileId = await insertFileRow("wip/keep.md");
+    const r = await call("DELETE", `/nodes/${shared.nodeId}/files/${fileId}`, admin());
+    assert.equal(r.statusCode, 200, r.body);
+    const payload = JSON.parse(r.body) as { requires_confirmation?: boolean };
+    assert.equal(payload.requires_confirmation, true);
+    const adapter = await getAdapter(shared.db, "test-fs");
+    assert.ok(await adapter.stat(await remotePathFor("wip/keep.md")));
+  });
+
+  it("POST /nodes/:id/files returns 404 for a node the identity cannot see", async () => {
+    await shared.db.execute({
+      sql: "UPDATE nodes SET visibility = 'group', meta = ? WHERE id = ?",
+      args: [JSON.stringify({ access_group: "secret@x.com" }), shared.nodeId],
+    });
+    const r = await call("POST", `/nodes/${shared.nodeId}/files`, outsider(), {
+      filename: "x.md",
+      content: "x",
+    });
     assert.equal(r.statusCode, 404, r.body);
   });
 });

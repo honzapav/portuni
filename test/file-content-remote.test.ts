@@ -20,6 +20,9 @@ import { FileContentError } from "../apps/server/domain/sync/file-content.js";
 import {
   readFileContentRemote,
   writeFileContentRemote,
+  createFileRemote,
+  renameFileRemote,
+  deleteFileRemote,
 } from "../apps/server/domain/sync/file-content-remote.js";
 
 let shared: SharedDb;
@@ -234,5 +237,159 @@ describe("writeFileContentRemote", () => {
         }),
       (e: unknown) => e instanceof FileContentError && e.code === "NOT_EDITABLE",
     );
+  });
+});
+
+describe("createFileRemote (B3)", () => {
+  it("writes bytes to the remote and registers a tracked file record", async () => {
+    const f = await createFileRemote(shared.db, {
+      userId: "U1",
+      nodeId: shared.nodeId,
+      filename: "notes.md",
+      content: "# Notes\n",
+    });
+    assert.equal(f.filename, "notes.md");
+    assert.equal(f.relative_path, "wip/notes.md");
+    assert.equal(f.mime_type, "text/markdown");
+    assert.ok(f.id.length > 0);
+
+    const row = await shared.db.execute({
+      sql: "SELECT node_id, remote_name, remote_path, current_remote_hash, is_native_format FROM files WHERE id = ?",
+      args: [f.id],
+    });
+    assert.equal(row.rows.length, 1);
+    assert.equal(row.rows[0].node_id, shared.nodeId);
+    assert.equal(row.rows[0].remote_name, "test-fs");
+    assert.equal(row.rows[0].remote_path, await remotePathFor("wip/notes.md"));
+    assert.equal(row.rows[0].current_remote_hash, sha256Buffer(Buffer.from("# Notes\n", "utf8")));
+    assert.equal(Number(row.rows[0].is_native_format), 0);
+
+    const adapter = await getAdapter(shared.db, "test-fs");
+    const onRemote = await adapter.get(await remotePathFor("wip/notes.md"));
+    assert.equal(onRemote.toString("utf8"), "# Notes\n");
+  });
+
+  it("supports section + subpath placement", async () => {
+    const f = await createFileRemote(shared.db, {
+      userId: "U1",
+      nodeId: shared.nodeId,
+      filename: "spec.md",
+      section: "outputs",
+      subpath: "sub/dir",
+      content: "x",
+    });
+    assert.equal(f.relative_path, "outputs/sub/dir/spec.md");
+    assert.equal(f.status, "output");
+    const adapter = await getAdapter(shared.db, "test-fs");
+    const onRemote = await adapter.get(await remotePathFor("outputs/sub/dir/spec.md"));
+    assert.equal(onRemote.toString("utf8"), "x");
+  });
+
+  it("throws EXISTS when the remote object already exists", async () => {
+    await seedRemote("wip/a.md", "old");
+    await assert.rejects(
+      () =>
+        createFileRemote(shared.db, {
+          userId: "U1",
+          nodeId: shared.nodeId,
+          filename: "a.md",
+          content: "new",
+        }),
+      (e: unknown) => e instanceof FileContentError && e.code === "EXISTS",
+    );
+  });
+
+  it("throws INVALID_PATH for a bad filename", async () => {
+    await assert.rejects(
+      () =>
+        createFileRemote(shared.db, {
+          userId: "U1",
+          nodeId: shared.nodeId,
+          filename: "../escape.md",
+          content: "x",
+        }),
+      (e: unknown) => e instanceof FileContentError && e.code === "INVALID_PATH",
+    );
+  });
+
+  it("throws NO_REMOTE when the node has no routed remote", async () => {
+    await replaceRules(shared.db, []);
+    resetAdapterCacheForTests();
+    await assert.rejects(
+      () =>
+        createFileRemote(shared.db, {
+          userId: "U1",
+          nodeId: shared.nodeId,
+          filename: "a.md",
+          content: "x",
+        }),
+      (e: unknown) => e instanceof FileContentError && e.code === "NO_REMOTE",
+    );
+  });
+});
+
+describe("renameFileRemote (B3)", () => {
+  it("renames the remote object and updates the tracked record", async () => {
+    await seedRemote("wip/old.md", "body");
+    const fileId = await insertFileRow("wip/old.md", { hash: "h" });
+    const r = await renameFileRemote(shared.db, {
+      userId: "U1",
+      fileId,
+      newFilename: "new.md",
+    });
+    assert.equal(r.new_filename, "new.md");
+    assert.equal(r.new_remote_path, await remotePathFor("wip/new.md"));
+    assert.equal(r.status, "ok");
+
+    const row = await shared.db.execute({
+      sql: "SELECT filename, remote_path FROM files WHERE id = ?",
+      args: [fileId],
+    });
+    assert.equal(row.rows[0].filename, "new.md");
+    assert.equal(row.rows[0].remote_path, await remotePathFor("wip/new.md"));
+
+    const adapter = await getAdapter(shared.db, "test-fs");
+    const onRemote = await adapter.get(await remotePathFor("wip/new.md"));
+    assert.equal(onRemote.toString("utf8"), "body");
+  });
+
+  it("throws on an invalid new filename", async () => {
+    await seedRemote("wip/old.md", "body");
+    const fileId = await insertFileRow("wip/old.md");
+    await assert.rejects(
+      () => renameFileRemote(shared.db, { userId: "U1", fileId, newFilename: "a/b.md" }),
+      /Invalid filename/,
+    );
+  });
+});
+
+describe("deleteFileRemote (B3)", () => {
+  it("returns a confirm-first preview when not confirmed", async () => {
+    await seedRemote("wip/x.md", "body");
+    const fileId = await insertFileRow("wip/x.md");
+    const r = await deleteFileRemote(shared.db, { userId: "U1", fileId, mode: "complete" });
+    assert.ok("requires_confirmation" in r && r.requires_confirmation === true);
+    if ("requires_confirmation" in r) {
+      assert.deepEqual(r.preview.will_remove_from, ["remote", "portuni"]);
+    }
+    // nothing deleted yet
+    const adapter = await getAdapter(shared.db, "test-fs");
+    assert.ok(await adapter.stat(await remotePathFor("wip/x.md")));
+  });
+
+  it("deletes the remote object and the tracked record when confirmed", async () => {
+    await seedRemote("wip/x.md", "body");
+    const fileId = await insertFileRow("wip/x.md");
+    const r = await deleteFileRemote(shared.db, {
+      userId: "U1",
+      fileId,
+      mode: "complete",
+      confirmed: true,
+    });
+    assert.ok("status" in r && r.status === "ok");
+    const row = await shared.db.execute({ sql: "SELECT id FROM files WHERE id = ?", args: [fileId] });
+    assert.equal(row.rows.length, 0);
+    const adapter = await getAdapter(shared.db, "test-fs");
+    assert.equal(await adapter.stat(await remotePathFor("wip/x.md")), null);
   });
 });
