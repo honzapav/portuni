@@ -84,6 +84,12 @@ function b64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
+// POSIX single-quote a path so spaces/quotes/specials survive when written
+// into the shell line. Wrap in '...' and escape embedded ' as '\''.
+function shellQuote(p: string): string {
+  return `'${p.replace(/'/g, "'\\''")}'`;
+}
+
 export default function TerminalPane({
   sessionId,
   cwd,
@@ -437,6 +443,37 @@ export default function TerminalPane({
     if (!term) return;
     term.options.theme = buildXtermTheme(theme);
   }, [theme]);
+
+  // (D) Finder drag-and-drop. Drop a file onto the ACTIVE terminal to
+  // insert its shell-quoted path at the cursor. Only the active pane
+  // registers the listener, so the drop targets the session the user is
+  // looking at. Tauri's native drag-drop event carries the real
+  // filesystem paths (the webview's HTML5 drop does not on macOS), so we
+  // use onDragDropEvent and write via the existing pty_write command.
+  useEffect(() => {
+    if (!isTauri() || !active) return;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    (async () => {
+      const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+      const { invoke } = await import("@tauri-apps/api/core");
+      const un = await getCurrentWebview().onDragDropEvent((event) => {
+        if (event.payload.type !== "drop") return;
+        const paths = event.payload.paths;
+        if (!paths || paths.length === 0) return;
+        const data = paths.map(shellQuote).join(" ") + " ";
+        void invoke("pty_write", {
+          args: { session_id: sessionId, data },
+        }).catch(() => undefined);
+      });
+      if (cancelled) un();
+      else unlisten = un;
+    })();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, [active, sessionId]);
 
   // (C) Active-fit effect — refits when a pane becomes the active tab.
   useEffect(() => {
