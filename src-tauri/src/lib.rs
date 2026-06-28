@@ -608,6 +608,12 @@ async fn open_in_finder(path: String, reveal: bool) -> Result<(), String> {
     if path.trim().is_empty() {
         return Err("path is required".to_string());
     }
+    // Defense against argv flag smuggling: `open` has no `--` end-of-options
+    // sentinel, so a path beginning with `-` would be parsed as a flag.
+    // Portuni only passes absolute mirror paths; reject leading-dash defensively.
+    if path.starts_with('-') {
+        return Err("invalid path".to_string());
+    }
     if !std::path::Path::new(&path).exists() {
         return Err(format!("path does not exist: {path}"));
     }
