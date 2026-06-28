@@ -26,6 +26,7 @@ import {
   resolveSandboxScopeForNode,
 } from "../domain/sandbox-profile.js";
 import type { SyncStatusResponse, SyncRunResponse, UntrackedFile } from "../shared/api-types.js";
+import { computeSyncPending } from "../domain/sync/pending.js";
 import { parseBody, parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 import { nodeVisibleTo, filterVisibleNodeIds } from "../auth/node-access.js";
 import { z } from "zod";
@@ -321,6 +322,19 @@ export async function handleSyncStatus(
     respondJson(res, 200, payload);
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sync-status`, err);
+  }
+}
+
+export async function handleSyncPending(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+): Promise<void> {
+  try {
+    const result = await computeSyncPending(getDb(), identity.userId);
+    respondJson(res, 200, result);
+  } catch (err) {
+    respondError(res, `${req.method} /sync/pending`, err);
   }
 }
 

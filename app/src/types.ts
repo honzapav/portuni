@@ -14,6 +14,7 @@ export type {
   SyncStatusFile,
   SyncStatusResponse,
   SyncRunResponse,
+  SyncPendingResponse,
   UntrackedFile,
   FileContentResponse,
 } from "../../src/shared/api-types";

@@ -64,6 +64,7 @@ import {
   handleNodeSandboxProfile,
   handlePatchNode,
   handlePositions,
+  handleSyncPending,
   handleSyncRun,
   handleSyncStatus,
 } from "./nodes.js";
@@ -176,6 +177,10 @@ async function routeSystem(
   }
   if (pathname === "/users" && method === "GET") {
     await handleListUsers(req, res);
+    return true;
+  }
+  if (pathname === "/sync/pending" && method === "GET") {
+    await handleSyncPending(req, res, identity);
     return true;
   }
   return false;

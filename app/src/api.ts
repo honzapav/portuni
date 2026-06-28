@@ -6,6 +6,7 @@ import type {
   DetailTool,
   SyncStatusResponse,
   SyncRunResponse,
+  SyncPendingResponse,
   DetailFile,
   FileContentResponse,
 } from "./types";
@@ -57,6 +58,12 @@ export async function fetchNodeSyncStatus(
 ): Promise<SyncStatusResponse> {
   const res = await apiFetch(`/nodes/${encodeURIComponent(id)}/sync-status`);
   await throwForStatus(res, "sync-status");
+  return res.json();
+}
+
+export async function fetchSyncPending(): Promise<SyncPendingResponse> {
+  const res = await apiFetch(`/sync/pending`);
+  await throwForStatus(res, "sync-pending");
   return res.json();
 }
 
