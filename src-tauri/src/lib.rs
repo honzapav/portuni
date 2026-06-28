@@ -599,6 +599,79 @@ async fn launch_claude_for_node(
     Err("UNSUPPORTED_OS".to_string())
 }
 
+// Open a path in Finder. If reveal=true, uses `open -R` to select/reveal
+// the file; if false, uses `open` to open the folder itself. macOS-only;
+// on other platforms returns UNSUPPORTED_OS so callers can fall through.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn open_in_finder(path: String, reveal: bool) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("path is required".to_string());
+    }
+    // Defense against argv flag smuggling: `open` has no `--` end-of-options
+    // sentinel, so a path beginning with `-` would be parsed as a flag.
+    // Portuni only passes absolute mirror paths; reject leading-dash defensively.
+    if path.starts_with('-') {
+        return Err("invalid path".to_string());
+    }
+    if !std::path::Path::new(&path).exists() {
+        return Err(format!("path does not exist: {path}"));
+    }
+    let mut cmd = std::process::Command::new("open");
+    if reveal {
+        cmd.arg("-R");
+    }
+    cmd.arg(&path);
+    let output = cmd.output().map_err(|e| format!("open failed: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "open exited with {}: {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+async fn open_in_finder(_path: String, _reveal: bool) -> Result<(), String> {
+    Err("UNSUPPORTED_OS".to_string())
+}
+
+// Read a file path from the macOS clipboard. Uses osascript to coerce
+// the clipboard to a POSIX file URL (POSIX path). Returns Ok(Some(path))
+// when the clipboard holds a file reference, Ok(None) when it does not
+// (AppleScript coercion errors are treated as "no file", not an error).
+// Non-macOS always returns Ok(None).
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn clipboard_file_path() -> Result<Option<String>, String> {
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg("POSIX path of (the clipboard as \u{00ab}class furl\u{00bb})")
+        .output()
+        .map_err(|e| format!("osascript failed: {e}"))?;
+    if output.status.success() {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if path.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(path))
+    } else {
+        // Non-zero exit means the clipboard did not contain a file —
+        // AppleScript coercion failed. Treat as "no file", not an error.
+        Ok(None)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+async fn clipboard_file_path() -> Result<Option<String>, String> {
+    Ok(None)
+}
+
 // Bounce the Node sidecar so it picks up a freshly-set Turso token
 // from the Keychain. Used by the first-run gate after the user pastes
 // their token. Idempotent: if no sidecar is running, just spawns one.
@@ -1039,6 +1112,8 @@ pub fn run() {
             install_codex_global,
             install_vibe_global,
             launch_claude_for_node,
+            open_in_finder,
+            clipboard_file_path,
             pty::pty_spawn,
             pty::pty_write,
             pty::pty_resize,

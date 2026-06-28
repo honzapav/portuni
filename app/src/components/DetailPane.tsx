@@ -12,6 +12,7 @@ import {
   ArrowLeft,
   Copy,
   Folder,
+  FolderOpen,
   X,
   Check,
   Pencil,
@@ -29,7 +30,6 @@ import {
   Building2,
   Info,
   ExternalLink,
-  Loader2,
 } from "lucide-react";
 import type {
   NodeDetail,
@@ -50,7 +50,7 @@ import {
 } from "../types";
 import { safeHref } from "../lib/safe-url";
 import { groupEventsByDate } from "../lib/events";
-import { isTauri, openExternal } from "../lib/backend-url";
+import { isTauri, openExternal, openInFinder } from "../lib/backend-url";
 import { useDataMode } from "../lib/central";
 import { agentDisplayName } from "../lib/settings";
 import type { Actor } from "../api";
@@ -82,7 +82,7 @@ import {
 // Sub-modules: file-tree + sync UI and event card live in sibling files;
 // DetailPane composes them with its own state.
 import { EventCard, AddEventForm } from "./DetailPane.events";
-import { FileTree, NewFileForm, SyncBar, ActionButtons } from "./DetailPane.files";
+import { FileTree, NewFileForm, SyncBar, TerminalSplitButton } from "./DetailPane.files";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
 // node shows the last-known badges instantly while the background
@@ -681,7 +681,19 @@ function DetailPaneBody({
             <>
               <span className="text-[var(--color-border-strong)]">·</span>
               {node.local_mirror ? (
-                <PathCopy path={node.local_mirror.local_path} />
+                <>
+                  <PathCopy path={node.local_mirror.local_path} />
+                  {isTauri() && (
+                    <button
+                      type="button"
+                      title="Otevřít složku"
+                      onClick={() => void openInFinder(node.local_mirror!.local_path, false).catch(() => undefined)}
+                      className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+                    >
+                      <FolderOpen size={13} />
+                    </button>
+                  )}
+                </>
               ) : (
                 <MirrorPlaceholder agentCommand={agentCommand} />
               )}
@@ -1071,30 +1083,15 @@ function DetailPaneBody({
           <div className="flex flex-col gap-2">
             {isCentral ? (
               <LocalOnlyNote />
-            ) : (
-              <ActionButtons
+            ) : node.type !== "organization" ? (
+              <TerminalSplitButton
                 node={node}
                 agentCommand={agentCommand}
                 terminalLaunch={terminalLaunch}
+                onEmbeddedOpen={openEmbeddedTerminal}
+                embeddedPending={launchingTerminal}
               />
-            )}
-            {node.type !== "organization" && !isCentral && (
-              <button
-                onClick={openEmbeddedTerminal}
-                disabled={launchingTerminal}
-                title={`Otevře terminál v Práci a spustí v něm ${agentDisplayName(agentCommand)}. Pracovní složka bude vytvořena, pokud ještě neexistuje.`}
-                className="flex items-center justify-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:cursor-default disabled:opacity-60 disabled:hover:border-[var(--color-border)] disabled:hover:text-[var(--color-text-muted)]"
-              >
-                {launchingTerminal ? (
-                  <>
-                    <Loader2 size={13} className="animate-spin" />
-                    Spouštím terminál…
-                  </>
-                ) : (
-                  "Otevřít terminál v Portuni"
-                )}
-              </button>
-            )}
+            ) : null}
           </div>
         )}
       </div>
