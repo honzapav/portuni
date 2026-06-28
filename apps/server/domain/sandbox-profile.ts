@@ -8,7 +8,7 @@
 // knowledge graph, it is not a general-purpose jail.
 //
 // Single-source model: neighbor nodes are NOT granted disk access here.
-// Instead, the ScopeReconciler (apps/server/domain/scope-reconciler.ts)
+// Instead, the ScopeReconciler (apps/server/mcp/scope-reconciler.ts)
 // copies them into <home>/.portuni-scope/<id>/. Those staged paths live
 // inside the home subpath and are therefore already covered by the home
 // rw rule — no second kernel grant needed.

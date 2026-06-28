@@ -1,11 +1,14 @@
-// Staging of expanded-scope node files into the home mirror.
+// Staging of in-scope node files into the home mirror.
 //
-// The Seatbelt boundary a terminal session runs under is fixed at spawn
-// time (home mirror rw + depth-1 neighbor mirrors ro). A mid-session
-// scope expansion approved by the user therefore cannot widen what the
-// kernel lets the agent read. Instead, the (unsandboxed) server copies
-// the expanded node's mirror into <homeMirror>/.portuni-scope/<nodeId>/:
-// inside the visible zone, read-only, refreshed on every expansion.
+// Single-source model: staging fires on EVERY scope entry, not just a
+// user-approved expansion. Any path that adds a node to the session scope
+// (auto-seed, session_init, get_node/get_context auto-allow, expand_scope)
+// goes through SessionScope.onAdd -> ScopeReconciler, which calls this
+// staging routine. The Seatbelt profile is home-only (home mirror rw, the
+// rest of PORTUNI_ROOT denied), so copying a node's mirror into
+// <homeMirror>/.portuni-scope/<nodeId>/ — inside the visible zone,
+// read-only — is the ONLY way a non-home in-scope node's files become
+// readable to the agent. Re-staging refreshes the copy.
 //
 // Dot-segment paths are excluded from both sync walkers
 // (sync/mirror-ignore.ts), so staged copies never get auto-adopted or

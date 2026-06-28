@@ -559,17 +559,25 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
         }
 
         // Rewrite local_path for non-home in-scope nodes to the staged copy
-        // that the Seatbelt sandbox actually allows reading. Do NOT await
-        // per-node reconciliation here — the onAdd hook already scheduled
-        // staging via reconciler.schedule(). For newly discovered nodes that
-        // were just added above, staging is in progress concurrently.
-        const homeMirror = scope.homeNodeId
-          ? await getMirrorPath(ctx.identity.userId, scope.homeNodeId)
-          : null;
+        // that the Seatbelt sandbox actually allows reading. Await staging
+        // first so the copy is complete before the agent acts on the path:
+        // a node discovered for the FIRST time in this call has its onAdd
+        // staging still in flight, so a follow-up Read could hit a mid-copy
+        // dir. The reconciler's in-flight dedup means this joins the copy
+        // onAdd already started (no double work). Scoped to the nodes this
+        // get_context call surfaces — not the whole session scope.
         const allPayloadNodes: Array<{ id: string; local_path: string | null }> = [
           payload.root,
           ...payload.connected,
         ];
+        await Promise.all(
+          allPayloadNodes
+            .filter((n) => n.id !== scope.homeNodeId && scope.has(n.id))
+            .map((n) => ctx.reconciler.reconcileNode(n.id)),
+        );
+        const homeMirror = scope.homeNodeId
+          ? await getMirrorPath(ctx.identity.userId, scope.homeNodeId)
+          : null;
         for (const n of allPayloadNodes) {
           n.local_path = readableMirrorRoot({
             scope,

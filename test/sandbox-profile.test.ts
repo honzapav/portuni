@@ -3,7 +3,7 @@
 // grants read+write in the home mirror, and denies the rest of
 // PORTUNI_ROOT. Neighbor nodes are made readable via staged copies under
 // <home>/.portuni-scope/<id>/ (inside the home subpath, already covered
-// by the home rw rule). See apps/server/domain/scope-reconciler.ts.
+// by the home rw rule). See apps/server/mcp/scope-reconciler.ts.
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
