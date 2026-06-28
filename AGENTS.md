@@ -74,6 +74,18 @@ tmux loop for backend iteration.
   is the desktop sidecar's embedded replica and can be stale. To answer
   "does node X exist?" hit Turso, the MCP server, or the desktop app –
   never the local file.
+- **File state is deterministic, not agent-driven.** A mirror watcher
+  (`apps/server/domain/sync/mirror-watcher.ts` → `reconcile.ts`) registers new
+  files and reconciles edits/deletes on every disk change, so the UI's sync
+  status (fast-mode `statusScan`, which reads `file_state.cached_local_hash`)
+  is current without anyone calling `portuni_store`/`portuni_status`.
+  Registration is local-only (`registerLocalFile`, no upload); a file then
+  reads as `push` until a deliberate "Synchronizovat"/`portuni_store` pushes
+  it to the remote. The watcher runs in the desktop sidecar by default
+  (`PORTUNI_WATCH_MIRRORS`, on the standalone server it is opt-in `=1`); for
+  backend dev against the tmux server, set `PORTUNI_WATCH_MIRRORS=1` if you
+  want the same behavior. Model:
+  `docs/superpowers/specs/2026-06-28-deterministic-file-state-design.md`.
 - **Mirror scope configs are Portuni-managed.** `portuni_mirror` materializes
   `.mcp.json`, `.claude/settings.local.json`, `.codex/config.toml`,
   `.vibe/config.toml`, `.cursor/rules`, `PORTUNI_SCOPE.md` and marker blocks
