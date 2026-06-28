@@ -43,6 +43,8 @@ import {
 import { listUserMirrors } from "./sync/mirror-registry.js";
 import { SOLO_USER } from "../infra/schema.js";
 import type { DataSourceRow } from "../shared/types.js";
+import { getDb } from "../infra/db.js";
+import { listDataSources } from "./entity-attributes.js";
 
 const BEGIN_MARKER = "<!-- BEGIN portuni-scope (auto-generated, do not edit) -->";
 const END_MARKER = "<!-- END portuni-scope -->";
@@ -304,6 +306,20 @@ export async function materializeScopeConfig(
   return result;
 }
 
+// Best-effort fetch of a node's data sources for the soft hint. A read
+// failure (DB unreachable, no such node) must never block config
+// materialization, so we degrade to an empty list rather than throwing.
+export async function dataSourcesForNode(
+  nodeId: string | null | undefined,
+): Promise<DataSourceRow[]> {
+  if (!nodeId) return [];
+  try {
+    return await listDataSources(getDb(), nodeId);
+  } catch {
+    return [];
+  }
+}
+
 // Re-materialise every mirror registered for the solo user, picking up
 // the current MCP URL + auth token from env. Called at sidecar boot so
 // per-mirror .mcp.json files written by an older launch (random port,
@@ -329,6 +345,7 @@ export async function materializeAllRegisteredMirrors(): Promise<MaterializeResu
   for (const m of mirrors) {
     const others = paths.filter((p) => p !== m.local_path);
     try {
+      const dataSources = await dataSourcesForNode(m.node_id);
       const r = await materializeScopeConfig({
         currentMirror: m.local_path,
         nodeId: m.node_id,
@@ -336,6 +353,7 @@ export async function materializeAllRegisteredMirrors(): Promise<MaterializeResu
         otherMirrors: others,
         portuniRoot,
         guardScriptPath,
+        dataSources,
       });
       aggregated.written.push(...r.written);
       aggregated.errors.push(...r.errors);
