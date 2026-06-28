@@ -62,7 +62,7 @@ url = "2"
 # Already present transitively (Cargo.lock pins 0.10.x); promoted to a
 # direct dep so the auth module can use it without relying on transitive
 # availability.
-sha2 = "0.10"
+sha2 = "0.11"
 # Comment- and format-preserving TOML editor. Used by the Mistral Vibe MCP
 # installer: Vibe's ~/.vibe/config.toml carries `mcp_servers = []` as a
 # value array (not [[mcp_servers]] blocks), so naive text appending would
