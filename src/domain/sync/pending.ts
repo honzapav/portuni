@@ -18,17 +18,13 @@ export async function computeSyncPending(
       args: [m.node_id],
     });
     if (row.rows.length === 0) continue; // mirror for a deleted node — skip before scanning
-    let scan;
-    try {
-      scan = await statusScan(db, {
-        userId,
-        nodeId: m.node_id,
-        includeDiscovery: true,
-        fast: true,
-      });
-    } catch {
-      continue; // unscannable mirror — skip, don't break the overview
-    }
+    const scan = await statusScan(db, {
+      userId,
+      nodeId: m.node_id,
+      includeDiscovery: true,
+      fast: true,
+    }).catch(() => null);
+    if (!scan) continue; // unscannable mirror — skip, don't break the overview
     const push = scan.push_candidates.length;
     const conflict = scan.conflicts.length;
     const untracked = scan.new_local.length;
