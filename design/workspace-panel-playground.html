@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Portuni · Levý panel Práce — playground</title>
+<style>
+  /* ---- Playground chrome ---- */
+  :root {
+    --pg-bg: #0c0d10;
+    --pg-panel: #141519;
+    --pg-panel-2: #1a1c21;
+    --pg-line: #26282e;
+    --pg-line-2: #34373f;
+    --pg-text: #e7e8ec;
+    --pg-dim: #8b909b;
+    --pg-faint: #5f636d;
+    --pg-accent: #76d9ff;
+    --pg-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --pg-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1200px 600px at 100% -10%, rgba(118,217,255,0.06), transparent 60%),
+      radial-gradient(900px 500px at -10% 110%, rgba(167,139,250,0.05), transparent 55%),
+      var(--pg-bg);
+    color: var(--pg-text);
+    font-family: var(--pg-sans);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    height: 100vh;
+  }
+
+  /* ---- Controls column ---- */
+  .controls {
+    border-right: 1px solid var(--pg-line);
+    background: linear-gradient(180deg, rgba(255,255,255,0.015), transparent);
+    overflow-y: auto;
+    padding: 22px 20px 60px;
+  }
+  .controls::-webkit-scrollbar { width: 10px; }
+  .controls::-webkit-scrollbar-thumb { background: var(--pg-line); border-radius: 6px; border: 3px solid var(--pg-bg); }
+
+  .brand {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 4px;
+  }
+  .brand .mark {
+    width: 30px; height: 30px; border-radius: 8px;
+    display: grid; place-items: center;
+    background: rgba(118,217,255,0.13);
+    color: var(--pg-accent);
+    box-shadow: inset 0 0 0 1px rgba(118,217,255,0.18);
+  }
+  .brand h1 {
+    font-size: 14px; font-weight: 650; letter-spacing: -0.01em;
+  }
+  .brand .sub {
+    font-family: var(--pg-mono);
+    font-size: 10.5px; color: var(--pg-faint); letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  .lead {
+    color: var(--pg-dim); font-size: 12.5px; line-height: 1.55;
+    margin: 14px 0 22px;
+  }
+
+  .group { margin-bottom: 24px; }
+  .group > .label {
+    font-family: var(--pg-mono);
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--pg-faint);
+    margin-bottom: 11px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .group > .label::after { content: ""; flex: 1; height: 1px; background: var(--pg-line); }
+
+  /* variant cards */
+  .variants { display: flex; flex-direction: column; gap: 7px; }
+  .variant {
+    text-align: left; cursor: pointer;
+    border: 1px solid var(--pg-line);
+    background: var(--pg-panel);
+    border-radius: 9px;
+    padding: 10px 12px;
+    color: var(--pg-text);
+    transition: border-color .14s, background .14s, transform .08s;
+    display: flex; gap: 11px; align-items: flex-start;
+  }
+  .variant:hover { border-color: var(--pg-line-2); background: var(--pg-panel-2); }
+  .variant:active { transform: translateY(1px); }
+  .variant.active {
+    border-color: rgba(118,217,255,0.55);
+    background: rgba(118,217,255,0.07);
+    box-shadow: 0 0 0 1px rgba(118,217,255,0.25);
+  }
+  .variant .vnum {
+    font-family: var(--pg-mono); font-size: 11px; font-weight: 700;
+    color: var(--pg-faint);
+    width: 18px; flex: none; padding-top: 1px;
+  }
+  .variant.active .vnum { color: var(--pg-accent); }
+  .variant .vbody .vt { font-size: 12.5px; font-weight: 600; }
+  .variant .vbody .vd { font-size: 11.5px; color: var(--pg-dim); margin-top: 2px; line-height: 1.4; }
+
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  .row .rl { font-size: 12.5px; color: var(--pg-text); }
+  .row .rv { font-family: var(--pg-mono); font-size: 11.5px; color: var(--pg-accent); min-width: 42px; text-align: right; }
+
+  input[type="range"] { -webkit-appearance: none; appearance: none; width: 150px; height: 4px; border-radius: 4px; background: var(--pg-line-2); outline: none; }
+  input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--pg-accent); cursor: pointer; box-shadow: 0 0 0 4px rgba(118,217,255,0.15); }
+
+  .seg { display: inline-flex; background: var(--pg-panel); border: 1px solid var(--pg-line); border-radius: 8px; padding: 2px; }
+  .seg button {
+    border: 0; background: transparent; cursor: pointer;
+    color: var(--pg-dim); font-family: var(--pg-sans); font-size: 11.5px;
+    padding: 4px 10px; border-radius: 6px; transition: all .12s;
+  }
+  .seg button.on { background: var(--pg-panel-2); color: var(--pg-text); box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
+
+  .toggle { display: inline-flex; align-items: center; gap: 0; cursor: pointer; }
+  .toggle input { display: none; }
+  .toggle .track { width: 36px; height: 20px; border-radius: 99px; background: var(--pg-line-2); position: relative; transition: background .15s; }
+  .toggle .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; }
+  .toggle input:checked + .track { background: var(--pg-accent); }
+  .toggle input:checked + .track::after { transform: translateX(16px); }
+
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; }
+  .preset {
+    cursor: pointer; border: 1px solid var(--pg-line);
+    background: var(--pg-panel); color: var(--pg-dim);
+    font-size: 11.5px; padding: 5px 10px; border-radius: 7px;
+    font-family: var(--pg-mono); transition: all .12s;
+  }
+  .preset:hover { border-color: var(--pg-line-2); color: var(--pg-text); background: var(--pg-panel-2); }
+
+  /* ---- Preview column ---- */
+  .stage {
+    display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  }
+  .stage-top {
+    flex: 1; min-height: 0;
+    display: grid; place-items: center;
+    padding: 40px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,0.012), transparent 30%),
+      repeating-linear-gradient(45deg, transparent, transparent 11px, rgba(255,255,255,0.012) 11px, rgba(255,255,255,0.012) 12px);
+    overflow: auto;
+  }
+  .stage-caption {
+    position: absolute; top: 18px; left: 50%; transform: translateX(-50%);
+    font-family: var(--pg-mono); font-size: 11px; color: var(--pg-faint);
+    letter-spacing: 0.04em; pointer-events: none;
+  }
+  .stage-top { position: relative; }
+
+  /* The faithful Portuni sidebar mock */
+  .pv {
+    --color-bg: #0a0b0d;
+    --color-surface: #141518;
+    --color-surface-2: #1c1d21;
+    --color-border: #27282c;
+    --color-border-strong: #35363b;
+    --color-text: #f1f2f5;
+    --color-text-muted: #c2c6cf;
+    --color-text-dim: #9298a2;
+    --color-accent: #76d9ff;
+    --color-accent-soft: rgba(118, 217, 255, 0.14);
+    --color-accent-dim: #3d8fb3;
+    --color-node-project: #a78bfa;
+    --color-node-process: #fbbf24;
+    --color-node-area: #f472b6;
+    --color-node-principle: #34d399;
+    --color-node-organization: #76d9ff;
+    --color-node-default: #94a3b8;
+    width: 300px; height: 620px; max-height: 100%;
+    background: var(--color-bg);
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+    border-radius: 14px;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+    box-shadow: 0 30px 80px -30px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.02);
+  }
+  .pv.light {
+    --color-bg: #f8fafc; --color-surface: #ffffff; --color-surface-2: #f1f5f9;
+    --color-border: #e2e8f0; --color-border-strong: #cbd5e1;
+    --color-text: #0f172a; --color-text-muted: #334155; --color-text-dim: #64748b;
+    --color-accent: #0284c7; --color-accent-soft: rgba(2,132,199,0.12); --color-accent-dim: #7dd3fc;
+    --color-node-project: #7c3aed; --color-node-process: #d97706; --color-node-area: #db2777; --color-node-principle: #059669; --color-node-organization: #0891b2; --color-node-default: #64748b;
+    box-shadow: 0 30px 80px -30px rgba(0,0,0,0.35);
+  }
+  .pv svg { width: 14px; height: 14px; flex: none; }
+  .pv .hdr .logo svg { width: 18px; height: 18px; }
+  .pv .hdr .ic svg { width: 13px; height: 13px; }
+  .pv .vt .seg2 svg { width: 13px; height: 13px; }
+  .pv .hdr { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--color-border); padding: 18px 18px; }
+  .pv .hdr .logo { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; background: var(--color-accent-soft); color: var(--color-accent); }
+  .pv .hdr .name { flex: 1; font-size: 17px; font-weight: 650; letter-spacing: -0.02em; }
+  .pv .hdr .ic { width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-dim); display: grid; place-items: center; }
+  .pv .vt { padding: 14px 14px 0; }
+  .pv .vt .seg2 { display: flex; gap: 2px; border: 1px solid var(--color-border); background: var(--color-surface); border-radius: 8px; padding: 2px; }
+  .pv .vt .seg2 button { flex: 1; border: 0; cursor: default; background: transparent; color: var(--color-text-dim); font: inherit; font-size: 13px; padding: 6px; border-radius: 6px; display: flex; align-items: center; justify-content: center; gap: 6px; }
+  .pv .vt .seg2 button.on { background: var(--color-bg); color: var(--color-text); box-shadow: 0 1px 2px rgba(0,0,0,0.25); }
+  .pv .vt .seg2 .badge { font-size: 10px; min-width: 16px; height: 16px; border-radius: 99px; background: var(--color-accent-soft); color: var(--color-accent); display: inline-flex; align-items: center; justify-content: center; padding: 0 4px; }
+
+  /* action area — filled by JS per variant */
+  .pv .actions { padding: 16px 14px 6px; }
+
+  /* node list */
+  .pv .nodes { flex: 1; overflow-y: auto; padding: 6px 8px 8px; }
+  .pv .nodes::-webkit-scrollbar { width: 8px; }
+  .pv .nodes::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 6px; }
+  .pv .nrow { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; font-size: 13px; color: var(--color-text-muted); }
+  .pv .nrow.sel { background: var(--color-surface); color: var(--color-text); }
+  .pv .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+  .pv .nrow .nm { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pv .nrow .ct { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--color-text-dim); }
+  .pv .live { width: 6px; height: 6px; border-radius: 50%; }
+  .pv .live.on { background: #10b981; }
+  .pv .live.idle { background: rgba(245,158,11,0.7); }
+  .pv .subs { margin-left: 14px; border-left: 1px solid var(--color-border); padding: 2px 0 2px 6px; display: flex; flex-direction: column; gap: 2px; }
+  .pv .sub { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 7px; font-size: 12.5px; color: var(--color-text-dim); }
+  .pv .sub.sel { background: var(--color-bg); color: var(--color-text); }
+  .pv .sub .hash { font-family: "JetBrains Mono", monospace; font-size: 11.5px; }
+  .pv .newsess { display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-size: 12px; color: var(--color-text-dim); }
+  .pv .ftr { border-top: 1px solid var(--color-border); padding: 11px 18px; font-size: 11px; color: var(--color-text-dim); line-height: 1.45; }
+
+  /* empty-state node-picker preview */
+  .pv .empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 26px; text-align: center; }
+  .pv .empty .et { font-size: 14px; font-weight: 600; }
+  .pv .empty .ep { font-size: 12px; color: var(--color-text-dim); max-width: 220px; }
+  .pv .empty .search { width: 100%; }
+
+  /* Generic action button styles, driven by inline vars from JS */
+  .ab {
+    width: 100%; display: flex; align-items: center; justify-content: center; gap: 7px;
+    font: inherit; font-size: 13px; cursor: default; border: 1px solid transparent;
+    transition: all .12s; white-space: nowrap;
+  }
+  .ab svg { width: 14px; height: 14px; }
+  .ab.full { width: 100%; }
+  .ab.primary.filled { background: var(--color-accent); color: var(--color-bg); font-weight: 600; }
+  .ab.primary.soft { background: var(--color-accent-soft); border-color: var(--color-accent-dim); color: var(--color-accent); font-weight: 600; }
+  .ab.primary.outline { background: transparent; border-color: var(--color-accent-dim); color: var(--color-accent); font-weight: 600; }
+  .ab.secondary { background: var(--color-surface); border-color: var(--color-border); color: var(--color-text-muted); }
+  .ab.ghost { background: transparent; color: var(--color-text-dim); border-color: transparent; }
+  .ab.icononly { width: auto; aspect-ratio: 1; padding-left: 0 !important; padding-right: 0 !important; flex: none; }
+
+  .pvsearch { display: flex; align-items: center; gap: 8px; width: 100%; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--ab-radius, 8px); padding: 9px 11px; color: var(--color-text-dim); font-size: 13px; }
+  .pvsearch svg { width: 13px; height: 13px; flex: none; }
+  .pvsearch .ph { flex: 1; }
+  .pvsearch .kbd { font-family: "JetBrains Mono", monospace; font-size: 10px; border: 1px solid var(--color-border); border-radius: 4px; padding: 1px 5px; color: var(--color-text-dim); }
+
+  .pvmenu { margin-top: 6px; border: 1px solid var(--color-border); background: var(--color-surface); border-radius: 9px; overflow: hidden; box-shadow: 0 12px 30px -12px rgba(0,0,0,0.6); }
+  .pvmenu .mi { display: flex; align-items: center; gap: 9px; padding: 9px 11px; font-size: 12.5px; color: var(--color-text-muted); }
+  .pvmenu .mi + .mi { border-top: 1px solid var(--color-border); }
+  .pvmenu .mi .mt { display: flex; flex-direction: column; }
+  .pvmenu .mi .md { font-size: 11px; color: var(--color-text-dim); }
+  .pvmenu .mi svg { width: 14px; height: 14px; color: var(--color-text-dim); flex: none; }
+
+  .pvresults { margin-top: 6px; border: 1px solid var(--color-border); background: var(--color-surface); border-radius: 9px; overflow: hidden; }
+  .pvresults .ri { display: flex; align-items: center; gap: 8px; padding: 8px 11px; font-size: 12.5px; color: var(--color-text-muted); }
+  .pvresults .ri + .ri { border-top: 1px solid var(--color-border); }
+  .pvresults .ri .ct { margin-left: auto; font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: var(--color-text-dim); }
+
+  .splitwrap { display: flex; width: 100%; }
+  .splitwrap .ab.main { border-top-right-radius: 0 !important; border-bottom-right-radius: 0 !important; flex: 1; }
+  .splitwrap .ab.caret { border-top-left-radius: 0 !important; border-bottom-left-radius: 0 !important; border-left: 0; width: auto; aspect-ratio: 1; flex: none; }
+
+  .hint { font-size: 11px; color: var(--color-text-dim); text-align: center; margin-top: 8px; }
+
+  /* ---- Prompt output ---- */
+  .promptbar {
+    border-top: 1px solid var(--pg-line);
+    background: var(--pg-panel);
+    padding: 16px 22px 18px;
+    display: flex; gap: 16px; align-items: flex-start;
+  }
+  .promptbar .pcol { flex: 1; min-width: 0; }
+  .promptbar .plabel { font-family: var(--pg-mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--pg-faint); margin-bottom: 7px; }
+  .promptbar .ptext { font-size: 12.5px; line-height: 1.55; color: var(--pg-text); }
+  .promptbar .ptext code { font-family: var(--pg-mono); font-size: 11.5px; background: var(--pg-panel-2); padding: 1px 5px; border-radius: 4px; color: var(--pg-accent); }
+  .copybtn {
+    flex: none; cursor: pointer; border: 1px solid var(--pg-line-2);
+    background: var(--pg-accent); color: #06222e; font-weight: 650;
+    font-size: 12.5px; padding: 9px 16px; border-radius: 9px;
+    font-family: var(--pg-sans); transition: transform .08s, filter .12s;
+    align-self: center;
+  }
+  .copybtn:hover { filter: brightness(1.06); }
+  .copybtn:active { transform: translateY(1px); }
+  .copybtn.ok { background: #34d399; color: #06281c; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <!-- CONTROLS -->
+  <aside class="controls">
+    <div class="brand">
+      <div class="mark">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>
+      </div>
+      <div>
+        <h1>Levý panel · Práce</h1>
+        <div class="sub">design playground</div>
+      </div>
+    </div>
+    <p class="lead">Šest způsobů, jak vyřešit dvojici akcí <b>Otevřít terminál</b> (existující uzel) a <b>Nový uzel + terminál</b>. Klikej varianty, laď styl, vpravo se mění věrný náhled panelu. Dole je prompt na zkopírování.</p>
+
+    <div class="group">
+      <div class="label">Rozložení akcí</div>
+      <div class="variants" id="variants"></div>
+    </div>
+
+    <div class="group">
+      <div class="label">Styl tlačítek</div>
+      <div class="row">
+        <span class="rl">Důraz primární akce</span>
+        <div class="seg" id="emphasis">
+          <button data-v="filled">Plné</button>
+          <button data-v="soft">Soft</button>
+          <button data-v="outline">Obrys</button>
+        </div>
+      </div>
+      <div class="row">
+        <span class="rl">Zaoblení</span>
+        <input type="range" id="radius" min="0" max="14" step="1" />
+        <span class="rv" id="radiusV"></span>
+      </div>
+      <div class="row">
+        <span class="rl">Hustota (výška)</span>
+        <input type="range" id="pad" min="6" max="13" step="1" />
+        <span class="rv" id="padV"></span>
+      </div>
+      <div class="row">
+        <span class="rl">Ikony v tlačítkách</span>
+        <label class="toggle"><input type="checkbox" id="icons" /><span class="track"></span></label>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="label">Panel</div>
+      <div class="row">
+        <span class="rl">Motiv</span>
+        <div class="seg" id="theme">
+          <button data-v="dark">Tmavý</button>
+          <button data-v="light">Světlý</button>
+        </div>
+      </div>
+      <div class="row">
+        <span class="rl">Barevné tečky typů</span>
+        <label class="toggle"><input type="checkbox" id="dots" /><span class="track"></span></label>
+      </div>
+      <div class="row">
+        <span class="rl">Stav: prázdný (0 sessions)</span>
+        <label class="toggle"><input type="checkbox" id="empty" /><span class="track"></span></label>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="label">Presety</div>
+      <div class="presets" id="presets"></div>
+    </div>
+  </aside>
+
+  <!-- STAGE -->
+  <section class="stage">
+    <div class="stage-top">
+      <div class="stage-caption" id="caption"></div>
+      <div class="pv" id="pv"></div>
+    </div>
+    <div class="promptbar">
+      <div class="pcol">
+        <div class="plabel">Prompt → zpět do Claude</div>
+        <div class="ptext" id="prompt"></div>
+      </div>
+      <button class="copybtn" id="copy">Kopírovat</button>
+    </div>
+  </section>
+</div>
+
+<script>
+// ---------- icons ----------
+const I = {
+  terminal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>',
+  chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>',
+  graph: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="4.5" r="2.5"/><circle cx="4.5" cy="19" r="2.5"/><circle cx="19.5" cy="19" r="2.5"/><path d="M10.7 6.5 6 16.8M13.3 6.5 18 16.8M7 19h10"/></svg>',
+  settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>',
+  sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4 12H2m20 0h-2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"/></svg>',
+};
+
+// ---------- variants ----------
+const VARIANTS = [
+  { id: 'stacked', t: 'Dvě tlačítka pod sebou', d: 'Aktuální stav: primární „Otevřít terminál“ nad sekundárním „Nový uzel“.' },
+  { id: 'split',   t: 'Split button', d: 'Hlavní akce + úzký caret, který rozbalí „Nový uzel + terminál“.' },
+  { id: 'iconadd', t: 'Primární + ikona', d: 'Plnošířkové „Otevřít terminál“ a vedle čtvercové [+] pro nový uzel.' },
+  { id: 'menu',    t: 'Jedno tlačítko + menu', d: 'Jediné „+ Nový terminál ▾“ rozbalí volbu existující / nový uzel.' },
+  { id: 'search',  t: 'Příkazový (search-first)', d: 'Vyhledávací pole = rovnou otevři terminál. Nový uzel jako tichý odkaz dole.' },
+  { id: 'segment', t: 'Přepínač cíle', d: 'Segment [Existující|Nový] zvolí cíl, pak jedno „Otevřít terminál“.' },
+];
+
+const DEFAULTS = { variant: 'search', emphasis: 'soft', radius: 6, pad: 9, icons: true, theme: 'dark', dots: true, empty: false, menuOpen: true, segTarget: 'exist' };
+const state = { ...DEFAULTS };
+
+const PRESETS = {
+  'Aktuální':        { variant: 'stacked', emphasis: 'soft',    radius: 6,  pad: 9,  icons: true,  dots: true },
+  'Split button':    { variant: 'split',   emphasis: 'filled',  radius: 8,  pad: 9,  icons: true,  dots: true },
+  'Příkazový':       { variant: 'search',  emphasis: 'soft',    radius: 8,  pad: 10, icons: true,  dots: true },
+  'Menu':            { variant: 'menu',    emphasis: 'filled',  radius: 9,  pad: 9,  icons: true,  dots: false },
+  'Ploché / ostré':  { variant: 'iconadd', emphasis: 'outline', radius: 2,  pad: 8,  icons: false, dots: true },
+};
+
+const MOCK = [
+  { id:'n1', name:'Tempo akademie', type:'project',   sessions:2, live:true,  sel:true },
+  { id:'n2', name:'Onboarding proces', type:'process', sessions:1, live:false, sel:false },
+  { id:'n3', name:'Workflow web', type:'project',     sessions:1, live:false, sel:false },
+];
+const PICK = [
+  { name:'Portuni jádro', type:'project' },
+  { name:'Fakturace', type:'process' },
+  { name:'Brand & vizuál', type:'area' },
+];
+
+// ---------- helpers ----------
+const $ = (s, r=document) => r.querySelector(s);
+function abStyle() {
+  return `border-radius:${state.radius}px;padding:${state.pad}px 12px;`;
+}
+function ic(name) { return state.icons ? I[name] : ''; }
+function dotColor(type) { return state.dots ? `var(--color-node-${type})` : 'var(--color-text-dim)'; }
+
+// ---------- action-area renderers ----------
+function renderActions() {
+  const r = state.radius, P = abStyle();
+  const primClass = `ab primary ${state.emphasis} full`;
+  switch (state.variant) {
+    case 'stacked':
+      return `<div style="display:flex;flex-direction:column;gap:8px">
+        <button class="${primClass}" style="${P}">${ic('terminal')}Otevřít terminál</button>
+        <button class="ab secondary full" style="${P}">${ic('plus')}Nový uzel + terminál</button>
+      </div>`;
+    case 'split':
+      return `<div class="splitwrap">
+        <button class="ab primary ${state.emphasis} main" style="${P}">${ic('terminal')}Otevřít terminál</button>
+        <button class="ab primary ${state.emphasis} caret" style="border-radius:${r}px;">${I.chevron}</button>
+      </div>
+      ${state.menuOpen ? `<div class="pvmenu">
+        <div class="mi"><span>${I.plus}</span><span class="mt">Nový uzel + terminál<span class="md">vytvoří uzel a otevře v něm terminál</span></span></div>
+      </div>` : ''}`;
+    case 'iconadd':
+      return `<div style="display:flex;gap:8px">
+        <button class="ab primary ${state.emphasis}" style="${P};flex:1">${ic('terminal')}Otevřít terminál</button>
+        <button class="ab secondary icononly" style="border-radius:${r}px;padding:${state.pad}px;" title="Nový uzel + terminál">${I.plus}</button>
+      </div>
+      <div class="hint">[+] založí nový uzel a otevře v něm terminál</div>`;
+    case 'menu':
+      return `<button class="${primClass}" style="${P}">${ic('plus')}Nový terminál${I.chevron}</button>
+      ${state.menuOpen ? `<div class="pvmenu">
+        <div class="mi"><span>${I.terminal}</span><span class="mt">Pro existující uzel<span class="md">vyber uzel a otevři terminál</span></span></div>
+        <div class="mi"><span>${I.plus}</span><span class="mt">Pro nový uzel<span class="md">vytvoř uzel a rovnou terminál</span></span></div>
+      </div>` : ''}`;
+    case 'search':
+      return `<div class="pvsearch" style="border-radius:${r}px;">${I.search}<span class="ph">Hledat uzel a otevřít terminál…</span><span class="kbd">⌘T</span></div>
+      ${state.menuOpen ? `<div class="pvresults">
+        ${PICK.map(n=>`<div class="ri"><span class="dot" style="background:${dotColor(n.type)}"></span>${n.name}<span class="ct">${n.type}</span></div>`).join('')}
+      </div>` : ''}
+      <button class="ab ghost full" style="${P};justify-content:flex-start;color:var(--color-text-dim)">${ic('plus')}Nebo vytvoř nový uzel…</button>`;
+    case 'segment':
+      return `<div class="pv vt" style="padding:0 0 10px">
+        <div class="seg2" style="border-radius:${r}px;">
+          <button class="${state.segTarget==='exist'?'on':''}" data-seg="exist">Existující uzel</button>
+          <button class="${state.segTarget==='new'?'on':''}" data-seg="new">Nový uzel</button>
+        </div>
+      </div>
+      <button class="${primClass}" style="${P}">${ic('terminal')}Otevřít terminál</button>`;
+  }
+}
+
+// ---------- full preview ----------
+function renderPreview() {
+  const pv = $('#pv');
+  pv.className = 'pv' + (state.theme === 'light' ? ' light' : '');
+
+  const header = `<div class="hdr">
+    <div class="logo">${I.graph}</div>
+    <div class="name">Portuni</div>
+    <div class="ic">${I.settings}</div>
+    <div class="ic">${I.sun}</div>
+  </div>`;
+
+  const toggle = `<div class="vt"><div class="seg2">
+    <button>${I.graph}Graf</button>
+    <button class="on">${I.terminal}Práce<span class="badge">4</span></button>
+  </div></div>`;
+
+  let body;
+  if (state.empty) {
+    body = `<div class="empty">
+      <div class="et">Vyber uzel a otevři terminál</div>
+      <div class="ep">Sessions zůstávají naživu při přepnutí pohledu.</div>
+      <div class="pvsearch search" style="border-radius:${state.radius}px;">${I.search}<span class="ph">Hledat uzel…</span></div>
+      <div class="pvresults" style="width:100%">
+        ${PICK.slice(0,2).map(n=>`<div class="ri"><span class="dot" style="background:${dotColor(n.type)}"></span>${n.name}<span class="ct">${n.type}</span></div>`).join('')}
+      </div>
+    </div>`;
+  } else {
+    const actions = `<div class="actions">${renderActions()}</div>`;
+    const list = `<div class="nodes">${MOCK.map(n => {
+      const rows = [`<div class="nrow ${n.sel?'sel':''}">
+        <span class="dot" style="background:${dotColor(n.type)}"></span>
+        <span class="nm">${n.name}</span>
+        <span class="ct">${n.sessions}</span>
+        <span class="live ${n.live?'on':'idle'}"></span>
+      </div>`];
+      if (n.sel) {
+        let subs = '';
+        for (let i=0;i<n.sessions;i++) subs += `<div class="sub ${i===0?'sel':''}"><span class="live ${i===0?'on':'idle'}"></span><span class="hash">#${i+1}</span></div>`;
+        subs += `<div class="newsess">${I.plus}Nová session</div>`;
+        rows.push(`<div class="subs">${subs}</div>`);
+      }
+      return rows.join('');
+    }).join('')}</div>`;
+    body = actions + list;
+  }
+
+  const footer = `<div class="ftr">Sessions zůstávají naživu při přepnutí pohledu. Cmd+Q ukončí všechny.</div>`;
+  pv.innerHTML = header + toggle + body + footer;
+
+  // wire segment clicks inside preview
+  pv.querySelectorAll('[data-seg]').forEach(b => b.addEventListener('click', () => { state.segTarget = b.dataset.seg; updateAll(); }));
+
+  $('#caption').textContent = '300 px · ' + (VARIANTS.find(v=>v.id===state.variant)?.t || '');
+}
+
+// ---------- prompt ----------
+function updatePrompt() {
+  const v = VARIANTS.find(x => x.id === state.variant);
+  const emphasisCz = { filled:'plně vyplněnou akcentem', soft:'v jemném akcentovém stylu (soft)', outline:'jen s akcentovým obrysem' }[state.emphasis];
+  const dens = state.pad <= 7 ? 'kompaktní (nízká)' : state.pad >= 11 ? 'vzdušná (vysoká)' : 'střední';
+  const sharp = state.radius <= 2 ? 'ostré rohy' : state.radius >= 11 ? 'výrazně zaoblené rohy' : `zaoblení ${state.radius}px`;
+
+  const layoutDesc = {
+    stacked: 'Ponech dvě tlačítka pod sebou, ale primární „Otevřít terminál“ jasně odděl od sekundárního „Nový uzel + terminál“.',
+    split: 'Slouč obě akce do split-buttonu: hlavní plocha = „Otevřít terminál“, úzký caret vpravo rozbalí menu s „Nový uzel + terminál“.',
+    iconadd: 'Dej plnošířkové primární „Otevřít terminál“ a hned vedle čtvercové ikonové tlačítko [+] pro vytvoření nového uzlu s terminálem.',
+    menu: 'Nahraď obě tlačítka jedním „+ Nový terminál“ s caretem, které otevře menu se dvěma volbami: „Pro existující uzel“ a „Pro nový uzel“.',
+    search: 'Udělej akci search-first: nahoře vyhledávací pole „Hledat uzel a otevřít terminál…“ (zkratka ⌘T), které inline filtruje uzly a kliknutím otevře terminál; pod ním tichý odkaz „Nebo vytvoř nový uzel…“. Pro existující uzel je to nula klikání navíc.',
+    segment: 'Přidej segmentový přepínač cíle [Existující uzel | Nový uzel] a pod ním jediné „Otevřít terminál“, které jedná podle zvoleného segmentu.',
+  }[state.variant];
+
+  const p = `V levém panelu pohledu Práce (komponenta <code>Sidebar.tsx</code>, sekce workspace akcí) přepracuj dvojici akcí „Otevřít terminál“ / „Nový uzel + terminál“ takto:
+
+${layoutDesc}
+
+Primární akci stylizuj ${emphasisCz}, sekundární nech decentní (surface + border). Hustota tlačítek ${dens} (vertikální padding ~${state.pad}px), ${sharp}, ikony ${state.icons ? 'zobraz (terminál / plus)' : 'vynech, jen text'}. ${state.dots ? 'V seznamu uzlů ponech barevné tečky podle typu.' : 'Tečky u uzlů sjednoť do neutrální barvy.'} Motiv: ${state.theme==='light'?'světlý':'tmavý'}. Zachovej existující picker existujícího uzlu (modal/inline) a chování „Nový uzel + terminál“ jako sekundární.`;
+
+  $('#prompt').innerHTML = p.replace(/\n/g, '<br>');
+  state._plain = p.replace(/<\/?code>/g, '`');
+}
+
+// ---------- render controls + bind ----------
+function buildVariants() {
+  $('#variants').innerHTML = VARIANTS.map((v,i) =>
+    `<button class="variant ${v.id===state.variant?'active':''}" data-id="${v.id}">
+      <span class="vnum">${i+1}</span>
+      <span class="vbody"><span class="vt">${v.t}</span><span class="vd">${v.d}</span></span>
+    </button>`).join('');
+  $('#variants').querySelectorAll('.variant').forEach(b =>
+    b.addEventListener('click', () => {
+      state.variant = b.dataset.id; state.menuOpen = true;
+      $('#variants').querySelectorAll('.variant').forEach(x => x.classList.toggle('active', x.dataset.id===state.variant));
+      updateAll();
+    }));
+}
+function buildPresets() {
+  $('#presets').innerHTML = Object.keys(PRESETS).map(k => `<button class="preset" data-k="${k}">${k}</button>`).join('');
+  $('#presets').querySelectorAll('.preset').forEach(b =>
+    b.addEventListener('click', () => { Object.assign(state, PRESETS[b.dataset.k]); state.menuOpen = true; syncControls(); updateAll(); }));
+}
+function bindSeg(id, key) {
+  $('#'+id).querySelectorAll('button').forEach(b =>
+    b.addEventListener('click', () => { state[key] = b.dataset.v; updateAll(); }));
+}
+function syncControls() {
+  $('#radius').value = state.radius; $('#radiusV').textContent = state.radius + 'px';
+  $('#pad').value = state.pad; $('#padV').textContent = state.pad + 'px';
+  $('#icons').checked = state.icons; $('#dots').checked = state.dots; $('#empty').checked = state.empty;
+  document.querySelectorAll('#emphasis button').forEach(b => b.classList.toggle('on', b.dataset.v===state.emphasis));
+  document.querySelectorAll('#theme button').forEach(b => b.classList.toggle('on', b.dataset.v===state.theme));
+  document.querySelectorAll('.variant').forEach(b => b.classList.toggle('active', b.dataset.id===state.variant));
+}
+function updateAll() { renderPreview(); updatePrompt(); }
+
+// init
+buildVariants();
+buildPresets();
+bindSeg('emphasis','emphasis');
+bindSeg('theme','theme');
+$('#radius').addEventListener('input', e => { state.radius = +e.target.value; $('#radiusV').textContent = state.radius+'px'; updateAll(); });
+$('#pad').addEventListener('input', e => { state.pad = +e.target.value; $('#padV').textContent = state.pad+'px'; updateAll(); });
+$('#icons').addEventListener('change', e => { state.icons = e.target.checked; updateAll(); });
+$('#dots').addEventListener('change', e => { state.dots = e.target.checked; updateAll(); });
+$('#empty').addEventListener('change', e => { state.empty = e.target.checked; updateAll(); });
+$('#copy').addEventListener('click', () => {
+  navigator.clipboard.writeText(state._plain || '').then(() => {
+    const b = $('#copy'); b.classList.add('ok'); b.textContent = 'Zkopírováno ✓';
+    setTimeout(() => { b.classList.remove('ok'); b.textContent = 'Kopírovat'; }, 1400);
+  });
+});
+
+syncControls();
+updateAll();
+</script>
+</body>
+</html>
