@@ -4,6 +4,7 @@
 // page so the user can copy URLs / install configs / regenerate token.
 
 import { useMcpStatus } from "../lib/use-mcp-status";
+import { pluralFiles } from "../lib/plural-files";
 
 type Props = {
   onOpenSettings: () => void;
@@ -71,7 +72,7 @@ export default function StatusFooter({
       {pendingCount > 0 && (
         <button
           type="button"
-          title={`Nesynchronizováno: ${pendingCount} souborů`}
+          title={`Nesynchronizováno: ${pendingCount} ${pluralFiles(pendingCount)}`}
           onClick={onOpenSyncOverview}
           className="ml-3 flex items-center gap-2 rounded px-2 py-0.5 transition-colors hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
         >

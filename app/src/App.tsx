@@ -20,6 +20,7 @@ import {
 } from "./lib/sessions";
 import { isTauri } from "./lib/backend-url";
 import { useSyncPending } from "./lib/use-sync-pending";
+import { pluralFiles } from "./lib/plural-files";
 import SyncOverview from "./components/SyncOverview";
 
 // Lazy chunks: cytoscape (the GraphView dep) is the main reason the app
@@ -435,7 +436,7 @@ export default function App() {
         setEditorGuard(null);
         if (isTauri()) {
           const { getCurrentWindow } = await import("@tauri-apps/api/window");
-          await getCurrentWindow().destroy();
+          await getCurrentWindow().destroy().catch(() => undefined);
         }
       }
     },
@@ -986,8 +987,7 @@ export default function App() {
               Nesynchronizovaná práce
             </div>
             <p className="mb-4 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
-              Máš {syncQuitGuard.count} nesynchronizovaných souborů, které nejsou
-              na remote. Pokud aplikaci zavřeš, zůstanou jen lokálně.
+              Máš {syncQuitGuard.count} {pluralFiles(syncQuitGuard.count)}, které nejsou na remote (nesynchronizováno). Pokud aplikaci zavřeš, zůstanou jen lokálně.
             </p>
             <div className="flex justify-end gap-2">
               <button
@@ -999,7 +999,7 @@ export default function App() {
               </button>
               <button
                 type="button"
-                onClick={async () => {
+                onClick={() => {
                   setSyncQuitGuard(null);
                   setSyncOverviewOpen(true);
                 }}
@@ -1012,7 +1012,7 @@ export default function App() {
                 onClick={async () => {
                   setSyncQuitGuard(null);
                   const { getCurrentWindow } = await import("@tauri-apps/api/window");
-                  await getCurrentWindow().destroy();
+                  await getCurrentWindow().destroy().catch(() => undefined);
                 }}
                 className="rounded-md border border-[var(--color-danger-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-danger)] hover:bg-[var(--color-surface)]"
               >

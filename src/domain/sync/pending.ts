@@ -13,6 +13,11 @@ export async function computeSyncPending(
   const mirrors = await listUserMirrors(userId);
   const nodes: SyncPendingNode[] = [];
   for (const m of mirrors) {
+    const row = await db.execute({
+      sql: "SELECT name, type FROM nodes WHERE id = ?",
+      args: [m.node_id],
+    });
+    if (row.rows.length === 0) continue; // mirror for a deleted node — skip before scanning
     let scan;
     try {
       scan = await statusScan(db, {
@@ -31,11 +36,6 @@ export async function computeSyncPending(
     const deleted_local = scan.deleted_local.length;
     const total = push + conflict + untracked + orphan + deleted_local;
     if (total === 0) continue;
-    const row = await db.execute({
-      sql: "SELECT name, type FROM nodes WHERE id = ?",
-      args: [m.node_id],
-    });
-    if (row.rows.length === 0) continue; // mirror for a deleted node — skip
     nodes.push({
       node_id: m.node_id,
       node_name: row.rows[0].name as string,
