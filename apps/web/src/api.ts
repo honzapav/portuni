@@ -121,15 +121,15 @@ export function createNodeMirror(id: string): Promise<CreateMirrorResponse> {
 }
 
 // Seatbelt disk-scope profile for spawning an agent terminal inside the
-// node's mirror: home mirror read+write, depth-1 neighbor mirrors
-// read-only, the rest of PORTUNI_ROOT denied by the kernel. Fetched right
-// before pty_spawn; the terminal launch is fail-closed on errors so an
-// agent never starts without the boundary by accident.
+// node's mirror: home mirror read+write, the rest of PORTUNI_ROOT denied
+// by the kernel. Files of other in-scope nodes are reachable via staged
+// read-only copies under .portuni-scope/. Fetched right before pty_spawn;
+// the terminal launch is fail-closed on errors so an agent never starts
+// without the boundary by accident.
 export type SandboxProfileResponse = {
   profile: string;
   portuni_root: string;
   home_mirror: string;
-  neighbor_mirrors: string[];
 };
 
 export function fetchSandboxProfile(id: string): Promise<SandboxProfileResponse> {
