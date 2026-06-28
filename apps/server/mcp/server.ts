@@ -20,6 +20,7 @@ import { registerEventTools } from "./tools/events.js";
 import { registerActorTools } from "./tools/actors.js";
 import { registerResponsibilityTools } from "./tools/responsibilities.js";
 import { registerEntityAttributeTools } from "./tools/entity-attributes.js";
+import { createScopeReconciler, type ScopeReconciler } from "./scope-reconciler.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { TOOL_MIN_SCOPE } from "../auth/min-scopes.js";
 import { scopeAtLeast } from "../auth/roles.js";
@@ -37,6 +38,7 @@ For semantics, contracts, and enums fetch resources: portuni://architecture, por
 export interface SessionCtx {
   scope: SessionScope;
   identity: RequestIdentity;
+  reconciler: ScopeReconciler;
 }
 
 // Default identity used when createMcpServer() is called without arguments
@@ -96,7 +98,9 @@ export function createMcpServer(
   identity: RequestIdentity,
 ): { server: McpServer; scope: SessionScope } {
   const scope = new SessionScope(parseScopeMode(process.env.PORTUNI_SCOPE_MODE));
-  const ctx: SessionCtx = { scope, identity };
+  const reconciler = createScopeReconciler({ userId: identity.userId, scope });
+  scope.onAdd((nodeId) => reconciler.schedule(nodeId));
+  const ctx: SessionCtx = { scope, identity, reconciler };
   const server = new McpServer(
     { name: "portuni", version: "0.1.0" },
     { instructions: INSTRUCTIONS },
