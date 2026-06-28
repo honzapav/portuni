@@ -1,0 +1,78 @@
+# Dependabot configuration for Portuni.
+# Covers every package ecosystem in the repo so version + security updates
+# are no longer limited to whatever GitHub auto-detects. Minor/patch bumps are
+# grouped per ecosystem to cut PR noise; majors and security fixes still open
+# individual PRs.
+version: 2
+updates:
+  # Backend Node server (root package.json / package-lock.json).
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      root-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # React + Vite frontend.
+  - package-ecosystem: "npm"
+    directory: "/app"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      app-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Marketing/landing site (Astro).
+  - package-ecosystem: "npm"
+    directory: "/website"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      website-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Documentation site (Astro).
+  - package-ecosystem: "npm"
+    directory: "/docs-site"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      docs-site-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Tauri 2 desktop shell (Rust).
+  - package-ecosystem: "cargo"
+    directory: "/src-tauri"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # CI/release workflows.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      github-actions:
+        update-types:
+          - "minor"
+          - "patch"
