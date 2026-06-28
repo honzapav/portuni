@@ -91,6 +91,12 @@ import { FileTree, NewFileForm, SyncBar, ActionButtons } from "./DetailPane.file
 // for repeat visits during a single session.
 const SYNC_STATUS_CACHE = new Map<string, Map<string, SyncStatusFile>>();
 
+type DetailTab = "overview" | "events" | "files" | "connections";
+// Survives the DetailPane unmount that happens when the editor takes over
+// the right slot (Option C). Without this, closing a file remounts the
+// pane and resets the tab to "overview" -- the bug in ukol 9.
+const TAB_CACHE = new Map<string, DetailTab>();
+
 function nodeTypeVar(type: string): string {
   const known = [
     "organization",
@@ -243,9 +249,18 @@ function DetailPaneBody({
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [tab, setTab] = useState<
-    "overview" | "events" | "files" | "connections"
-  >("overview");
+  const [tab, setTabState] = useState<DetailTab>(
+    () => TAB_CACHE.get(node.id) ?? "overview",
+  );
+  // Wrap setTab so the choice is remembered across an editor open/close
+  // (which unmounts this pane). Keyed by node id.
+  const setTab = useCallback(
+    (t: DetailTab) => {
+      TAB_CACHE.set(node.id, t);
+      setTabState(t);
+    },
+    [node.id],
+  );
   const [syncStatus, setSyncStatus] = useState<Map<string, SyncStatusFile>>(
     () => SYNC_STATUS_CACHE.get(node.id) ?? new Map(),
   );
@@ -280,7 +295,8 @@ function DetailPaneBody({
       setEditing(false);
       setDraftName(node.name);
       setErrorMsg(null);
-      setTab("overview");
+      TAB_CACHE.set(node.id, "overview");
+      setTabState("overview");
       // Seed sync state from the module cache so revisits feel instant.
       // The background refetch below will update cache + state when the
       // server responds.
