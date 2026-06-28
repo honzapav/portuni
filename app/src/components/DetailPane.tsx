@@ -687,7 +687,7 @@ function DetailPaneBody({
                     <button
                       type="button"
                       title="Otevřít složku"
-                      onClick={() => void openInFinder(node.local_mirror!.local_path, false)}
+                      onClick={() => void openInFinder(node.local_mirror!.local_path, false).catch(() => undefined)}
                       className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
                     >
                       <FolderOpen size={13} />

@@ -498,25 +498,13 @@ export default function TerminalPane({
     const handlePaste = (e: ClipboardEvent) => {
       const hasFile =
         (e.clipboardData?.files?.length ?? 0) > 0 ||
-        (e.clipboardData?.types?.includes("Files") ?? false);
+        (e.clipboardData?.types ?? []).some((t) => t === "Files" || t.includes("file-url"));
 
-      if (hasFile) {
-        // Synchronously block xterm from seeing the paste event.
-        e.preventDefault();
-        e.stopPropagation();
-        void (async () => {
-          const path = await clipboardFilePath();
-          if (!path) return;
-          const data = shellQuote(path) + " ";
-          const { invoke } = await import("@tauri-apps/api/core");
-          await invoke("pty_write", { args: { session_id: id, data } }).catch(() => undefined);
-        })();
-        return;
-      }
+      if (!hasFile) return;
 
-      // Synchronous detection did not fire — try the async fallback.
-      // Do NOT preventDefault here; xterm handles the paste normally.
-      // If clipboardFilePath() finds a file path we write it additionally.
+      // A file is on the clipboard — block xterm and resolve the native path.
+      e.preventDefault();
+      e.stopPropagation();
       void (async () => {
         const path = await clipboardFilePath();
         if (!path) return;

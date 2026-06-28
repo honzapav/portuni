@@ -16,7 +16,6 @@ import {
   FolderOpen,
   Link2,
   Loader2,
-  Play,
   RefreshCw,
 } from "lucide-react";
 import type {
@@ -31,7 +30,6 @@ import { buildAgentCommand } from "../lib/prompt";
 import { agentDisplayName } from "../lib/settings";
 import { createNodeMirror, fetchNodeFileUrl } from "../api";
 import { isTauri, openInFinder } from "../lib/backend-url";
-import { useDataMode } from "../lib/central";
 
 // ---------------------------------------------------------------------------
 // File tree (Files tab)
@@ -572,7 +570,7 @@ function FileRow({
                 title="Otevřít na disku"
                 onClick={(e) => {
                   e.stopPropagation();
-                  void openInFinder(f.local_path!, true);
+                  void openInFinder(f.local_path!, true).catch(() => undefined);
                 }}
                 className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
               >
@@ -863,132 +861,6 @@ type LaunchState =
   | { kind: "copied" }
   | { kind: "error"; message: string };
 
-export function ActionButtons({
-  node,
-  agentCommand,
-  terminalLaunch,
-}: {
-  node: NodeDetail;
-  agentCommand: string;
-  terminalLaunch: string;
-}) {
-  const [state, setState] = useState<LaunchState>({ kind: "idle" });
-  const dataMode = useDataMode();
-  const isCentral = dataMode?.mode === "central";
-
-  // Organizations are workspace roots, not work locations -- nobody runs an
-  // agent at org scope, so the launch command is pointless here.
-  if (node.type === "organization") return null;
-
-  // In central mode, mirror creation is not available — replace with a note.
-  if (isCentral) {
-    return (
-      <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
-        Dostupné jen v lokálním režimu (fáze B).
-      </div>
-    );
-  }
-
-  const handleLaunch = async () => {
-    setState({ kind: "pending" });
-    try {
-      // Ensure the folder exists. Idempotent — fast path when the mirror
-      // is already registered.
-      const { local_path } = await createNodeMirror(node.id);
-      // Splice the freshly known mirror onto the node so buildAgentCommand
-      // produces the cd-prefixed form even on the first launch (when
-      // node.local_mirror was still null).
-      const enriched: NodeDetail = {
-        ...node,
-        local_mirror: node.local_mirror ?? {
-          local_path,
-          registered_at: new Date().toISOString(),
-        },
-      };
-      const cmd = buildAgentCommand(enriched, agentCommand);
-
-      if (isTauri()) {
-        try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          await invoke("launch_claude_for_node", {
-            cwd: local_path,
-            command: cmd,
-            template: terminalLaunch,
-          });
-          setState({ kind: "launched" });
-          setTimeout(() => setState({ kind: "idle" }), 2000);
-          return;
-        } catch (err) {
-          const msg = String(err);
-          if (msg.includes("UNSUPPORTED_OS")) {
-            // Linux / Windows in Tauri build — fall through to clipboard.
-          } else {
-            setState({ kind: "error", message: msg });
-            setTimeout(() => setState({ kind: "idle" }), 3500);
-            return;
-          }
-        }
-      }
-
-      await navigator.clipboard.writeText(cmd);
-      setState({ kind: "copied" });
-      setTimeout(() => setState({ kind: "idle" }), 1800);
-    } catch (err) {
-      setState({ kind: "error", message: String(err) });
-      setTimeout(() => setState({ kind: "idle" }), 3500);
-    }
-  };
-
-  const agentName = agentDisplayName(agentCommand);
-  const label = (() => {
-    switch (state.kind) {
-      case "pending":
-        return "Spouštím…";
-      case "launched":
-        return "Spuštěno v Terminal.app";
-      case "copied":
-        return "Zkopírováno — paste do svého terminálu";
-      case "error":
-        return state.message;
-      default:
-        return `Spustit ${agentName}`;
-    }
-  })();
-
-  const icon = (() => {
-    switch (state.kind) {
-      case "pending":
-        return <Loader2 size={13} className="animate-spin" />;
-      case "launched":
-        return <Check size={13} />;
-      case "copied":
-        return <Copy size={13} />;
-      case "error":
-        return null;
-      default:
-        return <Play size={13} />;
-    }
-  })();
-
-  return (
-    <div className="flex gap-2">
-      <button
-        onClick={handleLaunch}
-        disabled={state.kind === "pending"}
-        title={
-          isTauri()
-            ? `Otevře Terminal.app v pracovní složce a spustí ${agentName}. Pracovní složka bude vytvořena, pokud ještě neexistuje.`
-            : `Zkopíruje shell příkaz pro vstup do složky a spuštění ${agentName}. V desktopové aplikaci spustí Terminal.app přímo.`
-        }
-        className="group flex flex-1 items-center justify-center gap-2 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)] disabled:opacity-60"
-      >
-        {icon}
-        <span className="truncate">{label}</span>
-      </button>
-    </div>
-  );
-}
-
 // Split button that merges two terminal-launch controls into one:
 //   - Left (primary): opens an embedded terminal inside Portuni.
 //   - Right (chevron): dropdown with "Otevřít v externím terminálu" that
@@ -1135,9 +1007,10 @@ export function TerminalSplitButton({
         <button
           type="button"
           onClick={() => setDropdownOpen((v) => !v)}
+          disabled={primaryDisabled}
           title="Další možnosti spuštění"
           aria-label="Další možnosti spuštění"
-          className="flex items-center justify-center rounded-r-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-2.5 text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)]"
+          className="flex items-center justify-center rounded-r-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-2.5 text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)] disabled:cursor-default disabled:opacity-60"
         >
           <ChevronDown size={13} />
         </button>
