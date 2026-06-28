@@ -18,6 +18,7 @@ import { safeMirrorJoin, type Section } from "./remote-path.js";
 
 export type FileContentErrorCode =
   | "NO_MIRROR"
+  | "NO_REMOTE"
   | "NOT_FOUND"
   | "NOT_EDITABLE"
   | "CONFLICT"

@@ -46,6 +46,7 @@ rest are optional tunables with code defaults. Grep check:
 | `PORTUNI_TOKEN_STORE` | per-OS | Token store backend: `keychain` \| `varlock` \| `file` |
 | `PORTUNI_VARLOCK_WRITE_PROGRAM` / `_ARGS`, `PORTUNI_VARLOCK_DELETE_PROGRAM` / `_ARGS` | varlock CLI | Override commands the varlock token store shells out to |
 | `PORTUNI_STATUS_SCAN_CONCURRENCY` | 8 | statusScan per-file fan-out |
+| `PORTUNI_REMOTE_<NAME>__SERVICE_ACCOUNT_JSON` | unset | Per-remote Google Drive Service Account key (sensitive), read by the `varlock` token store (`token-store-varlock.ts`). `<NAME>` is the remote name upper-cased with `-` → `_`. **Required on the VPS for Phase B** (central-mode file content over the server: the Drive-direct read/write in `file-content-remote.ts` resolves the adapter via this credential). Sibling fields: `__ACCESS_TOKEN`, `__REFRESH_TOKEN`, `__EXPIRES_AT`. |
 
 ## Auth mode
 
