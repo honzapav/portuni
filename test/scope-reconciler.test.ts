@@ -94,4 +94,17 @@ describe("ScopeReconciler.reconcileNode", () => {
     });
     assert.equal(await r.reconcileNode("NEIGHBOR"), null);
   });
+
+  it("returns null (never throws) when the copy fails", async () => {
+    const scope = new SessionScope("strict");
+    scope.homeNodeId = "HOME";
+    const r = createScopeReconciler({
+      userId: "u",
+      scope,
+      resolveMirror: fakeResolver({ HOME: home, NEIGHBOR: neighbor }),
+    });
+    // Remove the source mirror so stageNodeIntoMirror's stat() throws ENOENT.
+    await rm(neighbor, { recursive: true, force: true });
+    assert.equal(await r.reconcileNode("NEIGHBOR"), null);
+  });
 });
