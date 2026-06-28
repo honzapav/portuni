@@ -41,7 +41,8 @@ async function createTestDb() {
       refs TEXT,
       task_ref TEXT,
       created_by TEXT NOT NULL REFERENCES users(id),
-      created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+      created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+      logged_at DATETIME NOT NULL DEFAULT (datetime('now'))
     )`,
     `CREATE INDEX idx_events_node ON events(node_id)`,
     `CREATE INDEX idx_events_status ON events(status)`,
