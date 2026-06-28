@@ -581,7 +581,10 @@ async function fileExistsAt(path: string): Promise<boolean> {
   }
 }
 
-async function localHashFor(
+// Exported for the mirror watcher's reconcile path: re-hashes a changed
+// file (mtime/size guard) and refreshes file_state.cached_local_hash while
+// preserving the synced baseline -- exactly what a modify event needs.
+export async function localHashFor(
   path: string,
   fileId: string,
   remoteHashRef: string | null = null,
