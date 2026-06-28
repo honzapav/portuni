@@ -23,7 +23,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { isTauri, openExternal } from "../lib/backend-url";
 import { reportError } from "../lib/error-overlay";
-import type { Theme } from "../lib/theme";
+import { THEMES, type Theme } from "../lib/theme";
 
 type Props = {
   // Pre-allocated by the parent. Used as the PTY backend session id —
@@ -54,9 +54,9 @@ type Props = {
   onOutput?: () => void;
 };
 
-// Read current CSS variables into an xterm ITheme. Called at mount
-// and on every theme flip — wherever xterm needs a fresh snapshot.
-function buildXtermTheme(): ITheme {
+// Read current CSS variables into an xterm ITheme, merged with the
+// mode's 16-color ANSI palette. Called at mount and on every theme flip.
+function buildXtermTheme(theme: Theme): ITheme {
   const css = getComputedStyle(document.documentElement);
   const bg = css.getPropertyValue("--color-bg").trim();
   const fg = css.getPropertyValue("--color-text").trim();
@@ -67,6 +67,7 @@ function buildXtermTheme(): ITheme {
     cursor: accent || "#7ec8ff",
     cursorAccent: bg || "#0e1015",
     selectionBackground: "rgba(126, 200, 255, 0.25)",
+    ...THEMES[theme].ansi,
   };
 }
 
@@ -130,7 +131,7 @@ export default function TerminalPane({
       lineHeight: 1.0,
       letterSpacing: 0,
       cursorBlink: true,
-      theme: buildXtermTheme(),
+      theme: buildXtermTheme(theme),
       allowProposedApi: true,
       scrollback: 5000,
       // CRITICAL on macOS with non-US keyboard layouts. With
@@ -434,7 +435,7 @@ export default function TerminalPane({
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    term.options.theme = buildXtermTheme();
+    term.options.theme = buildXtermTheme(theme);
   }, [theme]);
 
   // (C) Active-fit effect — refits when a pane becomes the active tab.
