@@ -108,7 +108,9 @@ export default function WorkspaceNodeList({
                 style={{ background: nodeTypeVar(r.type) }}
                 aria-hidden
               />
-              <span className="flex-1 truncate">{r.name}</span>
+              <span className="min-w-0 flex-1 truncate" title={r.name}>
+                {r.name}
+              </span>
               <span
                 role="img"
                 className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${active ? "bg-emerald-500" : "bg-amber-500/70"}`}
@@ -203,7 +205,17 @@ export default function WorkspaceNodeList({
                     );
                   }
                   return (
-                    <li key={s.id} className="flex">
+                    <li key={s.id} className="relative flex">
+                      {/* On-screen terminal: a straight accent rail tick on
+                          the session tree's left rail. Replaces an inset
+                          box-shadow that bent around the row's rounded
+                          corners. */}
+                      {sessVisible && (
+                        <span
+                          aria-hidden
+                          className="pointer-events-none absolute inset-y-1 left-0 z-10 w-0.5 rounded-full bg-[var(--color-accent)]"
+                        />
+                      )}
                       {/* biome-ignore lint/a11y/useSemanticElements: nested <button> is invalid HTML; role+tabIndex is the documented workaround */}
                       <div
                         role="button"
@@ -216,12 +228,7 @@ export default function WorkspaceNodeList({
                           }
                         }}
                         onDoubleClick={() => startRename(s)}
-                        style={
-                          sessVisible
-                            ? { boxShadow: "inset 2px 0 0 0 var(--color-accent)" }
-                            : undefined
-                        }
-                        className={`group flex flex-1 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-[12.5px] transition-colors ${
+                        className={`group flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-[12.5px] transition-colors ${
                           sessVisible
                             ? "bg-[var(--color-surface)] font-medium text-[var(--color-text)]"
                             : "text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
@@ -234,11 +241,12 @@ export default function WorkspaceNodeList({
                           className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${sessActive ? "bg-emerald-500" : "bg-amber-500/70"}`}
                         />
                         <span
-                          className={`flex-1 truncate text-[12px] ${
+                          title={sessionDisplayName(s, idx)}
+                          className={`min-w-0 flex-1 truncate text-[12px] ${
                             s.label
                               ? ""
                               : "font-mono"
-                          } ${sessVisible ? "text-[var(--color-text)]" : ""}`}
+                          } ${sessVisible ? "text-[var(--color-accent)]" : ""}`}
                         >
                           {sessionDisplayName(s, idx)}
                         </span>

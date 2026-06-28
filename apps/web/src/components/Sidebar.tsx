@@ -188,7 +188,7 @@ function Sidebar({
             onOpenNode={onWorkspaceOpenNode}
             onCreateNode={onWorkspaceCreateNode}
           />
-          <div className="flex-1 overflow-y-auto scroll-thin">
+          <div className="flex-1 overflow-x-hidden overflow-y-auto scroll-thin">
             <WorkspaceNodeList
               rows={workspaceRows}
               sessions={workspaceSessions}
@@ -236,13 +236,13 @@ function Sidebar({
         </>
       )}
 
-      <div className="border-t border-[var(--color-border)] px-5 py-3 text-[11px] text-[var(--color-text-dim)]">
-        {view === "graph"
-          ? "Kliknutím na uzel otevřete detail. Tažením posunete pohled, kolečkem přibližujete."
-          : view === "workspace"
-            ? "Otevři víc uzlů a přeskakuj mezi nimi. Terminály zůstávají naživu při přepnutí pohledu."
+      {view !== "workspace" && (
+        <div className="border-t border-[var(--color-border)] px-5 py-3 text-[11px] text-[var(--color-text-dim)]">
+          {view === "graph"
+            ? "Kliknutím na uzel otevřete detail. Tažením posunete pohled, kolečkem přibližujete."
             : "Změny se ukládají automaticky."}
-      </div>
+        </div>
+      )}
     </aside>
   );
 }
