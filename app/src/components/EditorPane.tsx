@@ -102,6 +102,14 @@ export function EditorBody({
           </button>
         </div>
       )}
+      {!ed.conflict && ed.externalChange && (
+        <div className="flex items-center gap-3 border-b border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-accent)_12%,transparent)] px-3 py-2 text-[12.5px] text-[var(--color-text)]">
+          <span>Soubor se na disku změnil.</span>
+          <button onClick={ed.reloadTheirs} className="underline hover:no-underline">
+            Načíst aktuální verzi
+          </button>
+        </div>
+      )}
       <ModeToggle mode={mode} onChange={onModeChange} />
       <div className="min-h-0 flex-1 overflow-auto">
         {mode === "edit" ? (

@@ -17,6 +17,7 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState<ConflictState>(null);
+  const [externalChange, setExternalChange] = useState(false);
 
   // Load on (nodeId, relPath) change. When no file is open (either arg
   // null) the hook is inert: no fetch, callbacks no-op. This lets App own
@@ -33,6 +34,7 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
         setVersion(r.version);
         setDirty(false);
         setStatus({ kind: "ready" });
+        setExternalChange(false);
       })
       .catch((e) => {
         if (cancelled) return;
@@ -62,6 +64,7 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
         setVersion(r.version);
         setDirty(false);
         setConflict(null);
+        setExternalChange(false);
       } catch (e) {
         if (e instanceof FileConflictError) {
           setConflict({ theirVersion: e.currentVersion });
@@ -84,7 +87,27 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
     setVersion(r.version);
     setDirty(false);
     setConflict(null);
+    setExternalChange(false);
   }, [nodeId, relPath]);
+
+  // Poll the on-disk version while a file is open. The backend's GET
+  // returns the sha256 `version`; if it moved past what we loaded, the
+  // file changed underneath us (an agent edit, a sync pull). We only
+  // FLAG it -- never silently swap content -- mirroring the save-time
+  // conflict UX. Paused when the tab is hidden. 5 s matches App's
+  // node-detail poll (App.tsx:492-509).
+  useEffect(() => {
+    if (nodeId == null || relPath == null || version == null) return;
+    const id = setInterval(() => {
+      if (document.hidden) return;
+      fetchFileContent(nodeId, relPath)
+        .then((r) => {
+          if (r.version !== version) setExternalChange(true);
+        })
+        .catch(() => undefined);
+    }, 5000);
+    return () => clearInterval(id);
+  }, [nodeId, relPath, version]);
 
   return {
     status,
@@ -94,6 +117,7 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
     saving,
     dirty,
     conflict,
+    externalChange,
     keepMine,
     reloadTheirs,
   };
