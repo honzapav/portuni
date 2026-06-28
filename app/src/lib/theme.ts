@@ -96,7 +96,7 @@ const LIGHT_THEME: ThemeColors = {
   },
   nodeColorDefault: "#64748b",
   ansi: {
-    black: "#1e293b",
+    black: "#0f172a",
     red: "#dc2626",
     green: "#16a34a",
     yellow: "#b45309",

@@ -405,7 +405,7 @@ async function routeNodes(
   }
   const fileUrlMatch = pathname.match(/^\/nodes\/([^/]+)\/file-url$/);
   if (fileUrlMatch && method === "GET") {
-    await handleFileUrl(req, res, identity, fileUrlMatch[1]);
+    await handleFileUrl(req, res, identity, decodeURIComponent(fileUrlMatch[1]));
     return true;
   }
   const syncRunMatch = pathname.match(/^\/nodes\/([^/]+)\/sync$/);

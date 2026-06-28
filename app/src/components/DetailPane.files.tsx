@@ -408,9 +408,13 @@ function CopyPathButton({ value, title }: { value: string; title: string }) {
       title={title}
       onClick={async (e) => {
         e.stopPropagation();
-        await navigator.clipboard.writeText(value);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1200);
+        try {
+          await navigator.clipboard.writeText(value);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        } catch {
+          /* clipboard write rejected; skip copied state */
+        }
       }}
       className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
     >

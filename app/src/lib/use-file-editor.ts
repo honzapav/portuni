@@ -1,6 +1,6 @@
 // Shared load/save/conflict state for the editor shells (pane + fullscreen).
 // Save is local-only (PUT writes the mirror; the user pushes via Synchronizovat).
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchFileContent, saveFileContent, FileConflictError } from "../api";
 
 export type EditorStatus =
@@ -18,6 +18,8 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState<ConflictState>(null);
   const [externalChange, setExternalChange] = useState(false);
+  const versionRef = useRef(version);
+  useEffect(() => { versionRef.current = version; }, [version]);
 
   // Load on (nodeId, relPath) change. When no file is open (either arg
   // null) the hook is inert: no fetch, callbacks no-op. This lets App own
@@ -102,7 +104,7 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
       if (document.hidden) return;
       fetchFileContent(nodeId, relPath)
         .then((r) => {
-          if (r.version !== version) setExternalChange(true);
+          if (r.version !== versionRef.current) setExternalChange(true);
         })
         .catch(() => undefined);
     }, 5000);
