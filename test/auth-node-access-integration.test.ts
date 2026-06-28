@@ -621,3 +621,166 @@ describe("Fix #11: handlePositions filters hidden nodes from bulk updates", () =
     assert.equal(row.rows[0].pos_y, null, "pos_y must remain unset");
   });
 });
+
+// ---------------------------------------------------------------------------
+// IDOR fixes: FK visibility guards on sync / mirror / move / create
+//   - handleSyncRun + handleCreateNodeMirror: guard the path nodeId
+//   - handleMoveNode: guard the destination org (new_org_id) FK
+//   - handleCreateNode: guard the organization_id FK
+// All four returned success (or acted) without a nodeVisibleTo check before.
+// ---------------------------------------------------------------------------
+
+describe("IDOR fixes: FK guards on sync / mirror / move / create", () => {
+  let db: DbClient;
+  let workspace: string;
+  let orgId: string;
+  let teamNodeId: string;
+  let restrictedNodeId: string;
+  let restrictedOrgId: string;
+
+  before(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-idor-fk-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+
+    db = await makeTestDb();
+    setDbForTesting(db);
+
+    orgId = await insertOrg(db, "VisibleOrg");
+    teamNodeId = await insertNode(db, orgId, { name: "TeamNode" });
+    restrictedNodeId = await insertNode(db, orgId, {
+      visibility: "group",
+      accessGroup: "secret@x.com",
+      name: "RestrictedNode",
+    });
+    // A group-restricted organization the outsider cannot see.
+    restrictedOrgId = ulid();
+    await db.execute({
+      sql: `INSERT INTO nodes (id, type, name, visibility, meta, sync_key, created_by)
+            VALUES (?, 'organization', 'SecretOrg', 'group', ?, ?, ?)`,
+      args: [
+        restrictedOrgId,
+        JSON.stringify({ access_group: "secret@x.com" }),
+        `org-${restrictedOrgId}`,
+        SOLO,
+      ],
+    });
+  });
+
+  after(async () => {
+    setDbForTesting(null);
+    resetLocalDbForTests();
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  test("outsider POST /nodes/:id/sync on a restricted node -> 404", async () => {
+    const outsider = makeOutsider(["other@x.com"]);
+    const { req, res, captured } = makeMockReqRes("POST", `/nodes/${restrictedNodeId}/sync`);
+    await routeApiRequest(
+      req,
+      res,
+      new URL(`http://localhost/nodes/${restrictedNodeId}/sync`),
+      outsider,
+    );
+    assert.equal(
+      captured.statusCode,
+      404,
+      `expected 404, got ${captured.statusCode}; body: ${captured.body}`,
+    );
+  });
+
+  test("outsider POST /nodes/:id/mirror on a restricted node -> 404", async () => {
+    const outsider = makeOutsider(["other@x.com"]);
+    const { req, res, captured } = makeMockReqRes("POST", `/nodes/${restrictedNodeId}/mirror`);
+    await routeApiRequest(
+      req,
+      res,
+      new URL(`http://localhost/nodes/${restrictedNodeId}/mirror`),
+      outsider,
+    );
+    assert.equal(
+      captured.statusCode,
+      404,
+      `expected 404, got ${captured.statusCode}; body: ${captured.body}`,
+    );
+  });
+
+  test("move to an unseen destination org -> 404, belongs_to unchanged", async () => {
+    const outsider = makeOutsider(["other@x.com"]);
+    const { req, res, captured } = makeMockReqRes("POST", `/nodes/${teamNodeId}/move`, {
+      new_org_id: restrictedOrgId,
+    });
+    await routeApiRequest(
+      req,
+      res,
+      new URL(`http://localhost/nodes/${teamNodeId}/move`),
+      outsider,
+    );
+    assert.equal(
+      captured.statusCode,
+      404,
+      `expected 404, got ${captured.statusCode}; body: ${captured.body}`,
+    );
+
+    const rows = await db.execute({
+      sql: "SELECT target_id FROM edges WHERE source_id = ? AND relation = 'belongs_to'",
+      args: [teamNodeId],
+    });
+    assert.equal(rows.rows.length, 1, "belongs_to edge should still exist");
+    assert.equal(
+      rows.rows[0].target_id,
+      orgId,
+      "node must NOT have been rebound to the unseen org",
+    );
+  });
+
+  test("create a node under an unseen organization_id -> 404, no node created", async () => {
+    const outsider = makeOutsider(["other@x.com"]);
+    const { req, res, captured } = makeMockReqRes("POST", "/nodes", {
+      type: "project",
+      name: "SneakyNode",
+      organization_id: restrictedOrgId,
+    });
+    await routeApiRequest(req, res, new URL("http://localhost/nodes"), outsider);
+    assert.equal(
+      captured.statusCode,
+      404,
+      `expected 404, got ${captured.statusCode}; body: ${captured.body}`,
+    );
+
+    const rows = await db.execute({
+      sql: "SELECT COUNT(*) AS cnt FROM nodes WHERE name = 'SneakyNode'",
+      args: [],
+    });
+    assert.equal(
+      rows.rows[0].cnt as number,
+      0,
+      "no node should have been created under the unseen org",
+    );
+  });
+
+  test("create a node under a visible organization_id -> 201 (guard does not over-block)", async () => {
+    const outsider = makeOutsider(["other@x.com"]);
+    const { req, res, captured } = makeMockReqRes("POST", "/nodes", {
+      type: "project",
+      name: "LegitNode",
+      organization_id: orgId,
+    });
+    await routeApiRequest(req, res, new URL("http://localhost/nodes"), outsider);
+    assert.equal(
+      captured.statusCode,
+      201,
+      `expected 201, got ${captured.statusCode}; body: ${captured.body}`,
+    );
+
+    const rows = await db.execute({
+      sql: "SELECT COUNT(*) AS cnt FROM nodes WHERE name = 'LegitNode'",
+      args: [],
+    });
+    assert.equal(
+      rows.rows[0].cnt as number,
+      1,
+      "a node under a visible org should be created",
+    );
+  });
+});

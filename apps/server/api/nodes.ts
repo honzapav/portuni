@@ -163,6 +163,13 @@ export async function handleMoveNode(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    // The destination org is an FK from the request body -- validate the
+    // caller can see it too, otherwise this is an IDOR: rebinding a node onto
+    // an organization the user has no access to (or probing its existence).
+    if (!(await nodeVisibleTo(getDb(), identity, body.new_org_id))) {
+      respondJson(res, 404, { error: "organization not found" });
+      return;
+    }
     const result = await moveNodeToOrganization(
       getDb(),
       identity.userId,
@@ -205,6 +212,16 @@ export async function handleCreateNode(
   const body = await parseJsonBody(req, res, CreateNodeBody);
   if (!body) return;
   try {
+    // organization_id is an FK from the request body -- when present, verify
+    // the caller can see that org, otherwise this is an IDOR: creating a node
+    // under an organization the user has no access to.
+    if (
+      body.organization_id &&
+      !(await nodeVisibleTo(getDb(), identity, body.organization_id))
+    ) {
+      respondJson(res, 404, { error: "organization not found" });
+      return;
+    }
     const id = await createNodeInternal(getDb(), identity.userId, {
       type: body.type,
       name: body.name,
@@ -510,6 +527,10 @@ export async function handleSyncRun(
 ): Promise<void> {
   try {
     const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
     const scan = await statusScan(db, {
       userId: identity.userId,
       nodeId,
@@ -614,7 +635,12 @@ export async function handleCreateNodeMirror(
     return;
   }
   try {
-    const result = await createMirrorForNode(getDb(), identity.userId, { nodeId });
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    const result = await createMirrorForNode(db, identity.userId, { nodeId });
     // Best-effort folder URL on the routed remote — not part of the
     // happy-path mirror creation. We don't await any heavy listing here;
     // folderUrl returns null when the folder hasn't been synced yet.
