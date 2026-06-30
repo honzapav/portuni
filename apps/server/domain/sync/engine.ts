@@ -520,6 +520,14 @@ export interface StatusArgs {
   // indicator where "what we last knew" is acceptable; the trigger path
   // still uses the slow scan for ground truth before acting.
   fast?: boolean;
+  // Discovery sub-flag: when set, runDiscovery still walks the local mirror
+  // for new_local files but SKIPS the per-mirror remote `adapter.list` call
+  // that finds new_remote. The cross-mirror unsynced aggregate
+  // (computeSyncPending) never counts new_remote, so paying for one Drive
+  // round-trip per mirror is pure waste — with dozens of mirrors those
+  // serial network calls made /sync/pending take minutes and silently time
+  // out, killing the footer indicator. No effect unless includeDiscovery.
+  skipRemoteDiscovery?: boolean;
 }
 
 export interface StatusFileEntry {
@@ -1005,6 +1013,9 @@ async function runDiscovery(db: Client, a: StatusArgs, out: StatusResult): Promi
     // file that is tracked anywhere in `files` (not just under this node id).
     // Org nodes' nodeRoot expands to the whole org subtree, so per-node-only
     // matching would falsely flag every child's file as new_remote.
+    // Callers that don't consume new_remote (the unsynced aggregate) opt out
+    // of this network round-trip via skipRemoteDiscovery.
+    if (a.skipRemoteDiscovery) continue;
     const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
     if (!remoteName) continue;
     try {
