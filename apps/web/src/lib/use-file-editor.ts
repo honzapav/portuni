@@ -18,6 +18,7 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState<ConflictState>(null);
   const [externalChange, setExternalChange] = useState(false);
+  const [localPath, setLocalPath] = useState<string | null>(null);
   const versionRef = useRef(version);
   useEffect(() => { versionRef.current = version; }, [version]);
 
@@ -33,6 +34,7 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
       .then((r) => {
         if (cancelled) return;
         setContent(r.content);
+        setLocalPath(r.local_path);
         setVersion(r.version);
         setDirty(false);
         setStatus({ kind: "ready" });
@@ -122,6 +124,7 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
     externalChange,
     keepMine,
     reloadTheirs,
+    localPath,
   };
 }
 
