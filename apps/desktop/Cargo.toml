@@ -70,3 +70,7 @@ sha2 = "0.11"
 # into the existing array idempotently without clobbering the rest of the
 # (large, default) config. Already present transitively (Cargo.lock).
 toml_edit = "0.25"
+# Percent-decoding for the portuni-html custom URI scheme handler.
+# Already present transitively (Cargo.lock pins 2.3.2); promoted to a
+# direct dep so the protocol handler can use it explicitly.
+percent-encoding = "2"

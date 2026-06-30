@@ -451,6 +451,26 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
     false
 }
 
+/// True when `candidate`, after lexical normalization (resolving `.`/`..`),
+/// stays inside `root`. Scopes the portuni-html protocol to the workspace
+/// mirror so a crafted URL cannot read arbitrary files (e.g. ../../etc/passwd).
+/// Lexical only — does not resolve symlinks; the mirror is trusted not to
+/// contain symlinks escaping the workspace.
+fn path_within_root(root: &std::path::Path, candidate: &std::path::Path) -> bool {
+    use std::path::Component;
+    let mut normalized = std::path::PathBuf::new();
+    for comp in candidate.components() {
+        match comp {
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::CurDir => {}
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized.starts_with(root)
+}
+
 #[derive(Serialize)]
 struct DataModeResponse {
     mode: String,
@@ -1100,6 +1120,52 @@ pub fn run() {
         .manage(BackendPort(Mutex::new(None)))
         .manage(AuthToken(Mutex::new(auth_token)))
         .manage(pty::PtyState::default())
+        .register_uri_scheme_protocol("portuni-html", |ctx, request| {
+            use tauri::http::Response;
+            let app = ctx.app_handle();
+            // URL: portuni-html://localhost/<percent-encoded absolute path>
+            let raw = request.uri().path().trim_start_matches('/');
+            let decoded = percent_encoding::percent_decode_str(raw)
+                .decode_utf8_lossy()
+                .to_string();
+            let candidate = std::path::PathBuf::from(&decoded);
+
+            let data_dir = app.path().app_data_dir().unwrap_or_default();
+            let root = load_config(&data_dir).portuni_workspace_root.map(std::path::PathBuf::from);
+
+            let forbidden = || {
+                Response::builder()
+                    .status(403)
+                    .header("Content-Type", "text/plain")
+                    .body(b"forbidden".to_vec())
+                    .unwrap()
+            };
+
+            let Some(root) = root else { return forbidden() };
+            if !path_within_root(&root, &candidate) {
+                error!("portuni-html refused out-of-scope path: {decoded}");
+                return forbidden();
+            }
+            match std::fs::read(&candidate) {
+                Ok(bytes) => Response::builder()
+                    .status(200)
+                    .header("Content-Type", "text/html; charset=utf-8")
+                    // Own permissive CSP: this origin is sandboxed (no
+                    // allow-same-origin) and isolated from the app, so the
+                    // app CSP is intentionally NOT applied here.
+                    .header("Content-Security-Policy", "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'")
+                    .body(bytes)
+                    .unwrap(),
+                Err(e) => {
+                    error!("portuni-html read failed for {decoded}: {e}");
+                    Response::builder()
+                        .status(404)
+                        .header("Content-Type", "text/plain")
+                        .body(b"not found".to_vec())
+                        .unwrap()
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_backend_port,
             get_data_mode,
@@ -1263,5 +1329,32 @@ mod local_only_path_tests {
         assert!(!is_local_only_path("/nodes/abc/file?encoding=utf8"));
         assert!(is_local_only_path("/nodes/abc/sync-status?fast=1"));
         assert!(!is_local_only_path("/graph?filter=all"));
+    }
+}
+
+#[cfg(test)]
+mod protocol_scope_tests {
+    use super::path_within_root;
+    use std::path::Path;
+
+    #[test]
+    fn allows_file_inside_root() {
+        assert!(path_within_root(
+            Path::new("/ws"),
+            Path::new("/ws/nodes/abc/wip/page.html")
+        ));
+    }
+
+    #[test]
+    fn rejects_traversal_escape() {
+        assert!(!path_within_root(
+            Path::new("/ws"),
+            Path::new("/ws/../etc/passwd")
+        ));
+    }
+
+    #[test]
+    fn rejects_unrelated_root() {
+        assert!(!path_within_root(Path::new("/ws"), Path::new("/etc/passwd")));
     }
 }
