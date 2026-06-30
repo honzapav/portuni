@@ -70,9 +70,12 @@ cokoliv *sám se sebou*, ale je odříznutý od Portuni tokenu a dat.
 1. **Render = sandboxed iframe, dvě source strategie podle prostředí**
    (jedna komponenta `HtmlPreview.tsx`):
    - **Desktop (Tauri):** `<iframe sandbox="allow-scripts" src="<protokol>/<mirror-path>">`.
-     Soubor servíruje Tauri **protokol handler v Rustu**, který čte z mirroru
+     Soubor servíruje **custom URI-scheme protokol** (`portuni-html://…`, na
+     Windows `http://portuni-html.localhost/…`) – handler v Rustu čte z mirroru
      přímo z disku (žádný bearer token netřeba – obchází tokenless-iframe
-     problém) a vrací odpověď s **vlastním volným/žádným CSP**. Iframe běží na
+     problém) a vrací `Response` s hlavičkami pod plnou kontrolou, tedy s
+     **vlastním volným/žádným CSP**. Tauri do custom-scheme odpovědí
+     **neinjektuje** app CSP (na rozdíl od asset protokolu). Iframe běží na
      odděleném originu protokolu, takže nedědí striktní app CSP → JS i externí
      zdroje fungují. Bez `allow-same-origin` → nedosáhne na hlavní app.
    - **Web (Vite dev):** `<iframe sandbox="allow-scripts" srcDoc={content}>`.
@@ -90,13 +93,30 @@ cokoliv *sám se sebou*, ale je odříznutý od Portuni tokenu a dat.
    "Otevřít v prohlížeči" jen pokud to plán shledá levným (shell allowlist dnes
    blokuje `file:`) – **ne blocker**.
 
+### Desktop serving = custom URI-scheme protokol (rozhodnuto)
+
+Zvolen **custom protokol** (Option A), ne asset protokol. Důvody: per-response
+kontrola CSP (volný CSP jen pro náhled, nic jiného se nesahá), vlastní path
+scoping v handleru, žádný globální `dangerousDisableAssetCspModification`
+(který by vypnul CSP injekci pro *všechny* asset odpovědi app-wide). Cena: víc
+Rust kódu, compile-time registrace schématu.
+
+**Sdílený požadavek (CSP framing):** hlavní app CSP nemá `frame-src`, takže
+padá na `default-src 'self'` → framování protokol originu by bylo blokované.
+Přidá se **jediná cílená direktiva** `frame-src 'self' <preview-origin>` do
+`tauri.conf.json:26`. To povoluje jen *framování* izolovaného originu,
+**nemění `script-src`** hlavní app → bezpečnostní posture drží. Web/Vite build
+nepotřebuje nic (žádný CSP, `srcDoc` frame projde).
+
 ### Otevřené pro implementační plán (ne teď)
 
-- Desktop render strategie: **plně custom protokol** vs. **vestavěný asset
-  protokol s `dangerousDisableAssetCspModification`**. Obojí dá iframu vlastní
-  CSP; plán vybere. Pozor na scoping protokolu jen na mirror cesty.
 - Jak `HtmlPreview` na desktopu získá mirror cestu souboru (z node detailu /
   `local_path`) pro sestavení protokol URL.
+- Async handler (`register_asynchronous_uri_scheme_protocol`) + path-traversal
+  guard v Rustu (reuse logiky `safeMirrorJoin` – request musí resolvovat uvnitř
+  mirror rootu, jinak chyba).
+- Cross-platform tvar URL (`portuni-html://…` macOS/Linux vs
+  `http://portuni-html.localhost/…` Windows). Cíl je macOS `.app`.
 - Přesné `sandbox` flagy (zvážit `allow-popups` pro `target=_blank` odkazy;
   default držet minimální = jen `allow-scripts`).
 
