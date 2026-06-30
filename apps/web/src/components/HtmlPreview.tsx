@@ -7,7 +7,7 @@
 // would block scripts, so we load the file over the portuni-html:// custom
 // protocol (its own origin + permissive CSP, served by Rust from disk).
 import { useState } from "react";
-import { isTauri } from "../lib/backend-url";
+import { isTauri, openPathExternal } from "../lib/backend-url";
 
 // Build the protocol URL for the desktop webview. The absolute path is
 // percent-encoded as the URL path; the Rust handler decodes + scope-checks it.
@@ -47,6 +47,15 @@ export default function HtmlPreview({
           >
             {copied ? "Zkopírováno" : "Kopírovat cestu"}
           </button>
+          {isTauri() && (
+            <button
+              onClick={() => localPath && void openPathExternal(localPath)}
+              title="Otevřít v prohlížeči"
+              className="rounded px-2 py-0.5 text-[11.5px] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+            >
+              Otevřít v prohlížeči
+            </button>
+          )}
         </div>
       )}
       <iframe

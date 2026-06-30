@@ -53,6 +53,14 @@ export async function openExternal(url: string): Promise<void> {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
+// Open a local file in the OS default app (for .html: the default browser).
+// Scope-guarded in Rust to the workspace root. No-op in browser mode.
+export async function openPathExternal(path: string): Promise<void> {
+  if (!isTauri()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("open_path_external", { path });
+}
+
 // Open a local path in Finder. When reveal=true uses `open -R` so Finder
 // selects the file in its parent folder; when false opens the folder itself.
 // No-op in browser mode (not running in Tauri).

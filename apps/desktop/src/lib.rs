@@ -664,6 +664,24 @@ async fn open_in_finder(_path: String, _reveal: bool) -> Result<(), String> {
     Err("UNSUPPORTED_OS".to_string())
 }
 
+// Open a local file in the OS default application. For .html files this
+// means the system default browser. The path is scope-guarded against the
+// configured workspace root so only files inside the mirror are reachable.
+#[tauri::command]
+fn open_path_external(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().unwrap_or_default();
+    let root = load_config(&data_dir)
+        .portuni_workspace_root
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| "no workspace root".to_string())?;
+    let candidate = std::path::PathBuf::from(&path);
+    if !path_within_root(&root, &candidate) {
+        return Err("path out of workspace scope".into());
+    }
+    info!("open_path_external: {path}");
+    open::that(&candidate).map_err(|e| e.to_string())
+}
+
 // Read a file path from the macOS clipboard. Uses osascript to coerce
 // the clipboard to a POSIX file URL (POSIX path). Returns Ok(Some(path))
 // when the clipboard holds a file reference, Ok(None) when it does not
@@ -1183,6 +1201,7 @@ pub fn run() {
             install_vibe_global,
             launch_claude_for_node,
             open_in_finder,
+            open_path_external,
             clipboard_file_path,
             pty::pty_spawn,
             pty::pty_write,
