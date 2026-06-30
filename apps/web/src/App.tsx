@@ -47,7 +47,7 @@ function isMarkdownPath(relPath: string): boolean {
   return /\.(md|markdown|mdx)$/i.test(relPath);
 }
 
-function isHtmlPath(relPath: string): boolean {
+export function isHtmlPath(relPath: string): boolean {
   const lower = relPath.toLowerCase();
   return lower.endsWith(".html") || lower.endsWith(".htm");
 }
