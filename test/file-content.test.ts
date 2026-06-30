@@ -84,6 +84,22 @@ describe("readFileContent", () => {
       (e: unknown) => e instanceof FileContentError && e.code === "INVALID_PATH",
     );
   });
+
+  it("returns the absolute local_path of the file on disk", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    await mkdir(join(mirrorRoot, "wip"), { recursive: true });
+    await writeFile(join(mirrorRoot, "wip", "page.html"), "<h1>hi</h1>");
+
+    const r = await readFileContent(db, {
+      userId: "U1",
+      nodeId,
+      relPath: "wip/page.html",
+    });
+
+    assert.equal(r.local_path, join(mirrorRoot, "wip", "page.html"));
+  });
 });
 
 describe("writeFileContent", () => {
