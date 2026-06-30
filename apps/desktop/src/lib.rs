@@ -1142,7 +1142,12 @@ pub fn run() {
             use tauri::http::Response;
             let app = ctx.app_handle();
             // URL: portuni-html://localhost/<percent-encoded absolute path>
-            let raw = request.uri().path().trim_start_matches('/');
+            // Strip exactly one leading slash (the literal '/' that separates
+            // the authority from the path in the URL). Using strip_prefix
+            // rather than trim_start_matches so we only consume one character,
+            // matching the FE contract: portuni-html://localhost/<encodeURIComponent(absPath)>.
+            let raw_path = request.uri().path();
+            let raw = raw_path.strip_prefix('/').unwrap_or(raw_path);
             let decoded = percent_encoding::percent_decode_str(raw)
                 .decode_utf8_lossy()
                 .to_string();
@@ -1162,6 +1167,19 @@ pub fn run() {
             let Some(root) = root else { return forbidden() };
             if !path_within_root(&root, &candidate) {
                 error!("portuni-html refused out-of-scope path: {decoded}");
+                return forbidden();
+            }
+            // Defense-in-depth: only serve .html/.htm files. The preview
+            // never requests anything else, so this never breaks normal use;
+            // it narrows what the protocol can serve even if the scope check
+            // were somehow bypassed.
+            let ext_ok = candidate
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
+                .unwrap_or(false);
+            if !ext_ok {
+                error!("portuni-html refused non-html path: {decoded}");
                 return forbidden();
             }
             match std::fs::read(&candidate) {
