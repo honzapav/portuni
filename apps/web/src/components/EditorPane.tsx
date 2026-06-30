@@ -2,6 +2,8 @@
 // node detail (Option C). "← zpět" returns to detail; ⤢ expands to fullscreen.
 import { ChevronLeft, Eye, Maximize2, Pencil, Save } from "lucide-react";
 import type { FileEditor } from "../lib/use-file-editor";
+import { isHtmlPath } from "../App";
+import HtmlPreview from "./HtmlPreview";
 import MarkdownEditor from "./MarkdownEditor";
 import MarkdownPreview from "./MarkdownPreview";
 
@@ -57,7 +59,7 @@ export default function EditorPane({
           </button>
         </span>
       </div>
-      <EditorBody ed={ed} mode={mode} onModeChange={onModeChange} />
+      <EditorBody ed={ed} relPath={relPath} mode={mode} onModeChange={onModeChange} />
     </div>
   );
 }
@@ -68,6 +70,7 @@ export default function EditorPane({
 // to reset Náhled back to Editace on every expand/collapse.
 export function EditorBody({
   ed,
+  relPath,
   mode,
   onModeChange,
   // Cap the content column width and center it. Only the fullscreen shell
@@ -77,6 +80,7 @@ export function EditorBody({
   capWidth = false,
 }: {
   ed: FileEditor;
+  relPath: string;
   mode: EditorMode;
   onModeChange: (m: EditorMode) => void;
   capWidth?: boolean;
@@ -121,6 +125,8 @@ export function EditorBody({
         <div className={`mx-auto h-full w-full${capWidth ? " max-w-4xl" : ""}`}>
           {mode === "edit" ? (
             <MarkdownEditor value={ed.content} onChange={ed.onChange} onSave={(v) => ed.save(v)} />
+          ) : isHtmlPath(relPath) ? (
+            <HtmlPreview content={ed.content} localPath={ed.localPath} />
           ) : (
             <MarkdownPreview value={ed.content} />
           )}

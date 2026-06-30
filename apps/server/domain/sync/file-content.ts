@@ -61,7 +61,13 @@ function resolveAbs(mirrorRoot: string, relPath: string): string {
 export async function readFileContent(
   _db: Client,
   a: { userId: string; nodeId: string; relPath: string },
-): Promise<{ content: string; version: string; filename: string; mime_type: string | null }> {
+): Promise<{
+  content: string;
+  version: string;
+  filename: string;
+  mime_type: string | null;
+  local_path: string;
+}> {
   const mirrorRoot = await getMirrorPath(a.userId, a.nodeId);
   if (!mirrorRoot) throw new FileContentError("node has no local mirror", "NO_MIRROR");
   const abs = resolveAbs(mirrorRoot, a.relPath);
@@ -85,6 +91,7 @@ export async function readFileContent(
     version: sha256Buffer(buf),
     filename,
     mime_type: mime,
+    local_path: abs,
   };
 }
 

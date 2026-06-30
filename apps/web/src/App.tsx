@@ -47,6 +47,11 @@ function isMarkdownPath(relPath: string): boolean {
   return /\.(md|markdown|mdx)$/i.test(relPath);
 }
 
+export function isHtmlPath(relPath: string): boolean {
+  const lower = relPath.toLowerCase();
+  return lower.endsWith(".html") || lower.endsWith(".htm");
+}
+
 export default function App() {
   const [graph, setGraph] = useState<GraphPayload | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
@@ -464,7 +469,7 @@ export default function App() {
     // Markdown opens in Náhled (rendered preview) by default; editing is the
     // secondary mode. Other file types have no useful preview, so they start
     // in the source editor.
-    setEditorMode(isMarkdownPath(relPath) ? "preview" : "edit");
+    setEditorMode(isMarkdownPath(relPath) || isHtmlPath(relPath) ? "preview" : "edit");
     setEditorGuard(null);
   }, []);
   const openFileInEditor = useCallback(

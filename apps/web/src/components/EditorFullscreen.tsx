@@ -56,7 +56,7 @@ export default function EditorFullscreen({
           </button>
         </span>
       </div>
-      <EditorBody ed={ed} mode={mode} onModeChange={onModeChange} capWidth />
+      <EditorBody ed={ed} relPath={relPath} mode={mode} onModeChange={onModeChange} capWidth />
     </div>,
     document.body,
   );

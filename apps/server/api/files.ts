@@ -82,6 +82,7 @@ export async function handleGetFileContent(
       version: r.version,
       filename: r.filename,
       mime_type: r.mime_type,
+      local_path: r.local_path,
     };
     respondJson(res, 200, payload);
   } catch (err) {

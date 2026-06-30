@@ -451,6 +451,26 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
     false
 }
 
+/// True when `candidate`, after lexical normalization (resolving `.`/`..`),
+/// stays inside `root`. Scopes the portuni-html protocol to the workspace
+/// mirror so a crafted URL cannot read arbitrary files (e.g. ../../etc/passwd).
+/// Lexical only — does not resolve symlinks; the mirror is trusted not to
+/// contain symlinks escaping the workspace.
+fn path_within_root(root: &std::path::Path, candidate: &std::path::Path) -> bool {
+    use std::path::Component;
+    let mut normalized = std::path::PathBuf::new();
+    for comp in candidate.components() {
+        match comp {
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::CurDir => {}
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized.starts_with(root)
+}
+
 #[derive(Serialize)]
 struct DataModeResponse {
     mode: String,
@@ -642,6 +662,24 @@ async fn open_in_finder(path: String, reveal: bool) -> Result<(), String> {
 #[tauri::command]
 async fn open_in_finder(_path: String, _reveal: bool) -> Result<(), String> {
     Err("UNSUPPORTED_OS".to_string())
+}
+
+// Open a local file in the OS default application. For .html files this
+// means the system default browser. The path is scope-guarded against the
+// configured workspace root so only files inside the mirror are reachable.
+#[tauri::command]
+fn open_path_external(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().unwrap_or_default();
+    let root = load_config(&data_dir)
+        .portuni_workspace_root
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| "no workspace root".to_string())?;
+    let candidate = std::path::PathBuf::from(&path);
+    if !path_within_root(&root, &candidate) {
+        return Err("path out of workspace scope".into());
+    }
+    info!("open_path_external: {path}");
+    open::that(&candidate).map_err(|e| e.to_string())
 }
 
 // Read a file path from the macOS clipboard. Uses osascript to coerce
@@ -1100,6 +1138,70 @@ pub fn run() {
         .manage(BackendPort(Mutex::new(None)))
         .manage(AuthToken(Mutex::new(auth_token)))
         .manage(pty::PtyState::default())
+        .register_uri_scheme_protocol("portuni-html", |ctx, request| {
+            use tauri::http::Response;
+            let app = ctx.app_handle();
+            // URL: portuni-html://localhost/<percent-encoded absolute path>
+            // Strip exactly one leading slash (the literal '/' that separates
+            // the authority from the path in the URL). Using strip_prefix
+            // rather than trim_start_matches so we only consume one character,
+            // matching the FE contract: portuni-html://localhost/<encodeURIComponent(absPath)>.
+            let raw_path = request.uri().path();
+            let raw = raw_path.strip_prefix('/').unwrap_or(raw_path);
+            let decoded = percent_encoding::percent_decode_str(raw)
+                .decode_utf8_lossy()
+                .to_string();
+            let candidate = std::path::PathBuf::from(&decoded);
+
+            let data_dir = app.path().app_data_dir().unwrap_or_default();
+            let root = load_config(&data_dir).portuni_workspace_root.map(std::path::PathBuf::from);
+
+            let forbidden = || {
+                Response::builder()
+                    .status(403)
+                    .header("Content-Type", "text/plain")
+                    .body(b"forbidden".to_vec())
+                    .unwrap()
+            };
+
+            let Some(root) = root else { return forbidden() };
+            if !path_within_root(&root, &candidate) {
+                error!("portuni-html refused out-of-scope path: {decoded}");
+                return forbidden();
+            }
+            // Defense-in-depth: only serve .html/.htm files. The preview
+            // never requests anything else, so this never breaks normal use;
+            // it narrows what the protocol can serve even if the scope check
+            // were somehow bypassed.
+            let ext_ok = candidate
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
+                .unwrap_or(false);
+            if !ext_ok {
+                error!("portuni-html refused non-html path: {decoded}");
+                return forbidden();
+            }
+            match std::fs::read(&candidate) {
+                Ok(bytes) => Response::builder()
+                    .status(200)
+                    .header("Content-Type", "text/html; charset=utf-8")
+                    // Own permissive CSP: this origin is sandboxed (no
+                    // allow-same-origin) and isolated from the app, so the
+                    // app CSP is intentionally NOT applied here.
+                    .header("Content-Security-Policy", "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'")
+                    .body(bytes)
+                    .unwrap(),
+                Err(e) => {
+                    error!("portuni-html read failed for {decoded}: {e}");
+                    Response::builder()
+                        .status(404)
+                        .header("Content-Type", "text/plain")
+                        .body(b"not found".to_vec())
+                        .unwrap()
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_backend_port,
             get_data_mode,
@@ -1117,6 +1219,7 @@ pub fn run() {
             install_vibe_global,
             launch_claude_for_node,
             open_in_finder,
+            open_path_external,
             clipboard_file_path,
             pty::pty_spawn,
             pty::pty_write,
@@ -1263,5 +1366,32 @@ mod local_only_path_tests {
         assert!(!is_local_only_path("/nodes/abc/file?encoding=utf8"));
         assert!(is_local_only_path("/nodes/abc/sync-status?fast=1"));
         assert!(!is_local_only_path("/graph?filter=all"));
+    }
+}
+
+#[cfg(test)]
+mod protocol_scope_tests {
+    use super::path_within_root;
+    use std::path::Path;
+
+    #[test]
+    fn allows_file_inside_root() {
+        assert!(path_within_root(
+            Path::new("/ws"),
+            Path::new("/ws/nodes/abc/wip/page.html")
+        ));
+    }
+
+    #[test]
+    fn rejects_traversal_escape() {
+        assert!(!path_within_root(
+            Path::new("/ws"),
+            Path::new("/ws/../etc/passwd")
+        ));
+    }
+
+    #[test]
+    fn rejects_unrelated_root() {
+        assert!(!path_within_root(Path::new("/ws"), Path::new("/etc/passwd")));
     }
 }

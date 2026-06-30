@@ -133,7 +133,13 @@ async function getFileRecord(
 export async function readFileContentRemote(
   db: Client,
   a: { userId: string; nodeId: string; relPath: string },
-): Promise<{ content: string; version: string; filename: string; mime_type: string | null }> {
+): Promise<{
+  content: string;
+  version: string;
+  filename: string;
+  mime_type: string | null;
+  local_path: string | null;
+}> {
   const { remoteName, remotePath, filename } = await resolveRemoteTarget(db, a.nodeId, a.relPath);
   const mime = mimeFor(filename);
 
@@ -165,6 +171,7 @@ export async function readFileContentRemote(
     version: sha256Buffer(buf),
     filename,
     mime_type: mime,
+    local_path: null,
   };
 }
 

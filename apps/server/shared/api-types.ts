@@ -97,6 +97,12 @@ export type FileContentResponse = {
   version: string; // sha256 of the on-disk bytes; pass back as baseVersion on save
   filename: string;
   mime_type: string | null;
+  // Absolute filesystem path when read from a local mirror; null when read
+  // remotely (central / no mirror). Used by the desktop HTML preview to
+  // build its protocol URL. Desktop-only affordance: this is a server-side
+  // path, so in a hosted-web deployment it would expose server paths to the
+  // client -- it is null there (no local mirror) and unused by the web UI.
+  local_path: string | null;
 };
 
 // Per-file sync state classified by the engine's statusScan. Untracked
