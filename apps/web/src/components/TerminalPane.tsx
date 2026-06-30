@@ -54,20 +54,25 @@ type Props = {
   onOutput?: () => void;
 };
 
-// Read current CSS variables into an xterm ITheme, merged with the
-// mode's 16-color ANSI palette. Called at mount and on every theme flip.
+// Build an xterm ITheme from the theme tokens, merged with the mode's
+// 16-color ANSI palette. Called at mount and on every theme flip.
+//
+// Colors are read from THEMES[theme] (the same tokens that drive the CSS
+// variables), NOT from getComputedStyle(document.documentElement). The DOM
+// read used to lag a flip behind: this component's theme effect runs
+// child-first, before App's effect sets <html data-theme>, so the computed
+// --color-bg/--color-text were still the OLD theme's while the ANSI palette
+// was the new one — the terminal looked inverted. Deriving everything from
+// THEMES[theme] makes the snapshot independent of effect ordering.
 function buildXtermTheme(theme: Theme): ITheme {
-  const css = getComputedStyle(document.documentElement);
-  const bg = css.getPropertyValue("--color-bg").trim();
-  const fg = css.getPropertyValue("--color-text").trim();
-  const accent = css.getPropertyValue("--color-accent").trim();
+  const t = THEMES[theme];
   return {
-    background: bg || "#0e1015",
-    foreground: fg || "#e6e7ea",
-    cursor: accent || "#7ec8ff",
-    cursorAccent: bg || "#0e1015",
+    background: t.bg,
+    foreground: t.text,
+    cursor: t.accent,
+    cursorAccent: t.bg,
     selectionBackground: "rgba(126, 200, 255, 0.25)",
-    ...THEMES[theme].ansi,
+    ...t.ansi,
   };
 }
 

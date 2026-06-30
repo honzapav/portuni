@@ -70,10 +70,16 @@ export function EditorBody({
   ed,
   mode,
   onModeChange,
+  // Cap the content column width and center it. Only the fullscreen shell
+  // sets this — on a 4K monitor an uncapped editor/preview stretches the
+  // full window width (unreadable line lengths). The narrow right pane
+  // leaves it off so it keeps using the whole column.
+  capWidth = false,
 }: {
   ed: FileEditor;
   mode: EditorMode;
   onModeChange: (m: EditorMode) => void;
+  capWidth?: boolean;
 }) {
   if (ed.status.kind === "loading") {
     return (
@@ -112,11 +118,13 @@ export function EditorBody({
       )}
       <ModeToggle mode={mode} onChange={onModeChange} />
       <div className="min-h-0 flex-1 overflow-auto">
-        {mode === "edit" ? (
-          <MarkdownEditor value={ed.content} onChange={ed.onChange} onSave={(v) => ed.save(v)} />
-        ) : (
-          <MarkdownPreview value={ed.content} />
-        )}
+        <div className={`mx-auto h-full w-full${capWidth ? " max-w-4xl" : ""}`}>
+          {mode === "edit" ? (
+            <MarkdownEditor value={ed.content} onChange={ed.onChange} onSave={(v) => ed.save(v)} />
+          ) : (
+            <MarkdownPreview value={ed.content} />
+          )}
+        </div>
       </div>
     </div>
   );
@@ -138,18 +146,18 @@ function ModeToggle({
     <div className="flex justify-end border-b border-[var(--color-border)] px-2 py-1">
       <div className="flex items-center gap-0.5 rounded border border-[var(--color-border)] p-0.5">
         <button
-          onClick={() => onChange("edit")}
-          className={`${base} ${mode === "edit" ? active : idle}`}
-          title="Editace"
-        >
-          <Pencil size={11} /> Editace
-        </button>
-        <button
           onClick={() => onChange("preview")}
           className={`${base} ${mode === "preview" ? active : idle}`}
           title="Náhled"
         >
           <Eye size={11} /> Náhled
+        </button>
+        <button
+          onClick={() => onChange("edit")}
+          className={`${base} ${mode === "edit" ? active : idle}`}
+          title="Editace"
+        >
+          <Pencil size={11} /> Editace
         </button>
       </div>
     </div>
