@@ -122,7 +122,14 @@ export function EditorBody({
       )}
       <ModeToggle mode={mode} onChange={onModeChange} />
       <div className="min-h-0 flex-1 overflow-auto">
-        <div className={`mx-auto h-full w-full${capWidth ? " max-w-4xl" : ""}`}>
+        {/* Cap the column width in fullscreen for readable line length --
+            EXCEPT the rendered HTML preview, which is a self-contained
+            document that should use the full window width. */}
+        <div
+          className={`mx-auto h-full w-full${
+            capWidth && !(isHtmlPath(relPath) && mode === "preview") ? " max-w-4xl" : ""
+          }`}
+        >
           {mode === "edit" ? (
             <MarkdownEditor value={ed.content} onChange={ed.onChange} onSave={(v) => ed.save(v)} />
           ) : isHtmlPath(relPath) ? (
