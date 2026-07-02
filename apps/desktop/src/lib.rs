@@ -471,6 +471,22 @@ fn path_within_root(root: &std::path::Path, candidate: &std::path::Path) -> bool
     normalized.starts_with(root)
 }
 
+/// Expand a leading `~` / `~/` in a config path to the user's home dir.
+/// The sidecar expands PORTUNI_WORKSPACE_ROOT this way (mirror-create.ts,
+/// local-db.ts), so the derived `local_path` is always absolute — but Rust's
+/// PathBuf leaves `~` literal. A config value like "~/Workspaces/portuni-tempo"
+/// must therefore be expanded before it can be compared against that absolute
+/// path in `path_within_root`; without this every preview 403s.
+fn expand_tilde(home: &std::path::Path, raw: &str) -> std::path::PathBuf {
+    if raw == "~" {
+        home.to_path_buf()
+    } else if let Some(rest) = raw.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        std::path::PathBuf::from(raw)
+    }
+}
+
 #[derive(Serialize)]
 struct DataModeResponse {
     mode: String,
@@ -670,10 +686,14 @@ async fn open_in_finder(_path: String, _reveal: bool) -> Result<(), String> {
 #[tauri::command]
 fn open_path_external(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let data_dir = app.path().app_data_dir().unwrap_or_default();
-    let root = load_config(&data_dir)
+    let raw_root = load_config(&data_dir)
         .portuni_workspace_root
-        .map(std::path::PathBuf::from)
         .ok_or_else(|| "no workspace root".to_string())?;
+    // Expand the config's leading ~ to match the sidecar-derived absolute path.
+    let root = match app.path().home_dir() {
+        Ok(h) => expand_tilde(&h, &raw_root),
+        Err(_) => std::path::PathBuf::from(&raw_root),
+    };
     let candidate = std::path::PathBuf::from(&path);
     if !path_within_root(&root, &candidate) {
         return Err("path out of workspace scope".into());
@@ -1165,7 +1185,15 @@ pub fn run() {
             let candidate = std::path::PathBuf::from(&decoded);
 
             let data_dir = app.path().app_data_dir().unwrap_or_default();
-            let root = load_config(&data_dir).portuni_workspace_root.map(std::path::PathBuf::from);
+            // Expand the config's leading ~ (the sidecar does this for the
+            // absolute local_path we compare against). Fall back to the raw
+            // value if the home dir is somehow unavailable.
+            let root = load_config(&data_dir).portuni_workspace_root.map(|r| {
+                match app.path().home_dir() {
+                    Ok(h) => expand_tilde(&h, &r),
+                    Err(_) => std::path::PathBuf::from(r),
+                }
+            });
 
             let forbidden = || {
                 Response::builder()
@@ -1404,5 +1432,46 @@ mod protocol_scope_tests {
     #[test]
     fn rejects_unrelated_root() {
         assert!(!path_within_root(Path::new("/ws"), Path::new("/etc/passwd")));
+    }
+}
+
+#[cfg(test)]
+mod expand_tilde_tests {
+    use super::expand_tilde;
+    use std::path::Path;
+
+    #[test]
+    fn expands_tilde_slash_prefix() {
+        assert_eq!(
+            expand_tilde(Path::new("/Users/honzapav"), "~/Workspaces/portuni-tempo"),
+            Path::new("/Users/honzapav/Workspaces/portuni-tempo")
+        );
+    }
+
+    #[test]
+    fn expands_bare_tilde() {
+        assert_eq!(
+            expand_tilde(Path::new("/Users/honzapav"), "~"),
+            Path::new("/Users/honzapav")
+        );
+    }
+
+    #[test]
+    fn leaves_absolute_path_untouched() {
+        assert_eq!(
+            expand_tilde(Path::new("/Users/honzapav"), "/abs/mirror"),
+            Path::new("/abs/mirror")
+        );
+    }
+
+    #[test]
+    fn regression_expanded_root_contains_expanded_local_path() {
+        // The bug: raw "~/Workspaces/portuni-tempo" never contained the
+        // sidecar-expanded absolute local_path, so every preview 403'd.
+        let home = Path::new("/Users/honzapav");
+        let root = expand_tilde(home, "~/Workspaces/portuni-tempo");
+        let local_path =
+            Path::new("/Users/honzapav/Workspaces/portuni-tempo/nodes/abc/wip/page.html");
+        assert!(super::path_within_root(&root, local_path));
     }
 }
