@@ -678,6 +678,17 @@ fn open_path_external(app: tauri::AppHandle, path: String) -> Result<(), String>
     if !path_within_root(&root, &candidate) {
         return Err("path out of workspace scope".into());
     }
+    // Extension allowlist: open::that launches the OS default handler, so an
+    // arbitrary in-scope file type could trigger code execution. Mirror the
+    // portuni-html protocol handler and only ever open .html/.htm externally.
+    let ext_ok = candidate
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
+        .unwrap_or(false);
+    if !ext_ok {
+        return Err("only .html/.htm may be opened externally".into());
+    }
     info!("open_path_external: {path}");
     open::that(&candidate).map_err(|e| e.to_string())
 }
