@@ -92,6 +92,28 @@ class FakeCentral implements CentralClient {
     return { id, filename, remote_name: "test-fs", remote_path: remotePath };
   }
 
+  async syncInfoBatch(nodeIds: string[]): Promise<NodeSyncInfo[]> {
+    const out: NodeSyncInfo[] = [];
+    for (const id of nodeIds) {
+      try {
+        out.push(await this.syncInfo(id));
+      } catch {
+        /* omitted, like the server */
+      }
+    }
+    return out;
+  }
+
+  async registerFiles(nodeId: string, relPaths: string[]) {
+    const out = [];
+    for (const rel of relPaths) out.push(await this.registerFile(nodeId, rel));
+    return out;
+  }
+
+  invalidateSyncInfo(_nodeId: string): void {
+    /* fake has no cache */
+  }
+
   async getFileRaw(_nodeId: string, relPath: string) {
     const remotePath = posix.join(NODE_ROOT, relPath);
     const b = this.bytes.get(remotePath);

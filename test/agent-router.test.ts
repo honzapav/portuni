@@ -74,6 +74,28 @@ class FakeCentral implements CentralClient {
     return { version: sha(bytes), canonicalHash: sha(bytes) };
   }
 
+  async syncInfoBatch(nodeIds: string[]): Promise<NodeSyncInfo[]> {
+    const out: NodeSyncInfo[] = [];
+    for (const id of nodeIds) {
+      try {
+        out.push(await this.syncInfo(id));
+      } catch {
+        /* omitted, like the server */
+      }
+    }
+    return out;
+  }
+
+  async registerFiles(nodeId: string, relPaths: string[]) {
+    const out = [];
+    for (const rel of relPaths) out.push(await this.registerFile(nodeId, rel));
+    return out;
+  }
+
+  invalidateSyncInfo(_nodeId: string): void {
+    /* fake has no cache */
+  }
+
   async dataSources() {
     return [];
   }

@@ -61,7 +61,7 @@ function toNodeInfo(si: NodeSyncInfo): NodeInfo {
   };
 }
 
-interface NodeContext {
+export interface NodeContext {
   si: NodeSyncInfo;
   info: NodeInfo;
   nodeRoot: string;
@@ -72,8 +72,12 @@ async function loadNodeContext(
   client: CentralClient,
   userId: string,
   nodeId: string,
+  // Preloaded sync-info (batch fetch, or a caller that already has it).
+  // Threading this through kills the duplicated round-trips the perf
+  // review flagged in the pending aggregate and the sync run.
+  preloaded?: NodeSyncInfo,
 ): Promise<NodeContext> {
-  const si = await client.syncInfo(nodeId);
+  const si = preloaded ?? (await client.syncInfo(nodeId));
   const info = toNodeInfo(si);
   return {
     si,
@@ -82,6 +86,33 @@ async function loadNodeContext(
     mirrorRoot: await getMirrorPath(userId, nodeId),
   };
 }
+
+// Bounded-concurrency map (results keep input order). Mirrors the engine's
+// internal helper; exported for the agent boot wiring (desktop.ts backfill).
+export async function mapConcurrent<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const idx = next++;
+      if (idx >= items.length) return;
+      results[idx] = await fn(items[idx]);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(Math.max(1, limit), items.length) }, () => worker()),
+  );
+  return results;
+}
+
+const SYNC_RUN_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.PORTUNI_SYNC_RUN_CONCURRENCY ?? 5),
+);
 
 // Mirror-relative "<section>[/<subpath>]/<filename>" for a local path inside
 // the mirror. NFC-normalized (matches the engine's identity rules).
@@ -105,6 +136,9 @@ export interface StatusCentralArgs {
   // guarded) for ground truth before a sync run.
   fast?: boolean;
   includeDiscovery?: boolean;
+  // Preloaded sync-info -- avoids a redundant fetch when the caller already
+  // holds the document (batch pending pass, sync run).
+  preloadedInfo?: NodeSyncInfo;
 }
 
 async function classifyRecord(
@@ -200,7 +234,14 @@ export async function statusScanCentral(
   client: CentralClient,
   a: StatusCentralArgs,
 ): Promise<StatusResult> {
-  const ctx = await loadNodeContext(client, a.userId, a.nodeId);
+  const ctx = await loadNodeContext(client, a.userId, a.nodeId, a.preloadedInfo);
+  return statusScanForContext(ctx, a);
+}
+
+async function statusScanForContext(
+  ctx: NodeContext,
+  a: Pick<StatusCentralArgs, "fast" | "includeDiscovery">,
+): Promise<StatusResult> {
   const out: StatusResult = {
     clean: [],
     push_candidates: [],
@@ -213,8 +254,12 @@ export async function statusScanCentral(
     deleted_local: [],
     moved: [],
   };
-  for (const rec of ctx.si.files) {
-    const r = await classifyRecord(ctx, rec, a.fast ?? false);
+  // Bounded fan-out: slow scans hash changed files (CPU+disk); fast scans
+  // are sync.db reads. Order of buckets stays deterministic via mapConcurrent.
+  const classified = await mapConcurrent(ctx.si.files, 8, (rec) =>
+    classifyRecord(ctx, rec, a.fast ?? false),
+  );
+  for (const r of classified) {
     (out[r.bucket] as StatusFileEntry[]).push(r.entry);
   }
   if (a.includeDiscovery !== false) {
@@ -323,10 +368,12 @@ export async function registerLocalFileCentral(
   };
 }
 
-// Push one classified push-candidate. Conflict-safe: re-reads the current
-// remote bytes to (a) obtain the sha256 the PUT's optimistic check needs and
-// (b) verify the remote still matches this device's baseline -- a remote that
-// moved between scan and push must not be clobbered.
+// Push one classified push-candidate. Conflict-safe without any pre-flight
+// download: the PUT carries a server-side precondition -- baseCanonicalHash
+// (remote must still match this device's synced baseline) for previously
+// synced files, ifAbsent (create-only) for never-synced ones. The server
+// verifies via a metadata stat; a remote that moved between scan and push
+// answers CONFLICT/EXISTS instead of being clobbered.
 async function pushEntryCentral(
   client: CentralClient,
   a: { userId: string; nodeId: string; mirrorRoot: string; entry: StatusFileEntry },
@@ -336,36 +383,39 @@ async function pushEntryCentral(
   const relPath = relPathFor(a.mirrorRoot, localPath);
   if (!relPath) throw new Error(`path left the mirror sections: ${localPath}`);
 
-  let baseVersion: string | undefined;
+  const baseline = a.entry.last_synced_hash;
+  const bytes = await readFile(localPath);
+  let put: { version: string; canonicalHash: string };
   try {
-    const cur = await client.getFileRaw(a.nodeId, relPath);
-    const baseline = a.entry.last_synced_hash;
-    if (baseline !== null && cur.canonicalHash !== baseline) {
-      throw new Error(
-        `remote changed since the last scan (expected baseline ${baseline}, remote is ${cur.canonicalHash}) -- rescan and resolve`,
-      );
-    }
-    if (baseline === null) {
-      // Fresh registration but the remote already has bytes: only a
-      // byte-identical remote is safe to overwrite.
-      const local = await readFile(localPath);
-      const localInCanonical =
-        cur.canonicalHash.length === 32 ? md5Buffer(local) : sha256Buffer(local);
-      if (localInCanonical !== cur.canonicalHash) {
-        throw new Error("remote already has different content for a never-synced file -- resolve manually");
-      }
-    }
-    baseVersion = cur.version;
+    put = await client.putFileRaw(
+      a.nodeId,
+      relPath,
+      bytes,
+      baseline !== null ? { baseCanonicalHash: baseline } : { ifAbsent: true },
+    );
   } catch (e) {
-    if (e instanceof CentralHttpError && (e.status === 404 || e.code === "NOT_FOUND")) {
-      baseVersion = undefined; // brand-new remote object
+    if (e instanceof CentralHttpError && e.code === "EXISTS" && baseline === null) {
+      // Never-synced file but the remote already has bytes. Only a
+      // byte-identical remote is safe to claim; verify with one download.
+      const cur = await client.getFileRaw(a.nodeId, relPath);
+      const localInCanonical =
+        cur.canonicalHash.length === 32 ? md5Buffer(bytes) : sha256Buffer(bytes);
+      if (localInCanonical !== cur.canonicalHash) {
+        throw new Error(
+          "remote already has different content for a never-synced file -- resolve manually",
+        );
+      }
+      // Identical bytes -- adopt the remote state without rewriting it.
+      put = { version: cur.version, canonicalHash: cur.canonicalHash };
+    } else if (e instanceof CentralHttpError && e.code === "CONFLICT") {
+      throw new Error(
+        `remote changed since the last scan (baseline ${baseline}, remote is ${e.currentVersion ?? "unknown"}) -- rescan and resolve`,
+      );
     } else {
       throw e;
     }
   }
 
-  const bytes = await readFile(localPath);
-  const put = await client.putFileRaw(a.nodeId, relPath, bytes, { baseVersion });
   const fsInfo = await statForCache(localPath);
   await upsertFileState({
     file_id: a.entry.file_id,
@@ -384,9 +434,11 @@ export async function pullFileCentral(
     nodeId: string;
     entry: StatusFileEntry;
     force?: boolean;
+    // Preloaded node context (sync run) -- avoids a per-pull round-trip.
+    ctx?: NodeContext;
   },
 ): Promise<{ file_id: string; local_path: string; hash: string }> {
-  const ctx = await loadNodeContext(client, a.userId, a.nodeId);
+  const ctx = a.ctx ?? (await loadNodeContext(client, a.userId, a.nodeId));
   if (!ctx.mirrorRoot) {
     throw new Error(`Node ${a.nodeId} has no local mirror on this device.`);
   }
@@ -528,13 +580,11 @@ export async function syncRunCentral(
   client: CentralClient,
   a: { userId: string; nodeId: string },
 ): Promise<SyncRunResponse> {
+  // One sync-info for the whole run: the scan reuses this context, pulls
+  // reuse it too, and pushes/adopts run through a bounded worker pool
+  // instead of a strictly sequential per-file chain.
   const ctx = await loadNodeContext(client, a.userId, a.nodeId);
-  const scan = await statusScanCentral(client, {
-    userId: a.userId,
-    nodeId: a.nodeId,
-    includeDiscovery: true,
-    fast: false,
-  });
+  const scan = await statusScanForContext(ctx, { includeDiscovery: true, fast: false });
   const result: SyncRunResponse = {
     pushed: [],
     pulled: [],
@@ -546,14 +596,14 @@ export async function syncRunCentral(
   };
   const mirrorRoot = ctx.mirrorRoot;
 
-  for (const e of scan.push_candidates) {
+  await mapConcurrent(scan.push_candidates, SYNC_RUN_CONCURRENCY, async (e) => {
     if (!e.local_path || !mirrorRoot) {
       result.errors.push({
         file_id: e.file_id,
         filename: e.filename,
         error: "no local path -- node has no mirror on this device",
       });
-      continue;
+      return;
     }
     try {
       await pushEntryCentral(client, { userId: a.userId, nodeId: a.nodeId, mirrorRoot, entry: e });
@@ -561,16 +611,16 @@ export async function syncRunCentral(
     } catch (err) {
       result.errors.push({ file_id: e.file_id, filename: e.filename, error: String(err) });
     }
-  }
+  });
 
-  for (const e of scan.pull_candidates) {
+  await mapConcurrent(scan.pull_candidates, SYNC_RUN_CONCURRENCY, async (e) => {
     try {
-      await pullFileCentral(client, { userId: a.userId, nodeId: a.nodeId, entry: e });
+      await pullFileCentral(client, { userId: a.userId, nodeId: a.nodeId, entry: e, ctx });
       result.pulled.push({ file_id: e.file_id, filename: e.filename });
     } catch (err) {
       result.errors.push({ file_id: e.file_id, filename: e.filename, error: String(err) });
     }
-  }
+  });
 
   for (const e of scan.deleted_local) {
     result.deleted_local.push({ file_id: e.file_id, filename: e.filename });
@@ -582,36 +632,68 @@ export async function syncRunCentral(
     result.skipped.push({ file_id: e.file_id, filename: e.filename, sync_class: e.class });
   }
 
-  // Adopt untracked: register (record-only), then push the bytes.
-  for (const u of scan.new_local) {
+  // Adopt untracked: one BATCH registration for all new files (one request +
+  // one db.batch server-side), then push the bytes through the worker pool
+  // with create-only semantics.
+  if (scan.new_local.length > 0 && mirrorRoot) {
+    let registered: Awaited<ReturnType<typeof client.registerFiles>> = [];
+    const relPaths: string[] = [];
+    const byRelPath = new Map<string, (typeof scan.new_local)[number]>();
+    for (const u of scan.new_local) {
+      const rel = relPathFor(mirrorRoot, u.local_path);
+      if (!rel) {
+        result.errors.push({ file_id: "", filename: u.filename, error: "outside mirror sections" });
+        continue;
+      }
+      relPaths.push(rel);
+      byRelPath.set(rel, u);
+    }
     try {
-      const reg = await registerLocalFileCentral(client, {
-        userId: a.userId,
-        nodeId: a.nodeId,
-        localPath: u.local_path,
-      });
-      if (mirrorRoot) {
+      registered = await client.registerFiles(a.nodeId, relPaths);
+    } catch (err) {
+      for (const rel of relPaths) {
+        const u = byRelPath.get(rel);
+        result.errors.push({ file_id: "", filename: u?.filename ?? rel, error: String(err) });
+      }
+      registered = [];
+    }
+    // registerFiles preserves input order, so pair by index.
+    const pairs = registered.map((reg, i) => ({ reg, rel: relPaths[i] }));
+    await mapConcurrent(pairs, SYNC_RUN_CONCURRENCY, async ({ reg, rel }) => {
+      const u = byRelPath.get(rel);
+      if (!u) return;
+      try {
+        // Cache the local hash under the new record before pushing.
+        await localHashFor(u.local_path, reg.id, null);
         await pushEntryCentral(client, {
           userId: a.userId,
           nodeId: a.nodeId,
           mirrorRoot,
           entry: {
-            file_id: reg.file_id,
+            file_id: reg.id,
             node_id: a.nodeId,
             filename: u.filename,
             local_path: u.local_path,
             remote_name: reg.remote_name,
             remote_path: reg.remote_path,
-            local_hash: reg.hash,
+            local_hash: null,
             remote_hash: null,
             last_synced_hash: null,
             class: "push",
           },
         });
+        result.adopted.push({ file_id: reg.id, filename: u.filename });
+      } catch (err) {
+        result.errors.push({ file_id: reg.id, filename: u.filename, error: String(err) });
       }
-      result.adopted.push({ file_id: reg.file_id, filename: u.filename });
-    } catch (err) {
-      result.errors.push({ file_id: "", filename: u.filename, error: String(err) });
+    });
+  } else {
+    for (const u of scan.new_local) {
+      result.errors.push({
+        file_id: "",
+        filename: u.filename,
+        error: "no local path -- node has no mirror on this device",
+      });
     }
   }
 
@@ -629,19 +711,29 @@ export async function computeSyncPendingCentral(
   userId: string,
 ): Promise<SyncPendingResponse> {
   const mirrors = await listUserMirrors(userId);
+  if (mirrors.length === 0) return { nodes: [], total: 0 };
+
+  // ONE batch request for every mirrored node's sync-info -- the perf
+  // review's top finding was this aggregate firing 2 requests per mirror
+  // (120 at 60 mirrors) on every 30s footer poll. Hidden/deleted nodes are
+  // omitted by the server and simply skipped here.
+  let infos: NodeSyncInfo[];
+  try {
+    infos = await client.syncInfoBatch(mirrors.map((m) => m.node_id));
+  } catch {
+    return { nodes: [], total: 0 }; // central unreachable -- empty overview
+  }
+  const infoById = new Map(infos.map((i) => [i.node.id, i]));
 
   const scanOne = async (m: (typeof mirrors)[number]): Promise<SyncPendingNode | null> => {
-    let si: NodeSyncInfo;
-    try {
-      si = await client.syncInfo(m.node_id);
-    } catch {
-      return null; // node gone or not visible -- skip, never break the overview
-    }
+    const si = infoById.get(m.node_id);
+    if (!si) return null; // node gone or not visible -- skip
     const scan = await statusScanCentral(client, {
       userId,
       nodeId: m.node_id,
       includeDiscovery: true,
       fast: true,
+      preloadedInfo: si,
     }).catch(() => null);
     if (!scan) return null;
     const push = scan.push_candidates.length;
@@ -804,29 +896,29 @@ async function materializeAndRegenCentral(
     }
   };
 
-  for (const m of allMirrors) {
-    const others = paths.filter((p) => p !== m.local_path);
-    const r = await materializeScopeConfig({
-      currentMirror: m.local_path,
-      nodeId: m.node_id,
-      otherMirrors: others,
-      portuniRoot,
-      guardScriptPath,
-      dataSources: await dataSourcesFor(m.node_id),
-    });
-    aggregated.written.push(...r.written);
-    aggregated.errors.push(...r.errors);
-  }
+  // Sibling regen used to run M+1 sequential dataSources round-trips on the
+  // interactive mirror-create path (O(M^2) across a full onboarding). Fan
+  // out with bounded concurrency; the scope-config writes themselves are
+  // local disk I/O and stay in the same worker.
+  const jobs: Array<{ mirror: string; nodeId: string }> = allMirrors.map((m) => ({
+    mirror: m.local_path,
+    nodeId: m.node_id,
+  }));
   if (!allMirrors.find((m) => m.node_id === newNodeId)) {
-    const others = paths.filter((p) => p !== newMirrorPath);
-    const r = await materializeScopeConfig({
-      currentMirror: newMirrorPath,
-      nodeId: newNodeId,
+    jobs.push({ mirror: newMirrorPath, nodeId: newNodeId });
+  }
+  const results = await mapConcurrent(jobs, 6, async (j) => {
+    const others = paths.filter((p) => p !== j.mirror);
+    return materializeScopeConfig({
+      currentMirror: j.mirror,
+      nodeId: j.nodeId,
       otherMirrors: others,
       portuniRoot,
       guardScriptPath,
-      dataSources: await dataSourcesFor(newNodeId),
+      dataSources: await dataSourcesFor(j.nodeId),
     });
+  });
+  for (const r of results) {
     aggregated.written.push(...r.written);
     aggregated.errors.push(...r.errors);
   }

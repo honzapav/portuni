@@ -17,9 +17,10 @@ import { startMirrorWatcher } from "./boot/mirror-watch.js";
 import { createCentralClientFromEnv, type CentralClient } from "./domain/sync/central/client.js";
 import {
   listUntrackedLocalCentral,
+  mapConcurrent,
   reconcilePathCentral,
-  registerLocalFileCentral,
 } from "./domain/sync/central/engine-central.js";
+import { localHashFor } from "./domain/sync/engine.js";
 import { createMirrorWatcher, type MirrorWatcher } from "./domain/sync/mirror-watcher.js";
 import { listUserMirrors } from "./domain/sync/mirror-registry.js";
 import { createAgentRouter } from "./api/agent-router.js";
@@ -126,22 +127,32 @@ async function agentMain(client: CentralClient): Promise<void> {
 
   // Central backfill: register anything on disk the records don't know yet,
   // so files created while the agent was down are tracked. Best-effort.
+  // Bounded fan-out across mirrors + ONE batch registration per mirror
+  // instead of a strictly sequential per-file chain (perf review, scale-boot).
   void (async () => {
     try {
       const mirrors = await listUserMirrors(SOLO_USER);
-      for (const m of mirrors) {
-        const untracked = await listUntrackedLocalCentral(client, {
-          userId: SOLO_USER,
-          nodeId: m.node_id,
-        }).catch(() => []);
-        for (const u of untracked) {
-          await registerLocalFileCentral(client, {
+      await mapConcurrent(mirrors, 4, async (m) => {
+        try {
+          const untracked = await listUntrackedLocalCentral(client, {
             userId: SOLO_USER,
             nodeId: m.node_id,
-            localPath: u.local_path,
-          }).catch((e) => console.error("[boot] central backfill register failed:", e));
+          });
+          if (untracked.length === 0) return;
+          const relPaths = untracked.map((u) => {
+            const sub = u.subpath ? `${u.subpath.normalize("NFC")}/` : "";
+            return `${u.section}/${sub}${u.filename.normalize("NFC")}`;
+          });
+          const regs = await client.registerFiles(m.node_id, relPaths);
+          // Cache local hashes so fast status classifies them push (same
+          // contract as the single-file registration path).
+          for (let i = 0; i < regs.length; i += 1) {
+            await localHashFor(untracked[i].local_path, regs[i].id, null).catch(() => null);
+          }
+        } catch (e) {
+          console.error("[boot] central backfill failed for", m.node_id, e);
         }
-      }
+      });
     } catch (e) {
       console.error("[boot] central backfill skipped:", e);
     }
