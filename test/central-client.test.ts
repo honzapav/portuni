@@ -94,6 +94,87 @@ describe("createHttpCentralClient", () => {
     assert.equal(sent.content_base64, Buffer.from("x").toString("base64"));
   });
 
+  it("syncInfo micro-cache: sequential + concurrent calls within TTL share one fetch", async () => {
+    const { fetchImpl, calls } = fakeFetch([
+      { status: 200, json: { node: { id: "N1" }, remote_name: "r", files: [] } },
+    ]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl, syncInfoTtlMs: 60_000 });
+    const [a, b] = await Promise.all([c.syncInfo("N1"), c.syncInfo("N1")]);
+    await c.syncInfo("N1");
+    assert.equal(calls.length, 1);
+    assert.equal(a.remote_name, "r");
+    assert.equal(b.remote_name, "r");
+  });
+
+  it("syncInfo cache: mutation through the client invalidates the node", async () => {
+    const { fetchImpl, calls } = fakeFetch([
+      { status: 200, json: { node: { id: "N1" }, remote_name: "r", files: [] } },
+      { status: 201, json: { id: "F1", filename: "a", remote_name: "r", remote_path: "p" } },
+      { status: 200, json: { node: { id: "N1" }, remote_name: "r", files: [{ id: "F1" }] } },
+    ]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl, syncInfoTtlMs: 60_000 });
+    await c.syncInfo("N1");
+    await c.registerFile("N1", "wip/a.md");
+    const after = await c.syncInfo("N1");
+    assert.equal(calls.length, 3); // info, register, fresh info
+    assert.equal((after.files as unknown[]).length, 1);
+  });
+
+  it("syncInfo cache: failures are never cached; ttl 0 disables caching", async () => {
+    const failing = fakeFetch([
+      { status: 500, json: { error: "boom" } },
+      { status: 200, json: { node: { id: "N1" }, remote_name: "r", files: [] } },
+    ]);
+    const c1 = createHttpCentralClient({ ...BASE, fetchImpl: failing.fetchImpl, syncInfoTtlMs: 60_000 });
+    await assert.rejects(() => c1.syncInfo("N1"));
+    const ok = await c1.syncInfo("N1");
+    assert.equal(ok.remote_name, "r");
+    assert.equal(failing.calls.length, 2);
+
+    const uncached = fakeFetch([
+      { status: 200, json: { node: { id: "N1" }, remote_name: "r", files: [] } },
+    ]);
+    const c2 = createHttpCentralClient({ ...BASE, fetchImpl: uncached.fetchImpl, syncInfoTtlMs: 0 });
+    await c2.syncInfo("N1");
+    await c2.syncInfo("N1");
+    assert.equal(uncached.calls.length, 2);
+  });
+
+  it("syncInfoBatch posts node_ids and seeds the cache", async () => {
+    const { fetchImpl, calls } = fakeFetch([
+      {
+        status: 200,
+        json: { infos: [{ node: { id: "N1" }, remote_name: "r", files: [] }, { node: { id: "N2" }, remote_name: "r", files: [] }] },
+      },
+    ]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl, syncInfoTtlMs: 60_000 });
+    const infos = await c.syncInfoBatch(["N1", "N2"]);
+    assert.equal(infos.length, 2);
+    // Seeded cache -- no extra fetches for the same nodes.
+    await c.syncInfo("N1");
+    await c.syncInfo("N2");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "https://api.example.com/sync/info-batch");
+    assert.deepEqual(JSON.parse(calls[0].body ?? ""), { node_ids: ["N1", "N2"] });
+  });
+
+  it("registerFiles posts the batch and putFileRaw carries preconditions", async () => {
+    const { fetchImpl, calls } = fakeFetch([
+      { status: 201, json: { files: [{ id: "F1" }, { id: "F2" }] } },
+      { status: 200, json: { version: "v", canonical_hash: "h" } },
+    ]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    const regs = await c.registerFiles("N1", ["wip/a.md", "wip/b.md"]);
+    assert.equal(regs.length, 2);
+    await c.putFileRaw("N1", "wip/a.md", Buffer.from("x"), {
+      baseCanonicalHash: "abc",
+      ifAbsent: true,
+    });
+    const putBody = JSON.parse(calls[1].body ?? "");
+    assert.equal(putBody.baseCanonicalHash, "abc");
+    assert.equal(putBody.ifAbsent, true);
+  });
+
   it("nodeExists maps 200/404 and throws on other statuses", async () => {
     const { fetchImpl } = fakeFetch([
       { status: 200, json: {} },
