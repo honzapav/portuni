@@ -51,6 +51,8 @@ rest are optional tunables with code defaults. Grep check:
 | `PORTUNI_AGENT_MODE` | unset | `=1` boots the desktop sidecar as the central-mode **sync agent** (teammate mirrors): no Turso, no graph db, no MCP; serves only mirror/sync/scope/sandbox routes backed by the central server (`desktop.ts` → `api/agent-router.ts`, engine in `domain/sync/central/`). Set by the Tauri host in central data_mode. |
 | `PORTUNI_CENTRAL_URL` | unset | Agent mode: base URL of the central server (e.g. `https://api.portuni.com`). Required with `PORTUNI_AGENT_MODE=1`. |
 | `PORTUNI_CENTRAL_TOKEN` | unset | Agent mode: the user's device token (sensitive) used as Bearer for every graph-plane/byte call to the central server. Required with `PORTUNI_AGENT_MODE=1`. |
+| `PORTUNI_SYNC_RUN_CONCURRENCY` | `5` | Agent mode: worker-pool width for push/pull/adopt inside a sync run (`engine-central.ts`). |
+| `PORTUNI_MAX_FILE_BODY_BYTES` | `160 MB` | Body cap for the file-content PUT/POST routes (`api/files.ts`), decoupled from the generic 5 MB JSON cap (`PORTUNI_MAX_BODY_BYTES`) so base64 pushes of large files do not 413. |
 
 ## Auth mode
 

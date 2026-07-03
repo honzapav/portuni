@@ -20,36 +20,45 @@ export async function effectiveAccessGroup(
   db: Client,
   nodeId: string,
 ): Promise<string | null> {
-  let current: string | null = nodeId;
-  for (let i = 0; i < MAX_CHAIN && current !== null; i += 1) {
-    const nodeId_: string = current;
-    // eslint-disable-next-line no-await-in-loop
-    const r: Awaited<ReturnType<typeof db.execute>> = await db.execute({
-      sql: "SELECT visibility, meta FROM nodes WHERE id = ?",
-      args: [nodeId_],
-    });
-    if (r.rows.length === 0) return null;
-    const row = r.rows[0];
-    if (row.visibility === "group") {
-      try {
-        const meta = JSON.parse(String(row.meta ?? "{}")) as {
-          access_group?: unknown;
-        };
-        if (typeof meta.access_group === "string" && meta.access_group) {
-          return meta.access_group.toLowerCase();
-        }
-      } catch {
-        /* malformed meta -> restricted-without-group: deny-safe */
+  // One recursive-CTE round-trip instead of two queries per belongs_to hop
+  // (the old walk cost 2xdepth Turso round-trips on EVERY enforced request;
+  // the server has no embedded replica). The correlated LIMIT 1 subquery
+  // preserves the original single-path semantics -- the org invariant
+  // guarantees one scoping parent, and if data ever violates it we follow
+  // the same arbitrary-first edge the loop did.
+  const r = await db.execute({
+    sql: `WITH RECURSIVE chain(id, depth) AS (
+            SELECT ?, 0
+            UNION ALL
+            SELECT (SELECT e.target_id FROM edges e
+                    WHERE e.source_id = c.id AND e.relation = 'belongs_to' LIMIT 1),
+                   c.depth + 1
+            FROM chain c
+            WHERE c.depth < ${MAX_CHAIN}
+              AND (SELECT e.target_id FROM edges e
+                   WHERE e.source_id = c.id AND e.relation = 'belongs_to' LIMIT 1) IS NOT NULL
+          )
+          SELECT n.visibility, n.meta, c.depth
+          FROM chain c JOIN nodes n ON n.id = c.id
+          ORDER BY c.depth`,
+    args: [nodeId],
+  });
+  // Row 0 is the node itself; a missing node keeps the old contract (null).
+  if (r.rows.length === 0 || Number(r.rows[0].depth) !== 0) return null;
+  for (const row of r.rows) {
+    if (row.visibility !== "group") continue;
+    try {
+      const meta = JSON.parse(String(row.meta ?? "{}")) as {
+        access_group?: unknown;
+      };
+      if (typeof meta.access_group === "string" && meta.access_group) {
+        return meta.access_group.toLowerCase();
       }
-      // visibility='group' without a parseable access_group: fail closed.
-      return "__unresolvable__";
+    } catch {
+      /* malformed meta -> restricted-without-group: deny-safe */
     }
-    // eslint-disable-next-line no-await-in-loop
-    const edge: Awaited<ReturnType<typeof db.execute>> = await db.execute({
-      sql: `SELECT target_id FROM edges WHERE source_id = ? AND relation = 'belongs_to' LIMIT 1`,
-      args: [nodeId_],
-    });
-    current = edge.rows.length > 0 ? String(edge.rows[0].target_id) : null;
+    // visibility='group' without a parseable access_group: fail closed.
+    return "__unresolvable__";
   }
   return null;
 }

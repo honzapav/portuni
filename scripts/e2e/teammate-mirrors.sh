@@ -107,6 +107,11 @@ B64=$("$NODEBIN/node" -e "console.log(Buffer.from('edited via central by teammat
 curl -fsS -m 20 -H "Authorization: Bearer $TOK" -H 'content-type: application/json' \
   -X PUT "http://127.0.0.1:$CENTRAL_PORT/nodes/$NODE_ID/file?path=wip/e2e-note.md" \
   -d "{\"content_base64\":\"$B64\",\"force\":true}" > /dev/null
+# The agent's CentralClient holds sync-info in a 3s micro-cache; an edit made
+# by ANOTHER user (this direct central PUT) becomes visible on the next
+# fetch after the TTL. The UI polls at 5s, so real usage never notices --
+# but this assertion must wait the TTL out.
+sleep 4
 STATUS2=$(A "http://127.0.0.1:$AGENT_PORT/nodes/$NODE_ID/sync-status")
 echo "$STATUS2" | "$NODEBIN/node" -e "
   let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{
