@@ -327,8 +327,14 @@ export async function dataSourcesForNode(
 //
 // Returns aggregated written paths and errors; never throws — boot must
 // not be blocked by a single mirror's filesystem hiccup.
-export async function materializeAllRegisteredMirrors(): Promise<MaterializeResult> {
+export async function materializeAllRegisteredMirrors(opts?: {
+  // Alternate data-source resolver. The central-mode agent has no graph db,
+  // so it injects a resolver backed by the central server; the default reads
+  // the local db (dataSourcesForNode).
+  dataSourcesFor?: (nodeId: string) => Promise<DataSourceRow[]>;
+}): Promise<MaterializeResult> {
   const aggregated: MaterializeResult = { written: [], errors: [] };
+  const resolveDataSources = opts?.dataSourcesFor ?? dataSourcesForNode;
   const mirrors = await listUserMirrors(SOLO_USER);
   if (mirrors.length === 0) return aggregated;
 
@@ -345,7 +351,7 @@ export async function materializeAllRegisteredMirrors(): Promise<MaterializeResu
   for (const m of mirrors) {
     const others = paths.filter((p) => p !== m.local_path);
     try {
-      const dataSources = await dataSourcesForNode(m.node_id);
+      const dataSources = await resolveDataSources(m.node_id);
       const r = await materializeScopeConfig({
         currentMirror: m.local_path,
         nodeId: m.node_id,

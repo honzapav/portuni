@@ -29,16 +29,24 @@ export interface StartHttpServerOptions {
   // Tests pass false so multiple ad-hoc servers don't leave orphan
   // SIGINT handlers behind in the same process.
   registerSigint?: boolean;
+  // Alternate REST router. The central-mode sync agent serves only the
+  // local-only sync/mirror/scope routes and has no graph db, so it swaps
+  // the full API router out (and mounts no MCP transport).
+  router?: typeof routeApiRequest;
+  // Set false to skip the MCP transport entirely (agent mode: terminals
+  // talk to the central MCP, the local agent serves none).
+  mountMcp?: boolean;
 }
 
 export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHandle {
   const port = opts.port ?? Number(process.env.PORT ?? 4011);
   const host = opts.host ?? process.env.HOST ?? "127.0.0.1";
   const registerSigint = opts.registerSigint ?? true;
+  const route = opts.router ?? routeApiRequest;
 
   assertAuthRequiredIfNotLoopback(host);
 
-  const mcp = createMcpTransport();
+  const mcp = opts.mountMcp === false ? null : createMcpTransport();
 
   // PORTUNI_LOG_REQUESTS=1 enables a single-line access log per request.
   // Used for diagnosing desktop-mode CORS / auth / route problems where
@@ -93,7 +101,7 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
     const hostHeader = (req.headers.host ?? "").toLowerCase();
     const url = new URL(req.url ?? "/", `http://${hostHeader || "localhost"}`);
 
-    if (url.pathname === "/mcp" || url.pathname === "/mcp/") {
+    if (mcp && (url.pathname === "/mcp" || url.pathname === "/mcp/")) {
       await mcp.handle(req, res, identity);
       return;
     }
@@ -115,7 +123,7 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
       return;
     }
 
-    const handled = await routeApiRequest(req, res, url, identity);
+    const handled = await route(req, res, url, identity);
     if (!handled) {
       res.writeHead(404);
       res.end("Not found");
@@ -133,7 +141,7 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
   });
 
   const shutdown = async (): Promise<void> => {
-    mcp.shutdown();
+    mcp?.shutdown();
     await new Promise<void>((resolve) => {
       httpServer.close(() => resolve());
     });

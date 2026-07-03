@@ -8,11 +8,21 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import { startHttpServer } from "./http/server.js";
+import { startHttpServer, type HttpServerHandle } from "./http/server.js";
 import { getDb } from "./infra/db.js";
 import { ensureSchema } from "./infra/schema.js";
+import { SOLO_USER } from "./infra/schema.js";
 import { materializeAllRegisteredMirrors } from "./domain/scope-materialize.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
+import { createCentralClientFromEnv, type CentralClient } from "./domain/sync/central/client.js";
+import {
+  listUntrackedLocalCentral,
+  reconcilePathCentral,
+  registerLocalFileCentral,
+} from "./domain/sync/central/engine-central.js";
+import { createMirrorWatcher, type MirrorWatcher } from "./domain/sync/mirror-watcher.js";
+import { listUserMirrors } from "./domain/sync/mirror-registry.js";
+import { createAgentRouter } from "./api/agent-router.js";
 
 // Single ping wrapped in a hard timeout. The libsql client doesn't expose a
 // connect timeout of its own, so without this a DNS hiccup or a slow Turso
@@ -63,12 +73,124 @@ async function waitForDb(): Promise<void> {
   throw new Error(`database unreachable after ${attempts.length} attempts: ${reason}`);
 }
 
+// Bind the HTTP listener and announce the bound port on stdout -- shared by
+// the local sidecar and the central-mode sync agent.
+async function bindAndAnnounce(
+  handle: HttpServerHandle,
+): Promise<void> {
+  if (!handle.server.listening) {
+    await new Promise<void>((resolve) => handle.server.once("listening", resolve));
+  }
+  const address = handle.server.address() as AddressInfo | null;
+  if (!address || typeof address === "string") {
+    throw new Error("desktop entry: failed to bind HTTP server");
+  }
+  process.env.PORT = String(address.port);
+  // Parent (Tauri) reads this line from stdout to learn the bound port.
+  process.stdout.write(`PORTUNI_LISTENING_PORT=${address.port}\n`);
+}
+
+// Central-mode sync agent (teammate mirrors): no Turso, no graph db, no MCP.
+// Serves the local-only sync/mirror/scope routes backed by the central
+// engine, runs the mirror watcher with a central reconcile, and refreshes
+// per-mirror harness configs pointing at the central MCP (PORTUNI_URL).
+async function agentMain(client: CentralClient): Promise<void> {
+  const port = Number(process.env.PORTUNI_PORT ?? 0);
+  process.env.PORT = String(port);
+
+  const handle = startHttpServer({
+    port,
+    host: "127.0.0.1",
+    registerSigint: false,
+    router: createAgentRouter(client),
+    mountMcp: false,
+  });
+  await bindAndAnnounce(handle);
+  console.error("[boot] central-mode sync agent (no local graph db)");
+
+  // Watcher with the central reconcile; backfill is done here (the built-in
+  // backfill needs the local graph db the agent doesn't have).
+  let watcher: MirrorWatcher | null = null;
+  if (process.env.PORTUNI_WATCH_MIRRORS !== "0") {
+    watcher = createMirrorWatcher({
+      userId: SOLO_USER,
+      reconcile: (a) => reconcilePathCentral(client, a),
+      backfill: false,
+      onError: (e) => console.error("[portuni:watch]", e),
+    });
+    watcher
+      .start()
+      .then(() => console.log("[portuni:watch] mirror watcher active (central)"))
+      .catch((e) => console.error("[portuni:watch] start failed:", e));
+  }
+
+  // Central backfill: register anything on disk the records don't know yet,
+  // so files created while the agent was down are tracked. Best-effort.
+  void (async () => {
+    try {
+      const mirrors = await listUserMirrors(SOLO_USER);
+      for (const m of mirrors) {
+        const untracked = await listUntrackedLocalCentral(client, {
+          userId: SOLO_USER,
+          nodeId: m.node_id,
+        }).catch(() => []);
+        for (const u of untracked) {
+          await registerLocalFileCentral(client, {
+            userId: SOLO_USER,
+            nodeId: m.node_id,
+            localPath: u.local_path,
+          }).catch((e) => console.error("[boot] central backfill register failed:", e));
+        }
+      }
+    } catch (e) {
+      console.error("[boot] central backfill skipped:", e);
+    }
+  })();
+
+  // Refresh per-mirror harness configs; .mcp.json URLs resolve to the
+  // central MCP because the Tauri host sets PORTUNI_URL to the server URL.
+  void (async () => {
+    try {
+      const r = await materializeAllRegisteredMirrors({
+        dataSourcesFor: (nodeId) => client.dataSources(nodeId).catch(() => []),
+      });
+      if (r.errors.length > 0) {
+        console.error(
+          `[boot] mirror rematerialisation completed with ${r.errors.length} error(s):`,
+          r.errors,
+        );
+      }
+    } catch (err) {
+      console.error("[boot] mirror rematerialisation skipped:", err);
+    }
+  })();
+
+  const shutdown = async (): Promise<void> => {
+    try {
+      watcher?.stop();
+      await handle.shutdown();
+    } finally {
+      process.exit(0);
+    }
+  };
+  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown());
+}
+
 async function main(): Promise<void> {
   const dataDir = process.env.PORTUNI_DATA_DIR;
   if (!dataDir) {
     throw new Error("PORTUNI_DATA_DIR must be set in desktop mode");
   }
   mkdirSync(dataDir, { recursive: true });
+
+  // Central-mode sync agent: PORTUNI_AGENT_MODE=1 (plus central URL+token)
+  // branches before any Turso/graph-db wiring.
+  const agentClient = createCentralClientFromEnv();
+  if (agentClient) {
+    await agentMain(agentClient);
+    return;
+  }
 
   if (!process.env.TURSO_URL || process.env.TURSO_URL.trim() === "") {
     process.env.TURSO_URL = `file:${join(dataDir, "portuni.db")}`;
@@ -81,17 +203,7 @@ async function main(): Promise<void> {
   process.env.PORT = String(port);
 
   const handle = startHttpServer({ port, host: "127.0.0.1", registerSigint: false });
-
-  if (!handle.server.listening) {
-    await new Promise<void>((resolve) => handle.server.once("listening", resolve));
-  }
-  const address = handle.server.address() as AddressInfo | null;
-  if (!address || typeof address === "string") {
-    throw new Error("desktop entry: failed to bind HTTP server");
-  }
-  process.env.PORT = String(address.port);
-  // Parent (Tauri) reads this line from stdout to learn the bound port.
-  process.stdout.write(`PORTUNI_LISTENING_PORT=${address.port}\n`);
+  await bindAndAnnounce(handle);
 
   // Deterministic file-state: watch every registered mirror and reconcile on
   // each change so the UI's status is correct without an agent calling

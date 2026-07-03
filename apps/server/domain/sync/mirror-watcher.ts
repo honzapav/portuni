@@ -53,7 +53,10 @@ const defaultWatchFactory: WatchFactory = (root, onPath) => {
 };
 
 export interface MirrorWatcherDeps {
-  db: Client;
+  // Graph db for the default reconcile/backfill wiring. Optional: the
+  // central-mode agent injects its own reconcile and disables backfill, so
+  // it runs the watcher with no db at all.
+  db?: Client;
   userId: string;
   // Injectable seams (production defaults wire the real sync stack).
   listMirrors?: (userId: string) => Promise<LocalMirrorRow[]>;
@@ -77,9 +80,19 @@ export interface MirrorWatcher {
 
 export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
   const listMirrors = deps.listMirrors ?? listLocalMirrors;
-  const reconcile = deps.reconcile ?? ((a) => reconcilePath(deps.db, a));
+  const db = deps.db ?? null;
+  const reconcile =
+    deps.reconcile ??
+    ((a: { userId: string; nodeId: string; absPath: string }) => {
+      if (!db) {
+        return Promise.reject(
+          new Error("mirror watcher: no db and no reconcile injected"),
+        );
+      }
+      return reconcilePath(db, a);
+    });
   const watchFactory = deps.watchFactory ?? defaultWatchFactory;
-  const wantBackfill = deps.backfill ?? true;
+  const wantBackfill = (deps.backfill ?? true) && db !== null;
   const debounceMs = deps.debounceMs ?? 300;
   const onError = deps.onError ?? (() => undefined);
 
@@ -109,14 +122,15 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
   // the watcher was down do not stay invisible. Local-only (no remote calls);
   // upload still waits for a deliberate sync. Best-effort per mirror.
   async function backfill(): Promise<void> {
+    if (!db) return; // agent mode: the caller runs its own central backfill
     for (const m of mirrors) {
       try {
-        const untracked = await listUntrackedLocal(deps.db, {
+        const untracked = await listUntrackedLocal(db, {
           userId: deps.userId,
           nodeId: m.node_id,
         });
         for (const u of untracked) {
-          await registerLocalFile(deps.db, {
+          await registerLocalFile(db, {
             userId: deps.userId,
             nodeId: u.node_id,
             localPath: u.local_path,
