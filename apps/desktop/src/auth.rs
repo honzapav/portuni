@@ -475,6 +475,17 @@ pub async fn google_login(app: AppHandle) -> Result<Value, String> {
     keychain_set(KEYCHAIN_SESSION_JWT, &central.token)?;
     info!("google_login: session JWT stored in Keychain");
 
+    // Central data_mode: bring the local sync agent up now that a device
+    // token can be minted (spawn was deferred pre-login). spawn_blocking:
+    // ensure_device_token uses block_on internally, which must not run on
+    // an async-runtime worker.
+    let app_for_agent = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(e) = crate::spawn_sidecar(&app_for_agent) {
+            warn!("post-login sync agent spawn failed: {e}");
+        }
+    });
+
     Ok(central.user)
 }
 

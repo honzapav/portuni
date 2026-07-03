@@ -782,15 +782,10 @@ async fn api_request(
         config.data_mode.as_deref() == Some("central")
     };
 
-    if is_central {
-        // LOCAL_ONLY paths cannot be served by the central server.
-        if is_local_only_path(&path) {
-            return Ok(ApiResponse {
-                status: 501,
-                body: "{\"error\":\"local_only\"}".to_string(),
-            });
-        }
-
+    // In central mode, LOCAL_ONLY paths (mirror/sync/scope/sandbox) are
+    // served by the LOCAL sync agent — fall through to the local proxy
+    // below. Everything else goes to the central server.
+    if is_central && !is_local_only_path(&path) {
         // Route to the central server using the JWT + silent refresh logic.
         let config = {
             let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -855,7 +850,8 @@ async fn api_request(
         });
     }
 
-    // Local mode: proxy to the bundled sidecar.
+    // Local proxy: the bundled sidecar (local mode) or the sync agent
+    // (central mode, LOCAL_ONLY paths).
     // Snapshot port + token from state, then drop the guard before
     // awaiting — holding a std::sync::Mutex across .await deadlocks
     // the executor on contention.
@@ -864,6 +860,14 @@ async fn api_request(
         let guard = state.0.lock().map_err(|e| e.to_string())?;
         guard.ok_or_else(|| "backend not ready".to_string())?
     };
+    if port == 0 {
+        // Central-mode sentinel: the sync agent is not running (not logged
+        // in yet, or no server_url). Local-only affordances stay parked.
+        return Ok(ApiResponse {
+            status: 501,
+            body: "{\"error\":\"local_only\",\"detail\":\"sync agent not running\"}".to_string(),
+        });
+    }
     let token = app
         .state::<AuthToken>()
         .0
@@ -971,38 +975,77 @@ fn reap_orphan_sidecar(port: u16) {
     std::thread::sleep(std::time::Duration::from_millis(300));
 }
 
-fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&data_dir).ok();
     let data_dir_str = data_dir.to_string_lossy().to_string();
 
-    // In central mode the webview communicates with the remote server via
-    // api_request, not the local sidecar. Skip the spawn entirely and signal
-    // "ready" immediately so frontend code that polls get_backend_port / listens
-    // for backend-ready is unblocked. Use a sentinel port value (0) that
-    // api_request never reads in central mode.
+    // In central data_mode the webview talks to the remote server for the
+    // graph, and the LOCAL sidecar runs as a sync agent (teammate mirrors:
+    // watcher + mirror/sync routes, no graph db, no MCP). The agent needs a
+    // device token, which needs a login — before login we only signal
+    // readiness with the sentinel port (0) so the login gate can render;
+    // google_login re-invokes spawn_sidecar after a successful login.
     let config = load_config(&data_dir);
-    if config.data_mode.as_deref() == Some("central") {
-        info!("central data_mode: skipping sidecar spawn");
-        if let Ok(mut guard) = app.state::<BackendPort>().0.lock() {
-            // Port 0 is a sentinel — central mode api_request never uses it.
-            // Setting it unblocks any frontend that polls get_backend_port.
-            *guard = Some(0);
+    let is_central = config.data_mode.as_deref() == Some("central");
+    let mut agent_env: Option<Vec<(String, String)>> = None;
+    if is_central {
+        // Re-invocations (post-login) must not double-spawn.
+        if app.state::<SidecarState>().0.lock().unwrap().is_some() {
+            info!("central data_mode: sync agent already running");
+            return Ok(());
         }
-        let _ = app.emit("backend-ready", 0u16);
-        return Ok(());
+        let server_url = config
+            .server_url
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.trim().trim_end_matches('/').to_string());
+        let device_token =
+            server_url.as_ref().and_then(|_| crate::pty::ensure_device_token(app).ok());
+        match (server_url, device_token) {
+            (Some(url), Some(token)) => {
+                info!("central data_mode: starting local sync agent against {url}");
+                agent_env = Some(vec![
+                    ("PORTUNI_AGENT_MODE".to_string(), "1".to_string()),
+                    ("PORTUNI_CENTRAL_URL".to_string(), url.clone()),
+                    ("PORTUNI_CENTRAL_TOKEN".to_string(), token),
+                    // Per-mirror .mcp.json URLs materialize from PORTUNI_URL,
+                    // so agents launched inside mirrors connect to the
+                    // central MCP (the agent sidecar serves none).
+                    ("PORTUNI_URL".to_string(), url),
+                ]);
+            }
+            _ => {
+                info!(
+                    "central data_mode: sync agent deferred (no server_url or not logged in yet)"
+                );
+                if let Ok(mut guard) = app.state::<BackendPort>().0.lock() {
+                    // Port 0 is a sentinel — api_request answers local-only
+                    // paths with 501 until the agent is up.
+                    *guard = Some(0);
+                }
+                let _ = app.emit("backend-ready", 0u16);
+                return Ok(());
+            }
+        }
     }
 
-    info!("spawn_sidecar: data_dir={data_dir_str}");
+    info!("spawn_sidecar: data_dir={data_dir_str} central={is_central}");
 
-    // Move any legacy plaintext token into Keychain before we read either —
-    // makes the upgrade path silent for users who set turso_auth_token under
-    // the old scheme. Safe to call on every boot (no-op once migrated).
-    migrate_turso_token_to_keychain(&data_dir);
+    // Local mode only: move any legacy plaintext token into Keychain before
+    // we read either — makes the upgrade path silent for users who set
+    // turso_auth_token under the old scheme. No-op once migrated.
+    if !is_central {
+        migrate_turso_token_to_keychain(&data_dir);
+    }
 
     let config = load_config(&data_dir);
     let turso_url = config.turso_url.unwrap_or_default();
-    let turso_token = keychain_get_turso_token().unwrap_or_default();
+    let turso_token = if is_central {
+        String::new() // the agent never sees Turso credentials
+    } else {
+        keychain_get_turso_token().unwrap_or_default()
+    };
     // Resolve workspace root: explicit config wins, else fall back to
     // ~/Workspaces/portuni so first-run desktop installs have somewhere
     // to put mirrors. Tilde stays literal — sidecar expands it.
@@ -1069,22 +1112,34 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // tauri-plugin-shell 2.x's env_clear() does not reliably scrub the
     // parent env on macOS — additionally force-empty the variables we
     // don't want leaking from a developer's varlock-loaded shell.
-    let (mut rx, child) = app
+    let mut envs: Vec<(String, String)> = vec![
+        ("PORTUNI_DATA_DIR".to_string(), data_dir_str),
+        ("PORTUNI_PORT".to_string(), port.to_string()),
+        ("PORTUNI_AUTH_TOKEN".to_string(), auth_token),
+        ("PORTUNI_WORKSPACE_ROOT".to_string(), workspace_root),
+        ("PORTUNI_ALLOWED_ORIGINS".to_string(), allowed_origins),
+        ("PORTUNI_LOG_REQUESTS".to_string(), "1".to_string()),
+        ("HOME".to_string(), std::env::var("HOME").unwrap_or_default()),
+        ("PATH".to_string(), std::env::var("PATH").unwrap_or_default()),
+    ];
+    match agent_env {
+        // Central sync agent: central URL + device token, no Turso.
+        Some(extra) => envs.extend(extra),
+        // Local sidecar: direct Turso credentials, as before.
+        None => {
+            envs.push(("TURSO_URL".to_string(), turso_url));
+            envs.push(("TURSO_AUTH_TOKEN".to_string(), turso_token));
+        }
+    }
+    let mut cmd = app
         .shell()
         .sidecar("portuni-sidecar")?
         .current_dir(sidecar_cwd)
-        .env_clear()
-        .env("PORTUNI_DATA_DIR", data_dir_str)
-        .env("PORTUNI_PORT", port.to_string())
-        .env("PORTUNI_AUTH_TOKEN", auth_token)
-        .env("TURSO_URL", turso_url)
-        .env("TURSO_AUTH_TOKEN", turso_token)
-        .env("PORTUNI_WORKSPACE_ROOT", workspace_root)
-        .env("PORTUNI_ALLOWED_ORIGINS", allowed_origins)
-        .env("PORTUNI_LOG_REQUESTS", "1")
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .spawn()?;
+        .env_clear();
+    for (k, v) in envs {
+        cmd = cmd.env(k, v);
+    }
+    let (mut rx, child) = cmd.spawn()?;
 
     app.state::<SidecarState>().0.lock().unwrap().replace(child);
 

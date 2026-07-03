@@ -34,7 +34,9 @@ const KEYCHAIN_DEVICE_TOKEN_ACCOUNT: &str = "portuni_device_token";
 /// (using the current session JWT) and stores it. Errors if not logged in.
 ///
 /// Blocking: calls block_on internally because pty_spawn is a sync command.
-fn ensure_device_token(app: &AppHandle) -> Result<String, String> {
+/// pub(crate): the sync-agent sidecar spawn (lib.rs) authenticates with the
+/// same device token.
+pub(crate) fn ensure_device_token(app: &AppHandle) -> Result<String, String> {
     // Return cached token if already in Keychain.
     if let Some(t) = crate::auth::keychain_get(KEYCHAIN_DEVICE_TOKEN_ACCOUNT) {
         return Ok(t);
