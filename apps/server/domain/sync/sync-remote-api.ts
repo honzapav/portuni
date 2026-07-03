@@ -37,6 +37,7 @@ export interface SyncInfoFile {
 export interface NodeSyncInfo {
   node: {
     id: string;
+    name: string;
     type: string;
     sync_key: string;
     org_sync_key: string | null;
@@ -48,6 +49,11 @@ export interface NodeSyncInfo {
 export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeSyncInfo> {
   // resolveNodeInfo throws on a missing node -- callers map that to 404.
   const info = await resolveNodeInfo(db, nodeId);
+  const nameRes = await db.execute({
+    sql: "SELECT name FROM nodes WHERE id = ?",
+    args: [nodeId],
+  });
+  const nodeName = nameRes.rows.length > 0 ? (nameRes.rows[0].name as string) : nodeId;
   const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
   const filesRes = await db.execute({
     sql: `SELECT id, filename, status, remote_path, current_remote_hash, is_native_format, mime_type
@@ -57,6 +63,7 @@ export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeS
   return {
     node: {
       id: nodeId,
+      name: nodeName,
       type: info.nodeType,
       sync_key: info.nodeSyncKey,
       org_sync_key: info.orgSyncKey,
