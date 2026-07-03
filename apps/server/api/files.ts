@@ -19,10 +19,16 @@ import {
 import {
   readFileContentRemote,
   writeFileContentRemote,
+  readFileBytesRemote,
+  writeFileBytesRemote,
   createFileRemote,
   renameFileRemote,
   deleteFileRemote,
 } from "../domain/sync/file-content-remote.js";
+import {
+  getNodeSyncInfo,
+  registerFileRecordRemote,
+} from "../domain/sync/sync-remote-api.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { renameFile, deleteFile } from "../domain/sync/engine-mutations.js";
 import { nodeVisibleTo } from "../auth/node-access.js";
@@ -71,6 +77,20 @@ export async function handleGetFileContent(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    // Binary-safe byte read for the central-mode sync agent. Remote-only:
+    // the central server has no mirrors, and the agent never talks to a
+    // mirror-holding server.
+    if (url.searchParams.get("encoding") === "base64") {
+      const r = await readFileBytesRemote(db, { nodeId, relPath });
+      respondJson(res, 200, {
+        content_base64: r.bytes.toString("base64"),
+        version: r.version,
+        canonical_hash: r.canonical_hash,
+        filename: r.filename,
+        mime_type: r.mime_type,
+      });
+      return;
+    }
     // Mirror present -> local read (unchanged). No mirror (central / VPS)
     // -> Drive-direct read against the routed remote.
     const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
@@ -92,7 +112,10 @@ export async function handleGetFileContent(
 }
 
 const putSchema = z.object({
-  content: z.string(),
+  content: z.string().optional(),
+  // Binary-safe alternative used by the central-mode sync agent. Exactly one
+  // of content / content_base64 must be present.
+  content_base64: z.string().optional(),
   baseVersion: z.string().optional(),
   force: z.boolean().optional(),
 });
@@ -111,10 +134,29 @@ export async function handlePutFileContent(
   }
   const body = await parseJsonBody(req, res, putSchema);
   if (!body) return;
+  if ((body.content === undefined) === (body.content_base64 === undefined)) {
+    respondJson(res, 400, { error: "exactly one of content / content_base64 required" });
+    return;
+  }
   try {
     const db = getDb();
     if (!(await nodeVisibleTo(db, identity, nodeId))) {
       respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    // Binary-safe byte write for the central-mode sync agent (remote-only,
+    // see the GET handler). Response carries canonical_hash so the agent can
+    // record its synced baseline in files.current_remote_hash terms.
+    if (body.content_base64 !== undefined) {
+      const r = await writeFileBytesRemote(db, {
+        userId: identity.userId,
+        nodeId,
+        relPath,
+        bytes: Buffer.from(body.content_base64, "base64"),
+        baseVersion: body.baseVersion,
+        force: body.force,
+      });
+      respondJson(res, 200, { version: r.version, canonical_hash: r.canonical_hash });
       return;
     }
     // Mirror present -> local write (unchanged, push deferred to sync). No
@@ -126,7 +168,7 @@ export async function handlePutFileContent(
           userId: identity.userId,
           nodeId,
           relPath,
-          content: body.content,
+          content: body.content as string,
           baseVersion: body.baseVersion,
           force: body.force,
         })
@@ -134,7 +176,7 @@ export async function handlePutFileContent(
           userId: identity.userId,
           nodeId,
           relPath,
-          content: body.content,
+          content: body.content as string,
           baseVersion: body.baseVersion,
           force: body.force,
         });
@@ -142,6 +184,66 @@ export async function handlePutFileContent(
   } catch (err) {
     if (handleFileContentError(res, err)) return;
     respondError(res, `PUT /nodes/${nodeId}/file`, err);
+  }
+}
+
+// GET /nodes/:id/sync-info -- node identity + routed remote + file records,
+// the one-round-trip graph-plane snapshot the central-mode sync agent builds
+// its status scan on.
+export async function handleGetSyncInfo(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  nodeId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    const info = await getNodeSyncInfo(db, nodeId);
+    respondJson(res, 200, info);
+  } catch (err) {
+    if (err instanceof Error && /not found/i.test(err.message)) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    respondError(res, `GET /nodes/${nodeId}/sync-info`, err);
+  }
+}
+
+const registerSchema = z.object({ relPath: z.string().min(1) });
+
+// POST /nodes/:id/files/register -- record-only registration (no upload) for
+// a file the agent found in a local mirror. See sync-remote-api.ts.
+export async function handleRegisterFile(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  nodeId: string,
+): Promise<void> {
+  const body = await parseJsonBody(req, res, registerSchema);
+  if (!body) return;
+  try {
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    const r = await registerFileRecordRemote(db, {
+      userId: identity.userId,
+      nodeId,
+      relPath: body.relPath,
+    });
+    respondJson(res, 201, r);
+  } catch (err) {
+    if (handleFileContentError(res, err)) return;
+    if (err instanceof Error && /not found/i.test(err.message)) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    respondError(res, `POST /nodes/${nodeId}/files/register`, err);
   }
 }
 

@@ -1,0 +1,189 @@
+import { describe, it, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { makeSharedDb } from "./helpers/shared-db.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
+import {
+  getNodeSyncInfo,
+  registerFileRecordRemote,
+} from "../apps/server/domain/sync/sync-remote-api.js";
+import {
+  readFileBytesRemote,
+  writeFileBytesRemote,
+} from "../apps/server/domain/sync/file-content-remote.js";
+import { FileContentError } from "../apps/server/domain/sync/file-content.js";
+
+let workspace: string;
+let originalEnv: string | undefined;
+
+beforeEach(async () => {
+  workspace = await mkdtemp(join(tmpdir(), "portuni-syncremote-"));
+  originalEnv = process.env.PORTUNI_WORKSPACE_ROOT;
+  process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+  resetLocalDbForTests();
+  resetAdapterCacheForTests();
+});
+
+afterEach(async () => {
+  resetLocalDbForTests();
+  resetAdapterCacheForTests();
+  if (originalEnv === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
+  else process.env.PORTUNI_WORKSPACE_ROOT = originalEnv;
+  await rm(workspace, { recursive: true, force: true });
+});
+
+describe("registerFileRecordRemote", () => {
+  it("creates a files row with NULL current_remote_hash (pending upload)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const r = await registerFileRecordRemote(db, {
+      userId: "U1",
+      nodeId,
+      relPath: "wip/notes.md",
+    });
+    assert.equal(r.filename, "notes.md");
+    assert.equal(r.remote_name, "test-fs");
+    assert.ok(r.remote_path.endsWith("/wip/notes.md"));
+
+    const row = await db.execute({
+      sql: "SELECT current_remote_hash, last_pushed_at, status FROM files WHERE id = ?",
+      args: [r.id],
+    });
+    assert.equal(row.rows[0].current_remote_hash, null);
+    assert.equal(row.rows[0].last_pushed_at, null);
+    assert.equal(row.rows[0].status, "wip");
+  });
+
+  it("is idempotent: re-register keeps the id and the synced state", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const first = await registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "wip/a.md" });
+    // Simulate a later push having set the canonical hash.
+    await db.execute({
+      sql: "UPDATE files SET current_remote_hash = 'abc' WHERE id = ?",
+      args: [first.id],
+    });
+    const second = await registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "wip/a.md" });
+    assert.equal(second.id, first.id);
+    const row = await db.execute({
+      sql: "SELECT current_remote_hash FROM files WHERE id = ?",
+      args: [first.id],
+    });
+    // Synced baseline preserved -- registration never demotes a synced file.
+    assert.equal(row.rows[0].current_remote_hash, "abc");
+  });
+
+  it("rejects path traversal", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await assert.rejects(
+      () => registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "wip/../../etc/passwd" }),
+      (e: unknown) => e instanceof FileContentError && e.code === "INVALID_PATH",
+    );
+  });
+
+  it("throws for an unknown node", async () => {
+    const { db } = await makeSharedDb();
+    await assert.rejects(() =>
+      registerFileRecordRemote(db, { userId: "U1", nodeId: "NOPE", relPath: "wip/a.md" }),
+    );
+  });
+});
+
+describe("getNodeSyncInfo", () => {
+  it("returns node identity, routed remote, and file records", async () => {
+    const { db, nodeId, nodeSyncKey, orgSyncKey } = await makeSharedDb();
+    const reg = await registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "outputs/r.pdf" });
+
+    const info = await getNodeSyncInfo(db, nodeId);
+    assert.equal(info.node.id, nodeId);
+    assert.equal(info.node.type, "project");
+    assert.equal(info.node.sync_key, nodeSyncKey);
+    assert.equal(info.node.org_sync_key, orgSyncKey);
+    assert.equal(info.remote_name, "test-fs");
+    assert.equal(info.files.length, 1);
+    assert.equal(info.files[0].id, reg.id);
+    assert.equal(info.files[0].filename, "r.pdf");
+    assert.equal(info.files[0].status, "output");
+    assert.equal(info.files[0].current_remote_hash, null);
+    assert.equal(info.files[0].is_native_format, false);
+  });
+
+  it("throws for an unknown node (handler maps to 404)", async () => {
+    const { db } = await makeSharedDb();
+    await assert.rejects(() => getNodeSyncInfo(db, "NOPE"));
+  });
+});
+
+describe("byte-plane read/write (binary-safe sync transfer)", () => {
+  it("round-trips binary bytes with NUL through the routed remote", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "wip/p.png" });
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0xff]);
+
+    const w = await writeFileBytesRemote(db, {
+      userId: "U1",
+      nodeId,
+      relPath: "wip/p.png",
+      bytes,
+    });
+    assert.equal(w.version.length, 64);
+    assert.ok(w.canonical_hash.length > 0);
+
+    const r = await readFileBytesRemote(db, { nodeId, relPath: "wip/p.png" });
+    assert.deepEqual(r.bytes, bytes);
+    assert.equal(r.version, w.version);
+    assert.equal(r.canonical_hash, w.canonical_hash);
+  });
+
+  it("refreshes the file record canonical hash after a write", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const reg = await registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "wip/b.bin" });
+    const w = await writeFileBytesRemote(db, {
+      userId: "U1",
+      nodeId,
+      relPath: "wip/b.bin",
+      bytes: Buffer.from("data"),
+    });
+    const row = await db.execute({
+      sql: "SELECT current_remote_hash, last_pushed_by FROM files WHERE id = ?",
+      args: [reg.id],
+    });
+    assert.equal(row.rows[0].current_remote_hash, w.canonical_hash);
+    assert.equal(row.rows[0].last_pushed_by, "U1");
+  });
+
+  it("raises CONFLICT with currentVersion on a stale baseVersion", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "wip/c.txt" });
+    const w1 = await writeFileBytesRemote(db, {
+      userId: "U1",
+      nodeId,
+      relPath: "wip/c.txt",
+      bytes: Buffer.from("v1"),
+    });
+    // Second writer with a stale base.
+    await assert.rejects(
+      () =>
+        writeFileBytesRemote(db, {
+          userId: "U1",
+          nodeId,
+          relPath: "wip/c.txt",
+          bytes: Buffer.from("v3"),
+          baseVersion: "0".repeat(64),
+        }),
+      (e: unknown) =>
+        e instanceof FileContentError &&
+        e.code === "CONFLICT" &&
+        e.currentVersion === w1.version,
+    );
+  });
+
+  it("read of a missing remote object is NOT_FOUND", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await assert.rejects(
+      () => readFileBytesRemote(db, { nodeId, relPath: "wip/missing.bin" }),
+      (e: unknown) => e instanceof FileContentError && e.code === "NOT_FOUND",
+    );
+  });
+});

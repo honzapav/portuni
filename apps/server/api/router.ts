@@ -50,7 +50,9 @@ import {
   handleCreateFile,
   handleDeleteFile,
   handleGetFileContent,
+  handleGetSyncInfo,
   handlePutFileContent,
+  handleRegisterFile,
   handleRenameFile,
 } from "./files.js";
 import {
@@ -352,6 +354,19 @@ async function routeFiles(
       await handlePutFileContent(req, res, identity, nodeId, url);
       return true;
     }
+  }
+
+  // Agent-facing sync metadata. Registered in routeFiles (before routeNodes)
+  // so the bare /nodes/:id matcher never swallows the compound paths.
+  const syncInfoMatch = pathname.match(/^\/nodes\/([^/]+)\/sync-info$/);
+  if (syncInfoMatch && method === "GET") {
+    await handleGetSyncInfo(req, res, identity, decodeURIComponent(syncInfoMatch[1]));
+    return true;
+  }
+  const registerMatch = pathname.match(/^\/nodes\/([^/]+)\/files\/register$/);
+  if (registerMatch && method === "POST") {
+    await handleRegisterFile(req, res, identity, decodeURIComponent(registerMatch[1]));
+    return true;
   }
 
   const renameMatch = pathname.match(/^\/nodes\/([^/]+)\/files\/([^/]+)\/rename$/);

@@ -49,16 +49,35 @@ function isEditableMime(mime: string | null): boolean {
   return false;
 }
 
-interface ParsedRelPath {
+export interface ParsedRelPath {
   section: Section;
   subpath: string | null;
   filename: string;
 }
 
+// buildRemotePath with RemotePathError mapped to the FileContentError the
+// HTTP layer knows how to render. Exported for sync-remote-api.ts.
+export function buildRemotePathOrThrow(
+  info: { orgSyncKey: string | null; nodeType: string; nodeSyncKey: string },
+  section: Section,
+  subpath: string | null,
+  filename: string,
+): string {
+  try {
+    return buildRemotePath({ ...info, section, subpath, filename });
+  } catch (e) {
+    if (e instanceof RemotePathError) {
+      throw new FileContentError(`invalid path: ${section}/${filename}`, "INVALID_PATH");
+    }
+    throw e;
+  }
+}
+
 // A mirror-relative path is "<section>/<...subpath>/<filename>". Validate it
 // the same way the remote-path builder does, then split it into the pieces
-// buildRemotePath needs.
-function parseRelPath(relPath: string): ParsedRelPath {
+// buildRemotePath needs. Exported for sync-remote-api.ts (agent-facing
+// registration shares the exact same path contract).
+export function parseRelPath(relPath: string): ParsedRelPath {
   try {
     assertSafeRelativePath(relPath, "file-content-remote.relPath");
   } catch (e) {
@@ -238,6 +257,103 @@ export async function writeFileContentRemote(
   }
 
   return { version: sha256Buffer(bytes) };
+}
+
+// ---------------------------------------------------------------------------
+// Byte-plane transfer for the central-mode sync agent (teammate mirrors).
+//
+// The text read/write above are editor-facing: utf8 only, NUL-guarded. A sync
+// agent moves arbitrary mirror files (images, PDFs, archives), so these
+// variants skip the text-editability checks and speak Buffers. Native
+// formats stay NOT_EDITABLE -- they have no byte-level round-trip. Alongside
+// `version` (sha256 of the bytes, the optimistic-concurrency token) they
+// return `canonical_hash` -- whatever the backend reports as its identity
+// hash (Drive: md5, fs: sha256). The agent stores canonical_hash as its
+// synced baseline so fast statusScan (which compares against
+// files.current_remote_hash) sees the file as clean.
+// ---------------------------------------------------------------------------
+
+export async function readFileBytesRemote(
+  db: Client,
+  a: { nodeId: string; relPath: string },
+): Promise<{ bytes: Buffer; version: string; canonical_hash: string; filename: string; mime_type: string | null }> {
+  const { remoteName, remotePath, filename } = await resolveRemoteTarget(db, a.nodeId, a.relPath);
+  const record = await getFileRecord(db, a.nodeId, remoteName, remotePath);
+  if (record?.isNative) {
+    throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
+  }
+  const adapter = await getAdapter(db, remoteName);
+  const stat = await adapter.stat(remotePath);
+  if (!stat) {
+    throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND");
+  }
+  if (stat.is_native_format) {
+    throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
+  }
+  const buf = await adapter.get(remotePath);
+  return {
+    bytes: buf,
+    version: sha256Buffer(buf),
+    canonical_hash: stat.hash ? stat.hash.toLowerCase() : sha256Buffer(buf),
+    filename,
+    mime_type: mimeFor(filename),
+  };
+}
+
+export async function writeFileBytesRemote(
+  db: Client,
+  a: {
+    userId: string;
+    nodeId: string;
+    relPath: string;
+    bytes: Buffer;
+    baseVersion?: string;
+    force?: boolean;
+  },
+): Promise<{ version: string; canonical_hash: string }> {
+  const { remoteName, remotePath, filename } = await resolveRemoteTarget(db, a.nodeId, a.relPath);
+  const record = await getFileRecord(db, a.nodeId, remoteName, remotePath);
+  if (record?.isNative) {
+    throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
+  }
+  const adapter = await getAdapter(db, remoteName);
+
+  // Same conflict contract as the text write: baseVersion is the sha256 of
+  // the remote bytes the writer last saw; stat-gated so an adapter failure
+  // is never treated as "no current bytes".
+  if (a.baseVersion && !a.force) {
+    const stat = await adapter.stat(remotePath);
+    if (stat) {
+      if (stat.is_native_format) {
+        throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
+      }
+      const current = await adapter.get(remotePath);
+      const currentVersion = sha256Buffer(current);
+      if (currentVersion !== a.baseVersion) {
+        throw new FileContentError(
+          "file changed on the remote since it was opened",
+          "CONFLICT",
+          currentVersion,
+        );
+      }
+    }
+  }
+
+  const mime = mimeFor(filename);
+  const ref = await adapter.put(remotePath, a.bytes, mime ? { mimeType: mime } : undefined);
+  const canonicalHash = ref.hash ? ref.hash.toLowerCase() : sha256Buffer(a.bytes);
+
+  if (record) {
+    const now = new Date().toISOString();
+    await db.execute({
+      sql: `UPDATE files
+            SET current_remote_hash = ?, last_pushed_by = ?, last_pushed_at = ?, updated_at = ?
+            WHERE id = ?`,
+      args: [canonicalHash, a.userId, now, now, record.id],
+    });
+  }
+
+  return { version: sha256Buffer(a.bytes), canonical_hash: canonicalHash };
 }
 
 // ---------------------------------------------------------------------------
