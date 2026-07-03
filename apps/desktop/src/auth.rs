@@ -61,6 +61,7 @@ fn keychain_delete(account: &str) {
 pub struct AuthConfig {
     pub server_url: String,
     pub google_client_id: String,
+    pub google_client_secret: String,
 }
 
 pub fn load_auth_config(app: &AppHandle) -> Option<AuthConfig> {
@@ -69,12 +70,18 @@ pub fn load_auth_config(app: &AppHandle) -> Option<AuthConfig> {
     let config = load_config(&data_dir);
     let server_url = config.server_url?.trim().to_string();
     let google_client_id = config.google_client_id?.trim().to_string();
+    let google_client_secret = config
+        .google_client_secret
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if server_url.is_empty() || google_client_id.is_empty() {
         return None;
     }
     Some(AuthConfig {
         server_url,
         google_client_id,
+        google_client_secret,
     })
 }
 
@@ -129,6 +136,7 @@ struct GoogleTokenResponse {
 async fn exchange_code(
     client: &Client,
     client_id: &str,
+    client_secret: &str,
     redirect_uri: &str,
     code: &str,
     verifier: &str,
@@ -136,6 +144,7 @@ async fn exchange_code(
     let params = [
         ("code", code),
         ("client_id", client_id),
+        ("client_secret", client_secret),
         ("redirect_uri", redirect_uri),
         ("grant_type", "authorization_code"),
         ("code_verifier", verifier),
@@ -161,12 +170,14 @@ async fn exchange_code(
 async fn refresh_google_token(
     client: &Client,
     client_id: &str,
+    client_secret: &str,
     refresh_token: &str,
 ) -> Result<String, String> {
     let params = [
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_token),
         ("client_id", client_id),
+        ("client_secret", client_secret),
     ];
     let res = client
         .post("https://oauth2.googleapis.com/token")
@@ -440,7 +451,15 @@ pub async fn google_login(app: AppHandle) -> Result<Value, String> {
     }
 
     let client = Client::new();
-    let google_tokens = exchange_code(&client, &config.google_client_id, &redirect_uri, &code, &verifier).await?;
+    let google_tokens = exchange_code(
+        &client,
+        &config.google_client_id,
+        &config.google_client_secret,
+        &redirect_uri,
+        &code,
+        &verifier,
+    )
+    .await?;
 
     let id_token = google_tokens
         .id_token
@@ -470,7 +489,13 @@ pub async fn auth_refresh(app: AppHandle) -> Result<Value, String> {
         .ok_or_else(|| "not logged in: no refresh token in Keychain".to_string())?;
 
     let client = Client::new();
-    let id_token = refresh_google_token(&client, &config.google_client_id, &refresh_token).await?;
+    let id_token = refresh_google_token(
+        &client,
+        &config.google_client_id,
+        &config.google_client_secret,
+        &refresh_token,
+    )
+    .await?;
 
     let central = central_login(&client, &config.server_url, &id_token).await?;
     keychain_set(KEYCHAIN_SESSION_JWT, &central.token)?;

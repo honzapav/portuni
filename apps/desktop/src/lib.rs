@@ -68,10 +68,13 @@ pub(crate) struct DesktopConfig {
     pub(crate) server_url: Option<String>,
     /// Google OAuth client ID (Desktop application type). Non-secret; read
     /// from config.json. Required together with server_url for Google login.
-    /// The matching client secret is NOT used — Desktop PKCE flows are
-    /// public clients (no client_secret needed).
     #[serde(default)]
     pub(crate) google_client_id: Option<String>,
+    /// Google OAuth client secret for the Desktop client. Google requires it
+    /// in the token exchange even for installed-app PKCE flows; it is not a
+    /// true secret (it ships with every desktop install). Read from config.json.
+    #[serde(default)]
+    pub(crate) google_client_secret: Option<String>,
     /// Data mode: "central" routes api_request to server_url with the user's
     /// JWT; anything else (including absent) is treated as "local" (sidecar).
     /// Set to "central" on teammate desktops that should never touch a local
