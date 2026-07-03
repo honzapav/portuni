@@ -51,7 +51,6 @@ import {
 import { safeHref } from "../lib/safe-url";
 import { groupEventsByDate } from "../lib/events";
 import { isTauri, openExternal, openInFinder } from "../lib/backend-url";
-import { useDataMode } from "../lib/central";
 import { agentDisplayName } from "../lib/settings";
 import type { Actor } from "../api";
 import {
@@ -242,8 +241,6 @@ function DetailPaneBody({
   onCollapse?: () => void;
   onOpenFile?: (nodeId: string, relPath: string) => void;
 }) {
-  const dataMode = useDataMode();
-  const isCentral = dataMode?.mode === "central";
 
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
@@ -331,10 +328,10 @@ function DetailPaneBody({
   // The lastIdRef gate ignores responses that arrive after the user has
   // already navigated away, so a slow sync on node A does not paint
   // results into node B's pane.
-  // In central mode sync is not available (local_only) — the SyncBar is
-  // hidden so this should never be called, but guard here as belt-and-braces.
+  // Central mode: the local sync agent serves this route (teammate
+  // mirrors), so no mode gate — a 501 local_only just means the agent is
+  // not running yet (pre-login) and surfaces as a sync error.
   const handleRunSync = async () => {
-    if (isCentral) return;
     setSyncRunning(true);
     setSyncError(null);
     setSyncRunResult(null);
@@ -375,12 +372,6 @@ function DetailPaneBody({
   // effect on the very setState below, the previous run's cleanup would
   // mark its own response cancelled, and nothing would ever land.
   const loadSyncStatus = useCallback(async () => {
-    // In central mode the sync-status endpoint returns 501 local_only.
-    // Skip silently — sync features are not available in this mode.
-    if (isCentral) {
-      setSyncLoaded(true);
-      return;
-    }
     const requestNodeId = node.id;
     try {
       const res = await fetchNodeSyncStatus(requestNodeId);
@@ -394,10 +385,17 @@ function DetailPaneBody({
       setSyncError(null);
     } catch (e) {
       if (lastIdRef.current !== requestNodeId) return;
+      // Central mode before login: the sync agent is not up yet and the
+      // proxy answers 501 local_only. Not an error worth a banner — badges
+      // simply stay absent until the agent is running.
+      if (String(e).includes("local_only")) {
+        setSyncLoaded(true);
+        return;
+      }
       setSyncError(String(e));
       setSyncLoaded(true);
     }
-  }, [node.id, isCentral]);
+  }, [node.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -677,7 +675,7 @@ function DetailPaneBody({
           <IdCopy id={node.id} />
           <MetaInfo meta={node.meta} />
           <FolderLink nodeId={node.id} />
-          {node.type !== "organization" && !isCentral && (
+          {node.type !== "organization" && (
             <>
               <span className="text-[var(--color-border-strong)]">·</span>
               {node.local_mirror ? (
@@ -929,33 +927,10 @@ function DetailPaneBody({
 
         {tab === "files" && (
           <div className="px-5 py-4">
-            {isCentral ? (
-              <div className="flex flex-col gap-4">
-                <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
-                  Soubory, synchronizace a pracovní složky jsou dostupné jen v lokálním režimu (fáze B).
-                </div>
-                {node.files.length > 0 && (
-                  <FileTree
-                    files={node.files}
-                    untracked={[]}
-                    nodeId={node.id}
-                    syncStatus={syncStatus}
-                    syncLoaded={true}
-                    onOpenFile={(rel) => onOpenFile?.(node.id, rel)}
-                    onRename={async () => { /* hidden in central mode */ }}
-                    onDelete={async () => { /* hidden in central mode */ }}
-                    readOnly
-                  />
-                )}
-                {node.files.length === 0 && (
-                  <div className="text-[14px] text-[var(--color-text-dim)]">
-                    Zatím žádné soubory.
-                  </div>
-                )}
-              </div>
-            ) : (
-              <>
-                <div className="mb-3 flex items-center justify-between">
+            {/* Central mode uses the same full files UI: file content and
+                lifecycle go to the central server, sync + mirrors to the
+                local sync agent (teammate mirrors). */}
+            <div className="mb-3 flex items-center justify-between">
                   {(node.files.length > 0 || untracked.length > 0) ? (
                     <SyncBar
                       running={syncRunning}
@@ -1009,8 +984,6 @@ function DetailPaneBody({
                     Zatím žádné soubory.
                   </div>
                 )}
-              </>
-            )}
           </div>
         )}
 
@@ -1081,9 +1054,7 @@ function DetailPaneBody({
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            {isCentral ? (
-              <LocalOnlyNote />
-            ) : node.type !== "organization" ? (
+            {node.type !== "organization" ? (
               <TerminalSplitButton
                 node={node}
                 agentCommand={agentCommand}
@@ -1188,15 +1159,6 @@ function PaneShell({
       </div>
       <div className="flex flex-1 flex-col overflow-hidden">{children}</div>
     </aside>
-  );
-}
-
-// Muted note shown in place of local-only affordances when in central mode.
-function LocalOnlyNote() {
-  return (
-    <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
-      Dostupné jen v lokálním režimu (fáze B).
-    </div>
   );
 }
 
