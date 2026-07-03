@@ -146,8 +146,13 @@ obrazovku (CentralLoginGate), ne graf.
 5. Agenti: tlačítko instalace MCP zapíše central URL; terminály dostanou device
    token automaticky.
 
-Pozn.: mirrors a lokální file sync teammate v central režimu **nemá** (LOCAL_ONLY
-cesty vrací 501); file content jde přímo přes server (Phase B).
+Pozn. (aktualizace 2026-07-03 večer): teammate v central režimu **má lokální
+mirrory** — sidecar běží jako sync agent (watcher, sync, mirror složky na
+disku), graf i bajty jdou přes server s device tokenem. Implementace:
+`docs/superpowers/plans/2026-07-03-teammate-mirrors.md`, E2E ověřeno
+(`scripts/e2e/teammate-mirrors.sh`). **Funguje proti api.portuni.com až po
+deployi aktuálního main** (nasazený dist nemá sync-info/register/base64
+endpointy ani central file content).
 
 ## Krok 6 — Po migraci
 

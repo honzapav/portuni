@@ -48,6 +48,9 @@ rest are optional tunables with code defaults. Grep check:
 | `PORTUNI_STATUS_SCAN_CONCURRENCY` | 8 | statusScan per-file fan-out |
 | `PORTUNI_WATCH_MIRRORS` | on in sidecar, off standalone | Mirror watcher (`src/domain/sync/mirror-watcher.ts`): registers new files and reconciles edits on disk so the UI's file status stays current without agent action. The desktop sidecar (`desktop.ts`) defaults ON; set `=0` to disable. The standalone server (`index.ts`) defaults OFF; set `=1` to enable (keep exactly one watcher per machine — both processes share `.portuni/sync.db`). Solo (env auth) only. |
 | `PORTUNI_REMOTE_<NAME>__SERVICE_ACCOUNT_JSON` | unset | Per-remote Google Drive Service Account key (sensitive), read by the `varlock` token store (`token-store-varlock.ts`). `<NAME>` is the remote name upper-cased with `-` → `_`. **Required on the VPS for Phase B** (central-mode file content over the server: the Drive-direct read/write in `file-content-remote.ts` resolves the adapter via this credential). Sibling fields: `__ACCESS_TOKEN`, `__REFRESH_TOKEN`, `__EXPIRES_AT`. |
+| `PORTUNI_AGENT_MODE` | unset | `=1` boots the desktop sidecar as the central-mode **sync agent** (teammate mirrors): no Turso, no graph db, no MCP; serves only mirror/sync/scope/sandbox routes backed by the central server (`desktop.ts` → `api/agent-router.ts`, engine in `domain/sync/central/`). Set by the Tauri host in central data_mode. |
+| `PORTUNI_CENTRAL_URL` | unset | Agent mode: base URL of the central server (e.g. `https://api.portuni.com`). Required with `PORTUNI_AGENT_MODE=1`. |
+| `PORTUNI_CENTRAL_TOKEN` | unset | Agent mode: the user's device token (sensitive) used as Bearer for every graph-plane/byte call to the central server. Required with `PORTUNI_AGENT_MODE=1`. |
 
 ## Auth mode
 

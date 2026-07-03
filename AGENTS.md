@@ -114,12 +114,15 @@ tmux loop for backend iteration.
   tokens). Refresh token + session JWT live in Keychain; webview reaches the
   central server only via the `central_request` Tauri command. E2E login
   requires the Workspace OAuth client (admin checklist in the design spec §6).
-  `data_mode: "central"` přepne desktop plně na centrální server (sidecar se
-  nespouští, mirror/sync/file content = fáze B, "local only"); teammate setup =
-  config.json se `server_url`, `google_client_id`, `data_mode`. Pozor, je to
-  jiná osa než "sync vs Drive": "sync" = dvě roviny (graf v Turso vs. file bytes
-  na Drive), central mód umí dnes jen graf. Model: `docs/architecture/data-modes.md`;
-  scope nedostavěné buňky (file content přes server): `docs/architecture/central-file-content-phase-b.md`.
+  `data_mode: "central"` přepne desktop na centrální server pro graf i obsah
+  souborů; lokální sidecar běží jako **sync agent** (teammate mirrors: lokální
+  mirror složky + watcher + sync přes server, `PORTUNI_AGENT_MODE=1`, bez Turso
+  tokenu a bez Drive credentials — vše jde přes device token na central).
+  Teammate setup = config.json se `server_url`, `google_client_id`,
+  `google_client_secret`, `data_mode`. Agent se spouští až po Google loginu
+  (device token); před loginem vrací local-only cesty 501. E2E harness:
+  `scripts/e2e/teammate-mirrors.sh`. Model: `docs/architecture/data-modes.md`;
+  plán: `docs/superpowers/plans/2026-07-03-teammate-mirrors.md`.
 
 - **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
   keys; `.env.schema` declares only the 6 core ones. Full inventory with
