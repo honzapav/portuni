@@ -99,7 +99,9 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (/^\/nodes\/[^/]+\/file$/.test(pathname) && m === "GET") return "read";
   if (/^\/nodes\/[^/]+\/file$/.test(pathname) && m === "PUT") return "write";
   if (/^\/nodes\/[^/]+\/sync-info$/.test(pathname) && m === "GET") return "read";
+  if (pathname === "/sync/info-batch" && m === "POST") return "read";
   if (/^\/nodes\/[^/]+\/files\/register$/.test(pathname) && m === "POST") return "write";
+  if (/^\/nodes\/[^/]+\/files\/register-batch$/.test(pathname) && m === "POST") return "write";
   if (/^\/nodes\/[^/]+\/files$/.test(pathname) && m === "POST") return "write";
   if (/^\/nodes\/[^/]+\/files\/[^/]+\/rename$/.test(pathname) && m === "POST") return "write";
   if (/^\/nodes\/[^/]+\/files\/[^/]+$/.test(pathname) && m === "DELETE") return "admin";

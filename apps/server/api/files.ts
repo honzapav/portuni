@@ -28,7 +28,16 @@ import {
 import {
   getNodeSyncInfo,
   registerFileRecordRemote,
+  registerFileRecordsRemote,
 } from "../domain/sync/sync-remote-api.js";
+
+// File-content bodies carry whole files (base64-inflated for binary), so the
+// generic 5 MB JSON cap would hard-413 any push over ~3.7 MB raw. Dedicated
+// ceiling, aligned with the sync engine's 100 MB large-file warning
+// (WARN_SIZE_BYTES) plus base64 + JSON overhead.
+const FILE_BODY_MAX_BYTES = Number(
+  process.env.PORTUNI_MAX_FILE_BODY_BYTES ?? 160 * 1024 * 1024,
+);
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { renameFile, deleteFile } from "../domain/sync/engine-mutations.js";
 import { nodeVisibleTo } from "../auth/node-access.js";
@@ -117,6 +126,11 @@ const putSchema = z.object({
   // of content / content_base64 must be present.
   content_base64: z.string().optional(),
   baseVersion: z.string().optional(),
+  // Sync-agent preconditions (byte mode only): canonical-hash compare via a
+  // metadata stat (no download), and create-only writes. See
+  // writeFileBytesRemote.
+  baseCanonicalHash: z.string().optional(),
+  ifAbsent: z.boolean().optional(),
   force: z.boolean().optional(),
 });
 
@@ -132,7 +146,7 @@ export async function handlePutFileContent(
     respondJson(res, 400, { error: "path query param required" });
     return;
   }
-  const body = await parseJsonBody(req, res, putSchema);
+  const body = await parseJsonBody(req, res, putSchema, FILE_BODY_MAX_BYTES);
   if (!body) return;
   if ((body.content === undefined) === (body.content_base64 === undefined)) {
     respondJson(res, 400, { error: "exactly one of content / content_base64 required" });
@@ -154,6 +168,8 @@ export async function handlePutFileContent(
         relPath,
         bytes: Buffer.from(body.content_base64, "base64"),
         baseVersion: body.baseVersion,
+        baseCanonicalHash: body.baseCanonicalHash,
+        ifAbsent: body.ifAbsent,
         force: body.force,
       });
       respondJson(res, 200, { version: r.version, canonical_hash: r.canonical_hash });
@@ -214,6 +230,12 @@ export async function handleGetSyncInfo(
 }
 
 const registerSchema = z.object({ relPath: z.string().min(1) });
+const registerBatchSchema = z.object({
+  relPaths: z.array(z.string().min(1)).min(1).max(1000),
+});
+const infoBatchSchema = z.object({
+  node_ids: z.array(z.string().min(1)).min(1).max(500),
+});
 
 // POST /nodes/:id/files/register -- record-only registration (no upload) for
 // a file the agent found in a local mirror. See sync-remote-api.ts.
@@ -244,6 +266,66 @@ export async function handleRegisterFile(
       return;
     }
     respondError(res, `POST /nodes/${nodeId}/files/register`, err);
+  }
+}
+
+// POST /nodes/:id/files/register-batch -- bulk record-only registration
+// (agent boot backfill / adopt after bulk imports into a mirror).
+export async function handleRegisterFilesBatch(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  nodeId: string,
+): Promise<void> {
+  const body = await parseJsonBody(req, res, registerBatchSchema);
+  if (!body) return;
+  try {
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    const results = await registerFileRecordsRemote(db, {
+      userId: identity.userId,
+      nodeId,
+      relPaths: body.relPaths,
+    });
+    respondJson(res, 201, { files: results });
+  } catch (err) {
+    if (handleFileContentError(res, err)) return;
+    if (err instanceof Error && /not found/i.test(err.message)) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    respondError(res, `POST /nodes/${nodeId}/files/register-batch`, err);
+  }
+}
+
+// POST /sync/info-batch -- sync-info for many nodes in one request (the
+// agent's cross-mirror pending aggregate: 1 request instead of one per
+// mirror). Hidden or missing nodes are silently omitted, matching the
+// single-node endpoint's 404 semantics without failing the whole batch.
+export async function handleSyncInfoBatch(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+): Promise<void> {
+  const body = await parseJsonBody(req, res, infoBatchSchema);
+  if (!body) return;
+  try {
+    const db = getDb();
+    const infos = [];
+    for (const nodeId of body.node_ids) {
+      if (!(await nodeVisibleTo(db, identity, nodeId))) continue;
+      try {
+        infos.push(await getNodeSyncInfo(db, nodeId));
+      } catch {
+        /* node vanished between visibility check and read -- omit */
+      }
+    }
+    respondJson(res, 200, { infos });
+  } catch (err) {
+    respondError(res, "POST /sync/info-batch", err);
   }
 }
 

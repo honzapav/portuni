@@ -9,6 +9,7 @@ import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-ca
 import {
   getNodeSyncInfo,
   registerFileRecordRemote,
+  registerFileRecordsRemote,
 } from "../apps/server/domain/sync/sync-remote-api.js";
 import {
   readFileBytesRemote,
@@ -185,5 +186,88 @@ describe("byte-plane read/write (binary-safe sync transfer)", () => {
       () => readFileBytesRemote(db, { nodeId, relPath: "wip/missing.bin" }),
       (e: unknown) => e instanceof FileContentError && e.code === "NOT_FOUND",
     );
+  });
+
+  it("read of a tracked-but-vanished remote object is NOT_FOUND (fast path)", async () => {
+    const { db, nodeId, remoteRoot } = await makeSharedDb();
+    await registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "wip/gone.txt" });
+    await writeFileBytesRemote(db, { userId: "U1", nodeId, relPath: "wip/gone.txt", bytes: Buffer.from("x") });
+    // Record now carries a hash (fast path active); wipe the remote object
+    // directly on the fs remote's root.
+    const info = await getNodeSyncInfo(db, nodeId);
+    const rp = info.files[0].remote_path as string;
+    await rm(join(remoteRoot, rp), { force: true });
+    await assert.rejects(
+      () => readFileBytesRemote(db, { nodeId, relPath: "wip/gone.txt" }),
+      (e: unknown) => e instanceof FileContentError && e.code === "NOT_FOUND",
+    );
+  });
+
+  it("baseCanonicalHash precondition: match writes, mismatch raises CONFLICT without download", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "wip/pc.txt" });
+    const w1 = await writeFileBytesRemote(db, {
+      userId: "U1", nodeId, relPath: "wip/pc.txt", bytes: Buffer.from("v1"),
+    });
+    // Matching canonical hash -> write proceeds.
+    const w2 = await writeFileBytesRemote(db, {
+      userId: "U1", nodeId, relPath: "wip/pc.txt", bytes: Buffer.from("v2"),
+      baseCanonicalHash: w1.canonical_hash,
+    });
+    // Stale canonical hash -> CONFLICT carrying the current canonical hash.
+    await assert.rejects(
+      () => writeFileBytesRemote(db, {
+        userId: "U1", nodeId, relPath: "wip/pc.txt", bytes: Buffer.from("v3"),
+        baseCanonicalHash: w1.canonical_hash,
+      }),
+      (e: unknown) =>
+        e instanceof FileContentError && e.code === "CONFLICT" && e.currentVersion === w2.canonical_hash,
+    );
+  });
+
+  it("ifAbsent: creates when missing, EXISTS when the object is already there", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "wip/new.txt" });
+    await writeFileBytesRemote(db, {
+      userId: "U1", nodeId, relPath: "wip/new.txt", bytes: Buffer.from("first"), ifAbsent: true,
+    });
+    await assert.rejects(
+      () => writeFileBytesRemote(db, {
+        userId: "U1", nodeId, relPath: "wip/new.txt", bytes: Buffer.from("second"), ifAbsent: true,
+      }),
+      (e: unknown) => e instanceof FileContentError && e.code === "EXISTS",
+    );
+  });
+});
+
+describe("registerFileRecordsRemote (batch)", () => {
+  it("registers many files in one batch with NULL hashes", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const results = await registerFileRecordsRemote(db, {
+      userId: "U1",
+      nodeId,
+      relPaths: ["wip/a.md", "wip/sub/b.md", "outputs/c.pdf"],
+    });
+    assert.equal(results.length, 3);
+    assert.equal(results[2].filename, "c.pdf");
+    const rows = await db.execute({
+      sql: "SELECT current_remote_hash, status FROM files WHERE node_id = ? ORDER BY filename",
+      args: [nodeId],
+    });
+    assert.equal(rows.rows.length, 3);
+    for (const r of rows.rows) assert.equal(r.current_remote_hash, null);
+    assert.equal(rows.rows[2].status, "output");
+  });
+
+  it("is idempotent against existing records (keeps ids and synced state)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const single = await registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "wip/a.md" });
+    await db.execute({ sql: "UPDATE files SET current_remote_hash = 'kept' WHERE id = ?", args: [single.id] });
+    const batch = await registerFileRecordsRemote(db, {
+      userId: "U1", nodeId, relPaths: ["wip/a.md", "wip/b.md"],
+    });
+    assert.equal(batch[0].id, single.id);
+    const row = await db.execute({ sql: "SELECT current_remote_hash FROM files WHERE id = ?", args: [single.id] });
+    assert.equal(row.rows[0].current_remote_hash, "kept");
   });
 });

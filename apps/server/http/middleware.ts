@@ -162,10 +162,11 @@ export async function parseJsonBody<T>(
   req: IncomingMessage,
   res: ServerResponse,
   schema: ZodType<T>,
+  maxBytes?: number,
 ): Promise<T | null> {
   let raw: unknown;
   try {
-    raw = await parseBody(req);
+    raw = await parseBody(req, maxBytes);
   } catch (err) {
     if (err instanceof RequestBodyTooLargeError) {
       res.writeHead(413, { "Content-Type": "application/json" });

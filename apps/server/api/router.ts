@@ -53,7 +53,9 @@ import {
   handleGetSyncInfo,
   handlePutFileContent,
   handleRegisterFile,
+  handleRegisterFilesBatch,
   handleRenameFile,
+  handleSyncInfoBatch,
 } from "./files.js";
 import {
   handleCreateNode,
@@ -366,6 +368,15 @@ async function routeFiles(
   const registerMatch = pathname.match(/^\/nodes\/([^/]+)\/files\/register$/);
   if (registerMatch && method === "POST") {
     await handleRegisterFile(req, res, identity, decodeURIComponent(registerMatch[1]));
+    return true;
+  }
+  const registerBatchMatch = pathname.match(/^\/nodes\/([^/]+)\/files\/register-batch$/);
+  if (registerBatchMatch && method === "POST") {
+    await handleRegisterFilesBatch(req, res, identity, decodeURIComponent(registerBatchMatch[1]));
+    return true;
+  }
+  if (pathname === "/sync/info-batch" && method === "POST") {
+    await handleSyncInfoBatch(req, res, identity);
     return true;
   }
 

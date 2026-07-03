@@ -47,14 +47,30 @@ export interface NodeSyncInfo {
 }
 
 export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeSyncInfo> {
-  // resolveNodeInfo throws on a missing node -- callers map that to 404.
-  const info = await resolveNodeInfo(db, nodeId);
-  const nameRes = await db.execute({
-    sql: "SELECT name FROM nodes WHERE id = ?",
+  // One JOIN gets the node row AND its belongs_to organization sync_key --
+  // the same answer resolveNodeInfo assembles from two round-trips. The
+  // agent hits this endpoint constantly (status polls, watcher, pending
+  // aggregate), and the server has no embedded replica: every saved query
+  // is a saved Turso network round-trip.
+  const nodeRes = await db.execute({
+    sql: `SELECT n.id, n.name, n.type, n.sync_key,
+                 (SELECT o.sync_key FROM edges e
+                  JOIN nodes o ON o.id = e.target_id AND o.type = 'organization'
+                  WHERE e.source_id = n.id AND e.relation = 'belongs_to'
+                  LIMIT 1) AS org_sync_key
+          FROM nodes n WHERE n.id = ?`,
     args: [nodeId],
   });
-  const nodeName = nameRes.rows.length > 0 ? (nameRes.rows[0].name as string) : nodeId;
-  const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
+  if (nodeRes.rows.length === 0) throw new Error(`Node ${nodeId} not found`);
+  const row = nodeRes.rows[0];
+  const nodeType = row.type as string;
+  const nodeSyncKey = row.sync_key as string;
+  const orgSyncKey =
+    nodeType === "organization"
+      ? nodeSyncKey
+      : ((row.org_sync_key as string | null) ?? null);
+
+  const remoteName = await resolveRemote(db, nodeType, orgSyncKey);
   const filesRes = await db.execute({
     sql: `SELECT id, filename, status, remote_path, current_remote_hash, is_native_format, mime_type
           FROM files WHERE node_id = ?`,
@@ -63,10 +79,10 @@ export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeS
   return {
     node: {
       id: nodeId,
-      name: nodeName,
-      type: info.nodeType,
-      sync_key: info.nodeSyncKey,
-      org_sync_key: info.orgSyncKey,
+      name: (row.name as string | null) ?? nodeId,
+      type: nodeType,
+      sync_key: nodeSyncKey,
+      org_sync_key: orgSyncKey,
     },
     remote_name: remoteName,
     files: filesRes.rows.map((r) => ({
@@ -139,4 +155,71 @@ export async function registerFileRecordRemote(
   });
 
   return { id: fileId, filename, remote_name: remoteName, remote_path: remotePath };
+}
+
+// Batch registration: one request + one db.batch for N files instead of N
+// requests x ~5 queries. Used by the agent's boot backfill and sync-run
+// adopt, where bulk imports (unzip, git checkout into a mirror) register
+// dozens-to-hundreds of files at once. Same NULL-hash upsert semantics per
+// file as registerFileRecordRemote; one audit row for the whole batch.
+export async function registerFileRecordsRemote(
+  db: Client,
+  a: { userId: string; nodeId: string; relPaths: string[] },
+): Promise<RegisterFileRecordResult[]> {
+  if (a.relPaths.length === 0) return [];
+  const info = await resolveNodeInfo(db, a.nodeId);
+  const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
+  if (!remoteName) {
+    throw new FileContentError(
+      `no remote routed for node ${a.nodeId} (type=${info.nodeType}, org=${info.orgSyncKey ?? "null"})`,
+      "NO_REMOTE",
+    );
+  }
+  const now = new Date().toISOString();
+  const parsed = a.relPaths.map((relPath) => {
+    const { section, subpath, filename } = parseRelPath(relPath);
+    return {
+      filename,
+      remotePath: buildRemotePathOrThrow(info, section, subpath, filename),
+      status: section === "outputs" ? "output" : "wip",
+      mt: mimeFor(filename),
+    };
+  });
+
+  const upserts = await db.batch(
+    parsed.map((p) => ({
+      sql: `INSERT INTO files (id, node_id, filename, status, description, mime_type,
+                                remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
+                                is_native_format, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?, ?)
+            ON CONFLICT(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL
+            DO UPDATE SET
+              filename = excluded.filename,
+              mime_type = excluded.mime_type,
+              updated_at = excluded.updated_at
+            RETURNING id`,
+      args: [ulid(), a.nodeId, p.filename, p.status, null, p.mt, remoteName, p.remotePath, a.userId, now, now],
+    })),
+  );
+
+  const results: RegisterFileRecordResult[] = parsed.map((p, i) => ({
+    id: upserts[i].rows[0].id as string,
+    filename: p.filename,
+    remote_name: remoteName,
+    remote_path: p.remotePath,
+  }));
+
+  await db.execute({
+    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+          VALUES (?, ?, 'sync_register_remote_batch', 'node', ?, ?, ?)`,
+    args: [
+      ulid(),
+      a.userId,
+      a.nodeId,
+      JSON.stringify({ remote_name: remoteName, count: results.length, remote_paths: results.map((r) => r.remote_path).slice(0, 50) }),
+      now,
+    ],
+  });
+
+  return results;
 }

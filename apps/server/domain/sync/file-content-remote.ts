@@ -27,7 +27,7 @@ import { ulid } from "ulid";
 import { getAdapter } from "./adapter-cache.js";
 import { resolveRemote } from "./routing.js";
 import { resolveNodeInfo } from "./node-info.js";
-import { sha256Buffer } from "./hash.js";
+import { md5Buffer, sha256Buffer } from "./hash.js";
 import { mimeFor } from "./engine.js";
 import {
   assertSafeRelativePath,
@@ -139,14 +139,18 @@ async function getFileRecord(
   nodeId: string,
   remoteName: string,
   remotePath: string,
-): Promise<{ id: string; isNative: boolean } | null> {
+): Promise<{ id: string; isNative: boolean; currentRemoteHash: string | null } | null> {
   const r = await db.execute({
-    sql: `SELECT id, is_native_format FROM files
+    sql: `SELECT id, is_native_format, current_remote_hash FROM files
           WHERE node_id = ? AND remote_name = ? AND remote_path = ?`,
     args: [nodeId, remoteName, remotePath],
   });
   if (r.rows.length === 0) return null;
-  return { id: r.rows[0].id as string, isNative: Number(r.rows[0].is_native_format) === 1 };
+  return {
+    id: r.rows[0].id as string,
+    isNative: Number(r.rows[0].is_native_format) === 1,
+    currentRemoteHash: (r.rows[0].current_remote_hash as string | null) ?? null,
+  };
 }
 
 export async function readFileContentRemote(
@@ -283,6 +287,38 @@ export async function readFileBytesRemote(
     throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
   }
   const adapter = await getAdapter(db, remoteName);
+
+  // Fast path for tracked records (the sync agent's pull materialization):
+  // the record already carries the native flag and the canonical-hash
+  // algorithm, so skip the pre-flight adapter.stat and go straight to the
+  // download -- one remote round-trip instead of two. The canonical hash is
+  // recomputed from the DOWNLOADED bytes (never trusted from the record,
+  // which may be stale), using the algorithm the record's hash length
+  // implies (32 = md5 on Drive, else sha256).
+  if (record?.currentRemoteHash) {
+    let buf: Buffer;
+    try {
+      buf = await adapter.get(remotePath);
+    } catch (e) {
+      // Disambiguate a genuinely missing object from a transient adapter
+      // failure with a single follow-up stat (error path only).
+      const stat = await adapter.stat(remotePath).catch(() => null);
+      if (!stat) {
+        throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND");
+      }
+      throw e;
+    }
+    const canonical =
+      record.currentRemoteHash.length === 32 ? md5Buffer(buf) : sha256Buffer(buf);
+    return {
+      bytes: buf,
+      version: sha256Buffer(buf),
+      canonical_hash: canonical,
+      filename,
+      mime_type: mimeFor(filename),
+    };
+  }
+
   const stat = await adapter.stat(remotePath);
   if (!stat) {
     throw new FileContentError(`file not found: ${a.relPath}`, "NOT_FOUND");
@@ -308,6 +344,15 @@ export async function writeFileBytesRemote(
     relPath: string;
     bytes: Buffer;
     baseVersion?: string;
+    // Canonical-hash precondition: the write proceeds only when the remote's
+    // CURRENT canonical hash (adapter.stat -- metadata only, no download)
+    // equals this value, or the remote object is absent. This is the sync
+    // agent's conflict check: one stat instead of a full download.
+    baseCanonicalHash?: string;
+    // Create-only: refuse when the remote object already exists (EXISTS).
+    // Lets the agent adopt/push brand-new files without a guaranteed-404
+    // pre-flight GET while keeping clobber protection.
+    ifAbsent?: boolean;
     force?: boolean;
   },
 ): Promise<{ version: string; canonical_hash: string }> {
@@ -317,6 +362,36 @@ export async function writeFileBytesRemote(
     throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
   }
   const adapter = await getAdapter(db, remoteName);
+
+  // Stat-only preconditions (sync agent path): no byte download needed.
+  if ((a.ifAbsent || a.baseCanonicalHash) && !a.force) {
+    const stat = await adapter.stat(remotePath);
+    if (stat?.is_native_format) {
+      throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
+    }
+    if (a.ifAbsent && stat) {
+      throw new FileContentError(`file already exists on the remote: ${a.relPath}`, "EXISTS");
+    }
+    if (a.baseCanonicalHash && stat) {
+      let current = stat.hash?.toLowerCase() ?? null;
+      if (current === null) {
+        // Backend reports no hash on stat (e.g. the fs adapter): fall back
+        // to hashing the current bytes with the algorithm the base hash
+        // implies. Drive reports md5 on stat, so its hot path stays
+        // metadata-only.
+        const bytes = await adapter.get(remotePath);
+        current =
+          a.baseCanonicalHash.length === 32 ? md5Buffer(bytes) : sha256Buffer(bytes);
+      }
+      if (current !== a.baseCanonicalHash.toLowerCase()) {
+        throw new FileContentError(
+          "file changed on the remote since the last sync",
+          "CONFLICT",
+          current,
+        );
+      }
+    }
+  }
 
   // Same conflict contract as the text write: baseVersion is the sha256 of
   // the remote bytes the writer last saw; stat-gated so an adapter failure

@@ -141,7 +141,14 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
       const folderPath = parts.join("/");
       const parentId = await ensureFolderPath(folderPath);
       const existingId = await resolvePathToFileId(path);
-      const params = withSAD(new URLSearchParams({ uploadType: "multipart" }));
+      // fields= makes the upload response carry everything fileRefFrom needs,
+      // so no trailing adapter.stat round-trip is required per upload.
+      const params = withSAD(
+        new URLSearchParams({
+          uploadType: "multipart",
+          fields: "id,name,mimeType,size,md5Checksum,modifiedTime",
+        }),
+      );
       const boundary = "boundary" + Math.random().toString(36).slice(2);
       const metadata = existingId ? { name: filename } : { name: filename, parents: [parentId] };
       const body = Buffer.concat([
@@ -160,7 +167,7 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
       if (!res.ok) throw new Error(`Drive upload: ${res.status} ${await res.text()}`);
       const file = (await res.json()) as DriveFile;
       pathCache.set(path, file.id);
-      return (await adapter.stat(path))!;
+      return fileRefFrom(file, path);
     },
 
     async get(path) {
