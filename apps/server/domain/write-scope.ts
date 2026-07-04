@@ -328,21 +328,29 @@ export function buildVibeMcpToml(args: {
 
 // Build the hooks block for .claude/settings.local.json. Returns null when
 // no guard script is available so callers know to omit the block.
+//
+// When mcpUrl is known, the command line carries the server base URL and
+// the workspace token env var inline, so the guard talks to the right
+// workspace's server regardless of what the surrounding shell exports.
+// The hook runs via `sh -c`, so leading VAR=... assignments apply to the
+// script invocation only.
 function buildClaudeHooksBlock(args: {
   guardScriptPath: string | null;
+  mcpUrl?: string | null;
 }): { hooks: Record<string, unknown> } | null {
   if (!args.guardScriptPath) return null;
+  let command = args.guardScriptPath;
+  if (args.mcpUrl) {
+    const base = args.mcpUrl.replace(/\/+$/, "").replace(/\/mcp$/, "");
+    const tokenVar = resolveTokenEnvVar();
+    command = `PORTUNI_URL=${JSON.stringify(base)} PORTUNI_AUTH_TOKEN="\${${tokenVar}:-}" ${JSON.stringify(args.guardScriptPath)}`;
+  }
   return {
     hooks: {
       PreToolUse: [
         {
           matcher: "Edit|Write|NotebookEdit|MultiEdit",
-          hooks: [
-            {
-              type: "command",
-              command: args.guardScriptPath,
-            },
-          ],
+          hooks: [{ type: "command", command }],
         },
       ],
     },
@@ -375,6 +383,7 @@ export function buildClaudeSettings(args: {
   otherMirrors: readonly string[];
   portuniRoot: string;
   guardScriptPath?: string | null;
+  mcpUrl?: string | null;
 }): Record<string, unknown> {
   const cur = normalize(args.currentMirror);
   const others = args.otherMirrors
@@ -415,6 +424,7 @@ export function buildClaudeSettings(args: {
   // not enforce at the kernel).
   const hookBlock = buildClaudeHooksBlock({
     guardScriptPath: args.guardScriptPath ?? null,
+    mcpUrl: args.mcpUrl ?? null,
   });
   if (hookBlock) {
     out.hooks = hookBlock.hooks;

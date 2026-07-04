@@ -173,6 +173,7 @@ export async function materializeScopeConfig(
       otherMirrors: args.otherMirrors,
       portuniRoot: args.portuniRoot,
       guardScriptPath: args.guardScriptPath ?? null,
+      mcpUrl: args.mcpUrl ?? resolvePortuniMcpUrl(),
     });
     const path = join(cur, ".claude", "settings.local.json");
     await safeWrite(path, JSON.stringify(settings, null, 2) + "\n");
