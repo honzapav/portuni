@@ -6,6 +6,8 @@ import { TYPE_ORDER } from "../lib/colors";
 import type { Theme } from "../lib/theme";
 import { foldForSearch } from "../lib/normalize";
 import type { TerminalSession, WorkspaceNodeRow } from "../lib/sessions";
+import { isTauri } from "../lib/backend-url";
+import { listWorkspaces, switchWorkspace, type WorkspaceInfo } from "../lib/workspaces";
 import WorkspaceNodeList from "./WorkspaceNodeList";
 
 export type AppView = "graph" | "workspace" | "settings";
@@ -134,10 +136,11 @@ function Sidebar({
         >
           <Waypoints size={18} className="text-[var(--color-accent)]" />
         </div>
-        <div className="flex-1">
+        <div className="min-w-0 flex-1">
           <div className="text-[18px] font-semibold tracking-tight text-[var(--color-text)]">
             Portuni
           </div>
+          <WorkspaceSwitcher />
         </div>
         <button
           onClick={onOpenSettings}
@@ -244,6 +247,51 @@ function Sidebar({
         </div>
       )}
     </aside>
+  );
+}
+
+// Workspace switcher in the brand row. Hidden (renders nothing, current
+// look unchanged) unless running in Tauri AND more than one workspace
+// exists -- a single-workspace install has nothing to switch between. Value
+// change reloads the whole page (see switchWorkspace) since every cached
+// module-level state belongs to the previous workspace's backend.
+function WorkspaceSwitcher() {
+  const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    listWorkspaces()
+      .then((ws) => {
+        if (!cancelled) setWorkspaces(ws);
+      })
+      .catch((e) => console.error("listWorkspaces failed:", e));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!isTauri() || workspaces.length <= 1) return null;
+
+  const active = workspaces.find((w) => w.active);
+
+  return (
+    <select
+      value={active?.id ?? ""}
+      onChange={(e) => {
+        const id = e.target.value;
+        if (id && id !== active?.id) void switchWorkspace(id);
+      }}
+      title="Přepnout workspace"
+      className="mt-0.5 w-full max-w-full truncate rounded-sm border border-transparent bg-transparent text-[11px] text-[var(--color-text-dim)] outline-none transition-colors hover:border-[var(--color-border)] hover:text-[var(--color-text-muted)] focus:border-[var(--color-border)]"
+    >
+      {workspaces.map((w) => (
+        <option key={w.id} value={w.id}>
+          {w.label}
+          {!w.running && w.enabled ? " (nedostupný)" : ""}
+        </option>
+      ))}
+    </select>
   );
 }
 

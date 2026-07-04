@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App.tsx";
+import WorkspaceMigrationGate from "./components/WorkspaceMigrationGate";
 import TursoSetupGate from "./components/TursoSetupGate";
 import CentralLoginGate from "./components/CentralLoginGate";
 import ErrorBoundary from "./components/ErrorBoundary";
@@ -14,11 +15,13 @@ installGlobalErrorOverlay();
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <TursoSetupGate>
-        <CentralLoginGate>
-          <App />
-        </CentralLoginGate>
-      </TursoSetupGate>
+      <WorkspaceMigrationGate>
+        <TursoSetupGate>
+          <CentralLoginGate>
+            <App />
+          </CentralLoginGate>
+        </TursoSetupGate>
+      </WorkspaceMigrationGate>
     </ErrorBoundary>
   </React.StrictMode>,
 );
