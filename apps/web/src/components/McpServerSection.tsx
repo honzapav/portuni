@@ -11,6 +11,7 @@
 import { useEffect, useState } from "react";
 import { Copy, Eye, EyeOff, RefreshCw } from "lucide-react";
 import { apiFetch, isTauri } from "../lib/backend-url";
+import { useDataMode } from "../lib/central";
 
 type McpInfo = {
   url: string;
@@ -24,6 +25,11 @@ type Status =
   | { kind: "error"; reason: string };
 
 export default function McpServerSection() {
+  // Token rotation only applies to the local per-launch sidecar token. In
+  // central data_mode the bearer credential is a device token managed in
+  // Settings -> Ucet (revoke + re-mint), so the rotate button is hidden
+  // there. null while loading: keep the button hidden to avoid flicker.
+  const dataMode = useDataMode();
   const [status, setStatus] = useState<Status>({ kind: "loading" });
   const [token, setToken] = useState<string | null>(null);
   const [tokenVisible, setTokenVisible] = useState(false);
@@ -250,16 +256,25 @@ export default function McpServerSection() {
             >
               Přidat do Vibu (~/.vibe/config.toml)
             </ActionButton>
-            <ActionButton
-              busy={busy === "regenerate"}
-              disabled={busy !== null || !isTauri()}
-              onClick={() => void regenerate()}
-              variant="ghost"
-            >
-              <RefreshCw size={11} className="mr-1.5" />
-              Vygenerovat nový token
-            </ActionButton>
+            {dataMode?.mode === "local" && (
+              <ActionButton
+                busy={busy === "regenerate"}
+                disabled={busy !== null || !isTauri()}
+                onClick={() => void regenerate()}
+                variant="ghost"
+              >
+                <RefreshCw size={11} className="mr-1.5" />
+                Vygenerovat nový token
+              </ActionButton>
+            )}
           </div>
+
+          {dataMode?.mode === "central" && (
+            <div className="text-[12px] text-[var(--color-text-dim)]">
+              Token je device token pro centrální server — spravuje se
+              (revokace, nové zařízení) v sekci Účet.
+            </div>
+          )}
 
           {!isTauri() && (
             <div className="text-[12px] text-[var(--color-text-dim)]">
