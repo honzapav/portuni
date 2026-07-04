@@ -32,6 +32,11 @@ export default function WorkspacesSection() {
   const [state, setState] = useState<ListState>({ kind: "loading" });
   const [rowError, setRowError] = useState<string | null>(null);
   const [pending, setPending] = useState<Set<string>>(() => new Set());
+  // Inline two-step delete confirm: window.confirm is a silent no-op in the
+  // Tauri webview on macOS (see DetailPane.tsx). Holds the id of the row whose
+  // delete is awaiting confirmation; the row swaps its Smazat button for the
+  // warning + Potvrdit/Zrušit while set.
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -106,10 +111,7 @@ export default function WorkspacesSection() {
   }
 
   async function handleDelete(w: WorkspaceInfo) {
-    const confirmed = window.confirm
-      ? window.confirm(`Smazat workspace „${w.label}"?\n\n${DELETE_CONFIRM_MESSAGE}`)
-      : true;
-    if (!confirmed) return;
+    setConfirmDeleteId(null);
     setRowError(null);
     try {
       await withPending(w.id, () => deleteWorkspace(w.id));
@@ -259,15 +261,41 @@ export default function WorkspacesSection() {
                           >
                             {w.enabled ? "Vypnout" : "Zapnout"}
                           </button>
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => void handleDelete(w)}
-                            className="rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-dim)] transition-colors hover:border-red-900/50 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            Smazat
-                          </button>
+                          {confirmDeleteId === w.id ? (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void handleDelete(w)}
+                              className="rounded border border-red-900/50 bg-red-950/20 px-2 py-1 text-[11.5px] font-medium text-red-300 transition-colors hover:border-red-800 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Opravdu smazat
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => setConfirmDeleteId(w.id)}
+                              className="rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-dim)] transition-colors hover:border-red-900/50 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Smazat
+                            </button>
+                          )}
+                          {confirmDeleteId === w.id && (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => setConfirmDeleteId(null)}
+                              className="rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Zrušit
+                            </button>
+                          )}
                         </div>
+                        {confirmDeleteId === w.id && (
+                          <div className="mt-1.5 max-w-[420px] text-[11px] leading-snug text-[var(--color-text-dim)]">
+                            {DELETE_CONFIRM_MESSAGE}
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );

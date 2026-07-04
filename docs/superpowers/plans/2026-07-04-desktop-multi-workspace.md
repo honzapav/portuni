@@ -2205,6 +2205,7 @@ Přidej do Gotchas:
 5. Session mimo mirror: `~/.claude.json` má entries `portuni` a `portuni-<id2>`, obě se připojí.
 6. Vypnutí workspace: sidecar zmizí, entry z `~/.claude.json` zmizí, ostatní entries nedotčené. Smazání: data dir `workspaces/<id>/` a mirror složky zůstaly na disku.
 7. Regrese standalone: `npm test` zelené; tmux server (bez `PORTUNI_WORKSPACE_ID`) generuje per-mirror configy s `PORTUNI_MCP_TOKEN` beze změny.
+8. Fresh install (bez migrace): smazat/přejmenovat `config.json` v `~/Library/Application Support/ooo.workflow.portuni/` → appka po startu ukáže onboarding wizard (ne migrační dialog); volba „Pokračovat lokálně" → `save_config` založí v2 config s workspace `default` a `spawn_all_sidecars` nahodí sidecar bez restartu appky (graf naběhne, `lsof -nP -iTCP:47011 -sTCP:LISTEN` ukazuje sidecar, žádný 30s timeout); volba „Připojit" s Turso URL + tokenem → sidecar naběhne a po `restart_sidecar` čte token z Keychain.
 
 - [ ] **Step 4: Commit**
 

@@ -22,9 +22,10 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 // Keychain account for the long-lived device token used by agent terminals
-// in central data_mode. Separate from the per-launch MCP token used in local
-// mode so the two don't interfere. pub(crate): auth.rs's auth_logout deletes
-// this account for the active workspace too.
+// in central data_mode. Separate from the persisted per-workspace MCP token
+// (AuthTokens map / Keychain) used in local mode so the two don't interfere.
+// pub(crate): auth.rs's auth_logout deletes this account for the active
+// workspace too.
 pub(crate) const KEYCHAIN_DEVICE_TOKEN_ACCOUNT: &str = "portuni_device_token";
 
 /// Return the device token for central-mode terminal sessions. Tries Keychain

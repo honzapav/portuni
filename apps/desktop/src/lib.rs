@@ -115,7 +115,7 @@ fn clear_turso_token(app: AppHandle) -> Result<(), String> {
 // frontend reads it only when the user explicitly asks (Settings → Show /
 // Copy) so it doesn't sit in webview JS state by default.
 //
-// Local mode: the per-launch sidecar auth token from AuthToken state.
+// Local mode: the workspace's persisted MCP auth token from the AuthTokens map.
 // Central mode: the long-lived device token from Keychain (minted on
 // demand) — the central server rejects the local sidecar token, so
 // handing that out here would give the user a credential that 401s.
@@ -140,7 +140,7 @@ fn get_mcp_token(app: AppHandle) -> Result<String, String> {
 }
 
 // Rotates the MCP auth token: writes a fresh value to Keychain and into
-// the shared AuthToken state. Per-mirror .mcp.json and .codex/config.toml
+// the active workspace's entry in the AuthTokens map. Per-mirror .mcp.json and .codex/config.toml
 // reference the token via the PORTUNI_MCP_TOKEN env var, so they survive
 // rotation (already-running terminals keep the old value until respawned).
 // Only ~/.claude.json embeds the literal token and goes stale until the
@@ -426,6 +426,11 @@ fn migrate_to_workspaces(app: AppHandle, id: String) -> Result<(), String> {
     let file = workspace::migrate_v1_value(&v1, &id);
     workspace::save(&data_dir, &file)?;
     info!("migrated config.json to v2 with workspace '{id}'");
+    // .setup()'s spawn_all_sidecars was a no-op on the pre-migration v1/Missing
+    // config, so no sidecar is running. Spawn now — the migration gate's reload
+    // otherwise polls an empty BackendPorts map for 30 s. Idempotent:
+    // spawn_sidecar_ws's contains_key guard skips any already-running child.
+    spawn_all_sidecars(&app);
     Ok(())
 }
 
@@ -624,21 +629,52 @@ struct TursoStatus {
 
 #[tauri::command]
 fn get_turso_status(app: AppHandle) -> Result<TursoStatus, String> {
-    // active_workspace succeeds only for a v2 config; v1/Missing error out
-    // here and are handled by the migration/onboarding gate earlier, so a
-    // reached-this-point status always means config_exists = true (v2).
-    let (ws_id, cfg) = active_workspace(&app)?;
-    let url = cfg
-        .turso_url
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    Ok(TursoStatus {
-        config_exists: true,
-        url_set: url.is_some(),
-        token_set: keychain_get_ws(KEYCHAIN_TURSO_ACCOUNT, &ws_id)
-            .is_some_and(|t| !t.trim().is_empty()),
-        url,
-    })
+    // Must NOT hard-error just because the config lacks a v2 active workspace:
+    // TursoSetupGate treats a failed get_turso_status as "ready" and skips the
+    // onboarding wizard, so a `?` on active_workspace here would strand a fresh
+    // install with the wizard never rendered and no sidecar ever spawned (boot
+    // then times out at 30 s). Handle each config state explicitly; only a
+    // genuinely corrupt config.json (workspace::load Err) propagates.
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    match workspace::load(&data_dir)? {
+        // Fresh install: signal the onboarding wizard (config_exists = false).
+        workspace::LoadedConfig::Missing => Ok(TursoStatus {
+            config_exists: false,
+            url_set: false,
+            token_set: false,
+            url: None,
+        }),
+        // v1 config is blocked by WorkspaceMigrationGate, which renders BEFORE
+        // TursoSetupGate — so this value is never actually rendered. Report a
+        // best-effort config_exists = true (the file is on disk) with no
+        // url/token rather than hard-erroring, so the command stays infallible.
+        workspace::LoadedConfig::V1(_) => Ok(TursoStatus {
+            config_exists: true,
+            url_set: false,
+            token_set: false,
+            url: None,
+        }),
+        // v2: report the active workspace's Turso state (today's behavior).
+        workspace::LoadedConfig::V2(file) => {
+            let ws_id = file.active_workspace.clone();
+            let cfg = file
+                .workspaces
+                .get(&ws_id)
+                .ok_or_else(|| "active workspace missing from config".to_string())?;
+            let url = cfg
+                .turso_url
+                .clone()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            Ok(TursoStatus {
+                config_exists: true,
+                url_set: url.is_some(),
+                token_set: keychain_get_ws(KEYCHAIN_TURSO_ACCOUNT, &ws_id)
+                    .is_some_and(|t| !t.trim().is_empty()),
+                url,
+            })
+        }
+    }
 }
 
 // Used by the first-run onboarding wizard to commit the user's choice
@@ -651,7 +687,11 @@ fn save_config(app: AppHandle, turso_url: Option<String>) -> Result<(), String> 
     let turso = turso_url
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let mut file = match workspace::load(&data_dir)? {
+    let loaded = workspace::load(&data_dir)?;
+    // Fresh install path: .setup()'s spawn_all_sidecars was a no-op (config was
+    // Missing at boot), so nothing is running yet and we must spawn below.
+    let fresh_install = matches!(loaded, workspace::LoadedConfig::Missing);
+    let mut file = match loaded {
         workspace::LoadedConfig::V2(f) => f,
         // Fresh install: onboarding commits its first choice here — create a
         // v2 file with a single `default` workspace so the install is v2 from
@@ -669,7 +709,18 @@ fn save_config(app: AppHandle, turso_url: Option<String>) -> Result<(), String> 
         .get_mut(&active)
         .ok_or_else(|| "active workspace missing from config".to_string())?;
     cfg.turso_url = turso;
-    workspace::save(&data_dir, &file)
+    workspace::save(&data_dir, &file)?;
+    // Fresh install: bring the just-created `default` workspace's sidecar up
+    // now so the wizard's reload finds a running backend instead of polling an
+    // empty BackendPorts map for 30 s. On the "connect to org" path
+    // TursoSetupGate then calls set_turso_token + restart_sidecar (which
+    // kills+respawns to pick up the token); on "start local" no restart runs
+    // and this is the only spawn. spawn_sidecar_ws's contains_key guard makes
+    // the eventual restart's kill+respawn double-call safe.
+    if fresh_install {
+        spawn_all_sidecars(&app);
+    }
+    Ok(())
 }
 
 // Spawn an external Terminal.app window in the given working directory
@@ -1211,7 +1262,7 @@ pub(crate) fn spawn_sidecar_ws(
     };
     let workspace_root = cfg.effective_workspace_root();
     info!(
-        "spawn_sidecar[{ws_id}]: central={is_central} turso_url={} turso_auth_token={} workspace_root={}",
+        "spawn_sidecar_ws[{ws_id}]: central={is_central} turso_url={} turso_auth_token={} workspace_root={}",
         if turso_url.is_empty() { "<unset>" } else { "<set>" },
         if turso_token.is_empty() { "<unset>" } else { "<set>" },
         workspace_root,
@@ -1392,6 +1443,11 @@ pub(crate) fn spawn_all_sidecars(app: &AppHandle) {
 
 // Remove one workspace's entries from all three user-scoped agent configs.
 // Best-effort per file: a missing file is fine; a parse error propagates.
+// Resolves the MCP entry name from the (still-present) workspace config, then
+// delegates to remove_global_mcp_entries_by_name. delete_workspace must
+// instead resolve the name BEFORE it removes the workspace from config and
+// call the by-name helper directly (the config no longer has the entry to
+// look the name up from at cleanup time).
 fn remove_global_mcp_entries(app: &AppHandle, ws_id: &str) -> Result<(), String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let name = match workspace::load(&data_dir)? {
@@ -1402,20 +1458,26 @@ fn remove_global_mcp_entries(app: &AppHandle, ws_id: &str) -> Result<(), String>
             .unwrap_or_else(|| format!("portuni-{ws_id}")),
         _ => format!("portuni-{ws_id}"),
     };
+    remove_global_mcp_entries_by_name(&name)
+}
+
+// Remove the given MCP server entry from all three user-scoped agent configs.
+// Best-effort per file: a missing file is fine; a parse error propagates.
+fn remove_global_mcp_entries_by_name(name: &str) -> Result<(), String> {
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
     let claude = PathBuf::from(&home).join(".claude.json");
     if let Ok(raw) = std::fs::read_to_string(&claude) {
-        let next = mcp_install::remove_claude_server(Some(&raw), &name)?;
+        let next = mcp_install::remove_claude_server(Some(&raw), name)?;
         std::fs::write(&claude, next).map_err(|e| e.to_string())?;
     }
     let codex = PathBuf::from(&home).join(".codex").join("config.toml");
     if let Ok(raw) = std::fs::read_to_string(&codex) {
-        std::fs::write(&codex, mcp_install::remove_codex_block(&raw, &name))
+        std::fs::write(&codex, mcp_install::remove_codex_block(&raw, name))
             .map_err(|e| e.to_string())?;
     }
     let vibe = PathBuf::from(&home).join(".vibe").join("config.toml");
     if let Ok(raw) = std::fs::read_to_string(&vibe) {
-        let next = mcp_install::remove_vibe_server(&raw, &name)?;
+        let next = mcp_install::remove_vibe_server(&raw, name)?;
         std::fs::write(&vibe, next).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -1574,8 +1636,28 @@ fn delete_workspace(app: AppHandle, id: String) -> Result<(), String> {
     if !file.workspaces.contains_key(&id) {
         return Err(format!("unknown workspace '{id}'"));
     }
+    // Resolve the MCP entry name while the workspace is still in config — the
+    // migrated workspace keeps the historical "portuni" name, which we could
+    // not recover once it's removed below.
+    let mcp_name = file
+        .workspaces
+        .get(&id)
+        .map(|c| workspace::mcp_server_name(&id, c))
+        .unwrap_or_else(|| format!("portuni-{id}"));
+    // Stop the sidecar (a process, no persisted state).
     kill_sidecar_ws(&app, &id);
-    remove_global_mcp_entries(&app, &id).unwrap_or_else(|e| warn!("uninstall {id}: {e}"));
+    // COMMIT POINT: drop the workspace from config.json and persist FIRST. If
+    // this save fails we return early having touched no credentials — the
+    // workspace is still fully intact (config lists it, Keychain holds its
+    // secrets) and its sidecar re-spawns on the next launch.
+    file.workspaces.remove(&id);
+    workspace::save(&data_dir, &file)?;
+    // Config committed — the workspace is gone. Everything below is best-effort
+    // cleanup of now-orphaned state, logged but never propagated, so a Keychain
+    // or config-file hiccup cannot leave the workspace half-listed with its
+    // credentials already deleted.
+    remove_global_mcp_entries_by_name(&mcp_name)
+        .unwrap_or_else(|e| warn!("uninstall {id}: {e}"));
     for base in [
         "turso_auth_token",
         "mcp_auth_token",
@@ -1585,8 +1667,6 @@ fn delete_workspace(app: AppHandle, id: String) -> Result<(), String> {
     ] {
         keychain_delete_ws(base, &id);
     }
-    file.workspaces.remove(&id);
-    workspace::save(&data_dir, &file)?;
     // Data dir + mirrors stay on disk by design (spec §5): destructive
     // cleanup is manual only. The UI dialog states what remains.
     Ok(())
