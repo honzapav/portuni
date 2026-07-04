@@ -80,6 +80,9 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname === "/mcp/info") return "read";
   if (pathname === "/auth/login") return "read";
   if (pathname === "/auth/groups" && m === "GET") return "manage";
+  if (pathname === "/auth/users" && m === "GET") return "manage";
+  if (pathname === "/auth/users/admin" && m === "GET") return "admin";
+  if (pathname === "/auth/users/invite" && m === "POST") return "admin";
   if (pathname === "/me" && m === "GET") return "read";
   if (pathname === "/graph" && m === "GET") return "read";
   if (pathname === "/scope" && m === "GET") return "read";

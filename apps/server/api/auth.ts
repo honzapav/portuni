@@ -11,7 +11,7 @@ import {
   type RequestIdentity,
 } from "../http/middleware.js";
 import { GoogleAdapter } from "../auth/google-adapter.js";
-import { upsertUserFromIdentity } from "../auth/users.js";
+import { upsertUserFromIdentity, listUsers, listUsersAdmin, inviteUser, UserExistsError } from "../auth/users.js";
 import { signSessionToken } from "../auth/session-token.js";
 import {
   listDeviceTokens,
@@ -138,5 +138,65 @@ export async function handleRevokeDeviceToken(
     respondJson(res, 200, { revoked: true });
   } catch (err) {
     respondError(res, "DELETE /device-tokens/:id", err);
+  }
+}
+
+// GET /auth/users (manage): ACL picker source -- id/name/email/avatar_url only.
+export async function handleListAccountUsers(
+  _req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  try {
+    const users = await listUsers(getDb());
+    respondJson(res, 200, { users });
+  } catch (err) {
+    respondError(res, "GET /auth/users", err);
+  }
+}
+
+// GET /auth/users/admin (admin): full account list with invited flag and
+// each user's resolved global_scope (via the identity adapter).
+export async function handleListUsersAdmin(
+  _req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const rows = await listUsersAdmin(db);
+    const adapter = getIdentityContext().adapter;
+    const accessResolutions = await Promise.all(
+      rows.map((row) => adapter.resolveAccess(row.email)),
+    );
+    const users = rows.map((row, i) => ({
+      ...row,
+      global_scope: accessResolutions[i].globalScope,
+    }));
+    respondJson(res, 200, { users });
+  } catch (err) {
+    respondError(res, "GET /auth/users/admin", err);
+  }
+}
+
+const InviteUserBody = z.object({ email: z.string().email() });
+
+// POST /auth/users/invite (admin): creates a placeholder user row so it can
+// be granted access before the invitee's first login.
+export async function handleInviteUser(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+): Promise<void> {
+  try {
+    const body = await parseJsonBody(req, res, InviteUserBody);
+    if (!body) return;
+    const invited = await inviteUser(getDb(), body.email);
+    await logAudit(identity.userId, "user.invite", "user", invited.id, { email: invited.email });
+    respondJson(res, 201, invited);
+  } catch (err) {
+    if (err instanceof UserExistsError) {
+      respondJson(res, 409, { error: err.message });
+      return;
+    }
+    respondError(res, "POST /auth/users/invite", err);
   }
 }

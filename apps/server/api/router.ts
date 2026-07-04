@@ -15,6 +15,9 @@ import {
   handleMintDeviceToken,
   handleListDeviceTokens,
   handleRevokeDeviceToken,
+  handleListAccountUsers,
+  handleListUsersAdmin,
+  handleInviteUser,
 } from "./auth.js";
 import { handleHealth } from "./health.js";
 import { handleGraph } from "./graph.js";
@@ -133,6 +136,22 @@ export async function routeApiRequest(
   }
   if (url.pathname === "/auth/groups" && req.method === "GET") {
     await handleListGroups(req, res, identity, url);
+    return true;
+  }
+  // /auth/users/admin and /auth/users/invite MUST match before the bare
+  // /auth/users route below, or the startsWith-style prefix would never be
+  // reached (kept as exact-path checks here, but order still matters if
+  // /auth/users is ever loosened to a prefix match).
+  if (url.pathname === "/auth/users/admin" && req.method === "GET") {
+    await handleListUsersAdmin(req, res);
+    return true;
+  }
+  if (url.pathname === "/auth/users/invite" && req.method === "POST") {
+    await handleInviteUser(req, res, identity);
+    return true;
+  }
+  if (url.pathname === "/auth/users" && req.method === "GET") {
+    await handleListAccountUsers(req, res);
     return true;
   }
   if (url.pathname === "/me" && req.method === "GET") {
