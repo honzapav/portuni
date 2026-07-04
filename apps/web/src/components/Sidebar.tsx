@@ -261,13 +261,22 @@ function WorkspaceSwitcher() {
   useEffect(() => {
     if (!isTauri()) return;
     let cancelled = false;
-    listWorkspaces()
-      .then((ws) => {
-        if (!cancelled) setWorkspaces(ws);
-      })
-      .catch((e) => console.error("listWorkspaces failed:", e));
+    const fetchWorkspaces = () => {
+      listWorkspaces()
+        .then((ws) => {
+          if (!cancelled) setWorkspaces(ws);
+        })
+        .catch((e) => console.error("listWorkspaces failed:", e));
+    };
+    fetchWorkspaces();
+    // Live refresh: WorkspacesSection dispatches this after every successful
+    // mutation (create, delete, enable/disable, restart) so a newly created
+    // workspace -- including the 1 -> 2 transition where this switcher first
+    // becomes visible -- appears here without a full page reload.
+    window.addEventListener("portuni:workspaces-changed", fetchWorkspaces);
     return () => {
       cancelled = true;
+      window.removeEventListener("portuni:workspaces-changed", fetchWorkspaces);
     };
   }, []);
 
@@ -288,7 +297,11 @@ function WorkspaceSwitcher() {
       {workspaces.map((w) => (
         <option key={w.id} value={w.id}>
           {w.label}
-          {!w.running && w.enabled ? " (nedostupný)" : ""}
+          {/* Deferred central agents are not "unavailable" -- in central
+              mode the webview talks straight to the server, so a workspace
+              can be fully switchable while its local sync agent still waits
+              on login. */}
+          {!w.running && !w.deferred && w.enabled ? " (nedostupný)" : ""}
         </option>
       ))}
     </select>

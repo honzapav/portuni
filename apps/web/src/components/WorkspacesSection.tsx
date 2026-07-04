@@ -14,11 +14,19 @@ import {
   createWorkspace,
   deleteWorkspace,
   listWorkspaces,
+  restartWorkspace,
   setWorkspaceEnabled,
   slugify,
   switchWorkspace,
   type WorkspaceInfo,
 } from "../lib/workspaces";
+
+// Dispatched by every successful workspace mutation (create, delete,
+// enable/disable, restart) so components outside this section -- notably
+// Sidebar's WorkspaceSwitcher -- can refresh without a full page reload.
+function notifyWorkspacesChanged() {
+  window.dispatchEvent(new CustomEvent("portuni:workspaces-changed"));
+}
 
 type ListState =
   | { kind: "loading" }
@@ -47,6 +55,9 @@ export default function WorkspacesSection() {
 
   const load = useCallback(async () => {
     if (!mountedRef.current) return;
+    // Whenever the list reloads, an armed "Opravdu smazat" must not survive
+    // -- the row set it belonged to may have just changed underneath it.
+    setConfirmDeleteId(null);
     setState({ kind: "loading" });
     try {
       const workspaces = await listWorkspaces();
@@ -65,6 +76,14 @@ export default function WorkspacesSection() {
     void load();
   }, [load]);
 
+  // Every mutation (create, delete, enable/disable, restart) routes its
+  // post-success reload through here so the switcher-refresh event fires
+  // exactly once per mutation, from one place.
+  const reloadAfterMutation = useCallback(async () => {
+    await load();
+    notifyWorkspacesChanged();
+  }, [load]);
+
   function withPending<T>(id: string, fn: () => Promise<T>): Promise<T> {
     setPending((prev) => new Set([...prev, id]));
     return fn().finally(() => {
@@ -78,6 +97,9 @@ export default function WorkspacesSection() {
   }
 
   async function handleActivate(id: string) {
+    // Row action: an armed delete confirm elsewhere in the table must not
+    // survive an unrelated action.
+    setConfirmDeleteId(null);
     setRowError(null);
     try {
       await withPending(id, () => switchWorkspace(id));
@@ -88,23 +110,22 @@ export default function WorkspacesSection() {
   }
 
   async function handleRestart(id: string) {
+    setConfirmDeleteId(null);
     setRowError(null);
     try {
-      await withPending(id, async () => {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("restart_sidecar");
-      });
-      await load();
+      await withPending(id, () => restartWorkspace(id));
+      await reloadAfterMutation();
     } catch (e) {
       setRowError(e instanceof Error ? e.message : String(e));
     }
   }
 
   async function handleToggleEnabled(id: string, enabled: boolean) {
+    setConfirmDeleteId(null);
     setRowError(null);
     try {
       await withPending(id, () => setWorkspaceEnabled(id, enabled));
-      await load();
+      await reloadAfterMutation();
     } catch (e) {
       setRowError(e instanceof Error ? e.message : String(e));
     }
@@ -115,7 +136,7 @@ export default function WorkspacesSection() {
     setRowError(null);
     try {
       await withPending(w.id, () => deleteWorkspace(w.id));
-      await load();
+      await reloadAfterMutation();
     } catch (e) {
       setRowError(e instanceof Error ? e.message : String(e));
     }
@@ -187,7 +208,7 @@ export default function WorkspacesSection() {
               <tbody>
                 {state.workspaces.map((w) => {
                   const busy = pending.has(w.id);
-                  const canRestart = w.enabled && !w.running;
+                  const canRestart = w.enabled && !w.running && !w.deferred;
                   return (
                     <tr
                       key={w.id}
@@ -215,12 +236,16 @@ export default function WorkspacesSection() {
                         {w.mcp_port ?? "—"}
                       </td>
                       <td className="py-2 pr-4">
-                        {!w.enabled ? (
-                          <span className="text-[var(--color-text-dim)]">vypnutý</span>
-                        ) : w.running ? (
+                        {w.running ? (
                           <span className="text-green-400">běží</span>
-                        ) : (
+                        ) : w.deferred ? (
+                          <span className="text-[var(--color-text-dim)]">
+                            čeká na přihlášení
+                          </span>
+                        ) : w.enabled ? (
                           <span className="text-[var(--color-text-dim)]">neběží</span>
+                        ) : (
+                          <span className="text-[var(--color-text-dim)]">vypnutý</span>
                         )}
                       </td>
                       <td className="py-2">
@@ -233,26 +258,16 @@ export default function WorkspacesSection() {
                           >
                             Aktivovat
                           </button>
-                          {canRestart &&
-                            (w.active ? (
-                              <button
-                                type="button"
-                                disabled={busy}
-                                onClick={() => void handleRestart(w.id)}
-                                className="rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
-                              >
-                                Restartovat
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                disabled
-                                title="Přepni se do workspace a zkus restart"
-                                className="cursor-not-allowed rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-dim)] opacity-50"
-                              >
-                                Restartovat
-                              </button>
-                            ))}
+                          {canRestart && (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void handleRestart(w.id)}
+                              className="rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Restartovat
+                            </button>
+                          )}
                           <button
                             type="button"
                             disabled={busy}
@@ -306,7 +321,7 @@ export default function WorkspacesSection() {
         )}
       </div>
 
-      <CreateWorkspaceForm onCreated={() => void load()} />
+      <CreateWorkspaceForm onCreated={() => void reloadAfterMutation()} />
     </section>
   );
 }
@@ -325,6 +340,13 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdHint, setCreatedHint] = useState(false);
+
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const id = slugify(name);
   const effectiveWorkspaceRoot = workspaceRootTouched
@@ -365,11 +387,11 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
       const wasLocal = mode === "local";
       reset();
       onCreated();
-      if (wasLocal) setCreatedHint(true);
+      if (wasLocal && mountedRef.current) setCreatedHint(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (mountedRef.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   }
 

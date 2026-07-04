@@ -15,6 +15,10 @@ export interface WorkspaceInfo {
   mcp_port: number | null;
   active: boolean;
   running: boolean;
+  // True when this workspace's central sync agent is deferred (not logged
+  // in yet) rather than simply stopped -- see BackendPorts' sentinel port 0
+  // in apps/desktop/src/lib.rs.
+  deferred: boolean;
   mcp_server_name: string;
   workspace_root: string;
 }
@@ -52,6 +56,10 @@ export async function setWorkspaceEnabled(id: string, enabled: boolean): Promise
 
 export async function deleteWorkspace(id: string): Promise<void> {
   await invoke("delete_workspace", { id });
+}
+
+export async function restartWorkspace(id: string): Promise<void> {
+  await invoke("restart_sidecar", { id });
 }
 
 export function slugify(name: string): string {

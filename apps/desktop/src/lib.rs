@@ -899,14 +899,25 @@ async fn clipboard_file_path() -> Result<Option<String>, String> {
     Ok(None)
 }
 
-// Bounce the Node sidecar so it picks up a freshly-set Turso token
-// from the Keychain. Used by the first-run gate after the user pastes
-// their token. Idempotent: if no sidecar is running, just spawns one.
+// Bounce a workspace's Node sidecar so it picks up freshly-changed config
+// (Turso token, server URL, ...). Used by the first-run gate after the user
+// pastes their token (no id — defaults to the active workspace, preserving
+// today's behavior) and by WorkspacesSection for any enabled, non-running
+// workspace. Idempotent: if no sidecar is running, just spawns one.
 #[tauri::command]
-async fn restart_sidecar(app: AppHandle) -> Result<(), String> {
-    let (ws_id, _) = active_workspace(&app)?;
-    kill_sidecar_ws(&app, &ws_id);
-    spawn_sidecar_ws(&app, &ws_id).map_err(|e| e.to_string())
+async fn restart_sidecar(app: AppHandle, id: Option<String>) -> Result<(), String> {
+    let ws = match id {
+        Some(i) => i,
+        None => active_workspace(&app)?.0,
+    };
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(file) if file.workspaces.contains_key(&ws) => {}
+        workspace::LoadedConfig::V2(_) => return Err(format!("unknown workspace '{ws}'")),
+        _ => return Err("config not migrated to workspaces yet".to_string()),
+    }
+    kill_sidecar_ws(&app, &ws);
+    spawn_sidecar_ws(&app, &ws).map_err(|e| e.to_string())
 }
 
 // Webview-side HTTP proxy. The webview no longer talks to the sidecar
@@ -1431,13 +1442,24 @@ pub(crate) fn spawn_all_sidecars(app: &AppHandle) {
             return;
         }
     };
+    // Each enabled workspace spawns on its own OS thread rather than serially:
+    // spawn_sidecar_ws's reap_orphan_sidecar sleeps 300ms per call, so a
+    // serial loop added 300ms of boot latency per extra workspace. Threads
+    // race to call spawn_sidecar_ws, but that's safe — its contains_key
+    // check against SidecarState is the single double-spawn guard regardless
+    // of which thread (or a later re-invocation, e.g. post-login) gets there
+    // first.
     for (id, cfg) in &file.workspaces {
         if !cfg.enabled {
             continue;
         }
-        if let Err(e) = spawn_sidecar_ws(app, id) {
-            error!("failed to spawn sidecar for {id}: {e}");
-        }
+        let handle = app.clone();
+        let id = id.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = spawn_sidecar_ws(&handle, &id) {
+                error!("failed to spawn sidecar for {id}: {e}");
+            }
+        });
     }
 }
 
@@ -1492,6 +1514,12 @@ struct WorkspaceInfo {
     mcp_port: Option<u16>,
     active: bool,
     running: bool,
+    // True when the BackendPorts entry for this workspace is the central
+    // sentinel (Some(0)): a central-mode sync agent that is deferred because
+    // the user has not logged in yet (see spawn_sidecar_ws). Distinct from
+    // "not running" (no entry at all, or a crashed/never-spawned sidecar) so
+    // the UI can show "waiting for login" instead of a plain error state.
+    deferred: bool,
     mcp_server_name: String,
     workspace_root: String,
 }
@@ -1521,6 +1549,7 @@ fn list_workspaces(app: AppHandle) -> Result<Vec<WorkspaceInfo>, String> {
             mcp_port: cfg.mcp_port,
             active: *id == file.active_workspace,
             running: ports.get(id).is_some_and(|p| *p > 0),
+            deferred: ports.get(id).is_some_and(|p| *p == 0),
             mcp_server_name: workspace::mcp_server_name(id, cfg),
             workspace_root: cfg.effective_workspace_root(),
         })
