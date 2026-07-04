@@ -42,6 +42,8 @@ import {
   SEED_LIFECYCLE_STATE_FROM_STATUS,
   DDL_DEVICE_TOKENS,
   INDEX_DEVICE_TOKENS_USER,
+  DDL_NODE_ACCESS,
+  INDEX_NODE_ACCESS_NODE,
 } from "./schema-triggers.js";
 
 interface Migration {
@@ -1028,6 +1030,39 @@ const MIGRATIONS: Migration[] = [
       await db.execute(
         "UPDATE events SET logged_at = created_at WHERE logged_at IS NULL",
       );
+    },
+  },
+
+  // Migration 019: node_access ACL table. Creates the table (fresh installs
+  // already have it via DDL, so this is idempotent there), then backfills
+  // every node's meta.access_group into a kind='group' row and strips the
+  // key from meta -- the ACL table becomes the source of truth for group
+  // sharing going forward.
+  {
+    id: "019_node_access",
+    up: async (db) => {
+      await db.execute(DDL_NODE_ACCESS);
+      await db.execute(INDEX_NODE_ACCESS_NODE);
+
+      const rows = await db.execute(
+        `SELECT id, meta FROM nodes
+          WHERE meta IS NOT NULL AND json_extract(meta, '$.access_group') IS NOT NULL`,
+      );
+      for (const r of rows.rows) {
+        const email = String(
+          JSON.parse(String(r.meta)).access_group ?? "",
+        ).toLowerCase();
+        if (!email) continue;
+        await db.execute({
+          sql: `INSERT OR IGNORE INTO node_access (node_id, kind, principal, display_email, added_by)
+                VALUES (?, 'group', ?, ?, 'migration')`,
+          args: [String(r.id), email, email],
+        });
+        await db.execute({
+          sql: `UPDATE nodes SET meta = json_remove(meta, '$.access_group') WHERE id = ?`,
+          args: [String(r.id)],
+        });
+      }
     },
   },
 ];

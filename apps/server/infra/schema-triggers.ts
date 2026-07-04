@@ -44,6 +44,22 @@ export const DDL_DEVICE_TOKENS = `CREATE TABLE IF NOT EXISTS device_tokens (
 
 export const INDEX_DEVICE_TOKENS_USER = `CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_id)`;
 
+// Migration 019: node_access ACL table. Replaces the single
+// meta.access_group string with per-node rows so a node can be shared with
+// multiple groups/users independently of its coarse `visibility`. Declared
+// before DDL so it can be referenced in the array below.
+export const DDL_NODE_ACCESS = `CREATE TABLE IF NOT EXISTS node_access (
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('group','user')),
+    principal TEXT NOT NULL,
+    display_email TEXT,
+    added_by TEXT NOT NULL,
+    added_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (node_id, kind, principal)
+  )`;
+
+export const INDEX_NODE_ACCESS_NODE = `CREATE INDEX IF NOT EXISTS idx_node_access_node ON node_access(node_id)`;
+
 // Ground-truth DDL for fresh installs. Includes all CHECK constraints.
 // Existing installs get constraints via migrations.
 export const DDL = [
@@ -55,6 +71,8 @@ export const DDL = [
   )`,
   DDL_DEVICE_TOKENS,
   INDEX_DEVICE_TOKENS_USER,
+  DDL_NODE_ACCESS,
+  INDEX_NODE_ACCESS_NODE,
   `CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY CHECK(length(id) = 26),
     type TEXT NOT NULL CHECK(type IN (${NODE_TYPES_SQL})),
