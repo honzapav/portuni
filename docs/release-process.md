@@ -50,6 +50,13 @@ Bitwarden item **"Portuni Apple signing"** and in GitHub repo secrets.
    built app from a fresh user session / after
    `xattr -w com.apple.quarantine ...` to confirm Gatekeeper is happy.
 
+Done 2026-07-04. Values live in the Bitwarden item; ad-hoc `notarytool`
+commands (history, log, submit) can also use the Keychain credential
+profile `portuni-notary` (`--keychain-profile portuni-notary`) without
+touching Bitwarden. Note the CI DMG carries no stapled ticket of its
+own (tauri-action notarizes the .app inside, which is stapled);
+`build-signed.sh` additionally notarizes + staples the local DMG.
+
 ## Why this exists
 
 The repo carries the version string in **four manifests**: `package.json`
