@@ -12,7 +12,7 @@ export async function loadGraph(db: Client): Promise<GraphPayload> {
   // without an extra round-trip per node.
   const nodesRes = await db.execute({
     sql: `SELECT n.id, n.type, n.name, n.description, n.status,
-                 n.lifecycle_state, n.pos_x, n.pos_y,
+                 n.lifecycle_state, n.visibility, n.pos_x, n.pos_y,
                  a.id   AS owner_id,
                  a.name AS owner_name
           FROM nodes n
@@ -33,6 +33,7 @@ export async function loadGraph(db: Client): Promise<GraphPayload> {
       description: (row.description as string | null) ?? null,
       status: row.status as string,
       lifecycle_state: (row.lifecycle_state as string | null) ?? null,
+      visibility: row.visibility as string,
       owner:
         row.owner_id != null
           ? { id: row.owner_id as string, name: row.owner_name as string }

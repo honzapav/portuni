@@ -17,7 +17,18 @@ export type {
   SyncPendingResponse,
   UntrackedFile,
   FileContentResponse,
+  NodeAccessEntry,
+  NodeAccessResponse,
+  DirectoryGroup,
+  AccountUser,
 } from "../../server/shared/api-types";
+
+// Request-only shape for PUT /nodes/:id/access -- not a server response, so
+// it doesn't live in the shared api-types.ts (that file documents response
+// shapes only). Mirrors the zod union in apps/server/api/access.ts exactly.
+export type NodeAccessEntryInput =
+  | { kind: "group"; principal: string; display_email: string }
+  | { kind: "user"; principal: string };
 
 // Lifecycle state -> UI color bucket. Any state not listed falls through to "gray".
 export const LIFECYCLE_COLORS: Record<string, "green" | "yellow" | "red" | "gray"> = {

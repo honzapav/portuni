@@ -25,6 +25,11 @@ export type GraphNode = {
   description: string | null;
   status: string;
   lifecycle_state: string | null;
+  // "team" | "private" | "group" -- see NODE_VISIBILITIES in popp.ts. The
+  // graph uses this to draw a dashed border on nodes restricted to a
+  // group ACL, so sharing state is visible at a glance without opening
+  // the detail pane.
+  visibility: string;
   // Owner is rendered as a small initials pip on the node disc. Joined
   // from the actors table via nodes.owner_id; null when the node has no
   // assigned owner.
@@ -227,6 +232,58 @@ export type DetailTool = {
   name: string;
   description: string | null;
   external_link: string | null;
+};
+
+// -- Node sharing (access control) endpoints ---------------------------
+// GET/PUT /nodes/:id/access -- see apps/server/api/access.ts and
+// apps/server/auth/node-access.ts for the resolution model (a node's own
+// node_access rows override an inherited ancestor ACL; empty/absent ACL
+// anywhere in the belongs_to chain means unrestricted).
+
+export type NodeAccessEntry = {
+  kind: "group" | "user";
+  principal: string;
+  // For "group": the display email stored on the node_access row itself.
+  // For "user": the user's email, joined from the users table. Null only
+  // in the (should-not-happen) case of a dangling user principal.
+  display_email: string | null;
+  // Only populated for "user" kind (joined from users table); null for
+  // "group" entries -- groups have no separate display name field beyond
+  // their email.
+  display_name: string | null;
+  // Only populated for "user" kind; null for "group".
+  avatar_url: string | null;
+};
+
+export type NodeAccessResponse = {
+  // False when the node (and its whole belongs_to ancestor chain) has no
+  // ACL at all -- visible to every authenticated user.
+  restricted: boolean;
+  // True when the effective ACL was found on an ancestor rather than the
+  // node itself.
+  inherited: boolean;
+  // The node id that actually owns the ACL rows (self when !inherited).
+  // Null when unrestricted.
+  source_node_id: string | null;
+  source_node_name: string | null;
+  entries: NodeAccessEntry[];
+};
+
+// GET /auth/groups -- Google Workspace domain group directory, used by the
+// sharing picker. 501 { error: "google_mode_only" } in env auth mode.
+export type DirectoryGroup = {
+  id: string;
+  email: string;
+  name: string;
+};
+
+// GET /auth/users -- account picker source for the sharing UI. Minimal
+// projection (no global_scope/invited -- that's /auth/users/admin).
+export type AccountUser = {
+  id: string;
+  name: string;
+  email: string;
+  avatar_url: string | null;
 };
 
 export type NodeDetail = {

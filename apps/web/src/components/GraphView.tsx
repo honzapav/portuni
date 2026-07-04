@@ -236,6 +236,7 @@ function buildElements(graph: GraphPayload): cytoscape.ElementDefinition[] {
       description: node.description ?? "",
       status: node.status,
       lifecycle_state: node.lifecycle_state ?? "",
+      visibility: node.visibility,
       owner_id: node.owner?.id ?? "",
       owner_name: node.owner?.name ?? "",
       owner_initials: node.owner ? ownerInitials(node.owner.name) : "",
@@ -529,6 +530,19 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
         "background-opacity": 0.35,
         "border-opacity": 0.35,
         "text-opacity": 0.55,
+      },
+    },
+    // RESTRICTED: visibility = "group" -- dashed border regardless of
+    // lifecycle state, so a node's sharing status (Task 7: sekce Sdílení)
+    // is visible at a glance without opening the detail pane. Placed
+    // after all lifecycle overlays above so it always wins the
+    // border-style property; it never touches border-color/width, so
+    // whatever those rules set (including the plain type colour) is
+    // preserved.
+    {
+      selector: 'node[visibility = "group"][type != "organization"]',
+      style: {
+        "border-style": "dashed",
       },
     },
     // Selected wins over lifecycle signaling.

@@ -9,6 +9,10 @@ import type {
   SyncPendingResponse,
   DetailFile,
   FileContentResponse,
+  NodeAccessResponse,
+  NodeAccessEntryInput,
+  DirectoryGroup,
+  AccountUser,
 } from "./types";
 import { apiFetch } from "./lib/backend-url";
 
@@ -538,4 +542,67 @@ export function deleteFile(nodeId: string, fileId: string): Promise<unknown> {
     "DELETE",
     `/nodes/${encodeURIComponent(nodeId)}/files/${encodeURIComponent(fileId)}?confirmed=true`,
   );
+}
+
+// -- Sharing (node access) ----------------------------------------------
+
+export async function fetchNodeAccess(id: string): Promise<NodeAccessResponse> {
+  const res = await apiFetch(`/nodes/${encodeURIComponent(id)}/access`);
+  await throwForStatus(res, "node-access");
+  return res.json();
+}
+
+export function putNodeAccess(
+  id: string,
+  entries: NodeAccessEntryInput[],
+): Promise<NodeAccessResponse> {
+  return jsonRequest<NodeAccessResponse>(
+    "PUT",
+    `/nodes/${encodeURIComponent(id)}/access`,
+    { entries },
+  );
+}
+
+// Thrown by searchGroups when the backend is running in env auth mode,
+// which has no Google Workspace directory to query (GET /auth/groups
+// responds 501 { error: "google_mode_only" }). Callers should fall back to
+// a users-only picker instead of showing an error banner.
+export class GoogleModeOnlyError extends Error {
+  constructor() {
+    super("Skupiny nejsou dostupné mimo Google režim.");
+    this.name = "GoogleModeOnlyError";
+  }
+}
+
+export async function searchGroups(query: string): Promise<DirectoryGroup[]> {
+  const res = await apiFetch(`/auth/groups?query=${encodeURIComponent(query)}`);
+  if (res.status === 501) {
+    let isGoogleModeOnly = false;
+    try {
+      const j = (await res.clone().json()) as { error?: string };
+      if (j.error === "google_mode_only") isGoogleModeOnly = true;
+    } catch {
+      /* body not JSON -- fall through to the generic error below */
+    }
+    if (isGoogleModeOnly) throw new GoogleModeOnlyError();
+  }
+  await throwForStatus(res, "groups");
+  const body = (await res.json()) as { groups: DirectoryGroup[] };
+  return body.groups;
+}
+
+export async function fetchAccountUsers(): Promise<AccountUser[]> {
+  const res = await apiFetch("/auth/users");
+  await throwForStatus(res, "account-users");
+  const body = (await res.json()) as { users: AccountUser[] };
+  return body.users;
+}
+
+// Only the field the sharing UI needs (canManage = global_scope 'manage' |
+// 'admin'). /me returns more (email, name, groups, via) but nothing else
+// here consumes it yet.
+export async function fetchMe(): Promise<{ global_scope: string }> {
+  const res = await apiFetch("/me");
+  await throwForStatus(res, "me");
+  return res.json();
 }

@@ -77,11 +77,13 @@ import {
   createFile,
   renameFile,
   deleteFile,
+  fetchMe,
 } from "../api";
 // Sub-modules: file-tree + sync UI and event card live in sibling files;
 // DetailPane composes them with its own state.
 import { EventCard, AddEventForm } from "./DetailPane.events";
 import { FileTree, NewFileForm, SyncBar, TerminalSplitButton } from "./DetailPane.files";
+import { AccessSection } from "./DetailPane.access";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
 // node shows the last-known badges instantly while the background
@@ -159,6 +161,28 @@ function DetailPane({
   onCollapse,
   onOpenFile,
 }: Props) {
+  // Fetched once and cached for the lifetime of this component instance
+  // (this outer DetailPane stays mounted across node selections -- only
+  // DetailPaneBody remounts per node.id). Drives whether the sharing
+  // section is editable. Defaults to false (view-only) until the fetch
+  // resolves or if it fails -- never grants edit affordances optimistically.
+  const [canManage, setCanManage] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void fetchMe()
+      .then((me) => {
+        if (!cancelled) {
+          setCanManage(me.global_scope === "manage" || me.global_scope === "admin");
+        }
+      })
+      .catch(() => {
+        /* stays false -- sharing section renders view-only */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   if (loading && !node) {
     return (
       <PaneShell
@@ -200,6 +224,7 @@ function DetailPane({
     <DetailPaneBody
       node={node}
       graph={graph}
+      canManage={canManage}
       onSelect={onSelect}
       canGoBack={canGoBack}
       onBack={onBack}
@@ -217,6 +242,7 @@ function DetailPane({
 function DetailPaneBody({
   node,
   graph,
+  canManage,
   onSelect,
   canGoBack,
   onBack,
@@ -230,6 +256,7 @@ function DetailPaneBody({
 }: {
   node: NodeDetail;
   graph: GraphPayload | null;
+  canManage: boolean;
   onSelect: (id: string | null) => void;
   canGoBack: boolean;
   onBack: () => void;
@@ -658,6 +685,19 @@ function DetailPaneBody({
             onMutate={onMutate}
             onError={setErrorMsg}
           />
+          {node.visibility === "group" && (
+            <span
+              title="Sdílení je omezené na vybrané skupiny nebo uživatele"
+              className="rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider"
+              style={{
+                color: "var(--color-danger)",
+                background: "color-mix(in srgb, var(--color-danger) 12%, transparent)",
+                border: "1px solid color-mix(in srgb, var(--color-danger) 25%, transparent)",
+              }}
+            >
+              Omezené
+            </span>
+          )}
         </div>
         {editing ? (
           <input
@@ -858,6 +898,19 @@ function DetailPaneBody({
             />
           </Section>
         )}
+
+        {/* Sharing (Sdílení) -- self-fetches GET /nodes/:id/access rather
+            than reading from NodeDetail, since access is a separate
+            endpoint from the rest of the detail payload. Editable only
+            for global_scope manage/admin (canManage, resolved once from
+            /me in the outer DetailPane and threaded down as a prop). */}
+        <Section title="Sdílení">
+          <AccessSection
+            nodeId={node.id}
+            canManage={canManage}
+            onMutate={onMutate}
+          />
+        </Section>
 
         {editing && (
           <Section title="Nebezpečná oblast">
