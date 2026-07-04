@@ -49,6 +49,17 @@ CREATE INDEX idx_node_access_node ON node_access(node_id);
 ```
 
 - Node je omezený ⇔ má aspoň jeden řádek v `node_access`.
+- **Režim omezení (rozhodnuto 2026-07-04, inspirace Asana):** omezený node
+  má `nodes.access_mode` ∈ `'private'` (default) | `'request'`.
+  - `private` = dnešní sémantika: ne-člen nevidí vůbec nic, ani název.
+  - `request` = „membership by request": ne-člen node dál nevidí v grafu,
+    listech, vyhledávání ani detailu, ALE hrany z viditelných sousedů ho
+    ukážou jako zamčenou položku (název + typ + `peer_restricted: true`)
+    v Propojení detailu a v MCP get_node/context edges. Slouží k tomu, aby
+    člověk věděl, že něco existuje, a mohl si (později) vyžádat přístup —
+    request flow je mimo rozsah, v1 jen zamčený chip.
+  - Režim dědí s ACL: autoritativní předek určuje entries i mode.
+  - Sloupec má význam jen u omezených nodes; u neomezených se ignoruje.
 - `nodes.visibility='group'` zůstává jako rychlý indikátor a udržuje se
   **automaticky** při editaci ACL (nastaví se s prvním řádkem, vrátí na
   `team` se smazáním posledního). Ruční přepínání visibility na `group`
@@ -108,6 +119,15 @@ CREATE INDEX idx_node_access_node ON node_access(node_id);
 
 ## 4. UX
 
+### Zamčené položky v Propojení (režim `request`)
+
+- Hrany na omezené sousedy v režimu `request` se v detailu vykreslují jako
+  zamčený chip: název + ikona zámku, nekliknutelné (tooltip „Přístup na
+  vyžádání"). Režim `private` sousedy z hran odfiltruje úplně.
+- MCP get_node/context vrací tytéž hrany s `peer_restricted: true`
+  (konzistence UI ↔ agenti, rozhodnuto 2026-07-04).
+- Graf, listy a vyhledávání zůstávají beze změny (skrývají oba režimy).
+
 ### Detail nodu – sekce „Sdílení"
 
 - Zobrazuje efektivní stav: „Vidí všichni" / „Dědí z ‹předek›: ‹chips›"
@@ -115,7 +135,8 @@ CREATE INDEX idx_node_access_node ON node_access(node_id);
 - Pro globální roli **manage a výš**: editace – přidat skupinu
   (našeptávač přes `GET /auth/groups`), přidat uživatele (výběr
   z účtů), odebrat položku, „Zrušit omezení" (smaže ACL → zpět
-  dědění/veřejné).
+  dědění/veřejné), přepínač režimu „Soukromé" / „Na vyžádání"
+  (jen u vlastního ACL; default Soukromé).
 - Omezený node má ikonu zámku v detailu i na uzlu v grafu.
 - Read-only pro ostatní: sekce ukazuje jen stav, bez editace.
 
