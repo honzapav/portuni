@@ -24,12 +24,16 @@ use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
-struct SidecarState(Mutex<Option<CommandChild>>);
-struct BackendPort(Mutex<Option<u16>>);
-// Wrapped in a Mutex so the regenerate_mcp_token command can rotate the
-// shared token at runtime (after a fresh value lands in Keychain) without
-// restarting the whole Tauri host.
-struct AuthToken(Mutex<String>);
+// Per-workspace running sidecar children, keyed by workspace id. Concurrent
+// workspaces each get their own sidecar process on their own port.
+struct SidecarState(Mutex<HashMap<String, CommandChild>>);
+// Per-workspace bound backend port. Value 0 is the central sentinel — the
+// sync agent for that workspace is deferred (not logged in / no server_url).
+struct BackendPorts(Mutex<HashMap<String, u16>>);
+// Per-workspace MCP bearer token, cached so api_request / pty_spawn read it
+// without touching Keychain each time. regenerate_mcp_token rotates the
+// active workspace's entry in place without restarting the Tauri host.
+struct AuthTokens(Mutex<HashMap<String, String>>);
 
 // Keychain coordinates for secrets we persist across launches. Service is
 // bundle-id-shaped so entries show up under "ooo.workflow.portuni" in
@@ -83,11 +87,6 @@ pub(crate) struct DesktopConfig {
     #[serde(default)]
     pub(crate) data_mode: Option<String>,
 }
-
-/// Default loopback port for the bundled MCP server. Picked high enough
-/// to avoid common dev-server ports (3000/4000/5173/4011 dev backend);
-/// users hitting a collision can override via config.json `mcp_port`.
-const DEFAULT_MCP_PORT: u16 = 47011;
 
 fn config_path(data_dir: &PathBuf) -> PathBuf {
     data_dir.join("config.json")
@@ -184,12 +183,13 @@ fn get_mcp_token(app: AppHandle) -> Result<String, String> {
             .ok_or_else(|| "central mode requires server_url in config.json".to_string())?;
         return pty::ensure_device_token(&app, &ws_id, server_url);
     }
-    Ok(app
-        .state::<AuthToken>()
+    app.state::<AuthTokens>()
         .0
         .lock()
         .map_err(|e| e.to_string())?
-        .clone())
+        .get(&ws_id)
+        .cloned()
+        .ok_or_else(|| "backend not ready (no token)".to_string())
 }
 
 // Rotates the MCP auth token: writes a fresh value to Keychain and into
@@ -203,9 +203,11 @@ fn regenerate_mcp_token(app: AppHandle) -> Result<String, String> {
     let (ws_id, _) = active_workspace(&app)?;
     let fresh = random_token();
     keychain_set_ws(KEYCHAIN_MCP_ACCOUNT, &ws_id, &fresh)?;
-    let state = app.state::<AuthToken>();
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    *guard = fresh.clone();
+    app.state::<AuthTokens>()
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(ws_id, fresh.clone());
     Ok(fresh)
 }
 
@@ -215,15 +217,23 @@ fn regenerate_mcp_token(app: AppHandle) -> Result<String, String> {
 // the sidecar hasn't reported its port yet — the UI gates the install
 // buttons on the same status, so this should not normally happen.
 fn snapshot_mcp_endpoint(app: &AppHandle) -> Result<(String, String), String> {
+    let (ws_id, _) = active_workspace(app)?;
     let port = {
-        let state = app.state::<BackendPort>();
+        let state = app.state::<BackendPorts>();
         let guard = state.0.lock().map_err(|e| e.to_string())?;
-        guard.ok_or_else(|| "MCP server not yet running".to_string())?
+        guard
+            .get(&ws_id)
+            .copied()
+            .filter(|p| *p > 0)
+            .ok_or_else(|| "MCP server not yet running".to_string())?
     };
     let token = {
-        let state = app.state::<AuthToken>();
+        let state = app.state::<AuthTokens>();
         let guard = state.0.lock().map_err(|e| e.to_string())?;
-        guard.clone()
+        guard
+            .get(&ws_id)
+            .cloned()
+            .ok_or_else(|| "MCP server not yet running (no token)".to_string())?
     };
     Ok((format!("http://127.0.0.1:{port}/mcp"), token))
 }
@@ -475,9 +485,18 @@ fn random_token() -> String {
 }
 
 #[tauri::command]
-fn get_backend_port(state: tauri::State<BackendPort>) -> Option<u16> {
-    let port = *state.0.lock().unwrap();
-    info!("get_backend_port -> {port:?}");
+fn get_backend_port(app: AppHandle) -> Option<u16> {
+    // Port of the ACTIVE workspace's sidecar. None before the sidecar reports
+    // its port, or while config is still v1/Missing (the migration/onboarding
+    // gate handles that case in the UI).
+    let ws_id = active_workspace(&app).ok()?.0;
+    let port = app
+        .state::<BackendPorts>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|g| g.get(&ws_id).copied());
+    info!("get_backend_port[{ws_id}] -> {port:?}");
     port
 }
 
@@ -610,17 +629,16 @@ struct DataModeResponse {
 /// to adapt its UI (hide mirror/sync affordances in central mode).
 #[tauri::command]
 fn get_data_mode(app: AppHandle) -> Result<DataModeResponse, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let config = load_config(&data_dir);
-    let mode = config
-        .data_mode
-        .as_deref()
-        .filter(|s| *s == "central")
-        .unwrap_or("local")
-        .to_string();
+    let (_, cfg) = active_workspace(&app)?;
+    let mode = if workspace::is_central(&cfg) {
+        "central"
+    } else {
+        "local"
+    }
+    .to_string();
     Ok(DataModeResponse {
         mode,
-        server_url: config.server_url,
+        server_url: cfg.server_url,
     })
 }
 
@@ -648,15 +666,16 @@ struct TursoStatus {
 
 #[tauri::command]
 fn get_turso_status(app: AppHandle) -> Result<TursoStatus, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let config_exists = config_path(&data_dir).exists();
+    // active_workspace succeeds only for a v2 config; v1/Missing error out
+    // here and are handled by the migration/onboarding gate earlier, so a
+    // reached-this-point status always means config_exists = true (v2).
     let (ws_id, cfg) = active_workspace(&app)?;
     let url = cfg
         .turso_url
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     Ok(TursoStatus {
-        config_exists,
+        config_exists: true,
         url_set: url.is_some(),
         token_set: keychain_get_ws(KEYCHAIN_TURSO_ACCOUNT, &ws_id)
             .is_some_and(|t| !t.trim().is_empty()),
@@ -671,13 +690,28 @@ fn get_turso_status(app: AppHandle) -> Result<TursoStatus, String> {
 #[tauri::command]
 fn save_config(app: AppHandle, turso_url: Option<String>) -> Result<(), String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-    let mut config = load_config(&data_dir);
-    config.turso_url = turso_url
+    let turso = turso_url
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    std::fs::write(config_path(&data_dir), json).map_err(|e| e.to_string())
+    let mut file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        // Fresh install: onboarding commits its first choice here — create a
+        // v2 file with a single `default` workspace so the install is v2 from
+        // the outset (no separate v1->v2 migration step needed).
+        workspace::LoadedConfig::Missing => {
+            workspace::migrate_v1_value(&serde_json::json!({}), "default")
+        }
+        workspace::LoadedConfig::V1(_) => {
+            return Err("config awaiting workspace migration".to_string())
+        }
+    };
+    let active = file.active_workspace.clone();
+    let cfg = file
+        .workspaces
+        .get_mut(&active)
+        .ok_or_else(|| "active workspace missing from config".to_string())?;
+    cfg.turso_url = turso;
+    workspace::save(&data_dir, &file)
 }
 
 // Spawn an external Terminal.app window in the given working directory
@@ -798,10 +832,8 @@ async fn open_in_finder(_path: String, _reveal: bool) -> Result<(), String> {
 // configured workspace root so only files inside the mirror are reachable.
 #[tauri::command]
 fn open_path_external(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().unwrap_or_default();
-    let raw_root = load_config(&data_dir)
-        .portuni_workspace_root
-        .ok_or_else(|| "no workspace root".to_string())?;
+    let (_, cfg) = active_workspace(&app)?;
+    let raw_root = cfg.effective_workspace_root();
     // Expand the config's leading ~ to match the sidecar-derived absolute path.
     let root = match app.path().home_dir() {
         Ok(h) => expand_tilde(&h, &raw_root),
@@ -863,8 +895,9 @@ async fn clipboard_file_path() -> Result<Option<String>, String> {
 // their token. Idempotent: if no sidecar is running, just spawns one.
 #[tauri::command]
 async fn restart_sidecar(app: AppHandle) -> Result<(), String> {
-    kill_managed_sidecar(&app);
-    spawn_sidecar(&app).map_err(|e| e.to_string())
+    let (ws_id, _) = active_workspace(&app)?;
+    kill_sidecar_ws(&app, &ws_id);
+    spawn_sidecar_ws(&app, &ws_id).map_err(|e| e.to_string())
 }
 
 // Webview-side HTTP proxy. The webview no longer talks to the sidecar
@@ -885,27 +918,20 @@ async fn api_request(
     body: Option<String>,
     headers: Option<HashMap<String, String>>,
 ) -> Result<ApiResponse, String> {
-    // Check data_mode from persisted config.
-    let is_central = {
-        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-        let config = load_config(&data_dir);
-        config.data_mode.as_deref() == Some("central")
-    };
+    // Route by the ACTIVE workspace's config.
+    let (ws_id, cfg) = active_workspace(&app)?;
+    let is_central = workspace::is_central(&cfg);
 
     // In central mode, LOCAL_ONLY paths (mirror/sync/scope/sandbox) are
     // served by the LOCAL sync agent — fall through to the local proxy
     // below. Everything else goes to the central server.
     if is_central && !is_local_only_path(&path) {
         // Route to the central server using the JWT + silent refresh logic.
-        let config = {
-            let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-            load_config(&data_dir)
-        };
-        let server_url = config
+        let server_url = cfg
             .server_url
+            .clone()
             .ok_or_else(|| "central mode requires server_url in config.json".to_string())?;
 
-        let ws_id = active_workspace(&app)?.0;
         let jwt = keychain_get_ws(auth::KEYCHAIN_SESSION_JWT, &ws_id)
             .ok_or_else(|| "central mode: not logged in (no session JWT)".to_string())?;
 
@@ -967,9 +993,12 @@ async fn api_request(
     // awaiting — holding a std::sync::Mutex across .await deadlocks
     // the executor on contention.
     let port = {
-        let state = app.state::<BackendPort>();
+        let state = app.state::<BackendPorts>();
         let guard = state.0.lock().map_err(|e| e.to_string())?;
-        guard.ok_or_else(|| "backend not ready".to_string())?
+        guard
+            .get(&ws_id)
+            .copied()
+            .ok_or_else(|| "backend not ready".to_string())?
     };
     if port == 0 {
         // Central-mode sentinel: the sync agent is not running (not logged
@@ -980,11 +1009,13 @@ async fn api_request(
         });
     }
     let token = app
-        .state::<AuthToken>()
+        .state::<AuthTokens>()
         .0
         .lock()
         .map_err(|e| e.to_string())?
-        .clone();
+        .get(&ws_id)
+        .cloned()
+        .ok_or_else(|| "backend not ready (no token)".to_string())?;
 
     let url = format!("http://127.0.0.1:{port}{path}");
     let method_parsed =
@@ -1014,22 +1045,34 @@ async fn api_request(
     Ok(ApiResponse { status, body })
 }
 
-// Drop-side cleanup: kill the bundled sidecar child if we still hold a
-// handle to it. Used by `kill_managed_sidecar` and the various exit
-// paths that previously relied solely on `WindowEvent::Destroyed`.
-fn kill_managed_sidecar(app: &AppHandle) {
+// Kill one workspace's sidecar child if we still hold a handle to it, and
+// drop its port entry. Used by the lifecycle commands (disable/delete/
+// restart) and, via kill_all_sidecars, the app exit paths.
+fn kill_sidecar_ws(app: &AppHandle, ws_id: &str) {
     if let Some(state) = app.try_state::<SidecarState>() {
         if let Ok(mut guard) = state.0.lock() {
-            if let Some(child) = guard.take() {
-                info!("killing managed sidecar (pid={})", child.pid());
+            if let Some(child) = guard.remove(ws_id) {
+                info!("killing sidecar[{ws_id}] (pid={})", child.pid());
                 let _ = child.kill();
             }
         }
     }
-    if let Some(state) = app.try_state::<BackendPort>() {
+    if let Some(state) = app.try_state::<BackendPorts>() {
         if let Ok(mut guard) = state.0.lock() {
-            *guard = None;
+            guard.remove(ws_id);
         }
+    }
+}
+
+// Kill every running sidecar. Called on the app exit paths that previously
+// relied solely on `WindowEvent::Destroyed`.
+fn kill_all_sidecars(app: &AppHandle) {
+    let ids: Vec<String> = app
+        .try_state::<SidecarState>()
+        .and_then(|s| s.0.lock().ok().map(|g| g.keys().cloned().collect()))
+        .unwrap_or_default();
+    for id in ids {
+        kill_sidecar_ws(app, &id);
     }
 }
 
@@ -1086,103 +1129,117 @@ fn reap_orphan_sidecar(port: u16) {
     std::thread::sleep(std::time::Duration::from_millis(300));
 }
 
-pub(crate) fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let data_dir = app.path().app_data_dir()?;
-    std::fs::create_dir_all(&data_dir).ok();
-    let data_dir_str = data_dir.to_string_lossy().to_string();
+// Spawn (or no-op if already running) the sidecar for one workspace. Core
+// mirrors the old single-sidecar path — Turso vs. central sync agent, port
+// reaping, stdout port parsing — but keyed by workspace id into the state
+// maps so multiple workspaces run concurrently on their own ports.
+pub(crate) fn spawn_sidecar_ws(
+    app: &AppHandle,
+    ws_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let app_data = app.path().app_data_dir()?;
+    let (_, all) = match workspace::load(&app_data)? {
+        workspace::LoadedConfig::V2(f) => (f.active_workspace.clone(), f.workspaces),
+        _ => return Err("config not migrated to workspaces".into()),
+    };
+    let cfg = all
+        .get(ws_id)
+        .cloned()
+        .ok_or_else(|| format!("unknown workspace {ws_id}"))?;
+    if !cfg.enabled {
+        return Ok(());
+    }
+    // Re-invocations (post-login, retry) must not double-spawn.
+    if app
+        .state::<SidecarState>()
+        .0
+        .lock()
+        .unwrap()
+        .contains_key(ws_id)
+    {
+        info!("workspace {ws_id}: sidecar already running");
+        return Ok(());
+    }
+
+    let ws_data_dir = workspace::workspace_data_dir(&app_data, ws_id);
+    std::fs::create_dir_all(&ws_data_dir).ok();
+    let data_dir_str = ws_data_dir.to_string_lossy().to_string();
+    let is_central = workspace::is_central(&cfg);
 
     // In central data_mode the webview talks to the remote server for the
     // graph, and the LOCAL sidecar runs as a sync agent (teammate mirrors:
     // watcher + mirror/sync routes, no graph db, no MCP). The agent needs a
     // device token, which needs a login — before login we only signal
     // readiness with the sentinel port (0) so the login gate can render;
-    // google_login re-invokes spawn_sidecar after a successful login.
-    //
-    // Full multi-sidecar rewiring (per-workspace sidecar lifecycle) is
-    // Task 6 — for now this still spawns/manages a single sidecar, just
-    // sourced from the active workspace's config instead of the flat
-    // pre-workspace config.json.
-    let (ws_id, cfg) = active_workspace(app)?;
-    let is_central = workspace::is_central(&cfg);
+    // google_login re-invokes spawn_sidecar_ws after a successful login.
     let mut agent_env: Option<Vec<(String, String)>> = None;
     if is_central {
-        // Re-invocations (post-login) must not double-spawn.
-        if app.state::<SidecarState>().0.lock().unwrap().is_some() {
-            info!("central data_mode: sync agent already running");
-            return Ok(());
-        }
         let server_url = cfg
             .server_url
             .clone()
             .filter(|s| !s.trim().is_empty())
             .map(|s| s.trim().trim_end_matches('/').to_string());
-        let device_token = match &server_url {
-            Some(url) => crate::pty::ensure_device_token(app, &ws_id, url).ok(),
-            None => None,
-        };
+        let device_token = server_url
+            .as_ref()
+            .and_then(|u| crate::pty::ensure_device_token(app, ws_id, u).ok());
         match (server_url, device_token) {
             (Some(url), Some(token)) => {
-                info!("central data_mode: starting local sync agent against {url}");
+                info!("workspace {ws_id}: starting sync agent against {url}");
                 agent_env = Some(vec![
                     ("PORTUNI_AGENT_MODE".to_string(), "1".to_string()),
                     ("PORTUNI_CENTRAL_URL".to_string(), url.clone()),
                     ("PORTUNI_CENTRAL_TOKEN".to_string(), token),
                     // Per-mirror .mcp.json URLs materialize from PORTUNI_URL,
-                    // so agents launched inside mirrors connect to the
-                    // central MCP (the agent sidecar serves none).
+                    // so agents launched inside mirrors connect to the central
+                    // MCP (the agent sidecar serves none).
                     ("PORTUNI_URL".to_string(), url),
                 ]);
             }
             _ => {
-                info!(
-                    "central data_mode: sync agent deferred (no server_url or not logged in yet)"
-                );
-                if let Ok(mut guard) = app.state::<BackendPort>().0.lock() {
-                    // Port 0 is a sentinel — api_request answers local-only
-                    // paths with 501 until the agent is up.
-                    *guard = Some(0);
-                }
+                info!("workspace {ws_id}: sync agent deferred (no server_url or not logged in)");
+                app.state::<BackendPorts>()
+                    .0
+                    .lock()
+                    .unwrap()
+                    .insert(ws_id.to_string(), 0);
                 let _ = app.emit("backend-ready", 0u16);
                 return Ok(());
             }
         }
     }
 
-    info!("spawn_sidecar: data_dir={data_dir_str} central={is_central} workspace={ws_id}");
-
-    let turso_url = cfg.turso_url.clone().unwrap_or_default();
+    let turso_url = if is_central {
+        String::new()
+    } else {
+        cfg.turso_url.clone().unwrap_or_default()
+    };
     let turso_token = if is_central {
         String::new() // the agent never sees Turso credentials
     } else {
-        keychain_get_ws(KEYCHAIN_TURSO_ACCOUNT, &ws_id).unwrap_or_default()
+        keychain_get_ws(KEYCHAIN_TURSO_ACCOUNT, ws_id).unwrap_or_default()
     };
-    // Resolve workspace root: explicit config wins, else fall back to
-    // ~/Workspaces/portuni so first-run desktop installs have somewhere
-    // to put mirrors. Tilde stays literal — sidecar expands it.
     let workspace_root = cfg.effective_workspace_root();
     info!(
-        "config: turso_url={} turso_auth_token={} workspace_root={}",
+        "spawn_sidecar[{ws_id}]: central={is_central} turso_url={} turso_auth_token={} workspace_root={}",
         if turso_url.is_empty() { "<unset>" } else { "<set>" },
         if turso_token.is_empty() { "<unset>" } else { "<set>" },
         workspace_root,
     );
 
-    // Auth token: if the configured TURSO_URL is remote (libsql://), the
-    // backend's auth gate refuses to boot without PORTUNI_AUTH_TOKEN. Even
-    // for purely local mode it's a small extra defense against other
-    // local processes hitting the loopback port — generate a fresh
-    // 48-char random token per launch and pipe it to both the sidecar
-    // (env) and the frontend (Tauri command).
-    let auth_token = app
-        .state::<AuthToken>()
+    // Per-workspace persisted MCP token, cached in the AuthTokens map so
+    // api_request / pty_spawn read it without touching Keychain each time.
+    let auth_token = ensure_mcp_token_ws(ws_id).unwrap_or_else(|e| {
+        warn!("Keychain unavailable for {ws_id} MCP token, using per-launch random: {e}");
+        random_token()
+    });
+    app.state::<AuthTokens>()
         .0
         .lock()
-        .expect("AuthToken mutex poisoned")
-        .clone();
+        .unwrap()
+        .insert(ws_id.to_string(), auth_token.clone());
 
-    // Tauri's webview ships requests from a non-loopback origin that the
-    // backend's default allowlist doesn't know about. Pass the Tauri
-    // origins explicitly so the middleware admits them.
+    // Tauri's webview ships requests from a non-loopback origin the backend's
+    // default allowlist doesn't know about. Pass the Tauri origins explicitly.
     let allowed_origins = [
         "http://tauri.localhost",
         "https://tauri.localhost",
@@ -1190,40 +1247,26 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::E
     ]
     .join(",");
 
-    // The Bun-compiled sidecar's `require("@libsql/${target}")` is a
-    // dynamic call, so Bun did not bundle the native binding into the
-    // single-file output. At runtime Bun walks up from cwd looking for
-    // `node_modules/@libsql/<target>/`. Without setting cwd here, a
-    // .app launched from Finder runs with cwd=/ and the require fails
-    // with `Cannot find module`. scripts/build-sidecar.mjs stages the
-    // platform packages into src-tauri/sidecar-deps/ which Tauri ships
-    // as `bundle.resources`; at runtime they land under
-    // <Resources>/sidecar-deps/node_modules/@libsql/<target>/.
+    // The Bun-compiled sidecar walks up from cwd looking for the platform
+    // @libsql native binding; set cwd to the staged sidecar-deps dir so a
+    // Finder-launched .app (cwd=/) still resolves it.
     let resource_dir = app.path().resource_dir()?;
     let sidecar_cwd = resource_dir.join("sidecar-deps");
     if !sidecar_cwd.exists() {
-        warn!(
-            "sidecar-deps dir missing at {:?} — sidecar may fail to load native bindings",
-            sidecar_cwd,
-        );
+        warn!("sidecar-deps dir missing at {:?}", sidecar_cwd);
     }
 
-    // The MCP loopback port is fixed across launches so external clients'
-    // .mcp.json configs stay valid — but that means we collide with any
-    // orphan sidecar (previous abnormal exit) holding the port. Reap it
-    // before binding so the launch succeeds instead of erroring with
-    // "Failed to start server. Is port <n> in use?".
-    let port = cfg.mcp_port.unwrap_or(DEFAULT_MCP_PORT);
+    // Stable per-workspace loopback port so external .mcp.json configs stay
+    // valid; reap any orphan sidecar holding it before binding.
+    let port = cfg.mcp_port.unwrap_or(workspace::DEFAULT_MCP_PORT_BASE);
     reap_orphan_sidecar(port);
 
-    // tauri-plugin-shell 2.x's env_clear() does not reliably scrub the
-    // parent env on macOS — additionally force-empty the variables we
-    // don't want leaking from a developer's varlock-loaded shell.
     let mut envs: Vec<(String, String)> = vec![
         ("PORTUNI_DATA_DIR".to_string(), data_dir_str),
         ("PORTUNI_PORT".to_string(), port.to_string()),
         ("PORTUNI_AUTH_TOKEN".to_string(), auth_token),
         ("PORTUNI_WORKSPACE_ROOT".to_string(), workspace_root),
+        ("PORTUNI_WORKSPACE_ID".to_string(), ws_id.to_string()),
         ("PORTUNI_ALLOWED_ORIGINS".to_string(), allowed_origins),
         ("PORTUNI_LOG_REQUESTS".to_string(), "1".to_string()),
         ("HOME".to_string(), std::env::var("HOME").unwrap_or_default()),
@@ -1247,10 +1290,14 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::E
         cmd = cmd.env(k, v);
     }
     let (mut rx, child) = cmd.spawn()?;
-
-    app.state::<SidecarState>().0.lock().unwrap().replace(child);
+    app.state::<SidecarState>()
+        .0
+        .lock()
+        .unwrap()
+        .insert(ws_id.to_string(), child);
 
     let handle = app.clone();
+    let ws = ws_id.to_string();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             match event {
@@ -1260,36 +1307,38 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::E
                     if let Some(rest) = line.strip_prefix("PORTUNI_LISTENING_PORT=") {
                         if let Ok(port) = rest.trim().parse::<u16>() {
                             handle
-                                .state::<BackendPort>()
+                                .state::<BackendPorts>()
                                 .0
                                 .lock()
                                 .unwrap()
-                                .replace(port);
+                                .insert(ws.clone(), port);
                             let _ = handle.emit("backend-ready", port);
-                            info!("sidecar backend ready on port {port}");
+                            info!("sidecar[{ws}] ready on port {port}");
                         }
                     } else if let Some(rest) = line.strip_prefix("PORTUNI_BACKEND_ERROR=") {
-                        // Sidecar surfaced a startup error in a structured form
-                        // (e.g. database unreachable). Emit it to the frontend
-                        // immediately so the UI can show a real reason instead
-                        // of the generic 30s "did not start" timeout.
                         let msg = rest.trim().to_string();
-                        error!("sidecar backend error: {msg}");
+                        error!("sidecar[{ws}] backend error: {msg}");
                         let _ = handle.emit("backend-error", msg);
                     } else {
-                        info!("sidecar: {line}");
+                        info!("sidecar[{ws}]: {line}");
                     }
                 }
                 CommandEvent::Stderr(line) => {
                     let line = String::from_utf8_lossy(&line).into_owned();
                     let line = line.trim_end_matches(|c| c == '\n' || c == '\r');
-                    warn!("sidecar:err: {line}");
+                    warn!("sidecar[{ws}]:err: {line}");
                 }
                 CommandEvent::Terminated(payload) => {
-                    error!("sidecar terminated: code={:?}", payload.code);
+                    error!("sidecar[{ws}] terminated: code={:?}", payload.code);
+                    handle
+                        .state::<BackendPorts>()
+                        .0
+                        .lock()
+                        .unwrap()
+                        .remove(&ws);
                     let _ = handle.emit(
                         "backend-error",
-                        format!("sidecar terminated (exit code {:?})", payload.code),
+                        format!("sidecar {ws} terminated (exit code {:?})", payload.code),
                     );
                 }
                 _ => {}
@@ -1300,15 +1349,222 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+// Spawn a sidecar for every enabled workspace. Called from .setup(). A v1 or
+// Missing config is a no-op — the app waits on migration/onboarding first.
+pub(crate) fn spawn_all_sidecars(app: &AppHandle) {
+    let Ok(app_data) = app.path().app_data_dir() else {
+        return;
+    };
+    let file = match workspace::load(&app_data) {
+        Ok(workspace::LoadedConfig::V2(f)) => f,
+        Ok(_) => {
+            info!("config awaiting migration/onboarding; no sidecars spawned");
+            return;
+        }
+        Err(e) => {
+            error!("config.json unreadable: {e}");
+            let _ = app.emit("backend-error", format!("config.json: {e}"));
+            return;
+        }
+    };
+    for (id, cfg) in &file.workspaces {
+        if !cfg.enabled {
+            continue;
+        }
+        if let Err(e) = spawn_sidecar_ws(app, id) {
+            error!("failed to spawn sidecar for {id}: {e}");
+        }
+    }
+}
+
+// Temporary stub — replaced in the global-installers task, which removes a
+// workspace's user-scoped MCP entries (~/.claude.json, ~/.codex, ~/.vibe)
+// when it is disabled or deleted. Until then, disabling/deleting a workspace
+// leaves any global MCP entry in place (harmless: it points at a stopped
+// sidecar port).
+fn remove_global_mcp_entries(_: &AppHandle, _: &str) -> Result<(), String> {
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct WorkspaceInfo {
+    id: String,
+    label: String,
+    data_mode: String,
+    enabled: bool,
+    mcp_port: Option<u16>,
+    active: bool,
+    running: bool,
+    mcp_server_name: String,
+    workspace_root: String,
+}
+
+#[tauri::command]
+fn list_workspaces(app: AppHandle) -> Result<Vec<WorkspaceInfo>, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        _ => return Ok(vec![]),
+    };
+    let ports_state = app.state::<BackendPorts>();
+    let ports = ports_state.0.lock().map_err(|e| e.to_string())?;
+    Ok(file
+        .workspaces
+        .iter()
+        .map(|(id, cfg)| WorkspaceInfo {
+            id: id.clone(),
+            label: cfg.label.clone().unwrap_or_else(|| id.clone()),
+            data_mode: if workspace::is_central(cfg) {
+                "central"
+            } else {
+                "local"
+            }
+            .to_string(),
+            enabled: cfg.enabled,
+            mcp_port: cfg.mcp_port,
+            active: *id == file.active_workspace,
+            running: ports.get(id).is_some_and(|p| *p > 0),
+            mcp_server_name: workspace::mcp_server_name(id, cfg),
+            workspace_root: cfg.effective_workspace_root(),
+        })
+        .collect())
+}
+
+#[derive(Deserialize)]
+struct CreateWorkspaceArgs {
+    id: String,
+    label: Option<String>,
+    data_mode: String, // "local" | "central"
+    turso_url: Option<String>,
+    server_url: Option<String>,
+    google_client_id: Option<String>,
+    google_client_secret: Option<String>,
+    workspace_root: String,
+}
+
+#[tauri::command]
+fn create_workspace(app: AppHandle, args: CreateWorkspaceArgs) -> Result<(), String> {
+    if !workspace::is_valid_workspace_id(&args.id) {
+        return Err("invalid workspace id (use lowercase letters, digits, dashes)".to_string());
+    }
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        _ => return Err("config not migrated to workspaces yet".to_string()),
+    };
+    if file.workspaces.contains_key(&args.id) {
+        return Err(format!("workspace '{}' already exists", args.id));
+    }
+    let port = workspace::allocate_port(&file.workspaces);
+    let cfg = workspace::WorkspaceConfig {
+        label: args.label,
+        enabled: true,
+        turso_url: args.turso_url.filter(|s| !s.trim().is_empty()),
+        workspace_root: Some(args.workspace_root),
+        mcp_port: Some(port),
+        server_url: args.server_url.filter(|s| !s.trim().is_empty()),
+        google_client_id: args.google_client_id.filter(|s| !s.trim().is_empty()),
+        google_client_secret: args.google_client_secret.filter(|s| !s.trim().is_empty()),
+        data_mode: if args.data_mode == "central" {
+            Some("central".to_string())
+        } else {
+            None
+        },
+        mcp_server_name: None,
+    };
+    file.workspaces.insert(args.id.clone(), cfg);
+    workspace::save(&data_dir, &file)?;
+    if let Err(e) = spawn_sidecar_ws(&app, &args.id) {
+        warn!("new workspace {} sidecar spawn failed: {e}", args.id);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_active_workspace(app: AppHandle, id: String) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        _ => return Err("config not migrated to workspaces yet".to_string()),
+    };
+    if !file.workspaces.contains_key(&id) {
+        return Err(format!("unknown workspace '{id}'"));
+    }
+    file.active_workspace = id;
+    workspace::save(&data_dir, &file)
+}
+
+#[tauri::command]
+fn set_workspace_enabled(app: AppHandle, id: String, enabled: bool) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        _ => return Err("config not migrated to workspaces yet".to_string()),
+    };
+    {
+        let cfg = file
+            .workspaces
+            .get_mut(&id)
+            .ok_or_else(|| format!("unknown workspace '{id}'"))?;
+        cfg.enabled = enabled;
+    }
+    if !enabled && file.active_workspace == id {
+        return Err("cannot disable the active workspace — switch first".to_string());
+    }
+    workspace::save(&data_dir, &file)?;
+    if enabled {
+        if let Err(e) = spawn_sidecar_ws(&app, &id) {
+            warn!("enable {id}: sidecar spawn failed: {e}");
+        }
+    } else {
+        kill_sidecar_ws(&app, &id);
+        remove_global_mcp_entries(&app, &id).unwrap_or_else(|e| warn!("uninstall {id}: {e}"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_workspace(app: AppHandle, id: String) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        _ => return Err("config not migrated to workspaces yet".to_string()),
+    };
+    if file.active_workspace == id {
+        return Err("cannot delete the active workspace — switch first".to_string());
+    }
+    if file.workspaces.len() == 1 {
+        return Err("cannot delete the last workspace".to_string());
+    }
+    if !file.workspaces.contains_key(&id) {
+        return Err(format!("unknown workspace '{id}'"));
+    }
+    kill_sidecar_ws(&app, &id);
+    remove_global_mcp_entries(&app, &id).unwrap_or_else(|e| warn!("uninstall {id}: {e}"));
+    for base in [
+        "turso_auth_token",
+        "mcp_auth_token",
+        "google_refresh_token",
+        "portuni_session_jwt",
+        "portuni_device_token",
+    ] {
+        keychain_delete_ws(base, &id);
+    }
+    file.workspaces.remove(&id);
+    workspace::save(&data_dir, &file)?;
+    // Data dir + mirrors stay on disk by design (spec §5): destructive
+    // cleanup is manual only. The UI dialog states what remains.
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // The per-workspace MCP token is loaded in .setup() below, once an
-    // AppHandle exists to resolve the active workspace from config.json.
-    // Managed here with a placeholder so AuthToken state exists for the
-    // whole app lifetime; .setup() overwrites it before spawn_sidecar runs.
+    // State maps start empty and are filled per workspace by .setup()'s
+    // spawn_all_sidecars — each spawn_sidecar_ws caches that workspace's
+    // MCP token into AuthTokens and its bound port into BackendPorts.
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        // Logger plugin is initialised before spawn_sidecar so every line we
+        // Logger plugin is initialised before spawn_all_sidecars so every line we
         // emit during boot — including the auth-token confirmation and any
         // sidecar stdout/stderr — lands in the file at
         // ~/Library/Logs/<bundle_id>/sidecar.log. Without this, release
@@ -1325,9 +1581,9 @@ pub fn run() {
                 .level(log::LevelFilter::Info)
                 .build(),
         )
-        .manage(SidecarState(Mutex::new(None)))
-        .manage(BackendPort(Mutex::new(None)))
-        .manage(AuthToken(Mutex::new(String::new())))
+        .manage(SidecarState(Mutex::new(HashMap::new())))
+        .manage(BackendPorts(Mutex::new(HashMap::new())))
+        .manage(AuthTokens(Mutex::new(HashMap::new())))
         .manage(pty::PtyState::default())
         .register_uri_scheme_protocol("portuni-html", |ctx, request| {
             use tauri::http::Response;
@@ -1344,14 +1600,15 @@ pub fn run() {
                 .to_string();
             let candidate = std::path::PathBuf::from(&decoded);
 
-            let data_dir = app.path().app_data_dir().unwrap_or_default();
-            // Expand the config's leading ~ (the sidecar does this for the
-            // absolute local_path we compare against). Fall back to the raw
-            // value if the home dir is somehow unavailable.
-            let root = load_config(&data_dir).portuni_workspace_root.map(|r| {
+            // Scope the preview to the ACTIVE workspace's mirror root. Expand
+            // the config's leading ~ (the sidecar does this for the absolute
+            // local_path we compare against); fall back to the raw value if the
+            // home dir is somehow unavailable.
+            let root = active_workspace(app).ok().map(|(_, cfg)| {
+                let raw = cfg.effective_workspace_root();
                 match app.path().home_dir() {
-                    Ok(h) => expand_tilde(&h, &r),
-                    Err(_) => std::path::PathBuf::from(r),
+                    Ok(h) => expand_tilde(&h, &raw),
+                    Err(_) => std::path::PathBuf::from(raw),
                 }
             });
 
@@ -1431,48 +1688,28 @@ pub fn run() {
             auth::auth_refresh,
             auth::auth_logout,
             auth::central_request,
+            list_workspaces,
+            create_workspace,
+            set_active_workspace,
+            set_workspace_enabled,
+            delete_workspace,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
-            // Persisted per workspace across launches so user-scoped MCP
-            // configs (Claude Code, Codex, per-mirror .mcp.json) stay valid.
-            // Falls back to a per-launch random value when there's no active
-            // workspace yet (pre-migration / fresh install) or Keychain is
-            // unreachable — the app can still boot, just without stable
-            // external-agent support until that's resolved.
-            let auth_token = match active_workspace(&handle) {
-                Ok((ws_id, _)) => ensure_mcp_token_ws(&ws_id).unwrap_or_else(|e| {
-                    warn!("Keychain unavailable for MCP token, falling back to per-launch random: {e}");
-                    random_token()
-                }),
-                Err(e) => {
-                    warn!("no active workspace yet, using per-launch random MCP token: {e}");
-                    random_token()
-                }
-            };
-            *app.state::<AuthToken>().0.lock().expect("AuthToken mutex poisoned") = auth_token;
-
-            info!(
-                "MCP auth token loaded (length={})",
-                app.state::<AuthToken>()
-                    .0
-                    .lock()
-                    .map(|g| g.len())
-                    .unwrap_or(0)
-            );
-            if let Err(e) = spawn_sidecar(&handle) {
-                error!("failed to spawn sidecar: {e}");
-            }
+            // Each enabled workspace gets its own sidecar; spawn_sidecar_ws
+            // caches the per-workspace MCP token into AuthTokens as it goes.
+            // A v1/Missing config is a no-op until migration/onboarding.
+            spawn_all_sidecars(&handle);
             Ok(())
         })
         .on_window_event(|window, event| {
             // Only Destroyed, not CloseRequested: the webview registers an
             // onCloseRequested listener (dirty-editor guard), so a close
-            // request may be cancelled in JS. Killing the sidecar on the
-            // request would leave a live window with a dead backend.
+            // request may be cancelled in JS. Killing the sidecars on the
+            // request would leave a live window with dead backends.
             // Cmd+Q / app exit is covered by ExitRequested/Exit below.
             if matches!(event, tauri::WindowEvent::Destroyed) {
-                kill_managed_sidecar(window.app_handle());
+                kill_all_sidecars(window.app_handle());
             }
         })
         .build(tauri::generate_context!())
@@ -1486,7 +1723,7 @@ pub fn run() {
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
-                kill_managed_sidecar(app);
+                kill_all_sidecars(app);
             }
         });
 }

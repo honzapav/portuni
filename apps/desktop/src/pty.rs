@@ -306,10 +306,10 @@ pub fn pty_spawn(
                     }
                 }
             }
-            Ok(_) => {
-                // Local mode: use the per-launch sidecar auth token.
-                if let Ok(token) = app.state::<crate::AuthToken>().0.lock() {
-                    if !token.is_empty() {
+            Ok((ws_id, _)) => {
+                // Local mode: use this workspace's cached sidecar auth token.
+                if let Ok(map) = app.state::<crate::AuthTokens>().0.lock() {
+                    if let Some(token) = map.get(&ws_id).filter(|t| !t.is_empty()) {
                         cmd.env("PORTUNI_MCP_TOKEN", token.clone());
                     }
                 }

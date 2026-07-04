@@ -478,8 +478,9 @@ pub async fn google_login(app: AppHandle) -> Result<Value, String> {
     // ensure_device_token uses block_on internally, which must not run on
     // an async-runtime worker.
     let app_for_agent = app.clone();
+    let ws_for_agent = ws_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if let Err(e) = crate::spawn_sidecar(&app_for_agent) {
+        if let Err(e) = crate::spawn_sidecar_ws(&app_for_agent, &ws_for_agent) {
             warn!("post-login sync agent spawn failed: {e}");
         }
     });
