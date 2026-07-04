@@ -24,35 +24,27 @@ use std::{
     sync::mpsc,
     time::Duration,
 };
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 // ─── Keychain accounts ───────────────────────────────────────────────────────
+//
+// All ws-scoped: every account below is namespaced per workspace
+// (`<base>.<ws_id>`) via crate::keychain_{get,set,delete}_ws — the single
+// implementation lives in lib.rs, these delegate to it.
 
-const KEYCHAIN_SERVICE: &str = "ooo.workflow.portuni";
 const KEYCHAIN_GOOGLE_REFRESH: &str = "google_refresh_token";
 pub const KEYCHAIN_SESSION_JWT: &str = "portuni_session_jwt";
 
-pub fn keychain_get(account: &str) -> Option<String> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, account)
-        .ok()
-        .and_then(|e| e.get_password().ok())
-        .filter(|s| !s.is_empty())
+pub fn keychain_get_ws(base: &str, ws_id: &str) -> Option<String> {
+    crate::keychain_get_ws(base, ws_id)
 }
 
-fn keychain_set(account: &str, value: &str) -> Result<(), String> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, account)
-        .map_err(|e| e.to_string())?
-        .set_password(value)
-        .map_err(|e| e.to_string())
+fn keychain_set_ws(base: &str, ws_id: &str, value: &str) -> Result<(), String> {
+    crate::keychain_set_ws(base, ws_id, value)
 }
 
-fn keychain_delete(account: &str) {
-    if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, account) {
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(e) => warn!("keychain delete {account} failed: {e}"),
-        }
-    }
+fn keychain_delete_ws(base: &str, ws_id: &str) {
+    crate::keychain_delete_ws(base, ws_id)
 }
 
 // ─── Config helpers ──────────────────────────────────────────────────────────
@@ -64,13 +56,11 @@ pub struct AuthConfig {
     pub google_client_secret: String,
 }
 
-pub fn load_auth_config(app: &AppHandle) -> Option<AuthConfig> {
-    use crate::load_config;
-    let data_dir = app.path().app_data_dir().ok()?;
-    let config = load_config(&data_dir);
-    let server_url = config.server_url?.trim().to_string();
-    let google_client_id = config.google_client_id?.trim().to_string();
-    let google_client_secret = config
+pub fn load_auth_config(app: &AppHandle) -> Option<(String, AuthConfig)> {
+    let (ws_id, cfg) = crate::active_workspace(app).ok()?;
+    let server_url = cfg.server_url?.trim().to_string();
+    let google_client_id = cfg.google_client_id?.trim().to_string();
+    let google_client_secret = cfg
         .google_client_secret
         .unwrap_or_default()
         .trim()
@@ -78,11 +68,14 @@ pub fn load_auth_config(app: &AppHandle) -> Option<AuthConfig> {
     if server_url.is_empty() || google_client_id.is_empty() {
         return None;
     }
-    Some(AuthConfig {
-        server_url,
-        google_client_id,
-        google_client_secret,
-    })
+    Some((
+        ws_id,
+        AuthConfig {
+            server_url,
+            google_client_id,
+            google_client_secret,
+        },
+    ))
 }
 
 // ─── JWT payload decode (display-only, no signature verification) ─────────────
@@ -378,7 +371,12 @@ pub struct AuthStatus {
 pub fn auth_status(app: AppHandle) -> AuthStatus {
     let config = load_auth_config(&app);
     let configured = config.is_some();
-    let jwt = keychain_get(KEYCHAIN_SESSION_JWT);
+    // Independent of `configured`: a workspace can hold a session JWT even
+    // if server_url/google_client_id checks above were incomplete, so look
+    // up the active workspace directly rather than reusing `config`.
+    let jwt = crate::active_workspace(&app)
+        .ok()
+        .and_then(|(ws_id, _)| keychain_get_ws(KEYCHAIN_SESSION_JWT, &ws_id));
     let logged_in = jwt.is_some();
     let user = jwt.as_deref().and_then(decode_jwt_payload);
     AuthStatus {
@@ -399,7 +397,7 @@ pub fn auth_status(app: AppHandle) -> AuthStatus {
 /// 8. Return user JSON from server response.
 #[tauri::command]
 pub async fn google_login(app: AppHandle) -> Result<Value, String> {
-    let config = load_auth_config(&app)
+    let (ws_id, config) = load_auth_config(&app)
         .ok_or_else(|| "server_url and google_client_id must be set in config.json".to_string())?;
 
     let verifier = pkce_verifier();
@@ -467,12 +465,12 @@ pub async fn google_login(app: AppHandle) -> Result<Value, String> {
 
     // Store refresh_token if present (offline access).
     if let Some(refresh) = google_tokens.refresh_token {
-        keychain_set(KEYCHAIN_GOOGLE_REFRESH, &refresh)?;
+        keychain_set_ws(KEYCHAIN_GOOGLE_REFRESH, &ws_id, &refresh)?;
         info!("google_login: refresh_token stored in Keychain");
     }
 
     let central = central_login(&client, &config.server_url, &id_token).await?;
-    keychain_set(KEYCHAIN_SESSION_JWT, &central.token)?;
+    keychain_set_ws(KEYCHAIN_SESSION_JWT, &ws_id, &central.token)?;
     info!("google_login: session JWT stored in Keychain");
 
     // Central data_mode: bring the local sync agent up now that a device
@@ -493,10 +491,10 @@ pub async fn google_login(app: AppHandle) -> Result<Value, String> {
 /// Returns the updated user JSON from the central server.
 #[tauri::command]
 pub async fn auth_refresh(app: AppHandle) -> Result<Value, String> {
-    let config = load_auth_config(&app)
+    let (ws_id, config) = load_auth_config(&app)
         .ok_or_else(|| "server_url and google_client_id must be set in config.json".to_string())?;
 
-    let refresh_token = keychain_get(KEYCHAIN_GOOGLE_REFRESH)
+    let refresh_token = keychain_get_ws(KEYCHAIN_GOOGLE_REFRESH, &ws_id)
         .ok_or_else(|| "not logged in: no refresh token in Keychain".to_string())?;
 
     let client = Client::new();
@@ -509,19 +507,21 @@ pub async fn auth_refresh(app: AppHandle) -> Result<Value, String> {
     .await?;
 
     let central = central_login(&client, &config.server_url, &id_token).await?;
-    keychain_set(KEYCHAIN_SESSION_JWT, &central.token)?;
+    keychain_set_ws(KEYCHAIN_SESSION_JWT, &ws_id, &central.token)?;
     info!("auth_refresh: session JWT refreshed in Keychain");
 
     Ok(central.user)
 }
 
-/// Delete both Keychain entries. Idempotent.
+/// Delete the active workspace's Keychain entries. Idempotent.
 #[tauri::command]
-pub fn auth_logout() {
-    keychain_delete(KEYCHAIN_GOOGLE_REFRESH);
-    keychain_delete(KEYCHAIN_SESSION_JWT);
-    keychain_delete("portuni_device_token");
-    info!("auth_logout: Keychain entries removed");
+pub fn auth_logout(app: AppHandle) -> Result<(), String> {
+    let (ws_id, _) = crate::active_workspace(&app)?;
+    keychain_delete_ws(KEYCHAIN_GOOGLE_REFRESH, &ws_id);
+    keychain_delete_ws(KEYCHAIN_SESSION_JWT, &ws_id);
+    keychain_delete_ws(crate::pty::KEYCHAIN_DEVICE_TOKEN_ACCOUNT, &ws_id);
+    info!("auth_logout: Keychain entries removed for workspace {ws_id}");
+    Ok(())
 }
 
 // ─── central_request ─────────────────────────────────────────────────────────
@@ -542,10 +542,10 @@ pub async fn central_request(
     path: String,
     body: Option<Value>,
 ) -> Result<CentralResponse, String> {
-    let config = load_auth_config(&app)
+    let (ws_id, config) = load_auth_config(&app)
         .ok_or_else(|| "server_url is not configured".to_string())?;
 
-    let jwt = keychain_get(KEYCHAIN_SESSION_JWT)
+    let jwt = keychain_get_ws(KEYCHAIN_SESSION_JWT, &ws_id)
         .ok_or_else(|| "not logged in: no session JWT in Keychain".to_string())?;
 
     let resp = do_central_request(&config.server_url, &method, &path, body.as_ref(), &jwt).await?;
@@ -560,7 +560,7 @@ pub async fn central_request(
                 return Ok(resp);
             }
             Ok(_) => {
-                let new_jwt = keychain_get(KEYCHAIN_SESSION_JWT)
+                let new_jwt = keychain_get_ws(KEYCHAIN_SESSION_JWT, &ws_id)
                     .ok_or_else(|| "not logged in after refresh".to_string())?;
                 return do_central_request(&config.server_url, &method, &path, body.as_ref(), &new_jwt).await;
             }

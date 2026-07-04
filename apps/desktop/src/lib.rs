@@ -101,30 +101,68 @@ pub(crate) fn load_config(data_dir: &PathBuf) -> DesktopConfig {
         .unwrap_or_default()
 }
 
-fn keychain_get_turso_token() -> Option<String> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_TURSO_ACCOUNT)
+// Workspace-scoped Keychain helpers. Every secret we persist across
+// launches is namespaced per workspace (`<base>.<ws_id>`, see
+// workspace::keychain_account) so switching the active workspace never
+// leaks or clobbers another workspace's credentials.
+pub(crate) fn keychain_get_ws(base: &str, ws_id: &str) -> Option<String> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, &workspace::keychain_account(base, ws_id))
         .ok()
         .and_then(|e| e.get_password().ok())
+        .filter(|s| !s.is_empty())
 }
 
-#[tauri::command]
-fn set_turso_token(token: String) -> Result<(), String> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_TURSO_ACCOUNT)
+pub(crate) fn keychain_set_ws(base: &str, ws_id: &str, value: &str) -> Result<(), String> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, &workspace::keychain_account(base, ws_id))
         .map_err(|e| e.to_string())?
-        .set_password(&token)
+        .set_password(value)
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn clear_turso_token() -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_TURSO_ACCOUNT)
-        .map_err(|e| e.to_string())?;
-    match entry.delete_credential() {
-        Ok(()) => Ok(()),
-        // "no entry" means already cleared — idempotent success.
-        Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e.to_string()),
+pub(crate) fn keychain_delete_ws(base: &str, ws_id: &str) {
+    if let Ok(entry) =
+        keyring::Entry::new(KEYCHAIN_SERVICE, &workspace::keychain_account(base, ws_id))
+    {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(e) => log::warn!("keychain delete {base}.{ws_id} failed: {e}"),
+        }
     }
+}
+
+/// Load the active workspace's id + config from the v2 config.json. Errors
+/// when the config is still v1 (awaiting migration) or missing (fresh
+/// install) — callers surface that as a command error to the UI rather
+/// than guessing at a workspace that doesn't exist yet.
+pub(crate) fn active_workspace(
+    app: &AppHandle,
+) -> Result<(String, workspace::WorkspaceConfig), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(file) => {
+            let cfg = file
+                .workspaces
+                .get(&file.active_workspace)
+                .cloned()
+                .ok_or_else(|| "active workspace missing from config".to_string())?;
+            Ok((file.active_workspace, cfg))
+        }
+        workspace::LoadedConfig::V1(_) => Err("config awaiting workspace migration".to_string()),
+        workspace::LoadedConfig::Missing => Err("no config.json (fresh install)".to_string()),
+    }
+}
+
+#[tauri::command]
+fn set_turso_token(app: AppHandle, token: String) -> Result<(), String> {
+    let (ws_id, _) = active_workspace(&app)?;
+    keychain_set_ws(KEYCHAIN_TURSO_ACCOUNT, &ws_id, &token)
+}
+
+#[tauri::command]
+fn clear_turso_token(app: AppHandle) -> Result<(), String> {
+    let (ws_id, _) = active_workspace(&app)?;
+    keychain_delete_ws(KEYCHAIN_TURSO_ACCOUNT, &ws_id);
+    Ok(())
 }
 
 // Returns the MCP bearer token the current data_mode actually needs. The
@@ -137,9 +175,14 @@ fn clear_turso_token() -> Result<(), String> {
 // handing that out here would give the user a credential that 401s.
 #[tauri::command]
 fn get_mcp_token(app: AppHandle) -> Result<String, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    if load_config(&data_dir).data_mode.as_deref() == Some("central") {
-        return pty::ensure_device_token(&app);
+    let (ws_id, cfg) = active_workspace(&app)?;
+    if workspace::is_central(&cfg) {
+        let server_url = cfg
+            .server_url
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| "central mode requires server_url in config.json".to_string())?;
+        return pty::ensure_device_token(&app, &ws_id, server_url);
     }
     Ok(app
         .state::<AuthToken>()
@@ -157,8 +200,9 @@ fn get_mcp_token(app: AppHandle) -> Result<String, String> {
 // user re-runs "Install Claude (global)".
 #[tauri::command]
 fn regenerate_mcp_token(app: AppHandle) -> Result<String, String> {
+    let (ws_id, _) = active_workspace(&app)?;
     let fresh = random_token();
-    keychain_set_mcp_token(&fresh)?;
+    keychain_set_ws(KEYCHAIN_MCP_ACCOUNT, &ws_id, &fresh)?;
     let state = app.state::<AuthToken>();
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     *guard = fresh.clone();
@@ -282,29 +326,15 @@ fn install_vibe_global(app: AppHandle) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
-fn keychain_get_mcp_token() -> Option<String> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_MCP_ACCOUNT)
-        .ok()
-        .and_then(|e| e.get_password().ok())
-        .filter(|s| !s.is_empty())
-}
-
-fn keychain_set_mcp_token(token: &str) -> Result<(), String> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_MCP_ACCOUNT)
-        .map_err(|e| e.to_string())?
-        .set_password(token)
-        .map_err(|e| e.to_string())
-}
-
-// Returns the persisted MCP auth token, generating + storing one on first
-// call. Subsequent launches reuse the same token so external `.mcp.json`
-// files (Claude Code, Codex) keep working across restarts.
-fn ensure_mcp_token() -> Result<String, String> {
-    if let Some(existing) = keychain_get_mcp_token() {
+// Persisted MCP auth token per workspace, generated on first use.
+// Subsequent launches reuse the same token so external `.mcp.json` files
+// (Claude Code, Codex) keep working across restarts.
+fn ensure_mcp_token_ws(ws_id: &str) -> Result<String, String> {
+    if let Some(existing) = keychain_get_ws(KEYCHAIN_MCP_ACCOUNT, ws_id) {
         return Ok(existing);
     }
     let fresh = random_token();
-    keychain_set_mcp_token(&fresh)?;
+    keychain_set_ws(KEYCHAIN_MCP_ACCOUNT, ws_id, &fresh)?;
     Ok(fresh)
 }
 
@@ -329,7 +359,14 @@ fn migrate_turso_token_to_keychain(data_dir: &PathBuf) {
 
     let mut migrated_into_keychain = false;
     if let Some(token) = token.filter(|t| !t.is_empty()) {
-        if keychain_get_turso_token().is_none() {
+        // Deliberately unsuffixed: this migrates the legacy pre-workspace
+        // plaintext field into the legacy unsuffixed Keychain account, which
+        // migrate_to_workspaces then copies into the per-workspace account.
+        let existing = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_TURSO_ACCOUNT)
+            .ok()
+            .and_then(|e| e.get_password().ok())
+            .filter(|s| !s.is_empty());
+        if existing.is_none() {
             match keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_TURSO_ACCOUNT)
                 .and_then(|e| e.set_password(&token))
             {
@@ -359,6 +396,69 @@ fn migrate_turso_token_to_keychain(data_dir: &PathBuf) {
         }
         Err(e) => warn!("failed to serialize cleaned config.json: {e}"),
     }
+}
+
+/// True when config.json is still the flat v1 layout — the frontend uses
+/// this to gate the one-time migration prompt. False for both v2 (already
+/// migrated) and Missing (fresh install, no migration needed).
+#[tauri::command]
+fn workspace_migration_status(app: AppHandle) -> Result<bool, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(matches!(workspace::load(&data_dir)?, workspace::LoadedConfig::V1(_)))
+}
+
+// One-shot v1 -> v2 migration. Order matters for idempotence: DB files and
+// Keychain first, config.json LAST — its `workspaces` key is the completion
+// marker, so an interrupted run re-enters here safely.
+#[tauri::command]
+fn migrate_to_workspaces(app: AppHandle, id: String) -> Result<(), String> {
+    if !workspace::is_valid_workspace_id(&id) {
+        return Err("invalid workspace id (use lowercase letters, digits, dashes)".to_string());
+    }
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let v1 = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V1(v) => v,
+        workspace::LoadedConfig::V2(_) => return Ok(()), // already migrated
+        workspace::LoadedConfig::Missing => serde_json::json!({}),
+    };
+
+    // 1. DB files into workspaces/<id>/.
+    workspace::apply_migration_files(&data_dir, &id)?;
+
+    // 1.5 Any legacy plaintext turso_auth_token still sitting in config.json
+    // needs to land in the (unsuffixed) Keychain account first, so the
+    // per-workspace copy step below finds it there.
+    migrate_turso_token_to_keychain(&data_dir);
+
+    // 2. Keychain: copy unsuffixed accounts to <base>.<id>, delete originals.
+    //    Copy-if-missing keeps re-runs safe after a partial failure.
+    const BASES: [&str; 5] = [
+        "turso_auth_token",
+        "mcp_auth_token",
+        "google_refresh_token",
+        "portuni_session_jwt",
+        "portuni_device_token",
+    ];
+    for base in BASES {
+        let old = keyring::Entry::new(KEYCHAIN_SERVICE, base)
+            .ok()
+            .and_then(|e| e.get_password().ok())
+            .filter(|s| !s.is_empty());
+        if let Some(value) = old {
+            if keychain_get_ws(base, &id).is_none() {
+                keychain_set_ws(base, &id, &value)?;
+            }
+            if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, base) {
+                let _ = entry.delete_credential();
+            }
+        }
+    }
+
+    // 3. config.json v2 — completion marker.
+    let file = workspace::migrate_v1_value(&v1, &id);
+    workspace::save(&data_dir, &file)?;
+    info!("migrated config.json to v2 with workspace '{id}'");
+    Ok(())
 }
 
 fn random_token() -> String {
@@ -550,15 +650,15 @@ struct TursoStatus {
 fn get_turso_status(app: AppHandle) -> Result<TursoStatus, String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let config_exists = config_path(&data_dir).exists();
-    let config = load_config(&data_dir);
-    let url = config
+    let (ws_id, cfg) = active_workspace(&app)?;
+    let url = cfg
         .turso_url
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     Ok(TursoStatus {
         config_exists,
         url_set: url.is_some(),
-        token_set: keychain_get_turso_token()
+        token_set: keychain_get_ws(KEYCHAIN_TURSO_ACCOUNT, &ws_id)
             .is_some_and(|t| !t.trim().is_empty()),
         url,
     })
@@ -805,7 +905,8 @@ async fn api_request(
             .server_url
             .ok_or_else(|| "central mode requires server_url in config.json".to_string())?;
 
-        let jwt = auth::keychain_get(auth::KEYCHAIN_SESSION_JWT)
+        let ws_id = active_workspace(&app)?.0;
+        let jwt = keychain_get_ws(auth::KEYCHAIN_SESSION_JWT, &ws_id)
             .ok_or_else(|| "central mode: not logged in (no session JWT)".to_string())?;
 
         // Convert body: api_request takes Option<String>, do_central_request
@@ -836,7 +937,7 @@ async fn api_request(
                     });
                 }
                 Ok(_) => {
-                    let new_jwt = auth::keychain_get(auth::KEYCHAIN_SESSION_JWT)
+                    let new_jwt = keychain_get_ws(auth::KEYCHAIN_SESSION_JWT, &ws_id)
                         .ok_or_else(|| "not logged in after refresh".to_string())?;
                     let resp2 = auth::do_central_request_raw(
                         &server_url,
@@ -996,8 +1097,13 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::E
     // device token, which needs a login — before login we only signal
     // readiness with the sentinel port (0) so the login gate can render;
     // google_login re-invokes spawn_sidecar after a successful login.
-    let config = load_config(&data_dir);
-    let is_central = config.data_mode.as_deref() == Some("central");
+    //
+    // Full multi-sidecar rewiring (per-workspace sidecar lifecycle) is
+    // Task 6 — for now this still spawns/manages a single sidecar, just
+    // sourced from the active workspace's config instead of the flat
+    // pre-workspace config.json.
+    let (ws_id, cfg) = active_workspace(app)?;
+    let is_central = workspace::is_central(&cfg);
     let mut agent_env: Option<Vec<(String, String)>> = None;
     if is_central {
         // Re-invocations (post-login) must not double-spawn.
@@ -1005,13 +1111,15 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::E
             info!("central data_mode: sync agent already running");
             return Ok(());
         }
-        let server_url = config
+        let server_url = cfg
             .server_url
             .clone()
             .filter(|s| !s.trim().is_empty())
             .map(|s| s.trim().trim_end_matches('/').to_string());
-        let device_token =
-            server_url.as_ref().and_then(|_| crate::pty::ensure_device_token(app).ok());
+        let device_token = match &server_url {
+            Some(url) => crate::pty::ensure_device_token(app, &ws_id, url).ok(),
+            None => None,
+        };
         match (server_url, device_token) {
             (Some(url), Some(token)) => {
                 info!("central data_mode: starting local sync agent against {url}");
@@ -1040,29 +1148,18 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::E
         }
     }
 
-    info!("spawn_sidecar: data_dir={data_dir_str} central={is_central}");
+    info!("spawn_sidecar: data_dir={data_dir_str} central={is_central} workspace={ws_id}");
 
-    // Local mode only: move any legacy plaintext token into Keychain before
-    // we read either — makes the upgrade path silent for users who set
-    // turso_auth_token under the old scheme. No-op once migrated.
-    if !is_central {
-        migrate_turso_token_to_keychain(&data_dir);
-    }
-
-    let config = load_config(&data_dir);
-    let turso_url = config.turso_url.unwrap_or_default();
+    let turso_url = cfg.turso_url.clone().unwrap_or_default();
     let turso_token = if is_central {
         String::new() // the agent never sees Turso credentials
     } else {
-        keychain_get_turso_token().unwrap_or_default()
+        keychain_get_ws(KEYCHAIN_TURSO_ACCOUNT, &ws_id).unwrap_or_default()
     };
     // Resolve workspace root: explicit config wins, else fall back to
     // ~/Workspaces/portuni so first-run desktop installs have somewhere
     // to put mirrors. Tilde stays literal — sidecar expands it.
-    let workspace_root = config
-        .portuni_workspace_root
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "~/Workspaces/portuni".to_string());
+    let workspace_root = cfg.effective_workspace_root();
     info!(
         "config: turso_url={} turso_auth_token={} workspace_root={}",
         if turso_url.is_empty() { "<unset>" } else { "<set>" },
@@ -1116,7 +1213,7 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::E
     // orphan sidecar (previous abnormal exit) holding the port. Reap it
     // before binding so the launch succeeds instead of erroring with
     // "Failed to start server. Is port <n> in use?".
-    let port = config.mcp_port.unwrap_or(DEFAULT_MCP_PORT);
+    let port = cfg.mcp_port.unwrap_or(DEFAULT_MCP_PORT);
     reap_orphan_sidecar(port);
 
     // tauri-plugin-shell 2.x's env_clear() does not reliably scrub the
@@ -1205,15 +1302,10 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::E
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Persisted across launches so user-scoped MCP configs (Claude Code,
-    // Codex, per-mirror .mcp.json) stay valid. Falls back to a random
-    // value if Keychain is unreachable — the app can still boot, just
-    // without external-agent support until Keychain comes back.
-    let auth_token = ensure_mcp_token().unwrap_or_else(|e| {
-        warn!("Keychain unavailable for MCP token, falling back to per-launch random: {e}");
-        random_token()
-    });
-
+    // The per-workspace MCP token is loaded in .setup() below, once an
+    // AppHandle exists to resolve the active workspace from config.json.
+    // Managed here with a placeholder so AuthToken state exists for the
+    // whole app lifetime; .setup() overwrites it before spawn_sidecar runs.
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         // Logger plugin is initialised before spawn_sidecar so every line we
@@ -1235,7 +1327,7 @@ pub fn run() {
         )
         .manage(SidecarState(Mutex::new(None)))
         .manage(BackendPort(Mutex::new(None)))
-        .manage(AuthToken(Mutex::new(auth_token)))
+        .manage(AuthToken(Mutex::new(String::new())))
         .manage(pty::PtyState::default())
         .register_uri_scheme_protocol("portuni-html", |ctx, request| {
             use tauri::http::Response;
@@ -1319,6 +1411,8 @@ pub fn run() {
             get_turso_status,
             save_config,
             restart_sidecar,
+            workspace_migration_status,
+            migrate_to_workspaces,
             get_mcp_token,
             regenerate_mcp_token,
             install_claude_global,
@@ -1339,6 +1433,25 @@ pub fn run() {
             auth::central_request,
         ])
         .setup(|app| {
+            let handle = app.handle().clone();
+            // Persisted per workspace across launches so user-scoped MCP
+            // configs (Claude Code, Codex, per-mirror .mcp.json) stay valid.
+            // Falls back to a per-launch random value when there's no active
+            // workspace yet (pre-migration / fresh install) or Keychain is
+            // unreachable — the app can still boot, just without stable
+            // external-agent support until that's resolved.
+            let auth_token = match active_workspace(&handle) {
+                Ok((ws_id, _)) => ensure_mcp_token_ws(&ws_id).unwrap_or_else(|e| {
+                    warn!("Keychain unavailable for MCP token, falling back to per-launch random: {e}");
+                    random_token()
+                }),
+                Err(e) => {
+                    warn!("no active workspace yet, using per-launch random MCP token: {e}");
+                    random_token()
+                }
+            };
+            *app.state::<AuthToken>().0.lock().expect("AuthToken mutex poisoned") = auth_token;
+
             info!(
                 "MCP auth token loaded (length={})",
                 app.state::<AuthToken>()
@@ -1347,7 +1460,7 @@ pub fn run() {
                     .map(|g| g.len())
                     .unwrap_or(0)
             );
-            if let Err(e) = spawn_sidecar(&app.handle().clone()) {
+            if let Err(e) = spawn_sidecar(&handle) {
                 error!("failed to spawn sidecar: {e}");
             }
             Ok(())

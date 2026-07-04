@@ -21,37 +21,37 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-// For device-token Keychain operations in ensure_device_token.
-use keyring;
-
 // Keychain account for the long-lived device token used by agent terminals
 // in central data_mode. Separate from the per-launch MCP token used in local
-// mode so the two don't interfere.
-const KEYCHAIN_DEVICE_TOKEN_ACCOUNT: &str = "portuni_device_token";
+// mode so the two don't interfere. pub(crate): auth.rs's auth_logout deletes
+// this account for the active workspace too.
+pub(crate) const KEYCHAIN_DEVICE_TOKEN_ACCOUNT: &str = "portuni_device_token";
 
 /// Return the device token for central-mode terminal sessions. Tries Keychain
 /// first; if absent, mints one via POST /device-tokens on the central server
 /// (using the current session JWT) and stores it. Errors if not logged in.
+/// `ws_id` and `server_url` come from the caller's `active_workspace(&app)?`
+/// lookup — this function itself does no config resolution.
 ///
 /// Blocking: calls block_on internally because pty_spawn is a sync command.
 /// pub(crate): the sync-agent sidecar spawn (lib.rs) authenticates with the
 /// same device token.
-pub(crate) fn ensure_device_token(app: &AppHandle) -> Result<String, String> {
+pub(crate) fn ensure_device_token(
+    app: &AppHandle,
+    ws_id: &str,
+    server_url: &str,
+) -> Result<String, String> {
     // Return cached token if already in Keychain.
-    if let Some(t) = crate::auth::keychain_get(KEYCHAIN_DEVICE_TOKEN_ACCOUNT) {
+    if let Some(t) = crate::keychain_get_ws(KEYCHAIN_DEVICE_TOKEN_ACCOUNT, ws_id) {
         return Ok(t);
     }
 
     // Need to mint. Require a session JWT.
-    let jwt = crate::auth::keychain_get(crate::auth::KEYCHAIN_SESSION_JWT)
+    let jwt = crate::keychain_get_ws(crate::auth::KEYCHAIN_SESSION_JWT, ws_id)
         .ok_or_else(|| "not logged in: no session JWT in Keychain".to_string())?;
 
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let config = crate::load_config(&data_dir);
-    let server_url = config
-        .server_url
-        .ok_or_else(|| "central mode requires server_url in config.json".to_string())?;
-
+    let server_url = server_url.trim().trim_end_matches('/').to_string();
+    let ws_for_store = ws_id.to_string();
     // Mint via POST /device-tokens {"label": "Desktop terminály"}.
     // block_on is safe here because pty_spawn runs on a Tauri thread-pool
     // thread (not inside an async context), so we won't deadlock.
@@ -81,11 +81,8 @@ pub(crate) fn ensure_device_token(app: &AppHandle) -> Result<String, String> {
     })?;
 
     // Persist to Keychain so subsequent spawns reuse it.
-    keyring::Entry::new(crate::KEYCHAIN_SERVICE, KEYCHAIN_DEVICE_TOKEN_ACCOUNT)
-        .map_err(|e| e.to_string())?
-        .set_password(&token)
-        .map_err(|e| e.to_string())?;
-    info!("pty: device token minted and stored in Keychain");
+    crate::keychain_set_ws(KEYCHAIN_DEVICE_TOKEN_ACCOUNT, &ws_for_store, &token)?;
+    info!("pty: device token minted and stored for workspace {ws_for_store}");
 
     Ok(token)
 }
@@ -289,31 +286,36 @@ pub fn pty_spawn(
     // In central mode: use the device token from Keychain (account
     //   "portuni_device_token"); if absent, mint one via POST /device-tokens and
     //   store it. If not logged in, skip injection (terminal works without MCP).
+    // Multi-workspace terminal token injection (which workspace's token to
+    // use for a given node's terminal) is Task 8 — for now this uses
+    // whichever workspace is active.
     {
-        let is_central = {
-            if let Ok(data_dir) = app.path().app_data_dir() {
-                let cfg = crate::load_config(&data_dir);
-                cfg.data_mode.as_deref() == Some("central")
-            } else {
-                false
-            }
-        };
-
-        if is_central {
-            match ensure_device_token(&app) {
-                Ok(token) => {
-                    cmd.env("PORTUNI_MCP_TOKEN", token);
-                }
-                Err(e) => {
-                    warn!("pty_spawn: could not obtain device token for central mode, skipping PORTUNI_MCP_TOKEN injection: {e}");
+        match crate::active_workspace(&app) {
+            Ok((ws_id, cfg)) if crate::workspace::is_central(&cfg) => {
+                match cfg.server_url.as_deref().filter(|s| !s.trim().is_empty()) {
+                    Some(server_url) => match ensure_device_token(&app, &ws_id, server_url) {
+                        Ok(token) => {
+                            cmd.env("PORTUNI_MCP_TOKEN", token);
+                        }
+                        Err(e) => {
+                            warn!("pty_spawn: could not obtain device token for central mode, skipping PORTUNI_MCP_TOKEN injection: {e}");
+                        }
+                    },
+                    None => {
+                        warn!("pty_spawn: central mode but no server_url configured, skipping PORTUNI_MCP_TOKEN injection");
+                    }
                 }
             }
-        } else {
-            // Local mode: use the per-launch sidecar auth token.
-            if let Ok(token) = app.state::<crate::AuthToken>().0.lock() {
-                if !token.is_empty() {
-                    cmd.env("PORTUNI_MCP_TOKEN", token.clone());
+            Ok(_) => {
+                // Local mode: use the per-launch sidecar auth token.
+                if let Ok(token) = app.state::<crate::AuthToken>().0.lock() {
+                    if !token.is_empty() {
+                        cmd.env("PORTUNI_MCP_TOKEN", token.clone());
+                    }
                 }
+            }
+            Err(e) => {
+                warn!("pty_spawn: no active workspace, skipping PORTUNI_MCP_TOKEN injection: {e}");
             }
         }
     }

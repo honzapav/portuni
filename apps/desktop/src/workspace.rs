@@ -187,6 +187,28 @@ pub(crate) fn workspace_data_dir(app_data: &Path, id: &str) -> PathBuf {
     app_data.join("workspaces").join(id)
 }
 
+/// Move the v1 flat-layout DB files into workspaces/<id>/. Idempotent:
+/// a missing source is skipped (already moved or fresh install); a source
+/// AND destination both present is an error — never overwrite a database.
+pub(crate) fn apply_migration_files(data_dir: &Path, id: &str) -> Result<(), String> {
+    let target = workspace_data_dir(data_dir, id);
+    std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+    for name in ["portuni.db", "portuni.db-wal", "portuni.db-shm", "portuni.db-journal"] {
+        let src = data_dir.join(name);
+        if !src.exists() {
+            continue;
+        }
+        let dst = target.join(name);
+        if dst.exists() {
+            return Err(format!(
+                "migration conflict: both {src:?} and {dst:?} exist — resolve manually"
+            ));
+        }
+        std::fs::rename(&src, &dst).map_err(|e| format!("move {name} failed: {e}"))?;
+    }
+    Ok(())
+}
+
 pub(crate) fn is_central(cfg: &WorkspaceConfig) -> bool {
     cfg.data_mode.as_deref() == Some("central")
 }
@@ -321,6 +343,29 @@ mod tests {
         // Corrupt v2 must be an error, not a silent default.
         std::fs::write(dir.join("config.json"), r#"{"workspaces": 42}"#).unwrap();
         assert!(load(&dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_migration_moves_db_files_idempotently() {
+        let dir = std::env::temp_dir().join(format!("portuni-mig-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("portuni.db"), b"db").unwrap();
+        std::fs::write(dir.join("portuni.db-wal"), b"wal").unwrap();
+
+        apply_migration_files(&dir, "tempo").unwrap();
+        assert!(!dir.join("portuni.db").exists());
+        assert!(dir.join("workspaces/tempo/portuni.db").exists());
+        assert!(dir.join("workspaces/tempo/portuni.db-wal").exists());
+
+        // Second run: sources gone, no error.
+        apply_migration_files(&dir, "tempo").unwrap();
+
+        // Fresh install (no db at all): fine too.
+        let dir2 = dir.join("fresh");
+        std::fs::create_dir_all(&dir2).unwrap();
+        apply_migration_files(&dir2, "x").unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
