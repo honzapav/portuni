@@ -14,7 +14,7 @@ import { getAdapter } from "../domain/sync/adapter-cache.js";
 import { statusScan, storeFile, pullFile } from "../domain/sync/engine.js";
 import { listUntrackedLocal } from "../domain/sync/discover-local.js";
 import { mimeFor } from "../domain/sync/engine.js";
-import { createNodeInternal, updateNodeInternal } from "../domain/nodes.js";
+import { createNodeInternal, updateNodeInternal, NodeVisibilityManagedError } from "../domain/nodes.js";
 import { moveNodeToOrganization } from "../domain/edges.js";
 import { loadNodeDetail } from "../domain/queries/node-detail.js";
 import {
@@ -139,6 +139,10 @@ export async function handlePatchNode(
     }
     respondJson(res, 200, node);
   } catch (err) {
+    if (err instanceof NodeVisibilityManagedError) {
+      respondJson(res, 400, { error: err.message });
+      return;
+    }
     respondError(res, `${req.method} /nodes/${nodeId}`, err);
   }
 }
@@ -233,6 +237,10 @@ export async function handleCreateNode(
     const node = await loadNodeDetail(getDb(), identity.userId, id, identity);
     respondJson(res, 201, node);
   } catch (err) {
+    if (err instanceof NodeVisibilityManagedError) {
+      respondJson(res, 400, { error: err.message });
+      return;
+    }
     respondError(res, `${req.method} /nodes`, err);
   }
 }
@@ -348,7 +356,7 @@ export async function handleSyncPending(
   identity: RequestIdentity,
 ): Promise<void> {
   try {
-    const result = await computeSyncPending(getDb(), identity.userId);
+    const result = await computeSyncPending(getDb(), identity);
     respondJson(res, 200, result);
   } catch (err) {
     respondError(res, `${req.method} /sync/pending`, err);

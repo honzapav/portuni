@@ -100,6 +100,12 @@ export async function handleGetNodeAccess(
 ): Promise<void> {
   try {
     const db = getDb();
+    // The separate existence SELECT is NOT redundant with nodeVisibleTo:
+    // resolveAccessChain returns entries=null for a nonexistent node (empty
+    // chain), and canSeeNode(identity, null) is TRUE by contract (null means
+    // "unrestricted", not "hidden") -- so nodeVisibleTo alone would answer
+    // true for an id that doesn't exist at all. Both checks are required to
+    // 404 correctly.
     const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [nodeId] });
     if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, nodeId))) {
       respondJson(res, 404, { error: "node not found" });
@@ -120,6 +126,8 @@ export async function handlePutNodeAccess(
 ): Promise<void> {
   try {
     const db = getDb();
+    // See handleGetNodeAccess above: the existence SELECT is load-bearing,
+    // not redundant with nodeVisibleTo (which answers true for a missing id).
     const nodeRow = await db.execute({
       sql: "SELECT id, visibility FROM nodes WHERE id = ?",
       args: [nodeId],
@@ -131,6 +139,23 @@ export async function handlePutNodeAccess(
 
     const body = await parseJsonBody(req, res, PutAccessBody);
     if (!body) return;
+
+    // Reject duplicate (kind, principal) pairs up front -- letting them
+    // through would hit the node_access PK (node_id, kind, principal)
+    // inside the INSERT batch below and 500 instead of a clean 400.
+    const seenEntries = new Set<string>();
+    const duplicateEntries = new Set<string>();
+    for (const entry of body.entries) {
+      const key = `${entry.kind}:${entry.principal}`;
+      if (seenEntries.has(key)) duplicateEntries.add(key);
+      seenEntries.add(key);
+    }
+    if (duplicateEntries.size > 0) {
+      respondJson(res, 400, {
+        error: `duplicate access entries: ${[...duplicateEntries].join(", ")}`,
+      });
+      return;
+    }
 
     const userIds = body.entries
       .filter((e): e is { kind: "user"; principal: string } => e.kind === "user")

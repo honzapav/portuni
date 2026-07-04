@@ -76,6 +76,19 @@ describe("updateNodeInternal: goal, lifecycle_state, owner_id", () => {
     const n = await db.execute({ sql: "SELECT owner_id FROM nodes WHERE id = ?", args: [projectId] });
     assert.equal(n.rows[0].owner_id, bot.id);
   });
+
+  // Task 14 point 6: visibility='group' is a derived state owned by
+  // PUT /nodes/:id/access -- a plain node update must not be able to set it
+  // manually (that would show the "shared" UI state with no ACL behind it).
+  it("rejects visibility='group' on update", async () => {
+    const { db, projectId } = await freshEnv();
+    await assert.rejects(
+      updateNodeInternal(db, "U1", { node_id: projectId, visibility: "group" }),
+      /managed via the sharing ACL/,
+    );
+    const n = await db.execute({ sql: "SELECT visibility FROM nodes WHERE id = ?", args: [projectId] });
+    assert.equal(n.rows[0].visibility, "team", "visibility must be unaffected by the rejected update");
+  });
 });
 
 describe("createNodeInternal with goal and lifecycle_state", () => {
@@ -121,5 +134,21 @@ describe("createNodeInternal with goal and lifecycle_state", () => {
     const n = await db.execute({ sql: "SELECT goal, lifecycle_state FROM nodes WHERE id = ?", args: [id] });
     assert.equal(n.rows[0].goal, null);
     assert.equal(n.rows[0].lifecycle_state, null);
+  });
+
+  // Task 14 point 6: same guard at create time -- a node cannot be born
+  // with visibility='group' outside the sharing ACL flow either.
+  it("rejects visibility='group' at create time", async () => {
+    const { db, orgId } = await freshEnv();
+    const { createNodeInternal } = await import("../apps/server/domain/nodes.js");
+    await assert.rejects(
+      createNodeInternal(db, "U1", {
+        type: "project",
+        name: "X",
+        organization_id: orgId,
+        visibility: "group",
+      }),
+      /managed via the sharing ACL/,
+    );
   });
 });

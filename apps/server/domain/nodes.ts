@@ -18,6 +18,22 @@ import { getLifecycleStatesForType } from "../shared/popp.js";
 import type { NodeType } from "../shared/popp.js";
 import { writeAudit } from "../infra/audit.js";
 
+// visibility='group' is a derived state: it is set (and unset) exclusively
+// by PUT /nodes/:id/access, which writes the column directly via SQL and
+// never calls createNodeInternal/updateNodeInternal (see apps/server/api/access.ts).
+// Letting a plain node create/update set it manually would let a node show
+// the "shared" dashed-border state in the graph with no actual node_access
+// row backing it (or, worse, silently overwrite a real ACL-driven value
+// out from under the sharing feature). Thrown from both entry points so
+// REST (api/nodes.ts, mapped to 400) and MCP (mcp/tools/nodes.ts, mapped
+// to isError text) reject it the same way.
+export class NodeVisibilityManagedError extends Error {
+  constructor() {
+    super("visibility 'group' is managed via the sharing ACL (PUT /nodes/:id/access) and cannot be set directly");
+    this.name = "NodeVisibilityManagedError";
+  }
+}
+
 // Cleanup hook for node purge: removes the per-device local mirror row for
 // the node being purged. Best-effort -- never fails on local cleanup errors.
 // Other devices clean up their stale mirror rows lazily.
@@ -97,6 +113,10 @@ export async function updateNodeInternal(
   input: UpdateNodeInput,
 ): Promise<void> {
   const args = UpdateNodeInput.parse(input);
+
+  if (args.visibility === "group") {
+    throw new NodeVisibilityManagedError();
+  }
 
   const row = await db.execute({
     sql: "SELECT type FROM nodes WHERE id = ?",
@@ -178,6 +198,10 @@ export async function createNodeInternal(
   input: CreateNodeInput,
 ): Promise<string> {
   const args = CreateNodeInput.parse(input);
+
+  if (args.visibility === "group") {
+    throw new NodeVisibilityManagedError();
+  }
 
   // Non-organization nodes must belong to exactly one organization. Verify
   // here so the error message is friendly instead of a DB-level FK/trigger

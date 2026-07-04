@@ -155,6 +155,19 @@ function makeMockReqRes(
   return { req, res, captured };
 }
 
+// Setup helper for tests that need a node already under some ACL state
+// before exercising the behavior under test -- issues the PUT as the
+// manager identity and returns the raw captured response so callers can
+// still assert on it when the PUT itself is part of what's being tested.
+async function putAccessFixture(
+  nodeId: string,
+  entries: unknown[],
+): Promise<MockResponse> {
+  const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${nodeId}/access`, { entries });
+  await routeApiRequest(req, res, new URL(`http://localhost/nodes/${nodeId}/access`), makeManager());
+  return captured;
+}
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -163,8 +176,6 @@ describe("GET/PUT /nodes/:id/access", () => {
   let db: DbClient;
   let workspace: string;
   let orgId: string;
-  let nodeAId: string;
-  let nodeBId: string;
   let nodeDId: string;
   let aliceId: string;
 
@@ -177,8 +188,6 @@ describe("GET/PUT /nodes/:id/access", () => {
     setDbForTesting(db);
 
     orgId = await insertOrg(db, "TestOrg");
-    nodeAId = await insertNode(db, orgId, { name: "NodeA" });
-    nodeBId = await insertNode(db, nodeAId, { name: "NodeB" }); // child of NodeA, no own ACL
     nodeDId = await insertNode(db, orgId, {
       name: "NodeD",
       visibility: "group",
@@ -198,34 +207,44 @@ describe("GET/PUT /nodes/:id/access", () => {
     await rm(workspace, { recursive: true, force: true });
   });
 
+  // Tests 1/3/4/5 used to share a single `nodeAId` fixture mutated in
+  // sequence -- test 3 (child inheritance) only passed because test 1 had
+  // already restricted the shared parent, and test 5's "unaffected"
+  // assertion only held because test 4 had already cleared it back to
+  // 'team'. That made the suite pass only in file-declaration order and
+  // break under reordering or per-test runs. Each test below now creates
+  // its own dedicated node (and sets up whatever ACL precondition it needs
+  // itself), so none of them depend on another test having run first.
+
   // 1. PUT with group+user entries (manage identity) -> 200; visibility='group'; audit row.
   test("1. PUT sets group+user ACL -> 200, visibility=group, audit row logged", async () => {
     const manager = makeManager();
+    const node1Id = await insertNode(db, orgId, { name: "Node1" });
     const body = {
       entries: [
         { kind: "group", principal: "eng@x.com", display_email: "eng@x.com" },
         { kind: "user", principal: aliceId },
       ],
     };
-    const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${nodeAId}/access`, body);
-    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${nodeAId}/access`), manager);
+    const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${node1Id}/access`, body);
+    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${node1Id}/access`), manager);
 
     assert.equal(captured.statusCode, 200, `expected 200, got ${captured.statusCode}; body: ${captured.body}`);
     const parsed = JSON.parse(captured.body);
     assert.equal(parsed.restricted, true);
     assert.equal(parsed.inherited, false);
-    assert.equal(parsed.source_node_id, nodeAId);
+    assert.equal(parsed.source_node_id, node1Id);
     assert.equal(parsed.entries.length, 2);
 
     const nodeRow = await db.execute({
       sql: "SELECT visibility FROM nodes WHERE id = ?",
-      args: [nodeAId],
+      args: [node1Id],
     });
     assert.equal(nodeRow.rows[0].visibility, "group");
 
     const auditRows = await db.execute({
       sql: "SELECT action, target_id FROM audit_log WHERE target_id = ? AND action = 'node.access.set'",
-      args: [nodeAId],
+      args: [node1Id],
     });
     assert.equal(auditRows.rows.length, 1, "expected exactly one node.access.set audit row");
   });
@@ -233,15 +252,21 @@ describe("GET/PUT /nodes/:id/access", () => {
   // 2. GET returns own list, inherited false, display_name from users JOIN.
   test("2. GET returns own ACL with display data joined from users", async () => {
     const manager = makeManager();
-    const { req, res, captured } = makeMockReqRes("GET", `/nodes/${nodeAId}/access`);
-    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${nodeAId}/access`), manager);
+    const node2Id = await insertNode(db, orgId, { name: "Node2" });
+    await putAccessFixture(node2Id, [
+      { kind: "group", principal: "eng@x.com", display_email: "eng@x.com" },
+      { kind: "user", principal: aliceId },
+    ]);
+
+    const { req, res, captured } = makeMockReqRes("GET", `/nodes/${node2Id}/access`);
+    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${node2Id}/access`), manager);
 
     assert.equal(captured.statusCode, 200, `expected 200, got ${captured.statusCode}; body: ${captured.body}`);
     const parsed = JSON.parse(captured.body);
     assert.equal(parsed.restricted, true);
     assert.equal(parsed.inherited, false);
-    assert.equal(parsed.source_node_id, nodeAId);
-    assert.equal(parsed.source_node_name, "NodeA");
+    assert.equal(parsed.source_node_id, node2Id);
+    assert.equal(parsed.source_node_name, "Node2");
 
     const userEntry = parsed.entries.find((e: { kind: string }) => e.kind === "user");
     const groupEntry = parsed.entries.find((e: { kind: string }) => e.kind === "group");
@@ -256,25 +281,35 @@ describe("GET/PUT /nodes/:id/access", () => {
   });
 
   // 3. GET on a child without its own ACL returns the inherited chain.
-  test("3. GET on child without own ACL returns inherited entries from NodeA", async () => {
+  test("3. GET on child without own ACL returns inherited entries from its own parent", async () => {
     const manager = makeManager();
-    const { req, res, captured } = makeMockReqRes("GET", `/nodes/${nodeBId}/access`);
-    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${nodeBId}/access`), manager);
+    const parent3Id = await insertNode(db, orgId, { name: "Parent3" });
+    const child3Id = await insertNode(db, parent3Id, { name: "Child3" }); // no own ACL
+    await putAccessFixture(parent3Id, [
+      { kind: "group", principal: "eng@x.com", display_email: "eng@x.com" },
+      { kind: "user", principal: aliceId },
+    ]);
+
+    const { req, res, captured } = makeMockReqRes("GET", `/nodes/${child3Id}/access`);
+    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${child3Id}/access`), manager);
 
     assert.equal(captured.statusCode, 200, `expected 200, got ${captured.statusCode}; body: ${captured.body}`);
     const parsed = JSON.parse(captured.body);
     assert.equal(parsed.restricted, true);
     assert.equal(parsed.inherited, true);
-    assert.equal(parsed.source_node_id, nodeAId);
-    assert.equal(parsed.source_node_name, "NodeA");
+    assert.equal(parsed.source_node_id, parent3Id);
+    assert.equal(parsed.source_node_name, "Parent3");
     assert.equal(parsed.entries.length, 2);
   });
 
   // 4. PUT entries:[] -> visibility back to 'team', GET restricted:false.
   test("4. PUT with empty entries clears restriction back to team", async () => {
     const manager = makeManager();
-    const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${nodeAId}/access`, { entries: [] });
-    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${nodeAId}/access`), manager);
+    const node4Id = await insertNode(db, orgId, { name: "Node4" });
+    await putAccessFixture(node4Id, [{ kind: "group", principal: "eng@x.com", display_email: "eng@x.com" }]);
+
+    const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${node4Id}/access`, { entries: [] });
+    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${node4Id}/access`), manager);
 
     assert.equal(captured.statusCode, 200, `expected 200, got ${captured.statusCode}; body: ${captured.body}`);
     const parsed = JSON.parse(captured.body);
@@ -282,15 +317,15 @@ describe("GET/PUT /nodes/:id/access", () => {
 
     const nodeRow = await db.execute({
       sql: "SELECT visibility FROM nodes WHERE id = ?",
-      args: [nodeAId],
+      args: [node4Id],
     });
     assert.equal(nodeRow.rows[0].visibility, "team");
 
     const { req: getReq, res: getRes, captured: getCaptured } = makeMockReqRes(
       "GET",
-      `/nodes/${nodeAId}/access`,
+      `/nodes/${node4Id}/access`,
     );
-    await routeApiRequest(getReq, getRes, new URL(`http://localhost/nodes/${nodeAId}/access`), manager);
+    await routeApiRequest(getReq, getRes, new URL(`http://localhost/nodes/${node4Id}/access`), manager);
     assert.equal(getCaptured.statusCode, 200);
     const getParsed = JSON.parse(getCaptured.body);
     assert.equal(getParsed.restricted, false);
@@ -303,26 +338,126 @@ describe("GET/PUT /nodes/:id/access", () => {
   // 5. PUT with a user principal that doesn't exist in `users` -> 400.
   test("5. PUT with unknown user id -> 400, no mutation", async () => {
     const manager = makeManager();
+    const node5Id = await insertNode(db, orgId, { name: "Node5" });
     const bogusId = "01BOGUSNOTAREALUSERID0000A";
-    const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${nodeAId}/access`, {
+    const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${node5Id}/access`, {
       entries: [{ kind: "user", principal: bogusId }],
     });
-    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${nodeAId}/access`), manager);
+    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${node5Id}/access`), manager);
 
     assert.equal(captured.statusCode, 400, `expected 400, got ${captured.statusCode}; body: ${captured.body}`);
     assert.match(captured.body, new RegExp(bogusId), "error should list the missing user id");
 
     const nodeRow = await db.execute({
       sql: "SELECT visibility FROM nodes WHERE id = ?",
-      args: [nodeAId],
+      args: [node5Id],
     });
     assert.equal(nodeRow.rows[0].visibility, "team", "visibility must be unaffected by the rejected PUT");
 
     const accessRows = await db.execute({
       sql: "SELECT COUNT(*) AS cnt FROM node_access WHERE node_id = ?",
-      args: [nodeAId],
+      args: [node5Id],
     });
     assert.equal(accessRows.rows[0].cnt, 0, "node_access must be unaffected by the rejected PUT");
+  });
+
+  // Task 14 point 1: duplicate (kind, principal) pairs in one PUT payload
+  // used to hit the node_access PK inside the batch INSERT and 500; now
+  // rejected up front with a 400 listing the offending pair(s).
+  test("8. PUT with duplicate (kind, principal) entries -> 400, no mutation", async () => {
+    const manager = makeManager();
+    const node8Id = await insertNode(db, orgId, { name: "Node8" });
+    const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${node8Id}/access`, {
+      entries: [
+        { kind: "group", principal: "eng@x.com", display_email: "eng@x.com" },
+        { kind: "group", principal: "eng@x.com", display_email: "eng@x.com" },
+      ],
+    });
+    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${node8Id}/access`), manager);
+
+    assert.equal(captured.statusCode, 400, `expected 400, got ${captured.statusCode}; body: ${captured.body}`);
+    assert.match(captured.body, /group:eng@x\.com/, "error should list the duplicate pair");
+
+    const nodeRow = await db.execute({
+      sql: "SELECT visibility FROM nodes WHERE id = ?",
+      args: [node8Id],
+    });
+    assert.equal(nodeRow.rows[0].visibility, "team", "rejected PUT must not mutate visibility");
+
+    const accessRows = await db.execute({
+      sql: "SELECT COUNT(*) AS cnt FROM node_access WHERE node_id = ?",
+      args: [node8Id],
+    });
+    assert.equal(accessRows.rows[0].cnt, 0, "rejected PUT must not write any node_access rows");
+  });
+
+  // Task 14 point 1: a duplicate user entry (same principal twice) must
+  // also be rejected, not just duplicate groups.
+  test("9. PUT with duplicate user entries -> 400", async () => {
+    const manager = makeManager();
+    const node9Id = await insertNode(db, orgId, { name: "Node9" });
+    const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${node9Id}/access`, {
+      entries: [
+        { kind: "user", principal: aliceId },
+        { kind: "user", principal: aliceId },
+      ],
+    });
+    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${node9Id}/access`), manager);
+
+    assert.equal(captured.statusCode, 400, `expected 400, got ${captured.statusCode}; body: ${captured.body}`);
+    assert.match(captured.body, new RegExp(`user:${aliceId}`));
+  });
+
+  // Task 14 point 2: pin the private-preservation behavior. Restricting
+  // (non-empty entries) always moves visibility to 'group', regardless of
+  // the prior value -- including 'private'. Clearing only reverts to
+  // 'team' when the node was 'group' at the time of the PUT; it never
+  // clobbers a 'private' node that was never put under ACL restriction.
+  test("10. PUT non-empty entries on a 'private' node moves it to 'group'", async () => {
+    const privateNodeId = await insertNode(db, orgId, { name: "PrivateNode10", visibility: "private" });
+
+    const restricted = await putAccessFixture(privateNodeId, [
+      { kind: "group", principal: "eng@x.com", display_email: "eng@x.com" },
+    ]);
+    assert.equal(restricted.statusCode, 200);
+    const afterRestrict = await db.execute({
+      sql: "SELECT visibility FROM nodes WHERE id = ?",
+      args: [privateNodeId],
+    });
+    assert.equal(afterRestrict.rows[0].visibility, "group", "non-empty entries always set 'group', even from 'private'");
+
+    // Clearing afterwards reverts to 'team' (the node is currently 'group',
+    // not 'private', so the wasGroup branch fires) -- NOT back to 'private'.
+    const cleared = await putAccessFixture(privateNodeId, []);
+    assert.equal(cleared.statusCode, 200);
+    const afterClear = await db.execute({
+      sql: "SELECT visibility FROM nodes WHERE id = ?",
+      args: [privateNodeId],
+    });
+    assert.equal(
+      afterClear.rows[0].visibility,
+      "team",
+      "clearing a node that was 'group' reverts to 'team', never back to its pre-restriction 'private'",
+    );
+  });
+
+  test("11. PUT entries:[] on a 'private' node that was never restricted leaves visibility unchanged", async () => {
+    const privateNodeId = await insertNode(db, orgId, { name: "PrivateNode11", visibility: "private" });
+
+    const cleared = await putAccessFixture(privateNodeId, []);
+    assert.equal(cleared.statusCode, 200, `expected 200, got ${cleared.statusCode}; body: ${cleared.body}`);
+    const parsed = JSON.parse(cleared.body);
+    assert.equal(parsed.restricted, false);
+
+    const nodeRow = await db.execute({
+      sql: "SELECT visibility FROM nodes WHERE id = ?",
+      args: [privateNodeId],
+    });
+    assert.equal(
+      nodeRow.rows[0].visibility,
+      "private",
+      "PUT [] on a node that was never restricted (not 'group') must not clobber 'private'",
+    );
   });
 
   // 6. Non-member (read identity, outside the group) -> GET 404, PUT 403.
