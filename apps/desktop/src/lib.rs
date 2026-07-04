@@ -1045,6 +1045,15 @@ async fn api_request(
     Ok(ApiResponse { status, body })
 }
 
+// True when `ws_id` is the active workspace at call time. Gates the
+// `backend-ready` / `backend-error` emits: the webview boot contract
+// (apps/web/src/lib/backend-url.ts) resolves/rejects on ANY such event, so
+// events must only describe the workspace the webview is displaying.
+// Non-active workspace state stays visible via list_workspaces (`running`).
+fn is_active_ws(app: &AppHandle, ws_id: &str) -> bool {
+    active_workspace(app).map(|(id, _)| id).ok().as_deref() == Some(ws_id)
+}
+
 // Kill one workspace's sidecar child if we still hold a handle to it, and
 // drop its port entry. Used by the lifecycle commands (disable/delete/
 // restart) and, via kill_all_sidecars, the app exit paths.
@@ -1202,7 +1211,13 @@ pub(crate) fn spawn_sidecar_ws(
                     .lock()
                     .unwrap()
                     .insert(ws_id.to_string(), 0);
-                let _ = app.emit("backend-ready", 0u16);
+                // Emit only for the active workspace: the webview boot
+                // resolves on any backend-ready, so another workspace's
+                // sentinel must not complete the active workspace's boot.
+                // Non-active status surfaces via list_workspaces instead.
+                if is_active_ws(app, ws_id) {
+                    let _ = app.emit("backend-ready", 0u16);
+                }
                 return Ok(());
             }
         }
@@ -1312,13 +1327,23 @@ pub(crate) fn spawn_sidecar_ws(
                                 .lock()
                                 .unwrap()
                                 .insert(ws.clone(), port);
-                            let _ = handle.emit("backend-ready", port);
+                            // Webview boot contract: it resolves/rejects on
+                            // any backend-ready/-error, so only the ACTIVE
+                            // workspace's sidecar may emit. Non-active status
+                            // surfaces via list_workspaces (`running`).
+                            if is_active_ws(&handle, &ws) {
+                                let _ = handle.emit("backend-ready", port);
+                            }
                             info!("sidecar[{ws}] ready on port {port}");
                         }
                     } else if let Some(rest) = line.strip_prefix("PORTUNI_BACKEND_ERROR=") {
                         let msg = rest.trim().to_string();
                         error!("sidecar[{ws}] backend error: {msg}");
-                        let _ = handle.emit("backend-error", msg);
+                        // Active-only: a non-active workspace's startup
+                        // failure must not reject the webview boot.
+                        if is_active_ws(&handle, &ws) {
+                            let _ = handle.emit("backend-error", msg);
+                        }
                     } else {
                         info!("sidecar[{ws}]: {line}");
                     }
@@ -1336,10 +1361,15 @@ pub(crate) fn spawn_sidecar_ws(
                         .lock()
                         .unwrap()
                         .remove(&ws);
-                    let _ = handle.emit(
-                        "backend-error",
-                        format!("sidecar {ws} terminated (exit code {:?})", payload.code),
-                    );
+                    // Active-only (webview boot contract): another
+                    // workspace's crash must not take down the UI boot;
+                    // it stays visible via list_workspaces (`running`).
+                    if is_active_ws(&handle, &ws) {
+                        let _ = handle.emit(
+                            "backend-error",
+                            format!("sidecar {ws} terminated (exit code {:?})", payload.code),
+                        );
+                    }
                 }
                 _ => {}
             }
