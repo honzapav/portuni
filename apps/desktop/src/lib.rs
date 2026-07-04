@@ -126,11 +126,20 @@ fn clear_turso_token() -> Result<(), String> {
     }
 }
 
-// Returns the current in-memory MCP auth token. The frontend reads it
-// only when the user explicitly asks (Settings → Show / Copy) so it
-// doesn't sit in webview JS state by default.
+// Returns the MCP bearer token the current data_mode actually needs. The
+// frontend reads it only when the user explicitly asks (Settings → Show /
+// Copy) so it doesn't sit in webview JS state by default.
+//
+// Local mode: the per-launch sidecar auth token from AuthToken state.
+// Central mode: the long-lived device token from Keychain (minted on
+// demand) — the central server rejects the local sidecar token, so
+// handing that out here would give the user a credential that 401s.
 #[tauri::command]
 fn get_mcp_token(app: AppHandle) -> Result<String, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    if load_config(&data_dir).data_mode.as_deref() == Some("central") {
+        return pty::ensure_device_token(&app);
+    }
     Ok(app
         .state::<AuthToken>()
         .0
