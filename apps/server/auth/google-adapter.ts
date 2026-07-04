@@ -46,7 +46,7 @@ export class GoogleAdapter implements IdentityAdapter {
 
   constructor(private readonly deps: GoogleAdapterDeps) {
     this.now = deps.now ?? (() => Date.now());
-    this.allowedDomains = deps.allowedDomains.map((d) => d.toLowerCase());
+    this.allowedDomains = deps.allowedDomains.map((d) => d.trim().toLowerCase());
   }
 
   private assertAllowedIdentity(payload: GoogleIdTokenPayload | null): Identity {

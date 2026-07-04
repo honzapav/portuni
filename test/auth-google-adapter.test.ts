@@ -236,6 +236,18 @@ test("verify rejects a domain not in a multi-domain allow list", async () => {
   await assert.rejects(adapter.verify("token"), /domain/i);
 });
 
+test("verify accepts domain with whitespace in allowed list after trim", async () => {
+  const adapter = new GoogleAdapter({
+    verifyIdToken: async () => basePayload,
+    listGroups: async () => [],
+    listAllGroups: async () => [],
+    allowedDomains: ["  Workflow.OOO  ", "tempo.ooo"],
+    roleConfig: { admin: [], manage: [], write: [] },
+  });
+  const id = await adapter.verify("token");
+  assert.equal(id.email, "a@workflow.ooo");
+});
+
 test("createGoogleAdapter parses PORTUNI_ALLOWED_DOMAINS as a comma list, trimmed and lowercased", () => {
   const domains = parseAllowedDomains({
     PORTUNI_ALLOWED_DOMAINS: "workflow.ooo, Tempo.ooo",
