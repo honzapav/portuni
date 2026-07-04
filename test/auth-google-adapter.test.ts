@@ -146,3 +146,65 @@ test("listDomainGroups caches the directory fetch for 5 minutes", async () => {
   await adapter.listDomainGroups("");
   assert.equal(allGroupsCalls(), 2, "expired cache refetches");
 });
+
+test("listDomainGroups caps results at 20 even with more matches", async () => {
+  const allGroups = Array.from({ length: 25 }, (_, i) => ({
+    id: `g${i}`,
+    email: `team${i}@workflow.ooo`,
+    name: `Team ${i}`,
+  }));
+  const { adapter } = makeAdapter({ allGroups });
+  const result = await adapter.listDomainGroups("team");
+  assert.equal(result.length, 20, "result is capped at 20 despite 25 matches");
+});
+
+test("listDomainGroups coalesces concurrent cold-cache fetches into a single listAllGroups call", async () => {
+  let allGroupsCalls = 0;
+  let resolveFetch: ((groups: Array<{ id: string; email: string; name: string }>) => void) | null =
+    null;
+  const fetchPromise = new Promise<Array<{ id: string; email: string; name: string }>>(
+    (resolve) => {
+      resolveFetch = resolve;
+    },
+  );
+  const adapter = new GoogleAdapter({
+    verifyIdToken: async () => basePayload,
+    listGroups: async () => [],
+    listAllGroups: async () => {
+      allGroupsCalls += 1;
+      return fetchPromise;
+    },
+    allowedDomain: "workflow.ooo",
+    roleConfig: { admin: [], manage: [], write: [] },
+  });
+
+  const p1 = adapter.listDomainGroups("eng");
+  const p2 = adapter.listDomainGroups("eng");
+  assert.ok(resolveFetch, "listAllGroups must have been invoked synchronously by both callers");
+  resolveFetch!([{ id: "1", email: "eng@workflow.ooo", name: "Engineering" }]);
+  const [r1, r2] = await Promise.all([p1, p2]);
+
+  assert.equal(allGroupsCalls, 1, "concurrent cold-cache calls must coalesce into one fetch");
+  assert.equal(r1.length, 1);
+  assert.equal(r2.length, 1);
+});
+
+test("listDomainGroups does not poison the cache on a rejected fetch and allows retry", async () => {
+  let allGroupsCalls = 0;
+  const adapter = new GoogleAdapter({
+    verifyIdToken: async () => basePayload,
+    listGroups: async () => [],
+    listAllGroups: async () => {
+      allGroupsCalls += 1;
+      if (allGroupsCalls === 1) throw new Error("directory API unavailable");
+      return [{ id: "1", email: "eng@workflow.ooo", name: "Engineering" }];
+    },
+    allowedDomain: "workflow.ooo",
+    roleConfig: { admin: [], manage: [], write: [] },
+  });
+
+  await assert.rejects(adapter.listDomainGroups("eng"), /directory API unavailable/);
+  const result = await adapter.listDomainGroups("eng");
+  assert.equal(allGroupsCalls, 2, "retry after rejection triggers a fresh fetch");
+  assert.equal(result.length, 1);
+});

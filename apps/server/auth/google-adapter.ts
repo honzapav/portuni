@@ -38,6 +38,8 @@ export class GoogleAdapter implements IdentityAdapter {
     fetchedAt: number;
     groups: Array<{ id: string; email: string; name: string }>;
   } | null = null;
+  private allGroupsInFlight: Promise<Array<{ id: string; email: string; name: string }>> | null =
+    null;
   private readonly now: () => number;
 
   constructor(private readonly deps: GoogleAdapterDeps) {
@@ -98,7 +100,17 @@ export class GoogleAdapter implements IdentityAdapter {
   ): Promise<Array<{ id: string; email: string; name: string }>> {
     const now = this.now();
     if (!this.allGroupsCache || now - this.allGroupsCache.fetchedAt >= ALL_GROUPS_CACHE_TTL_MS) {
-      const groups = await this.deps.listAllGroups();
+      // Coalesce concurrent cache misses behind one in-flight fetch so a burst
+      // of requests (e.g. sharing-UI keystrokes right after cache expiry)
+      // doesn't fan out into N paginated Directory API calls. A rejection
+      // must not poison the cache and must clear the slot so the next call
+      // retries with a fresh fetch.
+      if (!this.allGroupsInFlight) {
+        this.allGroupsInFlight = this.deps.listAllGroups().finally(() => {
+          this.allGroupsInFlight = null;
+        });
+      }
+      const groups = await this.allGroupsInFlight;
       this.allGroupsCache = { fetchedAt: now, groups };
     }
     const q = query.toLowerCase().trim();
