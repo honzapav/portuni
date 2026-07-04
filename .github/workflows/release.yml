@@ -5,9 +5,12 @@ name: Release
 # DMGs to a draft GitHub Release on that tag. Edit the release body
 # and click "Publish" once both jobs go green.
 #
-# Builds are Developer ID signed and notarized. tauri-action imports the
-# certificate into a temporary keychain and Tauri submits to notarytool
-# and staples automatically when the APPLE_* env vars below are present.
+# Builds are Developer ID signed and notarized. The certificate is
+# imported into a build keychain as an explicit step BEFORE tauri-action:
+# scripts/build-sidecar.mjs codesigns the libsql .node bindings during
+# beforeBuildCommand, which runs earlier than Tauri's own certificate
+# import. Tauri then signs the bundle and submits to notarytool + staples
+# automatically when the APPLE_* env vars below are present.
 # Required repo secrets (stored in Bitwarden, item "Portuni Apple signing"):
 #   APPLE_CERTIFICATE          base64 of the Developer ID Application .p12
 #   APPLE_CERTIFICATE_PASSWORD password chosen at .p12 export
@@ -34,7 +37,9 @@ jobs:
         include:
           - runner: macos-14
             target: aarch64-apple-darwin
-          - runner: macos-13
+          # macos-13 was retired 2025-12; macos-15-intel is the last
+          # x86_64 image (available until 2027-08), then drop Intel.
+          - runner: macos-15-intel
             target: x86_64-apple-darwin
 
     runs-on: ${{ matrix.runner }}
@@ -63,6 +68,26 @@ jobs:
       - run: npm ci
 
       - run: npm ci --prefix apps/web
+
+      # The identity must exist in the keychain before beforeBuildCommand
+      # runs (build-sidecar.mjs codesigns the .node bindings there).
+      - name: Import Apple Developer certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import "$RUNNER_TEMP/certificate.p12" -k build.keychain \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm "$RUNNER_TEMP/certificate.p12"
+          security find-identity -v -p codesigning build.keychain
 
       - uses: tauri-apps/tauri-action@v0
         env:
