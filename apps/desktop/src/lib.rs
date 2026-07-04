@@ -13,6 +13,7 @@ use std::sync::Mutex;
 mod auth;
 mod mcp_install;
 mod pty;
+mod workspace;
 
 use log::{error, info, warn};
 use rand::distr::Alphanumeric;
