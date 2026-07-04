@@ -237,6 +237,7 @@ function buildElements(graph: GraphPayload): cytoscape.ElementDefinition[] {
       status: node.status,
       lifecycle_state: node.lifecycle_state ?? "",
       visibility: node.visibility,
+      restricted: node.restricted ?? false,
       owner_id: node.owner?.id ?? "",
       owner_name: node.owner?.name ?? "",
       owner_initials: node.owner ? ownerInitials(node.owner.name) : "",
@@ -532,15 +533,18 @@ function stylesheet(theme: ThemeColors): cytoscape.StylesheetJson {
         "text-opacity": 0.55,
       },
     },
-    // RESTRICTED: visibility = "group" -- dashed border regardless of
-    // lifecycle state, so a node's sharing status (Task 7: sekce Sdílení)
-    // is visible at a glance without opening the detail pane. Placed
-    // after all lifecycle overlays above so it always wins the
-    // border-style property; it never touches border-color/width, so
-    // whatever those rules set (including the plain type colour) is
-    // preserved.
+    // RESTRICTED: node under a node_access ACL -- its own rows or an
+    // inherited ancestor's -- gets a dashed border regardless of
+    // lifecycle state, so sharing status (Task 7: sekce Sdílení) is
+    // visible at a glance without opening the detail pane. Driven by the
+    // `restricted` graph payload flag (Task 14), not `visibility`, so
+    // nodes that merely inherit a restriction from an ancestor also get
+    // the dashed border. Placed after all lifecycle overlays above so it
+    // always wins the border-style property; it never touches
+    // border-color/width, so whatever those rules set (including the
+    // plain type colour) is preserved.
     {
-      selector: 'node[visibility = "group"][type != "organization"]',
+      selector: 'node[?restricted][type != "organization"]',
       style: {
         "border-style": "dashed",
       },
@@ -1547,6 +1551,7 @@ function GraphView({
             "description",
             "status",
             "lifecycle_state",
+            "restricted",
             "owner_id",
             "owner_name",
             "owner_initials",

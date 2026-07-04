@@ -103,6 +103,15 @@ Highest matching group wins. Admin-scoped users bypass all node-level group chec
 
 ## Notes
 
+- **Access revocation SLA**: three independent caches delay when removing
+  a user from a group/ACL actually takes effect — Google group membership
+  cache (`GROUP_CACHE_TTL_MS`, 15 min, `google-adapter.ts`), session JWT
+  (1 h TTL), and MCP session idle timeout (`PORTUNI_SESSION_TTL_MS`,
+  30 min, see above). Worst case: revocation is only fully in effect
+  after ~1 h. For immediate revocation, delete the user's device tokens
+  (self-service only today — `DELETE /device-tokens/:id`; deleting another
+  user's tokens needs a direct DB op, no admin endpoint yet) and wait out
+  the session JWT expiry rather than relying on the caches alone.
 - `.env.schema` is committed and visible to agents; actual values are not.
 - Run `varlock scan` before committing to catch accidental secret leakage.
 - For the design rationale behind google mode see `docs/superpowers/specs/2026-06-09-google-groups-auth-design.md`.

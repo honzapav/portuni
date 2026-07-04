@@ -192,6 +192,12 @@ export default function SettingsPage({
 
         {tab === "users" && isAdmin && <SettingsUsersPanel />}
 
+        {tab === "users" && adminState === "unknown" && (
+          <div className="text-[13px] text-[var(--color-text-dim)]">
+            Načítám…
+          </div>
+        )}
+
         {tab === "general" && (
           <>
             <McpServerSection />

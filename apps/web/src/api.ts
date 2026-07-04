@@ -25,8 +25,13 @@ export type User = {
   name: string;
 };
 
+// GET /users was raised to the "manage" scope (node-sharing owner picker).
+// Read-scope callers (e.g. ActorModal's user_id dropdown) can't save an
+// owner anyway, so a 403 here degrades silently to an empty list instead
+// of surfacing an error banner.
 export async function fetchUsers(): Promise<User[]> {
   const res = await apiFetch("/users");
+  if (res.status === 403) return [];
   if (!res.ok) throw new Error(`users: ${res.status}`);
   return res.json();
 }
@@ -627,6 +632,18 @@ export class UserExistsError extends Error {
   }
 }
 
+// Thrown by inviteUser when the server rejects the email as malformed (400,
+// zod's z.string().email() failing validation). The client already checks
+// the format before POSTing, but this still covers races and any other
+// 400 the endpoint might return -- surfaces the same Czech message instead
+// of raw zod issue text.
+export class InvalidEmailError extends Error {
+  constructor() {
+    super("Zadej platný e-mail.");
+    this.name = "InvalidEmailError";
+  }
+}
+
 // POST /auth/users/invite (admin-only): creates a placeholder user row so it
 // can be granted access before the invitee's first login.
 export async function inviteUser(
@@ -639,6 +656,9 @@ export async function inviteUser(
   });
   if (res.status === 409) {
     throw new UserExistsError(email);
+  }
+  if (res.status === 400) {
+    throw new InvalidEmailError();
   }
   await throwForStatus(res, "invite-user");
   return res.json();

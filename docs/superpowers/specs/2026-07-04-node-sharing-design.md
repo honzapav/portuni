@@ -103,6 +103,21 @@ CREATE INDEX idx_node_access_node ON node_access(node_id);
 - Globální role se dál mapují z e-mailů skupin
   (`PORTUNI_GROUPS_ADMIN/MANAGE/WRITE`).
 
+**SLA revokace přístupu.** Tři nezávislé cache vrstvy zpožďují, kdy se
+odebrání ze skupiny/ACL reálně projeví: `GoogleAdapter` cachuje členství
+ve skupinách 15 minut (`GROUP_CACHE_TTL_MS` v `google-adapter.ts`),
+session JWT nese skupiny/role po dobu 1 h (viz výše), a MCP relace
+(`apps/server/mcp/transport.ts`, `SESSION_TTL_MS`) zůstává živá až 30 min
+nečinnosti. V nejhorším případě (čerstvě obnovená group cache + čerstvě
+vydaný JWT + aktivní MCP session) se odebrání přístupu projeví reálně až
+za ~1 h. Pro okamžitou revokaci (kompromitovaný účet, urgentní offboarding)
+nespoléhat na TTL vypršení: smazat všechny device tokeny daného uživatele
+(dnes jen self-service přes `DELETE /device-tokens/:id`, `handleRevokeDeviceToken`
+v `apps/server/api/auth.ts` – pro cizí účet zatím jen přímý zásah v tabulce
+`device_tokens`, admin endpoint chybí – v1 mimo rozsah) a počkat na expiraci
+session JWT – bez platného device tokenu se nový JWT nevydá, takže i běžící
+MCP session skončí nejpozději s idle timeoutem.
+
 ## 3. Uživatelé
 
 - `users` tabulka existuje (id = ulid, `google_sub`, email, name,

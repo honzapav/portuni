@@ -3,7 +3,7 @@
 // gating (global_scope === "admin") happens in SettingsPage.tsx; this
 // component assumes it's only ever rendered for an admin.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchUsersAdmin, inviteUser, UserExistsError } from "../api";
 import type { UserAdmin } from "../types";
 
@@ -12,22 +12,41 @@ type UsersState =
   | { kind: "error"; reason: string }
   | { kind: "ok"; users: UserAdmin[] };
 
+// Simple format check, mirrors the server's zod z.string().email() closely
+// enough to catch typos before a round-trip -- not a full RFC validator.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 export default function SettingsUsersPanel() {
   const [state, setState] = useState<UsersState>({ kind: "loading" });
   const [email, setEmail] = useState("");
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
 
+  // Guards setState calls that resolve after the panel has unmounted
+  // (tab switch mid-fetch, admin bounced back to "general", etc.) --
+  // same cancelled-flag intent as the fetchMe effect in SettingsPage.tsx,
+  // shared across load() and handleInvite() via a ref since both call
+  // async work outside a single effect body.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const load = useCallback(async () => {
+    if (!mountedRef.current) return;
     setState({ kind: "loading" });
     try {
       const users = await fetchUsersAdmin();
-      setState({ kind: "ok", users });
+      if (mountedRef.current) setState({ kind: "ok", users });
     } catch (e) {
-      setState({
-        kind: "error",
-        reason: e instanceof Error ? e.message : String(e),
-      });
+      if (mountedRef.current) {
+        setState({
+          kind: "error",
+          reason: e instanceof Error ? e.message : String(e),
+        });
+      }
     }
   }, []);
 
@@ -38,22 +57,29 @@ export default function SettingsUsersPanel() {
   async function handleInvite() {
     const trimmed = email.trim();
     if (!trimmed) return;
+    if (!EMAIL_RE.test(trimmed)) {
+      setInviteError("Zadej platný e-mail.");
+      return;
+    }
     setInviteBusy(true);
     setInviteError(null);
     try {
       await inviteUser(trimmed);
+      if (!mountedRef.current) return;
       setEmail("");
       await load();
     } catch (e) {
-      setInviteError(
-        e instanceof UserExistsError
-          ? "Uživatel už existuje"
-          : e instanceof Error
-            ? e.message
-            : String(e),
-      );
+      if (mountedRef.current) {
+        setInviteError(
+          e instanceof UserExistsError
+            ? "Uživatel už existuje"
+            : e instanceof Error
+              ? e.message
+              : String(e),
+        );
+      }
     } finally {
-      setInviteBusy(false);
+      if (mountedRef.current) setInviteBusy(false);
     }
   }
 
