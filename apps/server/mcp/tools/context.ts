@@ -39,9 +39,11 @@ export type ContextAttrRow = {
 };
 
 export type ContextEdge = {
+  // "" when peer_restricted is true -- see DetailEdge.id.
   id: string;
   relation: string;
   direction: string;
+  // "" when peer_restricted is true -- see DetailEdge.peer_id.
   peer_id: string;
   peer_name: string;
   peer_type: string;
@@ -458,12 +460,16 @@ export async function buildContextPayload(
     const classification = await classifyNodeVisibility(db, identity, candidateIds);
     const visibleConnected = connected.filter((n) => classification.get(n.id) === "visible");
 
+    // A locked (peer_restricted) edge is opaque by design -- name + type
+    // only, no ids -- so a caller who can't otherwise see the peer can't use
+    // the payload to probe or act on it. Blank both id and peer_id, mirroring
+    // the REST detail projection in domain/queries/node-detail.ts.
     const projectEdges = (edges: ContextEdge[]): ContextEdge[] =>
       edges
         .filter((e) => e.peer_id === nodeId || classification.get(e.peer_id) !== "hidden")
         .map((e) =>
           classification.get(e.peer_id) === "request"
-            ? { ...e, peer_restricted: true as const }
+            ? { ...e, id: "", peer_id: "", peer_restricted: true as const }
             : e,
         );
 

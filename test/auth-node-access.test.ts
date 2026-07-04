@@ -9,6 +9,7 @@ import {
   nodeVisibleTo,
   filterVisibleNodeIds,
   classifyNodeVisibility,
+  visibilityWithRestriction,
   type GroupIdentityView,
   type AccessMode,
 } from "../apps/server/auth/node-access.js";
@@ -390,6 +391,78 @@ test("filterVisibleNodeIds: member sees restricted + its child, outsider only se
   assert.ok(!outsiderVisible.has(restricted));
   assert.ok(!outsiderVisible.has(child));
   assert.ok(outsiderVisible.has(sibling));
+});
+
+// --- visibilityWithRestriction: single-pass combined visible+restricted (Finding 1, wave-2 final review) ---
+
+test("visibilityWithRestriction: mixed visible/hidden/restricted set -- member, outsider and admin all correct", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const restricted = await addNode(db, orgId, "group");
+  await addAccessRow(db, restricted, "group", "GROUP_A");
+  const sibling = await addNode(db, orgId, "team");
+
+  const member = identity({ globalScope: "write", groupIds: ["GROUP_A"] });
+  const outsider = identity({ globalScope: "manage", groupIds: ["GROUP_OTHER"] });
+  const admin = identity({ globalScope: "admin" });
+
+  const memberResult = await visibilityWithRestriction(db, member, [restricted, sibling]);
+  assert.deepEqual(memberResult.get(restricted), { visible: true, restricted: true });
+  assert.deepEqual(memberResult.get(sibling), { visible: true, restricted: false });
+
+  const outsiderResult = await visibilityWithRestriction(db, outsider, [restricted, sibling]);
+  assert.deepEqual(
+    outsiderResult.get(restricted),
+    { visible: false, restricted: true },
+    "outsider must not see the restricted node, but the flag still reports it as restricted",
+  );
+  assert.deepEqual(outsiderResult.get(sibling), { visible: true, restricted: false });
+
+  const adminResult = await visibilityWithRestriction(db, admin, [restricted, sibling]);
+  assert.deepEqual(
+    adminResult.get(restricted),
+    { visible: true, restricted: true },
+    "admin sees everything but the restricted flag is still real",
+  );
+  assert.deepEqual(adminResult.get(sibling), { visible: true, restricted: false });
+});
+
+test("visibilityWithRestriction: dedupes repeated ids, one entry per id", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const restricted = await addNode(db, orgId, "group");
+  await addAccessRow(db, restricted, "group", "GROUP_A");
+  const sibling = await addNode(db, orgId, "team");
+
+  const member = identity({ globalScope: "write", groupIds: ["GROUP_A"] });
+  const result = await visibilityWithRestriction(db, member, [restricted, sibling, restricted, sibling]);
+  assert.equal(result.size, 2);
+});
+
+test("visibilityWithRestriction: resolves each distinct node's chain exactly once, whether admin or member", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const restricted = await addNode(db, orgId, "group");
+  await addAccessRow(db, restricted, "group", "GROUP_A");
+  const sibling = await addNode(db, orgId, "team");
+
+  let chainQueries = 0;
+  const originalExecute = db.execute.bind(db);
+  db.execute = ((...args: Parameters<typeof db.execute>) => {
+    const first = args[0];
+    const sql = typeof first === "string" ? first : first.sql;
+    if (sql.includes("WITH RECURSIVE chain")) chainQueries++;
+    return (originalExecute as (...a: unknown[]) => unknown)(...args);
+  }) as typeof db.execute;
+
+  const member = identity({ globalScope: "write", groupIds: ["GROUP_A"] });
+  chainQueries = 0;
+  await visibilityWithRestriction(db, member, [restricted, sibling]);
+  assert.equal(chainQueries, 2, "member: exactly one chain resolution per distinct node id (visible+restricted from the same pass)");
+
+  const admin = identity({ globalScope: "admin" });
+  chainQueries = 0;
+  await visibilityWithRestriction(db, admin, [restricted, sibling]);
+  assert.equal(chainQueries, 2, "admin: still exactly one chain resolution per distinct node id, not one for visibility + one for the flag");
+
+  db.execute = originalExecute;
 });
 
 test("filterVisibleNodeIds: admin sees everything without resolving chains", async () => {

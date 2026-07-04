@@ -386,6 +386,7 @@ describe("Finding 1: GET /nodes/:id edges hide restricted neighbors", () => {
 // ---------------------------------------------------------------------------
 
 type EdgeWithFlag = {
+  id: string;
   peer_id: string;
   peer_name: string;
   peer_type: string;
@@ -442,13 +443,30 @@ describe("Task 12: peer_restricted edges in REST node detail", () => {
     assert.ok(visibleEdge, "visible child must appear in edges");
     assert.equal(visibleEdge!.peer_restricted, undefined, "visible peer must not carry peer_restricted");
 
-    const requestEdge = parsed.edges.find((e) => e.peer_id === requestChildId);
+    const requestEdge = parsed.edges.find((e) => e.peer_name === "RequestChild");
     assert.ok(requestEdge, "request-mode restricted child must still appear as a locked edge");
     assert.equal(requestEdge!.peer_name, "RequestChild", "locked edge must carry the peer's name");
     assert.equal(requestEdge!.peer_restricted, true, "request-mode peer must carry peer_restricted: true");
 
     const privateEdge = parsed.edges.find((e) => e.peer_id === privateChildId);
     assert.equal(privateEdge, undefined, "private-mode restricted child must be dropped entirely (wave-1 regression)");
+  });
+
+  // Finding 2 (wave-2 final review): locked edges must be opaque -- no id
+  // that would let a caller who can't see the peer probe or act on it.
+  test("org member: locked RequestChild edge has both id and peer_id blanked; ULID does not appear in the response at all", async () => {
+    const result = await getNode(orgMember, orgId);
+    assert.equal(result.statusCode, 200, `expected 200, got ${result.statusCode}; body: ${result.body}`);
+    const parsed = JSON.parse(result.body) as { edges: EdgeWithFlag[] };
+
+    const requestEdge = parsed.edges.find((e) => e.peer_name === "RequestChild");
+    assert.ok(requestEdge, "request-mode restricted child must still appear as a locked edge");
+    assert.equal(requestEdge!.peer_id, "", "locked edge must not carry the peer's ULID");
+    assert.equal(requestEdge!.id, "", "locked edge must not carry its own edge id");
+    assert.ok(
+      !result.body.includes(requestChildId),
+      "the restricted node's ULID must not appear anywhere in the serialized detail response",
+    );
   });
 
   test("org member: GET RequestChild and PrivateChild directly both 404", async () => {
@@ -657,10 +675,14 @@ describe("Task 12: MCP get_node/context edges carry peer_restricted for mode='re
     assert.notEqual(result.isError, true, "visible node should succeed");
     const text = (result.content as Array<{ type: string; text: string }>)[0].text;
     const payload = JSON.parse(text) as { edges?: EdgeWithFlag[] };
-    const requestEdge = payload.edges?.find((e) => e.peer_id === requestId);
+    const requestEdge = payload.edges?.find((e) => e.peer_name === "McpRequestChild");
     assert.ok(requestEdge, "request-mode peer must still appear in get_node edges");
     assert.equal(requestEdge!.peer_name, "McpRequestChild");
     assert.equal(requestEdge!.peer_restricted, true);
+    // Finding 2 (wave-2 final review): locked edges are opaque -- no ids,
+    // and the restricted node's ULID must not leak anywhere in the payload.
+    assert.equal(requestEdge!.peer_id, "", "locked edge must not carry the peer's ULID");
+    assert.ok(!text.includes(requestId), "restricted node's ULID must not appear anywhere in the payload");
   });
 
   test("portuni_get_context on the visible neighbor: root edges show the request-mode peer locked", async () => {
@@ -693,9 +715,15 @@ describe("Task 12: MCP get_node/context edges carry peer_restricted for mode='re
       "request-mode node must not appear as a connected node in the traversal itself",
     );
     // ...but must still surface as a locked edge off the visible root.
-    const requestEdge = root!.edges?.find((e) => e.peer_id === requestId);
+    const requestEdge = root!.edges?.find((e) => e.peer_name === "McpRequestChild");
     assert.ok(requestEdge, "request-mode peer must appear as a locked edge on the visible root");
     assert.equal(requestEdge!.peer_restricted, true);
+    // Finding 2 (wave-2 final review): opaque locked edge -- no ids, and the
+    // restricted node's ULID must not leak anywhere in the payload (it does
+    // legitimately appear in the traversal-scope bookkeeping check above,
+    // but must be absent from the edge projection itself).
+    assert.equal(requestEdge!.peer_id, "", "locked edge must not carry the peer's ULID");
+    assert.equal(requestEdge!.id, "", "locked edge must not carry its own edge id");
   });
 });
 
@@ -831,5 +859,74 @@ describe("Task 14 point 6: manual visibility='group' rejected", () => {
 
     const nodeRow = await db.execute({ sql: "SELECT visibility FROM nodes WHERE id = ?", args: [nodeId] });
     assert.equal(nodeRow.rows[0].visibility, "team", "rejected MCP update must not mutate visibility");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 3 (wave-2 final review): visibility drift under live ACL. PATCHing
+// visibility to ANY value (not just 'group') on a node that has its own
+// node_access rows must be rejected -- otherwise the indicator column
+// diverges from the ACL until the next PUT /nodes/:id/access call.
+// ---------------------------------------------------------------------------
+
+describe("Finding 3: visibility PATCH rejected while node_access rows exist", () => {
+  let db: DbClient;
+  let workspace: string;
+  let orgId: string;
+  let aclNodeId: string;
+  let plainNodeId: string;
+
+  const admin = makeAdmin();
+
+  before(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-visibility-drift-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+
+    db = await makeTestDb();
+    setDbForTesting(db);
+
+    orgId = await insertOrg(db, "VisibilityDriftOrg");
+    aclNodeId = await insertNode(db, orgId, {
+      name: "AclNode",
+      visibility: "group",
+      accessGroup: "GID_DRIFT",
+    });
+    plainNodeId = await insertNode(db, orgId, { name: "PlainNode" });
+  });
+
+  after(async () => {
+    setDbForTesting(null);
+    resetLocalDbForTests();
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  test("PATCH visibility='team' on the ACL'd node -> 400, visibility unchanged", async () => {
+    const result = await patchNode(admin, aclNodeId, { visibility: "team" });
+    assert.equal(result.statusCode, 400, `expected 400, got ${result.statusCode}; body: ${result.body}`);
+    assert.match(JSON.parse(result.body).error, /managed via the sharing ACL/);
+
+    const nodeRow = await db.execute({ sql: "SELECT visibility FROM nodes WHERE id = ?", args: [aclNodeId] });
+    assert.equal(nodeRow.rows[0].visibility, "group", "rejected PATCH must not mutate visibility");
+  });
+
+  test("PATCH without a visibility field on the ACL'd node still succeeds", async () => {
+    const result = await patchNode(admin, aclNodeId, { name: "AclNode Renamed" });
+    assert.equal(result.statusCode, 200, `expected 200, got ${result.statusCode}; body: ${result.body}`);
+
+    const nodeRow = await db.execute({
+      sql: "SELECT name, visibility FROM nodes WHERE id = ?",
+      args: [aclNodeId],
+    });
+    assert.equal(nodeRow.rows[0].name, "AclNode Renamed");
+    assert.equal(nodeRow.rows[0].visibility, "group", "untouched visibility column must remain as-is");
+  });
+
+  test("PATCH visibility='private' on a node with no node_access rows still succeeds", async () => {
+    const result = await patchNode(admin, plainNodeId, { visibility: "private" });
+    assert.equal(result.statusCode, 200, `expected 200, got ${result.statusCode}; body: ${result.body}`);
+
+    const nodeRow = await db.execute({ sql: "SELECT visibility FROM nodes WHERE id = ?", args: [plainNodeId] });
+    assert.equal(nodeRow.rows[0].visibility, "private");
   });
 });

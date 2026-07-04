@@ -28,8 +28,11 @@ import { writeAudit } from "../infra/audit.js";
 // REST (api/nodes.ts, mapped to 400) and MCP (mcp/tools/nodes.ts, mapped
 // to isError text) reject it the same way.
 export class NodeVisibilityManagedError extends Error {
-  constructor() {
-    super("visibility 'group' is managed via the sharing ACL (PUT /nodes/:id/access) and cannot be set directly");
+  constructor(message?: string) {
+    super(
+      message ??
+        "visibility 'group' is managed via the sharing ACL (PUT /nodes/:id/access) and cannot be set directly",
+    );
     this.name = "NodeVisibilityManagedError";
   }
 }
@@ -116,6 +119,24 @@ export async function updateNodeInternal(
 
   if (args.visibility === "group") {
     throw new NodeVisibilityManagedError();
+  }
+
+  // Same guard, wider trigger: once a node has live node_access rows (its
+  // own ACL, set via PUT /nodes/:id/access), visibility is derived from that
+  // ACL -- not just the literal value 'group'. Without this, PATCHing
+  // visibility to 'team' or 'private' on an ACL'd node would silently
+  // desync the indicator column from the ACL until the next PUT access call
+  // touches it. Only costs a query when the update actually sets visibility.
+  if (args.visibility !== undefined) {
+    const accessCheck = await db.execute({
+      sql: "SELECT 1 FROM node_access WHERE node_id = ? LIMIT 1",
+      args: [args.node_id],
+    });
+    if (accessCheck.rows.length > 0) {
+      throw new NodeVisibilityManagedError(
+        "visibility is managed via the sharing ACL while access entries exist (PUT /nodes/:id/access) and cannot be set directly",
+      );
+    }
   }
 
   const row = await db.execute({

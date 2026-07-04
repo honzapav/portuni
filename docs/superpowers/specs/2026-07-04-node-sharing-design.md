@@ -142,6 +142,9 @@ MCP session skončí nejpozději s idle timeoutem.
 - MCP get_node/context vrací tytéž hrany s `peer_restricted: true`
   (konzistence UI ↔ agenti, rozhodnuto 2026-07-04).
 - Graf, listy a vyhledávání zůstávají beze změny (skrývají oba režimy).
+- Id se u zamčených hran nevrací (`id` i `peer_id` jsou `""`) – chip je
+  nekliknutelný, takže je nepotřebuje, a vrácení ULID by umožnilo cílené
+  zkoušení skrytého uzlu.
 
 ### Detail nodu – sekce „Sdílení"
 

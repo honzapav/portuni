@@ -56,13 +56,18 @@ export async function loadNodeDetail(
   // is 'request' (spec: "Zamceni polozky v Propojeni"). Admins short-circuit
   // inside classifyNodeVisibility -- no per-edge queries for them, and never
   // get the flag since they see the peer plainly.
+  //
+  // A locked chip is non-clickable in the UI (DetailPane renders it as
+  // static text, not a button), so it has no legitimate use for the peer's
+  // ULID or the edge's own id -- blank both so a caller who can only see the
+  // name/type cannot use the response to probe or act on the hidden node.
   const peerIds = [...new Set(rawEdges.map((e) => e.peer_id))];
   const classification = await classifyNodeVisibility(db, identity, peerIds);
   const edges = rawEdges
     .filter((e) => classification.get(e.peer_id) !== "hidden")
     .map((e) =>
       classification.get(e.peer_id) === "request"
-        ? { ...e, peer_restricted: true as const }
+        ? { ...e, id: "", peer_id: "", peer_restricted: true as const }
         : e,
     );
 

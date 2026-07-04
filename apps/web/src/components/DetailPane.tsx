@@ -1050,9 +1050,9 @@ function DetailPaneBody({
                       {relation}
                     </div>
                     <div className="space-y-0.5">
-                      {edges.map((edge) => (
+                      {edges.map((edge, edgeIndex) => (
                         <ConnectionLink
-                          key={edge.id}
+                          key={edge.id || `${relation}:${edge.peer_name}:${edgeIndex}`}
                           edge={edge}
                           onSelect={onSelect}
                           onRemove={() => handleRemoveEdge(edge.id)}
@@ -1252,8 +1252,10 @@ function ConnectionLink({
 
   // belongs_to has its own invariants and a dedicated UX (OrganizationPicker
   // for the org case, plus DB triggers for the rest). Keep this row read-only
-  // for relation changes to avoid trigger-error surprises.
-  const editable = edge.relation !== "belongs_to";
+  // for relation changes to avoid trigger-error surprises. A locked
+  // (peer_restricted) edge has id/peer_id blanked by the server, so there is
+  // no real id to edit or delete against -- treat it as read-only too.
+  const editable = edge.relation !== "belongs_to" && !edge.peer_restricted;
 
   if (editing) {
     return (
@@ -1359,25 +1361,27 @@ function ConnectionLink({
           <Pencil size={11} />
         </button>
       )}
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onRemove();
-        }}
-        disabled={disabled}
-        title="Odebrat vazbu"
-        className="ml-0.5 flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] opacity-0 transition-all group-hover:opacity-100 disabled:pointer-events-none"
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background = "var(--color-danger-bg)";
-          e.currentTarget.style.color = "var(--color-danger)";
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = "";
-          e.currentTarget.style.color = "";
-        }}
-      >
-        <Trash2 size={11} />
-      </button>
+      {!edge.peer_restricted && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove();
+          }}
+          disabled={disabled}
+          title="Odebrat vazbu"
+          className="ml-0.5 flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] opacity-0 transition-all group-hover:opacity-100 disabled:pointer-events-none"
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "var(--color-danger-bg)";
+            e.currentTarget.style.color = "var(--color-danger)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "";
+            e.currentTarget.style.color = "";
+          }}
+        >
+          <Trash2 size={11} />
+        </button>
+      )}
     </div>
   );
 }

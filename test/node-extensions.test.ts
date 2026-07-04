@@ -18,6 +18,7 @@ async function freshEnv() {
   await db.execute(`CREATE TABLE nodes (id TEXT PRIMARY KEY CHECK(length(id)=26), type TEXT NOT NULL, name TEXT NOT NULL, description TEXT, summary TEXT, summary_updated_at DATETIME, meta TEXT, status TEXT NOT NULL DEFAULT 'active', visibility TEXT NOT NULL DEFAULT 'team', pos_x REAL, pos_y REAL, sync_key TEXT, created_by TEXT NOT NULL, created_at DATETIME DEFAULT (datetime('now')), updated_at DATETIME DEFAULT (datetime('now')))`);
   await db.execute(`CREATE TABLE edges (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, target_id TEXT NOT NULL, relation TEXT NOT NULL, meta TEXT, created_by TEXT NOT NULL, created_at DATETIME DEFAULT (datetime('now')))`);
   await db.execute(`CREATE TABLE audit_log (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, action TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, detail TEXT, timestamp DATETIME DEFAULT (datetime('now')))`);
+  await db.execute(`CREATE TABLE node_access (node_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('group','user')), principal TEXT NOT NULL, display_email TEXT, added_by TEXT NOT NULL, added_at DATETIME NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (node_id, kind, principal))`);
   await db.execute(`INSERT INTO users (id, email, name) VALUES ('U1','t@t','T')`);
   const orgId = ulid();
   const projectId = ulid();
@@ -88,6 +89,69 @@ describe("updateNodeInternal: goal, lifecycle_state, owner_id", () => {
     );
     const n = await db.execute({ sql: "SELECT visibility FROM nodes WHERE id = ?", args: [projectId] });
     assert.equal(n.rows[0].visibility, "team", "visibility must be unaffected by the rejected update");
+  });
+
+  // Finding 3 (wave-2 final review): visibility drift under live ACL. A node
+  // with node_access rows must not be able to have its visibility column
+  // PATCHed to anything (not just 'group') -- that would desync the
+  // indicator column from the ACL until the next PUT /nodes/:id/access call.
+  describe("visibility guard when node_access rows exist", () => {
+    it("rejects visibility='team' on a node that has its own node_access rows", async () => {
+      const { db, projectId } = await freshEnv();
+      await db.execute({
+        sql: `INSERT INTO node_access (node_id, kind, principal, display_email, added_by)
+              VALUES (?, 'group', 'GID_X', 'x@x.com', 'U1')`,
+        args: [projectId],
+      });
+      await db.execute({ sql: "UPDATE nodes SET visibility = 'group' WHERE id = ?", args: [projectId] });
+
+      await assert.rejects(
+        updateNodeInternal(db, "U1", { node_id: projectId, visibility: "team" }),
+        /managed via the sharing ACL/,
+      );
+      const n = await db.execute({ sql: "SELECT visibility FROM nodes WHERE id = ?", args: [projectId] });
+      assert.equal(n.rows[0].visibility, "group", "rejected PATCH must not mutate visibility");
+    });
+
+    it("rejects visibility='private' on a node that has its own node_access rows", async () => {
+      const { db, projectId } = await freshEnv();
+      await db.execute({
+        sql: `INSERT INTO node_access (node_id, kind, principal, display_email, added_by)
+              VALUES (?, 'user', 'U2', NULL, 'U1')`,
+        args: [projectId],
+      });
+      await db.execute({ sql: "UPDATE nodes SET visibility = 'group' WHERE id = ?", args: [projectId] });
+
+      await assert.rejects(
+        updateNodeInternal(db, "U1", { node_id: projectId, visibility: "private" }),
+        /managed via the sharing ACL/,
+      );
+    });
+
+    it("allows an update without a visibility field on a node that has node_access rows", async () => {
+      const { db, projectId } = await freshEnv();
+      await db.execute({
+        sql: `INSERT INTO node_access (node_id, kind, principal, display_email, added_by)
+              VALUES (?, 'group', 'GID_X', 'x@x.com', 'U1')`,
+        args: [projectId],
+      });
+      await db.execute({ sql: "UPDATE nodes SET visibility = 'group' WHERE id = ?", args: [projectId] });
+
+      await updateNodeInternal(db, "U1", { node_id: projectId, name: "Renamed" });
+      const n = await db.execute({
+        sql: "SELECT name, visibility FROM nodes WHERE id = ?",
+        args: [projectId],
+      });
+      assert.equal(n.rows[0].name, "Renamed");
+      assert.equal(n.rows[0].visibility, "group", "untouched visibility column must remain as-is");
+    });
+
+    it("allows visibility='private' on a node with no node_access rows", async () => {
+      const { db, projectId } = await freshEnv();
+      await updateNodeInternal(db, "U1", { node_id: projectId, visibility: "private" });
+      const n = await db.execute({ sql: "SELECT visibility FROM nodes WHERE id = ?", args: [projectId] });
+      assert.equal(n.rows[0].visibility, "private");
+    });
   });
 });
 

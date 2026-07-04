@@ -65,9 +65,14 @@ export type GraphPayload = {
 // -- Node detail endpoint ---------------------------------------------
 
 export type DetailEdge = {
+  // "" (not the real ULID) when peer_restricted is true -- the locked chip
+  // is non-clickable and has no legitimate use for the edge id, and keeping
+  // it would let a caller who can't see the peer use its ULID to probe it.
   id: string;
   relation: EdgeRelation | string;
   direction: "outgoing" | "incoming";
+  // "" (not the real ULID) when peer_restricted is true, same rationale as
+  // `id` above.
   peer_id: string;
   peer_name: string;
   peer_type: NodeType | string;

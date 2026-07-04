@@ -175,28 +175,31 @@ export async function filterVisibleNodeIds(
   return visible;
 }
 
-// Batch flag: which of the given node ids currently carry a non-null
-// effective ACL (their own node_access rows, or an inherited ancestor's),
-// independent of who is asking. Used by the GET /graph payload to mark
-// visible-but-shared nodes with `restricted: true` so the UI can render a
-// shared/lock indicator without a second round-trip per node -- callers
-// typically pass the already-filtered visible id set (from
-// filterVisibleNodeIds) so invisible nodes never pay for a chain
-// resolution. Same per-call memo shape as filterVisibleNodeIds /
-// classifyNodeVisibility -- resolves each distinct chain once.
-export async function restrictedNodeIds(
+// Combined single-pass helper for GET /graph: for every node id, resolves
+// the ACL chain ONCE and derives BOTH the visibility decision and the
+// `restricted` flag from that single resolution. Replaces the former
+// filterVisibleNodeIds + restrictedNodeIds two-pass combo, which cost
+// members up to 2x the chain resolutions (once to filter, once again for the
+// flag on the visible subset) and cost admins a full N resolutions purely
+// for the flag despite their visibility being trivially true. Same per-call
+// memo shape as filterVisibleNodeIds/classifyNodeVisibility -- resolves each
+// distinct id once even if it repeats in the input.
+export async function visibilityWithRestriction(
   db: Client,
+  identity: GroupIdentityView,
   nodeIds: string[],
-): Promise<Set<string>> {
-  const memo = new Map<string, boolean>();
-  const result = new Set<string>();
+): Promise<Map<string, { visible: boolean; restricted: boolean }>> {
+  const isAdmin = identity.globalScope === "admin";
+  const memo = new Map<string, AccessEntry[] | null>();
+  const result = new Map<string, { visible: boolean; restricted: boolean }>();
   for (const id of nodeIds) {
-    let isRestricted = memo.get(id);
-    if (isRestricted === undefined) {
-      isRestricted = (await resolveAccessChain(db, id)).entries !== null;
-      memo.set(id, isRestricted);
+    let entries = memo.get(id);
+    if (entries === undefined) {
+      entries = await effectiveAccessEntries(db, id);
+      memo.set(id, entries);
     }
-    if (isRestricted) result.add(id);
+    const visible = isAdmin ? true : canSeeNode(identity, entries);
+    result.set(id, { visible, restricted: entries !== null });
   }
   return result;
 }
