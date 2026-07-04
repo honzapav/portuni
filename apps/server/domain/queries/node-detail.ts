@@ -7,7 +7,7 @@ import type { NodeDetail } from "../../shared/api-types.js";
 import { listUserMirrors, unregisterMirror } from "../sync/mirror-registry.js";
 import { getLocalMirror } from "../sync/local-db.js";
 import { deriveLocalPath, buildNodeRoot } from "../sync/remote-path.js";
-import { filterVisibleNodeIds, type GroupIdentityView } from "../../auth/node-access.js";
+import { classifyNodeVisibility, type GroupIdentityView } from "../../auth/node-access.js";
 
 export async function loadNodeDetail(
   db: Client,
@@ -50,12 +50,21 @@ export async function loadNodeDetail(
     };
   });
 
-  // Group-visibility: drop edges to neighbors the caller can't see so their
-  // id/name/type don't leak through a visible node's detail (admins
-  // short-circuit inside filterVisibleNodeIds -- no per-edge queries for them).
+  // Group-visibility: a peer the caller can't see is either dropped
+  // entirely (private, or hidden) or kept as a locked chip -- name/type
+  // visible, peer_restricted:true -- when its authoritative ancestor's mode
+  // is 'request' (spec: "Zamceni polozky v Propojeni"). Admins short-circuit
+  // inside classifyNodeVisibility -- no per-edge queries for them, and never
+  // get the flag since they see the peer plainly.
   const peerIds = [...new Set(rawEdges.map((e) => e.peer_id))];
-  const visiblePeerIds = await filterVisibleNodeIds(db, identity, peerIds);
-  const edges = rawEdges.filter((e) => visiblePeerIds.has(e.peer_id));
+  const classification = await classifyNodeVisibility(db, identity, peerIds);
+  const edges = rawEdges
+    .filter((e) => classification.get(e.peer_id) !== "hidden")
+    .map((e) =>
+      classification.get(e.peer_id) === "request"
+        ? { ...e, peer_restricted: true as const }
+        : e,
+    );
 
   const mirror = await getLocalMirror(userId, row.id);
   const mirrorPath = mirror?.local_path ?? null;

@@ -65,6 +65,13 @@ export type DetailEdge = {
   peer_id: string;
   peer_name: string;
   peer_type: NodeType | string;
+  // True when the peer is a mode='request' restricted node the caller
+  // cannot otherwise see: it renders as a locked chip (name + type, no
+  // access) instead of being dropped like a mode='private' peer is.
+  // Absent (not false) for a plainly-visible peer or for admins, who see
+  // every peer without the flag. Spec: "Zamcene polozky v Propojeni"
+  // (docs/superpowers/specs/2026-07-04-node-sharing-design.md §4).
+  peer_restricted?: true;
 };
 
 export type DetailFile = {
@@ -268,6 +275,12 @@ export type NodeAccessResponse = {
   source_node_id: string | null;
   source_node_name: string | null;
   entries: NodeAccessEntry[];
+  // Restriction mode of the authoritative node (self when !inherited, the
+  // ancestor's when inherited). Null when unrestricted -- the column only
+  // has meaning for a node that actually has ACL rows. See
+  // apps/server/auth/node-access.ts AccessMode and the "Rezim omezeni"
+  // section of the sharing design spec.
+  mode: "private" | "request" | null;
 };
 
 // GET /auth/groups -- Google Workspace domain group directory, used by the

@@ -6,7 +6,7 @@ import type { Client, InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardNodeRead } from "../scope.js";
 import { logAudit } from "../../infra/audit.js";
-import { filterVisibleNodeIds, type GroupIdentityView } from "../../auth/node-access.js";
+import { classifyNodeVisibility, type GroupIdentityView } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
 // --- Task E3: enriched context payload shape ---
@@ -45,6 +45,11 @@ export type ContextEdge = {
   peer_id: string;
   peer_name: string;
   peer_type: string;
+  // See DetailEdge.peer_restricted (apps/server/shared/api-types.ts) -- same
+  // semantics, kept consistent between REST and MCP (spec: "Zamcene polozky
+  // v Propojeni"). True only for a mode='request' peer the caller can't
+  // otherwise see; absent for a plainly-visible peer or for admins.
+  peer_restricted?: true;
 };
 
 export type ContextRootNode = {
@@ -429,8 +434,13 @@ export async function buildContextPayload(
   });
 
   // 7. Filter connected nodes and root edges for group visibility.
-  //    Hidden nodes are silently dropped; edges touching hidden nodes are
-  //    pruned so the caller cannot infer their existence from the edge list.
+  //    Connected nodes (the traversal/listing surface) hide BOTH restriction
+  //    modes -- a request-mode node still doesn't show up as a walked
+  //    neighbor, same as the graph/list/search surfaces (spec: "Zamcene
+  //    polozky v Propojeni"). Edges are different: a hidden (private, or
+  //    genuinely invisible) peer is pruned so its existence can't be
+  //    inferred, but a request-mode peer is kept with peer_restricted:true
+  //    so the caller sees a locked chip (name + type) instead of nothing.
   if (identity !== undefined) {
     const allConnectedIds = connected.map((n) => n.id);
     // Collect all unique peer IDs that appear in any edge (including those
@@ -443,19 +453,25 @@ export async function buildContextPayload(
     }
     allEdgePeerIds.delete(nodeId); // root is always visible to itself
 
-    // Union of walked connected IDs + edge peers; filter all at once.
+    // Union of walked connected IDs + edge peers; classify all at once.
     const candidateIds = [...new Set([...allConnectedIds, ...allEdgePeerIds])];
-    const visibleSet = await filterVisibleNodeIds(db, identity, candidateIds);
-    const visibleConnected = connected.filter((n) => visibleSet.has(n.id));
-    const visibleIds = new Set([nodeId, ...visibleSet]);
-    const prunedRootEdges = root.edges.filter(
-      (e) => visibleIds.has(e.peer_id),
-    );
+    const classification = await classifyNodeVisibility(db, identity, candidateIds);
+    const visibleConnected = connected.filter((n) => classification.get(n.id) === "visible");
+
+    const projectEdges = (edges: ContextEdge[]): ContextEdge[] =>
+      edges
+        .filter((e) => e.peer_id === nodeId || classification.get(e.peer_id) !== "hidden")
+        .map((e) =>
+          classification.get(e.peer_id) === "request"
+            ? { ...e, peer_restricted: true as const }
+            : e,
+        );
+
     return {
-      root: { ...root, edges: prunedRootEdges },
+      root: { ...root, edges: projectEdges(root.edges) },
       connected: visibleConnected.map((n) => ({
         ...n,
-        edges: n.edges.filter((e) => visibleIds.has(e.peer_id)),
+        edges: projectEdges(n.edges),
       })),
     };
   }

@@ -19,10 +19,13 @@ import { tmpdir } from "node:os";
 import { Readable, Writable } from "node:stream";
 import { ulid } from "ulid";
 import { createClient as createDbClient, type Client as DbClient } from "@libsql/client";
+import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { routeApiRequest } from "../apps/server/api/router.js";
+import { createMcpServer } from "../apps/server/mcp/server.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -50,7 +53,7 @@ async function insertOrg(db: DbClient, name = "TestOrg") {
 async function insertNode(
   db: DbClient,
   parentId: string,
-  opts: { visibility?: string; accessGroup?: string; name?: string } = {},
+  opts: { visibility?: string; accessGroup?: string; name?: string; accessMode?: "private" | "request" } = {},
 ) {
   const id = ulid();
   await db.execute({
@@ -67,6 +70,12 @@ async function insertNode(
       sql: `INSERT INTO node_access (node_id, kind, principal, display_email, added_by)
             VALUES (?, 'group', ?, ?, ?)`,
       args: [id, opts.accessGroup, opts.accessGroup, SOLO],
+    });
+  }
+  if (opts.accessMode) {
+    await db.execute({
+      sql: "UPDATE nodes SET access_mode = ? WHERE id = ?",
+      args: [opts.accessMode, id],
     });
   }
   return id;
@@ -360,5 +369,323 @@ describe("Finding 1: GET /nodes/:id edges hide restricted neighbors", () => {
     const peerIds = parsed.edges.map((e) => e.peer_id);
     assert.ok(peerIds.includes(visibleChildId), "admin should see visible child in edges");
     assert.ok(peerIds.includes(restrictedChildId), "admin should see restricted child in edges");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 12: peer_restricted edges (mode='request') + mode in the access API.
+// ---------------------------------------------------------------------------
+
+type EdgeWithFlag = {
+  peer_id: string;
+  peer_name: string;
+  peer_type: string;
+  peer_restricted?: true;
+};
+
+describe("Task 12: peer_restricted edges in REST node detail", () => {
+  let db: DbClient;
+  let workspace: string;
+  let orgId: string;
+  let visibleChildId: string;
+  let requestChildId: string;
+  let privateChildId: string;
+
+  const admin = makeAdmin();
+  const orgMember = makeOrgMember(); // groupIds: ["GID_ORG"] -- not a member of GID_SECRET*
+
+  before(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-peer-restricted-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+
+    db = await makeTestDb();
+    setDbForTesting(db);
+
+    orgId = await insertOrg(db, "PeerRestrictedOrg");
+    visibleChildId = await insertNode(db, orgId, { name: "VisibleChild" });
+    requestChildId = await insertNode(db, orgId, {
+      visibility: "group",
+      accessGroup: "GID_SECRET_REQUEST",
+      name: "RequestChild",
+      accessMode: "request",
+    });
+    privateChildId = await insertNode(db, orgId, {
+      visibility: "group",
+      accessGroup: "GID_SECRET_PRIVATE",
+      name: "PrivateChild",
+      // accessMode defaults to 'private'
+    });
+  });
+
+  after(async () => {
+    setDbForTesting(null);
+    resetLocalDbForTests();
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  test("org member: VisibleChild edge plain, RequestChild edge locked with name, PrivateChild edge absent", async () => {
+    const result = await getNode(orgMember, orgId);
+    assert.equal(result.statusCode, 200, `expected 200, got ${result.statusCode}; body: ${result.body}`);
+    const parsed = JSON.parse(result.body) as { edges: EdgeWithFlag[] };
+
+    const visibleEdge = parsed.edges.find((e) => e.peer_id === visibleChildId);
+    assert.ok(visibleEdge, "visible child must appear in edges");
+    assert.equal(visibleEdge!.peer_restricted, undefined, "visible peer must not carry peer_restricted");
+
+    const requestEdge = parsed.edges.find((e) => e.peer_id === requestChildId);
+    assert.ok(requestEdge, "request-mode restricted child must still appear as a locked edge");
+    assert.equal(requestEdge!.peer_name, "RequestChild", "locked edge must carry the peer's name");
+    assert.equal(requestEdge!.peer_restricted, true, "request-mode peer must carry peer_restricted: true");
+
+    const privateEdge = parsed.edges.find((e) => e.peer_id === privateChildId);
+    assert.equal(privateEdge, undefined, "private-mode restricted child must be dropped entirely (wave-1 regression)");
+  });
+
+  test("org member: GET RequestChild and PrivateChild directly both 404", async () => {
+    const requestDirect = await getNode(orgMember, requestChildId);
+    assert.equal(
+      requestDirect.statusCode,
+      404,
+      `expected 404 for request-mode node direct GET, got ${requestDirect.statusCode}; body: ${requestDirect.body}`,
+    );
+    const privateDirect = await getNode(orgMember, privateChildId);
+    assert.equal(
+      privateDirect.statusCode,
+      404,
+      `expected 404 for private-mode node direct GET, got ${privateDirect.statusCode}; body: ${privateDirect.body}`,
+    );
+  });
+
+  test("org member: /graph omits both RequestChild and PrivateChild", async () => {
+    const graph = await getGraph(orgMember);
+    const ids = graph.nodes.map((n) => n.id);
+    assert.ok(ids.includes(orgId), "org member should see the org");
+    assert.ok(ids.includes(visibleChildId), "org member should see VisibleChild");
+    assert.ok(!ids.includes(requestChildId), "request-mode node must stay out of /graph");
+    assert.ok(!ids.includes(privateChildId), "private-mode node must stay out of /graph");
+  });
+
+  test("admin: both restricted children appear in edges with no peer_restricted flag", async () => {
+    const result = await getNode(admin, orgId);
+    assert.equal(result.statusCode, 200, `expected 200, got ${result.statusCode}; body: ${result.body}`);
+    const parsed = JSON.parse(result.body) as { edges: EdgeWithFlag[] };
+
+    const requestEdge = parsed.edges.find((e) => e.peer_id === requestChildId);
+    assert.ok(requestEdge, "admin should see RequestChild edge");
+    assert.equal(requestEdge!.peer_restricted, undefined, "admin never gets peer_restricted (sees everything plainly)");
+
+    const privateEdge = parsed.edges.find((e) => e.peer_id === privateChildId);
+    assert.ok(privateEdge, "admin should see PrivateChild edge");
+    assert.equal(privateEdge!.peer_restricted, undefined, "admin never gets peer_restricted");
+  });
+});
+
+describe("Task 12: mode in GET/PUT /nodes/:id/access", () => {
+  let db: DbClient;
+  let workspace: string;
+  let orgId: string;
+  let parentId: string;
+  let childId: string;
+
+  const admin = makeAdmin();
+
+  before(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-access-mode-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+
+    db = await makeTestDb();
+    setDbForTesting(db);
+
+    orgId = await insertOrg(db, "ModeOrg");
+    parentId = await insertNode(db, orgId, { name: "ModeParent" });
+    childId = await insertNode(db, parentId, { name: "ModeChild" }); // no own ACL -- inherits
+  });
+
+  after(async () => {
+    setDbForTesting(null);
+    resetLocalDbForTests();
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  test("PUT with mode 'request' persists; GET on the node and on an inheriting child both report mode 'request'", async () => {
+    const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${parentId}/access`, {
+      entries: [{ kind: "group", principal: "GID_MODE", display_email: "mode@x.com" }],
+      mode: "request",
+    });
+    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${parentId}/access`), admin);
+    assert.equal(captured.statusCode, 200, `expected 200, got ${captured.statusCode}; body: ${captured.body}`);
+    const putParsed = JSON.parse(captured.body);
+    assert.equal(putParsed.mode, "request");
+
+    const { req: getReq, res: getRes, captured: getCaptured } = makeMockReqRes(
+      "GET",
+      `/nodes/${parentId}/access`,
+    );
+    await routeApiRequest(getReq, getRes, new URL(`http://localhost/nodes/${parentId}/access`), admin);
+    assert.equal(getCaptured.statusCode, 200);
+    const getParsed = JSON.parse(getCaptured.body);
+    assert.equal(getParsed.mode, "request");
+
+    const { req: childReq, res: childRes, captured: childCaptured } = makeMockReqRes(
+      "GET",
+      `/nodes/${childId}/access`,
+    );
+    await routeApiRequest(childReq, childRes, new URL(`http://localhost/nodes/${childId}/access`), admin);
+    assert.equal(childCaptured.statusCode, 200);
+    const childParsed = JSON.parse(childCaptured.body);
+    assert.equal(childParsed.inherited, true);
+    assert.equal(childParsed.mode, "request", "inheriting child must report the authoritative ancestor's mode");
+  });
+
+  test("PUT with non-empty entries and no mode defaults to 'private'", async () => {
+    const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${parentId}/access`, {
+      entries: [{ kind: "group", principal: "GID_MODE2", display_email: "mode2@x.com" }],
+    });
+    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${parentId}/access`), admin);
+    assert.equal(captured.statusCode, 200, `expected 200, got ${captured.statusCode}; body: ${captured.body}`);
+    const parsed = JSON.parse(captured.body);
+    assert.equal(parsed.mode, "private");
+
+    const nodeRow = await db.execute({
+      sql: "SELECT access_mode FROM nodes WHERE id = ?",
+      args: [parentId],
+    });
+    assert.equal(nodeRow.rows[0].access_mode, "private");
+  });
+
+  test("PUT entries:[] resets access_mode column back to 'private' and mode reports null", async () => {
+    // First set it to 'request' again so the reset is a real transition.
+    await putAccess(admin, parentId, [{ kind: "group", principal: "GID_MODE3", display_email: "mode3@x.com" }]);
+    await db.execute({ sql: "UPDATE nodes SET access_mode = 'request' WHERE id = ?", args: [parentId] });
+
+    const cleared = await putAccess(admin, parentId, []);
+    assert.equal(cleared.statusCode, 200, `expected 200, got ${cleared.statusCode}; body: ${cleared.body}`);
+    const clearedParsed = JSON.parse(cleared.body);
+    assert.equal(clearedParsed.restricted, false);
+    assert.equal(clearedParsed.mode, null, "unrestricted node reports mode: null");
+
+    const nodeRow = await db.execute({
+      sql: "SELECT access_mode FROM nodes WHERE id = ?",
+      args: [parentId],
+    });
+    assert.equal(
+      nodeRow.rows[0].access_mode,
+      "private",
+      "clearing entries must reset access_mode so a stale 'request' never lingers",
+    );
+  });
+});
+
+describe("Task 12: MCP get_node/context edges carry peer_restricted for mode='request'", () => {
+  let db: DbClient;
+  let workspace: string;
+  let orgId: string;
+  let visibleId: string;
+  let requestId: string;
+
+  before(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-mcp-peer-restricted-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+
+    db = await makeTestDb();
+    setDbForTesting(db);
+
+    orgId = await insertOrg(db, "McpPeerRestrictedOrg");
+    visibleId = await insertNode(db, orgId, { name: "McpVisible" });
+    requestId = await insertNode(db, orgId, {
+      visibility: "group",
+      accessGroup: "GID_MCP_SECRET",
+      name: "McpRequestChild",
+      accessMode: "request",
+    });
+
+    // Direct edge between the two so they show up as neighbors of each other.
+    await db.execute({
+      sql: "INSERT INTO edges (id, source_id, target_id, relation, created_by) VALUES (?, ?, ?, 'related_to', ?)",
+      args: [ulid(), visibleId, requestId, SOLO],
+    });
+  });
+
+  after(async () => {
+    setDbForTesting(null);
+    resetLocalDbForTests();
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  function makeOutsider(): RequestIdentity {
+    return {
+      userId: SOLO,
+      email: "mcp-outsider@x.com",
+      name: "McpOutsider",
+      globalScope: "manage",
+      groups: [],
+      groupIds: ["GID_NOT_SECRET"],
+      via: "env",
+    };
+  }
+
+  test("portuni_get_node on the visible neighbor shows the request-mode peer locked with name + peer_restricted", async () => {
+    const outsider = makeOutsider();
+    const { server, scope } = createMcpServer(outsider);
+    scope.add(orgId);
+    scope.add(visibleId);
+    scope.add(requestId);
+
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    const mcpClient = new McpClient({ name: "test-task12-get-node", version: "0.0.1" }, { capabilities: {} });
+    await server.connect(serverT);
+    await mcpClient.connect(clientT);
+
+    const result = await mcpClient.callTool({
+      name: "portuni_get_node",
+      arguments: { node_id: visibleId },
+    });
+    await mcpClient.close();
+
+    assert.notEqual(result.isError, true, "visible node should succeed");
+    const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+    const payload = JSON.parse(text) as { edges?: EdgeWithFlag[] };
+    const requestEdge = payload.edges?.find((e) => e.peer_id === requestId);
+    assert.ok(requestEdge, "request-mode peer must still appear in get_node edges");
+    assert.equal(requestEdge!.peer_name, "McpRequestChild");
+    assert.equal(requestEdge!.peer_restricted, true);
+  });
+
+  test("portuni_get_context on the visible neighbor: root edges show the request-mode peer locked", async () => {
+    const outsider = makeOutsider();
+    const { server, scope } = createMcpServer(outsider);
+    scope.add(orgId);
+    scope.add(visibleId);
+    scope.add(requestId);
+
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    const mcpClient = new McpClient({ name: "test-task12-get-context", version: "0.0.1" }, { capabilities: {} });
+    await server.connect(serverT);
+    await mcpClient.connect(clientT);
+
+    const result = await mcpClient.callTool({
+      name: "portuni_get_context",
+      arguments: { node_id: visibleId, depth: 1 },
+    });
+    await mcpClient.close();
+
+    assert.notEqual(result.isError, true, "get_context on visible node should succeed");
+    const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+    const payload = JSON.parse(text) as Array<{ id: string; edges?: EdgeWithFlag[]; depth: number }>;
+    const root = payload.find((n) => n.depth === 0);
+    assert.ok(root, "root node must be present");
+
+    // The request-mode child must NOT appear as its own connected node...
+    assert.ok(
+      !payload.some((n) => n.id === requestId),
+      "request-mode node must not appear as a connected node in the traversal itself",
+    );
+    // ...but must still surface as a locked edge off the visible root.
+    const requestEdge = root!.edges?.find((e) => e.peer_id === requestId);
+    assert.ok(requestEdge, "request-mode peer must appear as a locked edge on the visible root");
+    assert.equal(requestEdge!.peer_restricted, true);
   });
 });
