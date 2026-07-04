@@ -1096,6 +1096,24 @@ fn reap_orphan_sidecar(port: u16) {
     std::thread::sleep(std::time::Duration::from_millis(300));
 }
 
+/// Append a raw sidecar line to the per-workspace log file. Best-effort:
+/// all IO errors are silently ignored. Creates parent directories as needed.
+fn append_ws_log(path: &Option<std::path::PathBuf>, line: &str) {
+    if let Some(p) = path {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+        {
+            use std::io::Write;
+            let _ = writeln!(f, "{line}");
+        }
+    }
+}
+
 // Spawn (or no-op if already running) the sidecar for one workspace. Core
 // mirrors the old single-sidecar path — Turso vs. central sync agent, port
 // reaping, stdout port parsing — but keyed by workspace id into the state
@@ -1271,12 +1289,18 @@ pub(crate) fn spawn_sidecar_ws(
 
     let handle = app.clone();
     let ws = ws_id.to_string();
+    let ws_log_path = app
+        .path()
+        .app_log_dir()
+        .ok()
+        .map(|d| d.join(format!("sidecar-{ws_id}.log")));
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             match event {
                 CommandEvent::Stdout(line) => {
                     let line = String::from_utf8_lossy(&line).into_owned();
                     let line = line.trim_end_matches(|c| c == '\n' || c == '\r');
+                    append_ws_log(&ws_log_path, line);
                     if let Some(rest) = line.strip_prefix("PORTUNI_LISTENING_PORT=") {
                         if let Ok(port) = rest.trim().parse::<u16>() {
                             handle
@@ -1309,6 +1333,7 @@ pub(crate) fn spawn_sidecar_ws(
                 CommandEvent::Stderr(line) => {
                     let line = String::from_utf8_lossy(&line).into_owned();
                     let line = line.trim_end_matches(|c| c == '\n' || c == '\r');
+                    append_ws_log(&ws_log_path, line);
                     warn!("sidecar[{ws}]:err: {line}");
                 }
                 CommandEvent::Terminated(payload) => {
