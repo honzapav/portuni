@@ -8,7 +8,9 @@ import {
   canSeeNode,
   nodeVisibleTo,
   filterVisibleNodeIds,
+  classifyNodeVisibility,
   type GroupIdentityView,
+  type AccessMode,
 } from "../apps/server/auth/node-access.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -28,12 +30,13 @@ async function addNode(
   db: ReturnType<typeof createDbClient>,
   parentId: string,
   visibility: string,
+  accessMode?: AccessMode,
 ) {
   const id = ulid();
   await db.execute({
-    sql: `INSERT INTO nodes (id, type, name, status, visibility, sync_key, created_by)
-          VALUES (?, 'project', 'n', 'active', ?, ?, ?)`,
-    args: [id, visibility, `project:n-${id}`, SOLO],
+    sql: `INSERT INTO nodes (id, type, name, status, visibility, access_mode, sync_key, created_by)
+          VALUES (?, 'project', 'n', 'active', ?, ?, ?, ?)`,
+    args: [id, visibility, accessMode ?? "private", `project:n-${id}`, SOLO],
   });
   await db.execute({
     sql: `INSERT INTO edges (id, source_id, target_id, relation, created_by)
@@ -243,6 +246,127 @@ test("resolveAccessChain: reports the ancestor node that owns the effective ACL"
   const rootChain = await resolveAccessChain(db, orgId);
   assert.equal(rootChain.sourceNodeId, null);
   assert.equal(rootChain.entries, null);
+});
+
+// --- resolveAccessChain: access_mode semantics ---
+
+test("resolveAccessChain: mode defaults to 'private' on a restricted node", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const restricted = await addNode(db, orgId, "group");
+  await addAccessRow(db, restricted, "group", "GROUP_A");
+
+  const chain = await resolveAccessChain(db, restricted);
+  assert.equal(chain.mode, "private");
+});
+
+test("resolveAccessChain: 'request' mode inherits to a child without its own ACL", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const restricted = await addNode(db, orgId, "group", "request");
+  await addAccessRow(db, restricted, "group", "GROUP_A");
+  const child = await addNode(db, restricted, "team");
+
+  const childChain = await resolveAccessChain(db, child);
+  assert.equal(childChain.sourceNodeId, restricted, "child inherits the ancestor's chain");
+  assert.equal(childChain.mode, "request", "child inherits the ancestor's mode along with entries");
+});
+
+test("resolveAccessChain: a child with its own ACL uses its own mode, not the ancestor's", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const parentRestricted = await addNode(db, orgId, "group", "request");
+  await addAccessRow(db, parentRestricted, "group", "GROUP_A");
+  const child = await addNode(db, parentRestricted, "group", "private");
+  await addAccessRow(db, child, "group", "GROUP_B");
+
+  const childChain = await resolveAccessChain(db, child);
+  assert.equal(childChain.sourceNodeId, child, "child is authoritative for itself");
+  assert.equal(childChain.mode, "private", "child's own mode overrides, does not inherit 'request'");
+});
+
+test("resolveAccessChain: mode is null when the chain is unrestricted", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const child = await addNode(db, orgId, "team", "request");
+
+  const chain = await resolveAccessChain(db, child);
+  assert.equal(chain.entries, null, "unrestricted -- access_mode column value is irrelevant");
+  assert.equal(chain.mode, null, "mode must be null, not the raw column value, when unrestricted");
+});
+
+test("resolveAccessChain: fail-closed node (visibility='group', no rows) still reports its own mode", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const restricted = await addNode(db, orgId, "group", "request");
+  // No node_access rows -- fail-closed entries [].
+
+  const chain = await resolveAccessChain(db, restricted);
+  assert.deepEqual(chain.entries, []);
+  assert.equal(chain.mode, "request", "mode is read from the same fail-closed node");
+});
+
+// --- classifyNodeVisibility: three-way classification for edge/related filters ---
+
+test("classifyNodeVisibility: admin sees everything as visible without resolving chains", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const restricted = await addNode(db, orgId, "group", "request");
+  await addAccessRow(db, restricted, "group", "GROUP_A");
+
+  const admin = identity({ globalScope: "admin" });
+  const result = await classifyNodeVisibility(db, admin, [restricted, orgId]);
+  assert.equal(result.get(restricted), "visible");
+  assert.equal(result.get(orgId), "visible");
+});
+
+test("classifyNodeVisibility: member of the ACL sees 'visible', unrestricted sibling is 'visible' too", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const restricted = await addNode(db, orgId, "group", "request");
+  await addAccessRow(db, restricted, "group", "GROUP_A");
+  const sibling = await addNode(db, orgId, "team");
+
+  const member = identity({ globalScope: "write", groupIds: ["GROUP_A"] });
+  const result = await classifyNodeVisibility(db, member, [restricted, sibling]);
+  assert.equal(result.get(restricted), "visible");
+  assert.equal(result.get(sibling), "visible");
+});
+
+test("classifyNodeVisibility: non-member of a 'request' node gets 'request', not 'hidden'", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const restricted = await addNode(db, orgId, "group", "request");
+  await addAccessRow(db, restricted, "group", "GROUP_A");
+
+  const outsider = identity({ globalScope: "write", groupIds: ["GROUP_OTHER"] });
+  const result = await classifyNodeVisibility(db, outsider, [restricted]);
+  assert.equal(result.get(restricted), "request");
+});
+
+test("classifyNodeVisibility: non-member of a 'private' node gets 'hidden'", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const restricted = await addNode(db, orgId, "group", "private");
+  await addAccessRow(db, restricted, "group", "GROUP_A");
+
+  const outsider = identity({ globalScope: "write", groupIds: ["GROUP_OTHER"] });
+  const result = await classifyNodeVisibility(db, outsider, [restricted]);
+  assert.equal(result.get(restricted), "hidden");
+});
+
+test("classifyNodeVisibility: fail-closed 'request' node classifies as 'request' for a non-admin", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const restricted = await addNode(db, orgId, "group", "request");
+  // No node_access rows -- fail-closed entries [].
+
+  const outsider = identity({ globalScope: "write", groupIds: ["ANY_GROUP"] });
+  const result = await classifyNodeVisibility(db, outsider, [restricted]);
+  assert.equal(result.get(restricted), "request");
+});
+
+test("classifyNodeVisibility: dedupes repeated ids in the input, one entry per id in the result", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const restricted = await addNode(db, orgId, "group", "request");
+  await addAccessRow(db, restricted, "group", "GROUP_A");
+  const sibling = await addNode(db, orgId, "team");
+
+  const outsider = identity({ globalScope: "write", groupIds: ["GROUP_OTHER"] });
+  const result = await classifyNodeVisibility(db, outsider, [restricted, restricted, sibling, sibling, restricted]);
+  assert.equal(result.size, 2, "duplicate ids collapse to one map entry each");
+  assert.equal(result.get(restricted), "request");
+  assert.equal(result.get(sibling), "visible");
 });
 
 // --- filterVisibleNodeIds: batch memoized filter ---

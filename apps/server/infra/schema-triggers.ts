@@ -83,6 +83,7 @@ export const DDL = [
     meta TEXT,
     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN (${NODE_STATUSES_SQL})),
     visibility TEXT NOT NULL DEFAULT 'team' CHECK(visibility IN (${NODE_VISIBILITIES_SQL})),
+    access_mode TEXT NOT NULL DEFAULT 'private' CHECK(access_mode IN ('private','request')),
     pos_x REAL,
     pos_y REAL,
     owner_id TEXT,

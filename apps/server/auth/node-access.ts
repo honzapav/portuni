@@ -17,6 +17,13 @@ export interface AccessEntry {
   principal: string;
 }
 
+// Node-level restriction mode (spec: docs/superpowers/specs/2026-07-04-node-sharing-design.md
+// "Rezim omezeni"). Only meaningful for restricted nodes (entries !== null);
+// ignored for unrestricted ones. Inherits with the ACL: a child without its
+// own node_access rows takes the authoritative ancestor's mode along with
+// its entries.
+export type AccessMode = "private" | "request";
+
 export interface GroupIdentityView {
   globalScope: GlobalScope;
   groups: string[];
@@ -30,6 +37,7 @@ interface ChainRow {
   node_id: string;
   depth: number;
   visibility: string;
+  access_mode: AccessMode;
   kind: "group" | "user" | null;
   principal: string | null;
 }
@@ -53,7 +61,7 @@ async function loadChain(db: Client, nodeId: string): Promise<ChainRow[]> {
               AND (SELECT e.target_id FROM edges e
                    WHERE e.source_id = c.id AND e.relation = 'belongs_to' LIMIT 1) IS NOT NULL
           )
-          SELECT c.id AS node_id, c.depth, n.visibility, na.kind, na.principal
+          SELECT c.id AS node_id, c.depth, n.visibility, n.access_mode, na.kind, na.principal
           FROM chain c
           JOIN nodes n ON n.id = c.id
           LEFT JOIN node_access na ON na.node_id = c.id
@@ -64,6 +72,7 @@ async function loadChain(db: Client, nodeId: string): Promise<ChainRow[]> {
     node_id: String(row.node_id),
     depth: Number(row.depth),
     visibility: String(row.visibility),
+    access_mode: String(row.access_mode) as AccessMode,
     kind: row.kind === null ? null : (String(row.kind) as "group" | "user"),
     principal: row.principal === null ? null : String(row.principal),
   }));
@@ -76,12 +85,12 @@ async function loadChain(db: Client, nodeId: string): Promise<ChainRow[]> {
 export async function resolveAccessChain(
   db: Client,
   nodeId: string,
-): Promise<{ sourceNodeId: string | null; entries: AccessEntry[] | null }> {
+): Promise<{ sourceNodeId: string | null; entries: AccessEntry[] | null; mode: AccessMode | null }> {
   const rows = await loadChain(db, nodeId);
   if (rows.length === 0 || rows[0].depth !== 0) {
     // Missing node -- old contract keeps this null/null (guards handle
     // existence separately).
-    return { sourceNodeId: null, entries: null };
+    return { sourceNodeId: null, entries: null, mode: null };
   }
 
   const byDepth = new Map<number, ChainRow[]>();
@@ -102,15 +111,17 @@ export async function resolveAccessChain(
           kind: row.kind as "group" | "user",
           principal: row.principal as string,
         })),
+        mode: bucket[0].access_mode,
       };
     }
     if (bucket[0].visibility === "group") {
-      // Restricted-without-rows: fail closed, only admins may see it.
-      return { sourceNodeId: bucket[0].node_id, entries: [] };
+      // Restricted-without-rows: fail closed, only admins may see it. Mode
+      // still comes from this same node -- it is the authoritative one.
+      return { sourceNodeId: bucket[0].node_id, entries: [], mode: bucket[0].access_mode };
     }
   }
 
-  return { sourceNodeId: null, entries: null };
+  return { sourceNodeId: null, entries: null, mode: null };
 }
 
 export async function effectiveAccessEntries(
@@ -162,4 +173,39 @@ export async function filterVisibleNodeIds(
     if (canSeeNode(identity, entries)) visible.add(id);
   }
   return visible;
+}
+
+// Three-way classification for edge/related-node filters (spec: "Rezim
+// omezeni"): a `mode='request'` node that a non-member cannot see still
+// surfaces as a locked chip (name + type only) instead of disappearing
+// entirely like a `private` one does. Same per-call memo shape as
+// filterVisibleNodeIds -- resolves each distinct chain once.
+export async function classifyNodeVisibility(
+  db: Client,
+  identity: GroupIdentityView,
+  nodeIds: string[],
+): Promise<Map<string, "visible" | "request" | "hidden">> {
+  const result = new Map<string, "visible" | "request" | "hidden">();
+  if (identity.globalScope === "admin") {
+    for (const id of nodeIds) result.set(id, "visible");
+    return result;
+  }
+
+  const memo = new Map<string, { entries: AccessEntry[] | null; mode: AccessMode | null }>();
+  for (const id of nodeIds) {
+    let resolved = memo.get(id);
+    if (resolved === undefined) {
+      const chain = await resolveAccessChain(db, id);
+      resolved = { entries: chain.entries, mode: chain.mode };
+      memo.set(id, resolved);
+    }
+    if (canSeeNode(identity, resolved.entries)) {
+      result.set(id, "visible");
+    } else if (resolved.mode === "request") {
+      result.set(id, "request");
+    } else {
+      result.set(id, "hidden");
+    }
+  }
+  return result;
 }

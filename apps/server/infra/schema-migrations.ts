@@ -1065,6 +1065,27 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+
+  // Migration 020: nodes.access_mode (spec: "Rezim omezeni" in
+  // 2026-07-04-node-sharing-design.md). Fresh installs already have the
+  // column with the CHECK constraint via DDL, so this is idempotent there;
+  // existing installs get it added with the same constant default and
+  // CHECK -- SQLite accepts CHECK + a constant DEFAULT on ADD COLUMN as
+  // long as the default itself satisfies the constraint (verified: 'private'
+  // does), so no separate nullable-then-backfill dance is needed here
+  // (unlike migration 018's logged_at, whose default was not constant).
+  {
+    id: "020_nodes_access_mode",
+    up: async (db) => {
+      const info = await db.execute("PRAGMA table_info(nodes)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      if (!cols.has("access_mode")) {
+        await db.execute(
+          "ALTER TABLE nodes ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'private' CHECK(access_mode IN ('private','request'))",
+        );
+      }
+    },
+  },
 ];
 
 export async function runMigrations(db: Client): Promise<void> {
