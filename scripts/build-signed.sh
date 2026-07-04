@@ -54,16 +54,20 @@ SIDECAR="$APP/Contents/MacOS/portuni-sidecar"
 codesign --verify --strict --verbose=2 "$SIDECAR"
 codesign -d --entitlements - "$SIDECAR"
 
-echo "--- unsigned Mach-O files in the bundle (must be empty)"
-UNSIGNED=0
+echo "--- unsigned or ad-hoc signed Mach-O files in the bundle (must be empty)"
+BAD=0
 while IFS= read -r -d '' f; do
-  if file -b "$f" | grep -q "Mach-O" && ! codesign --verify "$f" 2>/dev/null; then
+  file -b "$f" | grep -q "Mach-O" || continue
+  if ! codesign --verify "$f" 2>/dev/null; then
     echo "UNSIGNED: $f"
-    UNSIGNED=1
+    BAD=1
+  elif codesign -dv "$f" 2>&1 | grep -q "Signature=adhoc"; then
+    echo "ADHOC: $f"
+    BAD=1
   fi
 done < <(find "$APP" -type f -print0)
-if [[ $UNSIGNED -eq 1 ]]; then
-  echo "Some Mach-O files are unsigned; notarization will reject these." >&2
+if [[ $BAD -eq 1 ]]; then
+  echo "Notarization rejects unsigned and ad-hoc signed Mach-O files." >&2
   exit 1
 fi
 

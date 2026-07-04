@@ -100,6 +100,31 @@ function stageNativeBindings() {
   }
 }
 
+// npm ships the .node bindings ad-hoc (linker) signed; Tauri seals them
+// into the bundle as resources without re-signing, and notarization
+// rejects ad-hoc Mach-O. Sign them with the Developer ID here, before
+// bundling, whenever an identity is available (local signed builds and
+// CI both export APPLE_SIGNING_IDENTITY).
+function signNativeBindings() {
+  const identity = process.env.APPLE_SIGNING_IDENTITY;
+  if (!identity || process.platform !== "darwin") return;
+  const dstRoot = join(repoRoot, "apps/desktop/sidecar-deps/node_modules/@libsql");
+  for (const dir of readdirSync(dstRoot, { withFileTypes: true })) {
+    if (!dir.isDirectory() || !dir.name.startsWith("darwin-")) continue;
+    for (const file of readdirSync(join(dstRoot, dir.name))) {
+      if (!file.endsWith(".node")) continue;
+      const path = join(dstRoot, dir.name, file);
+      execFileSync(
+        "codesign",
+        ["--force", "--sign", identity, "--timestamp", path],
+        { stdio: "inherit" },
+      );
+      console.log(`signed: ${path}`);
+    }
+  }
+}
+
 compile(join(repoRoot, "apps/server/desktop.ts"), "portuni-sidecar");
 stageNativeBindings();
+signNativeBindings();
 // MCP stdio binary is added by the Task 7 commit.
