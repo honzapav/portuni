@@ -128,7 +128,7 @@ export default function WorkspacesSection() {
         <p className="mb-4 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
           Každý workspace má vlastní sidecar, port a data (lokální Turso nebo
           centrální server). Zdraví neaktivního workspace se dá zjistit jen
-          tady -- stavové eventy backendu chodí jen pro ten aktivní.
+          tady – stavové eventy backendu chodí jen pro ten aktivní.
         </p>
 
         {rowError && (
@@ -365,7 +365,7 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
             className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-[13.5px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] disabled:opacity-50"
           />
           <div className="mt-1 text-[11.5px] text-[var(--color-text-dim)]">
-            ID: <span className="font-mono">{id || "(neplatné)"}</span> --
+            ID: <span className="font-mono">{id || "(neplatné)"}</span> –
             po vytvoření už nejde změnit.
           </div>
         </div>
@@ -413,7 +413,7 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
               className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[12.5px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] disabled:opacity-50"
             />
             <div className="mt-1 text-[11.5px] text-[var(--color-text-dim)]">
-              Necháš-li prázdné, workspace startuje s lokální SQLite -- token
+              Necháš-li prázdné, workspace startuje s lokální SQLite – token
               se vkládá až po přepnutí do workspace v Settings.
             </div>
           </div>
