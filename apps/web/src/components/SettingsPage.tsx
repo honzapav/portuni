@@ -8,7 +8,9 @@ import {
 } from "../lib/settings";
 import McpServerSection from "./McpServerSection";
 import SettingsActorsPanel from "./SettingsPage.actors";
+import SettingsUsersPanel from "./SettingsPage.users";
 import AccountSection from "./AccountSection";
+import { fetchMe } from "../api";
 
 type Props = {
   agentCommand: string;
@@ -17,7 +19,7 @@ type Props = {
   onTerminalLaunchChange: (value: string) => void;
 };
 
-type SubTab = "general" | "actors" | "account";
+type SubTab = "general" | "actors" | "account" | "users";
 
 export default function SettingsPage({
   agentCommand,
@@ -30,6 +32,7 @@ export default function SettingsPage({
     const t = p.get("settingsTab");
     if (t === "actors") return "actors";
     if (t === "account") return "account";
+    if (t === "users") return "users";
     return "general";
   });
   useEffect(() => {
@@ -38,6 +41,32 @@ export default function SettingsPage({
     else url.searchParams.set("settingsTab", tab);
     window.history.replaceState(null, "", url.toString());
   }, [tab]);
+
+  // Uzivatele tab is admin-only. fetchMe() resolves the caller's
+  // global_scope; adminState starts "unknown" so a direct ?settingsTab=users
+  // link isn't bounced before the check resolves -- the tab button/panel
+  // just stay hidden until we know. Once resolved, a confirmed non-admin on
+  // "users" is bounced back to "general".
+  const [adminState, setAdminState] = useState<"unknown" | "yes" | "no">(
+    "unknown",
+  );
+  useEffect(() => {
+    let cancelled = false;
+    fetchMe()
+      .then((me) => {
+        if (!cancelled) setAdminState(me.global_scope === "admin" ? "yes" : "no");
+      })
+      .catch(() => {
+        if (!cancelled) setAdminState("no");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const isAdmin = adminState === "yes";
+  useEffect(() => {
+    if (tab === "users" && adminState === "no") setTab("general");
+  }, [tab, adminState]);
 
   const isGeneralTab = tab === "general";
 
@@ -142,12 +171,26 @@ export default function SettingsPage({
             >
               Účet
             </button>
+            {isAdmin && (
+              <button
+                onClick={() => setTab("users")}
+                className={`rounded px-3 py-1 text-[13px] transition-colors ${
+                  tab === "users"
+                    ? "bg-[var(--color-bg)] text-[var(--color-text)]"
+                    : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+                }`}
+              >
+                Uživatelé
+              </button>
+            )}
           </div>
         </header>
 
         {tab === "actors" && <SettingsActorsPanel />}
 
         {tab === "account" && <AccountSection />}
+
+        {tab === "users" && isAdmin && <SettingsUsersPanel />}
 
         {tab === "general" && (
           <>

@@ -21,6 +21,7 @@ export type {
   NodeAccessResponse,
   DirectoryGroup,
   AccountUser,
+  UserAdmin,
 } from "../../server/shared/api-types";
 
 // Request-only shape for PUT /nodes/:id/access -- not a server response, so

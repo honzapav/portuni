@@ -286,6 +286,19 @@ export type AccountUser = {
   avatar_url: string | null;
 };
 
+// GET /auth/users/admin -- full account list for the Nastaveni > Uzivatele
+// admin tab: adds last_login_at, invited (no google_sub yet) and the
+// resolved global_scope (via the identity adapter).
+export type UserAdmin = {
+  id: string;
+  name: string;
+  email: string;
+  avatar_url: string | null;
+  last_login_at: string | null;
+  invited: boolean;
+  global_scope: string;
+};
+
 export type NodeDetail = {
   id: string;
   type: NodeType | string;

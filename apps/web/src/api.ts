@@ -13,6 +13,7 @@ import type {
   NodeAccessEntryInput,
   DirectoryGroup,
   AccountUser,
+  UserAdmin,
 } from "./types";
 import { apiFetch } from "./lib/backend-url";
 
@@ -604,5 +605,40 @@ export async function fetchAccountUsers(): Promise<AccountUser[]> {
 export async function fetchMe(): Promise<{ global_scope: string }> {
   const res = await apiFetch("/me");
   await throwForStatus(res, "me");
+  return res.json();
+}
+
+// GET /auth/users/admin (admin-only): full account list for the Nastaveni >
+// Uzivatele tab -- last_login_at, invited flag and resolved global_scope.
+export async function fetchUsersAdmin(): Promise<UserAdmin[]> {
+  const res = await apiFetch("/auth/users/admin");
+  await throwForStatus(res, "users-admin");
+  const body = (await res.json()) as { users: UserAdmin[] };
+  return body.users;
+}
+
+// Thrown by inviteUser when the email is already registered (paired or
+// previously invited) -- the server maps this to 409.
+export class UserExistsError extends Error {
+  constructor(email: string) {
+    super(`Uživatel ${email} už existuje.`);
+    this.name = "UserExistsError";
+  }
+}
+
+// POST /auth/users/invite (admin-only): creates a placeholder user row so it
+// can be granted access before the invitee's first login.
+export async function inviteUser(
+  email: string,
+): Promise<{ id: string; email: string; name: string }> {
+  const res = await apiFetch("/auth/users/invite", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  if (res.status === 409) {
+    throw new UserExistsError(email);
+  }
+  await throwForStatus(res, "invite-user");
   return res.json();
 }
