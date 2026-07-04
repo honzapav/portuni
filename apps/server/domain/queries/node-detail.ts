@@ -7,11 +7,13 @@ import type { NodeDetail } from "../../shared/api-types.js";
 import { listUserMirrors, unregisterMirror } from "../sync/mirror-registry.js";
 import { getLocalMirror } from "../sync/local-db.js";
 import { deriveLocalPath, buildNodeRoot } from "../sync/remote-path.js";
+import { filterVisibleNodeIds, type GroupIdentityView } from "../../auth/node-access.js";
 
 export async function loadNodeDetail(
   db: Client,
   userId: string,
   nodeId: string,
+  identity: GroupIdentityView,
 ): Promise<NodeDetail | null> {
   void listUserMirrors;
   void unregisterMirror;
@@ -34,7 +36,7 @@ export async function loadNodeDetail(
     args: [row.id, row.id],
   });
 
-  const edges = edgeRes.rows.map((edge) => {
+  const rawEdges = edgeRes.rows.map((edge) => {
     const sourceId = edge.source_id as string;
     const targetId = edge.target_id as string;
     const isOutgoing = sourceId === row.id;
@@ -47,6 +49,13 @@ export async function loadNodeDetail(
       peer_type: isOutgoing ? (edge.target_type as string) : (edge.source_type as string),
     };
   });
+
+  // Group-visibility: drop edges to neighbors the caller can't see so their
+  // id/name/type don't leak through a visible node's detail (admins
+  // short-circuit inside filterVisibleNodeIds -- no per-edge queries for them).
+  const peerIds = [...new Set(rawEdges.map((e) => e.peer_id))];
+  const visiblePeerIds = await filterVisibleNodeIds(db, identity, peerIds);
+  const edges = rawEdges.filter((e) => visiblePeerIds.has(e.peer_id));
 
   const mirror = await getLocalMirror(userId, row.id);
   const mirrorPath = mirror?.local_path ?? null;

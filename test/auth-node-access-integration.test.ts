@@ -793,4 +793,46 @@ describe("IDOR fixes: FK guards on sync / mirror / move / create", () => {
       "a node under a visible org should be created",
     );
   });
+
+  // MCP portuni_move_node guards node_id but (before this fix) not new_org_id
+  // -- an outsider who can see the node being moved could rebind it onto an
+  // organization they cannot see, an IDOR identical to the REST /move fix
+  // above. Mirrors "move to an unseen destination org -> 404" but through MCP.
+  test("MCP portuni_move_node to an unseen destination org -> not-found error, belongs_to unchanged", async () => {
+    const outsider = makeOutsider(["other@x.com"]);
+    const { server } = createMcpServer(outsider);
+
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    const mcpClient = new McpClient(
+      { name: "test-move-node-idor", version: "0.0.1" },
+      { capabilities: {} },
+    );
+    await server.connect(serverT);
+    await mcpClient.connect(clientT);
+
+    const result = await mcpClient.callTool({
+      name: "portuni_move_node",
+      arguments: { node_id: teamNodeId, new_org_id: restrictedOrgId },
+    });
+
+    await mcpClient.close();
+
+    assert.equal(result.isError, true, "expected an error result for an unseen destination org");
+    const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+    assert.ok(
+      text.includes("not found"),
+      `error message should match the not-found shape (no existence oracle), got: ${text}`,
+    );
+
+    const rows = await db.execute({
+      sql: "SELECT target_id FROM edges WHERE source_id = ? AND relation = 'belongs_to'",
+      args: [teamNodeId],
+    });
+    assert.equal(rows.rows.length, 1, "belongs_to edge should still exist");
+    assert.equal(
+      rows.rows[0].target_id,
+      orgId,
+      "node must NOT have been rebound to the unseen org via MCP",
+    );
+  });
 });

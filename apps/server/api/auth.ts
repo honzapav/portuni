@@ -164,13 +164,21 @@ export async function handleListUsersAdmin(
     const db = getDb();
     const rows = await listUsersAdmin(db);
     const adapter = getIdentityContext().adapter;
-    const accessResolutions = await Promise.all(
+    // Resolve each row independently -- one unresolvable email (invited
+    // external/typo address the directory can't look up in google mode)
+    // must not 500 the whole admin tab. Promise.all would reject on the
+    // first rejection; Promise.allSettled keeps the others intact and we
+    // fall back to global_scope: null for the failed row.
+    const accessResolutions = await Promise.allSettled(
       rows.map((row) => adapter.resolveAccess(row.email)),
     );
-    const users = rows.map((row, i) => ({
-      ...row,
-      global_scope: accessResolutions[i].globalScope,
-    }));
+    const users = rows.map((row, i) => {
+      const resolution = accessResolutions[i];
+      return {
+        ...row,
+        global_scope: resolution.status === "fulfilled" ? resolution.value.globalScope : null,
+      };
+    });
     respondJson(res, 200, { users });
   } catch (err) {
     respondError(res, "GET /auth/users/admin", err);

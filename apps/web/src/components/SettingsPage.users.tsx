@@ -168,7 +168,7 @@ export default function SettingsUsersPanel() {
                     {u.email}
                   </td>
                   <td className="py-2 pr-4 font-mono text-[var(--color-text-muted)]">
-                    {u.global_scope}
+                    {u.global_scope ?? "—"}
                   </td>
                   <td className="py-2 text-[var(--color-text-muted)]">
                     {u.last_login_at ? fmtDateTime(u.last_login_at) : "—"}

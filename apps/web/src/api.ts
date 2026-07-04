@@ -608,8 +608,8 @@ export async function fetchMe(): Promise<{ global_scope: string }> {
   return res.json();
 }
 
-// GET /auth/users/admin (admin-only): full account list for the Nastaveni >
-// Uzivatele tab -- last_login_at, invited flag and resolved global_scope.
+// GET /auth/users/admin (admin-only): full account list for the Nastavení >
+// Uživatelé tab -- last_login_at, invited flag and resolved global_scope.
 export async function fetchUsersAdmin(): Promise<UserAdmin[]> {
   const res = await apiFetch("/auth/users/admin");
   await throwForStatus(res, "users-admin");

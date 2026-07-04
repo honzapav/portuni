@@ -10,6 +10,7 @@
 // handlers and the frontend consumers must be updated.
 
 import type { NodeType, EdgeRelation } from "./popp.js";
+import type { GlobalScope } from "../auth/roles.js";
 
 // -- Graph (list) endpoint --------------------------------------------
 
@@ -286,9 +287,11 @@ export type AccountUser = {
   avatar_url: string | null;
 };
 
-// GET /auth/users/admin -- full account list for the Nastaveni > Uzivatele
+// GET /auth/users/admin -- full account list for the Nastavení > Uživatelé
 // admin tab: adds last_login_at, invited (no google_sub yet) and the
-// resolved global_scope (via the identity adapter).
+// resolved global_scope (via the identity adapter). null when the identity
+// adapter couldn't resolve this row's access (e.g. an unresolvable invited
+// email) -- the row still renders, just without a role.
 export type UserAdmin = {
   id: string;
   name: string;
@@ -296,7 +299,7 @@ export type UserAdmin = {
   avatar_url: string | null;
   last_login_at: string | null;
   invited: boolean;
-  global_scope: string;
+  global_scope: GlobalScope | null;
 };
 
 export type NodeDetail = {

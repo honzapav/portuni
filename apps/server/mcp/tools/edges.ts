@@ -249,6 +249,17 @@ export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
+      // new_org_id is an FK from the tool args -- verify the caller can see
+      // the destination too, otherwise this is an IDOR: rebinding a node onto
+      // an organization the caller has no access to (or probing its
+      // existence). Same not-found message shape as the node_id check above
+      // so neither branch works as an existence oracle.
+      if (!(await nodeVisibleTo(db, ctx.identity, args.new_org_id))) {
+        return {
+          content: [{ type: "text" as const, text: `Error: node ${args.new_org_id} not found` }],
+          isError: true,
+        };
+      }
       try {
         const result = await moveNodeToOrganization(
           db,

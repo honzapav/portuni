@@ -380,6 +380,64 @@ describe("Users: listing + invite (Task 6)", () => {
     assert.equal(paired.global_scope, "admin");
   });
 
+  // 5b. One row's resolveAccess rejects (e.g. an invited external/typo email
+  // in google mode that the directory can't resolve) -- must not 500 the
+  // whole endpoint. That row gets global_scope: null, others stay intact.
+  test("5b. resolveAccess throws for one row -> 200, that row's global_scope is null, others intact", async () => {
+    const unresolvableEmail = "unresolvable@example.com";
+    const { req: inviteReq, res: inviteRes, captured: inviteCaptured } = makeMockReqRes(
+      "POST",
+      "/auth/users/invite",
+      { email: unresolvableEmail },
+    );
+    await routeApiRequest(
+      inviteReq,
+      inviteRes,
+      new URL("http://localhost/auth/users/invite"),
+      makeAdmin(),
+    );
+    assert.equal(inviteCaptured.statusCode, 201);
+
+    const flakyAdapter: IdentityAdapter = {
+      verify: async () => ({ email: "admin@x.com", name: "Admin", sub: "env:admin@x.com" }),
+      resolveAccess: async (email: string) => {
+        if (email === unresolvableEmail) {
+          throw new Error("directory lookup failed: no such user");
+        }
+        return { globalScope: "admin", groups: [], groupIds: [`scope-for-${email}`] };
+      },
+    };
+    setIdentityContextForTesting(makeCtxWithAdapter(flakyAdapter));
+    try {
+      const admin = makeAdmin();
+      const { req, res, captured } = makeMockReqRes("GET", "/auth/users/admin");
+      await routeApiRequest(req, res, new URL("http://localhost/auth/users/admin"), admin);
+
+      assert.equal(captured.statusCode, 200, `expected 200, got ${captured.statusCode}; body: ${captured.body}`);
+      const parsed = JSON.parse(captured.body);
+      assert.ok(Array.isArray(parsed.users));
+
+      const broken = parsed.users.find((u: { email: string }) => u.email === unresolvableEmail);
+      assert.ok(broken, "expected the unresolvable row to still be present");
+      assert.equal(broken.global_scope, null, "unresolvable row's global_scope must be null, not throw");
+
+      const other = parsed.users.find((u: { email: string }) => u.email === "new.user@example.com");
+      assert.ok(other, "expected an unaffected row to still be present");
+      assert.equal(other.global_scope, "admin", "unaffected rows must resolve normally");
+    } finally {
+      setIdentityContextForTesting(
+        makeCtxWithAdapter({
+          verify: async () => ({ email: "admin@x.com", name: "Admin", sub: "env:admin@x.com" }),
+          resolveAccess: async (email: string) => ({
+            globalScope: "admin",
+            groups: [],
+            groupIds: [`scope-for-${email}`],
+          }),
+        }),
+      );
+    }
+  });
+
   // 6. GET /auth/users (manage) -> ACL picker shape, no admin-only fields.
   test("6. GET /auth/users (manage) -> picker shape", async () => {
     const manager = makeManager();

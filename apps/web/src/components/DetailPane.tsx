@@ -1719,6 +1719,13 @@ function LifecycleDropdown({
   );
 }
 
+// "group" is not directly selectable here -- picking it would PATCH
+// visibility with zero node_access rows, which fails the node closed to
+// admin-only. Group visibility is only ever set via the "Sdílení" section's
+// ACL flow; the dropdown just reflects it as a disabled, informational entry
+// when it's already the node's current value (see below).
+const SELECTABLE_VISIBILITIES = NODE_VISIBILITIES.filter((v) => v !== "group");
+
 function VisibilityDropdown({
   nodeId,
   value,
@@ -1784,7 +1791,7 @@ function VisibilityDropdown({
       </button>
       {open && (
         <div className="absolute right-0 top-full z-50 mt-1 min-w-[180px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
-          {NODE_VISIBILITIES.map((v) => {
+          {SELECTABLE_VISIBILITIES.map((v) => {
             const priv = v === "private";
             const VIcon = priv ? Lock : Users;
             const vLabel = priv ? "soukromé" : "tým";
@@ -1816,6 +1823,26 @@ function VisibilityDropdown({
               </button>
             );
           })}
+          {value === "group" && (
+            <div
+              className="flex w-full cursor-default items-start gap-2 px-3 py-1.5 text-left text-[11.5px] opacity-60 bg-[var(--color-surface-2)]"
+              title="Viditelnost „skupina“ se nastavuje v sekci „Sdílení“, ne zde."
+            >
+              <Users
+                size={12}
+                strokeWidth={2}
+                className="mt-[2px] shrink-0 text-[var(--color-text-dim)]"
+              />
+              <span className="flex flex-col">
+                <span className="font-mono text-[11px] text-[var(--color-text)]">
+                  skupina
+                </span>
+                <span className="text-[10px] text-[var(--color-text-dim)]">
+                  spravováno v sekci „Sdílení“
+                </span>
+              </span>
+            </div>
+          )}
         </div>
       )}
     </div>

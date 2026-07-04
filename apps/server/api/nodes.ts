@@ -47,7 +47,7 @@ export async function handleGetNode(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
-    const node = await loadNodeDetail(db, identity.userId, nodeId);
+    const node = await loadNodeDetail(db, identity.userId, nodeId, identity);
     if (!node) {
       respondJson(res, 404, { error: "node not found" });
       return;
@@ -132,7 +132,7 @@ export async function handlePatchNode(
       return;
     }
     await updateNodeInternal(getDb(), identity.userId, update);
-    const node = await loadNodeDetail(getDb(), identity.userId, nodeId);
+    const node = await loadNodeDetail(getDb(), identity.userId, nodeId, identity);
     if (!node) {
       respondJson(res, 404, { error: "node not found" });
       return;
@@ -176,7 +176,7 @@ export async function handleMoveNode(
       nodeId,
       body.new_org_id,
     );
-    const node = await loadNodeDetail(getDb(), identity.userId, nodeId);
+    const node = await loadNodeDetail(getDb(), identity.userId, nodeId, identity);
     if (!node) {
       respondJson(res, 404, { error: "node not found" });
       return;
@@ -230,7 +230,7 @@ export async function handleCreateNode(
       goal: body.goal ?? undefined,
       lifecycle_state: body.lifecycle_state ?? undefined,
     });
-    const node = await loadNodeDetail(getDb(), identity.userId, id);
+    const node = await loadNodeDetail(getDb(), identity.userId, id, identity);
     respondJson(res, 201, node);
   } catch (err) {
     respondError(res, `${req.method} /nodes`, err);

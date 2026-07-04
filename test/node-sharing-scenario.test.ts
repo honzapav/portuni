@@ -296,3 +296,69 @@ describe("business partners sharing scenario", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Finding 1 (final review wave): loadNodeDetail's edge list must not leak
+// peer_id/peer_name/peer_type of a restricted neighbor onto an otherwise
+// visible node's detail payload.
+// ---------------------------------------------------------------------------
+
+describe("Finding 1: GET /nodes/:id edges hide restricted neighbors", () => {
+  let db: DbClient;
+  let workspace: string;
+  let orgId: string;
+  let visibleChildId: string;
+  let restrictedChildId: string;
+
+  const admin = makeAdmin();
+  const orgMember = makeOrgMember(); // groupIds: ["GID_ORG"] -- not a member of GID_SECRET
+
+  before(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-edge-leak-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+
+    db = await makeTestDb();
+    setDbForTesting(db);
+
+    // Org itself is unrestricted so both identities can load its detail;
+    // one child is restricted to a group neither identity below belongs to.
+    orgId = await insertOrg(db, "EdgeLeakOrg");
+    visibleChildId = await insertNode(db, orgId, { name: "VisibleChild" });
+    restrictedChildId = await insertNode(db, orgId, {
+      visibility: "group",
+      accessGroup: "GID_SECRET",
+      name: "RestrictedChild",
+    });
+  });
+
+  after(async () => {
+    setDbForTesting(null);
+    resetLocalDbForTests();
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  test("org member GETs the org: edges include the visible child, NOT the restricted child", async () => {
+    const result = await getNode(orgMember, orgId);
+    assert.equal(result.statusCode, 200, `expected 200, got ${result.statusCode}; body: ${result.body}`);
+    const parsed = JSON.parse(result.body) as {
+      edges: Array<{ peer_id: string; peer_name: string; peer_type: string }>;
+    };
+    const peerIds = parsed.edges.map((e) => e.peer_id);
+    assert.ok(peerIds.includes(visibleChildId), "visible child must appear in edges");
+    assert.ok(!peerIds.includes(restrictedChildId), "restricted child must NOT appear in edges");
+    assert.ok(
+      !parsed.edges.some((e) => e.peer_name === "RestrictedChild"),
+      "restricted child's name must not leak through edges either",
+    );
+  });
+
+  test("admin GETs the org: edges include both children", async () => {
+    const result = await getNode(admin, orgId);
+    assert.equal(result.statusCode, 200, `expected 200, got ${result.statusCode}; body: ${result.body}`);
+    const parsed = JSON.parse(result.body) as { edges: Array<{ peer_id: string }> };
+    const peerIds = parsed.edges.map((e) => e.peer_id);
+    assert.ok(peerIds.includes(visibleChildId), "admin should see visible child in edges");
+    assert.ok(peerIds.includes(restrictedChildId), "admin should see restricted child in edges");
+  });
+});
