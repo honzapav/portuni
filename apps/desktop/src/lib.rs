@@ -43,61 +43,8 @@ pub(crate) const KEYCHAIN_SERVICE: &str = "ooo.workflow.portuni";
 const KEYCHAIN_TURSO_ACCOUNT: &str = "turso_auth_token";
 const KEYCHAIN_MCP_ACCOUNT: &str = "mcp_auth_token";
 
-#[derive(Default, Serialize, Deserialize, Clone)]
-pub(crate) struct DesktopConfig {
-    /// Optional libSQL URL. When unset, defaults to a file: URL inside
-    /// PORTUNI_DATA_DIR. Leave the file: variant for purely local use,
-    /// set a libsql:// URL to point the desktop at a Turso database. The
-    /// matching auth token lives in the OS keychain, not this file —
-    /// see `set_turso_token` / `clear_turso_token` Tauri commands.
-    #[serde(default)]
-    turso_url: Option<String>,
-    /// Filesystem root for local mirror folders + the per-device
-    /// `<root>/.portuni/sync.db` registry. Mirror-aware backend code
-    /// (file detail, status scan, store/pull) reads PORTUNI_WORKSPACE_ROOT
-    /// before hitting that registry. Defaults to ~/Workspaces/portuni when
-    /// unset; set to match an existing CLI workspace to share its mirrors.
-    /// Tilde (~) is expanded by the sidecar at runtime.
-    #[serde(default)]
-    portuni_workspace_root: Option<String>,
-    /// Loopback port the bundled MCP server listens on. Stable across
-    /// launches so external agents (Claude Code, Codex) can keep their
-    /// `.mcp.json` configs valid. Defaults to DEFAULT_MCP_PORT; override
-    /// in config.json if it collides with another local service.
-    #[serde(default)]
-    mcp_port: Option<u16>,
-    /// Base URL of the Portuni central server (e.g. "https://api.portuni.com").
-    /// Required for Google login and central_request. Non-secret; read from
-    /// config.json. Leave unset for purely local/Turso-only installations.
-    #[serde(default)]
-    pub(crate) server_url: Option<String>,
-    /// Google OAuth client ID (Desktop application type). Non-secret; read
-    /// from config.json. Required together with server_url for Google login.
-    #[serde(default)]
-    pub(crate) google_client_id: Option<String>,
-    /// Google OAuth client secret for the Desktop client. Google requires it
-    /// in the token exchange even for installed-app PKCE flows; it is not a
-    /// true secret (it ships with every desktop install). Read from config.json.
-    #[serde(default)]
-    pub(crate) google_client_secret: Option<String>,
-    /// Data mode: "central" routes api_request to server_url with the user's
-    /// JWT; anything else (including absent) is treated as "local" (sidecar).
-    /// Set to "central" on teammate desktops that should never touch a local
-    /// Turso replica directly.
-    #[serde(default)]
-    pub(crate) data_mode: Option<String>,
-}
-
 fn config_path(data_dir: &PathBuf) -> PathBuf {
     data_dir.join("config.json")
-}
-
-pub(crate) fn load_config(data_dir: &PathBuf) -> DesktopConfig {
-    let path = config_path(data_dir);
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
 }
 
 // Workspace-scoped Keychain helpers. Every secret we persist across
@@ -211,128 +158,104 @@ fn regenerate_mcp_token(app: AppHandle) -> Result<String, String> {
     Ok(fresh)
 }
 
-// Snapshots the live MCP endpoint (URL built from the bound port) +
-// auth token. Returns ("url", "token") so the install_* commands don't
-// each duplicate the same plumbing. Errors with a human message when
-// the sidecar hasn't reported its port yet — the UI gates the install
-// buttons on the same status, so this should not normally happen.
-fn snapshot_mcp_endpoint(app: &AppHandle) -> Result<(String, String), String> {
-    let (ws_id, _) = active_workspace(app)?;
-    let port = {
-        let state = app.state::<BackendPorts>();
-        let guard = state.0.lock().map_err(|e| e.to_string())?;
-        guard
-            .get(&ws_id)
-            .copied()
-            .filter(|p| *p > 0)
-            .ok_or_else(|| "MCP server not yet running".to_string())?
-    };
-    let token = {
-        let state = app.state::<AuthTokens>();
-        let guard = state.0.lock().map_err(|e| e.to_string())?;
-        guard
-            .get(&ws_id)
+// Resolve (name, url, claude_token, token_env) for one workspace's global
+// MCP entry. Local mode: loopback URL from the stable config port and the
+// literal persisted token (Claude embeds it; Codex/Vibe use env
+// indirection). Central mode: {server_url}/mcp and env-reference for all.
+fn global_entry_parts(
+    app: &AppHandle,
+    ws_id: &str,
+    cfg: &workspace::WorkspaceConfig,
+) -> Result<(String, String, String, String), String> {
+    let name = workspace::mcp_server_name(ws_id, cfg);
+    let token_env = workspace::token_env_var(ws_id);
+    if workspace::is_central(cfg) {
+        let server_url = cfg
+            .server_url
+            .clone()
+            .ok_or_else(|| format!("workspace {ws_id}: central mode requires server_url"))?;
+        let url = format!("{}/mcp", server_url.trim_end_matches('/'));
+        let claude_token = format!("${{{token_env}:-}}");
+        Ok((name, url, claude_token, token_env))
+    } else {
+        let port = cfg
+            .mcp_port
+            .ok_or_else(|| format!("workspace {ws_id}: no mcp_port assigned"))?;
+        let url = format!("http://127.0.0.1:{port}/mcp");
+        let token = app
+            .state::<AuthTokens>()
+            .0
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get(ws_id)
             .cloned()
-            .ok_or_else(|| "MCP server not yet running (no token)".to_string())?
-    };
-    Ok((format!("http://127.0.0.1:{port}/mcp"), token))
+            .or_else(|| keychain_get_ws(KEYCHAIN_MCP_ACCOUNT, ws_id))
+            .ok_or_else(|| format!("workspace {ws_id}: MCP token unavailable"))?;
+        Ok((name, url, token, token_env))
+    }
+}
+
+pub(crate) fn enabled_workspaces(
+    app: &AppHandle,
+) -> Result<Vec<(String, workspace::WorkspaceConfig)>, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => Ok(f
+            .workspaces
+            .into_iter()
+            .filter(|(_, c)| c.enabled)
+            .collect()),
+        _ => Err("config not migrated to workspaces yet".to_string()),
+    }
 }
 
 // Writes Portuni as a user-scoped MCP server in ~/.claude.json, so any
 // Claude Code session on this machine can connect without per-project
 // .mcp.json. Returns the absolute path of the written file for the UI
-// to surface back to the user.
+// to surface back to the user. Installs one entry per enabled workspace.
 //
 // In central data_mode: writes {server_url}/mcp as the URL and uses the
-// PORTUNI_MCP_TOKEN env-reference pattern (same as mirror configs) so the
-// token is never hardcoded in the file.
+// PORTUNI_MCP_TOKEN_<WS> env-reference pattern (same as mirror configs) so
+// the token is never hardcoded in the file.
 #[tauri::command]
 fn install_claude_global(app: AppHandle) -> Result<String, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let config = load_config(&data_dir);
-    let is_central = config.data_mode.as_deref() == Some("central");
-
-    let (url, token) = if is_central {
-        let server_url = config
-            .server_url
-            .ok_or_else(|| "central mode requires server_url in config.json".to_string())?;
-        let mcp_url = format!("{}/mcp", server_url.trim_end_matches('/'));
-        // Use the env-reference pattern so the token is never hardcoded.
-        // Claude Code resolves ${PORTUNI_MCP_TOKEN:-} from the shell env at
-        // session start — the terminal inject path ensures it is set for
-        // sessions spawned by Portuni.
-        (mcp_url, "${PORTUNI_MCP_TOKEN:-}".to_string())
-    } else {
-        // Local mode: snapshot live sidecar endpoint (url, token).
-        snapshot_mcp_endpoint(&app)?
-    };
-
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
     let path = PathBuf::from(home).join(".claude.json");
-    mcp_install::write_claude_config(&path, "portuni", &url, &token)?;
+    for (ws_id, cfg) in enabled_workspaces(&app)? {
+        let (name, url, token, _env) = global_entry_parts(&app, &ws_id, &cfg)?;
+        mcp_install::write_claude_config(&path, &name, &url, &token)?;
+    }
     Ok(path.to_string_lossy().into_owned())
 }
 
-// Same idea for Codex: writes the [mcp_servers.portuni] block into
-// ~/.codex/config.toml between Portuni-managed marker comments so we
-// can refresh idempotently without clobbering surrounding user config.
+// Same idea for Codex: writes one [mcp_servers.<name>] block per enabled
+// workspace into ~/.codex/config.toml between Portuni-managed marker
+// comments so we can refresh idempotently without clobbering surrounding
+// user config.
 #[tauri::command]
 fn install_codex_global(app: AppHandle) -> Result<String, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let config = load_config(&data_dir);
-    let is_central = config.data_mode.as_deref() == Some("central");
-
-    let (url, token) = if is_central {
-        let server_url = config
-            .server_url
-            .ok_or_else(|| "central mode requires server_url in config.json".to_string())?;
-        let mcp_url = format!("{}/mcp", server_url.trim_end_matches('/'));
-        // Use the env-reference pattern so the token is never hardcoded.
-        // Codex resolves ${PORTUNI_MCP_TOKEN:-} from the shell env at
-        // session start — the terminal inject path ensures it is set for
-        // sessions spawned by Portuni.
-        (mcp_url, "${PORTUNI_MCP_TOKEN:-}".to_string())
-    } else {
-        // Local mode: snapshot live sidecar endpoint (url, token).
-        snapshot_mcp_endpoint(&app)?
-    };
-
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
     let path = PathBuf::from(home).join(".codex").join("config.toml");
-    mcp_install::write_codex_config(&path, "portuni", &url, "PORTUNI_MCP_TOKEN")?;
+    for (ws_id, cfg) in enabled_workspaces(&app)? {
+        let (name, url, _token, token_env) = global_entry_parts(&app, &ws_id, &cfg)?;
+        mcp_install::write_codex_config(&path, &name, &url, &token_env)?;
+    }
     Ok(path.to_string_lossy().into_owned())
 }
 
-// Same idea for Mistral Vibe: writes the Portuni [[mcp_servers]] entry
-// into ~/.vibe/config.toml between Portuni-managed marker comments. Vibe
-// pulls the bearer token from the PORTUNI_MCP_TOKEN env var (api_key_env),
-// so — like Codex — the literal token never lands in the file in either
-// data mode.
+// Same idea for Mistral Vibe: writes one [[mcp_servers]] entry per enabled
+// workspace into ~/.vibe/config.toml between Portuni-managed marker
+// comments. Vibe pulls the bearer token from the per-workspace env var
+// (api_key_env), so — like Codex — the literal token never lands in the
+// file in either data mode.
 #[tauri::command]
 fn install_vibe_global(app: AppHandle) -> Result<String, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let config = load_config(&data_dir);
-    let is_central = config.data_mode.as_deref() == Some("central");
-
-    let (url, token) = if is_central {
-        let server_url = config
-            .server_url
-            .ok_or_else(|| "central mode requires server_url in config.json".to_string())?;
-        let mcp_url = format!("{}/mcp", server_url.trim_end_matches('/'));
-        // Token resolved from the env var at runtime (api_key_env), so the
-        // value is never written to disk. The terminal inject path ensures
-        // PORTUNI_MCP_TOKEN is set for sessions Portuni spawns.
-        (mcp_url, "${PORTUNI_MCP_TOKEN:-}".to_string())
-    } else {
-        // Local mode: snapshot live sidecar endpoint (url, token). The
-        // token is ignored by the writer (env-var indirection) but the URL
-        // carries the live sidecar port.
-        snapshot_mcp_endpoint(&app)?
-    };
-
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
     let path = PathBuf::from(home).join(".vibe").join("config.toml");
-    mcp_install::write_vibe_config(&path, "portuni", &url, "PORTUNI_MCP_TOKEN")?;
+    for (ws_id, cfg) in enabled_workspaces(&app)? {
+        let (name, url, _token, token_env) = global_entry_parts(&app, &ws_id, &cfg)?;
+        mcp_install::write_vibe_config(&path, &name, &url, &token_env)?;
+    }
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -1407,12 +1330,34 @@ pub(crate) fn spawn_all_sidecars(app: &AppHandle) {
     }
 }
 
-// Temporary stub — replaced in the global-installers task, which removes a
-// workspace's user-scoped MCP entries (~/.claude.json, ~/.codex, ~/.vibe)
-// when it is disabled or deleted. Until then, disabling/deleting a workspace
-// leaves any global MCP entry in place (harmless: it points at a stopped
-// sidecar port).
-fn remove_global_mcp_entries(_: &AppHandle, _: &str) -> Result<(), String> {
+// Remove one workspace's entries from all three user-scoped agent configs.
+// Best-effort per file: a missing file is fine; a parse error propagates.
+fn remove_global_mcp_entries(app: &AppHandle, ws_id: &str) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let name = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f
+            .workspaces
+            .get(ws_id)
+            .map(|c| workspace::mcp_server_name(ws_id, c))
+            .unwrap_or_else(|| format!("portuni-{ws_id}")),
+        _ => format!("portuni-{ws_id}"),
+    };
+    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
+    let claude = PathBuf::from(&home).join(".claude.json");
+    if let Ok(raw) = std::fs::read_to_string(&claude) {
+        let next = mcp_install::remove_claude_server(Some(&raw), &name)?;
+        std::fs::write(&claude, next).map_err(|e| e.to_string())?;
+    }
+    let codex = PathBuf::from(&home).join(".codex").join("config.toml");
+    if let Ok(raw) = std::fs::read_to_string(&codex) {
+        std::fs::write(&codex, mcp_install::remove_codex_block(&raw, &name))
+            .map_err(|e| e.to_string())?;
+    }
+    let vibe = PathBuf::from(&home).join(".vibe").join("config.toml");
+    if let Ok(raw) = std::fs::read_to_string(&vibe) {
+        let next = mcp_install::remove_vibe_server(&raw, &name)?;
+        std::fs::write(&vibe, next).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
