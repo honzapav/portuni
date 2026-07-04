@@ -1044,9 +1044,16 @@ const MIGRATIONS: Migration[] = [
       await db.execute(DDL_NODE_ACCESS);
       await db.execute(INDEX_NODE_ACCESS_NODE);
 
+      // json_valid(meta) guards against a node with a corrupt/non-JSON meta
+      // column: without it, json_extract() throws on that one row and
+      // SQLite aborts the WHOLE query -- no node gets backfilled, not just
+      // the offender. With the guard, invalid-JSON rows are simply excluded
+      // from the backfill (they can't have had a valid access_group anyway)
+      // and every other node still gets processed.
       const rows = await db.execute(
         `SELECT id, meta FROM nodes
-          WHERE meta IS NOT NULL AND json_extract(meta, '$.access_group') IS NOT NULL`,
+          WHERE meta IS NOT NULL AND json_valid(meta)
+            AND json_extract(meta, '$.access_group') IS NOT NULL`,
       );
       for (const r of rows.rows) {
         const email = String(
