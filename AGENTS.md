@@ -124,6 +124,16 @@ tmux loop for backend iteration.
   `scripts/e2e/teammate-mirrors.sh`. Model: `docs/architecture/data-modes.md`;
   plán: `docs/superpowers/plans/2026-07-03-teammate-mirrors.md`.
 
+- **Multi-workspace desktop**: `config.json` v2 má `workspaces` mapu +
+  `active_workspace`; sidecary všech zapnutých workspaces běží souběžně
+  (každý vlastní port od 47011, data dir `workspaces/<id>/`, Keychain
+  accounty `<base>.<id>`). UI přepíná jen pohled. Per-mirror configy
+  referencují token přes `PORTUNI_MCP_TOKEN_<ID>` (server zná své ID z
+  `PORTUNI_WORKSPACE_ID`; bez něj — standalone — zůstává
+  `PORTUNI_MCP_TOKEN`). Globální MCP entries: `portuni-<id>`, migrovaný
+  workspace drží historické `portuni`. Model:
+  `docs/superpowers/specs/2026-07-04-desktop-multi-workspace-design.md`.
+
 - **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
   keys; `.env.schema` declares only the 6 core ones. Full inventory with
   defaults: `docs/env-vars.md`. Watch out: `PORTUNI_ROOT` (write-scope

@@ -43,6 +43,11 @@ feature toggle — it is a transport/trust boundary:
   permissions** (groups, node-access in `apps/server/auth/`). The teammate never holds
   the raw Turso token.
 
+In multi-workspace setups, **each workspace can have a different `data_mode`**:
+one workspace can be local (direct Turso + Drive access) while another is
+central (through the server). This allows a single desktop to host, say, a
+central-mode Tempo workspace and a local-mode personal workspace simultaneously.
+
 The central server is literally the **same backend codebase** deployed to a VPS
 (`scripts/deploy-vps.sh` rsyncs `dist/`). It just has **no local mirror folders**
 and is reached by JWT instead of a bearer token.
