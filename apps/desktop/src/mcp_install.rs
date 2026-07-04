@@ -114,7 +114,13 @@ pub fn upsert_codex_config(
         _ => return Ok(block),
     };
 
-    if let Some(start) = body.find(&marker) {
+    // Match the marker as a complete line (marker + newline): the marker
+    // for "portuni" is a string prefix of the marker for
+    // "portuni-honzapav", so a plain substring search would find (and
+    // clobber) the wrong block. Every emitted block writes the marker
+    // followed by a newline, so anchoring on the trailing \n is safe.
+    let marker_line = format!("{marker}\n");
+    if let Some(start) = body.find(&marker_line) {
         // Find the end of the block: next blank line, or EOF.
         let after = &body[start..];
         let end_offset = after
@@ -153,7 +159,10 @@ pub fn upsert_codex_config(
 /// Remove the managed block for `name`. Text outside the block is preserved.
 pub fn remove_codex_block(existing: &str, name: &str) -> String {
     let marker = codex_marker(name);
-    let Some(start) = existing.find(&marker) else {
+    // Full-line match — see upsert_codex_config for why a plain substring
+    // search would hit a longer prefixed name's block.
+    let marker_line = format!("{marker}\n");
+    let Some(start) = existing.find(&marker_line) else {
         return existing.to_string();
     };
     let after = &existing[start..];
@@ -398,6 +407,22 @@ mod codex_tests {
         assert!(!second.contains("http://old/mcp"));
         // Marker must remain exactly once.
         assert_eq!(second.matches(&codex_marker("portuni")).count(), 1);
+    }
+
+    #[test]
+    fn short_name_ops_do_not_touch_longer_prefixed_block() {
+        let long = upsert_codex_config(None, "portuni-honzapav", "http://y/mcp", "PORTUNI_MCP_TOKEN_HONZAPAV").unwrap();
+        // Upserting the SHORT name must append a new block, not corrupt the
+        // long one ("portuni" marker is a string prefix of the
+        // "portuni-honzapav" marker).
+        let both = upsert_codex_config(Some(&long), "portuni", "http://x/mcp", "PORTUNI_MCP_TOKEN").unwrap();
+        assert!(both.contains("[mcp_servers.portuni-honzapav]"));
+        assert!(both.contains("url = \"http://y/mcp\""));
+        assert!(both.contains("[mcp_servers.portuni]\n"));
+        // Removing the SHORT name must leave the long block intact.
+        let removed = remove_codex_block(&both, "portuni");
+        assert!(removed.contains("[mcp_servers.portuni-honzapav]"));
+        assert!(!removed.contains("[mcp_servers.portuni]\n"));
     }
 
     #[test]
