@@ -191,4 +191,18 @@ describe("local-db", () => {
     resetLocalDbForTests();
     await assert.rejects(() => getLocalDb(), /PORTUNI_WORKSPACE_ROOT/);
   });
+
+  it("mirror read paths tolerate a missing workspace root (central server)", async () => {
+    delete process.env.PORTUNI_WORKSPACE_ROOT;
+    resetLocalDbForTests();
+    // The central server has no workspace root; node detail and MCP get-node
+    // must see "no mirror", not a 500.
+    assert.equal(await getLocalMirror("U1", "N1"), null);
+    assert.deepEqual(await listLocalMirrors("U1"), []);
+    // Writes still fail fast on the misconfiguration.
+    await assert.rejects(
+      () => upsertLocalMirror({ user_id: "U1", node_id: "N1", local_path: "/x" }),
+      /PORTUNI_WORKSPACE_ROOT/,
+    );
+  });
 });

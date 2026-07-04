@@ -227,6 +227,11 @@ export async function getLocalMirror(
   userId: string,
   nodeId: string,
 ): Promise<LocalMirrorRow | null> {
+  // The central server runs without PORTUNI_WORKSPACE_ROOT: mirrors are
+  // per-device state owned by the desktop/agent, so "no workspace" simply
+  // means "no mirror here" on read paths (node detail, MCP get-node).
+  // Write paths (upsert/delete) still fail fast on the missing root.
+  if (!process.env.PORTUNI_WORKSPACE_ROOT) return null;
   const db = await getLocalDb();
   const r = await db.execute({
     sql: "SELECT * FROM local_mirrors WHERE user_id = ? AND node_id = ?",
@@ -251,6 +256,7 @@ export async function deleteLocalMirror(userId: string, nodeId: string): Promise
 }
 
 export async function listLocalMirrors(userId: string): Promise<LocalMirrorRow[]> {
+  if (!process.env.PORTUNI_WORKSPACE_ROOT) return [];
   const db = await getLocalDb();
   const r = await db.execute({
     sql: "SELECT * FROM local_mirrors WHERE user_id = ? ORDER BY registered_at DESC",
