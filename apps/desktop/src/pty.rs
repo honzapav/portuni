@@ -279,43 +279,40 @@ pub fn pty_spawn(
     // copies the parent env by default, which is what we want here so
     // the user's shell rc files have what they expect.
     cmd.env("TERM", "xterm-256color");
-    // Inject PORTUNI_MCP_TOKEN so the per-mirror .mcp.json (which references
-    // it as `${PORTUNI_MCP_TOKEN:-}`) resolves to the right bearer credential.
-    //
-    // In local mode: use the per-launch sidecar auth token from AuthToken state.
-    // In central mode: use the device token from Keychain (account
-    //   "portuni_device_token"); if absent, mint one via POST /device-tokens and
-    //   store it. If not logged in, skip injection (terminal works without MCP).
-    // Multi-workspace terminal token injection (which workspace's token to
-    // use for a given node's terminal) is Task 8 — for now this uses
-    // whichever workspace is active.
+    // Inject one token env var per enabled workspace, so per-mirror configs
+    // (which reference ${PORTUNI_MCP_TOKEN_<ID>:-}) resolve the right
+    // credential regardless of which workspace the terminal's cwd belongs
+    // to. PORTUNI_MCP_TOKEN keeps carrying the ACTIVE workspace's token for
+    // backward compatibility with pre-workspace mirror configs.
     {
-        match crate::active_workspace(&app) {
-            Ok((ws_id, cfg)) if crate::workspace::is_central(&cfg) => {
-                match cfg.server_url.as_deref().filter(|s| !s.trim().is_empty()) {
-                    Some(server_url) => match ensure_device_token(&app, &ws_id, server_url) {
-                        Ok(token) => {
-                            cmd.env("PORTUNI_MCP_TOKEN", token);
-                        }
-                        Err(e) => {
-                            warn!("pty_spawn: could not obtain device token for central mode, skipping PORTUNI_MCP_TOKEN injection: {e}");
-                        }
-                    },
-                    None => {
-                        warn!("pty_spawn: central mode but no server_url configured, skipping PORTUNI_MCP_TOKEN injection");
+        let active_id = crate::active_workspace(&app).map(|(id, _)| id).ok();
+        if let Ok(workspaces) = crate::enabled_workspaces(&app) {
+            for (ws_id, cfg) in workspaces {
+                let token = if crate::workspace::is_central(&cfg) {
+                    match cfg.server_url.as_deref() {
+                        Some(url) => match ensure_device_token(&app, &ws_id, url) {
+                            Ok(t) => Some(t),
+                            Err(e) => {
+                                warn!("pty_spawn: no device token for workspace {ws_id}: {e}");
+                                None
+                            }
+                        },
+                        None => None,
+                    }
+                } else {
+                    app.state::<crate::AuthTokens>()
+                        .0
+                        .lock()
+                        .ok()
+                        .and_then(|m| m.get(&ws_id).cloned())
+                        .or_else(|| crate::keychain_get_ws(crate::KEYCHAIN_MCP_ACCOUNT, &ws_id))
+                };
+                if let Some(token) = token {
+                    cmd.env(crate::workspace::token_env_var(&ws_id), &token);
+                    if active_id.as_deref() == Some(ws_id.as_str()) {
+                        cmd.env("PORTUNI_MCP_TOKEN", &token);
                     }
                 }
-            }
-            Ok((ws_id, _)) => {
-                // Local mode: use this workspace's cached sidecar auth token.
-                if let Ok(map) = app.state::<crate::AuthTokens>().0.lock() {
-                    if let Some(token) = map.get(&ws_id).filter(|t| !t.is_empty()) {
-                        cmd.env("PORTUNI_MCP_TOKEN", token.clone());
-                    }
-                }
-            }
-            Err(e) => {
-                warn!("pty_spawn: no active workspace, skipping PORTUNI_MCP_TOKEN injection: {e}");
             }
         }
     }

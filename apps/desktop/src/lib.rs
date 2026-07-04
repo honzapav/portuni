@@ -41,7 +41,7 @@ struct AuthTokens(Mutex<HashMap<String, String>>);
 // service.
 pub(crate) const KEYCHAIN_SERVICE: &str = "ooo.workflow.portuni";
 const KEYCHAIN_TURSO_ACCOUNT: &str = "turso_auth_token";
-const KEYCHAIN_MCP_ACCOUNT: &str = "mcp_auth_token";
+pub(crate) const KEYCHAIN_MCP_ACCOUNT: &str = "mcp_auth_token";
 
 fn config_path(data_dir: &PathBuf) -> PathBuf {
     data_dir.join("config.json")
