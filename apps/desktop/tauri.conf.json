@@ -37,6 +37,9 @@
     "targets": "all",
     "externalBin": ["binaries/portuni-sidecar"],
     "resources": ["sidecar-deps/**/*"],
+    "macOS": {
+      "entitlements": "./Entitlements.plist"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

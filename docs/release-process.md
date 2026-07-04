@@ -20,8 +20,35 @@ the discovery that produced it.
   the user had to hand-edit `config.json` before launching the app.
 - **release-please.** Not yet wired. See "Plan" below.
 - **PR / branch hygiene.** Not yet enforced. See "Plan" below.
-- **Code signing + notarisation.** Not in scope until an Apple
-  Developer account exists (US$99/yr).
+- **Code signing + notarisation.** Wired (2026-07-04, account exists).
+  `release.yml` passes the `APPLE_*` secrets to tauri-action;
+  `apps/desktop/Entitlements.plist` carries the hardened-runtime
+  exceptions the bun-compiled sidecar needs (JIT, unsigned executable
+  memory, library validation off for the dlopen'ed libsql `.node`
+  modules). Local signed build + verification:
+  `scripts/build-signed.sh` (use `--no-notarize` while iterating).
+  Remaining manual steps — see "Signing setup checklist" below.
+
+## Signing setup checklist (manual, one-time)
+
+Portal/keychain work that code cannot do; everything lands in the
+Bitwarden item **"Portuni Apple signing"** and in GitHub repo secrets.
+
+1. Create a **Developer ID Application** certificate (Xcode → Settings →
+   Accounts → Manage Certificates → +, requires the Account Holder
+   role). It ends up in the login Keychain.
+2. Export it from Keychain Access as `.p12` (include the private key,
+   choose a password), then `base64 -i cert.p12 | pbcopy`.
+3. Generate an **app-specific password** at appleid.apple.com and note
+   the **Team ID** (developer.apple.com → Membership details).
+4. Add the six GitHub repo secrets listed in the header of
+   `.github/workflows/release.yml` (`gh secret set NAME`).
+5. Verify locally before cutting a tag: export `APPLE_SIGNING_IDENTITY`
+   (+ `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID`) and run
+   `scripts/build-signed.sh`. First run `--no-notarize` to shake out
+   entitlement problems cheaply, then the full run, then launch the
+   built app from a fresh user session / after
+   `xattr -w com.apple.quarantine ...` to confirm Gatekeeper is happy.
 
 ## Why this exists
 
@@ -156,13 +183,10 @@ from 228 commits of pre-release work.
   history. Cleaner than most. `git filter-repo` would break every
   existing clone and reference for negligible benefit; release-please
   reads only commits *after* the last tag, so past noise costs nothing.
-- **Code signing + notarisation.** Requires an Apple Developer account
-  (US$99/yr) plus secrets wired into `release.yml` (`APPLE_CERTIFICATE`,
-  `APPLE_ID`, `APPLE_TEAM_ID`, …). Worth doing the day there's a second
-  user complaining about Gatekeeper; not before.
 - **Auto-updater.** Tauri 2 has `tauri-plugin-updater` with built-in
   signature verification, but it requires signed builds plus a hosted
-  update manifest. Defer until after signing.
+  update manifest. Signing is now in place, so this is unblocked —
+  still deferred until DMG distribution has a second regular user.
 - **Intel build.** The `release.yml` matrix already includes
   `macos-13` for `x86_64-apple-darwin`. If GitHub deprecates Intel
   runners (likely within a year) and the user base is Apple Silicon

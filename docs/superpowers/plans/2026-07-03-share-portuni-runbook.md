@@ -114,13 +114,13 @@ přítomný (real central read+edit Drive souboru).
 ## Krok 4 — Distribuce Portuni.app
 
 - Build hotový: `apps/desktop/target/release/bundle/dmg/Portuni_0.1.0_aarch64.dmg`.
-- **Gap: build není podepsaný/notarizovaný.** Na cizím Macu Gatekeeper hlásí
-  „neznámý vývojář". Řešení:
-  - rychlé (pro pár lidí): `xattr -dr com.apple.quarantine /Applications/Portuni.app`
-    po instalaci, nebo pravý klik → Otevřít.
-  - správné (na šíření): Developer ID podpis + notarizace
-    (`codesign --deep --sign "Developer ID Application: ..."` + `notarytool`).
-    Vyžaduje Apple Developer účet.
+- **Podpis/notarizace: zadrátováno (2026-07-04).** Apple Developer účet
+  existuje; `release.yml` podepisuje a notarizuje přes `APPLE_*` secrets,
+  lokálně `scripts/build-signed.sh`. Zbývající ruční kroky (certifikát,
+  secrets) viz „Signing setup checklist" v `docs/release-process.md`.
+  Než jsou secrets nasazené, platí workaround
+  `xattr -dr com.apple.quarantine /Applications/Portuni.app` nebo pravý
+  klik → Otevřít.
 
 ## Krok 5 — Onboard teammate (po 2–4)
 

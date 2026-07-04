@@ -5,9 +5,18 @@ name: Release
 # DMGs to a draft GitHub Release on that tag. Edit the release body
 # and click "Publish" once both jobs go green.
 #
-# No code signing yet — first launch shows the Gatekeeper "unidentified
-# developer" dialog. Wire APPLE_CERTIFICATE / APPLE_ID / TEAM_ID secrets
-# into tauri-action when you have an Apple Developer account.
+# Builds are Developer ID signed and notarized. tauri-action imports the
+# certificate into a temporary keychain and Tauri submits to notarytool
+# and staples automatically when the APPLE_* env vars below are present.
+# Required repo secrets (stored in Bitwarden, item "Portuni Apple signing"):
+#   APPLE_CERTIFICATE          base64 of the Developer ID Application .p12
+#   APPLE_CERTIFICATE_PASSWORD password chosen at .p12 export
+#   APPLE_SIGNING_IDENTITY     "Developer ID Application: <name> (<team id>)"
+#   APPLE_ID                   Apple ID email of the developer account
+#   APPLE_PASSWORD             app-specific password (appleid.apple.com)
+#   APPLE_TEAM_ID              10-char team ID (developer.apple.com → Membership)
+# If any secret is missing the build still succeeds — Tauri skips
+# signing/notarization and ships an unsigned DMG (Gatekeeper dialog).
 
 on:
   push:
@@ -58,6 +67,12 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
