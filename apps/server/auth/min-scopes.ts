@@ -79,6 +79,7 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname === "/health") return "read";
   if (pathname === "/mcp/info") return "read";
   if (pathname === "/auth/login") return "read";
+  if (pathname === "/auth/groups" && m === "GET") return "manage";
   if (pathname === "/me" && m === "GET") return "read";
   if (pathname === "/graph" && m === "GET") return "read";
   if (pathname === "/scope" && m === "GET") return "read";

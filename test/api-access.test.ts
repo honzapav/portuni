@@ -17,6 +17,12 @@ import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { routeApiRequest } from "../apps/server/api/router.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
+import type { IdentityContext } from "../apps/server/auth/request-identity.js";
+import type { IdentityAdapter } from "../apps/server/auth/adapter.js";
+import {
+  setIdentityContextForTesting,
+  resetIdentityContextForTesting,
+} from "../apps/server/http/middleware.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 const SOLO = "01SOLO0000000000000000000";
@@ -345,5 +351,125 @@ describe("GET/PUT /nodes/:id/access", () => {
     const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${nodeDId}/access`, { entries: [] });
     await routeApiRequest(req, res, new URL(`http://localhost/nodes/${nodeDId}/access`), manager2);
     assert.equal(captured.statusCode, 404, `expected 404, got ${captured.statusCode}; body: ${captured.body}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /auth/groups (Task 5): domain groups picker for the sharing UI.
+// ---------------------------------------------------------------------------
+
+describe("GET /auth/groups", () => {
+  let db: DbClient;
+  let workspace: string;
+
+  const fakeGroups = [
+    { id: "1", email: "eng-team@x.com", name: "Engineering Team" },
+    { id: "2", email: "sales@x.com", name: "Sales" },
+    { id: "3", email: "eng-leads@x.com", name: "Engineering Leads" },
+  ];
+
+  function makeCtxWithAdapter(adapter: IdentityAdapter): IdentityContext {
+    return {
+      db,
+      mode: "google",
+      jwtSecret: "test-secret-at-least-32-characters-long",
+      adapter,
+      soloUserId: SOLO,
+    };
+  }
+
+  before(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-api-auth-groups-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+    db = await makeTestDb();
+    setDbForTesting(db);
+  });
+
+  after(async () => {
+    resetIdentityContextForTesting();
+    setDbForTesting(null);
+    resetLocalDbForTests();
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  test("1. fake adapter with listDomainGroups: query filters to matching groups", async () => {
+    const fakeAdapter: IdentityAdapter = {
+      verify: async () => ({ email: "manager@x.com", name: "Manager", sub: "env:manager@x.com" }),
+      resolveAccess: async () => ({ globalScope: "manage", groups: [], groupIds: [] }),
+      listDomainGroups: async (query) => {
+        const q = query.toLowerCase().trim();
+        return fakeGroups.filter(
+          (g) => g.email.includes(q) || g.name.toLowerCase().includes(q),
+        );
+      },
+    };
+    setIdentityContextForTesting(makeCtxWithAdapter(fakeAdapter));
+
+    const manager: RequestIdentity = {
+      userId: SOLO,
+      email: "manager@x.com",
+      name: "Manager",
+      globalScope: "manage",
+      groups: [],
+      groupIds: [],
+      via: "env",
+    };
+    const { req, res, captured } = makeMockReqRes("GET", "/auth/groups?query=eng");
+    await routeApiRequest(req, res, new URL("http://localhost/auth/groups?query=eng"), manager);
+
+    assert.equal(captured.statusCode, 200, `expected 200, got ${captured.statusCode}; body: ${captured.body}`);
+    const parsed = JSON.parse(captured.body);
+    assert.equal(parsed.groups.length, 2);
+    assert.deepEqual(
+      parsed.groups.map((g: { id: string }) => g.id).sort(),
+      ["1", "3"],
+    );
+  });
+
+  test("2. env adapter without listDomainGroups -> 501 google_mode_only", async () => {
+    const envLikeAdapter: IdentityAdapter = {
+      verify: async () => ({ email: "manager@x.com", name: "Manager", sub: "env:manager@x.com" }),
+      resolveAccess: async () => ({ globalScope: "manage", groups: [], groupIds: [] }),
+    };
+    setIdentityContextForTesting(makeCtxWithAdapter(envLikeAdapter));
+
+    const manager: RequestIdentity = {
+      userId: SOLO,
+      email: "manager@x.com",
+      name: "Manager",
+      globalScope: "manage",
+      groups: [],
+      groupIds: [],
+      via: "env",
+    };
+    const { req, res, captured } = makeMockReqRes("GET", "/auth/groups");
+    await routeApiRequest(req, res, new URL("http://localhost/auth/groups"), manager);
+
+    assert.equal(captured.statusCode, 501, `expected 501, got ${captured.statusCode}; body: ${captured.body}`);
+    assert.deepEqual(JSON.parse(captured.body), { error: "google_mode_only" });
+  });
+
+  test("3. read-scope identity -> 403 (min-scope gate, never reaches handler)", async () => {
+    const fakeAdapter: IdentityAdapter = {
+      verify: async () => ({ email: "reader@x.com", name: "Reader", sub: "env:reader@x.com" }),
+      resolveAccess: async () => ({ globalScope: "read", groups: [], groupIds: [] }),
+      listDomainGroups: async () => fakeGroups,
+    };
+    setIdentityContextForTesting(makeCtxWithAdapter(fakeAdapter));
+
+    const reader: RequestIdentity = {
+      userId: SOLO,
+      email: "reader@x.com",
+      name: "Reader",
+      globalScope: "read",
+      groups: [],
+      groupIds: [],
+      via: "env",
+    };
+    const { req, res, captured } = makeMockReqRes("GET", "/auth/groups");
+    await routeApiRequest(req, res, new URL("http://localhost/auth/groups"), reader);
+
+    assert.equal(captured.statusCode, 403, `expected 403, got ${captured.statusCode}; body: ${captured.body}`);
   });
 });

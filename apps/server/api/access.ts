@@ -9,7 +9,13 @@ import type { Client } from "@libsql/client";
 import { z } from "zod";
 import { getDb } from "../infra/db.js";
 import { logAudit } from "../infra/audit.js";
-import { parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
+import {
+  getIdentityContext,
+  parseJsonBody,
+  respondError,
+  respondJson,
+  type RequestIdentity,
+} from "../http/middleware.js";
 import { nodeVisibleTo, resolveAccessChain } from "../auth/node-access.js";
 
 const AccessEntryBody = z.discriminatedUnion("kind", [
@@ -167,5 +173,29 @@ export async function handlePutNodeAccess(
     respondJson(res, 200, view);
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/access`, err);
+  }
+}
+
+// Domain groups picker for the node sharing UI (min-scope "manage" -- only
+// editors of sharing get to see the org's group directory). Backed by
+// GoogleAdapter.listDomainGroups; adapters without it (env mode) respond
+// 501 so the UI can fall back to a plain "no groups available" state.
+export async function handleListGroups(
+  req: IncomingMessage,
+  res: ServerResponse,
+  _identity: RequestIdentity,
+  url: URL,
+): Promise<void> {
+  try {
+    const ctx = getIdentityContext();
+    if (!ctx.adapter.listDomainGroups) {
+      respondJson(res, 501, { error: "google_mode_only" });
+      return;
+    }
+    const query = url.searchParams.get("query") ?? "";
+    const groups = await ctx.adapter.listDomainGroups(query);
+    respondJson(res, 200, { groups });
+  } catch (err) {
+    respondError(res, `${req.method} /auth/groups`, err);
   }
 }

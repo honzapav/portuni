@@ -73,7 +73,7 @@ import {
   handleSyncStatus,
 } from "./nodes.js";
 import { handleCreateEdge, handleDeleteEdge } from "./edges.js";
-import { handleGetNodeAccess, handlePutNodeAccess } from "./access.js";
+import { handleGetNodeAccess, handleListGroups, handlePutNodeAccess } from "./access.js";
 import {
   handleArchiveEvent,
   handleCreateEvent,
@@ -129,6 +129,10 @@ export async function routeApiRequest(
   // Auth routes handled first (login is public in google mode, others need identity).
   if (url.pathname === "/auth/login" && req.method === "POST") {
     await handleLogin(req, res);
+    return true;
+  }
+  if (url.pathname === "/auth/groups" && req.method === "GET") {
+    await handleListGroups(req, res, identity, url);
     return true;
   }
   if (url.pathname === "/me" && req.method === "GET") {

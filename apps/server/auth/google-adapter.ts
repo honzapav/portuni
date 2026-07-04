@@ -12,6 +12,7 @@ import {
 } from "./roles.js";
 
 const GROUP_CACHE_TTL_MS = 15 * 60 * 1000;
+const ALL_GROUPS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 export interface GoogleIdTokenPayload {
   sub: string;
@@ -25,6 +26,7 @@ export interface GoogleIdTokenPayload {
 export interface GoogleAdapterDeps {
   verifyIdToken: (idToken: string) => Promise<GoogleIdTokenPayload | null>;
   listGroups: (email: string) => Promise<Array<{ id: string; email: string }>>;
+  listAllGroups: () => Promise<Array<{ id: string; email: string; name: string }>>;
   allowedDomain: string;
   roleConfig: GroupRoleConfig;
   now?: () => number;
@@ -32,6 +34,10 @@ export interface GoogleAdapterDeps {
 
 export class GoogleAdapter implements IdentityAdapter {
   private readonly cache = new Map<string, { at: number; access: AccessResolution }>();
+  private allGroupsCache: {
+    fetchedAt: number;
+    groups: Array<{ id: string; email: string; name: string }>;
+  } | null = null;
   private readonly now: () => number;
 
   constructor(private readonly deps: GoogleAdapterDeps) {
@@ -81,6 +87,24 @@ export class GoogleAdapter implements IdentityAdapter {
     };
     this.cache.set(key, { at: this.now(), access });
     return access;
+  }
+
+  // Domain groups picker for the sharing UI (GET /auth/groups). The full
+  // directory listing is cached module-wide for 5 min -- callers filter
+  // client-side (per keystroke) against the cached snapshot rather than
+  // hitting the Directory API on every query.
+  async listDomainGroups(
+    query: string,
+  ): Promise<Array<{ id: string; email: string; name: string }>> {
+    const now = this.now();
+    if (!this.allGroupsCache || now - this.allGroupsCache.fetchedAt >= ALL_GROUPS_CACHE_TTL_MS) {
+      const groups = await this.deps.listAllGroups();
+      this.allGroupsCache = { fetchedAt: now, groups };
+    }
+    const q = query.toLowerCase().trim();
+    return this.allGroupsCache.groups
+      .filter((g) => g.email.includes(q) || g.name.toLowerCase().includes(q))
+      .slice(0, 20);
   }
 }
 
@@ -145,6 +169,24 @@ export function createGoogleAdapter(env: NodeJS.ProcessEnv = process.env): Googl
           nextPageToken?: string;
         }>({ url: url.toString() });
         for (const g of res.data.groups ?? []) groups.push({ id: g.id, email: g.email });
+        pageToken = res.data.nextPageToken;
+      } while (pageToken);
+      return groups;
+    },
+    listAllGroups: async () => {
+      const groups: Array<{ id: string; email: string; name: string }> = [];
+      let pageToken: string | undefined;
+      do {
+        const url = new URL("https://admin.googleapis.com/admin/directory/v1/groups");
+        url.searchParams.set("customer", "my_customer");
+        url.searchParams.set("maxResults", "200");
+        if (pageToken) url.searchParams.set("pageToken", pageToken);
+        const res = await directoryClient.request<{
+          groups?: Array<{ id: string; email: string; name?: string }>;
+          nextPageToken?: string;
+        }>({ url: url.toString() });
+        for (const g of res.data.groups ?? [])
+          groups.push({ id: g.id, email: g.email, name: g.name ?? g.email });
         pageToken = res.data.nextPageToken;
       } while (pageToken);
       return groups;

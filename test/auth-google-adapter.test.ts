@@ -15,18 +15,24 @@ function makeAdapter(
   overrides: Partial<{
     payload: typeof basePayload | null;
     groups: Array<{ id: string; email: string }>;
+    allGroups: Array<{ id: string; email: string; name: string }>;
     allowedDomain: string;
     roleConfig: { admin: string[]; manage: string[]; write: string[] };
     now: () => number;
   }> = {},
 ) {
   let groupCalls = 0;
+  let allGroupsCalls = 0;
   const adapter = new GoogleAdapter({
     verifyIdToken: async () =>
       overrides.payload === undefined ? basePayload : overrides.payload,
     listGroups: async () => {
       groupCalls += 1;
       return overrides.groups ?? [];
+    },
+    listAllGroups: async () => {
+      allGroupsCalls += 1;
+      return overrides.allGroups ?? [];
     },
     allowedDomain: overrides.allowedDomain ?? "workflow.ooo",
     roleConfig: overrides.roleConfig ?? {
@@ -36,7 +42,7 @@ function makeAdapter(
     },
     now: overrides.now ?? (() => Date.now()),
   });
-  return { adapter, groupCalls: () => groupCalls };
+  return { adapter, groupCalls: () => groupCalls, allGroupsCalls: () => allGroupsCalls };
 }
 
 test("verify returns identity for a valid token in the allowed domain", async () => {
@@ -101,6 +107,7 @@ test("verifyWithProfile verifies the token exactly once and returns avatar", asy
       return basePayload;
     },
     listGroups: async () => [],
+    listAllGroups: async () => [],
     allowedDomain: "workflow.ooo",
     roleConfig: { admin: [], manage: [], write: [] },
   });
@@ -108,4 +115,34 @@ test("verifyWithProfile verifies the token exactly once and returns avatar", asy
   assert.equal(verifyCalls, 1);
   assert.equal(r.identity.email, "a@workflow.ooo");
   assert.equal(r.avatarUrl, "https://p/x.png");
+});
+
+test("listDomainGroups filters by email/name (case-insensitive) and caps at 20", async () => {
+  const { adapter } = makeAdapter({
+    allGroups: [
+      { id: "1", email: "eng-team@workflow.ooo", name: "Engineering Team" },
+      { id: "2", email: "sales@workflow.ooo", name: "Sales" },
+      { id: "3", email: "eng-leads@workflow.ooo", name: "Engineering Leads" },
+    ],
+  });
+  const result = await adapter.listDomainGroups("eng");
+  assert.equal(result.length, 2);
+  assert.deepEqual(
+    result.map((g) => g.id).sort(),
+    ["1", "3"],
+  );
+});
+
+test("listDomainGroups caches the directory fetch for 5 minutes", async () => {
+  let t = 1_000_000;
+  const { adapter, allGroupsCalls } = makeAdapter({
+    allGroups: [{ id: "1", email: "eng@workflow.ooo", name: "Engineering" }],
+    now: () => t,
+  });
+  await adapter.listDomainGroups("");
+  await adapter.listDomainGroups("eng");
+  assert.equal(allGroupsCalls(), 1, "second call within TTL served from cache");
+  t += 5 * 60 * 1000 + 1;
+  await adapter.listDomainGroups("");
+  assert.equal(allGroupsCalls(), 2, "expired cache refetches");
 });

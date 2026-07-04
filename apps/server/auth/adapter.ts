@@ -23,4 +23,10 @@ export interface AccessResolution {
 export interface IdentityAdapter {
   verify(credential: string): Promise<Identity>;
   resolveAccess(email: string): Promise<AccessResolution>;
+  // Domain groups picker for the sharing UI (GET /auth/groups). Only
+  // implemented by GoogleAdapter -- adapters without it make the endpoint
+  // respond 501 google_mode_only.
+  listDomainGroups?: (
+    query: string,
+  ) => Promise<Array<{ id: string; email: string; name: string }>>;
 }

@@ -110,6 +110,13 @@ export function resetIdentityContextForTesting(): void {
   identityCtxCache = null;
 }
 
+// Test seam: inject a fully-constructed IdentityContext (e.g. with a fake
+// adapter) instead of letting getIdentityContext() build one from env.
+// Production code never calls this.
+export function setIdentityContextForTesting(ctx: IdentityContext): void {
+  identityCtxCache = ctx;
+}
+
 // Bearer-token auth. When PORTUNI_AUTH_TOKEN is set, every route except
 // /health (and CORS preflight) must present a matching Authorization
 // header — protects against malicious local processes that can reach
