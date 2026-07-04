@@ -7,7 +7,7 @@
 // DetailPane.tsx self-fetches sync status for the Files tab.
 
 import { useEffect, useRef, useState } from "react";
-import { Plus, Search, User, Users, X } from "lucide-react";
+import { Copy, Plus, Search, User, Users, X } from "lucide-react";
 import type {
   NodeAccessEntry,
   NodeAccessEntryInput,
@@ -63,6 +63,12 @@ function draftSetKey(entries: DraftEntry[]): string {
   return entries.map(entryKey).sort().join("|");
 }
 
+type AccessMode = "private" | "request";
+
+function modeLabel(m: AccessMode | null): string {
+  return m === "request" ? "Na vyžádání" : "Soukromé";
+}
+
 export function AccessSection({
   nodeId,
   canManage,
@@ -77,6 +83,9 @@ export function AccessSection({
   const [restricted, setRestricted] = useState(false);
   const [inherited, setInherited] = useState(false);
   const [sourceName, setSourceName] = useState<string | null>(null);
+  // Restriction mode of the authoritative node (self when !inherited, the
+  // ancestor's when inherited). Null when unrestricted.
+  const [mode, setMode] = useState<AccessMode | null>(null);
   // The effective entries as last fetched from the server -- this node's
   // own list when !inherited, the ancestor's list when inherited.
   const [entries, setEntries] = useState<DraftEntry[]>([]);
@@ -84,6 +93,14 @@ export function AccessSection({
   // starts empty when inherited or unrestricted (adding to it creates a
   // NEW override on this node, it never edits the ancestor's rows).
   const [draft, setDraft] = useState<DraftEntry[]>([]);
+  // Mode of the draft being edited -- what gets sent as `mode` on save.
+  const [draftMode, setDraftMode] = useState<AccessMode>("private");
+  // True after "Upravit kopii": the manager is building a local override
+  // seeded from the inherited entries/mode, even though the node's own
+  // persisted state (per the last fetch/save) is still "inherited". Only
+  // affects which panel renders (informational vs. editable) -- the dirty
+  // check below always compares against the raw persisted `inherited`.
+  const [overriding, setOverriding] = useState(false);
   const [addingOpen, setAddingOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -94,15 +111,18 @@ export function AccessSection({
     setLoadError(null);
     setAddingOpen(false);
     setSaveError(null);
+    setOverriding(false);
     fetchNodeAccess(nodeId)
       .then((res) => {
         if (cancelled) return;
         setRestricted(res.restricted);
         setInherited(res.inherited);
         setSourceName(res.source_node_name);
+        setMode(res.mode);
         const eff = res.entries.map(entryToDraft);
         setEntries(eff);
         setDraft(res.inherited ? [] : eff);
+        setDraftMode(res.inherited ? "private" : (res.mode ?? "private"));
       })
       .catch(() => {
         if (!cancelled) setLoadError("Nepodařilo se načíst sdílení");
@@ -115,17 +135,20 @@ export function AccessSection({
     };
   }, [nodeId]);
 
-  const persist = async (next: DraftEntry[]) => {
+  const persist = async (next: DraftEntry[], nextMode: AccessMode) => {
     setSaving(true);
     setSaveError(null);
     try {
-      const res = await putNodeAccess(nodeId, next.map(draftToInput));
+      const res = await putNodeAccess(nodeId, next.map(draftToInput), nextMode);
       setRestricted(res.restricted);
       setInherited(res.inherited);
       setSourceName(res.source_node_name);
+      setMode(res.mode);
       const eff = res.entries.map(entryToDraft);
       setEntries(eff);
       setDraft(res.inherited ? [] : eff);
+      setDraftMode(res.inherited ? "private" : (res.mode ?? "private"));
+      setOverriding(false);
       setAddingOpen(false);
       await onMutate();
     } catch (e) {
@@ -134,6 +157,16 @@ export function AccessSection({
     } finally {
       setSaving(false);
     }
+  };
+
+  // Seeds the draft with the ancestor's entries + mode so a manager can
+  // narrow an inherited ACL without re-adding every principal by hand. The
+  // copy only becomes a real override on this node once "Uložit" persists
+  // it -- until then this is purely a local editing-mode switch.
+  const startOverride = () => {
+    setDraft(entries.map((e) => ({ ...e })));
+    setDraftMode(mode ?? "private");
+    setOverriding(true);
   };
 
   const addEntry = (entry: DraftEntry) => {
@@ -161,18 +194,32 @@ export function AccessSection({
     );
   }
 
+  // Local editing-mode switch: while "overriding" the panel shows the
+  // editable draft (seeded from the inherited list) instead of the plain
+  // informational "Dědí z" view, even though the node's persisted state is
+  // still inherited until the draft is saved.
+  const effectiveInherited = inherited && !overriding;
+
   // Read-only informational chips: this node's own explicit list (when a
   // non-manager views it), or the ancestor's inherited list (shown to
   // everyone, manager or not -- managers get an additional editable draft
   // row below to build their own override).
   const showReadOnlyChips =
-    restricted && (inherited || !canManage) && entries.length > 0;
+    restricted && (effectiveInherited || !canManage) && entries.length > 0;
 
-  // Dirty check: compare the draft's entry set against what's actually
-  // persisted as this node's OWN acl (empty when inherited, since the
-  // node has no rows of its own yet).
+  // Dirty check: compare the draft's entry set + mode against what's
+  // actually persisted as this node's OWN acl (empty/"private" when
+  // inherited, since the node has no rows of its own yet). Always uses the
+  // raw (server-persisted) `inherited`/`mode`, not the local `overriding`
+  // switch, so starting a copy immediately shows as dirty (ready to save).
   const ownKey = inherited ? "" : draftSetKey(entries);
-  const dirty = draftSetKey(draft) !== ownKey;
+  const ownMode: AccessMode = inherited ? "private" : (mode ?? "private");
+  // Mode only has meaning once there's at least one entry (an empty draft
+  // has nothing to apply it to, and the server ignores `mode` when entries
+  // is empty) -- ignore it here so toggling mode with an empty draft
+  // doesn't spuriously enable "Uložit".
+  const dirty =
+    draftSetKey(draft) !== ownKey || (draft.length > 0 && draftMode !== ownMode);
 
   return (
     <div className="space-y-2.5">
@@ -182,11 +229,36 @@ export function AccessSection({
         </p>
       )}
 
-      {inherited && (
+      {effectiveInherited && (
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-[13px] text-[var(--color-text-dim)]">
+            Dědí z{" "}
+            <span className="font-medium text-[var(--color-text-muted)]">
+              {sourceName ?? "nadřazeného uzlu"}
+            </span>
+            {" — "}
+            <span className="font-medium text-[var(--color-text-muted)]">
+              {modeLabel(mode)}
+            </span>
+          </p>
+          {canManage && (
+            <button
+              type="button"
+              onClick={startOverride}
+              className="inline-flex items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-0.5 text-[12px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+            >
+              <Copy size={10} />
+              Upravit kopii
+            </button>
+          )}
+        </div>
+      )}
+
+      {restricted && !inherited && !canManage && (
         <p className="text-[13px] text-[var(--color-text-dim)]">
-          Dědí z{" "}
+          Režim:{" "}
           <span className="font-medium text-[var(--color-text-muted)]">
-            {sourceName ?? "nadřazeného uzlu"}
+            {modeLabel(mode)}
           </span>
         </p>
       )}
@@ -201,6 +273,7 @@ export function AccessSection({
 
       {canManage && (
         <>
+          <ModeToggle value={draftMode} onChange={setDraftMode} disabled={saving} />
           <div className="flex flex-wrap items-center gap-1.5">
             {draft.map((e, i) => (
               <Chip key={entryKey(e)} entry={e} onRemove={() => removeEntry(i)} />
@@ -225,7 +298,7 @@ export function AccessSection({
           <div className="flex gap-2 pt-0.5">
             <button
               type="button"
-              onClick={() => void persist(draft)}
+              onClick={() => void persist(draft, draftMode)}
               disabled={saving || !dirty}
               className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[13px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
             >
@@ -234,7 +307,7 @@ export function AccessSection({
             {restricted && !inherited && (
               <button
                 type="button"
-                onClick={() => void persist([])}
+                onClick={() => void persist([], "private")}
                 disabled={saving}
                 className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
               >
@@ -249,6 +322,49 @@ export function AccessSection({
           )}
         </>
       )}
+    </div>
+  );
+}
+
+// Segmented control for the draft's restriction mode -- "Soukromé" (default,
+// non-member sees nothing) vs. "Na vyžádání" (non-member sees a locked chip
+// on visible neighbours, spec §"Zamčené položky v Propojení"). Only shown to
+// managers editing this node's own ACL (see canManage block above).
+function ModeToggle({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: AccessMode;
+  onChange: (mode: AccessMode) => void;
+  disabled?: boolean;
+}) {
+  const options: { value: AccessMode; label: string }[] = [
+    { value: "private", label: "Soukromé" },
+    { value: "request", label: "Na vyžádání" },
+  ];
+  return (
+    <div className="inline-flex overflow-hidden rounded-md border border-[var(--color-border)]">
+      {options.map((opt, i) => {
+        const active = value === opt.value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => onChange(opt.value)}
+            disabled={disabled}
+            className={`px-2.5 py-1 text-[12px] transition-colors disabled:opacity-50 ${
+              i > 0 ? "border-l border-[var(--color-border)]" : ""
+            } ${
+              active
+                ? "bg-[var(--color-accent-dim)]/20 font-medium text-[var(--color-accent)]"
+                : "bg-[var(--color-surface)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+            }`}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
     </div>
   );
 }

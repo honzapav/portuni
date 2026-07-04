@@ -1308,28 +1308,43 @@ function ConnectionLink({
 
   return (
     <div className="group flex items-center gap-1 rounded px-2 py-1.5 transition-colors hover:bg-[var(--color-surface)]">
-      <button
-        onClick={() => onSelect(edge.peer_id)}
-        className="flex flex-1 items-center gap-2 text-left"
-      >
+      {edge.peer_restricted ? (
         <span
-          className="h-2 w-2 shrink-0 rounded-full"
-          style={{
-            background: nodeTypeVar(edge.peer_type),
-            boxShadow: `0 0 8px ${nodeTypeGlow(edge.peer_type, 0.4)}`,
-          }}
-        />
-        <span className="flex-1 truncate text-[13.5px] text-[var(--color-text)]">
-          {edge.peer_name}
+          title="Přístup na vyžádání"
+          className="flex flex-1 cursor-not-allowed items-center gap-2 text-left opacity-60"
+        >
+          <Lock size={11} className="shrink-0 text-[var(--color-text-dim)]" />
+          <span className="flex-1 truncate text-[13.5px] text-[var(--color-text-dim)]">
+            {edge.peer_name}
+          </span>
+          <span className="font-mono text-[14px] text-[var(--color-text-dim)]">
+            {edge.peer_type}
+          </span>
         </span>
-        <span className="font-mono text-[14px] text-[var(--color-text-dim)]">
-          {edge.peer_type}
-        </span>
-        <ArrowRight
-          size={11}
-          className="text-[var(--color-text-dim)] opacity-0 transition-opacity group-hover:opacity-100"
-        />
-      </button>
+      ) : (
+        <button
+          onClick={() => onSelect(edge.peer_id)}
+          className="flex flex-1 items-center gap-2 text-left"
+        >
+          <span
+            className="h-2 w-2 shrink-0 rounded-full"
+            style={{
+              background: nodeTypeVar(edge.peer_type),
+              boxShadow: `0 0 8px ${nodeTypeGlow(edge.peer_type, 0.4)}`,
+            }}
+          />
+          <span className="flex-1 truncate text-[13.5px] text-[var(--color-text)]">
+            {edge.peer_name}
+          </span>
+          <span className="font-mono text-[14px] text-[var(--color-text-dim)]">
+            {edge.peer_type}
+          </span>
+          <ArrowRight
+            size={11}
+            className="text-[var(--color-text-dim)] opacity-0 transition-opacity group-hover:opacity-100"
+          />
+        </button>
+      )}
       {editable && (
         <button
           onClick={(e) => {

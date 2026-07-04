@@ -556,11 +556,12 @@ export async function fetchNodeAccess(id: string): Promise<NodeAccessResponse> {
 export function putNodeAccess(
   id: string,
   entries: NodeAccessEntryInput[],
+  mode?: "private" | "request",
 ): Promise<NodeAccessResponse> {
   return jsonRequest<NodeAccessResponse>(
     "PUT",
     `/nodes/${encodeURIComponent(id)}/access`,
-    { entries },
+    { entries, mode },
   );
 }
 
