@@ -42,6 +42,12 @@ export type GraphNode = {
   // box, so there's nothing to store for them.
   pos_x: number | null;
   pos_y: number | null;
+  // True when this node (visible to the caller) is currently under a
+  // node_access ACL -- its own rows, or an inherited ancestor's. Absent
+  // (not false) for an unrestricted node, mirroring the DetailEdge
+  // peer_restricted convention. Present for admins too (they see every
+  // node, but the ACL itself is still real) -- see apps/server/api/graph.ts.
+  restricted?: true;
 };
 
 export type GraphEdge = {

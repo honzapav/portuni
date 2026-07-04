@@ -213,6 +213,59 @@ test("listDomainGroups does not poison the cache on a rejected fetch and allows 
   assert.equal(result.length, 1);
 });
 
+// Task 14 point 10: TTL boundary. `now - fetchedAt >= TTL` refetches, so an
+// elapsed time of EXACTLY the TTL (not TTL+1) must already count as
+// expired -- pin the boundary itself, not just "well past it".
+test("listDomainGroups refetches when elapsed time is exactly the TTL boundary", async () => {
+  let t = 1_000_000;
+  const ALL_GROUPS_CACHE_TTL_MS = 5 * 60 * 1000;
+  const { adapter, allGroupsCalls } = makeAdapter({
+    allGroups: [{ id: "1", email: "eng@workflow.ooo", name: "Engineering" }],
+    now: () => t,
+  });
+  await adapter.listDomainGroups("");
+  assert.equal(allGroupsCalls(), 1);
+
+  t += ALL_GROUPS_CACHE_TTL_MS; // exactly at the boundary, not past it
+  await adapter.listDomainGroups("");
+  assert.equal(allGroupsCalls(), 2, "elapsed time exactly == TTL must count as expired and refetch");
+});
+
+// Task 14 point 10: two concurrent cold-cache calls with DIFFERENT queries
+// must still coalesce into a single listAllGroups fetch, and each caller
+// must get back its own query's filtered result (not the other's).
+test("listDomainGroups: concurrent calls with different queries share one fetch, each gets its own filtered result", async () => {
+  let allGroupsCalls = 0;
+  let resolveFetch: ((groups: Array<{ id: string; email: string; name: string }>) => void) | null =
+    null;
+  const fetchPromise = new Promise<Array<{ id: string; email: string; name: string }>>((resolve) => {
+    resolveFetch = resolve;
+  });
+  const adapter = new GoogleAdapter({
+    verifyIdToken: async () => basePayload,
+    listGroups: async () => [],
+    listAllGroups: async () => {
+      allGroupsCalls += 1;
+      return fetchPromise;
+    },
+    allowedDomains: ["workflow.ooo"],
+    roleConfig: { admin: [], manage: [], write: [] },
+  });
+
+  const pEng = adapter.listDomainGroups("eng");
+  const pSales = adapter.listDomainGroups("sales");
+  assert.ok(resolveFetch, "listAllGroups must have been invoked synchronously by both callers");
+  resolveFetch!([
+    { id: "1", email: "eng-team@workflow.ooo", name: "Engineering Team" },
+    { id: "2", email: "sales@workflow.ooo", name: "Sales" },
+  ]);
+  const [engResult, salesResult] = await Promise.all([pEng, pSales]);
+
+  assert.equal(allGroupsCalls, 1, "concurrent cold-cache calls with different queries must still coalesce");
+  assert.deepEqual(engResult.map((g) => g.id), ["1"], "the 'eng' caller must get only the eng match");
+  assert.deepEqual(salesResult.map((g) => g.id), ["2"], "the 'sales' caller must get only the sales match");
+});
+
 test("verify accepts any domain in a multi-domain allow list", async () => {
   const adapter = new GoogleAdapter({
     verifyIdToken: async () => ({ ...basePayload, email: "b@tempo.ooo", hd: "tempo.ooo" }),

@@ -169,7 +169,16 @@ async function getGraph(identity: RequestIdentity) {
   const { req, res, captured } = makeMockReqRes("GET", "/graph");
   await routeApiRequest(req, res, new URL("http://localhost/graph"), identity);
   assert.equal(captured.statusCode, 200, `expected 200 from GET /graph, got ${captured.statusCode}; body: ${captured.body}`);
-  return JSON.parse(captured.body) as { nodes: Array<{ id: string }>; edges: Array<{ source_id: string; target_id: string }> };
+  return JSON.parse(captured.body) as {
+    nodes: Array<{ id: string; restricted?: true }>;
+    edges: Array<{ source_id: string; target_id: string }>;
+  };
+}
+
+async function patchNode(identity: RequestIdentity, nodeId: string, body: unknown) {
+  const { req, res, captured } = makeMockReqRes("PATCH", `/nodes/${nodeId}`, body);
+  await routeApiRequest(req, res, new URL(`http://localhost/nodes/${nodeId}`), identity);
+  return captured;
 }
 
 async function getNode(identity: RequestIdentity, nodeId: string) {
@@ -687,5 +696,140 @@ describe("Task 12: MCP get_node/context edges carry peer_restricted for mode='re
     const requestEdge = root!.edges?.find((e) => e.peer_id === requestId);
     assert.ok(requestEdge, "request-mode peer must appear as a locked edge on the visible root");
     assert.equal(requestEdge!.peer_restricted, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 14 point 8: GET /graph marks visible-but-ACL'd nodes restricted:true.
+// ---------------------------------------------------------------------------
+
+describe("Task 14 point 8: graph restricted flag", () => {
+  let db: DbClient;
+  let workspace: string;
+  let orgId: string;
+  let plainChildId: string;
+  let sharedChildId: string;
+
+  const admin = makeAdmin();
+
+  function makeGroupMember(): RequestIdentity {
+    return {
+      userId: SOLO,
+      email: "member@tempo.ooo",
+      name: "Group Member",
+      globalScope: "manage",
+      groups: [],
+      groupIds: ["GID_GRAPH_RESTRICTED"],
+      via: "env",
+    };
+  }
+
+  before(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-graph-restricted-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+
+    db = await makeTestDb();
+    setDbForTesting(db);
+
+    orgId = await insertOrg(db, "GraphRestrictedOrg");
+    plainChildId = await insertNode(db, orgId, { name: "PlainChild" });
+    sharedChildId = await insertNode(db, orgId, {
+      name: "SharedChild",
+      visibility: "group",
+      accessGroup: "GID_GRAPH_RESTRICTED",
+    });
+  });
+
+  after(async () => {
+    setDbForTesting(null);
+    resetLocalDbForTests();
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  test("admin: org and PlainChild carry no restricted flag; SharedChild carries restricted:true", async () => {
+    const graph = await getGraph(admin);
+    const org = graph.nodes.find((n) => n.id === orgId);
+    const plain = graph.nodes.find((n) => n.id === plainChildId);
+    const shared = graph.nodes.find((n) => n.id === sharedChildId);
+    assert.ok(org, "org must be present");
+    assert.ok(plain, "PlainChild must be present");
+    assert.ok(shared, "SharedChild must be present (admin sees everything)");
+    assert.equal(org!.restricted, undefined, "unrestricted org must not carry restricted");
+    assert.equal(plain!.restricted, undefined, "unrestricted child must not carry restricted");
+    assert.equal(shared!.restricted, true, "ACL'd node must carry restricted:true even for admin");
+  });
+
+  test("group member: sees SharedChild with restricted:true", async () => {
+    const member = makeGroupMember();
+    const graph = await getGraph(member);
+    const shared = graph.nodes.find((n) => n.id === sharedChildId);
+    assert.ok(shared, "member of GID_GRAPH_RESTRICTED must see SharedChild");
+    assert.equal(shared!.restricted, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 14 point 6: visibility='group' cannot be set through plain node
+// update -- it is derived exclusively from PUT /nodes/:id/access.
+// ---------------------------------------------------------------------------
+
+describe("Task 14 point 6: manual visibility='group' rejected", () => {
+  let db: DbClient;
+  let workspace: string;
+  let orgId: string;
+  let nodeId: string;
+
+  const admin = makeAdmin();
+
+  before(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-visibility-guard-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+
+    db = await makeTestDb();
+    setDbForTesting(db);
+
+    orgId = await insertOrg(db, "VisibilityGuardOrg");
+    nodeId = await insertNode(db, orgId, { name: "GuardedNode" });
+  });
+
+  after(async () => {
+    setDbForTesting(null);
+    resetLocalDbForTests();
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  test("REST PATCH /nodes/:id with visibility='group' -> 400", async () => {
+    const result = await patchNode(admin, nodeId, { visibility: "group" });
+    assert.equal(result.statusCode, 400, `expected 400, got ${result.statusCode}; body: ${result.body}`);
+    assert.match(JSON.parse(result.body).error, /managed via the sharing ACL/);
+
+    const nodeRow = await db.execute({ sql: "SELECT visibility FROM nodes WHERE id = ?", args: [nodeId] });
+    assert.equal(nodeRow.rows[0].visibility, "team", "rejected PATCH must not mutate visibility");
+  });
+
+  test("MCP portuni_update_node with visibility='group' -> tool error", async () => {
+    const { server, scope } = createMcpServer(admin);
+    scope.add(orgId);
+    scope.add(nodeId);
+
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    const mcpClient = new McpClient({ name: "test-task14-visibility-guard", version: "0.0.1" }, { capabilities: {} });
+    await server.connect(serverT);
+    await mcpClient.connect(clientT);
+
+    const result = await mcpClient.callTool({
+      name: "portuni_update_node",
+      arguments: { node_id: nodeId, visibility: "group" },
+    });
+    await mcpClient.close();
+
+    assert.equal(result.isError, true, "expected an MCP tool error");
+    const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+    assert.match(text, /managed via the sharing ACL/);
+
+    const nodeRow = await db.execute({ sql: "SELECT visibility FROM nodes WHERE id = ?", args: [nodeId] });
+    assert.equal(nodeRow.rows[0].visibility, "team", "rejected MCP update must not mutate visibility");
   });
 });

@@ -175,6 +175,32 @@ export async function filterVisibleNodeIds(
   return visible;
 }
 
+// Batch flag: which of the given node ids currently carry a non-null
+// effective ACL (their own node_access rows, or an inherited ancestor's),
+// independent of who is asking. Used by the GET /graph payload to mark
+// visible-but-shared nodes with `restricted: true` so the UI can render a
+// shared/lock indicator without a second round-trip per node -- callers
+// typically pass the already-filtered visible id set (from
+// filterVisibleNodeIds) so invisible nodes never pay for a chain
+// resolution. Same per-call memo shape as filterVisibleNodeIds /
+// classifyNodeVisibility -- resolves each distinct chain once.
+export async function restrictedNodeIds(
+  db: Client,
+  nodeIds: string[],
+): Promise<Set<string>> {
+  const memo = new Map<string, boolean>();
+  const result = new Set<string>();
+  for (const id of nodeIds) {
+    let isRestricted = memo.get(id);
+    if (isRestricted === undefined) {
+      isRestricted = (await resolveAccessChain(db, id)).entries !== null;
+      memo.set(id, isRestricted);
+    }
+    if (isRestricted) result.add(id);
+  }
+  return result;
+}
+
 // Three-way classification for edge/related-node filters (spec: "Rezim
 // omezeni"): a `mode='request'` node that a non-member cannot see still
 // surfaces as a locked chip (name + type only) instead of disappearing

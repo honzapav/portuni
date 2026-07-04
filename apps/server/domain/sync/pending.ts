@@ -4,6 +4,7 @@
 import type { Client } from "@libsql/client";
 import { listUserMirrors } from "./mirror-registry.js";
 import { statusScan } from "./engine.js";
+import { filterVisibleNodeIds, type GroupIdentityView } from "../../auth/node-access.js";
 import type { SyncPendingNode, SyncPendingResponse } from "../../shared/api-types.js";
 
 // Scan at most this many mirrors at once. A user can have dozens of mirrors;
@@ -13,9 +14,21 @@ const SCAN_CONCURRENCY = 8;
 
 export async function computeSyncPending(
   db: Client,
-  userId: string,
+  identity: GroupIdentityView,
 ): Promise<SyncPendingResponse> {
-  const mirrors = await listUserMirrors(userId);
+  const allMirrors = await listUserMirrors(identity.userId);
+
+  // Group-visibility guard: a mirror for a node whose ACL has since been
+  // set/changed (revoked access, or a restricted node the caller never
+  // belonged to) must not surface its name or counts in the cross-mirror
+  // aggregate. Filter before scanning so a revoked node's disk state is
+  // never even touched, not just hidden after the fact.
+  const visibleIds = await filterVisibleNodeIds(
+    db,
+    identity,
+    allMirrors.map((m) => m.node_id),
+  );
+  const mirrors = allMirrors.filter((m) => visibleIds.has(m.node_id));
 
   const scanOne = async (m: (typeof mirrors)[number]): Promise<SyncPendingNode | null> => {
     const row = await db.execute({
@@ -24,7 +37,7 @@ export async function computeSyncPending(
     });
     if (row.rows.length === 0) return null; // mirror for a deleted node — skip before scanning
     const scan = await statusScan(db, {
-      userId,
+      userId: identity.userId,
       nodeId: m.node_id,
       includeDiscovery: true,
       // The aggregate never counts new_remote, so skip the per-mirror Drive

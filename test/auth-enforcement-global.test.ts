@@ -64,6 +64,14 @@ describe("minScopeForRoute", () => {
     assert.equal(minScopeForRoute("GET", "/me"), "read");
   });
 
+  // Task 14 point 9: GET /users only backs the manage-gated actor
+  // owner-picker (see the comment in min-scopes.ts) -- raised from "read"
+  // so the full workspace user directory isn't exposed more broadly than
+  // the one flow that can act on it.
+  it("maps GET /users -> manage", () => {
+    assert.equal(minScopeForRoute("GET", "/users"), "manage");
+  });
+
   it("maps unknown route -> admin (fail-closed)", () => {
     assert.equal(minScopeForRoute("GET", "/unknown-future-route"), "admin");
   });

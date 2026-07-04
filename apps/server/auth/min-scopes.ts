@@ -86,7 +86,15 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname === "/me" && m === "GET") return "read";
   if (pathname === "/graph" && m === "GET") return "read";
   if (pathname === "/scope" && m === "GET") return "read";
-  if (pathname === "/users" && m === "GET") return "read";
+  // GET /users backs the OwnerPicker dropdown (apps/server/api/users.ts).
+  // Its only frontend call site is ActorModal's user_id picker
+  // (apps/web/src/components/ActorsPage.tsx), and that assignment can only
+  // ever be persisted via POST/PATCH /actors, both already manage-gated --
+  // a read-scope user opening the picker could browse the full workspace
+  // user directory (email/name/avatar for everyone) but could never save
+  // anything with it. Raised from "read" so that directory listing isn't
+  // handed out more broadly than the one flow that can use it.
+  if (pathname === "/users" && m === "GET") return "manage";
   if (pathname === "/sync/pending" && m === "GET") return "read";
 
   // --- Device tokens ---
