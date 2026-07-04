@@ -118,6 +118,12 @@ vše + správa).
 
 ### Node-level (group visibility)
 
+> **Nahrazeno** obecnějším modelem v
+> `docs/superpowers/specs/2026-07-04-node-sharing-design.md` (tabulka
+> `node_access`, sdílení přes skupiny i jednotlivé uživatele). Sekce
+> níže zůstává jako historický kontext; enforcement infrastruktura
+> (guardy, filtry, rekurzivní CTE) je popsaná v novém spec beze změny.
+
 - `nodes.visibility` rozšířeno o `'group'`; skupina v
   `meta.access_group` (e-mail skupiny).
 - **Dědičnost po `belongs_to` řetězu**: node bez vlastního

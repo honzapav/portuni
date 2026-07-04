@@ -78,12 +78,17 @@ required when google mode is active (except the optional group mappings).
 |---|---|---|---|
 | `PORTUNI_JWT_SECRET` | — | Yes | Secret for signing Portuni session JWTs (HS256). Min 32 chars |
 | `PORTUNI_GOOGLE_CLIENT_IDS` | — | No | Comma-separated accepted Google OAuth client IDs (Google Cloud Console) |
-| `PORTUNI_ALLOWED_DOMAIN` | — | No | Workspace domain all users must belong to (e.g. `workflow.ooo`) |
+| `PORTUNI_ALLOWED_DOMAINS` | — | No | Comma-separated Workspace domains users must belong to (e.g. `workflow.ooo,tempo.ooo`); trimmed and lowercased. Singular `PORTUNI_ALLOWED_DOMAIN` still works as a fallback for a single domain when the plural var is unset |
 | `PORTUNI_GOOGLE_SA_KEY_JSON` | — | Yes | Service-account key JSON with domain-wide delegation scoped to `admin.directory.group.readonly`. Full JSON as a single line |
 | `PORTUNI_GOOGLE_IMPERSONATE` | — | No | Admin user the service account impersonates to read group memberships (e.g. `admin@workflow.ooo`) |
 | `PORTUNI_GROUPS_ADMIN` | — | No | Comma-separated Google Group email(s) granting the `admin` Portuni scope |
 | `PORTUNI_GROUPS_MANAGE` | — | No | Comma-separated Google Group email(s) granting the `manage` Portuni scope |
 | `PORTUNI_GROUPS_WRITE` | — | No | Comma-separated Google Group email(s) granting the `write` Portuni scope |
+
+Node-level *visibility* (who can see a given node, as opposed to the
+global read/write/manage/admin scopes above) is governed separately by
+the `node_access` ACL — see
+`docs/superpowers/specs/2026-07-04-node-sharing-design.md`.
 
 ### Scope mapping
 

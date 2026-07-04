@@ -27,7 +27,7 @@ export interface GoogleAdapterDeps {
   verifyIdToken: (idToken: string) => Promise<GoogleIdTokenPayload | null>;
   listGroups: (email: string) => Promise<Array<{ id: string; email: string }>>;
   listAllGroups: () => Promise<Array<{ id: string; email: string; name: string }>>;
-  allowedDomain: string;
+  allowedDomains: string[];
   roleConfig: GroupRoleConfig;
   now?: () => number;
 }
@@ -42,15 +42,18 @@ export class GoogleAdapter implements IdentityAdapter {
     null;
   private readonly now: () => number;
 
+  private readonly allowedDomains: string[];
+
   constructor(private readonly deps: GoogleAdapterDeps) {
     this.now = deps.now ?? (() => Date.now());
+    this.allowedDomains = deps.allowedDomains.map((d) => d.toLowerCase());
   }
 
   private assertAllowedIdentity(payload: GoogleIdTokenPayload | null): Identity {
     if (!payload) throw new Error("Invalid Google ID token");
     if (!payload.email_verified) throw new Error("Google email not verified");
     const domain = payload.email.split("@")[1]?.toLowerCase() ?? "";
-    if (domain !== this.deps.allowedDomain.toLowerCase()) {
+    if (!this.allowedDomains.includes(domain)) {
       // External Google accounts are a future phase (spec: rozhodnutí
       // "Externí uživatelé"); for the team test only the org domain logs in.
       throw new Error(`Account domain '${domain}' is not allowed`);
@@ -120,9 +123,23 @@ export class GoogleAdapter implements IdentityAdapter {
   }
 }
 
+// Comma-separated, trim + lowercase, drop empties. PORTUNI_ALLOWED_DOMAINS
+// (plural) is primary; PORTUNI_ALLOWED_DOMAIN (singular) is a legacy
+// fallback used only when the plural var is unset.
+export function parseAllowedDomains(env: NodeJS.ProcessEnv = process.env): string[] {
+  const raw = env.PORTUNI_ALLOWED_DOMAINS ?? env.PORTUNI_ALLOWED_DOMAIN ?? "";
+  return raw
+    .split(",")
+    .map((d) => d.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 // Production wiring from env:
 //   PORTUNI_GOOGLE_CLIENT_IDS   comma list of accepted OAuth client IDs
-//   PORTUNI_ALLOWED_DOMAIN      e.g. workflow.ooo
+//   PORTUNI_ALLOWED_DOMAINS     comma list of allowed Workspace domains,
+//                               e.g. workflow.ooo,tempo.ooo (singular
+//                               PORTUNI_ALLOWED_DOMAIN still works as a
+//                               fallback for a single domain)
 //   PORTUNI_GOOGLE_SA_KEY_JSON  service-account key JSON (DWD-enabled)
 //   PORTUNI_GOOGLE_IMPERSONATE  admin user the SA impersonates
 //   PORTUNI_GROUPS_ADMIN/MANAGE/WRITE  group-email lists (roles.ts)
@@ -134,9 +151,9 @@ export function createGoogleAdapter(env: NodeJS.ProcessEnv = process.env): Googl
   if (clientIds.length === 0) {
     throw new Error("PORTUNI_GOOGLE_CLIENT_IDS is required in google auth mode");
   }
-  const allowedDomain = env.PORTUNI_ALLOWED_DOMAIN ?? "";
-  if (!allowedDomain) {
-    throw new Error("PORTUNI_ALLOWED_DOMAIN is required in google auth mode");
+  const allowedDomains = parseAllowedDomains(env);
+  if (allowedDomains.length === 0) {
+    throw new Error("PORTUNI_ALLOWED_DOMAINS is required in google auth mode");
   }
   const saJson = env.PORTUNI_GOOGLE_SA_KEY_JSON ?? "";
   const impersonate = env.PORTUNI_GOOGLE_IMPERSONATE ?? "";
@@ -203,7 +220,7 @@ export function createGoogleAdapter(env: NodeJS.ProcessEnv = process.env): Googl
       } while (pageToken);
       return groups;
     },
-    allowedDomain,
+    allowedDomains,
     roleConfig: groupRoleConfigFromEnv(env),
   });
 }

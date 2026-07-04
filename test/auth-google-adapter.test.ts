@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GoogleAdapter } from "../apps/server/auth/google-adapter.js";
+import {
+  GoogleAdapter,
+  createGoogleAdapter,
+  parseAllowedDomains,
+} from "../apps/server/auth/google-adapter.js";
 
 const basePayload = {
   sub: "g-sub-1",
@@ -34,7 +38,7 @@ function makeAdapter(
       allGroupsCalls += 1;
       return overrides.allGroups ?? [];
     },
-    allowedDomain: overrides.allowedDomain ?? "workflow.ooo",
+    allowedDomains: [overrides.allowedDomain ?? "workflow.ooo"],
     roleConfig: overrides.roleConfig ?? {
       admin: ["portuni-admins@workflow.ooo"],
       manage: [],
@@ -108,7 +112,7 @@ test("verifyWithProfile verifies the token exactly once and returns avatar", asy
     },
     listGroups: async () => [],
     listAllGroups: async () => [],
-    allowedDomain: "workflow.ooo",
+    allowedDomains: ["workflow.ooo"],
     roleConfig: { admin: [], manage: [], write: [] },
   });
   const r = await adapter.verifyWithProfile("token");
@@ -174,7 +178,7 @@ test("listDomainGroups coalesces concurrent cold-cache fetches into a single lis
       allGroupsCalls += 1;
       return fetchPromise;
     },
-    allowedDomain: "workflow.ooo",
+    allowedDomains: ["workflow.ooo"],
     roleConfig: { admin: [], manage: [], write: [] },
   });
 
@@ -199,7 +203,7 @@ test("listDomainGroups does not poison the cache on a rejected fetch and allows 
       if (allGroupsCalls === 1) throw new Error("directory API unavailable");
       return [{ id: "1", email: "eng@workflow.ooo", name: "Engineering" }];
     },
-    allowedDomain: "workflow.ooo",
+    allowedDomains: ["workflow.ooo"],
     roleConfig: { admin: [], manage: [], write: [] },
   });
 
@@ -207,4 +211,59 @@ test("listDomainGroups does not poison the cache on a rejected fetch and allows 
   const result = await adapter.listDomainGroups("eng");
   assert.equal(allGroupsCalls, 2, "retry after rejection triggers a fresh fetch");
   assert.equal(result.length, 1);
+});
+
+test("verify accepts any domain in a multi-domain allow list", async () => {
+  const adapter = new GoogleAdapter({
+    verifyIdToken: async () => ({ ...basePayload, email: "b@tempo.ooo", hd: "tempo.ooo" }),
+    listGroups: async () => [],
+    listAllGroups: async () => [],
+    allowedDomains: ["workflow.ooo", "tempo.ooo"],
+    roleConfig: { admin: [], manage: [], write: [] },
+  });
+  const id = await adapter.verify("token");
+  assert.equal(id.email, "b@tempo.ooo");
+});
+
+test("verify rejects a domain not in a multi-domain allow list", async () => {
+  const adapter = new GoogleAdapter({
+    verifyIdToken: async () => ({ ...basePayload, email: "x@gmail.com", hd: "gmail.com" }),
+    listGroups: async () => [],
+    listAllGroups: async () => [],
+    allowedDomains: ["workflow.ooo", "tempo.ooo"],
+    roleConfig: { admin: [], manage: [], write: [] },
+  });
+  await assert.rejects(adapter.verify("token"), /domain/i);
+});
+
+test("createGoogleAdapter parses PORTUNI_ALLOWED_DOMAINS as a comma list, trimmed and lowercased", () => {
+  const domains = parseAllowedDomains({
+    PORTUNI_ALLOWED_DOMAINS: "workflow.ooo, Tempo.ooo",
+  } as NodeJS.ProcessEnv);
+  assert.deepEqual(domains, ["workflow.ooo", "tempo.ooo"]);
+});
+
+test("createGoogleAdapter falls back to the singular PORTUNI_ALLOWED_DOMAIN when plural is unset", () => {
+  const domains = parseAllowedDomains({
+    PORTUNI_ALLOWED_DOMAIN: "workflow.ooo",
+  } as NodeJS.ProcessEnv);
+  assert.deepEqual(domains, ["workflow.ooo"]);
+});
+
+test("createGoogleAdapter prefers PORTUNI_ALLOWED_DOMAINS over the singular fallback when both are set", () => {
+  const domains = parseAllowedDomains({
+    PORTUNI_ALLOWED_DOMAINS: "workflow.ooo,tempo.ooo",
+    PORTUNI_ALLOWED_DOMAIN: "evil.com",
+  } as NodeJS.ProcessEnv);
+  assert.deepEqual(domains, ["workflow.ooo", "tempo.ooo"]);
+});
+
+test("createGoogleAdapter throws when neither PORTUNI_ALLOWED_DOMAINS nor PORTUNI_ALLOWED_DOMAIN is set", () => {
+  assert.throws(
+    () =>
+      createGoogleAdapter({
+        PORTUNI_GOOGLE_CLIENT_IDS: "client-1",
+      } as NodeJS.ProcessEnv),
+    /PORTUNI_ALLOWED_DOMAINS is required/,
+  );
 });
