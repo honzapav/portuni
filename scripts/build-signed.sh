@@ -72,10 +72,19 @@ if [[ $BAD -eq 1 ]]; then
 fi
 
 if [[ $NOTARIZE -eq 1 ]]; then
-  echo "--- stapled notarization ticket"
+  # Tauri notarizes and staples the .app only; notarize the DMG too so
+  # the download artifact verifies offline without the online ticket
+  # lookup. (No && chains here: `a && b` never trips set -e when a fails.)
+  echo "--- notarize + staple DMG"
+  for dmg in "$REPO"/apps/desktop/target/release/bundle/dmg/*.dmg; do
+    xcrun notarytool submit "$dmg" --wait \
+      --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID"
+    xcrun stapler staple "$dmg"
+  done
+  echo "--- stapled notarization tickets"
   xcrun stapler validate "$APP"
   for dmg in "$REPO"/apps/desktop/target/release/bundle/dmg/*.dmg; do
-    xcrun stapler validate "$dmg" && echo "OK: $dmg"
+    xcrun stapler validate "$dmg"
   done
 fi
 
