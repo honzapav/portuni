@@ -9,9 +9,8 @@ the discovery that produced it.
 - **DMG build pipeline.** Shipped as `.github/workflows/release.yml`.
   Tag-triggered (`v*`), `macos-14` (Apple Silicon only — Intel dropped
   2026-07-04, no Intel users), uses `tauri-apps/tauri-action@v0` to
-  build and attach the DMG to a draft GitHub Release on the tag. No code
-  signing yet — first launch shows the Gatekeeper "unidentified
-  developer" dialog.
+  build and attach the DMG to a draft GitHub Release on the tag.
+  Builds are Developer ID signed and notarized (see below).
 - **First-run onboarding wizard.** Shipped in `app/src/components/
   TursoSetupGate.tsx` + `src-tauri/src/lib.rs`. A fresh install (no
   `config.json`) now sees a wizard that asks "connect to existing
