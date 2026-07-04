@@ -7,9 +7,9 @@ the discovery that produced it.
 ## Status (as of 2026-05-06)
 
 - **DMG build pipeline.** Shipped as `.github/workflows/release.yml`.
-  Tag-triggered (`v*`), matrix on `macos-14` (Apple Silicon) +
-  `macos-13` (Intel), uses `tauri-apps/tauri-action@v0` to build and
-  attach both DMGs to a draft GitHub Release on the tag. No code
+  Tag-triggered (`v*`), `macos-14` (Apple Silicon only — Intel dropped
+  2026-07-04, no Intel users), uses `tauri-apps/tauri-action@v0` to
+  build and attach the DMG to a draft GitHub Release on the tag. No code
   signing yet — first launch shows the Gatekeeper "unidentified
   developer" dialog.
 - **First-run onboarding wizard.** Shipped in `app/src/components/
@@ -96,8 +96,8 @@ feat/foo branch → PR "feat(scope): summary"
        └─ regenerates CHANGELOG.md from feat:/fix: since v0.1.0
   → review + squash merge release PR
   → release-please-bot tags v0.1.1 + creates GitHub Release
-  → release.yml fires on the tag → builds aarch64 + x86_64 DMGs
-  → tauri-action attaches DMGs to the Release (still draft)
+  → release.yml fires on the tag → builds the aarch64 DMG
+  → tauri-action attaches the DMG to the Release (still draft)
   → maintainer edits release notes, clicks Publish
   → users go to /releases and download the DMG matching their CPU
 ```
@@ -194,10 +194,9 @@ from 228 commits of pre-release work.
   signature verification, but it requires signed builds plus a hosted
   update manifest. Signing is now in place, so this is unblocked —
   still deferred until DMG distribution has a second regular user.
-- **Intel build.** The `release.yml` matrix already includes
-  `macos-13` for `x86_64-apple-darwin`. If GitHub deprecates Intel
-  runners (likely within a year) and the user base is Apple Silicon
-  only, drop that matrix entry.
+- **Intel build.** Dropped 2026-07-04: GitHub retired `macos-13` in
+  2025-12 and the user base has no Intel Macs. If ever needed again,
+  `macos-15-intel` is the last x86_64 runner image (until 2027-08).
 
 ## Sequence
 

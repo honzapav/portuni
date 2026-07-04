@@ -35,12 +35,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Apple Silicon only — the user base has no Intel Macs and
+          # GitHub retired macos-13 in 2025-12. If Intel ever comes
+          # back, macos-15-intel is the last x86_64 image (until
+          # 2027-08).
           - runner: macos-14
             target: aarch64-apple-darwin
-          # macos-13 was retired 2025-12; macos-15-intel is the last
-          # x86_64 image (available until 2027-08), then drop Intel.
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
 
     runs-on: ${{ matrix.runner }}
 
