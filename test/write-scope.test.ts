@@ -1,6 +1,6 @@
 // Tests for the filesystem write-scope module (Phase B of the scope spec).
 
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -21,6 +21,7 @@ import {
   resolveGuardScriptPath,
   resolvePortuniMcpUrl,
   resolvePortuniRoot,
+  resolveTokenEnvVar,
 } from "../apps/server/domain/write-scope.js";
 import { materializeScopeConfig } from "../apps/server/domain/scope-materialize.js";
 
@@ -278,6 +279,16 @@ describe("buildVibeMcpToml", () => {
     assert.match(toml, /url = "http:\/\/x\/mcp"/);
     assert.ok(!toml.includes("home_node_id"));
   });
+
+  it("uses the workspace-suffixed api_key_env when PORTUNI_WORKSPACE_ID is set", () => {
+    process.env.PORTUNI_WORKSPACE_ID = "honzapav";
+    try {
+      const toml = buildVibeMcpToml({ url: "http://127.0.0.1:47012/mcp", homeNodeId: "n1" });
+      assert.ok(toml.includes('api_key_env = "PORTUNI_MCP_TOKEN_HONZAPAV"'));
+    } finally {
+      delete process.env.PORTUNI_WORKSPACE_ID;
+    }
+  });
 });
 
 describe("buildClaudeMcpJson", () => {
@@ -312,6 +323,18 @@ describe("buildClaudeMcpJson", () => {
     const j = buildClaudeMcpJson({ url: "http://x/mcp", homeNodeId: null });
     const portuni = (j as { mcpServers: { portuni: { url: string } } }).mcpServers.portuni;
     assert.equal(portuni.url, "http://x/mcp");
+  });
+
+  it("references the workspace-suffixed env var when PORTUNI_WORKSPACE_ID is set", () => {
+    process.env.PORTUNI_WORKSPACE_ID = "honzapav";
+    try {
+      const out = buildClaudeMcpJson({ url: "http://127.0.0.1:47012/mcp", homeNodeId: "n1" });
+      const server = (out.mcpServers as Record<string, { headers: Record<string, string> }>).portuni;
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded by Claude Code, not JS
+      assert.equal(server.headers.Authorization, "Bearer ${PORTUNI_MCP_TOKEN_HONZAPAV:-}");
+    } finally {
+      delete process.env.PORTUNI_WORKSPACE_ID;
+    }
   });
 });
 
@@ -379,6 +402,24 @@ describe("resolveGuardScriptPath", () => {
       if (orig !== undefined) process.env.PORTUNI_GUARD_SCRIPT = orig;
       else delete process.env.PORTUNI_GUARD_SCRIPT;
     }
+  });
+});
+
+describe("resolveTokenEnvVar", () => {
+  const saved = process.env.PORTUNI_WORKSPACE_ID;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.PORTUNI_WORKSPACE_ID;
+    else process.env.PORTUNI_WORKSPACE_ID = saved;
+  });
+
+  it("returns the plain var when PORTUNI_WORKSPACE_ID is unset", () => {
+    delete process.env.PORTUNI_WORKSPACE_ID;
+    assert.equal(resolveTokenEnvVar(), "PORTUNI_MCP_TOKEN");
+  });
+
+  it("suffixes with uppercased id, dashes to underscores", () => {
+    process.env.PORTUNI_WORKSPACE_ID = "honza-pav";
+    assert.equal(resolveTokenEnvVar(), "PORTUNI_MCP_TOKEN_HONZA_PAV");
   });
 });
 

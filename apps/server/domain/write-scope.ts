@@ -242,6 +242,18 @@ export function resolvePortuniMcpUrl(): string {
   return `http://${host}:${port}/mcp`;
 }
 
+// Name of the env var per-mirror configs reference for the MCP bearer
+// token. In the multi-workspace desktop each sidecar gets
+// PORTUNI_WORKSPACE_ID and its mirrors reference a workspace-suffixed
+// variable, so a terminal carrying tokens for several workspaces resolves
+// the right one. Standalone servers (no PORTUNI_WORKSPACE_ID) keep the
+// historical PORTUNI_MCP_TOKEN — byte-identical output, zero regression.
+export function resolveTokenEnvVar(): string {
+  const id = process.env.PORTUNI_WORKSPACE_ID?.trim();
+  if (!id) return "PORTUNI_MCP_TOKEN";
+  return "PORTUNI_MCP_TOKEN_" + id.toUpperCase().replace(/-/g, "_");
+}
+
 // Build the Claude Code project-scoped .mcp.json content. Claude Code
 // merges this over the user-scoped ~/.claude.json entry of the same name,
 // so inside a mirror the connection carries ?home_node_id=... and the MCP
@@ -254,10 +266,11 @@ export function buildClaudeMcpJson(args: {
   url: string;
   homeNodeId: string | null;
 }): Record<string, unknown> {
+  const tokenVar = resolveTokenEnvVar();
   return {
     portuni_managed: {
       generated_at: new Date().toISOString(),
-      note: "Portuni-managed file; regenerated on sidecar boot and mirror changes. Token comes from the PORTUNI_MCP_TOKEN env var, never stored here.",
+      note: `Portuni-managed file; regenerated on sidecar boot and mirror changes. Token comes from the ${tokenVar} env var, never stored here.`,
     },
     mcpServers: {
       portuni: {
@@ -267,7 +280,7 @@ export function buildClaudeMcpJson(args: {
         // degrades to an empty header instead of a config load failure
         // when the variable is unset (e.g. a shell outside the app).
         // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded by Claude Code, not JS
-        headers: { Authorization: "Bearer ${PORTUNI_MCP_TOKEN:-}" },
+        headers: { Authorization: `Bearer \${${tokenVar}:-}` },
       },
     },
   };
@@ -297,6 +310,7 @@ export function buildVibeMcpToml(args: {
   homeNodeId: string | null;
 }): string {
   const url = appendHomeNodeIdToUrl(args.url, args.homeNodeId);
+  const tokenVar = resolveTokenEnvVar();
   return [
     VIBE_PROJECT_MARKER,
     "[[mcp_servers]]",
@@ -306,7 +320,7 @@ export function buildVibeMcpToml(args: {
     "",
     "[mcp_servers.auth]",
     'type = "static"',
-    'api_key_env = "PORTUNI_MCP_TOKEN"',
+    `api_key_env = ${JSON.stringify(tokenVar)}`,
     'api_key_header = "Authorization"',
     'api_key_format = "Bearer {token}"',
     "",
