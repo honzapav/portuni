@@ -221,11 +221,22 @@ pub(crate) fn enabled_workspaces(
 fn install_claude_global(app: AppHandle) -> Result<String, String> {
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
     let path = PathBuf::from(home).join(".claude.json");
+    // Each workspace entry installs independently; failures aggregate so
+    // one broken workspace (e.g. tokenless) cannot block the rest.
+    let mut failures: Vec<String> = Vec::new();
     for (ws_id, cfg) in enabled_workspaces(&app)? {
-        let (name, url, token, _env) = global_entry_parts(&app, &ws_id, &cfg)?;
-        mcp_install::write_claude_config(&path, &name, &url, &token)?;
+        let result = global_entry_parts(&app, &ws_id, &cfg).and_then(|(name, url, token, _env)| {
+            mcp_install::write_claude_config(&path, &name, &url, &token)
+        });
+        if let Err(e) = result {
+            failures.push(format!("{ws_id}: {e}"));
+        }
     }
-    Ok(path.to_string_lossy().into_owned())
+    if failures.is_empty() {
+        Ok(path.to_string_lossy().into_owned())
+    } else {
+        Err(format!("some workspaces failed: {}", failures.join("; ")))
+    }
 }
 
 // Same idea for Codex: writes one [mcp_servers.<name>] block per enabled
@@ -236,11 +247,23 @@ fn install_claude_global(app: AppHandle) -> Result<String, String> {
 fn install_codex_global(app: AppHandle) -> Result<String, String> {
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
     let path = PathBuf::from(home).join(".codex").join("config.toml");
+    // Each workspace entry installs independently; failures aggregate so
+    // one broken workspace (e.g. tokenless) cannot block the rest.
+    let mut failures: Vec<String> = Vec::new();
     for (ws_id, cfg) in enabled_workspaces(&app)? {
-        let (name, url, _token, token_env) = global_entry_parts(&app, &ws_id, &cfg)?;
-        mcp_install::write_codex_config(&path, &name, &url, &token_env)?;
+        let result =
+            global_entry_parts(&app, &ws_id, &cfg).and_then(|(name, url, _token, token_env)| {
+                mcp_install::write_codex_config(&path, &name, &url, &token_env)
+            });
+        if let Err(e) = result {
+            failures.push(format!("{ws_id}: {e}"));
+        }
     }
-    Ok(path.to_string_lossy().into_owned())
+    if failures.is_empty() {
+        Ok(path.to_string_lossy().into_owned())
+    } else {
+        Err(format!("some workspaces failed: {}", failures.join("; ")))
+    }
 }
 
 // Same idea for Mistral Vibe: writes one [[mcp_servers]] entry per enabled
@@ -252,11 +275,23 @@ fn install_codex_global(app: AppHandle) -> Result<String, String> {
 fn install_vibe_global(app: AppHandle) -> Result<String, String> {
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
     let path = PathBuf::from(home).join(".vibe").join("config.toml");
+    // Each workspace entry installs independently; failures aggregate so
+    // one broken workspace (e.g. tokenless) cannot block the rest.
+    let mut failures: Vec<String> = Vec::new();
     for (ws_id, cfg) in enabled_workspaces(&app)? {
-        let (name, url, _token, token_env) = global_entry_parts(&app, &ws_id, &cfg)?;
-        mcp_install::write_vibe_config(&path, &name, &url, &token_env)?;
+        let result =
+            global_entry_parts(&app, &ws_id, &cfg).and_then(|(name, url, _token, token_env)| {
+                mcp_install::write_vibe_config(&path, &name, &url, &token_env)
+            });
+        if let Err(e) = result {
+            failures.push(format!("{ws_id}: {e}"));
+        }
     }
-    Ok(path.to_string_lossy().into_owned())
+    if failures.is_empty() {
+        Ok(path.to_string_lossy().into_owned())
+    } else {
+        Err(format!("some workspaces failed: {}", failures.join("; ")))
+    }
 }
 
 // Persisted MCP auth token per workspace, generated on first use.
