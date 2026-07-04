@@ -33,10 +33,20 @@ let dataModePending: Promise<DataMode> | null = null;
 async function getDataModeCached(): Promise<DataMode> {
   if (dataModeCache) return dataModeCache;
   if (!dataModePending) {
-    dataModePending = getDataMode().then((m) => {
-      dataModeCache = m;
-      return m;
-    });
+    // On rejection, clear the pending slot so a later caller retries instead
+    // of every future call resolving to the same cached rejection (e.g.
+    // "config awaiting workspace migration" thrown before the migration
+    // gate has run).
+    dataModePending = getDataMode().then(
+      (m) => {
+        dataModeCache = m;
+        return m;
+      },
+      (e) => {
+        dataModePending = null;
+        throw e;
+      },
+    );
   }
   return dataModePending;
 }
@@ -48,9 +58,17 @@ export function useDataMode(): DataMode | null {
   const [mode, setMode] = useState<DataMode | null>(null);
   useEffect(() => {
     let cancelled = false;
-    void getDataModeCached().then((m) => {
-      if (!cancelled) setMode(m);
-    });
+    // Rejection must not escape as an unhandled rejection (it did, live:
+    // "config awaiting workspace migration"). Log and leave mode null —
+    // central-mode UI stays optimistically hidden, same as while loading.
+    void getDataModeCached().then(
+      (m) => {
+        if (!cancelled) setMode(m);
+      },
+      (e) => {
+        console.warn("get_data_mode failed:", e);
+      },
+    );
     return () => {
       cancelled = true;
     };
