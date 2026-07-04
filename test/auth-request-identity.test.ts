@@ -26,12 +26,20 @@ test("env mode yields solo admin identity regardless of header", async () => {
   assert.equal(id.userId, SOLO);
   assert.equal(id.globalScope, "admin");
   assert.equal(id.via, "env");
+  assert.deepEqual(id.groupIds, []);
 });
 
 test("google mode accepts a valid session JWT", async () => {
   const { db } = await makeSharedDb();
   const token = await signSessionToken(
-    { userId: "u1", email: "a@x.com", name: "A", globalScope: "write", groups: ["g@x.com"] },
+    {
+      userId: "u1",
+      email: "a@x.com",
+      name: "A",
+      globalScope: "write",
+      groups: ["g@x.com"],
+      groupIds: ["01group"],
+    },
     SECRET,
   );
   const id = await resolveRequestIdentity(ctx(db, "google"), `Bearer ${token}`);
@@ -39,6 +47,7 @@ test("google mode accepts a valid session JWT", async () => {
   assert.equal(id.userId, "u1");
   assert.equal(id.globalScope, "write");
   assert.equal(id.via, "session_jwt");
+  assert.deepEqual(id.groupIds, ["01group"]);
 });
 
 test("google mode accepts a device token and resolves access via adapter", async () => {
@@ -49,6 +58,7 @@ test("google mode accepts a device token and resolves access via adapter", async
   assert.equal(id.userId, SOLO);
   assert.equal(id.via, "device_token");
   assert.equal(id.globalScope, "admin"); // EnvAdapter resolveAccess
+  assert.deepEqual(id.groupIds, []); // EnvAdapter resolveAccess has no groups
 });
 
 test("google mode rejects garbage and missing header", async () => {

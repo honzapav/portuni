@@ -14,6 +14,6 @@ export class EnvAdapter implements IdentityAdapter {
   }
 
   async resolveAccess(_email: string): Promise<AccessResolution> {
-    return { globalScope: "admin", groups: [] };
+    return { globalScope: "admin", groups: [], groupIds: [] };
   }
 }

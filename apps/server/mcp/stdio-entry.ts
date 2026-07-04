@@ -32,6 +32,7 @@ function buildStdioIdentity(): RequestIdentity {
     name: process.env.PORTUNI_USER_NAME ?? "Solo User",
     globalScope: "admin",
     groups: [],
+    groupIds: [],
     via: "env",
   };
 }

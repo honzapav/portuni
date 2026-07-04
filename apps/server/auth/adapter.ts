@@ -16,7 +16,8 @@ export interface Identity {
 
 export interface AccessResolution {
   globalScope: GlobalScope;
-  groups: string[];
+  groups: string[]; // emails (role mapping, ACL backward compatibility)
+  groupIds: string[]; // Directory group IDs (ACL matching)
 }
 
 export interface IdentityAdapter {

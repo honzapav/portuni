@@ -52,6 +52,7 @@ export async function handleLogin(
         name: identity.name,
         globalScope: access.globalScope,
         groups: access.groups,
+        groupIds: access.groupIds,
       },
       ctx.jwtSecret,
     );

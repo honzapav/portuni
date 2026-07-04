@@ -24,7 +24,7 @@ export interface GoogleIdTokenPayload {
 
 export interface GoogleAdapterDeps {
   verifyIdToken: (idToken: string) => Promise<GoogleIdTokenPayload | null>;
-  listGroups: (email: string) => Promise<string[]>;
+  listGroups: (email: string) => Promise<Array<{ id: string; email: string }>>;
   allowedDomain: string;
   roleConfig: GroupRoleConfig;
   now?: () => number;
@@ -72,10 +72,12 @@ export class GoogleAdapter implements IdentityAdapter {
     const key = email.toLowerCase();
     const hit = this.cache.get(key);
     if (hit && this.now() - hit.at < GROUP_CACHE_TTL_MS) return hit.access;
-    const groups = (await this.deps.listGroups(key)).map((g) => g.toLowerCase());
+    const list = await this.deps.listGroups(key);
+    const groups = list.map((g) => g.email.toLowerCase());
     const access: AccessResolution = {
       globalScope: resolveGlobalScope(groups, this.deps.roleConfig),
       groups,
+      groupIds: list.map((g) => g.id),
     };
     this.cache.set(key, { at: this.now(), access });
     return access;
@@ -132,17 +134,17 @@ export function createGoogleAdapter(env: NodeJS.ProcessEnv = process.env): Googl
       };
     },
     listGroups: async (email) => {
-      const groups: string[] = [];
+      const groups: Array<{ id: string; email: string }> = [];
       let pageToken: string | undefined;
       do {
         const url = new URL("https://admin.googleapis.com/admin/directory/v1/groups");
         url.searchParams.set("userKey", email);
         if (pageToken) url.searchParams.set("pageToken", pageToken);
         const res = await directoryClient.request<{
-          groups?: Array<{ email: string }>;
+          groups?: Array<{ id: string; email: string }>;
           nextPageToken?: string;
         }>({ url: url.toString() });
-        for (const g of res.data.groups ?? []) groups.push(g.email);
+        for (const g of res.data.groups ?? []) groups.push({ id: g.id, email: g.email });
         pageToken = res.data.nextPageToken;
       } while (pageToken);
       return groups;

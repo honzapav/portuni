@@ -14,7 +14,7 @@ const basePayload = {
 function makeAdapter(
   overrides: Partial<{
     payload: typeof basePayload | null;
-    groups: string[];
+    groups: Array<{ id: string; email: string }>;
     allowedDomain: string;
     roleConfig: { admin: string[]; manage: string[]; write: string[] };
     now: () => number;
@@ -61,16 +61,28 @@ test("verify rejects unverified email", async () => {
 });
 
 test("resolveAccess maps groups to scope", async () => {
-  const { adapter } = makeAdapter({ groups: ["portuni-team@workflow.ooo"] });
+  const { adapter } = makeAdapter({
+    groups: [{ id: "01abc", email: "portuni-team@workflow.ooo" }],
+  });
   const access = await adapter.resolveAccess("a@workflow.ooo");
   assert.equal(access.globalScope, "write");
   assert.deepEqual(access.groups, ["portuni-team@workflow.ooo"]);
+  assert.deepEqual(access.groupIds, ["01abc"]);
+});
+
+test("resolveAccess preserves group id even when email casing differs", async () => {
+  const { adapter } = makeAdapter({
+    groups: [{ id: "01abc", email: "Portuni-Team@Workflow.ooo" }],
+  });
+  const access = await adapter.resolveAccess("a@workflow.ooo");
+  assert.deepEqual(access.groups, ["portuni-team@workflow.ooo"]);
+  assert.deepEqual(access.groupIds, ["01abc"]);
 });
 
 test("resolveAccess caches for 15 minutes", async () => {
   let t = 1_000_000;
   const { adapter, groupCalls } = makeAdapter({
-    groups: ["portuni-team@workflow.ooo"],
+    groups: [{ id: "01abc", email: "portuni-team@workflow.ooo" }],
     now: () => t,
   });
   await adapter.resolveAccess("a@workflow.ooo");

@@ -355,6 +355,7 @@ export async function applyGates(
       name: "",
       globalScope: "read",
       groups: [],
+      groupIds: [],
       via: "session_jwt",
     };
   }

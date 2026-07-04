@@ -13,6 +13,7 @@ export interface SessionClaims {
   name: string;
   globalScope: GlobalScope;
   groups: string[];
+  groupIds: string[];
 }
 
 const DEFAULT_TTL_SECONDS = 60 * 60;
@@ -32,6 +33,7 @@ export async function signSessionToken(
     name: claims.name,
     scope: claims.globalScope,
     groups: claims.groups,
+    groupIds: claims.groupIds,
   })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(claims.userId)
@@ -62,6 +64,9 @@ export async function verifySessionToken(
       globalScope: scope as GlobalScope,
       groups: Array.isArray(payload.groups)
         ? payload.groups.filter((g): g is string => typeof g === "string")
+        : [],
+      groupIds: Array.isArray(payload.groupIds)
+        ? payload.groupIds.filter((g): g is string => typeof g === "string")
         : [],
     };
   } catch {

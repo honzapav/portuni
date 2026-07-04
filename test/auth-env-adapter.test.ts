@@ -25,4 +25,5 @@ test("EnvAdapter grants admin with no groups", async () => {
   const access = await adapter.resolveAccess("solo@localhost");
   assert.equal(access.globalScope, "admin");
   assert.deepEqual(access.groups, []);
+  assert.deepEqual(access.groupIds, []);
 });

@@ -14,6 +14,7 @@ export interface RequestIdentity {
   name: string;
   globalScope: GlobalScope;
   groups: string[];
+  groupIds: string[];
   via: "env" | "session_jwt" | "device_token";
 }
 
@@ -43,6 +44,7 @@ export async function resolveRequestIdentity(
       name: identity.name,
       globalScope: access.globalScope,
       groups: access.groups,
+      groupIds: access.groupIds,
       via: "env",
     };
   }
@@ -66,6 +68,7 @@ export async function resolveRequestIdentity(
       name: String(user.rows[0].name),
       globalScope: access.globalScope,
       groups: access.groups,
+      groupIds: access.groupIds,
       via: "device_token",
     };
   }
