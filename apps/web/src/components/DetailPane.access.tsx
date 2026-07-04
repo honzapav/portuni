@@ -129,7 +129,8 @@ export function AccessSection({
       setAddingOpen(false);
       await onMutate();
     } catch (e) {
-      setSaveError(String(e));
+      console.error(e);
+      setSaveError("Uložení se nepovedlo. Zkus to znovu.");
     } finally {
       setSaving(false);
     }
@@ -347,6 +348,7 @@ function EntryPicker({
 
   // Debounced group search + local user re-filter on every query change.
   useEffect(() => {
+    let cancelled = false;
     if (allUsersRef.current) setUsers(filterUsers(allUsersRef.current, query));
     if (!groupsAvailable) return;
     if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
@@ -354,10 +356,12 @@ function EntryPicker({
       debounceRef.current = null;
       searchGroups(query)
         .then((res) => {
+          if (cancelled) return;
           setGroups(res);
           setSearchError(null);
         })
         .catch((e) => {
+          if (cancelled) return;
           if (e instanceof GoogleModeOnlyError) {
             setGroupsAvailable(false);
             setGroups([]);
@@ -367,6 +371,7 @@ function EntryPicker({
         });
     }, 300);
     return () => {
+      cancelled = true;
       if (debounceRef.current !== null) {
         window.clearTimeout(debounceRef.current);
         debounceRef.current = null;
