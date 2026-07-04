@@ -116,6 +116,8 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (/^\/nodes\/[^/]+$/.test(pathname) && m === "PATCH") return "manage";
   if (/^\/nodes\/[^/]+$/.test(pathname) && m === "DELETE") return "admin";
   if (/^\/nodes\/[^/]+\/move$/.test(pathname) && m === "POST") return "manage";
+  if (/^\/nodes\/[^/]+\/access$/.test(pathname) && m === "GET") return "read";
+  if (/^\/nodes\/[^/]+\/access$/.test(pathname) && m === "PUT") return "manage";
   if (/^\/nodes\/[^/]+\/sync-status$/.test(pathname) && m === "GET") return "read";
   if (/^\/nodes\/[^/]+\/folder-url$/.test(pathname) && m === "GET") return "read";
   if (/^\/nodes\/[^/]+\/file-url$/.test(pathname) && m === "GET") return "read";

@@ -73,6 +73,7 @@ import {
   handleSyncStatus,
 } from "./nodes.js";
 import { handleCreateEdge, handleDeleteEdge } from "./edges.js";
+import { handleGetNodeAccess, handlePutNodeAccess } from "./access.js";
 import {
   handleArchiveEvent,
   handleCreateEvent,
@@ -457,6 +458,15 @@ async function routeNodes(
   const moveMatch = pathname.match(/^\/nodes\/([^/]+)\/move$/);
   if (moveMatch && method === "POST") {
     await handleMoveNode(req, res, identity, decodeURIComponent(moveMatch[1]));
+    return true;
+  }
+  const accessMatch = pathname.match(/^\/nodes\/([^/]+)\/access$/);
+  if (accessMatch && method === "GET") {
+    await handleGetNodeAccess(req, res, identity, decodeURIComponent(accessMatch[1]));
+    return true;
+  }
+  if (accessMatch && method === "PUT") {
+    await handlePutNodeAccess(req, res, identity, decodeURIComponent(accessMatch[1]));
     return true;
   }
   if (pathname === "/positions" && method === "POST") {
