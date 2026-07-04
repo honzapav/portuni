@@ -21,7 +21,7 @@ import {
   setIdentityContextForTesting,
   resetIdentityContextForTesting,
 } from "../apps/server/http/middleware.js";
-import { upsertUserFromIdentity } from "../apps/server/auth/users.js";
+import { upsertUserFromIdentity, inviteUser, UserExistsError } from "../apps/server/auth/users.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 const SOLO = "01SOLO0000000000000000000";
@@ -34,6 +34,38 @@ async function makeTestDb() {
   const db = createDbClient({ url: ":memory:" });
   await ensureSchemaOn(db);
   return db;
+}
+
+// Simulates the race in inviteUser's SELECT-then-INSERT: wraps a real db
+// client and, right when inviteUser's own INSERT for `raceEmail` is about to
+// run, sneaks in a direct INSERT of the same email first -- as if a second
+// concurrent inviteUser call for that email had already won. inviteUser's
+// pre-check SELECT still runs first and sees no row (deterministic, no
+// actual concurrency needed); by the time its INSERT fires, the row exists,
+// so libsql's UNIQUE constraint on users.email fires for real.
+function makeRacyDbForConcurrentInsert(realDb: DbClient, raceEmail: string): DbClient {
+  return new Proxy(realDb, {
+    get(target, prop, receiver) {
+      if (prop === "execute") {
+        return async (arg: unknown) => {
+          const sql = typeof arg === "string" ? arg : (arg as { sql: string }).sql;
+          const args = typeof arg === "string" ? undefined : (arg as { args?: unknown[] }).args;
+          if (
+            sql.startsWith("INSERT INTO users") &&
+            Array.isArray(args) &&
+            args.includes(raceEmail)
+          ) {
+            await target.execute({
+              sql: "INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, datetime('now'))",
+              args: [`racer-${raceEmail}`, raceEmail, "racer"],
+            });
+          }
+          return target.execute(arg as never);
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  }) as DbClient;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +229,51 @@ describe("Users: listing + invite (Task 6)", () => {
     assert.equal(rows.rows[0].cnt, 1);
   });
 
+  // 2b. Concurrent invite race: pre-check SELECT passes for both callers,
+  // but the second INSERT hits users.email's UNIQUE constraint. inviteUser
+  // must map that into the same UserExistsError as the fast-path duplicate
+  // check, not let the raw libsql constraint error escape.
+  test("2b. inviteUser race on INSERT -> UserExistsError, no generic throw", async () => {
+    const raceEmail = "race@example.com";
+    const racyDb = makeRacyDbForConcurrentInsert(db, raceEmail);
+
+    await assert.rejects(
+      () => inviteUser(racyDb, raceEmail),
+      (err: unknown) => {
+        assert.ok(err instanceof UserExistsError, `expected UserExistsError, got ${err}`);
+        assert.equal((err as UserExistsError).email, raceEmail);
+        return true;
+      },
+    );
+
+    const rows = await db.execute({
+      sql: "SELECT COUNT(*) AS cnt FROM users WHERE email = ?",
+      args: [raceEmail],
+    });
+    assert.equal(rows.rows[0].cnt, 1, "only the racer's row should exist, not inviteUser's");
+  });
+
+  // 2c. Same race, but at the HTTP layer: the handler's catch only maps
+  // UserExistsError to 409, so this pins that the race resolves to 409, not
+  // the generic 500 (or the middleware's raw SQLITE_CONSTRAINT 409) the
+  // review flagged as the risk before this fix.
+  test("2c. POST /auth/users/invite race on INSERT -> 409, not 500", async () => {
+    const raceEmail = "race-http@example.com";
+    const racyDb = makeRacyDbForConcurrentInsert(db, raceEmail);
+    setDbForTesting(racyDb);
+    try {
+      const admin = makeAdmin();
+      const { req, res, captured } = makeMockReqRes("POST", "/auth/users/invite", {
+        email: raceEmail,
+      });
+      await routeApiRequest(req, res, new URL("http://localhost/auth/users/invite"), admin);
+
+      assert.equal(captured.statusCode, 409, `expected 409, got ${captured.statusCode}; body: ${captured.body}`);
+    } finally {
+      setDbForTesting(db);
+    }
+  });
+
   // 3. Login identity with the same email as an invited row pairs by email:
   // fills google_sub, keeps the same id (upsertUserFromIdentity — do not change its logic).
   test("3. upsertUserFromIdentity pairs invited row by email (fills sub, keeps id)", async () => {
@@ -218,6 +295,45 @@ describe("Users: listing + invite (Task 6)", () => {
     });
     assert.equal(after.rows[0].google_sub, "google-sub-123");
     assert.equal(after.rows[0].name, "New User");
+  });
+
+  // 3b. Case-mismatch pairing: inviteUser stores the invited row lowercase
+  // ("Mixed.Case@Example.com" -> "mixed.case@example.com"). upsertUserFromIdentity
+  // itself does a plain case-sensitive `email = ?` match with no lowercasing
+  // of its own -- it is safe here only because GoogleAdapter.assertAllowedIdentity
+  // (apps/server/auth/google-adapter.ts) always lowercases the email before
+  // building the Identity it hands to upsertUserFromIdentity. This test pins
+  // that invariant: it feeds upsertUserFromIdentity an already-lowercased
+  // email (as the adapter guarantees), not the mixed-case one, and asserts it
+  // still pairs onto the invited row.
+  test("3b. invited mixed-case email pairs with adapter-lowercased login identity", async () => {
+    const admin = makeAdmin();
+    const { req, res, captured } = makeMockReqRes("POST", "/auth/users/invite", {
+      email: "Mixed.Case@Example.com",
+    });
+    await routeApiRequest(req, res, new URL("http://localhost/auth/users/invite"), admin);
+    assert.equal(captured.statusCode, 201, `expected 201, got ${captured.statusCode}; body: ${captured.body}`);
+    const invited = JSON.parse(captured.body);
+    assert.equal(invited.email, "mixed.case@example.com", "invite stores email lowercased");
+
+    // GoogleAdapter.assertAllowedIdentity guarantees this is already lowercase
+    // (payload.email.toLowerCase()) by the time upsertUserFromIdentity sees it.
+    const identity = {
+      email: "mixed.case@example.com",
+      name: "Mixed Case",
+      sub: "google-sub-mixed-case",
+    };
+    const returnedId = await upsertUserFromIdentity(db, identity, null);
+
+    assert.equal(returnedId, invited.id, "must pair onto the invited row, not create a new one");
+
+    const row = await db.execute({
+      sql: "SELECT google_sub, id FROM users WHERE email = ?",
+      args: ["mixed.case@example.com"],
+    });
+    assert.equal(row.rows.length, 1, "no duplicate row for the same (lowercased) email");
+    assert.equal(row.rows[0].google_sub, "google-sub-mixed-case");
+    assert.equal(row.rows[0].id, invited.id);
   });
 
   // 4. manage identity on /auth/users/admin -> 403 (min-scope gate, admin-only route).

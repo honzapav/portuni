@@ -137,9 +137,23 @@ export async function inviteUser(
   if (existing.rows.length > 0) throw new UserExistsError(normalized);
   const id = ulid();
   const name = normalized.split("@")[0];
-  await db.execute({
-    sql: "INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, datetime('now'))",
-    args: [id, normalized, name],
-  });
+  try {
+    await db.execute({
+      sql: "INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, datetime('now'))",
+      args: [id, normalized, name],
+    });
+  } catch (err) {
+    // The pre-check above is a fast path, not a lock: two concurrent invites
+    // for the same email can both pass it and race to this INSERT. The
+    // loser hits users.email's UNIQUE constraint here (libsql surfaces it as
+    // `SQLITE_CONSTRAINT: UNIQUE constraint failed: users.email`, verified
+    // empirically -- see the constraint-race test). Re-throw as the same
+    // UserExistsError the pre-check throws so the handler's existing 409
+    // mapping covers the race too, instead of a generic 500.
+    if (err instanceof Error && err.message.includes("UNIQUE constraint failed: users.email")) {
+      throw new UserExistsError(normalized);
+    }
+    throw err;
+  }
   return { id, email: normalized, name };
 }
