@@ -215,7 +215,7 @@ fn install_claude_global(app: AppHandle) -> Result<String, String> {
 
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
     let path = PathBuf::from(home).join(".claude.json");
-    mcp_install::write_claude_config(&path, &url, &token)?;
+    mcp_install::write_claude_config(&path, "portuni", &url, &token)?;
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -245,7 +245,7 @@ fn install_codex_global(app: AppHandle) -> Result<String, String> {
 
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
     let path = PathBuf::from(home).join(".codex").join("config.toml");
-    mcp_install::write_codex_config(&path, &url, &token)?;
+    mcp_install::write_codex_config(&path, "portuni", &url, "PORTUNI_MCP_TOKEN")?;
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -278,7 +278,7 @@ fn install_vibe_global(app: AppHandle) -> Result<String, String> {
 
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
     let path = PathBuf::from(home).join(".vibe").join("config.toml");
-    mcp_install::write_vibe_config(&path, &url, &token)?;
+    mcp_install::write_vibe_config(&path, "portuni", &url, "PORTUNI_MCP_TOKEN")?;
     Ok(path.to_string_lossy().into_owned())
 }
 

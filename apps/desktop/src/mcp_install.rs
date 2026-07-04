@@ -7,11 +7,12 @@
 use serde_json::{json, Value};
 use std::path::Path;
 
-/// Inserts or replaces `mcpServers.portuni` in the JSON document at the
+/// Inserts or replaces `mcpServers.<name>` in the JSON document at the
 /// provided text. Returns the serialized JSON to write back. Preserves
 /// every other key in the file untouched.
 pub fn upsert_claude_config(
     existing: Option<&str>,
+    name: &str,
     url: &str,
     token: &str,
 ) -> Result<String, String> {
@@ -31,7 +32,7 @@ pub fn upsert_claude_config(
         .as_object_mut()
         .ok_or_else(|| "mcpServers is not an object".to_string())?;
     servers_obj.insert(
-        "portuni".to_string(),
+        name.to_string(),
         json!({
             "type": "http",
             "url": url,
@@ -41,45 +42,71 @@ pub fn upsert_claude_config(
     serde_json::to_string_pretty(&root).map_err(|e| e.to_string())
 }
 
+/// Removes `mcpServers.<name>` from the JSON document, leaving everything
+/// else untouched. A missing/empty document round-trips to `{}`.
+pub fn remove_claude_server(existing: Option<&str>, name: &str) -> Result<String, String> {
+    let mut root: Value = match existing {
+        Some(raw) if !raw.trim().is_empty() => {
+            serde_json::from_str(raw).map_err(|e| format!("invalid JSON in ~/.claude.json: {e}"))?
+        }
+        _ => return Ok("{}".to_string()),
+    };
+    if let Some(servers) = root
+        .as_object_mut()
+        .and_then(|o| o.get_mut("mcpServers"))
+        .and_then(|s| s.as_object_mut())
+    {
+        servers.remove(name);
+    }
+    serde_json::to_string_pretty(&root).map_err(|e| e.to_string())
+}
+
 /// Read-modify-write wrapper around `upsert_claude_config`. Creates the
 /// parent directory if needed.
-pub fn write_claude_config(claude_json: &Path, url: &str, token: &str) -> Result<(), String> {
+pub fn write_claude_config(
+    claude_json: &Path,
+    name: &str,
+    url: &str,
+    token: &str,
+) -> Result<(), String> {
     let existing = std::fs::read_to_string(claude_json).ok();
-    let next = upsert_claude_config(existing.as_deref(), url, token)?;
+    let next = upsert_claude_config(existing.as_deref(), name, url, token)?;
     if let Some(parent) = claude_json.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     std::fs::write(claude_json, next).map_err(|e| e.to_string())
 }
 
-/// Marker comment that identifies a Portuni-managed [mcp_servers.portuni]
+/// Marker comment that identifies a Portuni-managed [mcp_servers.<name>]
 /// block inside ~/.codex/config.toml so future edits can detect a
 /// hand-edited user file and refuse to clobber it.
-const CODEX_MARKER: &str = "# portuni-managed: mcp_servers.portuni";
+fn codex_marker(name: &str) -> String {
+    format!("# portuni-managed: mcp_servers.{name}")
+}
 
-/// Env var name Codex reads to obtain the Portuni MCP bearer token at
-/// runtime. Codex's streamable_http transport refuses a literal
-/// `bearer_token` field (it fails the entire config load with "not
-/// supported for streamable_http"); only `bearer_token_env_var` is
-/// accepted. The user must `export PORTUNI_MCP_TOKEN=<token>` in their
-/// shell rc, or run codex from a session Portuni itself spawned (which
-/// inherits the var from the Portuni host process).
-const CODEX_TOKEN_ENV: &str = "PORTUNI_MCP_TOKEN";
-
-/// Inserts or replaces the [mcp_servers.portuni] block in a Codex
+/// Inserts or replaces the [mcp_servers.<name>] block in a Codex
 /// config.toml document. Operates on the raw text so we don't need a
 /// TOML parser dependency: the block is always emitted between the
 /// marker comment and the next blank line, making it cheap to find and
 /// replace without tripping over the rest of the file.
 ///
-/// The `_token` argument is accepted but intentionally not written into
-/// the file — Codex requires bearer_token_env_var (env var indirection),
-/// not a literal. The argument stays in the signature so callers can
-/// keep the same wiring as the Claude installer and so a future move to
-/// in-process env injection has the value at hand.
-pub fn upsert_codex_config(existing: Option<&str>, url: &str, _token: &str) -> Result<String, String> {
+/// `token_env` is the name of the environment variable Codex reads at
+/// runtime to obtain the Portuni MCP bearer token — Codex's
+/// streamable_http transport refuses a literal `bearer_token` field (it
+/// fails the entire config load with "not supported for
+/// streamable_http"); only `bearer_token_env_var` is accepted. The user
+/// must export that var in their shell rc, or run codex from a session
+/// Portuni itself spawned (which inherits the var from the Portuni host
+/// process).
+pub fn upsert_codex_config(
+    existing: Option<&str>,
+    name: &str,
+    url: &str,
+    token_env: &str,
+) -> Result<String, String> {
+    let marker = codex_marker(name);
     let block = format!(
-        "{CODEX_MARKER}\n[mcp_servers.portuni]\nurl = \"{url}\"\nbearer_token_env_var = \"{CODEX_TOKEN_ENV}\"\n"
+        "{marker}\n[mcp_servers.{name}]\nurl = \"{url}\"\nbearer_token_env_var = \"{token_env}\"\n"
     );
 
     let body = match existing {
@@ -87,7 +114,7 @@ pub fn upsert_codex_config(existing: Option<&str>, url: &str, _token: &str) -> R
         _ => return Ok(block),
     };
 
-    if let Some(start) = body.find(CODEX_MARKER) {
+    if let Some(start) = body.find(&marker) {
         // Find the end of the block: next blank line, or EOF.
         let after = &body[start..];
         let end_offset = after
@@ -123,21 +150,39 @@ pub fn upsert_codex_config(existing: Option<&str>, url: &str, _token: &str) -> R
     Ok(out)
 }
 
-pub fn write_codex_config(toml_path: &Path, url: &str, token: &str) -> Result<(), String> {
+/// Remove the managed block for `name`. Text outside the block is preserved.
+pub fn remove_codex_block(existing: &str, name: &str) -> String {
+    let marker = codex_marker(name);
+    let Some(start) = existing.find(&marker) else {
+        return existing.to_string();
+    };
+    let after = &existing[start..];
+    let end_offset = after
+        .find("\n\n")
+        .map(|n| start + n + 2)
+        .unwrap_or(existing.len());
+    let mut out = String::new();
+    out.push_str(existing[..start].trim_end_matches('\n'));
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(existing[end_offset..].trim_start_matches('\n'));
+    out
+}
+
+pub fn write_codex_config(
+    toml_path: &Path,
+    name: &str,
+    url: &str,
+    token_env: &str,
+) -> Result<(), String> {
     let existing = std::fs::read_to_string(toml_path).ok();
-    let next = upsert_codex_config(existing.as_deref(), url, token)?;
+    let next = upsert_codex_config(existing.as_deref(), name, url, token_env)?;
     if let Some(parent) = toml_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     std::fs::write(toml_path, next).map_err(|e| e.to_string())
 }
-
-/// Env var Mistral Vibe reads for the Portuni MCP bearer token. Vibe's
-/// `api_key_env` mechanism assembles the header at runtime
-/// (`Authorization: Bearer <token>`) so the literal token never lands in
-/// the file — same invariant as Codex, and the same var the terminal
-/// spawn path injects, so it works in both local and central data modes.
-const VIBE_TOKEN_ENV: &str = "PORTUNI_MCP_TOKEN";
 
 /// Inserts or replaces the Portuni MCP entry in a Mistral Vibe
 /// config.toml. Vibe stores MCP servers as a value array
@@ -146,14 +191,19 @@ const VIBE_TOKEN_ENV: &str = "PORTUNI_MCP_TOKEN";
 /// text appending of an [[mcp_servers]] block would therefore produce a
 /// duplicate-key TOML error and Vibe would refuse to load its whole
 /// config. We use toml_edit to push our inline table into the existing
-/// array, de-duplicating by `name == "portuni"` so re-running the
-/// installer is idempotent and never clobbers the user's other servers or
-/// the rest of the (large, default) config.
+/// array, de-duplicating by `name == name` so re-running the installer is
+/// idempotent and never clobbers the user's other servers or the rest of
+/// the (large, default) config.
 ///
-/// The `_token` argument is accepted for signature parity with the other
-/// installers but intentionally not written — Vibe resolves the token
-/// from VIBE_TOKEN_ENV at runtime via `api_key_env`.
-pub fn upsert_vibe_config(existing: Option<&str>, url: &str, _token: &str) -> Result<String, String> {
+/// `token_env` is the name of the environment variable Vibe resolves the
+/// token from at runtime via `api_key_env` — the literal token value is
+/// never written to the file.
+pub fn upsert_vibe_config(
+    existing: Option<&str>,
+    name: &str,
+    url: &str,
+    token_env: &str,
+) -> Result<String, String> {
     use toml_edit::{Array, DocumentMut, InlineTable, Item, Value};
 
     let mut doc: DocumentMut = match existing {
@@ -163,13 +213,13 @@ pub fn upsert_vibe_config(existing: Option<&str>, url: &str, _token: &str) -> Re
         _ => DocumentMut::new(),
     };
 
-    let mut portuni = InlineTable::new();
-    portuni.insert("name", Value::from("portuni"));
-    portuni.insert("transport", Value::from("streamable-http"));
-    portuni.insert("url", Value::from(url));
-    portuni.insert("api_key_env", Value::from(VIBE_TOKEN_ENV));
-    portuni.insert("api_key_header", Value::from("Authorization"));
-    portuni.insert("api_key_format", Value::from("Bearer {token}"));
+    let mut entry = InlineTable::new();
+    entry.insert("name", Value::from(name));
+    entry.insert("transport", Value::from("streamable-http"));
+    entry.insert("url", Value::from(url));
+    entry.insert("api_key_env", Value::from(token_env));
+    entry.insert("api_key_header", Value::from("Authorization"));
+    entry.insert("api_key_format", Value::from("Bearer {token}"));
 
     let item = doc
         .as_table_mut()
@@ -189,29 +239,65 @@ pub fn upsert_vibe_config(existing: Option<&str>, url: &str, _token: &str) -> Re
         }
     };
 
-    // Drop any prior Portuni entry so re-installs don't accumulate.
+    // Drop any prior entry with the same name so re-installs don't
+    // accumulate.
     let mut i = 0;
     while i < arr.len() {
-        let is_portuni = arr
+        let matches = arr
             .get(i)
             .and_then(Value::as_inline_table)
             .and_then(|t| t.get("name"))
             .and_then(Value::as_str)
-            == Some("portuni");
-        if is_portuni {
+            == Some(name);
+        if matches {
             arr.remove(i);
         } else {
             i += 1;
         }
     }
-    arr.push(portuni);
+    arr.push(entry);
 
     Ok(doc.to_string())
 }
 
-pub fn write_vibe_config(toml_path: &Path, url: &str, token: &str) -> Result<(), String> {
+/// Removes the named entry from the Vibe `mcp_servers` array. Other
+/// entries and top-level keys are preserved untouched.
+pub fn remove_vibe_server(existing: &str, name: &str) -> Result<String, String> {
+    use toml_edit::{DocumentMut, Value};
+    let mut doc: DocumentMut = existing
+        .parse()
+        .map_err(|e| format!("invalid TOML in ~/.vibe/config.toml: {e}"))?;
+    if let Some(arr) = doc
+        .get_mut("mcp_servers")
+        .and_then(|i| i.as_value_mut())
+        .and_then(|v| v.as_array_mut())
+    {
+        let mut i = 0;
+        while i < arr.len() {
+            let matches = arr
+                .get(i)
+                .and_then(Value::as_inline_table)
+                .and_then(|t| t.get("name"))
+                .and_then(Value::as_str)
+                == Some(name);
+            if matches {
+                arr.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+    Ok(doc.to_string())
+}
+
+pub fn write_vibe_config(
+    toml_path: &Path,
+    name: &str,
+    url: &str,
+    token_env: &str,
+) -> Result<(), String> {
     let existing = std::fs::read_to_string(toml_path).ok();
-    let next = upsert_vibe_config(existing.as_deref(), url, token)?;
+    let next = upsert_vibe_config(existing.as_deref(), name, url, token_env)?;
     if let Some(parent) = toml_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -224,7 +310,7 @@ mod claude_tests {
 
     #[test]
     fn upserts_into_empty_file() {
-        let out = upsert_claude_config(None, "http://127.0.0.1:47011/mcp", "abc").unwrap();
+        let out = upsert_claude_config(None, "portuni", "http://127.0.0.1:47011/mcp", "abc").unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["mcpServers"]["portuni"]["url"], "http://127.0.0.1:47011/mcp");
         assert_eq!(
@@ -236,7 +322,7 @@ mod claude_tests {
     #[test]
     fn preserves_other_servers_and_top_level_keys() {
         let existing = r#"{"theme":"dark","mcpServers":{"other":{"type":"stdio","command":"x"}}}"#;
-        let out = upsert_claude_config(Some(existing), "http://x/mcp", "tok").unwrap();
+        let out = upsert_claude_config(Some(existing), "portuni", "http://x/mcp", "tok").unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["theme"], "dark");
         assert!(v["mcpServers"]["other"].is_object());
@@ -246,7 +332,7 @@ mod claude_tests {
     #[test]
     fn replaces_existing_portuni_entry() {
         let existing = r#"{"mcpServers":{"portuni":{"type":"http","url":"http://old/mcp","headers":{"Authorization":"Bearer old"}}}}"#;
-        let out = upsert_claude_config(Some(existing), "http://new/mcp", "new").unwrap();
+        let out = upsert_claude_config(Some(existing), "portuni", "http://new/mcp", "new").unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["mcpServers"]["portuni"]["url"], "http://new/mcp");
         assert_eq!(
@@ -257,8 +343,25 @@ mod claude_tests {
 
     #[test]
     fn rejects_non_object_root() {
-        let err = upsert_claude_config(Some("[1,2,3]"), "x", "y").unwrap_err();
+        let err = upsert_claude_config(Some("[1,2,3]"), "portuni", "x", "y").unwrap_err();
         assert!(err.contains("root is not a JSON object"), "{err}");
+    }
+
+    #[test]
+    fn upserts_named_entry_and_removal() {
+        let out = upsert_claude_config(None, "portuni-honzapav", "http://127.0.0.1:47012/mcp", "abc").unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["mcpServers"]["portuni-honzapav"]["url"], "http://127.0.0.1:47012/mcp");
+        // Two entries coexist.
+        let out2 = upsert_claude_config(Some(&out), "portuni", "http://127.0.0.1:47011/mcp", "xyz").unwrap();
+        let v2: Value = serde_json::from_str(&out2).unwrap();
+        assert!(v2["mcpServers"]["portuni"].is_object());
+        assert!(v2["mcpServers"]["portuni-honzapav"].is_object());
+        // Removal deletes only the named entry.
+        let out3 = remove_claude_server(Some(&out2), "portuni-honzapav").unwrap();
+        let v3: Value = serde_json::from_str(&out3).unwrap();
+        assert!(v3["mcpServers"]["portuni-honzapav"].is_null());
+        assert!(v3["mcpServers"]["portuni"].is_object());
     }
 }
 
@@ -268,23 +371,20 @@ mod codex_tests {
 
     #[test]
     fn writes_block_to_empty_file() {
-        let out = upsert_codex_config(None, "http://127.0.0.1:47011/mcp", "tok").unwrap();
-        assert!(out.contains(CODEX_MARKER));
+        let out = upsert_codex_config(None, "portuni", "http://127.0.0.1:47011/mcp", "PORTUNI_MCP_TOKEN").unwrap();
+        assert!(out.contains(&codex_marker("portuni")));
         assert!(out.contains("[mcp_servers.portuni]"));
         assert!(out.contains("url = \"http://127.0.0.1:47011/mcp\""));
         // Codex rejects literal bearer_token for streamable_http (fails
         // the whole config load). Must be env-var indirection.
         assert!(out.contains("bearer_token_env_var = \"PORTUNI_MCP_TOKEN\""));
         assert!(!out.contains("bearer_token = "));
-        // Token value must never end up in the file — only the env var
-        // name does. This is the load-bearing invariant.
-        assert!(!out.contains("\"tok\""));
     }
 
     #[test]
     fn appends_block_preserving_other_sections() {
         let existing = "[other]\nfoo = 1\n";
-        let out = upsert_codex_config(Some(existing), "http://x/mcp", "tok").unwrap();
+        let out = upsert_codex_config(Some(existing), "portuni", "http://x/mcp", "PORTUNI_MCP_TOKEN").unwrap();
         assert!(out.contains("[other]"));
         assert!(out.contains("foo = 1"));
         assert!(out.contains("[mcp_servers.portuni]"));
@@ -292,12 +392,24 @@ mod codex_tests {
 
     #[test]
     fn replaces_existing_managed_block_idempotently() {
-        let first = upsert_codex_config(None, "http://old/mcp", "old").unwrap();
-        let second = upsert_codex_config(Some(&first), "http://new/mcp", "new").unwrap();
+        let first = upsert_codex_config(None, "portuni", "http://old/mcp", "PORTUNI_MCP_TOKEN").unwrap();
+        let second = upsert_codex_config(Some(&first), "portuni", "http://new/mcp", "PORTUNI_MCP_TOKEN").unwrap();
         assert!(second.contains("http://new/mcp"));
         assert!(!second.contains("http://old/mcp"));
         // Marker must remain exactly once.
-        assert_eq!(second.matches(CODEX_MARKER).count(), 1);
+        assert_eq!(second.matches(&codex_marker("portuni")).count(), 1);
+    }
+
+    #[test]
+    fn two_named_blocks_coexist_and_remove_targets_one() {
+        let a = upsert_codex_config(None, "portuni", "http://x/mcp", "PORTUNI_MCP_TOKEN").unwrap();
+        let b = upsert_codex_config(Some(&a), "portuni-honzapav", "http://y/mcp", "PORTUNI_MCP_TOKEN_HONZAPAV").unwrap();
+        assert!(b.contains("[mcp_servers.portuni]"));
+        assert!(b.contains("[mcp_servers.portuni-honzapav]"));
+        assert!(b.contains("bearer_token_env_var = \"PORTUNI_MCP_TOKEN_HONZAPAV\""));
+        let c = remove_codex_block(&b, "portuni-honzapav");
+        assert!(!c.contains("portuni-honzapav"));
+        assert!(c.contains("[mcp_servers.portuni]"));
     }
 }
 
@@ -307,37 +419,35 @@ mod vibe_tests {
     use toml_edit::{DocumentMut, Value};
 
     // Helper: parse output and return the mcp_servers array entries with
-    // name == "portuni".
-    fn portuni_entries(out: &str) -> Vec<toml_edit::InlineTable> {
+    // the given name.
+    fn named_entries(out: &str, name: &str) -> Vec<toml_edit::InlineTable> {
         let doc: DocumentMut = out.parse().expect("output must be valid TOML");
         let arr = doc["mcp_servers"].as_array().expect("mcp_servers is array");
         arr.iter()
             .filter_map(Value::as_inline_table)
-            .filter(|t| t.get("name").and_then(Value::as_str) == Some("portuni"))
+            .filter(|t| t.get("name").and_then(Value::as_str) == Some(name))
             .cloned()
             .collect()
     }
 
     #[test]
     fn writes_valid_toml_into_empty_file() {
-        let out = upsert_vibe_config(None, "http://127.0.0.1:47011/mcp", "tok").unwrap();
-        let entries = portuni_entries(&out);
+        let out = upsert_vibe_config(None, "portuni", "http://127.0.0.1:47011/mcp", "PORTUNI_MCP_TOKEN").unwrap();
+        let entries = named_entries(&out, "portuni");
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
         assert_eq!(e.get("transport").and_then(Value::as_str), Some("streamable-http"));
         assert_eq!(e.get("url").and_then(Value::as_str), Some("http://127.0.0.1:47011/mcp"));
         assert_eq!(e.get("api_key_env").and_then(Value::as_str), Some("PORTUNI_MCP_TOKEN"));
         assert_eq!(e.get("api_key_format").and_then(Value::as_str), Some("Bearer {token}"));
-        // The literal token value must never end up in the file.
-        assert!(!out.contains("\"tok\""));
     }
 
     #[test]
     fn merges_into_existing_empty_array_preserving_other_keys() {
         // Mirrors Vibe's real default: lots of keys plus `mcp_servers = []`.
         let existing = "active_model = \"mistral-medium-3.5\"\nmcp_servers = []\n\n[project_context]\ndefault_commit_count = 5\n";
-        let out = upsert_vibe_config(Some(existing), "http://x/mcp", "tok").unwrap();
-        assert_eq!(portuni_entries(&out).len(), 1);
+        let out = upsert_vibe_config(Some(existing), "portuni", "http://x/mcp", "PORTUNI_MCP_TOKEN").unwrap();
+        assert_eq!(named_entries(&out, "portuni").len(), 1);
         let doc: DocumentMut = out.parse().unwrap();
         assert_eq!(doc["active_model"].as_str(), Some("mistral-medium-3.5"));
         assert!(doc.get("project_context").is_some());
@@ -345,9 +455,9 @@ mod vibe_tests {
 
     #[test]
     fn reinstall_is_idempotent() {
-        let first = upsert_vibe_config(Some("mcp_servers = []\n"), "http://old/mcp", "old").unwrap();
-        let second = upsert_vibe_config(Some(&first), "http://new/mcp", "new").unwrap();
-        let entries = portuni_entries(&second);
+        let first = upsert_vibe_config(Some("mcp_servers = []\n"), "portuni", "http://old/mcp", "PORTUNI_MCP_TOKEN").unwrap();
+        let second = upsert_vibe_config(Some(&first), "portuni", "http://new/mcp", "PORTUNI_MCP_TOKEN").unwrap();
+        let entries = named_entries(&second, "portuni");
         assert_eq!(entries.len(), 1, "no duplicate portuni entries");
         assert_eq!(entries[0].get("url").and_then(Value::as_str), Some("http://new/mcp"));
         assert!(!second.contains("http://old/mcp"));
@@ -356,11 +466,11 @@ mod vibe_tests {
     #[test]
     fn preserves_user_other_servers() {
         let existing = "mcp_servers = [{ name = \"mine\", transport = \"stdio\", command = \"x\" }]\n";
-        let out = upsert_vibe_config(Some(existing), "http://new/mcp", "tok").unwrap();
+        let out = upsert_vibe_config(Some(existing), "portuni", "http://new/mcp", "PORTUNI_MCP_TOKEN").unwrap();
         let doc: DocumentMut = out.parse().unwrap();
         let arr = doc["mcp_servers"].as_array().unwrap();
         assert_eq!(arr.len(), 2, "user server kept, portuni added");
-        assert_eq!(portuni_entries(&out).len(), 1);
+        assert_eq!(named_entries(&out, "portuni").len(), 1);
         // The user's own server survives untouched.
         let names: Vec<_> = arr
             .iter()
@@ -368,5 +478,17 @@ mod vibe_tests {
             .filter_map(|t| t.get("name").and_then(Value::as_str))
             .collect();
         assert!(names.contains(&"mine"));
+    }
+
+    #[test]
+    fn two_named_entries_coexist_and_remove_targets_one() {
+        let a = upsert_vibe_config(None, "portuni", "http://x/mcp", "PORTUNI_MCP_TOKEN").unwrap();
+        let b = upsert_vibe_config(Some(&a), "portuni-honzapav", "http://y/mcp", "PORTUNI_MCP_TOKEN_HONZAPAV").unwrap();
+        let doc: DocumentMut = b.parse().unwrap();
+        let arr = doc["mcp_servers"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        let c = remove_vibe_server(&b, "portuni-honzapav").unwrap();
+        let doc2: DocumentMut = c.parse().unwrap();
+        assert_eq!(doc2["mcp_servers"].as_array().unwrap().len(), 1);
     }
 }
