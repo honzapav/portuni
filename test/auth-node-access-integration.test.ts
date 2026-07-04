@@ -52,16 +52,22 @@ async function insertNode(
   opts: { visibility?: string; accessGroup?: string; name?: string } = {},
 ) {
   const id = ulid();
-  const meta = opts.accessGroup ? JSON.stringify({ access_group: opts.accessGroup }) : null;
   await db.execute({
-    sql: `INSERT INTO nodes (id, type, name, status, visibility, meta, sync_key, created_by)
-          VALUES (?, 'project', ?, 'active', ?, ?, ?, ?)`,
-    args: [id, opts.name ?? `node-${id}`, opts.visibility ?? "team", meta, `proj-${id}`, SOLO],
+    sql: `INSERT INTO nodes (id, type, name, status, visibility, sync_key, created_by)
+          VALUES (?, 'project', ?, 'active', ?, ?, ?)`,
+    args: [id, opts.name ?? `node-${id}`, opts.visibility ?? "team", `proj-${id}`, SOLO],
   });
   await db.execute({
     sql: "INSERT INTO edges (id, source_id, target_id, relation, created_by) VALUES (?, ?, ?, 'belongs_to', ?)",
     args: [ulid(), id, parentId, SOLO],
   });
+  if (opts.accessGroup) {
+    await db.execute({
+      sql: `INSERT INTO node_access (node_id, kind, principal, display_email, added_by)
+            VALUES (?, 'group', ?, ?, ?)`,
+      args: [id, opts.accessGroup, opts.accessGroup, SOLO],
+    });
+  }
   return id;
 }
 
@@ -83,6 +89,7 @@ function makeOutsider(groups: string[] = ["other@x.com"]): RequestIdentity {
     name: "Outsider",
     globalScope: "manage",
     groups,
+    groupIds: [],
     via: "env",
   };
 }
@@ -300,6 +307,7 @@ describe("Fix #2: handleUpdateEvent 404 for event on restricted node", () => {
       name: "Admin",
       globalScope: "admin",
       groups: [],
+      groupIds: [],
       via: "env",
     };
 
@@ -400,6 +408,7 @@ describe("Fix #10: expand_scope treats restricted node as not-found", () => {
       name: "Member",
       globalScope: "manage",
       groups: ["secret@x.com"],
+      groupIds: [],
       via: "env",
     };
     const { server, scope } = createMcpServer(member);
@@ -518,6 +527,7 @@ describe("Write-path guards: data_sources, tools, responsibilities", () => {
       name: "Member",
       globalScope: "manage",
       groups: ["restricted@x.com"],
+      groupIds: [],
       via: "env",
     };
     const { server, scope } = createMcpServer(member);
@@ -656,14 +666,14 @@ describe("IDOR fixes: FK guards on sync / mirror / move / create", () => {
     // A group-restricted organization the outsider cannot see.
     restrictedOrgId = ulid();
     await db.execute({
-      sql: `INSERT INTO nodes (id, type, name, visibility, meta, sync_key, created_by)
-            VALUES (?, 'organization', 'SecretOrg', 'group', ?, ?, ?)`,
-      args: [
-        restrictedOrgId,
-        JSON.stringify({ access_group: "secret@x.com" }),
-        `org-${restrictedOrgId}`,
-        SOLO,
-      ],
+      sql: `INSERT INTO nodes (id, type, name, visibility, sync_key, created_by)
+            VALUES (?, 'organization', 'SecretOrg', 'group', ?, ?)`,
+      args: [restrictedOrgId, `org-${restrictedOrgId}`, SOLO],
+    });
+    await db.execute({
+      sql: `INSERT INTO node_access (node_id, kind, principal, display_email, added_by)
+            VALUES (?, 'group', 'secret@x.com', 'secret@x.com', ?)`,
+      args: [restrictedOrgId, SOLO],
     });
   });
 

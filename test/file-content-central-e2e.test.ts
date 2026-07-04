@@ -68,6 +68,7 @@ function central(): RequestIdentity {
     name: "Teammate",
     globalScope: "admin",
     groups: [],
+    groupIds: [],
     via: "google",
   };
 }

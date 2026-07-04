@@ -25,7 +25,15 @@ let workspace: string;
 let originalEnv: string | undefined;
 
 function admin(): RequestIdentity {
-  return { userId: "U1", email: "owner@x.com", name: "Owner", globalScope: "admin", groups: [], via: "env" };
+  return {
+    userId: "U1",
+    email: "owner@x.com",
+    name: "Owner",
+    globalScope: "admin",
+    groups: [],
+    groupIds: [],
+    via: "env",
+  };
 }
 
 function outsider(): RequestIdentity {
@@ -35,6 +43,7 @@ function outsider(): RequestIdentity {
     name: "Outsider",
     globalScope: "manage",
     groups: ["other@x.com"],
+    groupIds: [],
     via: "env",
   };
 }

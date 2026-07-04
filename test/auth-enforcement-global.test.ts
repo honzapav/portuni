@@ -176,6 +176,7 @@ before(async () => {
     name: "Reader",
     globalScope: "read",
     groups: [],
+    groupIds: [],
     via: "session_jwt",
   };
 

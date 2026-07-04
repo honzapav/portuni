@@ -74,6 +74,9 @@ CREATE INDEX idx_node_access_node ON node_access(node_id);
 - `canSeeNode(identity, entries)`:
   `admin` → true; jinak
   `identity.userId ∈ entries[user]` ∨ `identity.groupIds ∩ entries[group] ≠ ∅`.
+  Skupinová položka se matchuje proti group ID i e-mailům identity –
+  e-mailové principaly z migrace zůstávají funkční, nové položky z UI
+  ukládají ID.
 - `filterVisibleNodeIds` (memoizace per request) a všechny vynucovací
   body (guardNodeRead, list/search/context filtry, write guardy, files,
   sync-info) zůstávají – mění se jen vnitřek resolveru a tvar
