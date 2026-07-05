@@ -6,8 +6,9 @@
 #   gunzip -c backup.sql.gz | turso db shell <target> ".read /dev/stdin"
 #
 # Credentials come from the repo's varlock env (.env.local: TURSO_URL,
-# TURSO_AUTH_TOKEN) -- the token is never printed. The dump endpoint needs an
-# https:// scheme, so libsql:// is rewritten on the fly.
+# TURSO_AUTH_TOKEN). The token is passed to curl via stdin (-H @-), so it
+# never appears in process argv (`ps`). The dump endpoint needs an https://
+# scheme, so libsql:// is rewritten on the fly.
 #
 # Scheduled via ~/Library/LaunchAgents/ooo.workflow.portuni.backup.plist.
 # launchd runs with a minimal PATH, so node + turso paths are pinned below.
@@ -26,10 +27,13 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 TMP="$BACKUP_DIR/.portuni-$STAMP.sql.partial"
 OUT="$BACKUP_DIR/portuni-$STAMP.sql.gz"
 
-# Dump via varlock so the auth token stays out of argv/logs.
+# Dump via the libSQL HTTP /dump endpoint. varlock provides the env; the
+# Authorization header goes to curl on stdin (-H @-), keeping the token out
+# of argv.
 node_modules/.bin/varlock run -- sh -c \
   'URL=$(printf "%s" "$TURSO_URL" | sed "s#^libsql://#https://#"); \
-   turso db shell "$URL?authToken=$TURSO_AUTH_TOKEN" ".dump"' > "$TMP"
+   printf "Authorization: Bearer %s\n" "$TURSO_AUTH_TOKEN" \
+     | curl -fsS -H @- "$URL/dump"' > "$TMP"
 
 # Sanity gate: a real dump has tables and ends with COMMIT. Refuse to keep a
 # truncated/empty file (a silent empty backup is worse than none).
