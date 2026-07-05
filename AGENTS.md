@@ -120,9 +120,14 @@ tmux loop for backend iteration.
   tokenu a bez Drive credentials — vše jde přes device token na central).
   Teammate setup = config.json se `server_url`, `google_client_id`,
   `google_client_secret`, `data_mode`. Agent se spouští až po Google loginu
-  (device token); před loginem vrací local-only cesty 501. E2E harness:
+  (device token); před loginem vrací local-only cesty 501. V agent módu
+  navíc per-mirror `.mcp.json` míří na lokální sidecar front door
+  (`http://127.0.0.1:<port>/mcp`), ne na central: graf/scope nástroje se
+  proxují na central beze změny, device-local nástroje (mirror/status/
+  store/pull/adopt_files) běží lokálně. E2E harness:
   `scripts/e2e/teammate-mirrors.sh`. Model: `docs/architecture/data-modes.md`;
-  plán: `docs/superpowers/plans/2026-07-03-teammate-mirrors.md`.
+  plán: `docs/superpowers/plans/2026-07-03-teammate-mirrors.md`,
+  `docs/superpowers/plans/2026-07-05-agent-mode-mcp-front-door.md`.
 
 - **Multi-workspace desktop**: `config.json` v2 má `workspaces` mapu +
   `active_workspace`; sidecary všech zapnutých workspaces běží souběžně

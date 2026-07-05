@@ -63,7 +63,7 @@ The empty cell is the whole story. Central mode does **not** "drop Drive by
 design." It lacks file bytes because **nobody has built the piece that lets a
 central client reach them** — the central server has no local mirror and no
 file-content path that talks to Drive directly. So those routes return
-`501 local_only`.
+`501 local_only`. **MCP is the one exception** — see below.
 
 ### What is `local_only` / "fáze B" in the UI
 
@@ -81,6 +81,30 @@ The frontend catches the 501 -> `LocalOnlyError` (`apps/web/src/api.ts`) and sho
 content is unimplemented." It means: "file content is implemented for **local**
 clients; reaching it over the **server** is Phase B." `/nodes/:id/folder-url`
 stays central (the server can resolve a Drive web URL without a mirror).
+
+### MCP in agent mode already crosses part of the gap
+
+The `local_only` gate above is for the **REST** plane the webview drives. MCP
+is different: a teammate's "sync agent" sidecar (`PORTUNI_AGENT_MODE=1`, see
+`docs/superpowers/plans/2026-07-05-agent-mode-mcp-front-door.md`) now serves
+`/mcp` itself, and the per-mirror `.mcp.json` in agent mode points at that
+local front door instead of central. Device-local tools (`portuni_mirror`,
+`portuni_status`, `portuni_store`, `portuni_pull`, `portuni_adopt_files`) run
+on-device against the local mirror + the central engine; every other tool
+(graph reads/writes, scope, responsibilities, ...) is proxied to central's
+`/mcp` unchanged. So an MCP client on a teammate's machine gets the
+file-bytes plane today, without waiting on Phase B — just not through the
+REST routes or the webview.
+
+Follow-up gaps, not yet built:
+- `portuni_move_file`, `portuni_rename_folder`, `portuni_delete_file`,
+  `portuni_snapshot` have no agent-mode handler — they still proxy to
+  central, which answers with the device-local-operation error (same as the
+  REST 501 above).
+- Scope disk projection (`.portuni-scope/` copies via `ScopeReconciler`,
+  see [`scope-disk-projection.md`](./scope-disk-projection.md)) is not
+  implemented for agent-mode MCP sessions; scope lives only in the upstream
+  (central) session.
 
 ## An important subtlety: editing a file is mirror-local, not Drive-direct
 
