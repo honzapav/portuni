@@ -920,6 +920,39 @@ async fn restart_sidecar(app: AppHandle, id: Option<String>) -> Result<(), Strin
     spawn_sidecar_ws(&app, &ws).map_err(|e| e.to_string())
 }
 
+// Snapshot the local sidecar's port + bearer token for `ws_id`, then drop
+// the guards before the caller awaits anything — holding a std::sync::Mutex
+// across .await deadlocks the executor on contention. Shared by api_request
+// (webview proxy) and auth::google_drive_connect (loopback POST to the
+// sidecar), both of which need to reach the same local backend.
+//
+// Port 0 is the central-mode sentinel: the sync agent for this workspace
+// isn't running (not logged in yet, or no server_url). Callers that need to
+// distinguish that case from "genuinely not ready" should match on the
+// exact error string "sync agent not running".
+pub(crate) fn sidecar_port_and_token(app: &AppHandle, ws_id: &str) -> Result<(u16, String), String> {
+    let port = {
+        let state = app.state::<BackendPorts>();
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        guard
+            .get(ws_id)
+            .copied()
+            .ok_or_else(|| "backend not ready".to_string())?
+    };
+    if port == 0 {
+        return Err("sync agent not running".to_string());
+    }
+    let token = app
+        .state::<AuthTokens>()
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(ws_id)
+        .cloned()
+        .ok_or_else(|| "backend not ready (no token)".to_string())?;
+    Ok((port, token))
+}
+
 // Webview-side HTTP proxy. The webview no longer talks to the sidecar
 // directly: it invokes this command, which lives in the same trust
 // domain as the sidecar (the Tauri host that spawned it) and therefore
@@ -1012,30 +1045,20 @@ async fn api_request(
     // Snapshot port + token from state, then drop the guard before
     // awaiting — holding a std::sync::Mutex across .await deadlocks
     // the executor on contention.
-    let port = {
-        let state = app.state::<BackendPorts>();
-        let guard = state.0.lock().map_err(|e| e.to_string())?;
-        guard
-            .get(&ws_id)
-            .copied()
-            .ok_or_else(|| "backend not ready".to_string())?
+    let (port, token) = match sidecar_port_and_token(&app, &ws_id) {
+        Ok(pt) => pt,
+        Err(e) if e == "sync agent not running" => {
+            // Central-mode sentinel: the sync agent is not running (not
+            // logged in yet, or no server_url). Local-only affordances
+            // stay parked.
+            return Ok(ApiResponse {
+                status: 501,
+                body: "{\"error\":\"local_only\",\"detail\":\"sync agent not running\"}"
+                    .to_string(),
+            });
+        }
+        Err(e) => return Err(e),
     };
-    if port == 0 {
-        // Central-mode sentinel: the sync agent is not running (not logged
-        // in yet, or no server_url). Local-only affordances stay parked.
-        return Ok(ApiResponse {
-            status: 501,
-            body: "{\"error\":\"local_only\",\"detail\":\"sync agent not running\"}".to_string(),
-        });
-    }
-    let token = app
-        .state::<AuthTokens>()
-        .0
-        .lock()
-        .map_err(|e| e.to_string())?
-        .get(&ws_id)
-        .cloned()
-        .ok_or_else(|| "backend not ready (no token)".to_string())?;
 
     let url = format!("http://127.0.0.1:{port}{path}");
     let method_parsed =
@@ -1829,6 +1852,8 @@ pub fn run() {
             pty::pty_kill,
             auth::auth_status,
             auth::google_login,
+            auth::google_client_configured,
+            auth::google_drive_connect,
             auth::auth_refresh,
             auth::auth_logout,
             auth::central_request,

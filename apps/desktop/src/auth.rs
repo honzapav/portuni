@@ -7,6 +7,8 @@
 // Tauri commands registered here:
 //   auth_status            – configured / logged_in / user payload
 //   google_login           – full PKCE flow (browser + loopback callback)
+//   google_client_configured – whether google_client_id/secret are set in config.json
+//   google_drive_connect    – PKCE flow with Drive scope, refresh token POSTed to sidecar
 //   auth_refresh           – refresh_token → new id_token → /auth/login
 //   auth_logout            – delete both keychain entries
 //   central_request        – authenticated proxy to server_url (mirrors api_request shape)
@@ -76,6 +78,20 @@ pub fn load_auth_config(app: &AppHandle) -> Option<(String, AuthConfig)> {
             google_client_secret,
         },
     ))
+}
+
+/// Google client for Drive OAuth: unlike load_auth_config this does NOT
+/// require server_url — local-mode workspaces have no central server.
+pub fn load_google_client(app: &AppHandle) -> Option<(String, String, String)> {
+    let (ws_id, cfg) = crate::active_workspace(app).ok()?;
+    let id = cfg.google_client_id.clone().filter(|s| !s.trim().is_empty())?;
+    let secret = cfg.google_client_secret.clone().filter(|s| !s.trim().is_empty())?;
+    Some((ws_id, id, secret))
+}
+
+#[tauri::command]
+pub fn google_client_configured(app: AppHandle) -> bool {
+    load_google_client(&app).is_some()
 }
 
 // ─── JWT payload decode (display-only, no signature verification) ─────────────
@@ -486,6 +502,85 @@ pub async fn google_login(app: AppHandle) -> Result<Value, String> {
     });
 
     Ok(central.user)
+}
+
+/// OAuth for Drive sync: PKCE + loopback (same machinery as google_login),
+/// scope includes drive. The refresh token goes straight to the sidecar
+/// over loopback — it must never transit the webview (security rule 1).
+#[tauri::command]
+pub async fn google_drive_connect(app: AppHandle) -> Result<Value, String> {
+    let (ws_id, client_id, client_secret) = load_google_client(&app)
+        .ok_or_else(|| "google_client_id and google_client_secret must be set in config.json".to_string())?;
+
+    let verifier = pkce_verifier();
+    let challenge = pkce_challenge(&verifier);
+    let state_param = random_state();
+    let (port, rx) = start_loopback()?;
+    let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+
+    let auth_url = format!(
+        "https://accounts.google.com/o/oauth2/v2/auth\
+        ?response_type=code\
+        &client_id={client_id}\
+        &redirect_uri={redirect_uri_enc}\
+        &scope=openid%20email%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive\
+        &access_type=offline\
+        &prompt=consent\
+        &code_challenge={challenge}\
+        &code_challenge_method=S256\
+        &state={state_param}",
+        redirect_uri_enc = percent_encode(&redirect_uri),
+    );
+
+    info!("google_drive_connect: opening browser for OAuth");
+    open::that(&auth_url).map_err(|e| format!("failed to open browser: {e}"))?;
+
+    let timeout = Duration::from_secs(120);
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(timeout)
+            .unwrap_or_else(|_| Err("login timed out waiting for browser callback (120 s)".to_string()))
+    })
+    .await
+    .map_err(|e| format!("thread join failed: {e}"))?;
+    if result.is_err() {
+        let _ = TcpStream::connect(format!("127.0.0.1:{port}").as_str());
+    }
+    let (code, returned_state) = result?;
+    if returned_state != state_param {
+        return Err("CSRF: state parameter mismatch".to_string());
+    }
+
+    let client = Client::new();
+    let tokens = exchange_code(&client, &client_id, &client_secret, &redirect_uri, &code, &verifier).await?;
+    let refresh = tokens.refresh_token
+        .ok_or_else(|| "Google did not return a refresh token — remove the app's prior consent and retry".to_string())?;
+    let id_token = tokens.id_token
+        .ok_or_else(|| "Google token exchange did not return id_token".to_string())?;
+    let email = decode_jwt_payload(&id_token)
+        .and_then(|v| v.get("email").and_then(|e| e.as_str()).map(String::from))
+        .ok_or_else(|| "id_token has no email claim".to_string())?;
+
+    let (sidecar_port, bearer) = crate::sidecar_port_and_token(&app, &ws_id)?;
+    let body = serde_json::json!({
+        "refresh_token": refresh,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "account_email": email,
+    });
+    let res = client
+        .post(format!("http://127.0.0.1:{sidecar_port}/sync/drive/connect"))
+        .header("Authorization", format!("Bearer {bearer}"))
+        .header("Origin", "tauri://localhost")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("sidecar connect failed: {e}"))?;
+    let status = res.status().as_u16();
+    let text = res.text().await.map_err(|e| e.to_string())?;
+    if status != 200 {
+        return Err(format!("sidecar connect returned {status}: {text}"));
+    }
+    serde_json::from_str::<Value>(&text).map_err(|e| format!("sidecar response parse failed: {e}"))
 }
 
 /// Refresh the session using the stored Google refresh token.
