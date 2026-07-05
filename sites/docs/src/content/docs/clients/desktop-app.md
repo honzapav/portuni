@@ -14,7 +14,7 @@ A native macOS window (1600×1000 by default, opens maximized) with:
 - **Workspace view** — a node browser with type / status filters, sidebar navigation, and a status footer.
 - **Multi-session terminal tabs** — built-in `xterm`-based terminals attached to the focused node's local mirror via PTY. Run `claude`, `codex`, or any shell command in-context without leaving the app.
 - **Actors page** — browse and manage actors and assignments.
-- **Settings page** — Turso credentials, workspace root, and a section for managing the embedded MCP server.
+- **Settings page** — workspaces (create, enable, switch, pick each one's data mode), per-workspace Turso credentials and workspace root, an Account section (Google sign-in and device tokens for central mode), and an MCP Server section with one-click install buttons for Claude Code, Codex, and Mistral Vibe.
 - **Create-node modal**, **date picker**, and other interactive controls for editing the graph directly from the UI.
 
 ## Embedded MCP sidecar
@@ -25,7 +25,11 @@ The app bundles the Portuni MCP server as an embedded binary (`binaries/portuni-
 - Install Node.js or Varlock.
 - Run `npm start` in a tmux session.
 
-The sidecar listens on `http://localhost:4011` (same port as the CLI build), so any MCP client — Claude Code, Codex CLI, Gemini CLI, Mistral Vibe — can point at it the same way. The app passes an auth token to the sidecar per-launch; if you want external MCP clients to connect, copy the token from the Settings → MCP Server section into your client config.
+Each enabled **workspace** runs its own sidecar on a fixed loopback port, allocated from `47011` up (the first workspace gets `47011`). Any MCP client — Claude Code, Codex CLI, Gemini CLI, Mistral Vibe — can point at `http://localhost:<port>/mcp` the same way it would at a standalone server. The sidecar's bearer token is persisted per workspace in the macOS Keychain (it survives restarts and can be rotated from Settings); the easiest way to wire up an external client is the one-click install buttons in Settings → MCP Server, which register the right URL and token for each workspace. Terminals spawned inside the app get every workspace's token injected as `PORTUNI_MCP_TOKEN_<workspace-id>` (plus `PORTUNI_MCP_TOKEN` as an alias for the active workspace); shells outside the app need the token exported manually.
+
+## Workspaces
+
+The app manages one or more workspaces — think of each as an independent Portuni: its own database, its own workspace root for mirrors, its own sidecar port, and its own Keychain-held credentials. All enabled workspaces run concurrently; the UI switcher only changes which one you're looking at. Each workspace also picks its **data mode**: local (its own Turso/SQLite database) or central (your organization's server — see [Data Modes](/concepts/data-modes/)), so a personal graph and a company graph can live side by side in one app.
 
 ## Install
 
@@ -36,16 +40,16 @@ The sidecar listens on `http://localhost:4011` (same port as the CLI build), so 
 3. Open the DMG and drag `Portuni.app` to `/Applications/`.
 4. Launch it.
 
-First launch shows the Gatekeeper "unidentified developer" dialog because the app is not yet code-signed (`APPLE_CERTIFICATE` secrets aren't wired into the release workflow). Right-click → Open the first time to bypass; subsequent launches are clean.
+Release DMGs are Developer ID signed and notarized, so the app opens without Gatekeeper warnings. If you built the app yourself without signing secrets, you'll see the "unidentified developer" dialog — right-click → Open to bypass.
 
 ## First run
 
-The app walks you through two gates before you can use it:
+A fresh install creates your first workspace and walks you through its setup. What you're asked depends on the workspace's data mode:
 
-1. **Turso setup gate** — paste your `TURSO_URL` and `TURSO_AUTH_TOKEN`, or skip to use a local SQLite database. The settings are stored locally via the app's settings storage; you don't edit `.env.local` for the desktop install.
-2. **Workspace-root prompt** — pick the root directory where mirror folders will live (e.g. `~/Workspaces/portuni`). This corresponds to the `PORTUNI_WORKSPACE_ROOT` env var in the CLI install.
+- **Local mode** — paste your `TURSO_URL` and `TURSO_AUTH_TOKEN`, or skip to use a local SQLite database, and pick the root directory where mirror folders will live (e.g. `~/Workspaces/portuni`; the equivalent of `PORTUNI_WORKSPACE_ROOT` in the CLI install). Credentials go to the macOS Keychain — you never edit `.env.local` for the desktop install.
+- **Central mode** — sign in with your Google account instead; no database credentials needed. See [Data Modes](/concepts/data-modes/).
 
-After these, you land in the Workspace view. Create your first organization node, then add projects / processes / areas / principles under it.
+After that, you land in the Workspace view. Create your first organization node, then add projects / processes / areas / principles under it. (Upgrading from an older single-workspace install? The app migrates your existing configuration into the first workspace automatically.)
 
 ## Updating
 
@@ -55,8 +59,8 @@ Releases are tag-driven (`v*`). When a new release lands, download the new DMG a
 
 The desktop app and an external MCP client (Claude Code, Codex CLI, Gemini CLI, Mistral Vibe) can share the same backend:
 
-1. Open the app and grab the auth token from Settings → MCP Server.
-2. Point the external client at `http://localhost:4011/mcp` with that token as a bearer header.
+1. The easiest way: use the one-click install buttons in Settings → MCP Server, which register each workspace's URL and token for you.
+2. Wiring by hand instead? Point the external client at the workspace's sidecar, `http://localhost:<port>/mcp` (ports start at `47011`; shown in Settings), with the workspace's token as a bearer header.
 3. Reads and writes from the external client land in the same graph as the app — keep the app open or the sidecar will exit with it.
 
 For the per-client configuration details see [Claude Code](/clients/claude-code/), [Codex CLI](/clients/codex-cli/), [Gemini CLI](/clients/gemini-cli/), [Mistral Vibe](/clients/mistral-vibe/).
@@ -67,8 +71,9 @@ Stick with the standalone CLI server (covered in [Setup](/getting-started/setup/
 
 - You're contributing to Portuni — the CLI dev loop is faster than rebuilding the `.app` on every change.
 - You're on Linux or Windows. Native bundles for those platforms aren't on the near roadmap.
-- You're deploying Portuni to a shared server, not a personal machine.
-- You want to run multiple Portuni instances side by side with distinct workspace roots.
+- You're deploying Portuni to a shared server, not a personal machine — see [Team Setup](/getting-started/team-setup/).
+
+Running multiple graphs side by side used to be a CLI-only affair; today it's a desktop feature — create another workspace instead.
 
 ## See also
 

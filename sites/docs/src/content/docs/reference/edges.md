@@ -16,7 +16,7 @@ Create a directed edge between two nodes.
 
 Relation types (strictly enforced): `related_to`, `belongs_to`, `applies`, `informed_by`.
 
-Duplicate edges (same source, target, and relation) are prevented.
+Duplicate edges (same source, target, and relation) are not created — the call returns `{ id: <existing edge id>, message: "Edge already exists" }` rather than an error. Self-loops (`source_id === target_id`) are rejected.
 
 **Organization invariant on `belongs_to`:** a non-organization node can have **exactly one** `belongs_to -> organization` edge. Attempting to create a second one is rejected with an actionable error. This is enforced both at the MCP tool layer and by a database trigger (`prevent_multi_parent_org`). To move a non-organization node to a different organization, disconnect the current `belongs_to` and connect to the new one in the same agent turn.
 

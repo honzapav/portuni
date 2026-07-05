@@ -19,9 +19,9 @@ Knowledge transfer between sessions is `git pull`, not iCloud. The pattern acros
 - `portuni_log` to record a decision
 - `portuni_store` to attach a file
 
-Every one of those is explicit. There is no daemon polling for changes, no auto-sync of "everything you might want to see," no subscription-style updates. The agent reaches for context when it needs context, and the user is in the loop.
+Every one of those is explicit. There is no auto-sync of "everything you might want to see," no subscription-style updates. The agent reaches for context when it needs context, and the user is in the loop.
 
-The same shape applies to file sync: `portuni_status` shows what's drifted, but it never reconciles on its own. The user sees the diff and acts.
+The same shape applies to file sync at the level that matters – bytes and knowledge. A background mirror watcher does keep file-state *metadata* current (it registers new files locally and reconciles edits and deletes, so sync status is always accurate without anyone asking), but it never pushes bytes to a remote and never creates knowledge in the graph. What's drifted is visible automatically; moving it anywhere is still a deliberate act. The user sees the diff and acts.
 
 ## Tasks can be autonomous after a trigger
 
@@ -63,7 +63,7 @@ This is why the [scope model](/concepts/scope-enforcement/) constrains what an a
 
 If a feature feels like it's fighting one of these principles, it's probably the wrong feature. A few examples of things Portuni explicitly does **not** do:
 
-- Background sync of files into the graph
+- Background upload of file bytes, or background creation of knowledge in the graph (background *status tracking* exists; background *sync* does not)
 - Auto-discovery of edges from chat history
 - Cross-organization "interesting things" feeds
 - Hidden state that the user can't audit

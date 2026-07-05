@@ -54,4 +54,6 @@ Portuni is the MCP server. It returns paths and records where files live, but it
 
 The price of that separation is that filesystem permissions need to be set up once per client. Fortunately, that's a five-minute job each.
 
+Two related layers do exist elsewhere: agent terminals spawned from the desktop app run under a Portuni-generated Seatbelt sandbox (see [Scope Enforcement](/concepts/scope-enforcement/)), and access to the graph itself is enforced server-side (see [Data Modes](/concepts/data-modes/)). This page is only about the CLI clients' own filesystem models.
+
 For exact config blocks, see the per-client pages: [Claude Code](/clients/claude-code/), [Codex CLI](/clients/codex-cli/), [Gemini CLI](/clients/gemini-cli/).

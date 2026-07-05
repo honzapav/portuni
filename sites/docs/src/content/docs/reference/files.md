@@ -21,29 +21,41 @@ Create a local folder for a node on this device and register it.
 | `custom_path` | string | no | Override default path |
 
 Default path: `{PORTUNI_WORKSPACE_ROOT}/{org-slug}/{type-plural}/{node-sync-key}/`
+(organizations mirror directly to `{PORTUNI_WORKSPACE_ROOT}/{org-slug}/`).
 
-Creates subdirectories: `outputs/`, `wip/`, `resources/`. Organization
-mirrors additionally contain `projects/`, `processes/`, `areas/`,
-`principles/` for child nodes.
+Locally, every mirror gets the `outputs/`, `wip/`, `resources/`
+subdirectories. The org-plural subfolders (`projects/`, `processes/`,
+`areas/`, `principles/`) are scaffolded on the **remote** when an
+organization is mirrored; locally they appear only as parent directories
+once child nodes are mirrored.
+
+Returns: `{ node_id, local_path, subdirs, remote_scaffold, scope_config }` —
+`remote_scaffold` lists the remote folders created and the resolved
+`remote_name`; `scope_config` lists the per-mirror config files written.
 
 Mirror registrations are **per device**. Each machine keeps its own copy
-of the registry in `~/.portuni/sync.db`; the shared Turso DB does NOT
-store per-device paths.
+of the registry in `{PORTUNI_WORKSPACE_ROOT}/.portuni/sync.db`; the shared
+Turso DB does NOT store per-device paths.
 
 ## portuni_store
 
 Copy a file into the node's local mirror, upload it via the routed remote,
 and persist a `files` row + `file_state` cache.
 
-:::caution[Register at creation time]
-Call `portuni_store` **immediately** after any tool (Claude Code `Write` /
-`Edit` / `MultiEdit`, Codex `apply_patch`, shell `cp`/`mv`, app save dialog)
-creates a new file inside a mirror's `wip/`, `outputs/`, or `resources/`.
-Writing alone places bytes on disk but does **not** create a `files` row --
-the next session, the routed remote, and teammates won't see the file.
-Treat "create file in mirror" and "call `portuni_store`" as a single
-atomic step. The end-of-turn `portuni_status` check is a drift safety
-net, not the primary registration path. For files that already exist on
+:::note[Registration is automatic — store is a deliberate push]
+New files created inside a mirror's `wip/`, `outputs/`, or `resources/`
+(by any tool — Claude Code `Write`/`Edit`, Codex `apply_patch`, shell
+`cp`/`mv`, app save dialog) are registered **automatically** by the mirror
+watcher: a local-only `files` row is created, no upload happens, and file
+status stays current without any agent action. Such a file reads as
+`push` until someone deliberately pushes it. Reach for `portuni_store`
+when you explicitly want to **push** a file to the remote.
+
+The watcher is default-on only in the desktop sidecar; the standalone
+server needs `PORTUNI_WATCH_MIRRORS=1`. In a watcher-less environment the
+old advice still applies: call `portuni_store` right after creating a
+file in a mirror, since nothing else registers it (`portuni_status`
+surfaces such files as `new_local`). For files that already exist on
 the remote (created elsewhere), use [`portuni_adopt_files`](/reference/sync/#portuni_adopt_files)
 instead.
 :::
@@ -101,6 +113,18 @@ Push the local changes with `portuni_store` first, or pass
 List files across all nodes with optional filtering. Each row includes a
 **derived** `local_path` (from the current mirror + `remote_path` +
 `sync_key`); it is `null` when the node has no mirror on this device.
+
+For a non-home in-scope node, `local_path` points at the staged read-only
+copy under `<home-mirror>/.portuni-scope/<node_id>/` — the location the
+sandbox actually allows the agent to read — not the node's original
+mirror. See [disk read scope](/reference/scope/).
+
+Scope gating: with `node_id` the node must be in session scope (out of
+scope returns `scope_expansion_required`). Without `node_id` the call is
+a global query — mode-gated, and results are restricted to the session
+scope set (empty scope returns an empty array) unless the mode is
+`permissive`. The same gating applies to the other list tools
+(`portuni_list_events`, ...).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

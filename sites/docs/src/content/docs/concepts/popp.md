@@ -21,13 +21,13 @@ These five types are peers, connected by edges. There's no hierarchy baked in â€
 
 Portuni has exactly one hard invariant on the graph's shape: every non-organization node belongs to **exactly one** organization, via a `belongs_to` edge. No orphans, no multi-parent. This exists so that ownership is never ambiguous, local mirror paths are deterministic, and nothing can float outside an organizational scope.
 
-To move a node from one organization to another, disconnect and reconnect in the same operation. The invariant is enforced in three layers:
+To move a node from one organization to another, call `portuni_move_node` â€“ it rebinds the existing `belongs_to` edge atomically, so the node is never orphaned even transiently. A disconnect-then-connect across organizations is rejected. The invariant is enforced in three layers:
 
 1. **`portuni_create_node`** refuses to create a non-organization node without an `organization_id`, and writes the node plus its `belongs_to` edge atomically.
 2. **`portuni_connect` / `portuni_disconnect`** reject attempts to add a second `belongs_to -> organization`, or to remove the only one.
 3. **SQL triggers** catch any direct database access that would bypass the tool layer.
 
-On startup, Portuni verifies the invariant for every non-organization node (including archived ones). A violation aborts startup with the list of offending nodes, so a human can fix it before the server handles any requests.
+A one-time integrity sweep runs when the triggers are first installed (as part of the schema migration): if any existing node violates the invariant, the migration aborts with the list of offenders, so a human can fix the data before the triggers take over. From then on, the triggers are the ongoing protection.
 
 ## Edge types
 

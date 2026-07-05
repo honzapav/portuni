@@ -13,7 +13,7 @@ A **remote** is a backend storage configuration. One row per remote in the `remo
 
 ### portuni_setup_remote
 
-Register a new remote and store its credentials.
+Create **or update** a named remote (upsert) and store its credentials. Calling it again with an existing `name` replaces that remote's config and drops the cached adapter.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -30,7 +30,7 @@ For Google Drive the `shared_drive_id` is mandatory – Phase 1 supports Shared 
 |-----------|------|----------|-------------|
 | (none) | | | |
 
-Returns: array of remotes with their public config (no credentials) plus the routing rules attached to each.
+Returns: array of `{ name, type, authenticated }` per remote – `authenticated` reflects whether credentials for this remote exist on the current device (`fs` remotes are always `true`). No config object and no routing rules are returned; routing lives in `portuni_set_routing_policy` below.
 
 ## Routing policy
 
@@ -136,7 +136,7 @@ Register existing **remote** files (not currently tracked) as `files` rows for t
 
 :::note[Adopt vs store]
 - `portuni_adopt_files` is for files that already live on the remote (created by a teammate or another device). It pulls metadata only, no upload.
-- [`portuni_store`](/reference/files/#portuni_store) is for files you just created locally (via `Write`, `Edit`, `cp`, save dialog, etc.). It uploads to the remote and registers in one call. **Always use `portuni_store` immediately after creating a file in a mirror -- don't wait for `portuni_status` discovery.**
+- [`portuni_store`](/reference/files/#portuni_store) is for a deliberate **push** to the remote. New local files in a mirror are registered automatically (local-only, no upload) by the mirror watcher, so `portuni_store` is not needed just to make a file visible – only to push it. The watcher is default-on in the desktop sidecar; the standalone server needs `PORTUNI_WATCH_MIRRORS=1`. In a watcher-less environment, call `portuni_store` right after creating a file in a mirror – nothing else registers it there.
 :::
 
 | Parameter | Type | Required | Description |

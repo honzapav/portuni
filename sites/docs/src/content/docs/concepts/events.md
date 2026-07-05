@@ -45,6 +45,8 @@ Events appear in tool responses with detail that scales inversely with distance 
 
 Recent events surface through `portuni_get_node` and `portuni_get_context` whenever the agent reads a node, so the latest activity is one tool call away – no separate session-start preamble.
 
+Note that `portuni_get_context` surfaces **active** events only – resolved, superseded, and archived events don't appear in context walks. That's the point of the lifecycle: resolving a blocker takes it out of every future session's view. Use `portuni_list_events` with filters to dig into the full history.
+
 ## Tools
 
 | Tool | What it does |

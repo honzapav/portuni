@@ -5,7 +5,7 @@ description: How to install and run Portuni.
 
 If you're reading this, you're about to get Portuni running on your machine. This page walks you through the install, the environment variables, and starting the server – so that by the end, your AI agents have something to talk to.
 
-Two install paths: the desktop app (recommended) or the standalone CLI server (for contributors and CI).
+Two install paths: the desktop app (recommended) or the standalone CLI server (for contributors and CI). Setting Portuni up for a whole organization — a central server with Google sign-in that teammates connect to — has its own page: [Team Setup](/getting-started/team-setup/).
 
 ## Install the desktop app (recommended)
 
@@ -14,20 +14,20 @@ Two install paths: the desktop app (recommended) or the standalone CLI server (f
 1. Open the [GitHub releases](https://github.com/honzapav/portuni/releases) page.
 2. Download the DMG for your CPU — `aarch64` for Apple Silicon, `x86_64` for Intel.
 3. Open the DMG and drag `Portuni.app` to `/Applications/`.
-4. Launch it. First run: see [Desktop App](/clients/desktop-app/) for the Turso setup gate and the workspace-root prompt.
+4. Launch it. First run: see [Desktop App](/clients/desktop-app/) for the first-run flow (creating a workspace, entering Turso credentials — or signing in with Google if your organization runs a central server).
 
-The app uses its own port (default `4011` for the sidecar, surfaced via `localhost:4011` for any MCP client you want to point at it). You don't need to clone the repo, install Node, or keep a tmux session running — the app handles all of that.
+The app manages one or more **workspaces**, and each enabled workspace runs its own embedded sidecar on a fixed loopback port starting at `47011` (the first workspace gets `47011`, the next free port goes to the next one). Point any external MCP client at `http://localhost:47011/mcp` — or use the one-click install buttons in Settings, which register the right port and token for each workspace. You don't need to clone the repo, install Node, or keep a tmux session running — the app handles all of that.
 
 The app is currently **macOS only**. For Linux/Windows, use the CLI install below; native bundles for other platforms aren't on the near roadmap.
 
 ## Install the CLI / standalone server
 
-Use this path if you want to contribute to Portuni, run it on Linux/Windows, run multiple instances side by side, or deploy it to a server.
+Use this path if you want to contribute to Portuni, run it on Linux/Windows, or deploy it to a server (for example as your organization's central server).
 
 ### Before you start
 
 - Node.js 20 or newer
-- [Varlock](https://github.com/varlockteam/varlock) for secrets management
+- [Varlock](https://github.com/dmno-dev/varlock) for secrets management
 - A [Turso](https://turso.tech/) account if you're setting up the team or production mode. Turso is the shared cloud database that lets multiple people and multiple agents work against the same graph – it's where Portuni is designed to live long-term.
 - **No database account needed** for a solo or testing setup: Portuni quietly falls back to a local SQLite file. Good for trying things out, or for working on the server itself. Plan to move to Turso as soon as more than one person needs the graph.
 
@@ -42,16 +42,17 @@ npm run build
 
 ### Environment
 
-The CLI server uses Varlock for credentials. The authoritative list of variables lives in `.env.schema`; here's the quick rundown:
+The CLI server uses Varlock for credentials. `.env.schema` declares the core variables (the server reads many more optional tunables — the full inventory lives in [`docs/env-vars.md`](https://github.com/honzapav/portuni/blob/main/docs/env-vars.md)); here's the quick rundown:
 
 | Variable | When you need it | What it's for |
 |----------|------------------|---------------|
 | `PORTUNI_WORKSPACE_ROOT` | always | Root directory for your local mirror folders, e.g. `~/Workspaces/portuni` |
 | `TURSO_URL` | team setup | Turso database URL. Leave empty to fall back to local SQLite at `./portuni.db` |
 | `TURSO_AUTH_TOKEN` | team setup | Turso auth token. Set alongside `TURSO_URL` |
+| `PORTUNI_AUTH_TOKEN` | team setup | Bearer token every HTTP/MCP client must present. Leave empty to disable auth — safe only on loopback on a trusted single-user machine; the server refuses to bind a non-loopback host without it |
 | `PORTUNI_USER_EMAIL` | optional | Solo-user email in single-user mode. Defaults to `solo@localhost` |
 | `PORTUNI_USER_NAME` | optional | Solo-user display name. Defaults to `Solo User` |
-| `PORT` | optional | HTTP port for the MCP server. Default `4011` |
+| `PORTUNI_PORT` | optional | HTTP port for the MCP server. Default `4011` (`PORT` works too; `PORTUNI_PORT` wins) |
 
 The desktop app handles these via its in-app settings UI (Turso credentials, workspace root) — you do not edit `.env.local` for daily use of `Portuni.app`.
 
@@ -67,7 +68,7 @@ npx varlock run -- npm start       # production
 npx varlock run -- npm run dev     # development
 ```
 
-Portuni listens on `http://localhost:4011` by default. Set `PORT` to change it.
+Portuni listens on `http://localhost:4011` by default. Set `PORTUNI_PORT` to change it.
 
 If you'd like it to stay running in the background (so it survives closing the terminal), drop it into a tmux session:
 
@@ -77,11 +78,13 @@ tmux new-session -d -s portuni -c /path/to/portuni 'npx varlock run -- npm run d
 
 ### Running multiple instances
 
-Portuni instances are independent: each has its own database, its own workspace root, and its own port. To run more than one side by side:
+If you're on the desktop app, you don't need any of this — create additional **workspaces** in Settings instead. Each workspace runs its own sidecar with its own database, workspace root, port, and token, all managed by the app.
+
+For standalone CLI servers, instances are independent: each has its own database, its own workspace root, and its own port. To run more than one side by side:
 
 1. **Clone the repo in a second location** (e.g. `/path/to/portuni-alt`). Each clone keeps its own local SQLite file.
 2. **Give each instance distinct values** in its `.env.local`:
-   - `PORT` – pick a different port, e.g. `3002`
+   - `PORTUNI_PORT` – pick a different port, e.g. `3002`
    - `PORTUNI_WORKSPACE_ROOT` – pick a different workspace root
    - optionally `PORTUNI_USER_EMAIL` / `PORTUNI_USER_NAME`
 3. **Start each in its own tmux session** with a distinct session name, so you can find them again.

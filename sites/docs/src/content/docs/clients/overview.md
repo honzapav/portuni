@@ -12,9 +12,11 @@ Portuni is a plain HTTP server that speaks MCP – which means any AI client tha
 
 If you're using something else that speaks MCP, the same ideas apply – you just have to hunt down the equivalent settings yourself.
 
-## One URL, three different habits around your files
+The [desktop app](/clients/desktop-app/) sits on both sides of this picture: it's a Portuni client in its own right, and its embedded sidecar is the server the CLIs above usually connect to. The client landscape is also a bit wider than the four pages here – `portuni_mirror` writes a `.cursor/rules` file into every mirror (the same scope hint that lands in `PORTUNI_SCOPE.md`), and the desktop app's terminal ships launch presets for Cursor Agent and OpenCode alongside the four clients above.
 
-The hard part isn't connecting. All three clients need roughly the same URL. What differs is **how each one treats your local files** – specifically, the mirror folders that Portuni points to. Those folders often sit outside the directory where you launched the CLI, and every client has its own opinion about whether the agent is allowed to read or write there.
+## One URL, four different habits around your files
+
+The hard part isn't connecting. All four clients need roughly the same URL. What differs is **how each one treats your local files** – specifically, the mirror folders that Portuni points to. Those folders often sit outside the directory where you launched the CLI, and every client has its own opinion about whether the agent is allowed to read or write there.
 
 This is where Portuni users most often get stuck: the server is running, the graph is loading, but the agent quietly fails to write a file and nobody's quite sure why. The short answer is almost always "the client doesn't know it's allowed to touch that folder yet."
 
@@ -37,4 +39,6 @@ For the full reasoning behind all this, head to [Concepts → Filesystem Permiss
 
 ## Before you start
 
-All pages in this section assume Portuni is already running on `http://localhost:4011/mcp`. If it isn't, pop over to [Getting Started → Setup](/getting-started/setup/) first – it's a few minutes of work and you can come back.
+All pages in this section assume a Portuni server is already running. With the desktop app, each enabled workspace runs its own sidecar on a loopback port allocated from `47011` up – Settings → MCP Server shows the exact URL and token, and its one-click install buttons wire up Claude Code, Codex, and Vibe for you. A standalone CLI server listens on `http://localhost:4011/mcp` by default. If neither is running, pop over to [Getting Started → Setup](/getting-started/setup/) first – it's a few minutes of work and you can come back.
+
+One variant to know about: in a **central-mode** workspace there is no local MCP endpoint to point at – the desktop app registers the organization's central server URL instead, authenticated with a device token rather than a local sidecar token. Everything else on these pages applies unchanged; only the URL and credential differ. See [Data Modes](/concepts/data-modes/).

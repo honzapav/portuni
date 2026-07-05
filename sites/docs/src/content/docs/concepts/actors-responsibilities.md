@@ -14,7 +14,7 @@ An **actor** is anyone or anything that does work in an organization. Two kinds:
 | `person` | A human – may be a registered Portuni user, or just a name on the map | Honza, Lucie, "the new account manager we'll hire" |
 | `automation` | A named functional unit that does work without a human | "Lead enrichment script", "Daily Slack digest" |
 
-Actors are scoped per organization. The same person who works in two organizations gets two actor records – one per org. This keeps responsibility maps clean and aligned with the [organization invariant](/concepts/organization-invariant/).
+Actors are global, not scoped per organization. The same person who works in two organizations is one actor record, holding responsibilities and ownership on nodes across both orgs. What an actor does is defined by the responsibilities attached to specific nodes – not by which org the actor "belongs" to. (Nodes follow the [organization invariant](/concepts/organization-invariant/); actors deliberately don't.)
 
 ### Placeholders
 
@@ -24,7 +24,7 @@ Why bother? Because work doesn't wait for hiring. Mapping a process or project t
 
 ### Automations as first-class actors
 
-An automation – a Make scenario, an n8n workflow, a CI script – gets the same treatment as a person. It has a name, an owner organization, and can hold responsibilities just like a human.
+An automation – a Make scenario, an n8n workflow, a CI script – gets the same treatment as a person. It has a name and can hold responsibilities just like a human.
 
 This matters because in a [symbiotic workflow](/concepts/design-principles/#symbiotic-work-not-full-automation), the same process can be done by a human, an agent, or an automation. Treating all three as actors means the process map stays the same regardless of who or what is currently executing it.
 
@@ -55,13 +55,7 @@ Responsibilities on a node are ordered – the order is meaningful (most importa
 
 Separate from the responsibility list, every node can have a single **owner** – the actor primarily accountable for the node as a whole. Owner is not "the only person involved"; it's "the one who answers the phone if something's wrong."
 
-Constraints on owner:
-
-- Must be an actor of type `person`.
-- Must have a `user_id` (a real registered Portuni user, not a placeholder).
-- Must belong to the same organization as the node.
-
-Automations can hold responsibilities, but they cannot be owners. An automation is something *under* an owner, not the owner itself.
+Owner can be **any actor** – a real registered person, a placeholder, or an automation. The only constraint is that the referenced actor exists (a foreign key); there is no same-organization check, because actors aren't scoped to organizations in the first place. Earlier versions restricted owners to registered persons; that restriction was dropped – an org's design often knows *which role* owns a node before the role is filled, and a fully automated process can honestly be owned by its automation.
 
 ## Data sources and tools
 

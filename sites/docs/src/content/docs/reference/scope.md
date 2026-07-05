@@ -5,7 +5,7 @@ description: Tools for managing the per-session read-scope set (session init, ex
 
 Every MCP session carries a read-scope set — the explicit list of node IDs the agent is allowed to read in this session. Reads of nodes outside the set return `{error: scope_expansion_required, ...}` until the user authorises expansion. See [Scope Enforcement](/concepts/scope-enforcement/) for the conceptual model and mode matrix.
 
-The scope set is normally seeded automatically when an MCP client opens the session with `?home_node_id=<id>` in the URL (which `portuni_mirror` writes into every mirror's `.mcp.json` / `.codex/config.toml`). The tools below cover the cases where auto-seed is absent, where reads need to reach beyond the seed, and where you want to audit what the agent has looked at.
+The scope set is normally seeded automatically when an MCP client opens the session with `?home_node_id=<id>` in the URL. `portuni_mirror` materializes that URL into every mirror's `.mcp.json` (Claude Code) and `.vibe/config.toml` (Mistral Vibe); it also writes `.claude/settings.local.json`, `.codex/config.toml` (sandbox config only — the Codex MCP connection lives in the user-scoped `~/.codex/config.toml`), `.cursor/rules`, `PORTUNI_SCOPE.md`, and marker blocks in `CLAUDE.md` / `AGENTS.md` when those files already exist. The tools below cover the cases where auto-seed is absent, where reads need to reach beyond the seed, and where you want to audit what the agent has looked at.
 
 ## portuni_session_init
 
@@ -29,7 +29,7 @@ Add one or more nodes to the current session's read-scope set. Required when a r
 | `triggered_by` | enum | no | `user` (default) for prompt-named or chat-confirmed expansions; `agent` for the agent's own initiative (rare — most agent-initiated reaches go through elicitation) |
 | `confirmed_hard_floor` | boolean | no | Default `false`. Set to `true` only when the user has explicitly confirmed reaching a hard-floor node (`visibility=private` owned by another user, or `meta.scope_sensitive=true`). Without this flag, hard-floor nodes are refused even when `reason` claims user confirmation |
 
-Returns: `{ added, unknown, refused_hard_floor, scope_size, hint? }` — `unknown` lists requested IDs that don't exist in the graph; `refused_hard_floor` lists nodes that need `confirmed_hard_floor=true`; `hint` appears when there's a clear next step.
+Returns: `{ added, unknown, refused_hard_floor, scope_size, staged?, hint? }` — `unknown` lists requested IDs that don't exist in the graph; `refused_hard_floor` lists nodes that need `confirmed_hard_floor=true`; `staged` is an array of `{ node_id, staged_path, files }` present when disk projection copied an added node's mirror into the read-only `.portuni-scope/<node_id>/` staging area of the home mirror (the copies are complete before the call returns); `hint` appears when there's a clear next step.
 
 Every expansion is audited and surfaced in `portuni_session_log`. See [Scope Enforcement](/concepts/scope-enforcement/).
 

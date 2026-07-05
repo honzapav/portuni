@@ -7,18 +7,25 @@ Anthropic's Claude Code is the agent most Portuni users start with. It's the one
 
 ## Connect to Portuni
 
-Add Portuni to `~/.claude.json`:
+If you run the desktop app, you don't do this by hand: **Settings → MCP Server → the Claude Code install button** writes one entry per workspace into `~/.claude.json`, named `portuni-<workspace-id>` and pointing at that workspace's sidecar port (allocated from `47011` up), token included. A workspace migrated from a single-workspace install keeps the historical name `portuni`.
+
+For a standalone CLI server, add Portuni to `~/.claude.json` yourself:
 
 ```json
 {
   "mcpServers": {
     "portuni": {
       "type": "http",
-      "url": "http://localhost:4011/mcp"
+      "url": "http://localhost:4011/mcp",
+      "headers": {
+        "Authorization": "Bearer ${PORTUNI_MCP_TOKEN:-}"
+      }
     }
   }
 }
 ```
+
+Claude Code expands `${VAR:-}` at config load, so the token stays out of the file – export `PORTUNI_MCP_TOKEN` in your shell (or launch from a terminal the desktop app spawned, which has it injected). The standalone server requires the header whenever `PORTUNI_AUTH_TOKEN` is set; the desktop sidecar always requires it.
 
 :::caution
 Use `type: "http"` (Streamable HTTP), not `"sse"` – Claude Code quietly ignores SSE transport in the global config, and you'll be left wondering why nothing's connecting.
@@ -60,22 +67,26 @@ Fine on a workstation dedicated to Portuni. Worth thinking twice about on anythi
 
 ## Auto-seed on connect
 
-When `portuni_mirror` materialises a mirror's config, the generated `.mcp.json` URL carries `?home_node_id=<id>`. The first time Claude Code opens an MCP session inside that mirror, the Portuni server reads the param and seeds the read scope with the home node + its depth-1 neighbors – no hook, no opening tool call, scope is just ready. The same mechanism works for any MCP-capable client (Codex, etc.); it's not Claude Code-specific.
+When `portuni_mirror` materialises a mirror's config, the generated `.mcp.json` URL carries `?home_node_id=<id>`. The first time Claude Code opens an MCP session inside that mirror, the Portuni server reads the param and seeds the read scope with the home node + its depth-1 neighbors – no hook, no opening tool call, scope is just ready. Server-side the mechanism is client-agnostic – Mistral Vibe gets the same treatment from the per-mirror `.vibe/config.toml` – but Codex doesn't: its per-mirror `.codex/config.toml` carries only sandbox config, no MCP connection, so a Codex session starts unscoped and relies on `portuni_session_init` instead.
 
 ## Running more than one Portuni instance
 
-If you're running several Portuni servers side by side, register each as its own MCP server in `~/.claude.json`:
+With the desktop app this is the normal state, and it's managed for you: every enabled workspace runs its own sidecar (loopback ports allocated from `47011` up), and the install button in Settings writes one `~/.claude.json` entry per workspace, named `portuni-<workspace-id>` – so tool names become `mcp__portuni-<id>__portuni_get_node` and so on. A workspace migrated from the single-workspace era keeps the historical name `portuni`. Terminals spawned inside the app carry each workspace's token as `PORTUNI_MCP_TOKEN_<ID>`, with plain `PORTUNI_MCP_TOKEN` as an alias for the active workspace, so per-mirror configs resolve the right credential no matter which workspace a folder belongs to.
+
+If you're running several standalone CLI servers instead, register each as its own MCP server in `~/.claude.json` yourself:
 
 ```json
 {
   "mcpServers": {
     "portuni": {
       "type": "http",
-      "url": "http://localhost:4011/mcp"
+      "url": "http://localhost:4011/mcp",
+      "headers": { "Authorization": "Bearer ${PORTUNI_MCP_TOKEN:-}" }
     },
     "portuni-alt": {
       "type": "http",
-      "url": "http://localhost:3002/mcp"
+      "url": "http://localhost:3002/mcp",
+      "headers": { "Authorization": "Bearer ${PORTUNI_ALT_MCP_TOKEN:-}" }
     }
   }
 }

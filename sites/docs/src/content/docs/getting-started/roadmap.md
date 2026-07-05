@@ -11,17 +11,19 @@ The core ideas have been pressure-tested through daily use and several refactors
 
 ## What works today
 
-**Graph model.** Five POPP node types (organization, project, process, area, principle) and four edge relations (`related_to`, `belongs_to`, `applies`, `informed_by`), strictly enforced via Zod schemas, database CHECK constraints, and a single source of truth in `src/popp.ts`. The organization invariant – every non-organization node belongs to exactly one organization – is enforced via atomic tool-level batches plus database triggers, with a startup integrity sweep that aborts on violations.
+**Graph model.** Five POPP node types (organization, project, process, area, principle) and four edge relations (`related_to`, `belongs_to`, `applies`, `informed_by`), strictly enforced via Zod schemas, database CHECK constraints, and a single source of truth in `apps/server/shared/popp.ts`. The organization invariant – every non-organization node belongs to exactly one organization – is enforced via atomic tool-level batches plus database triggers, with a startup integrity sweep that aborts on violations.
 
-**MCP tools.** 46 tools covering nodes (create / update / list / get / delete + move), edges (connect / disconnect / move), actors (create / update / list / get / delete) and responsibilities (with assignment), data sources and tools as descriptive metadata, recursive context fetching, mirror folder management, file flow (store / pull / list / status / adopt / snapshot) and the destructive operations (move / rename / delete), remote configuration and routing policy, and the event timeline (log, list, resolve, supersede). Streamable HTTP transport on port 4011. Full reference: [Tools](/reference/nodes/).
+**MCP tools.** 46 tools covering nodes (create / update / list / get / delete + move), edges (connect / disconnect / move), actors (create / update / list / get / delete) and responsibilities (with assignment), data sources and tools as descriptive metadata, recursive context fetching, mirror folder management, file flow (store / pull / list / status / adopt / snapshot) and the destructive operations (move / rename / delete), remote configuration and routing policy, and the event timeline (log, list, resolve, supersede). Streamable HTTP transport on port 4011 (standalone; the desktop app assigns each workspace its own sidecar port from 47011 up). Full reference: [Tools](/reference/nodes/).
 
 **Events.** A time-ordered timeline of what happened on each node – decisions, blockers, discoveries – with status tracking and supersede semantics. Events ride along with `get_context` so agents see recent history.
 
-**File sync.** A pluggable `FileAdapter` interface with Google Drive (Service Account) as the first concrete backend. Two-layer state: shared `files.current_remote_hash` in Turso, per-device sync state in `~/.portuni/sync.db`. Confirm-first move / rename / delete, hash-based conflict detection, native-format snapshots for Docs / Sheets / Slides.
+**File sync.** A pluggable `FileAdapter` interface with Google Drive (Service Account) as the first concrete backend. Two-layer state: shared `files.current_remote_hash` in Turso, per-device sync state in `.portuni/sync.db` under your workspace root. Confirm-first move / rename / delete, hash-based conflict detection, native-format snapshots for Docs / Sheets / Slides. A mirror watcher registers new files and reconciles edits automatically (on by default in the desktop sidecar), so file status stays current without an agent doing anything; only the push to the remote remains a deliberate action.
 
 **Integration glue.** Each mirror's per-harness MCP config carries `?home_node_id=<id>` in the server URL, so the Portuni server auto-seeds the read scope on connect – no harness-specific hooks needed.
 
-**Desktop app.** `Portuni.app` is a Tauri-built macOS application with a Cytoscape graph view, a detail pane (events, files, responsibilities), multi-session terminal tabs, and an embedded MCP server sidecar — install one DMG and the server runs alongside the UI. Tag-triggered GitHub releases ship aarch64 + x86_64 DMGs. See [Desktop App](/clients/desktop-app/).
+**Desktop app.** `Portuni.app` is a Tauri-built macOS application with a Cytoscape graph view, a detail pane (events, files, responsibilities), multi-session terminal tabs, and an embedded MCP server sidecar — install one DMG and the server runs alongside the UI. The app manages multiple **workspaces** (each with its own database, workspace root, sidecar port, and Keychain-held tokens) running side by side. Tag-triggered GitHub releases ship signed and notarized aarch64 + x86_64 DMGs. See [Desktop App](/clients/desktop-app/).
+
+**Team / central mode.** Server-side Google OAuth identity and Google Groups permissions (`PORTUNI_AUTH_MODE=google`): per-request identity, session JWTs, global role enforcement, node-level group visibility, and rate limiting are enforced server-side. The desktop app signs in with Google (Settings → Account), holds a device token, and can run a workspace in **central data mode**: the graph and file content go through the org's server, while the local sidecar acts as a sync agent for mirror folders — teammates never hold database or Drive credentials. See [Data Modes](/concepts/data-modes/).
 
 ## Gaps and what's coming next
 
@@ -35,15 +37,14 @@ The roadmap is grouped by intent, not by version number. Each gap is stated once
 
 ### Later (committed direction, not yet scheduled)
 
-- **Multi-user mode.** Server-side Google OAuth identity and Google Groups permission model are implemented (`PORTUNI_AUTH_MODE=google`): per-request identity, session JWTs, global role enforcement, and node-level group visibility are all enforced server-side. A teammate in central mode works with the **graph** through the shared server. Still pending: hosted deployment polish, desktop login UI for OAuth, and per-user client cutover. Rate limiting on the HTTP server is also outstanding. See [Data Modes](/concepts/data-modes/) for the local-vs-central model.
-- **File content over the central server.** Reading and editing file *content* is a **local-mode** capability today — it works against your local mirror folder. A central-mode teammate can see the graph but not file content; mirrors and sync report "available in local mode only." The planned work lets the shared server read and write file content directly against the remote (Drive), permission-checked, so central-mode teammates get files too. This is the "file-bytes plane" half of [Data Modes](/concepts/data-modes/).
-- **Migrations and backups.** Schema auto-applies via `CREATE TABLE IF NOT EXISTS`; there is no proper migration framework, and backups aren't automated. Plan: a real migration tool and documented disaster recovery.
+- **Multi-user polish.** The multi-user foundation shipped (see "Team / central mode" above): Google OAuth, Groups-based permissions, desktop login, device tokens, central data mode, and file content over the central server all work today. What's left is hosted-deployment polish: an admin story for managing users and device tokens, and smoothing the org onboarding path.
+- **Migrations.** Schema auto-applies via `CREATE TABLE IF NOT EXISTS`; there is no proper migration framework yet. A daily Turso backup script ships (`npm run backup`, scheduled via launchd on the host). Plan: a real migration tool and documented disaster recovery.
 - **More file backends.** The adapter interface is ready; only Google Drive (Service Account) ships today. Concrete adapters for Dropbox, S3, WebDAV, and SFTP are committed.
 - **Drive OAuth and domain-wide delegation.** Service Account is the only Drive auth path today. Per-user OAuth and DWD for Workspace deployments are planned.
-- **Background sync.** Every file operation is explicit, triggered by an MCP tool call. A daemon that watches for changes is on the list.
+- **Background push.** The mirror watcher already registers and reconciles file changes automatically; pushing to the remote is still a deliberate action (an MCP tool call or the Synchronize button). Whether pushes should ever happen automatically is an open design question — intentional capture is a principle, not an accident.
 - **Artifacts hosting.** A central `workflow-pages` GitHub repo and Cloudflare Pages target for AI-generated documents, with `artifact` nodes and a `publish_artifact` workflow.
 - **Per-node summarization.** LLM-generated summaries on each node, regenerated lazily after events accumulate, usable as an embedding source.
-- **Cross-platform desktop bundles.** `Portuni.app` (Tauri + React + Cytoscape) is the daily-driver client today and ships as macOS DMGs (aarch64 + x86_64) via tag-triggered GitHub releases. Linux and Windows bundles are not on the near roadmap; CLI install covers those platforms. Code-signing for macOS is also outstanding — first launch shows the Gatekeeper "unidentified developer" dialog until APPLE_CERTIFICATE secrets are wired into the release workflow.
+- **Cross-platform desktop bundles.** `Portuni.app` (Tauri + React + Cytoscape) is the daily-driver client today and ships as signed, notarized macOS DMGs (aarch64 + x86_64) via tag-triggered GitHub releases. Linux and Windows bundles are not on the near roadmap; CLI install covers those platforms.
 
 ### Exploring (open questions)
 
@@ -63,7 +64,7 @@ Portuni is for you if:
 Portuni is not yet for you if:
 
 - You need a turnkey, hosted product with SLAs.
-- You can't securely run an HTTP service on your internal network (no auth means an exposed port is a public read / write graph).
+- You need enterprise-grade identity beyond what's built in (bearer-token auth for solo use, Google OAuth + Groups for teams; no SAML/OIDC-generic SSO).
 - Your data is regulated and you need audit guarantees that go beyond Portuni's `audit_log` table.
 
 If you're somewhere in between – strong opinions about how AI agents should work with organizational structure, looking for a system to evolve with – open an issue on [GitHub](https://github.com/honzapav/portuni).

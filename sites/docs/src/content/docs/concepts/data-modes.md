@@ -32,43 +32,51 @@ project says "graph sync" it means the **Turso plane**.
   itself (the embedded sidecar), talks **directly to Turso**, and runs the
   **file sync engine** on your own machine (mirror folders ↔ Drive). Full power,
   full trust.
-- **Central mode** (a teammate). The desktop app runs **no** local server.
-  Every request goes to a shared server (`api.portuni.com`) with a **Google
-  login**, so the server can **enforce permissions** (groups, per-node
-  visibility). The teammate never holds the raw database token.
+- **Central mode** (a teammate). Every graph and file-content request goes to a
+  shared server with a **Google login**, so the server can **enforce
+  permissions** (groups, per-node visibility). The teammate never holds the raw
+  database token or the Drive credentials. The desktop still runs its local
+  sidecar — but as a **sync agent**, not as a graph server: it maintains local
+  mirror folders and a file watcher, and moves file bytes between those folders
+  and the central server using a per-device token. Everything is brokered
+  through the central server; nothing on the teammate's machine talks to Turso
+  or Drive directly.
 
 The central server is the **same Portuni backend**, just deployed centrally and
 reached with an identity instead of a shared secret. The key difference: it has
-**no local mirror folders** of its own.
+**no local mirror folders** of its own — it reads and writes file content
+directly against the routed remote (Drive) on the teammate's behalf.
 
-## The 2×2 — and the one cell that isn't built yet
+## The 2×2
 
 |  | Graph plane | File-bytes plane |
 |---|---|---|
-| **Local mode** | server → Turso | sync engine → Drive |
-| **Central mode** | server → Turso (available) | **not available yet** |
+| **Local mode** | sidecar → Turso | sync engine → Drive |
+| **Central mode** | central server → Turso | central server → Drive (adapter-direct); the local sync agent brokers mirror folders ↔ central server |
 
-That empty cell is the thing to understand: central mode does **not** drop Drive
-on purpose. A central client simply has no local mirror, and the shared server
-does not yet read and write file *content* directly against Drive on a
-teammate's behalf. So in central mode, file content, mirrors, and sync are
-currently unavailable, and the app says so rather than failing silently.
+Both cells of the central row are live. The central server has no mirror of its
+own, so it talks to the remote adapter directly: opening a file in central mode
+reads the bytes from Drive through the server, saving writes them back and
+refreshes the canonical hash in the graph so both planes stay consistent.
+Optimistic concurrency works the same as locally — a stale base version is a
+conflict, not a silent overwrite.
 
-:::caution[Status]
-**Central-mode file content is planned, not shipped.** A teammate in central
-mode can work with the **graph** today, but cannot yet read or edit file
-**content** through the server. Tracking: the "files over the central server"
-work on the [roadmap](/getting-started/roadmap/). Until it lands, file content
-is a **local-mode** capability.
-:::
+### Teammate mirrors — local folders without local credentials
 
-### Why editing a file is a local-mode thing today
+A central-mode teammate still gets real folders on disk. The sync agent
+(the sidecar running with `PORTUNI_AGENT_MODE=1`) creates and watches local
+mirror folders, and syncs their contents through the central server with the
+device token issued at Google login. Before login, mirror-dependent features
+simply report themselves unavailable. The result is the local-mirror experience
+— agents and editors work against plain folders — with zero shared secrets on
+the teammate's machine.
 
-When you open and save a file in the app, Portuni reads and writes the file in
-your **local mirror folder** — and pushing those bytes up to Drive is a
-**separate** step (the sync action, surfaced as the unsynced overview). A
-central-mode teammate has no mirror folder to read or write, which is exactly
-the gap above.
+### One desktop, both modes
+
+`data_mode` is **per workspace**, not per machine. The desktop's multi-workspace
+config can host a local-mode workspace (your own org, direct Turso + Drive) and
+a central-mode workspace (a team you're a teammate in) side by side, each with
+its own sidecar, port, and credentials.
 
 ## Two ways teammates can collaborate
 
@@ -83,16 +91,16 @@ folder**, keyed by the **same graph**.
   read/write. There are no per-person permissions. This is the exact problem
   central mode exists to solve.
 
-### Central collaboration (the secure target)
+### Central collaboration (the secure default for teams)
 
 Teammates run **central mode**, sign in with Google, and get **enforced
-permissions** with no raw database token. The graph works today; file content
-over the server is the planned piece described above.
+permissions** with no raw database token. Graph, file content, and teammate
+mirrors all work through the central server.
 
-| | Files work now? | Permissions enforced? | Teammate needs |
+| | Files work? | Permissions enforced? | Teammate needs |
 |---|---|---|---|
 | **Shared-database** | yes | no (raw token) | database token + Drive access |
-| **Central** | not yet | yes | a Google login |
+| **Central** | yes | yes | a Google login |
 
 ## Glossary
 
@@ -101,7 +109,8 @@ over the server is the planned piece described above.
 | graph sync | the shared knowledge graph in Turso |
 | file sync | file bytes moving between your mirror and Drive |
 | local mode | the client reaches data directly (the owner) |
-| central mode | the client reaches data through `api.portuni.com`, permissions enforced |
+| central mode | the client reaches data through the central server, permissions enforced |
+| sync agent | the local sidecar in central mode — mirror folders + watcher, brokered through the central server with a device token |
 
 ## See also
 
@@ -111,5 +120,3 @@ over the server is the planned piece described above.
   scoped.
 - [Setting Up Remotes](/guides/setting-up-remotes/) — configuring the Drive
   backend.
-- [Project status & roadmap](/getting-started/roadmap/) — where central-mode
-  file content sits.

@@ -33,7 +33,7 @@ Array — `[root, ...connected]`. The root (depth 0) and connected nodes share t
 - `responsibilities` — array, each with `id`, `title`, `description`, `sort_order`, `assignees`
 - `data_sources`, `tools` — array of `{ id, name, description, external_link }` rows
 - `edges` — direct edges with direction and peer info
-- `events` — up to 50 active events with full detail (`meta`, `refs`, `task_ref`)
+- `events` — up to 50 active events with `meta` and `task_ref` (`refs` is not included in the context payload — use [`portuni_list_events`](/reference/events/#portuni_list_events) when you need it)
 - `local_path` — local mirror path on the current device, or `null`
 
 **Connected nodes (depth >= 1):**
@@ -43,7 +43,11 @@ Array — `[root, ...connected]`. The root (depth 0) and connected nodes share t
 - `events` — depth 1 only: up to 5 recent events with `type`, `content`, `created_at`. Depth >= 2: empty
 - `local_path` — local mirror path on the current device, or `null`
 
-Local mirror paths are read from `~/.portuni/sync.db` (per-device registry). Stale rows (mirror registered for a node that has been purged from the shared graph) are skipped and cleaned up lazily.
+Local mirror paths are read from `{PORTUNI_WORKSPACE_ROOT}/.portuni/sync.db` (per-device registry). Stale rows (mirror registered for a node that has been purged from the shared graph) are skipped and cleaned up lazily.
+
+For a non-home in-scope node, `local_path` is rewritten to the staged read-only copy under `<home-mirror>/.portuni-scope/<node_id>/` — the location the sandbox actually allows the agent to read — not the node's original mirror. Staging is awaited before the response, so the returned path is complete and readable.
+
+Edges to a peer the caller can only reach via a request-mode ACL come back with `peer_restricted: true` and blanked `id` / `peer_id` — name and type only, so the edge is visible but cannot be used to probe or act on the peer. Edges to fully hidden peers are dropped.
 
 ### Scope
 

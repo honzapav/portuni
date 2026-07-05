@@ -9,16 +9,19 @@ This page walks you through connecting Codex to Portuni and granting it the acce
 
 ## Connecting to Portuni
 
-Add Portuni to `~/.codex/config.toml`:
+If you run the desktop app, use **Settings → MCP Server → the Codex install button**: it writes one `[mcp_servers.portuni-<workspace-id>]` block per workspace into `~/.codex/config.toml`, pointing at that workspace's sidecar port (allocated from `47011` up) with the token referenced via `bearer_token_env_var = "PORTUNI_MCP_TOKEN_<ID>"`. A workspace migrated from a single-workspace install keeps the historical name `portuni`.
+
+For a standalone CLI server, add Portuni to `~/.codex/config.toml` yourself:
 
 ```toml
 [mcp_servers.portuni]
 url = "http://localhost:4011/mcp"
+bearer_token_env_var = "PORTUNI_MCP_TOKEN"
 startup_timeout_sec = 10
 tool_timeout_sec = 60
 ```
 
-The `url` key tells Codex this is a Streamable HTTP server. Don't mix `url` with the stdio-style `command` key in the same block – one or the other.
+The `url` key tells Codex this is a Streamable HTTP server. Don't mix `url` with the stdio-style `command` key in the same block – one or the other. The token has to come through env-var indirection: Codex's Streamable HTTP transport rejects a literal `bearer_token` field (the whole config fails to load). Export `PORTUNI_MCP_TOKEN` in your shell, or launch Codex from a terminal the desktop app spawned – those get the token variables injected. The standalone server requires the bearer header whenever `PORTUNI_AUTH_TOKEN` is set; the desktop sidecar always requires it.
 
 For the full list of options, see OpenAI's [configuration reference](https://developers.openai.com/codex/config-reference).
 
@@ -96,17 +99,21 @@ The default `on-request` is a reasonable middle ground. Only change it if you ha
 
 ## Running more than one Portuni instance
 
-If you're running several Portuni servers (say, personal and team), register each in `~/.codex/config.toml` under its own name:
+With the desktop app this is the normal state, and the Codex install button handles it: every enabled workspace runs its own sidecar (loopback ports from `47011` up), and the button writes one `[mcp_servers.portuni-<workspace-id>]` block per workspace, each referencing its own `PORTUNI_MCP_TOKEN_<ID>` env var. Terminals spawned inside the app carry all of those variables (plus plain `PORTUNI_MCP_TOKEN` as an alias for the active workspace).
+
+If you're running several standalone CLI servers instead (say, personal and team), register each in `~/.codex/config.toml` under its own name:
 
 ```toml
 [mcp_servers.portuni]
 url = "http://localhost:4011/mcp"
+bearer_token_env_var = "PORTUNI_MCP_TOKEN"
 
 [mcp_servers.portuni-alt]
 url = "http://localhost:3002/mcp"
+bearer_token_env_var = "PORTUNI_ALT_MCP_TOKEN"
 ```
 
-Codex picks up project-scoped MCP wiring via `portuni_mirror`-generated `.codex/config.toml` (URL includes `?home_node_id=<id>`). The Portuni server auto-seeds the read scope with the home node + its depth-1 neighbors on connect, so you can dive into tools immediately without an opening `portuni_session_init` call.
+One thing Codex does **not** get: per-mirror MCP wiring. The `.codex/config.toml` that `portuni_mirror` writes into a mirror carries only sandbox config (`writable_roots`) – the MCP connection lives in the user-scoped `~/.codex/config.toml`, which is node-agnostic. That means a Codex session never auto-seeds its scope from `?home_node_id` the way Claude Code and Vibe do: start with `portuni_session_init`, as the scope hint in `AGENTS.md` / `PORTUNI_SCOPE.md` reminds the agent.
 
 ## Further reading
 

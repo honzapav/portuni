@@ -53,16 +53,18 @@ Writes divide into three concentric zones, each with different default behavior:
 
 ### How it's enforced
 
-Portuni does **not** intercept filesystem operations at runtime – cross-harness interception is fragile and easy to bypass. Instead, when a mirror is created or renamed, Portuni writes per-harness configuration into `local_path`, layering on top of user-owned files (never replacing them):
+The primary mechanism is declarative: when a mirror is created or renamed, Portuni writes per-harness configuration into `local_path`, layering on top of user-owned files (never replacing them). Portuni does not try to intercept individual filesystem calls from arbitrary harnesses – cross-harness interception is fragile and easy to bypass.
+
+There is one runtime layer on top: agent terminals spawned from the desktop app run under a **Seatbelt kernel sandbox** whose profile Portuni generates per session (`apps/server/domain/sandbox-profile.ts`). The kernel grants read+write on the home mirror only and denies the rest of `PORTUNI_ROOT`; everything outside the root stays unrestricted – the sandbox protects the knowledge graph, it is not a general-purpose jail. Manual shells outside the app rely on the declarative configs alone.
+
+The generated files:
 
 - **`.claude/settings.local.json`** – an overlay file Claude Code merges on top of `settings.json`. Portuni owns this file completely, so it can be regenerated safely on every call. Three things in one file:
   - `permissions.allow` for the current mirror and `permissions.deny` for every other mirror in the registry. No synthetic tier-3 negation – Claude Code's permission grammar is plain glob, so tier-3 enforcement is delegated to the `portuni-guard` PreToolUse hook (next bullet).
   - `hooks.PreToolUse` auto-wired to `scripts/portuni-guard.sh` (matcher: `Edit|Write|NotebookEdit|MultiEdit`). Resolved from `PORTUNI_GUARD_SCRIPT` env or relative to the Portuni install. The hook block is omitted when the script can't be located.
   - `portuni_managed` marker so the file is recognisable as auto-generated.
-- **`.mcp.json`** – Claude Code project-scoped MCP server registration (`mcpServers.portuni`). The user is prompted once on first session whether to trust the server; afterwards every session inside this mirror connects to the local Portuni server automatically. Bearer auth header is embedded only when `PORTUNI_AUTH_TOKEN` is set on the Portuni server's environment at the time `portuni_mirror` ran. **Gitignore this file if you embed an auth token.**
-- **`.codex/config.toml`** – two blocks under one Portuni-managed marker:
-  - `[sandbox_workspace_write]` with `writable_roots = [<this mirror>]`. Codex's Seatbelt / Landlock enforces this at the kernel level.
-  - `[mcp_servers.portuni]` with `type = "http"`, `url = <PORTUNI_URL>/mcp`, optional bearer headers. Codex CLI auto-connects.
+- **`.mcp.json`** – Claude Code project-scoped MCP server registration (`mcpServers.portuni`). The user is prompted once on first session whether to trust the server; afterwards every session inside this mirror connects to the local Portuni server automatically. The bearer header references the token via `${PORTUNI_MCP_TOKEN:-}` env expansion (workspace-suffixed `PORTUNI_MCP_TOKEN_<ID>` when the sidecar runs under the multi-workspace desktop) – **never a literal**. The file content is static across token rotations and safe to leave on disk; the desktop app injects the variable into spawned terminals, and manual shells export it themselves.
+- **`.codex/config.toml`** – a `[sandbox_workspace_write]` block with `writable_roots = [<this mirror>]`, under a Portuni-managed marker. Codex's Seatbelt / Landlock enforces this at the kernel level. The MCP server registration itself lives in the user-scoped `~/.codex/config.toml`, referencing the token via the same env var.
 
   Portuni writes this file only when it is missing or already carries the Portuni marker comment; a hand-edited Codex config is preserved.
 - **`.vibe/config.toml`** – project-scoped MCP server for Mistral Vibe: an `[[mcp_servers]]` entry named `portuni` (transport `streamable-http`, `url = <PORTUNI_URL>?home_node_id=<id>`) plus a `[mcp_servers.auth]` block using `api_key_env = "PORTUNI_MCP_TOKEN"`. Vibe merges this over `~/.vibe/config.toml` (union-merge by `name`), so it adds only the Portuni server. Vibe loads project config **only in trusted folders**, so launch it with `vibe --trust` (the desktop preset does). Marker-guarded like Codex. See [Mistral Vibe](/clients/mistral-vibe/).
@@ -84,7 +86,7 @@ When the registry changes (mirror added, removed, or renamed), every affected mi
 | `PORTUNI_ROOT` | Tier 1/2 boundary. The directory containing every Portuni mirror on this machine. | Nearest common ancestor of every registered mirror |
 | `PORTUNI_GUARD_SCRIPT` | Absolute path of `portuni-guard.sh` written into `.claude/settings.local.json` as the PreToolUse hook command. | Resolved relative to the Portuni install (`scripts/portuni-guard.sh`) |
 | `PORTUNI_URL` | MCP server base URL written into `.mcp.json`, `.codex/config.toml`, and `.vibe/config.toml`. The `/mcp` suffix is appended if missing. | `http://${HOST}:${PORT}/mcp`, defaulting to `http://127.0.0.1:4011/mcp` |
-| `PORTUNI_AUTH_TOKEN` | Bearer token embedded in MCP `Authorization` headers. When set, `.mcp.json` should be gitignored. | unset (no headers emitted) |
+| `PORTUNI_MCP_TOKEN` (or `PORTUNI_MCP_TOKEN_<ID>` per workspace) | The bearer token the generated configs *reference* via env expansion – never written into them. Set it in the shell that runs the agent; the desktop app injects it into spawned terminals automatically. | unset (header degrades to empty) |
 | `PORTUNI_SCOPE_MODE` | Read-scope elicitation strictness (`strict` / `balanced` / `permissive`). | `strict` |
 
 ### Backstop hook
@@ -135,9 +137,15 @@ Without a `home_node_id` query param (legacy mirror config or ad-hoc client), th
 
 Every expansion is logged to the audit trail with the reason (the user's quoted phrase, or the agent's stated rationale).
 
+### Disk projection – how read scope reaches the filesystem
+
+The session scope set is the single source of truth for disk reads too. The kernel sandbox grants read+write on the home mirror only – so how does an agent read files of a related node that's in scope? By **projection**: on every scope addition, a `ScopeReconciler` (`apps/server/mcp/scope-reconciler.ts`) copies each non-home in-scope node's mirror into `<home>/.portuni-scope/<node_id>/`, read-only. Those staged paths live inside the home mirror, so they're already covered by the existing kernel grant – no second sandbox rule needed.
+
+Read tools return the staged path as `local_path` for related nodes. Read related-node files from that returned path, not from the node's original mirror – the original stays outside the sandbox's readable set. The canonical model is `docs/architecture/scope-disk-projection.md` in the repository.
+
 ## Why this is its own page (and not a permission system)
 
-Scope is **orthogonal** to permissions. Permissions (visibility, including group-based access via Google Groups) are enforced server-side in `src/auth/` — every tool call and HTTP route passes through identity resolution, global scope gates (TOOL_MIN_SCOPE), and node-level access checks before scope is consulted. Scope decides what an in-progress session is currently focused on — a second, intentionality-shaped filter applied on top of permissions.
+Scope is **orthogonal** to permissions. Permissions (visibility, including group-based access via Google Groups) are enforced server-side in `apps/server/auth/` — every tool call and HTTP route passes through identity resolution, global scope gates (TOOL_MIN_SCOPE), and node-level access checks before scope is consulted. Scope decides what an in-progress session is currently focused on — a second, intentionality-shaped filter applied on top of permissions.
 
 A user with read access to every node in their org still gets a narrow scope set when they start a session in one project. The agent isn't omniscient by default; it's focused, and expansion is auditable.
 
@@ -187,7 +195,7 @@ The HTTP REST endpoints (`/graph`, `/context`, `/nodes/:id/sync-status`, `/users
 | Settings overlay strategy (`.claude/settings.local.json`, codex marker-aware) | Implemented |
 | Auto-wire `portuni-guard` as `PreToolUse` hook in generated Claude settings | Implemented |
 | `.mcp.json` for Claude Code project-scoped MCP registration | Implemented |
-| `[mcp_servers.portuni]` block in generated Codex `config.toml` | Implemented |
+| Codex MCP registration (user-scoped `~/.codex/config.toml`, token via env var) | Implemented |
 | Sibling regen on mirror add | Implemented |
 | `/scope` endpoint + `portuni-guard` PreToolUse hook (fail-closed on missing target) | Implemented |
 | Audit entries: `expand_scope`, `scope_global_query`, `scope_hard_floor_refusal`, `session_init` | Implemented |

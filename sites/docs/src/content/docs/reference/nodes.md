@@ -15,7 +15,7 @@ Create a new node in the knowledge graph. For every non-organization type, the c
 | `description` | string | no | What this node represents |
 | `meta` | object | no | Type-specific JSON data |
 | `status` | enum | no | `active` (default), `completed`, `archived`. Prefer setting `lifecycle_state` — status is derived from it |
-| `visibility` | enum | no | `team` (default), `private` |
+| `visibility` | enum | no | `team` (default), `private`, `group` |
 | `goal` | string | no | Optional textual goal / purpose of the node |
 | `lifecycle_state` | string | no | Optional primary lifecycle state — type-specific. See [Lifecycle States](/concepts/lifecycle-states/) for the per-type closed set |
 
@@ -23,6 +23,7 @@ Enforcement:
 
 - Node types: strictly enforced at the MCP tool layer (Zod enum) and at the database layer (SQL CHECK constraint on `nodes.type`). There is no way to create a node with a type outside the canonical five POPP entities.
 - Organization invariant: every non-organization node belongs to exactly one organization. `organization_id` is validated before the write (must exist and have `type='organization'`). The node and its `belongs_to` edge are inserted in one atomic batch, so the invariant holds from the moment the node exists.
+- Group visibility is enforced across tools: a node hidden from the caller by its `node_access` ACL answers "not found" everywhere — reads, lists, mirrors, event logging — so its existence cannot be probed.
 
 Returns: `{ id, type, name, status, belongs_to?, warning? }` -- `belongs_to` is included for non-organization nodes; `warning` appears when a node with the same name+type already exists (non-blocking, surfaces the duplicate IDs).
 
@@ -36,7 +37,7 @@ Update an existing node. Only provided fields are changed. Pass `null` for nulla
 | `name` | string | no | New name |
 | `description` | string \| null | no | New description |
 | `status` | enum | no | New status. Prefer setting `lifecycle_state` — status is derived from it |
-| `visibility` | enum | no | New visibility (`team` or `private`) |
+| `visibility` | enum | no | New visibility (`team`, `private`, or `group`) |
 | `meta` | object | no | New type-specific JSON data |
 | `goal` | string \| null | no | New goal text. Pass `null` to clear |
 | `lifecycle_state` | string \| null | no | New lifecycle state — type-specific. See [Lifecycle States](/concepts/lifecycle-states/). Pass `null` to clear |
@@ -52,6 +53,14 @@ List nodes with optional filtering.
 |-----------|------|----------|-------------|
 | `type` | enum | no | Filter by node type (one of the canonical five) |
 | `status` | enum | no | Filter by status |
+| `scope` | enum | no | `session` (default) or `global` |
+
+Scope semantics: the default `scope: "session"` returns only nodes
+already in the session scope set — an empty scope set returns an empty
+array (call `portuni_expand_scope` or ask the user). `scope: "global"`
+queries the full graph and is mode-gated: `strict` always returns
+`scope_expansion_required`, `balanced` requires one confirmation per
+session, `permissive` auto-allows and audits.
 
 Returns: Array of `{ id, type, name, status, description }`
 
@@ -76,6 +85,12 @@ Returns: Full node object including:
 - `files` — attached files with derived `local_path` and metadata
 - `events` — recent active events (up to 50, newest first)
 - `local_mirror` — `{ local_path, registered_at }` if mirrored on this device, else `null`
+
+For a non-home in-scope node, file `local_path`s are rewritten to the
+staged read-only copy under `<home-mirror>/.portuni-scope/<node_id>/` —
+the location the sandbox actually allows reading. `local_mirror` is the
+exception: it keeps pointing at the node's real mirror path (it is
+registration metadata, not a read path).
 
 ## portuni_delete_node
 

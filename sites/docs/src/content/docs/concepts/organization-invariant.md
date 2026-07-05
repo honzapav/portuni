@@ -47,11 +47,11 @@ Two triggers catch any direct database access that would bypass the tool layer:
 
 These guard against seed scripts, future REST endpoints, and any other path that doesn't go through the MCP tools.
 
-## Startup integrity sweep
+## One-time integrity sweep
 
-Every time Portuni boots, `ensureSchema()` runs an integrity sweep over every non-organization node (including archived ones). If any node violates the invariant, startup aborts with the list of offenders.
+When the org-invariant triggers are first installed – inside the schema migration that creates them – Portuni sweeps every non-organization node (including archived ones). If any node violates the invariant, the migration aborts with the list of offenders, and the server won't come up until the data is fixed. Once the triggers exist, the migration is skipped and the sweep never runs again; the triggers themselves are the ongoing protection.
 
-There is no "warning and continue." Portuni does not serve requests over an inconsistent graph – silent warnings are exactly how the original violations crept in.
+There is no "warning and continue." Portuni does not install the triggers over an inconsistent graph – silent warnings are exactly how the original violations crept in.
 
 ## Why no `BEFORE INSERT` trigger on `nodes`
 
@@ -61,7 +61,7 @@ The atomic `db.batch()` in `portuni_create_node` is the equivalent guarantee –
 
 ## What this means in practice
 
-- **Move a node between orgs:** disconnect + connect, atomic.
+- **Move a node between orgs:** `portuni_move_node`, which rebinds the existing `belongs_to` edge in one atomic `UPDATE`. Disconnect-then-connect across orgs is rejected.
 - **Find all nodes in an org:** filter by `belongs_to -> organization_id`. No tree walk needed.
 - **Local mirror paths are deterministic:** `{workspace_root}/{org-sync-key}/{type-plural}/{node-sync-key}/`. Single org → single path → no ambiguity for any tool, agent, or human.
 - **Routing policies stay simple:** `(node_type, org_slug) -> remote` is unambiguous because every node has exactly one org.

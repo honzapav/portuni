@@ -19,8 +19,8 @@ When you call `portuni_mirror`, Portuni creates a folder structure for you:
   resources/   -- reference material
 ```
 
-For organization-level workspaces, Portuni adds type-based subdirectories
-on top so child nodes can attach beneath them:
+Organization-level mirrors get type-based subdirectories **instead of** the
+wip/outputs/resources sections, so child nodes can attach beneath them:
 
 ```
 workflow/
@@ -38,9 +38,9 @@ its remote path.
 
 The shared Turso graph DB does NOT track mirror paths anymore (migration
 011 dropped the `local_mirrors` table from Turso). Each device keeps its
-own SQLite registry at `~/.portuni/sync.db` (`local_mirrors` table),
-together with `file_state` (local hash cache) and `remote_stat`
-(short-lived remote metadata cache).
+own SQLite registry at `{PORTUNI_WORKSPACE_ROOT}/.portuni/sync.db`
+(`local_mirrors` table), together with `file_state` (local hash cache)
+and `remote_stat_cache` (short-lived remote metadata cache).
 
 This split has two consequences:
 
@@ -71,10 +71,24 @@ file's `remote_path` minus the node's remote root prefix. The `files`
 table no longer stores `local_path` (migration 012); persisting it
 across devices and renames was actively misleading.
 
-## Intentional file storage
+## File state: deterministic metadata, intentional bytes
 
-Files are saved the same way you'd make a git commit -- on purpose,
-with meaning, and bound to a remote. The relevant tools:
+File handling has two halves that are easy to conflate.
+
+**File-state metadata is kept current automatically.** A mirror watcher
+observes every mirror folder and reacts to each disk change: a new file in a
+tracked section is registered in the local sync DB (local-only — no upload,
+no graph knowledge created), and edits and deletes are reconciled into the
+cached local hash. The result is that sync status in the UI is always
+correct, without any agent calling `portuni_status` or `portuni_store`. A
+freshly registered file simply shows as "needs push" until someone
+deliberately pushes it. The watcher runs by default in the desktop sidecar;
+on a standalone server it is opt-in via `PORTUNI_WATCH_MIRRORS=1`.
+
+**Moving bytes to the remote stays intentional.** Uploads happen the same way
+you'd make a git commit — on purpose, with meaning, via `portuni_store` or
+the app's Synchronize action. The watcher never pushes anything. The relevant
+tools:
 
 | Tool | What it does |
 |------|--------------|

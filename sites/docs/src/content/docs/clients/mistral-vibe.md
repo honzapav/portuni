@@ -22,9 +22,9 @@ api_key_header = "Authorization"
 api_key_format = "Bearer {token}"
 ```
 
-The bearer token is read from the `PORTUNI_MCP_TOKEN` environment variable (`api_key_env`), never written to the file. The Portuni desktop app injects that variable into terminals it spawns; for shells you open yourself, export it once (Settings → MCP server → Copy token).
+The bearer token is read from an environment variable (`api_key_env`), never written to the file. The example above is the standalone-server shape, with plain `PORTUNI_MCP_TOKEN`; configs written by a desktop workspace point at that workspace's sidecar port (allocated from `47011` up) and reference the workspace-suffixed `PORTUNI_MCP_TOKEN_<WORKSPACE_ID>` instead. Terminals the desktop app spawns get every workspace's variable injected, plus `PORTUNI_MCP_TOKEN` as an alias for the active workspace; for shells you open yourself, export the token once (Settings → MCP server → Copy token).
 
-In the desktop app, **Settings → MCP server → "Přidat do Vibu (~/.vibe/config.toml)"** writes this block for you, merging the Portuni server into your existing config without disturbing your models or providers.
+In the desktop app, **Settings → MCP server → "Přidat do Vibu (~/.vibe/config.toml)"** writes this for you — one entry per enabled workspace, named `portuni-<workspace-id>` (a workspace migrated from a single-workspace install keeps the historical name `portuni`) — merging the Portuni servers into your existing config without disturbing your models or providers.
 
 ## Why `--trust` matters
 
