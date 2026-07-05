@@ -163,7 +163,7 @@ export async function seedScopeFromHome(
 // hard floors (visibility + meta.scope_sensitive). Caller looks them up.
 export interface NodeScopeMeta {
   visibility: string;
-  ownerUserId: string | null;
+  creatorUserId: string | null;
   scopeSensitive: boolean;
 }
 
@@ -177,13 +177,13 @@ export function decideRead(
     return { kind: "allow" };
   }
 
-  // Hard floors: visibility=private owned by someone else, or
+  // Hard floors: visibility=private created by someone else, or
   // meta.scope_sensitive=true. These elicit regardless of mode.
   if (
     nodeMeta.scopeSensitive ||
     (nodeMeta.visibility === "private" &&
-      nodeMeta.ownerUserId !== null &&
-      nodeMeta.ownerUserId !== sessionUserId)
+      nodeMeta.creatorUserId !== null &&
+      nodeMeta.creatorUserId !== sessionUserId)
   ) {
     return {
       kind: "elicit",
@@ -241,13 +241,17 @@ export function scopeExpansionError(
 export interface NodeScopeRow {
   exists: boolean;
   visibility: string;
-  ownerUserId: string | null;
+  creatorUserId: string | null;
   scopeSensitive: boolean;
 }
 
 // Look up the bits of a node that drive scope decisions:
-// - visibility for the private-owned-by-other hard floor,
-// - owner_id -> actors.user_id resolution for the same hard floor,
+// - visibility for the private hard floor,
+// - created_by (the node's creator) for the same floor -- kept consistent
+//   with the human graph, which enforces visibility='private' as
+//   creator + admins only (apps/server/auth/node-access.ts). Using the
+//   nullable business owner_id here would leave ownerless private nodes
+//   unenforced, diverging from the graph.
 // - meta.scope_sensitive for the explicit-flag hard floor.
 //
 // Returns exists=false when the node is missing so callers can produce
@@ -257,22 +261,14 @@ export async function loadNodeScopeMeta(
   nodeId: string,
 ): Promise<NodeScopeRow> {
   const r = await db.execute({
-    sql: "SELECT visibility, owner_id, meta FROM nodes WHERE id = ?",
+    sql: "SELECT visibility, created_by, meta FROM nodes WHERE id = ?",
     args: [nodeId],
   });
   if (r.rows.length === 0) {
-    return { exists: false, visibility: "team", ownerUserId: null, scopeSensitive: false };
+    return { exists: false, visibility: "team", creatorUserId: null, scopeSensitive: false };
   }
   const row = r.rows[0];
-  let ownerUserId: string | null = null;
-  const oid = row.owner_id as string | null;
-  if (oid) {
-    const a = await db.execute({
-      sql: "SELECT user_id FROM actors WHERE id = ?",
-      args: [oid],
-    });
-    ownerUserId = a.rows.length === 0 ? null : ((a.rows[0].user_id as string | null) ?? null);
-  }
+  const creatorUserId = (row.created_by as string | null) ?? null;
   let scopeSensitive = false;
   const rawMeta = row.meta as string | null;
   if (rawMeta) {
@@ -286,7 +282,7 @@ export async function loadNodeScopeMeta(
   return {
     exists: true,
     visibility: row.visibility as string,
-    ownerUserId,
+    creatorUserId,
     scopeSensitive,
   };
 }
@@ -332,7 +328,7 @@ export async function guardNodeRead(
     nodeId,
     {
       visibility: meta.visibility,
-      ownerUserId: meta.ownerUserId,
+      creatorUserId: meta.creatorUserId,
       scopeSensitive: meta.scopeSensitive,
     },
     sessionUserId,
@@ -392,8 +388,8 @@ export function decideGlobalQuery(scope: SessionScope): GlobalQueryGuard {
 
 // Run a hard-floor check independently of any scope membership. Used by
 // portuni_expand_scope so an explicit user-named expansion still cannot
-// silently widen scope to a private-other or scope_sensitive node without
-// explicit acknowledgement.
+// silently widen scope to a private-created-by-other or scope_sensitive node
+// without explicit acknowledgement.
 export function violatesHardFloor(
   meta: NodeScopeRow,
   sessionUserId: string,
@@ -401,8 +397,8 @@ export function violatesHardFloor(
   if (meta.scopeSensitive) return true;
   if (
     meta.visibility === "private" &&
-    meta.ownerUserId !== null &&
-    meta.ownerUserId !== sessionUserId
+    meta.creatorUserId !== null &&
+    meta.creatorUserId !== sessionUserId
   ) {
     return true;
   }

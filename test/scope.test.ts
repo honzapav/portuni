@@ -69,7 +69,7 @@ describe("decideRead – allow when in scope", () => {
   it("returns allow for in-scope nodes", () => {
     const scope = new SessionScope("strict");
     scope.add("A");
-    const d = decideRead(scope, "A", { visibility: "team", ownerUserId: null, scopeSensitive: false }, "U1");
+    const d = decideRead(scope, "A", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1");
     assert.equal(d.kind, "allow");
   });
 });
@@ -78,20 +78,20 @@ describe("decideRead – hard floors", () => {
   it("elicits on scope_sensitive=true regardless of mode", () => {
     for (const mode of ["strict", "balanced", "permissive"] as const) {
       const scope = new SessionScope(mode);
-      const d = decideRead(scope, "X", { visibility: "team", ownerUserId: null, scopeSensitive: true }, "U1");
+      const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: true }, "U1");
       assert.equal(d.kind, "elicit", `mode=${mode}`);
     }
   });
 
   it("elicits on visibility=private owned by other user", () => {
     const scope = new SessionScope("permissive");
-    const d = decideRead(scope, "X", { visibility: "private", ownerUserId: "U_OTHER", scopeSensitive: false }, "U_SELF");
+    const d = decideRead(scope, "X", { visibility: "private", creatorUserId: "U_OTHER", scopeSensitive: false }, "U_SELF");
     assert.equal(d.kind, "elicit");
   });
 
   it("does NOT elicit on visibility=private owned by self", () => {
     const scope = new SessionScope("permissive");
-    const d = decideRead(scope, "X", { visibility: "private", ownerUserId: "U_SELF", scopeSensitive: false }, "U_SELF");
+    const d = decideRead(scope, "X", { visibility: "private", creatorUserId: "U_SELF", scopeSensitive: false }, "U_SELF");
     assert.equal(d.kind, "allow");
   });
 });
@@ -99,13 +99,13 @@ describe("decideRead – hard floors", () => {
 describe("decideRead – mode behaviour", () => {
   it("strict elicits on out-of-scope", () => {
     const scope = new SessionScope("strict");
-    const d = decideRead(scope, "X", { visibility: "team", ownerUserId: null, scopeSensitive: false }, "U1");
+    const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1");
     assert.equal(d.kind, "elicit");
   });
 
   it("balanced elicits first time, allows after agent expansion seen", () => {
     const scope = new SessionScope("balanced");
-    const meta = { visibility: "team", ownerUserId: null, scopeSensitive: false };
+    const meta = { visibility: "team", creatorUserId: null, scopeSensitive: false };
     let d = decideRead(scope, "X", meta, "U1");
     assert.equal(d.kind, "elicit");
     // Simulate agent-initiated expansion (the user confirmed).
@@ -122,7 +122,7 @@ describe("decideRead – mode behaviour", () => {
 
   it("permissive auto-allows out-of-scope", () => {
     const scope = new SessionScope("permissive");
-    const d = decideRead(scope, "X", { visibility: "team", ownerUserId: null, scopeSensitive: false }, "U1");
+    const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1");
     assert.equal(d.kind, "allow");
   });
 });

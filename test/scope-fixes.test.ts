@@ -3,7 +3,7 @@
 //     permissive auto-allows.
 //   - violatesHardFloor matches what decideRead's hard-floor branch checks.
 //   - guardNodeRead: returns elicit/allow with audit + auto-add.
-//   - loadNodeScopeMeta: pulls visibility / owner.user_id / scope_sensitive.
+//   - loadNodeScopeMeta: pulls visibility / created_by / scope_sensitive.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -19,10 +19,7 @@ import {
 async function freshDb() {
   const db = createClient({ url: ":memory:" });
   await db.execute(
-    `CREATE TABLE nodes (id TEXT PRIMARY KEY, type TEXT, name TEXT, owner_id TEXT, visibility TEXT NOT NULL DEFAULT 'team', meta TEXT)`,
-  );
-  await db.execute(
-    `CREATE TABLE actors (id TEXT PRIMARY KEY, type TEXT, name TEXT, user_id TEXT, is_placeholder INTEGER DEFAULT 0)`,
+    `CREATE TABLE nodes (id TEXT PRIMARY KEY, type TEXT, name TEXT, owner_id TEXT, created_by TEXT, visibility TEXT NOT NULL DEFAULT 'team', meta TEXT)`,
   );
   return db;
 }
@@ -49,7 +46,7 @@ describe("violatesHardFloor", () => {
   it("flags scope_sensitive=true", () => {
     assert.equal(
       violatesHardFloor(
-        { exists: true, visibility: "team", ownerUserId: null, scopeSensitive: true },
+        { exists: true, visibility: "team", creatorUserId: null, scopeSensitive: true },
         "U1",
       ),
       true,
@@ -58,7 +55,7 @@ describe("violatesHardFloor", () => {
   it("flags private owned by another user", () => {
     assert.equal(
       violatesHardFloor(
-        { exists: true, visibility: "private", ownerUserId: "U_OTHER", scopeSensitive: false },
+        { exists: true, visibility: "private", creatorUserId: "U_OTHER", scopeSensitive: false },
         "U_SELF",
       ),
       true,
@@ -67,7 +64,7 @@ describe("violatesHardFloor", () => {
   it("does not flag private owned by self", () => {
     assert.equal(
       violatesHardFloor(
-        { exists: true, visibility: "private", ownerUserId: "U_SELF", scopeSensitive: false },
+        { exists: true, visibility: "private", creatorUserId: "U_SELF", scopeSensitive: false },
         "U_SELF",
       ),
       false,
@@ -76,7 +73,7 @@ describe("violatesHardFloor", () => {
   it("does not flag team visibility", () => {
     assert.equal(
       violatesHardFloor(
-        { exists: true, visibility: "team", ownerUserId: "U_OTHER", scopeSensitive: false },
+        { exists: true, visibility: "team", creatorUserId: "U_OTHER", scopeSensitive: false },
         "U_SELF",
       ),
       false,
@@ -91,27 +88,24 @@ describe("loadNodeScopeMeta", () => {
     assert.equal(m.exists, false);
   });
 
-  it("resolves owner -> actor.user_id and scope_sensitive flag", async () => {
+  it("reads created_by as the creator and the scope_sensitive flag", async () => {
     const db = await freshDb();
-    await db.execute(
-      `INSERT INTO actors (id, type, name, user_id) VALUES ('A1','person','Honza','U1')`,
-    );
     await db.execute({
-      sql: `INSERT INTO nodes (id, type, name, owner_id, visibility, meta) VALUES (?,?,?,?,?,?)`,
-      args: ["N1", "project", "P", "A1", "private", JSON.stringify({ scope_sensitive: true })],
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N1", "project", "P", null, "U1", "private", JSON.stringify({ scope_sensitive: true })],
     });
     const m = await loadNodeScopeMeta(db, "N1");
     assert.equal(m.exists, true);
     assert.equal(m.visibility, "private");
-    assert.equal(m.ownerUserId, "U1");
+    assert.equal(m.creatorUserId, "U1");
     assert.equal(m.scopeSensitive, true);
   });
 
   it("tolerates malformed meta JSON", async () => {
     const db = await freshDb();
     await db.execute({
-      sql: `INSERT INTO nodes (id, type, name, owner_id, visibility, meta) VALUES (?,?,?,?,?,?)`,
-      args: ["N1", "project", "P", null, "team", "{not json"],
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N1", "project", "P", null, "U1", "team", "{not json"],
     });
     const m = await loadNodeScopeMeta(db, "N1");
     assert.equal(m.exists, true);
@@ -134,8 +128,8 @@ describe("guardNodeRead", () => {
   it("auto-adds and audits the new in-scope node on allow", async () => {
     const db = await freshDb();
     await db.execute({
-      sql: `INSERT INTO nodes (id, type, name, owner_id, visibility, meta) VALUES (?,?,?,?,?,?)`,
-      args: ["N1", "project", "P", null, "team", null],
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N1", "project", "P", null, "U1", "team", null],
     });
     const scope = new SessionScope("permissive");
     let audited = 0;
@@ -150,8 +144,8 @@ describe("guardNodeRead", () => {
   it("elicits in strict mode for out-of-scope node", async () => {
     const db = await freshDb();
     await db.execute({
-      sql: `INSERT INTO nodes (id, type, name, owner_id, visibility, meta) VALUES (?,?,?,?,?,?)`,
-      args: ["N1", "project", "P", null, "team", null],
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N1", "project", "P", null, "U1", "team", null],
     });
     const scope = new SessionScope("strict");
     let audited = 0;
