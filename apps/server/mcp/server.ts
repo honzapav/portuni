@@ -29,7 +29,7 @@ import { scopeAtLeast } from "../auth/roles.js";
 // field at ~2 KB. Anything load-bearing for an individual tool lives in
 // that tool's description; deeper reference material lives in the
 // portuni:// resources, which the agent pulls on demand.
-const INSTRUCTIONS = `Portuni is the organizational knowledge graph (POPP: organizations, projects, processes, areas, principles).
+export const INSTRUCTIONS = `Portuni is the organizational knowledge graph (POPP: organizations, projects, processes, areas, principles).
 Call portuni_get_context before starting work on a node; portuni_get_node for details and the local mirror path.
 Portuni tracks file changes automatically (the desktop app watches each mirror): new files in wip/outputs/resources are registered and edits are reflected without any action from you -- you normally need neither portuni_store nor portuni_status.
 portuni_store uploads a file to the remote (a deliberate push); portuni_status forces a sync-state recompute. Reach for them only to push on purpose, or to inspect/repair state where automatic tracking is not active (portuni_status then lists unregistered files as new_local).

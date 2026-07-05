@@ -285,29 +285,28 @@ pub fn pty_spawn(
     // credential regardless of which workspace the terminal's cwd belongs
     // to. PORTUNI_MCP_TOKEN keeps carrying the ACTIVE workspace's token for
     // backward compatibility with pre-workspace mirror configs.
+    //
+    // Both central-mode (agent) and local-mode terminals inject the LOCAL
+    // sidecar's per-launch token (the value cached in AuthTokens / Keychain
+    // KEYCHAIN_MCP_ACCOUNT, i.e. the sidecar's PORTUNI_AUTH_TOKEN). The
+    // materialized .mcp.json points every terminal at the local sidecar, so
+    // the central device token would be rejected (401) by the local gate —
+    // see workspace::terminal_mcp_token.
     {
         let active_id = crate::active_workspace(&app).map(|(id, _)| id).ok();
         if let Ok(workspaces) = crate::enabled_workspaces(&app) {
             for (ws_id, cfg) in workspaces {
-                let token = if crate::workspace::is_central(&cfg) {
-                    match cfg.server_url.as_deref() {
-                        Some(url) => match ensure_device_token(&app, &ws_id, url) {
-                            Ok(t) => Some(t),
-                            Err(e) => {
-                                warn!("pty_spawn: no device token for workspace {ws_id}: {e}");
-                                None
-                            }
-                        },
-                        None => None,
-                    }
-                } else {
-                    app.state::<crate::AuthTokens>()
-                        .0
-                        .lock()
-                        .ok()
-                        .and_then(|m| m.get(&ws_id).cloned())
-                        .or_else(|| crate::keychain_get_ws(crate::KEYCHAIN_MCP_ACCOUNT, &ws_id))
-                };
+                let local_token = app
+                    .state::<crate::AuthTokens>()
+                    .0
+                    .lock()
+                    .ok()
+                    .and_then(|m| m.get(&ws_id).cloned())
+                    .or_else(|| crate::keychain_get_ws(crate::KEYCHAIN_MCP_ACCOUNT, &ws_id));
+                let token = crate::workspace::terminal_mcp_token(
+                    crate::workspace::is_central(&cfg),
+                    local_token,
+                );
                 if let Some(token) = token {
                     cmd.env(crate::workspace::token_env_var(&ws_id), &token);
                     if active_id.as_deref() == Some(ws_id.as_str()) {

@@ -407,6 +407,44 @@ describe("resolvePortuniMcpUrl", () => {
       else delete process.env.PORTUNI_URL;
     }
   });
+
+  it("agent mode: materialized MCP URL is the local front door", () => {
+    const orig = {
+      agentMode: process.env.PORTUNI_AGENT_MODE,
+      port: process.env.PORTUNI_PORT,
+      url: process.env.PORTUNI_URL,
+    };
+    process.env.PORTUNI_AGENT_MODE = "1";
+    process.env.PORTUNI_PORT = "47011";
+    process.env.PORTUNI_URL = "https://api.portuni.com";
+    try {
+      assert.equal(resolvePortuniMcpUrl(), "http://127.0.0.1:47011/mcp");
+    } finally {
+      if (orig.agentMode !== undefined) process.env.PORTUNI_AGENT_MODE = orig.agentMode;
+      else delete process.env.PORTUNI_AGENT_MODE;
+      if (orig.port !== undefined) process.env.PORTUNI_PORT = orig.port;
+      else delete process.env.PORTUNI_PORT;
+      if (orig.url !== undefined) process.env.PORTUNI_URL = orig.url;
+      else delete process.env.PORTUNI_URL;
+    }
+  });
+
+  it("agent mode without PORTUNI_PORT falls back to 4011", () => {
+    const orig = {
+      agentMode: process.env.PORTUNI_AGENT_MODE,
+      port: process.env.PORTUNI_PORT,
+    };
+    process.env.PORTUNI_AGENT_MODE = "1";
+    delete process.env.PORTUNI_PORT;
+    try {
+      assert.equal(resolvePortuniMcpUrl(), "http://127.0.0.1:4011/mcp");
+    } finally {
+      if (orig.agentMode !== undefined) process.env.PORTUNI_AGENT_MODE = orig.agentMode;
+      else delete process.env.PORTUNI_AGENT_MODE;
+      if (orig.port !== undefined) process.env.PORTUNI_PORT = orig.port;
+      else delete process.env.PORTUNI_PORT;
+    }
+  });
 });
 
 describe("resolveGuardScriptPath", () => {

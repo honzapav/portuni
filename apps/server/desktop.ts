@@ -24,6 +24,19 @@ import { localHashFor } from "./domain/sync/engine.js";
 import { createMirrorWatcher, type MirrorWatcher } from "./domain/sync/mirror-watcher.js";
 import { listUserMirrors } from "./domain/sync/mirror-registry.js";
 import { createAgentRouter } from "./api/agent-router.js";
+import { createAgentMcpTransport } from "./mcp/agent-transport.js";
+
+// Reads a required env var, trimmed. Used for the two central-mode
+// connection settings: both are already validated non-empty by
+// createCentralClientFromEnv() by the time agentMain runs, but re-reading
+// them here (rather than threading raw strings through main()) keeps the
+// central-URL/token parsing local to the one place that needs the strings
+// rather than the CentralClient built from them.
+function requiredEnv(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`${name} must be set`);
+  return value;
+}
 
 // Single ping wrapped in a hard timeout. The libsql client doesn't expose a
 // connect timeout of its own, so without this a DNS hiccup or a slow Turso
@@ -91,20 +104,28 @@ async function bindAndAnnounce(
   process.stdout.write(`PORTUNI_LISTENING_PORT=${address.port}\n`);
 }
 
-// Central-mode sync agent (teammate mirrors): no Turso, no graph db, no MCP.
-// Serves the local-only sync/mirror/scope routes backed by the central
-// engine, runs the mirror watcher with a central reconcile, and refreshes
-// per-mirror harness configs pointing at the central MCP (PORTUNI_URL).
+// Central-mode sync agent (teammate mirrors): no Turso, no graph db. Serves
+// the local-only sync/mirror/scope routes backed by the central engine, runs
+// the mirror watcher with a central reconcile, and also serves MCP on /mcp
+// via createAgentMcpTransport -- the local front door: device-local tools
+// (agent-tools.ts) run on this box, everything else proxies to the central
+// MCP server. Refreshes per-mirror harness configs to point at this local
+// front door (resolvePortuniMcpUrl in domain/write-scope.ts).
 async function agentMain(client: CentralClient): Promise<void> {
   const port = Number(process.env.PORTUNI_PORT ?? 0);
   process.env.PORT = String(port);
 
+  const mcpTransport = createAgentMcpTransport({
+    client,
+    centralUrl: requiredEnv("PORTUNI_CENTRAL_URL"),
+    centralToken: requiredEnv("PORTUNI_CENTRAL_TOKEN"),
+  });
   const handle = startHttpServer({
     port,
     host: "127.0.0.1",
     registerSigint: false,
     router: createAgentRouter(client),
-    mountMcp: false,
+    mcpTransport,
   });
   await bindAndAnnounce(handle);
   console.error("[boot] central-mode sync agent (no local graph db)");
@@ -158,8 +179,9 @@ async function agentMain(client: CentralClient): Promise<void> {
     }
   })();
 
-  // Refresh per-mirror harness configs; .mcp.json URLs resolve to the
-  // central MCP because the Tauri host sets PORTUNI_URL to the server URL.
+  // Refresh per-mirror harness configs; in agent mode .mcp.json URLs resolve
+  // to this local sidecar's front door (PORTUNI_AGENT_MODE branch of
+  // resolvePortuniMcpUrl), not to central directly.
   void (async () => {
     try {
       const r = await materializeAllRegisteredMirrors({

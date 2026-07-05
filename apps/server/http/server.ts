@@ -8,7 +8,7 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { createMcpTransport } from "../mcp/transport.js";
+import { createMcpTransport, type McpTransport } from "../mcp/transport.js";
 import { routeApiRequest } from "../api/router.js";
 import {
   AUTH_ENABLED,
@@ -36,6 +36,10 @@ export interface StartHttpServerOptions {
   // Set false to skip the MCP transport entirely (agent mode: terminals
   // talk to the central MCP, the local agent serves none).
   mountMcp?: boolean;
+  // Externally-built MCP transport (e.g. the agent's central-proxying
+  // front door from agent-transport.ts). Wins over the internally-built
+  // Turso-backed transport; mountMcp is ignored when this is set.
+  mcpTransport?: McpTransport;
 }
 
 export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHandle {
@@ -46,7 +50,7 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
 
   assertAuthRequiredIfNotLoopback(host);
 
-  const mcp = opts.mountMcp === false ? null : createMcpTransport();
+  const mcp = opts.mcpTransport ?? (opts.mountMcp === false ? null : createMcpTransport());
 
   // PORTUNI_LOG_REQUESTS=1 enables a single-line access log per request.
   // Used for diagnosing desktop-mode CORS / auth / route problems where

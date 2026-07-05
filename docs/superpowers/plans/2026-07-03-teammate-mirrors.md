@@ -47,6 +47,10 @@ forwards local-only paths to the local agent instead of returning 501.
   `mirror-registry.ts` are db-free or local-only → reused as-is.
 - `resolvePortuniMcpUrl()` honours `PORTUNI_URL` → agent sidecar gets
   `PORTUNI_URL=<server_url>` so materialized `.mcp.json` points at central.
+  **Superseded** by `docs/superpowers/plans/2026-07-05-agent-mode-mcp-front-door.md`:
+  in agent mode `.mcp.json` now points at the local sidecar's own `/mcp`
+  front door instead, which proxies graph/scope tools to central and runs
+  the device-local tools on-device.
 - Rust: spawn skip at `lib.rs:985`; `is_local_only_path` at `lib.rs:424`;
   `ensure_device_token` at `pty.rs:37` (Keychain `portuni_device_token`).
 - GET/PUT `/nodes/:id/file` are text-only today (utf8 + NUL check) — sync

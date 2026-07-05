@@ -231,7 +231,18 @@ export function appendHomeNodeIdToUrl(
 // Compose the Portuni MCP server URL from configured host/port. Honours
 // PORTUNI_URL when set (allowing a custom scheme/host/port), normalising
 // the trailing /mcp segment.
+//
+// In agent mode (PORTUNI_AGENT_MODE=1, the teammate-mirrors sync agent)
+// PORTUNI_URL is set to the *central* server's URL for REST/sync calls, but
+// the agent sidecar now also serves MCP locally (the "front door"), so
+// per-mirror configs must point at the local sidecar instead — otherwise
+// they'd bypass it and hit the central server directly, which does not
+// speak MCP. This check must come before the PORTUNI_URL branch below.
 export function resolvePortuniMcpUrl(): string {
+  if (process.env.PORTUNI_AGENT_MODE === "1") {
+    const agentPort = Number(process.env.PORTUNI_PORT ?? 4011);
+    return `http://127.0.0.1:${agentPort}/mcp`;
+  }
   const explicit = process.env.PORTUNI_URL?.trim();
   if (explicit) {
     const trimmed = explicit.replace(/\/+$/, "");

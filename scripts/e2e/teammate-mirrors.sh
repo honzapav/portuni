@@ -4,10 +4,14 @@
 # remote edit -> pull. No prod, no Drive, no Turso cloud.
 set -euo pipefail
 
-REPO=/Users/honzapav/Dev/projekty/portuni
 NODEBIN="$HOME/.nvm/versions/node/v24.0.2/bin"
 export PATH="$NODEBIN:$PATH"
 SP="$(cd "$(dirname "$0")" && pwd)"
+# Derive the repo root from the script's own location (scripts/e2e/..) rather
+# than a hardcoded path -- a hardcoded absolute path silently tests whatever
+# checkout happens to live there instead of the code this script ships with,
+# which is exactly wrong when this script is run from a git worktree.
+REPO="$(cd "$SP/../.." && pwd)"
 
 E2E=$(mktemp -d /tmp/portuni-e2e.XXXXXX)
 REMOTE_ROOT="$E2E/remote"; CENTRAL_DATA="$E2E/central-data"; CENTRAL_WS="$E2E/central-ws"
@@ -129,14 +133,92 @@ echo "== 6) pending aggregate over agent =="
 A "http://127.0.0.1:$AGENT_PORT/sync/pending"
 echo
 
-echo "== 7) scope config materialized with central MCP URL =="
+echo "== 7) scope config materialized with the local agent MCP front door =="
+# Since the agent-mode MCP front door (docs/superpowers/plans/
+# 2026-07-05-agent-mode-mcp-front-door.md), resolvePortuniMcpUrl() checks
+# PORTUNI_AGENT_MODE before PORTUNI_URL, so materialized .mcp.json points at
+# THIS sidecar's own /mcp, not at central -- terminals opened inside the
+# mirror talk to the local front door, which proxies graph tools upstream.
 if [ -f "$MIRROR/.mcp.json" ]; then
-  grep -q "http://127.0.0.1:$CENTRAL_PORT/mcp" "$MIRROR/.mcp.json" \
-    && echo ".mcp.json points at central MCP OK" \
+  grep -q "http://127.0.0.1:$AGENT_PORT/mcp" "$MIRROR/.mcp.json" \
+    && echo ".mcp.json points at the local agent front door OK" \
     || { echo "WARN: .mcp.json exists but URL unexpected:"; cat "$MIRROR/.mcp.json"; }
 else
   echo "NOTE: no .mcp.json (PORTUNI_ROOT not resolvable in tmp workspace) — non-fatal"
 fi
+
+echo "== 8) MCP front door: initialize -> portuni_mirror (local) -> portuni_get_context (proxied) =="
+# Raw JSON-RPC over curl against the agent's /mcp -- no MCP SDK client, since
+# this is a bash harness. The streamable-HTTP transport requires the client
+# to accept both application/json and text/event-stream, and frames every
+# response (even a single-shot POST reply) as SSE ("data: <json>\n\n") since
+# no eventStore is configured here -- exactly one data line per response.
+MCP_INIT_HEADERS="$E2E/mcp-init-headers.txt"
+curl -fsS -m 20 -D "$MCP_INIT_HEADERS" -o "$E2E/mcp-init-body.txt" \
+  -H "Authorization: Bearer agent-local-token" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -X POST "http://127.0.0.1:$AGENT_PORT/mcp?home_node_id=$NODE_ID" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"e2e-curl","version":"0.0.0"}}}'
+MCP_SESSION=$(grep -i '^mcp-session-id:' "$MCP_INIT_HEADERS" | tr -d '\r' | sed 's/^[Mm]cp-[Ss]ession-[Ii]d: *//')
+test -n "$MCP_SESSION" || { echo "FAIL: initialize did not return mcp-session-id"; cat "$MCP_INIT_HEADERS"; exit 1; }
+echo "mcp session: $MCP_SESSION"
+
+mcp_call() { # $1=id $2=method $3=params(json) -> prints the SSE "data:" payload
+  local body payload
+  body=$(curl -fsS -m 20 \
+    -H "Authorization: Bearer agent-local-token" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    -H "mcp-session-id: $MCP_SESSION" \
+    -X POST "http://127.0.0.1:$AGENT_PORT/mcp" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":$1,\"method\":\"$2\",\"params\":$3}")
+  # `|| true`: grep exits 1 on no match, and under set -e/pipefail that would
+  # abort the script right here, silently -- before the FAIL message below.
+  payload=$(printf '%s\n' "$body" | grep '^data: ' | head -1 | sed 's/^data: //' || true)
+  if [ -z "$payload" ]; then
+    # Not SSE-framed (e.g. a plain-JSON error body, or an empty response):
+    # fail with the body head instead of letting the caller's JSON.parse
+    # choke on an empty string with a raw stack trace.
+    echo "FAIL: $2 response had no SSE data line; body head: ${body:0:200}" >&2
+    return 1
+  fi
+  printf '%s\n' "$payload"
+}
+
+# Lifecycle notification per the MCP spec -- notifications get 202 Accepted
+# with no body, so there is nothing to parse here.
+curl -fsS -m 20 -o /dev/null \
+  -H "Authorization: Bearer agent-local-token" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "mcp-session-id: $MCP_SESSION" \
+  -X POST "http://127.0.0.1:$AGENT_PORT/mcp" \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+
+echo "-- tools/call portuni_mirror (device-local tool, runs on-device) --"
+MIRROR_RPC=$(mcp_call 2 tools/call "{\"name\":\"portuni_mirror\",\"arguments\":{\"node_id\":\"$NODE_ID\",\"targets\":[\"local\"]}}")
+MCP_LOCAL_PATH=$("$NODEBIN/node" -e "
+  const r = JSON.parse(process.argv[1]);
+  if (r.error) { console.error('FAIL: portuni_mirror RPC error: ' + JSON.stringify(r.error)); process.exit(1); }
+  if (r.result.isError) { console.error('FAIL: portuni_mirror tool error: ' + JSON.stringify(r.result)); process.exit(1); }
+  console.log(JSON.parse(r.result.content[0].text).local_path);
+" "$MIRROR_RPC")
+test -d "$MCP_LOCAL_PATH" || { echo "FAIL: MCP portuni_mirror local_path missing on disk: $MCP_LOCAL_PATH"; exit 1; }
+echo "portuni_mirror over MCP OK: $MCP_LOCAL_PATH (idempotent -- same mirror as step 1)"
+
+echo "-- tools/call portuni_get_context (graph tool, proxied to central) --"
+CONTEXT_RPC=$(mcp_call 3 tools/call "{\"name\":\"portuni_get_context\",\"arguments\":{\"node_id\":\"$NODE_ID\",\"depth\":0}}")
+"$NODEBIN/node" -e "
+  const r = JSON.parse(process.argv[1]);
+  const nodeId = process.argv[2];
+  if (r.error) { console.error('FAIL: portuni_get_context RPC error: ' + JSON.stringify(r.error)); process.exit(1); }
+  if (r.result.isError) { console.error('FAIL: portuni_get_context tool error: ' + JSON.stringify(r.result)); process.exit(1); }
+  const payload = JSON.parse(r.result.content[0].text);
+  const root = Array.isArray(payload) ? payload[0] : payload.root;
+  if (!root || root.id !== nodeId) { console.error('FAIL: unexpected graph payload: ' + JSON.stringify(payload)); process.exit(1); }
+  console.log('portuni_get_context over MCP OK (passthrough to central): root=' + root.id + ' name=' + root.name);
+" "$CONTEXT_RPC" "$NODE_ID"
 
 echo
 echo "E2E PASSED. Logs in $E2E"
