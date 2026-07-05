@@ -532,14 +532,18 @@ Agent presents, user decides, agent invokes the corresponding explicit tool. Por
 
 ## Setup flow
 
-### First-time admin setup
+### Desktop one-click (per-user OAuth)
 
-One-time per Portuni deployment, done by whoever sets up the Turso database:
+The default path for a local desktop workspace. **Settings → Synchronizace → Propojit Google Drive** runs the PKCE loopback OAuth flow in `apps/desktop/src/auth.rs` (`google_drive_connect`, scope `openid email https://www.googleapis.com/auth/drive`). The refresh token is extracted in Rust and POSTed to the sidecar's bearer-authed `POST /sync/drive/connect` over loopback — it never reaches the webview (security rule 1). The sidecar (`apps/server/domain/sync/remote-service.ts`) stores it via the TokenStore as a `refresh_token`-mode entry for the fixed remote name `gdrive`, then on target selection (`POST /sync/drive/target`) upserts the `gdrive` remote and adds a wildcard routing rule **only if the routing table is empty** (never clobbers an existing policy). Target can be a My Drive folder (`root_folder_id`, a `Portuni` folder Portuni creates) or a Shared Drive. The Drive adapter picks auth mode per token: `refresh_token` → `drive-user-auth.ts`, else service-account → `drive-sa-auth.ts`. REST surface: `/sync/drive/{connect,targets,target,status,test,disconnect}`.
 
-1. `portuni_setup_remote { name, type, config }` for each backend. Creates a `remotes` row.
+### Admin setup (Service Account)
+
+One-time per Portuni deployment for headless/central/multi-remote setups, done by whoever sets up the Turso database. Also the only path when there's no desktop to click through consent:
+
+1. `portuni_setup_remote { name, type, config }` for each backend. Creates a `remotes` row. For `gdrive` a `shared_drive_id` is required (service accounts have no My Drive quota — enforced at setup by `assertSaDriveConfig`).
 2. `portuni_set_routing_policy { rules }` to configure mapping from node-type/org to remote-name.
 
-Solo mode: one remote, one wildcard rule.
+Solo mode: one remote, one wildcard rule. Agents can be walked through this via the `setup-drive-remote` MCP prompt; when a store hits an unrouted node the error now carries setup guidance (`ROUTING_GUIDANCE` in `engine.ts`).
 
 ### First-time device setup
 

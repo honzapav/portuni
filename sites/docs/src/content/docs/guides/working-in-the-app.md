@@ -82,11 +82,22 @@ Every mutating action calls back through `onMutate` which refetches the graph an
 
 ## Settings
 
-Three sections worth highlighting:
+Sections worth highlighting:
 
 - **Theme** — light / dark; the choice persists in `localStorage` and is reapplied on launch.
 - **Agent command preset** — pick which CLI agent your "Copy launch command" / new-terminal default uses. Built-in presets: Claude Code (`claude {prompt}`), Codex CLI (`codex {prompt}`), Gemini CLI (`gemini -p {prompt}`), Cursor Agent (`cursor-agent {prompt}`), OpenCode (`opencode run {prompt}`), Mistral Vibe (`vibe --trust {prompt}`). You can also type a custom template; `{prompt}` is the placeholder for the shell-escaped prompt. (The Vibe preset passes `--trust` so it loads the mirror's project config and auto-seeds scope — see [Mistral Vibe](/clients/mistral-vibe/).)
 - **MCP server** — shows the sidecar's URL (typically `http://localhost:4011/mcp`), port, and whether an auth token is set. The bearer token itself lives in macOS Keychain (Tauri-only); reveal it on demand or rotate with one click. The install buttons write the URL + token into `~/.claude.json`, `~/.codex/config.toml`, and `~/.vibe/config.toml` so external clients can talk to the app's sidecar without manual config editing.
+- **Synchronizace** — connect Google Drive so stored files leave the local mirror. See below.
+
+## Synchronizace (Google Drive)
+
+For a **local** workspace, Settings → Synchronizace is where you connect Google Drive:
+
+1. **Propojit Google Drive** — a normal Google sign-in opens in your browser. The refresh token is handled entirely by the desktop shell and the local sidecar; it never reaches the web UI.
+2. **Pick a target** — your My Drive (Portuni creates a `Portuni` folder) or any Shared Drive you can access.
+3. **Otestovat připojení** confirms the target is reachable; **Odpojit** removes the connection (local files stay put).
+
+Until a target is connected, stored files sit in the local mirror only — a node's Soubory pane shows a "soubory se ukládají jen lokálně" banner linking here. A **central** workspace shows nothing to configure: file sync is managed by the org's server. Under the hood this is per-user OAuth writing to a `gdrive` remote with a wildcard routing rule; the equivalent MCP setup for headless/server deployments is in [Setting Up Remotes](/guides/setting-up-remotes/).
 
 ## Recommended daily flow
 

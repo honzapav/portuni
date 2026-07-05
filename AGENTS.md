@@ -100,6 +100,25 @@ tmux loop for backend iteration.
   backend dev against the tmux server, set `PORTUNI_WATCH_MIRRORS=1` if you
   want the same behavior. Model:
   `docs/superpowers/specs/2026-06-28-deterministic-file-state-design.md`.
+- **Drive sync has two auth paths sharing one adapter.** Desktop local
+  workspaces connect via per-user OAuth: Settings → Synchronizace →
+  `google_drive_connect` (`apps/desktop/src/auth.rs`, PKCE loopback) hands the
+  refresh token to the sidecar's bearer-authed `POST /sync/drive/connect` over
+  loopback — never through the webview (security rule 1). It lands as a
+  `refresh_token`-mode TokenStore entry under the fixed remote name `gdrive`;
+  `POST /sync/drive/target` upserts the remote and adds a wildcard routing rule
+  **only if routing is empty**. Domain logic is `remote-service.ts`
+  (`connectDrive/setDriveTarget/driveStatus/testDrive/disconnectDrive`), REST is
+  `apps/server/api/sync-drive.ts` (`/sync/drive/{connect,targets,target,status,test,disconnect}`),
+  web is `SyncSection.tsx` + `lib/sync-drive.ts`. The Drive adapter
+  (`drive-adapter.ts`) picks auth by token mode: `refresh_token` →
+  `drive-user-auth.ts`, else service-account → `drive-sa-auth.ts`
+  (`assertSaDriveConfig` forces a `shared_drive_id` — SAs have no My Drive quota;
+  OAuth may target My Drive via `root_folder_id`). The service-account path stays
+  MCP-only (`portuni_setup_remote`; `setup-drive-remote` prompt) for headless /
+  central / multi-remote. `driveStatus.routed` guards the "connected but nothing
+  routes to gdrive" trap. Spec/plan:
+  `docs/superpowers/{specs,plans}/2026-07-05-sync-settings*.md`.
 - **Mirror scope configs are Portuni-managed.** `portuni_mirror` materializes
   `.mcp.json`, `.claude/settings.local.json`, `.codex/config.toml`,
   `.vibe/config.toml`, `.cursor/rules`, `PORTUNI_SCOPE.md` and marker blocks

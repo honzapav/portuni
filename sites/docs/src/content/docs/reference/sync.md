@@ -22,7 +22,9 @@ Create **or update** a named remote (upsert) and store its credentials. Calling 
 | `config` | object | yes | Backend-specific configuration. For `gdrive`: `{ shared_drive_id, root_folder_id? }` |
 | `service_account_json` | string | conditional | Required for `gdrive`. Stored via TokenStore (file / keychain / varlock), never in Turso |
 
-For Google Drive the `shared_drive_id` is mandatory – Phase 1 supports Shared Drives only, not personal "My Drive."
+For a **Service Account** remote the `shared_drive_id` is mandatory – service accounts have no My Drive storage quota, so they can only write into Shared Drives.
+
+Desktop users don't call `portuni_setup_remote` for Google Drive by hand: **Settings → Synchronizace** runs a Google sign-in and configures the `gdrive` remote (plus a wildcard routing rule) for them, using per-user OAuth. That path also supports a personal My Drive folder (`root_folder_id`) as the target, which the Service-Account path cannot. See [Setting Up Remotes](/guides/setting-up-remotes/). The MCP tools remain the way to configure headless/central deployments and multi-remote routing.
 
 ### portuni_list_remotes
 

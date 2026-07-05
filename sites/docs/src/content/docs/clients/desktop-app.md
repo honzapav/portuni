@@ -14,7 +14,7 @@ A native macOS window (1600×1000 by default, opens maximized) with:
 - **Workspace view** — a node browser with type / status filters, sidebar navigation, and a status footer.
 - **Multi-session terminal tabs** — built-in `xterm`-based terminals attached to the focused node's local mirror via PTY. Run `claude`, `codex`, or any shell command in-context without leaving the app.
 - **Actors page** — browse and manage actors and assignments.
-- **Settings page** — workspaces (create, enable, switch, pick each one's data mode), per-workspace Turso credentials and workspace root, an Account section (Google sign-in and device tokens for central mode), and an MCP Server section with one-click install buttons for Claude Code, Codex, and Mistral Vibe.
+- **Settings page** — workspaces (create, enable, switch, pick each one's data mode), per-workspace Turso credentials and workspace root, an Account section (Google sign-in and device tokens for central mode), a Synchronizace section (one-click Google Drive connect for local workspaces — see [Working in the App](/guides/working-in-the-app/#synchronizace-google-drive)), and an MCP Server section with one-click install buttons for Claude Code, Codex, and Mistral Vibe.
 - **Create-node modal**, **date picker**, and other interactive controls for editing the graph directly from the UI.
 
 ## Embedded MCP sidecar
