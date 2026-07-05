@@ -35,7 +35,7 @@ type LoadState =
   | { kind: "prerequisite" }
   | { kind: "not-connected" }
   | { kind: "select-target"; email: string | null }
-  | { kind: "active"; email: string | null; targetName: string };
+  | { kind: "active"; email: string | null; targetName: string; routed: boolean };
 
 export default function SyncSection() {
   const dataMode = useDataMode();
@@ -71,6 +71,7 @@ export default function SyncSection() {
           kind: "active",
           email: status.account_email,
           targetName: status.target.name,
+          routed: status.routed,
         });
       }
     } catch (e) {
@@ -184,6 +185,7 @@ export default function SyncSection() {
         <ActivePanel
           email={state.email}
           targetName={state.targetName}
+          routed={state.routed}
           onDisconnected={() => void load()}
           onExpired={() => setState({ kind: "not-connected" })}
           onError={setError}
@@ -323,12 +325,14 @@ type TestResultState =
 function ActivePanel({
   email,
   targetName,
+  routed,
   onDisconnected,
   onExpired,
   onError,
 }: {
   email: string | null;
   targetName: string;
+  routed: boolean;
   onDisconnected: () => void;
   onExpired: () => void;
   onError: (message: string) => void;
@@ -388,6 +392,12 @@ function ActivePanel({
 
   return (
     <div className="flex flex-col gap-3">
+      {!routed && (
+        <div className="rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
+          Propojeno, ale směrování ukládá soubory jinam. Uprav routing policy
+          přes portuni_set_routing_policy, aby soubory mířily na Google Drive.
+        </div>
+      )}
       <div className="text-[13.5px] text-[var(--color-text)]">
         Propojeno jako{" "}
         <span className="font-medium">{email ?? "—"}</span>

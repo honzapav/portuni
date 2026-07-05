@@ -16,6 +16,7 @@ export type DriveStatus = {
   connected: boolean;
   account_email: string | null;
   target: { kind: "my_drive" | "shared_drive"; name: string } | null;
+  routed: boolean;
 };
 
 export type TestDriveResult = { ok: boolean; code?: string };

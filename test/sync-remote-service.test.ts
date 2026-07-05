@@ -5,15 +5,22 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
 import { getTokenStore, resetTokenStoreForTests } from "../apps/server/domain/sync/token-store.js";
-import { listRules } from "../apps/server/domain/sync/routing.js";
+import { listRules, replaceRules } from "../apps/server/domain/sync/routing.js";
 import { resetUserTokenCacheForTests, __setUserTokenFetchForTests } from "../apps/server/domain/sync/drive-user-auth.js";
 import {
-  connectDrive, setDriveTarget, driveStatus, testDrive, disconnectDrive,
+  connectDrive, setDriveTarget, driveStatus, testDrive, disconnectDrive, setupRemoteService,
   __setDriveRestFetchForTests,
 } from "../apps/server/domain/sync/remote-service.js";
 
 let workspace: string;
 const CONN = { userId: "U1", refresh_token: "R1", client_id: "C", client_secret: "S", account_email: "a@b.cz" };
+
+const SAMPLE_SA = JSON.stringify({
+  type: "service_account",
+  client_email: "portuni@proj.iam.gserviceaccount.com",
+  private_key: "-----BEGIN PRIVATE KEY-----\nMIIEv...\n-----END PRIVATE KEY-----\n",
+  token_uri: "https://oauth2.googleapis.com/token",
+});
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), "portuni-remotesvc-"));
@@ -115,5 +122,69 @@ describe("routing error guidance", () => {
     assert.match(ROUTING_GUIDANCE, /Nastavení → Synchronizace/);
     assert.match(ROUTING_GUIDANCE, /portuni_setup_remote/);
     assert.match(ROUTING_GUIDANCE, /portuni_list_remotes/);
+  });
+});
+
+describe("driveStatus.routed", () => {
+  it("is true when setDriveTarget adds the wildcard rule to an empty routing table", async () => {
+    const { db } = await makeSharedDb();
+    // Clear the test-fs rule makeSharedDb seeds so the routing table is
+    // genuinely empty when setDriveTarget runs its only-if-empty guard.
+    await replaceRules(db, []);
+    __setDriveRestFetchForTests((async (url: string) =>
+      url.includes("/drives") ? okJson({ drives: [{ id: "D1", name: "Tým" }] }) : okJson({ files: [] })
+    ) as typeof fetch);
+    await connectDrive(db, CONN);
+    await setDriveTarget(db, { userId: "U1", shared_drive_id: "D1" });
+
+    const s = await driveStatus(db);
+    assert.equal(s.routed, true);
+  });
+
+  it("is false when a pre-existing non-gdrive rule keeps the wildcard from being added", async () => {
+    const { db } = await makeSharedDb(); // seeds a "test-fs" wildcard rule
+    __setDriveRestFetchForTests((async (url: string) =>
+      url.includes("/drives") ? okJson({ drives: [{ id: "D1", name: "Tým" }] }) : okJson({ files: [] })
+    ) as typeof fetch);
+    await connectDrive(db, CONN);
+    await setDriveTarget(db, { userId: "U1", shared_drive_id: "D1" });
+
+    const s = await driveStatus(db);
+    assert.equal(s.configured, true);
+    assert.equal(s.routed, false);
+  });
+});
+
+describe("setupRemoteService SA My-Drive guard", () => {
+  it("rejects a service-account remote configured with root_folder_id only", async () => {
+    const { db } = await makeSharedDb();
+    await assert.rejects(
+      setupRemoteService(db, {
+        userId: "U1",
+        name: "gdrive",
+        type: "gdrive",
+        config: { root_folder_id: "F1" },
+        service_account_json: SAMPLE_SA,
+      }),
+      /Personal My Drive is not supported/,
+    );
+  });
+});
+
+describe("connectDrive SA/gdrive name collision guard", () => {
+  it("throws when a service-account remote named gdrive already exists", async () => {
+    const { db } = await makeSharedDb();
+    await setupRemoteService(db, {
+      userId: "U1",
+      name: "gdrive",
+      type: "gdrive",
+      config: { shared_drive_id: "D1" },
+      service_account_json: SAMPLE_SA,
+    });
+
+    await assert.rejects(
+      connectDrive(db, CONN),
+      /service-account remote named 'gdrive' already exists/,
+    );
   });
 });

@@ -35,8 +35,10 @@ export async function setupRemoteService(db: Client, a: SetupRemoteArgs): Promis
     }
   }
   if (a.type === "gdrive") {
-    const { parseDriveConfig, parseServiceAccountJson } = await import("./drive-config.js");
-    parseDriveConfig(a.config);
+    const { parseDriveConfig, parseServiceAccountJson, assertSaDriveConfig } = await import("./drive-config.js");
+    // Service accounts have no My Drive quota -- fail setup fast rather than
+    // waiting for the first sync to discover this via the adapter.
+    assertSaDriveConfig(parseDriveConfig(a.config));
     if (!a.service_account_json) {
       throw new Error("gdrive remote requires service_account_json");
     }
@@ -161,6 +163,7 @@ export interface DriveStatus {
   connected: boolean;
   account_email: string | null;
   target: DriveTargetInfo | null;
+  routed: boolean;
 }
 
 export type TestDriveResult =
@@ -168,9 +171,18 @@ export type TestDriveResult =
   | { ok: false; code: "TOKEN_INVALID" | "TARGET_NOT_FOUND" | "DRIVE_UNREACHABLE"; detail: string };
 
 export async function connectDrive(
-  _db: Client,
+  db: Client,
   a: ConnectDriveArgs,
 ): Promise<{ account_email: string; shared_drives: DriveInfo[] }> {
+  const existingRemote = await getRemote(db, GDRIVE_REMOTE);
+  if (existingRemote) {
+    const existingToken = await (await getTokenStore()).read(GDRIVE_REMOTE);
+    if (existingToken?.mode === "service_account" || existingToken?.service_account_json) {
+      throw new Error(
+        "A service-account remote named 'gdrive' already exists — remove it before connecting via OAuth.",
+      );
+    }
+  }
   const token: DeviceToken = {
     mode: "refresh_token",
     refresh_token: a.refresh_token,
@@ -236,11 +248,13 @@ function targetFromConfig(config: Record<string, unknown>): DriveTargetInfo | nu
 export async function driveStatus(db: Client): Promise<DriveStatus> {
   const remote = await getRemote(db, GDRIVE_REMOTE);
   const token = await readGdriveToken();
+  const rules = await listRules(db);
   return {
     configured: Boolean(remote) && Boolean(token),
     connected: Boolean(token),
     account_email: token?.account_email ?? null,
     target: remote ? targetFromConfig(remote.config) : null,
+    routed: rules.some((r) => r.remote_name === GDRIVE_REMOTE),
   };
 }
 
