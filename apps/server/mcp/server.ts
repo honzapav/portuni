@@ -95,6 +95,36 @@ function gateToolsByScope(server: McpServer, identity: RequestIdentity): void {
   };
 }
 
+// Guides an agent/admin through the service-account path for Google Drive
+// sync -- the headless counterpart to the desktop app's Nastavení ->
+// Synchronizace OAuth flow. Surfaced to the model as a slash-style prompt so
+// it can be invoked directly instead of being rediscovered from the routing
+// error text every time.
+function registerSetupDriveRemotePrompt(server: McpServer): void {
+  server.prompt(
+    "setup-drive-remote",
+    "Guide the user through configuring Google Drive file sync (service-account path for servers/admins).",
+    () => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text:
+            "Help me configure Portuni file sync to Google Drive using a service account. " +
+            "Walk me through: (1) Google Cloud Console — create/select a project, enable the Drive API, " +
+            "create a service account, download its JSON key; (2) share the target shared drive with the " +
+            "service account e-mail as Content manager; (3) call portuni_setup_remote with type gdrive, " +
+            "config {shared_drive_id}, and the JSON key as service_account_json; (4) call " +
+            "portuni_set_routing_policy with [{priority: 1, node_type: null, org_slug: null, remote_name: <name>}] " +
+            "unless a policy already exists (check portuni_list_remotes first); (5) verify with a test " +
+            "portuni_store and confirm the file appears on the shared drive. Note: desktop users should " +
+            "prefer Nastavení → Synchronizace (user OAuth) — the service account is for headless servers.",
+        },
+      }],
+    }),
+  );
+}
+
 export function createMcpServer(
   identity: RequestIdentity,
 ): { server: McpServer; scope: SessionScope } {
@@ -117,6 +147,7 @@ export function createMcpServer(
   registerFileTools(server, ctx);
   registerSyncStatusTools(server, ctx);
   registerSyncRemoteTools(server, ctx);
+  registerSetupDriveRemotePrompt(server);
   registerSyncSnapshotTools(server, ctx);
   registerEventTools(server, ctx);
   registerActorTools(server, ctx);

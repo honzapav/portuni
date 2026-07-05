@@ -24,7 +24,7 @@ import {
   registerMirror,
   listUserMirrors,
 } from "./mirror-registry.js";
-import { resolveNodeInfo } from "./engine.js";
+import { resolveNodeInfo, ROUTING_GUIDANCE } from "./engine.js";
 import { resolveRemote } from "./routing.js";
 import { getAdapter } from "./adapter-cache.js";
 import { buildNodeRoot } from "./remote-path.js";
@@ -70,7 +70,12 @@ export type CreateMirrorResult = {
   local_path: string;
   created: boolean;
   subdirs: string[];
-  remote_scaffold: { scaffolded: string[]; remote_name: string | null; error?: string };
+  remote_scaffold: {
+    scaffolded: string[];
+    remote_name: string | null;
+    error?: string;
+    hint?: string;
+  };
   scope_config: {
     written: string[];
     errors: { path: string; message: string }[];
@@ -81,11 +86,16 @@ export type CreateMirrorResult = {
 async function scaffoldRemoteStructure(
   db: Client,
   nodeId: string,
-): Promise<{ scaffolded: string[]; remote_name: string | null; error?: string }> {
+): Promise<{
+  scaffolded: string[];
+  remote_name: string | null;
+  error?: string;
+  hint?: string;
+}> {
   try {
     const info = await resolveNodeInfo(db, nodeId);
     const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
-    if (!remoteName) return { scaffolded: [], remote_name: null };
+    if (!remoteName) return { scaffolded: [], remote_name: null, hint: ROUTING_GUIDANCE };
     const adapter = await getAdapter(db, remoteName);
     if (!adapter.ensureFolder) return { scaffolded: [], remote_name: remoteName };
     const nodeRoot = buildNodeRoot(info);

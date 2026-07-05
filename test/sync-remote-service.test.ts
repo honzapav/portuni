@@ -108,3 +108,12 @@ describe("testDrive + disconnectDrive", () => {
     assert.equal(s.connected, false);
   });
 });
+
+describe("routing error guidance", () => {
+  it("store failure without routing tells the agent and the user what to do", async () => {
+    const { ROUTING_GUIDANCE } = await import("../apps/server/domain/sync/engine.js");
+    assert.match(ROUTING_GUIDANCE, /Nastavení → Synchronizace/);
+    assert.match(ROUTING_GUIDANCE, /portuni_setup_remote/);
+    assert.match(ROUTING_GUIDANCE, /portuni_list_remotes/);
+  });
+});
