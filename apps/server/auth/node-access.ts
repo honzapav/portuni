@@ -38,6 +38,7 @@ interface ChainRow {
   depth: number;
   visibility: string;
   access_mode: AccessMode;
+  created_by: string;
   kind: "group" | "user" | null;
   principal: string | null;
 }
@@ -61,7 +62,7 @@ async function loadChain(db: Client, nodeId: string): Promise<ChainRow[]> {
               AND (SELECT e.target_id FROM edges e
                    WHERE e.source_id = c.id AND e.relation = 'belongs_to' LIMIT 1) IS NOT NULL
           )
-          SELECT c.id AS node_id, c.depth, n.visibility, n.access_mode, na.kind, na.principal
+          SELECT c.id AS node_id, c.depth, n.visibility, n.access_mode, n.created_by, na.kind, na.principal
           FROM chain c
           JOIN nodes n ON n.id = c.id
           LEFT JOIN node_access na ON na.node_id = c.id
@@ -73,6 +74,7 @@ async function loadChain(db: Client, nodeId: string): Promise<ChainRow[]> {
     depth: Number(row.depth),
     visibility: String(row.visibility),
     access_mode: String(row.access_mode) as AccessMode,
+    created_by: String(row.created_by),
     kind: row.kind === null ? null : (String(row.kind) as "group" | "user"),
     principal: row.principal === null ? null : String(row.principal),
   }));
@@ -85,12 +87,21 @@ async function loadChain(db: Client, nodeId: string): Promise<ChainRow[]> {
 export async function resolveAccessChain(
   db: Client,
   nodeId: string,
-): Promise<{ sourceNodeId: string | null; entries: AccessEntry[] | null; mode: AccessMode | null }> {
+): Promise<{
+  sourceNodeId: string | null;
+  entries: AccessEntry[] | null;
+  mode: AccessMode | null;
+  // True when `entries` is a synthetic "only the creator" list derived from
+  // visibility='private' (no real node_access rows). Enforcement treats it
+  // like any other ACL; display (buildAccessView) must NOT show it as a
+  // group restriction -- a private node has no shared grantees.
+  implicitPrivate: boolean;
+}> {
   const rows = await loadChain(db, nodeId);
   if (rows.length === 0 || rows[0].depth !== 0) {
     // Missing node -- old contract keeps this null/null (guards handle
     // existence separately).
-    return { sourceNodeId: null, entries: null, mode: null };
+    return { sourceNodeId: null, entries: null, mode: null, implicitPrivate: false };
   }
 
   const byDepth = new Map<number, ChainRow[]>();
@@ -112,16 +123,35 @@ export async function resolveAccessChain(
           principal: row.principal as string,
         })),
         mode: bucket[0].access_mode,
+        implicitPrivate: false,
       };
     }
     if (bucket[0].visibility === "group") {
       // Restricted-without-rows: fail closed, only admins may see it. Mode
       // still comes from this same node -- it is the authoritative one.
-      return { sourceNodeId: bucket[0].node_id, entries: [], mode: bucket[0].access_mode };
+      return {
+        sourceNodeId: bucket[0].node_id,
+        entries: [],
+        mode: bucket[0].access_mode,
+        implicitPrivate: false,
+      };
+    }
+    if (bucket[0].visibility === "private") {
+      // Private: visible only to the creator (implicit self-grant) and
+      // admins (canSeeNode's admin bypass). Everyone else is hidden -- same
+      // as a group node whose sole grant is the creator. mode is null: a
+      // private node offers no "request" affordance, so classifyNodeVisibility
+      // resolves it to "hidden" (it disappears), not "request".
+      return {
+        sourceNodeId: bucket[0].node_id,
+        entries: [{ kind: "user", principal: bucket[0].created_by }],
+        mode: null,
+        implicitPrivate: true,
+      };
     }
   }
 
-  return { sourceNodeId: null, entries: null, mode: null };
+  return { sourceNodeId: null, entries: null, mode: null, implicitPrivate: false };
 }
 
 export async function effectiveAccessEntries(

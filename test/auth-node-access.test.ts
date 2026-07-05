@@ -182,6 +182,25 @@ test("6. visibility='group' with no node_access rows: entries [], only admin see
   assert.equal(canSeeNode(admin, entries), true);
 });
 
+// --- Scenario 6b: visibility='private' -> only creator + admin see it ---
+
+test("6b. visibility='private': creator sees it, other users do not, admin does", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const priv = await addNode(db, orgId, "private"); // created_by = SOLO
+
+  const entries = await effectiveAccessEntries(db, priv);
+  // Synthetic self-grant to the creator, so canSeeNode enforces it.
+  assert.deepEqual(entries, [{ kind: "user", principal: SOLO }]);
+
+  const creator = identity({ globalScope: "write", userId: SOLO });
+  const otherUser = identity({ globalScope: "manage", userId: "01USEROTHER00000000000000" });
+  const admin = identity({ globalScope: "admin" });
+
+  assert.equal(await nodeVisibleTo(db, creator, priv), true, "creator sees own private node");
+  assert.equal(await nodeVisibleTo(db, otherUser, priv), false, "other user must NOT see a private node");
+  assert.equal(await nodeVisibleTo(db, admin, priv), true, "admin sees everything");
+});
+
 // --- Scenario 7: nonexistent node ---
 
 test("7. nonexistent node: effectiveAccessEntries returns null, nodeVisibleTo is true (old contract)", async () => {

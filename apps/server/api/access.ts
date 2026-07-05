@@ -63,12 +63,15 @@ interface AccessView {
 // nodeId (walking up the belongs_to chain when the node has no ACL of its
 // own) and joins display data (user name/email/avatar) for the UI.
 async function buildAccessView(db: Client, nodeId: string): Promise<AccessView> {
-  const [{ sourceNodeId, entries, mode }, ownVisRow] = await Promise.all([
+  const [{ sourceNodeId, entries, mode, implicitPrivate }, ownVisRow] = await Promise.all([
     resolveAccessChain(db, nodeId),
     db.execute({ sql: "SELECT visibility FROM nodes WHERE id = ?", args: [nodeId] }),
   ]);
   const ownVisibility = String(ownVisRow.rows[0]?.visibility ?? "team");
-  if (entries === null) {
+  // A private node's entries are a synthetic creator-only grant for
+  // enforcement; for display it has no shared grantees, so present it like
+  // an unrestricted node (the selector renders "Soukromé" from `visibility`).
+  if (entries === null || implicitPrivate) {
     return {
       restricted: false,
       inherited: false,
