@@ -427,6 +427,102 @@ async function pushEntryCentral(
   });
 }
 
+export interface StoreFileCentralArgs {
+  userId: string;
+  nodeId: string;
+  localPath: string;
+}
+
+export interface StoreFileCentralResult {
+  file_id: string;
+  remote_name: string;
+  remote_path: string;
+  local_path: string;
+  hash: string;
+}
+
+// Deliberate push of one file -- the portuni_store equivalent for agent
+// mode (there is no "upload one file" endpoint; it is built from the same
+// primitives syncRunCentral's push path uses). registerLocalFileCentral's
+// upsert is idempotent (ON CONFLICT DO UPDATE leaves an already-synced
+// file's hash state untouched), so calling it here handles both "never
+// registered" and "already registered" files through the same path; the
+// baseline for the conflict-safe PUT then comes from this device's
+// file_state, exactly like pushEntryCentral.
+export async function storeFileCentral(
+  client: CentralClient,
+  a: StoreFileCentralArgs,
+): Promise<StoreFileCentralResult> {
+  const mirrorRoot = await getMirrorPath(a.userId, a.nodeId);
+  if (!mirrorRoot) {
+    throw new Error(`Node ${a.nodeId} has no local mirror. Register via portuni_mirror first.`);
+  }
+  const relPath = relPathFor(mirrorRoot, a.localPath);
+  if (!relPath) {
+    throw new Error(
+      `Path is outside the mirror's tracked sections (wip/outputs/resources): ${a.localPath}`,
+    );
+  }
+
+  const reg = await registerLocalFileCentral(client, {
+    userId: a.userId,
+    nodeId: a.nodeId,
+    localPath: a.localPath,
+  });
+
+  const state = await getFileState(reg.file_id);
+  const baseline = state?.last_synced_hash ?? null;
+  const bytes = await readFile(a.localPath);
+
+  let put: { version: string; canonicalHash: string };
+  try {
+    put = await client.putFileRaw(
+      a.nodeId,
+      relPath,
+      bytes,
+      baseline !== null ? { baseCanonicalHash: baseline } : { ifAbsent: true },
+    );
+  } catch (e) {
+    if (e instanceof CentralHttpError && e.code === "EXISTS" && baseline === null) {
+      // Never-synced file but the remote already has bytes. Only a
+      // byte-identical remote is safe to claim; verify with one download.
+      const cur = await client.getFileRaw(a.nodeId, relPath);
+      const localInCanonical =
+        cur.canonicalHash.length === 32 ? md5Buffer(bytes) : sha256Buffer(bytes);
+      if (localInCanonical !== cur.canonicalHash) {
+        throw new Error(
+          "remote already has different content for a never-synced file -- resolve manually",
+        );
+      }
+      put = { version: cur.version, canonicalHash: cur.canonicalHash };
+    } else if (e instanceof CentralHttpError && e.code === "CONFLICT") {
+      throw new Error(
+        `remote changed since the last scan (baseline ${baseline}, remote is ${e.currentVersion ?? "unknown"}) -- rescan and resolve`,
+      );
+    } else {
+      throw e;
+    }
+  }
+
+  const fsInfo = await statForCache(a.localPath);
+  await upsertFileState({
+    file_id: reg.file_id,
+    last_synced_hash: put.canonicalHash,
+    last_synced_at: new Date().toISOString(),
+    cached_local_hash: put.canonicalHash,
+    cached_mtime: fsInfo.mtime,
+    cached_size: fsInfo.size,
+  });
+
+  return {
+    file_id: reg.file_id,
+    remote_name: reg.remote_name,
+    remote_path: reg.remote_path,
+    local_path: a.localPath,
+    hash: put.canonicalHash,
+  };
+}
+
 export async function pullFileCentral(
   client: CentralClient,
   a: {
