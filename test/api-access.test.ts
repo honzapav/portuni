@@ -249,6 +249,83 @@ describe("GET/PUT /nodes/:id/access", () => {
     assert.equal(auditRows.rows.length, 1, "expected exactly one node.access.set audit row");
   });
 
+  // Unified control: authoritative `visibility` in the PUT body owns the
+  // whole access state (visibility + entries + access_mode) atomically.
+  test("U1. PUT visibility='private' clears entries and sets private", async () => {
+    const manager = makeManager();
+    const nodeId = await insertNode(db, orgId, { name: "UNode1" });
+    // First make it a group node (granted to the manager's group so the
+    // manager can still access it to change the sharing).
+    await putAccessFixture(nodeId, [
+      { kind: "group", principal: "eng@x.com", display_email: "eng@x.com" },
+    ]);
+    // Now switch to private via the unified control; entries in the body are
+    // ignored (forced empty) for a team/private target.
+    const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${nodeId}/access`, {
+      entries: [{ kind: "user", principal: aliceId }],
+      visibility: "private",
+    });
+    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${nodeId}/access`), manager);
+    assert.equal(captured.statusCode, 200, captured.body);
+    const parsed = JSON.parse(captured.body);
+    assert.equal(parsed.restricted, false, "private node has no ACL rows");
+    assert.equal(parsed.visibility, "private");
+    const nodeRow = await db.execute({ sql: "SELECT visibility, access_mode FROM nodes WHERE id = ?", args: [nodeId] });
+    assert.equal(nodeRow.rows[0].visibility, "private");
+    assert.equal(nodeRow.rows[0].access_mode, "private");
+    const cnt = await db.execute({ sql: "SELECT COUNT(*) AS c FROM node_access WHERE node_id = ?", args: [nodeId] });
+    assert.equal(cnt.rows[0].c, 0, "entries must be cleared despite being passed in the body");
+  });
+
+  test("U2. PUT visibility='team' clears entries and sets team", async () => {
+    const manager = makeManager();
+    const nodeId = await insertNode(db, orgId, { name: "UNode2" });
+    await putAccessFixture(nodeId, [
+      { kind: "group", principal: "eng@x.com", display_email: "eng@x.com" },
+    ]);
+    const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${nodeId}/access`, {
+      entries: [],
+      visibility: "team",
+    });
+    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${nodeId}/access`), manager);
+    assert.equal(captured.statusCode, 200, captured.body);
+    assert.equal(JSON.parse(captured.body).visibility, "team");
+    const nodeRow = await db.execute({ sql: "SELECT visibility FROM nodes WHERE id = ?", args: [nodeId] });
+    assert.equal(nodeRow.rows[0].visibility, "team");
+  });
+
+  test("U3. PUT visibility='group' with entries sets group + mode", async () => {
+    const manager = makeManager();
+    const nodeId = await insertNode(db, orgId, { name: "UNode3" });
+    const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${nodeId}/access`, {
+      entries: [{ kind: "user", principal: aliceId }],
+      visibility: "group",
+      mode: "request",
+    });
+    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${nodeId}/access`), manager);
+    assert.equal(captured.statusCode, 200, captured.body);
+    const parsed = JSON.parse(captured.body);
+    assert.equal(parsed.visibility, "group");
+    assert.equal(parsed.mode, "request");
+    const nodeRow = await db.execute({ sql: "SELECT visibility, access_mode FROM nodes WHERE id = ?", args: [nodeId] });
+    assert.equal(nodeRow.rows[0].visibility, "group");
+    assert.equal(nodeRow.rows[0].access_mode, "request");
+  });
+
+  test("U4. PUT visibility='group' with empty entries -> 400, no mutation", async () => {
+    const manager = makeManager();
+    const nodeId = await insertNode(db, orgId, { name: "UNode4" });
+    const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${nodeId}/access`, {
+      entries: [],
+      visibility: "group",
+    });
+    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${nodeId}/access`), manager);
+    assert.equal(captured.statusCode, 400, captured.body);
+    assert.match(JSON.parse(captured.body).error, /group visibility requires at least one/);
+    const nodeRow = await db.execute({ sql: "SELECT visibility FROM nodes WHERE id = ?", args: [nodeId] });
+    assert.equal(nodeRow.rows[0].visibility, "team", "rejected PUT must not mutate visibility");
+  });
+
   // 2. GET returns own list, inherited false, display_name from users JOIN.
   test("2. GET returns own ACL with display data joined from users", async () => {
     const manager = makeManager();

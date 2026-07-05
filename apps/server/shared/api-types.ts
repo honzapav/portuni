@@ -292,6 +292,11 @@ export type NodeAccessResponse = {
   // apps/server/auth/node-access.ts AccessMode and the "Rezim omezeni"
   // section of the sharing design spec.
   mode: "private" | "request" | null;
+  // The node's OWN visibility mode (team | private | group), for the unified
+  // sharing selector. Distinct from `restricted`, which reflects the
+  // effective (possibly inherited) ACL and cannot distinguish team from
+  // private.
+  visibility: string;
 };
 
 // GET /auth/groups -- Google Workspace domain group directory, used by the

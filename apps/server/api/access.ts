@@ -28,6 +28,13 @@ const PutAccessBody = z.object({
   // Ignored when entries is empty -- clearing the ACL always resets
   // access_mode to "private" regardless of what's passed here.
   mode: z.enum(["private", "request"]).optional(),
+  // Authoritative target mode for the unified sharing control. When present
+  // this endpoint owns the whole access state (visibility + entries +
+  // access_mode) so the two can never drift:
+  //   team|private -> entries are forced empty, visibility set directly.
+  //   group        -> requires >= 1 entry (else 400).
+  // When absent, visibility is derived from entries (legacy behaviour).
+  visibility: z.enum(["team", "private", "group"]).optional(),
 });
 
 interface AccessViewEntry {
@@ -45,13 +52,22 @@ interface AccessView {
   source_node_name: string | null;
   entries: AccessViewEntry[];
   mode: "private" | "request" | null;
+  // The node's OWN visibility mode (team | private | group), so the unified
+  // sharing control can render the selector. Distinct from `restricted`,
+  // which reflects the *effective* (possibly inherited) ACL and cannot tell
+  // team from private.
+  visibility: string;
 }
 
 // Shared by GET and the post-PUT response: resolves the effective ACL for
 // nodeId (walking up the belongs_to chain when the node has no ACL of its
 // own) and joins display data (user name/email/avatar) for the UI.
 async function buildAccessView(db: Client, nodeId: string): Promise<AccessView> {
-  const { sourceNodeId, entries, mode } = await resolveAccessChain(db, nodeId);
+  const [{ sourceNodeId, entries, mode }, ownVisRow] = await Promise.all([
+    resolveAccessChain(db, nodeId),
+    db.execute({ sql: "SELECT visibility FROM nodes WHERE id = ?", args: [nodeId] }),
+  ]);
+  const ownVisibility = String(ownVisRow.rows[0]?.visibility ?? "team");
   if (entries === null) {
     return {
       restricted: false,
@@ -60,6 +76,7 @@ async function buildAccessView(db: Client, nodeId: string): Promise<AccessView> 
       source_node_name: null,
       entries: [],
       mode: null,
+      visibility: ownVisibility,
     };
   }
 
@@ -89,6 +106,7 @@ async function buildAccessView(db: Client, nodeId: string): Promise<AccessView> 
     source_node_name: (sourceNodeRow.rows[0]?.name as string | undefined) ?? null,
     entries: entriesOut,
     mode,
+    visibility: ownVisibility,
   };
 }
 
@@ -140,12 +158,46 @@ export async function handlePutNodeAccess(
     const body = await parseJsonBody(req, res, PutAccessBody);
     if (!body) return;
 
+    // Resolve the authoritative access state. When body.visibility is
+    // present this endpoint owns visibility + entries + access_mode as one
+    // atomic unit (the unified sharing control); team/private force the
+    // entries empty, group requires at least one. When absent, fall back to
+    // the legacy derive-from-entries behaviour.
+    const wasGroup = String(nodeRow.rows[0].visibility) === "group";
+    let effectiveEntries = body.entries;
+    let newVisibility: string;
+    let newAccessMode: "private" | "request";
+    if (body.visibility === "group") {
+      if (body.entries.length === 0) {
+        respondJson(res, 400, {
+          error: "group visibility requires at least one access entry",
+        });
+        return;
+      }
+      newVisibility = "group";
+      newAccessMode = body.mode ?? "private";
+    } else if (body.visibility === "team" || body.visibility === "private") {
+      effectiveEntries = [];
+      newVisibility = body.visibility;
+      newAccessMode = "private";
+    } else {
+      // Legacy: non-empty entries always set 'group'; clearing reverts to
+      // 'team' only if the node was 'group' -- never clobbers 'private'.
+      newVisibility =
+        body.entries.length > 0
+          ? "group"
+          : wasGroup
+            ? "team"
+            : String(nodeRow.rows[0].visibility);
+      newAccessMode = body.entries.length > 0 ? (body.mode ?? "private") : "private";
+    }
+
     // Reject duplicate (kind, principal) pairs up front -- letting them
     // through would hit the node_access PK (node_id, kind, principal)
     // inside the INSERT batch below and 500 instead of a clean 400.
     const seenEntries = new Set<string>();
     const duplicateEntries = new Set<string>();
-    for (const entry of body.entries) {
+    for (const entry of effectiveEntries) {
       const key = `${entry.kind}:${entry.principal}`;
       if (seenEntries.has(key)) duplicateEntries.add(key);
       seenEntries.add(key);
@@ -157,7 +209,7 @@ export async function handlePutNodeAccess(
       return;
     }
 
-    const userIds = body.entries
+    const userIds = effectiveEntries
       .filter((e): e is { kind: "user"; principal: string } => e.kind === "user")
       .map((e) => e.principal);
     if (userIds.length > 0) {
@@ -174,24 +226,9 @@ export async function handlePutNodeAccess(
       }
     }
 
-    // Restricting (non-empty entries) always sets 'group'. Clearing
-    // (empty entries) only reverts to 'team' if the node was 'group' --
-    // never clobbers 'private', which is an independent, manually-set state.
-    const wasGroup = String(nodeRow.rows[0].visibility) === "group";
-    const newVisibility =
-      body.entries.length > 0 ? "group" : wasGroup ? "team" : String(nodeRow.rows[0].visibility);
-
-    // access_mode only means something for a restricted node. Non-empty
-    // entries: default to "private" unless the caller asked for "request".
-    // Empty entries: always reset to "private" in the same batch so a
-    // stale "request" from a previous restriction never lingers once the
-    // node becomes unrestricted (or inherits its ancestor's mode instead).
-    const newAccessMode: "private" | "request" =
-      body.entries.length > 0 ? (body.mode ?? "private") : "private";
-
     const statements: Parameters<typeof db.batch>[0] = [
       { sql: "DELETE FROM node_access WHERE node_id = ?", args: [nodeId] },
-      ...body.entries.map((entry) => ({
+      ...effectiveEntries.map((entry) => ({
         sql: `INSERT INTO node_access (node_id, kind, principal, display_email, added_by)
               VALUES (?, ?, ?, ?, ?)`,
         args: [
@@ -210,8 +247,9 @@ export async function handlePutNodeAccess(
     await db.batch(statements, "write");
 
     await logAudit(identity.userId, "node.access.set", "node", nodeId, {
-      entries: body.entries,
+      entries: effectiveEntries,
       mode: newAccessMode,
+      visibility: newVisibility,
     });
 
     const view = await buildAccessView(db, nodeId);

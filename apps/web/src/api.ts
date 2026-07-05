@@ -562,11 +562,12 @@ export function putNodeAccess(
   id: string,
   entries: NodeAccessEntryInput[],
   mode?: "private" | "request",
+  visibility?: "team" | "private" | "group",
 ): Promise<NodeAccessResponse> {
   return jsonRequest<NodeAccessResponse>(
     "PUT",
     `/nodes/${encodeURIComponent(id)}/access`,
-    { entries, mode },
+    { entries, mode, visibility },
   );
 }
 
