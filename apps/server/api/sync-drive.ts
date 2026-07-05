@@ -5,6 +5,7 @@ import { parseBody, respondError, respondJson, type RequestIdentity } from "../h
 import { getDb } from "../infra/db.js";
 import {
   connectDrive, disconnectDrive, driveStatus, listDriveTargets, setDriveTarget, testDrive,
+  DriveNotConnectedError,
 } from "../domain/sync/remote-service.js";
 
 export async function routeSyncDrive(
@@ -44,7 +45,15 @@ export async function routeSyncDrive(
         respondJson(res, 400, { error: "target requires exactly one of shared_drive_id | my_drive" });
         return true;
       }
-      respondJson(res, 200, await setDriveTarget(db, { userId: identity.userId, ...b }));
+      try {
+        respondJson(res, 200, await setDriveTarget(db, { userId: identity.userId, ...b }));
+      } catch (err) {
+        if (err instanceof DriveNotConnectedError) {
+          respondJson(res, 409, { error: "not_connected" });
+          return true;
+        }
+        throw err;
+      }
       return true;
     }
     if (pathname === "/sync/drive/status" && method === "GET") {

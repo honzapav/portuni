@@ -16,6 +16,10 @@ import { invalidateAdapter } from "./adapter-cache.js";
 import { parseDriveConfig } from "./drive-config.js";
 import { getUserAccessToken, DriveAuthError } from "./drive-user-auth.js";
 
+export class DriveNotConnectedError extends Error {
+  constructor(message: string) { super(message); this.name = "DriveNotConnectedError"; }
+}
+
 export interface SetupRemoteArgs {
   userId: string;
   name: string;
@@ -193,7 +197,7 @@ export async function setDriveTarget(
   a: SetDriveTargetArgs,
 ): Promise<{ target: DriveTargetInfo }> {
   const token = await readGdriveToken();
-  if (!token) throw new Error("Google Drive not connected");
+  if (!token) throw new DriveNotConnectedError("Google Drive not connected");
 
   let config: Record<string, unknown>;
   let target: DriveTargetInfo;

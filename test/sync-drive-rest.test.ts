@@ -171,3 +171,16 @@ describe("targets before connect", () => {
     assert.equal(body.error, "not_connected");
   });
 });
+
+describe("target before connect", () => {
+  it("409s with not_connected when no token is stored", async () => {
+    const res = await fetch(`${base}/sync/drive/target`, {
+      method: "POST",
+      headers: authJson,
+      body: JSON.stringify({ shared_drive_id: "D1" }),
+    });
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { error: string };
+    assert.equal(body.error, "not_connected");
+  });
+});
