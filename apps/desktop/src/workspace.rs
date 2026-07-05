@@ -161,6 +161,25 @@ pub(crate) fn token_env_var(id: &str) -> String {
     )
 }
 
+/// The MCP token a spawned terminal must inject for a workspace's
+/// `PORTUNI_MCP_TOKEN_<ID>` env var.
+///
+/// After the agent-mode MCP front-door change the materialized `.mcp.json`
+/// for a central-mode (agent) workspace points at the LOCAL sidecar, whose
+/// gate authenticates with the per-launch `PORTUNI_AUTH_TOKEN` (the same
+/// value cached in `AuthTokens` and used by the webview proxy). So agent-mode
+/// terminals must carry that local token, NOT the central device token —
+/// otherwise the local gate returns 401. Local-mode terminals already used
+/// the local token; both modes now resolve to it. `is_central` is kept as an
+/// explicit parameter so the invariant (mode does not change the answer) is
+/// testable and regression-proof.
+pub(crate) fn terminal_mcp_token(
+    _is_central: bool,
+    local_token: Option<String>,
+) -> Option<String> {
+    local_token
+}
+
 pub(crate) fn keychain_account(base: &str, id: &str) -> String {
     format!("{base}.{id}")
 }
@@ -259,6 +278,28 @@ mod tests {
     fn token_env_var_uppercases_and_replaces_dashes() {
         assert_eq!(token_env_var("honzapav"), "PORTUNI_MCP_TOKEN_HONZAPAV");
         assert_eq!(token_env_var("honza-pav"), "PORTUNI_MCP_TOKEN_HONZA_PAV");
+    }
+
+    #[test]
+    fn terminal_mcp_token_is_local_for_both_modes() {
+        // Regression: agent-mode (central) terminals must carry the LOCAL
+        // sidecar launch token, never the central device token — the local
+        // .mcp.json gate authenticates with PORTUNI_AUTH_TOKEN, so a device
+        // (ptk_) token would 401.
+        let local = "local-launch-token".to_string();
+        assert_eq!(
+            terminal_mcp_token(true, Some(local.clone())),
+            Some(local.clone()),
+            "central-mode must inject the sidecar launch token"
+        );
+        assert_eq!(
+            terminal_mcp_token(false, Some(local.clone())),
+            Some(local),
+            "local-mode keeps injecting the sidecar launch token"
+        );
+        // No local token available -> nothing injected (no fallback to a
+        // device token).
+        assert_eq!(terminal_mcp_token(true, None), None);
     }
 
     #[test]
