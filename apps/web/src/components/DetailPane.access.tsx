@@ -7,7 +7,7 @@
 // DetailPane.tsx self-fetches sync status for the Files tab.
 
 import { useEffect, useRef, useState } from "react";
-import { Copy, Plus, Search, User, Users, X } from "lucide-react";
+import { Copy, Lock, Plus, Search, User, Users, X } from "lucide-react";
 import type {
   NodeAccessEntry,
   NodeAccessEntryInput,
@@ -69,6 +69,12 @@ function modeLabel(m: AccessMode | null): string {
   return m === "request" ? "Na vyžádání" : "Soukromé";
 }
 
+// The unified sharing selector's three modes -- one dimension stored in
+// `nodes.visibility` (spec: docs/superpowers/specs/2026-07-05-unified-sharing-tab-design.md).
+// "group" is the *detail* mode: it requires >= 1 node_access row (enforced
+// server-side, PUT 400s on an empty entries + visibility:"group" body).
+type VisibilityMode = "team" | "private" | "group";
+
 export function AccessSection({
   nodeId,
   canManage,
@@ -83,6 +89,24 @@ export function AccessSection({
   const [restricted, setRestricted] = useState(false);
   const [inherited, setInherited] = useState(false);
   const [sourceName, setSourceName] = useState<string | null>(null);
+  // The node's OWN visibility mode, as last fetched/saved -- drives the
+  // top-level Tým/Soukromé/Skupina selector together with `restricted`
+  // (see `effectiveMode` below: an inherited-restricted node shows as
+  // "group" even though its own column still reads "team").
+  const [visibility, setVisibility] = useState<VisibilityMode>("team");
+  // True while a manager is peeking at the group editor on a node that
+  // isn't (yet) restricted -- clicking "Skupina" only opens this local
+  // view, it never persists by itself (an empty group would 400 server
+  // side). Reset whenever the node changes or a mutation actually lands.
+  const [editingGroup, setEditingGroup] = useState(false);
+  // Armed when switching away from "Skupina" would drop this node's own
+  // (non-inherited) grants -- holds the target mode until "Potvrdit".
+  // window.confirm is a silent no-op in the Tauri macOS webview (see
+  // WorkspacesSection.tsx / SyncSection.tsx), hence the inline two-step
+  // pattern instead.
+  const [confirmTarget, setConfirmTarget] = useState<VisibilityMode | null>(
+    null,
+  );
   // Restriction mode of the authoritative node (self when !inherited, the
   // ancestor's when inherited). Null when unrestricted.
   const [mode, setMode] = useState<AccessMode | null>(null);
@@ -112,6 +136,8 @@ export function AccessSection({
     setAddingOpen(false);
     setSaveError(null);
     setOverriding(false);
+    setEditingGroup(false);
+    setConfirmTarget(null);
     fetchNodeAccess(nodeId)
       .then((res) => {
         if (cancelled) return;
@@ -119,6 +145,7 @@ export function AccessSection({
         setInherited(res.inherited);
         setSourceName(res.source_node_name);
         setMode(res.mode);
+        setVisibility(res.visibility as VisibilityMode);
         const eff = res.entries.map(entryToDraft);
         setEntries(eff);
         setDraft(res.inherited ? [] : eff);
@@ -135,21 +162,38 @@ export function AccessSection({
     };
   }, [nodeId]);
 
-  const persist = async (next: DraftEntry[], nextMode: AccessMode) => {
+  // `nextVisibility` is the authoritative arg added for the unified sharing
+  // control: "team"/"private" force entries empty server-side, "group"
+  // requires >= 1 entry. Omitted (the "Zrušit omezení" call below) keeps
+  // the legacy derive-from-entries behaviour, unchanged from before this
+  // feature.
+  const persist = async (
+    next: DraftEntry[],
+    nextMode: AccessMode,
+    nextVisibility?: VisibilityMode,
+  ) => {
     setSaving(true);
     setSaveError(null);
     try {
-      const res = await putNodeAccess(nodeId, next.map(draftToInput), nextMode);
+      const res = await putNodeAccess(
+        nodeId,
+        next.map(draftToInput),
+        nextMode,
+        nextVisibility,
+      );
       setRestricted(res.restricted);
       setInherited(res.inherited);
       setSourceName(res.source_node_name);
       setMode(res.mode);
+      setVisibility(res.visibility as VisibilityMode);
       const eff = res.entries.map(entryToDraft);
       setEntries(eff);
       setDraft(res.inherited ? [] : eff);
       setDraftMode(res.inherited ? "private" : (res.mode ?? "private"));
       setOverriding(false);
       setAddingOpen(false);
+      setEditingGroup(false);
+      setConfirmTarget(null);
       await onMutate();
     } catch (e) {
       console.error(e);
@@ -221,14 +265,65 @@ export function AccessSection({
   const dirty =
     draftSetKey(draft) !== ownKey || (draft.length > 0 && draftMode !== ownMode);
 
+  // The selector's displayed value: a node effectively governed by a group
+  // ACL -- whether the rows are its own or inherited from an ancestor --
+  // shows as "Skupina" even though `visibility` (the node's own column)
+  // may still read "team"/"private" (the common case for a default child
+  // of a group-restricted parent). `editingGroup` layers a local-only peek
+  // on top so a manager can open the group editor on an otherwise
+  // unrestricted node without persisting anything yet.
+  const effectiveMode: VisibilityMode = restricted ? "group" : visibility;
+  const displayedMode: VisibilityMode = editingGroup ? "group" : effectiveMode;
+
+  const selectMode = (target: VisibilityMode) => {
+    if (saving || target === displayedMode) return;
+    if (target === "group") {
+      setEditingGroup(true);
+      setConfirmTarget(null);
+      return;
+    }
+    // Switching away from "Skupina" to Tým/Soukromé. Only this node's OWN,
+    // non-inherited grants are at risk of being cleared -- an inherited-only
+    // restriction isn't touched by this node's own visibility column, and
+    // an unsaved "editingGroup" peek has nothing persisted to lose.
+    if (displayedMode === "group") {
+      const ownGrantsExist = restricted && !inherited && entries.length > 0;
+      if (ownGrantsExist) {
+        setConfirmTarget(target);
+        return;
+      }
+    }
+    void persist([], "private", target);
+  };
+
+  const confirmSwitch = () => {
+    const target = confirmTarget;
+    setConfirmTarget(null);
+    if (target) void persist([], "private", target);
+  };
+
   return (
-    <div className="space-y-2.5">
-      {!restricted && (
+    <div className="space-y-3">
+      <VisibilitySelector
+        value={displayedMode}
+        onChange={selectMode}
+        disabled={!canManage || saving}
+      />
+
+      {displayedMode === "team" && (
         <p className="text-[14px] text-[var(--color-text-muted)]">
-          Vidí všichni přihlášení
+          Vidí všichni přihlášení.
         </p>
       )}
 
+      {displayedMode === "private" && (
+        <p className="text-[14px] text-[var(--color-text-muted)]">
+          Vidí jen tvůrce a správci.
+        </p>
+      )}
+
+      {displayedMode === "group" && (
+      <div className="space-y-2.5">
       {effectiveInherited && (
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-[13px] text-[var(--color-text-dim)]">
@@ -295,11 +390,16 @@ export function AccessSection({
               </button>
             )}
           </div>
+          {draft.length === 0 && (
+            <p className="text-[12px] text-[var(--color-text-dim)]">
+              Přidej aspoň jednoho příjemce, jinak node uvidí jen správci.
+            </p>
+          )}
           <div className="flex gap-2 pt-0.5">
             <button
               type="button"
-              onClick={() => void persist(draft, draftMode)}
-              disabled={saving || !dirty}
+              onClick={() => void persist(draft, draftMode, "group")}
+              disabled={saving || !dirty || draft.length === 0}
               className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[13px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
             >
               {saving ? "Ukládám..." : "Uložit"}
@@ -315,13 +415,87 @@ export function AccessSection({
               </button>
             )}
           </div>
-          {saveError && (
-            <p className="text-[12px]" style={{ color: "var(--color-danger)" }}>
-              {saveError}
-            </p>
-          )}
         </>
       )}
+      </div>
+      )}
+
+      {confirmTarget && (
+        <div className="space-y-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
+          <p className="text-[12.5px] text-[var(--color-text-muted)]">
+            Přepnutím odebereš {entries.length} sdílení.
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={confirmSwitch}
+              disabled={saving}
+              className="rounded-md border border-[color:var(--color-danger-border)] bg-[var(--color-danger-bg)] px-3 py-1.5 text-[13px] font-medium text-[var(--color-danger)] transition-colors hover:bg-[var(--color-danger-bg-hover)] disabled:opacity-50"
+            >
+              {saving ? "…" : "Potvrdit"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmTarget(null)}
+              disabled={saving}
+              className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
+            >
+              Zrušit
+            </button>
+          </div>
+        </div>
+      )}
+
+      {saveError && (
+        <p className="text-[12px]" style={{ color: "var(--color-danger)" }}>
+          {saveError}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// Top-level segmented control for the unified sharing mode (spec:
+// docs/superpowers/specs/2026-07-05-unified-sharing-tab-design.md). Reflects
+// `displayedMode` from AccessSection -- an inherited or own group ACL both
+// show as "Skupina", team/private nodes show their own column value.
+function VisibilitySelector({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: VisibilityMode;
+  onChange: (mode: VisibilityMode) => void;
+  disabled?: boolean;
+}) {
+  const options: { value: VisibilityMode; label: string; Icon: typeof Users }[] = [
+    { value: "team", label: "Tým", Icon: Users },
+    { value: "private", label: "Soukromé", Icon: Lock },
+    { value: "group", label: "Skupina", Icon: Users },
+  ];
+  return (
+    <div className="inline-flex overflow-hidden rounded-md border border-[var(--color-border)]">
+      {options.map((opt, i) => {
+        const active = value === opt.value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => onChange(opt.value)}
+            disabled={disabled}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-[13px] transition-colors disabled:opacity-50 ${
+              i > 0 ? "border-l border-[var(--color-border)]" : ""
+            } ${
+              active
+                ? "bg-[var(--color-accent-dim)]/20 font-medium text-[var(--color-accent)]"
+                : "bg-[var(--color-surface)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+            }`}
+          >
+            <opt.Icon size={13} />
+            {opt.label}
+          </button>
+        );
+      })}
     </div>
   );
 }

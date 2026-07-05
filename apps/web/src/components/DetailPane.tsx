@@ -22,7 +22,6 @@ import {
   Save,
   Search,
   User,
-  Users,
   Lock,
   ChevronUp,
   ChevronDown,
@@ -46,7 +45,6 @@ import {
   RELATION_TYPES,
   LIFECYCLE_COLORS,
   LIFECYCLE_STATES_BY_TYPE,
-  NODE_VISIBILITIES,
 } from "../types";
 import { safeHref } from "../lib/safe-url";
 import { groupEventsByDate } from "../lib/events";
@@ -99,7 +97,7 @@ import { AccessSection } from "./DetailPane.access";
 // for repeat visits during a single session.
 const SYNC_STATUS_CACHE = new Map<string, Map<string, SyncStatusFile>>();
 
-type DetailTab = "overview" | "events" | "files" | "connections";
+type DetailTab = "overview" | "events" | "files" | "connections" | "sharing";
 // Survives the DetailPane unmount that happens when the editor takes over
 // the right slot (Option C). Without this, closing a file remounts the
 // pane and resets the tab to "overview" -- the bug in ukol 9.
@@ -685,25 +683,6 @@ function DetailPaneBody({
             onError={setErrorMsg}
           />
           <StatusDot status={node.status} />
-          <VisibilityDropdown
-            nodeId={node.id}
-            value={node.visibility}
-            onMutate={onMutate}
-            onError={setErrorMsg}
-          />
-          {node.visibility === "group" && (
-            <span
-              title="Sdílení je omezené na vybrané skupiny nebo uživatele"
-              className="rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider"
-              style={{
-                color: "var(--color-danger)",
-                background: "color-mix(in srgb, var(--color-danger) 12%, transparent)",
-                border: "1px solid color-mix(in srgb, var(--color-danger) 25%, transparent)",
-              }}
-            >
-              Omezené
-            </span>
-          )}
         </div>
         {editing ? (
           <input
@@ -772,6 +751,11 @@ function DetailPaneBody({
           onClick={() => setTab("connections")}
           label="Propojení"
           count={node.edges.length}
+        />
+        <TabButton
+          active={tab === "sharing"}
+          onClick={() => setTab("sharing")}
+          label="Sdílení"
         />
       </div>
 
@@ -904,19 +888,6 @@ function DetailPaneBody({
             />
           </Section>
         )}
-
-        {/* Sharing (Sdílení) -- self-fetches GET /nodes/:id/access rather
-            than reading from NodeDetail, since access is a separate
-            endpoint from the rest of the detail payload. Editable only
-            for global_scope manage/admin (canManage, resolved once from
-            /me in the outer DetailPane and threaded down as a prop). */}
-        <Section title="Sdílení">
-          <AccessSection
-            nodeId={node.id}
-            canManage={canManage}
-            onMutate={onMutate}
-          />
-        </Section>
 
         {editing && (
           <Section title="Nebezpečná oblast">
@@ -1090,6 +1061,16 @@ function DetailPaneBody({
                 />
               </div>
             )}
+          </div>
+        )}
+
+        {tab === "sharing" && (
+          <div className="px-5 py-4">
+            <AccessSection
+              nodeId={node.id}
+              canManage={canManage}
+              onMutate={onMutate}
+            />
           </div>
         )}
       </div>
@@ -1741,136 +1722,6 @@ function LifecycleDropdown({
               </span>
             </button>
           ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// "group" is not directly selectable here -- picking it would PATCH
-// visibility with zero node_access rows, which fails the node closed to
-// admin-only. Group visibility is only ever set via the "Sdílení" section's
-// ACL flow; the dropdown just reflects it as a disabled, informational entry
-// when it's already the node's current value (see below).
-const SELECTABLE_VISIBILITIES = NODE_VISIBILITIES.filter((v) => v !== "group");
-
-function VisibilityDropdown({
-  nodeId,
-  value,
-  onMutate,
-  onError,
-}: {
-  nodeId: string;
-  value: string;
-  onMutate: () => Promise<void>;
-  onError: (msg: string | null) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
-  const pick = async (next: string) => {
-    setOpen(false);
-    if (next === value) return;
-    setSaving(true);
-    onError(null);
-    try {
-      await updateNode(nodeId, { visibility: next });
-      await onMutate();
-    } catch (e) {
-      onError(String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const isPrivate = value === "private";
-  const Icon = isPrivate ? Lock : Users;
-  const label = isPrivate ? "soukromé" : "tým";
-  const tone = isPrivate
-    ? "border-[color:color-mix(in_srgb,var(--color-warning,#a16207)_50%,transparent)] text-[color:var(--color-warning,#a16207)]"
-    : "border-[var(--color-border)] text-[var(--color-text-dim)]";
-
-  return (
-    <div ref={containerRef} className="relative inline-flex">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        disabled={saving}
-        title="Změnit viditelnost nodu"
-        className={`inline-flex items-center gap-1 rounded-md border px-2 py-[2px] font-mono text-[11px] transition-opacity hover:opacity-80 disabled:opacity-50 ${tone}`}
-      >
-        <Icon size={11} strokeWidth={2} />
-        <span>{label}</span>
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full z-50 mt-1 min-w-[180px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
-          {SELECTABLE_VISIBILITIES.map((v) => {
-            const priv = v === "private";
-            const VIcon = priv ? Lock : Users;
-            const vLabel = priv ? "soukromé" : "tým";
-            const vHint = priv
-              ? "jen tvůrce"
-              : "všichni v týmu";
-            return (
-              <button
-                key={v}
-                type="button"
-                onClick={() => pick(v)}
-                className={`flex w-full items-start gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
-                  value === v ? "bg-[var(--color-surface-2)]" : ""
-                }`}
-              >
-                <VIcon
-                  size={12}
-                  strokeWidth={2}
-                  className="mt-[2px] shrink-0 text-[var(--color-text-dim)]"
-                />
-                <span className="flex flex-col">
-                  <span className="font-mono text-[11px] text-[var(--color-text)]">
-                    {vLabel}
-                  </span>
-                  <span className="text-[10px] text-[var(--color-text-dim)]">
-                    {vHint}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-          {value === "group" && (
-            <div
-              className="flex w-full cursor-default items-start gap-2 px-3 py-1.5 text-left text-[11.5px] opacity-60 bg-[var(--color-surface-2)]"
-              title="Viditelnost „skupina“ se nastavuje v sekci „Sdílení“, ne zde."
-            >
-              <Users
-                size={12}
-                strokeWidth={2}
-                className="mt-[2px] shrink-0 text-[var(--color-text-dim)]"
-              />
-              <span className="flex flex-col">
-                <span className="font-mono text-[11px] text-[var(--color-text)]">
-                  skupina
-                </span>
-                <span className="text-[10px] text-[var(--color-text-dim)]">
-                  spravováno v sekci „Sdílení“
-                </span>
-              </span>
-            </div>
-          )}
         </div>
       )}
     </div>
