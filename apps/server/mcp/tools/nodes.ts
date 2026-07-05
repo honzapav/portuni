@@ -79,7 +79,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_update_node",
-    "Update an existing node in the Portuni knowledge graph. Only provided fields change. Status is derived from lifecycle_state — prefer setting lifecycle_state. owner_id must reference an actor of type=person with user_id set, in the same organization.",
+    "Update an existing node in the Portuni knowledge graph. Only provided fields change. Status is derived from lifecycle_state — prefer setting lifecycle_state. owner_id must reference an existing actor (person, placeholder, or automation).",
     {
       node_id: z.string().describe("Node ID (ULID)"),
       name: z.string().optional().describe("New human-readable name"),
@@ -89,7 +89,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
       meta: z.record(z.string(), z.unknown()).optional().describe("New type-specific JSON data"),
       goal: z.string().nullable().optional().describe("New goal text. Pass null to clear."),
       lifecycle_state: z.string().nullable().optional().describe("New lifecycle state — type-specific. See portuni://enums for the per-type closed set. Pass null to clear."),
-      owner_id: z.string().nullable().optional().describe("New owner (actors.id). Must reference an actor of type=person with user_id set (non-placeholder) in the same organization. Pass null to clear."),
+      owner_id: z.string().nullable().optional().describe("New owner (actors.id). Any existing actor works — person, placeholder, or automation. Pass null to clear."),
     },
     async (args) => {
       const db = getDb();
