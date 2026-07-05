@@ -1,6 +1,7 @@
 import type { FileAdapter, FileRef, RemoteConfig, DeviceTokens } from "./types.js";
-import { parseDriveConfig, parseServiceAccountJson, type ServiceAccountKey, type DriveConfig } from "./drive-config.js";
+import { parseDriveConfig, parseServiceAccountJson, assertSaDriveConfig, type ServiceAccountKey, type DriveConfig } from "./drive-config.js";
 import { getDriveAccessToken, __setTokenFetchForTests } from "./drive-sa-auth.js";
+import { getUserAccessToken } from "./drive-user-auth.js";
 import { detectNativeFormat, EXPORT_MIME } from "./native-format.js";
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
@@ -34,11 +35,19 @@ interface DriveFile { id: string; name: string; mimeType: string; parents?: stri
 export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): FileAdapter {
   const cfg: DriveConfig = parseDriveConfig(remote.config);
   const t = tokens[remote.name];
-  if (!t?.service_account_json) {
-    throw new Error(`Drive remote ${remote.name}: no service account credentials on this device. Run portuni_setup_remote with service_account_json.`);
+  let getAccessToken: () => Promise<string>;
+  if (t?.mode === "refresh_token" && t.refresh_token) {
+    getAccessToken = () => getUserAccessToken(t);
+  } else if (t?.service_account_json) {
+    assertSaDriveConfig(cfg);
+    const sa: ServiceAccountKey = parseServiceAccountJson(t.service_account_json);
+    getAccessToken = () => getDriveAccessToken(sa);
+  } else {
+    throw new Error(
+      `Drive remote ${remote.name}: no credentials on this device. Connect Google Drive in Nastavení → Synchronizace, or run portuni_setup_remote with service_account_json.`,
+    );
   }
-  const sa: ServiceAccountKey = parseServiceAccountJson(t.service_account_json);
-  const driveRoot = cfg.root_folder_id ?? cfg.shared_drive_id!; // TODO(Task 3)
+  const driveRoot = cfg.root_folder_id ?? cfg.shared_drive_id!;
   const pathCache = new Map<string, string>([["", driveRoot]]);
 
   function invalidatePrefix(prefix: string): void {
@@ -50,11 +59,21 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
   }
 
   async function authHeaders(): Promise<Record<string, string>> {
-    return { Authorization: `Bearer ${await getDriveAccessToken(sa)}` };
+    return { Authorization: `Bearer ${await getAccessToken()}` };
   }
 
   function withSAD(params: URLSearchParams): URLSearchParams {
     params.set("supportsAllDrives", "true");
+    return params;
+  }
+
+  function withCorpora(params: URLSearchParams): URLSearchParams {
+    if (cfg.shared_drive_id) {
+      params.set("driveId", cfg.shared_drive_id);
+      params.set("corpora", "drive");
+    } else {
+      params.set("corpora", "user");
+    }
     return params;
   }
 
@@ -70,12 +89,11 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
       // orderBy pins the winner when same-name siblings exist (concurrent
       // puts from two devices): the oldest copy resolves consistently
       // instead of files[0] flapping between duplicates per call.
-      const params = withSAD(new URLSearchParams({
+      const params = withCorpora(withSAD(new URLSearchParams({
         q, fields: "files(id,name,mimeType)",
         orderBy: "createdTime",
         includeItemsFromAllDrives: "true",
-        driveId: cfg.shared_drive_id!, corpora: "drive", // TODO(Task 3)
-      }));
+      })));
       const res = await driveFetch(`${DRIVE_API}/files?${params.toString()}`, { headers: await authHeaders() });
       if (!res.ok) throw new Error(`Drive list: ${res.status} ${await res.text()}`);
       const b = (await res.json()) as { files?: DriveFile[] };
@@ -95,12 +113,11 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
       walked = walked ? `${walked}/${seg}` : seg;
       if (pathCache.has(walked)) { parentId = pathCache.get(walked)!; continue; }
       const q = `name = '${seg.replace(/'/g, "\\'")}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
-      const params = withSAD(new URLSearchParams({
+      const params = withCorpora(withSAD(new URLSearchParams({
         q, fields: "files(id,name)",
         orderBy: "createdTime",
         includeItemsFromAllDrives: "true",
-        driveId: cfg.shared_drive_id!, corpora: "drive", // TODO(Task 3)
-      }));
+      })));
       const res = await driveFetch(`${DRIVE_API}/files?${params.toString()}`, { headers: await authHeaders() });
       if (!res.ok) throw new Error(`Drive folder search: ${res.status} ${await res.text()}`);
       const b = (await res.json()) as { files?: DriveFile[] };
@@ -198,13 +215,12 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
       async function walk(folderId: string, prefixPath: string): Promise<void> {
         let pageToken: string | undefined;
         do {
-          const params = withSAD(new URLSearchParams({
+          const params = withCorpora(withSAD(new URLSearchParams({
             q: `'${folderId}' in parents and trashed = false`,
             fields: "nextPageToken,files(id,name,mimeType,size,md5Checksum,modifiedTime)",
             includeItemsFromAllDrives: "true",
-            driveId: cfg.shared_drive_id!, corpora: "drive", // TODO(Task 3)
             pageSize: "200",
-          }));
+          })));
           if (pageToken) params.set("pageToken", pageToken);
           const res = await driveFetch(`${DRIVE_API}/files?${params.toString()}`, { headers: await authHeaders() });
           if (!res.ok) throw new Error(`Drive list: ${res.status} ${await res.text()}`);
@@ -246,7 +262,7 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
       const newFolderPath = toParts.join("/");
       const newParentId = await ensureFolderPath(newFolderPath);
       const oldParentPath = fromParts.join("/");
-      const oldParentId = await resolvePathToFileId(oldParentPath) ?? driveRoot!; // TODO(Task 3)
+      const oldParentId = await resolvePathToFileId(oldParentPath) ?? driveRoot;
       const params = withSAD(new URLSearchParams({
         addParents: newParentId, removeParents: oldParentId,
         fields: "id,name,parents",
