@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseDriveConfig, isDriveRemote, parseServiceAccountJson } from "../apps/server/domain/sync/drive-config.js";
+import { parseDriveConfig, isDriveRemote, parseServiceAccountJson, assertSaDriveConfig } from "../apps/server/domain/sync/drive-config.js";
 
 const sampleSA = JSON.stringify({
   type: "service_account",
@@ -59,5 +59,30 @@ describe("drive-config", () => {
       token_uri: "http://oauth2.googleapis.com/token",
     });
     assert.throws(() => parseServiceAccountJson(bad), /token_uri/);
+  });
+});
+
+describe("parseDriveConfig (refresh-token era)", () => {
+  it("accepts root_folder_id-only config (My Drive)", () => {
+    const cfg = parseDriveConfig({ root_folder_id: "F1" });
+    assert.equal(cfg.root_folder_id, "F1");
+    assert.equal(cfg.shared_drive_id, undefined);
+  });
+
+  it("still accepts shared_drive_id-only config", () => {
+    const cfg = parseDriveConfig({ shared_drive_id: "D1" });
+    assert.equal(cfg.shared_drive_id, "D1");
+  });
+
+  it("rejects config with neither id", () => {
+    assert.throws(() => parseDriveConfig({}), /shared_drive_id or root_folder_id/);
+  });
+
+  it("assertSaDriveConfig rejects My Drive for service accounts", () => {
+    assert.throws(
+      () => assertSaDriveConfig(parseDriveConfig({ root_folder_id: "F1" })),
+      /Personal My Drive is not supported/,
+    );
+    assertSaDriveConfig(parseDriveConfig({ shared_drive_id: "D1" })); // no throw
   });
 });

@@ -1,20 +1,31 @@
 import type { RemoteConfig } from "./types.js";
 
 export interface DriveConfig {
-  shared_drive_id: string;
+  shared_drive_id?: string;
   root_folder_id?: string;
 }
 
 export function parseDriveConfig(raw: Record<string, unknown>): DriveConfig {
-  const sd = raw.shared_drive_id;
-  if (typeof sd !== "string" || sd.length === 0) {
-    throw new Error("Drive config requires shared_drive_id. Personal My Drive is not supported.");
+  const out: DriveConfig = {};
+  if (typeof raw.shared_drive_id === "string" && raw.shared_drive_id.length > 0) {
+    out.shared_drive_id = raw.shared_drive_id;
   }
-  const out: DriveConfig = { shared_drive_id: sd };
   if (typeof raw.root_folder_id === "string" && raw.root_folder_id.length > 0) {
     out.root_folder_id = raw.root_folder_id;
   }
+  if (!out.shared_drive_id && !out.root_folder_id) {
+    throw new Error("Drive config requires shared_drive_id or root_folder_id.");
+  }
   return out;
+}
+
+// Service accounts have no My Drive storage quota; they can only write
+// into a shared drive. User-OAuth (refresh_token) remotes have no such
+// restriction, so this check lives outside parseDriveConfig.
+export function assertSaDriveConfig(cfg: DriveConfig): void {
+  if (!cfg.shared_drive_id) {
+    throw new Error("Drive config requires shared_drive_id. Personal My Drive is not supported.");
+  }
 }
 
 export function isDriveRemote(r: RemoteConfig): boolean { return r.type === "gdrive"; }

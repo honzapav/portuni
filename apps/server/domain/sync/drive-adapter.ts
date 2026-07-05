@@ -38,7 +38,7 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
     throw new Error(`Drive remote ${remote.name}: no service account credentials on this device. Run portuni_setup_remote with service_account_json.`);
   }
   const sa: ServiceAccountKey = parseServiceAccountJson(t.service_account_json);
-  const driveRoot = cfg.root_folder_id ?? cfg.shared_drive_id;
+  const driveRoot = cfg.root_folder_id ?? cfg.shared_drive_id!; // TODO(Task 3)
   const pathCache = new Map<string, string>([["", driveRoot]]);
 
   function invalidatePrefix(prefix: string): void {
@@ -74,7 +74,7 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
         q, fields: "files(id,name,mimeType)",
         orderBy: "createdTime",
         includeItemsFromAllDrives: "true",
-        driveId: cfg.shared_drive_id, corpora: "drive",
+        driveId: cfg.shared_drive_id!, corpora: "drive", // TODO(Task 3)
       }));
       const res = await driveFetch(`${DRIVE_API}/files?${params.toString()}`, { headers: await authHeaders() });
       if (!res.ok) throw new Error(`Drive list: ${res.status} ${await res.text()}`);
@@ -99,7 +99,7 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
         q, fields: "files(id,name)",
         orderBy: "createdTime",
         includeItemsFromAllDrives: "true",
-        driveId: cfg.shared_drive_id, corpora: "drive",
+        driveId: cfg.shared_drive_id!, corpora: "drive", // TODO(Task 3)
       }));
       const res = await driveFetch(`${DRIVE_API}/files?${params.toString()}`, { headers: await authHeaders() });
       if (!res.ok) throw new Error(`Drive folder search: ${res.status} ${await res.text()}`);
@@ -202,7 +202,7 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
             q: `'${folderId}' in parents and trashed = false`,
             fields: "nextPageToken,files(id,name,mimeType,size,md5Checksum,modifiedTime)",
             includeItemsFromAllDrives: "true",
-            driveId: cfg.shared_drive_id, corpora: "drive",
+            driveId: cfg.shared_drive_id!, corpora: "drive", // TODO(Task 3)
             pageSize: "200",
           }));
           if (pageToken) params.set("pageToken", pageToken);
@@ -246,7 +246,7 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
       const newFolderPath = toParts.join("/");
       const newParentId = await ensureFolderPath(newFolderPath);
       const oldParentPath = fromParts.join("/");
-      const oldParentId = await resolvePathToFileId(oldParentPath) ?? driveRoot;
+      const oldParentId = await resolvePathToFileId(oldParentPath) ?? driveRoot!; // TODO(Task 3)
       const params = withSAD(new URLSearchParams({
         addParents: newParentId, removeParents: oldParentId,
         fields: "id,name,parents",
