@@ -81,6 +81,24 @@ tmux loop for backend iteration.
 
 ~95% of changes are the first row.
 
+## Releases & commit conventions
+
+- **Conventional Commits are load-bearing, not style.** release-please parses
+  `git log` to compute the next version and generate `CHANGELOG.md`. Use
+  `feat:` (minor), `fix:` (patch), or `docs:`/`chore:`/`refactor:`/`test:`/
+  `ci:` (no bump). On `0.x` a breaking change (`feat!:`) bumps minor, not
+  major. Keep scopes consistent with `git log` (`sync`, `mcp`, `desktop`,
+  `web`, `auth`, …).
+- **Never hand-bump the version.** It lives in four manifests kept in lockstep
+  — `package.json`, `apps/web/package.json`, `apps/desktop/tauri.conf.json`,
+  `apps/desktop/Cargo.toml` — and release-please owns all four
+  (`release-please-config.json`). The Cargo.toml line carries a
+  `# x-release-please-version` annotation; don't remove it.
+- **Don't manually tag `v*` or cut releases.** Merging to `main` makes
+  release-please open a `chore: release X.Y.Z` PR; merging *that* tags the
+  version and fires `release.yml` (signed DMG). Full flow + one-time PAT setup:
+  `CONTRIBUTING.md`, `docs/release-process.md`.
+
 ## Gotchas
 
 - **Source of truth is Turso**, not the local SQLite at

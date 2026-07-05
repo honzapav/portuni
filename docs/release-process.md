@@ -17,7 +17,21 @@ the discovery that produced it.
   organisation" (URL + token) or "start locally", then writes the
   config and Keychain entry itself. Replaces the previous flow where
   the user had to hand-edit `config.json` before launching the app.
-- **release-please.** Not yet wired. See "Plan" below.
+- **release-please.** Wired (2026-07-05). `release-please-config.json` +
+  `.release-please-manifest.json` at the repo root drive version bumps across
+  the four manifests (`package.json`, `apps/web/package.json`,
+  `apps/desktop/tauri.conf.json`, `apps/desktop/Cargo.toml` — the latter via a
+  `# x-release-please-version` annotation) and generate `CHANGELOG.md`.
+  `.github/workflows/release-please.yml` runs on push to `main` and maintains
+  the `chore: release X.Y.Z` PR; merging it tags `vX.Y.Z`, which triggers
+  `release.yml`. The tag is pushed with the fine-grained PAT secret
+  `RELEASE_PLEASE_TOKEN` (Contents + Pull requests RW, scoped to this repo;
+  copy in Bitwarden "Portuni release-please PAT") — NOT `GITHUB_TOKEN`, whose
+  tags don't trigger downstream workflows. `bootstrap-sha` in the config
+  anchors the first changelog at wiring time so it doesn't replay all history.
+  Flow + commit conventions: `CONTRIBUTING.md`. The "Plan" section below is the
+  original design; the paths there (`app/`, `src-tauri/`) predate the `apps/`
+  restructure — the shipped config uses `apps/web` / `apps/desktop`.
 - **PR / branch hygiene.** Not yet enforced. See "Plan" below.
 - **Code signing + notarisation.** Wired (2026-07-04, account exists).
   `release.yml` passes the `APPLE_*` secrets to tauri-action;

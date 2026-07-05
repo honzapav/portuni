@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bootstrap-sha": "3342c2c3a8e8debcd4ec3c461d25d15d706f8556",
+  "packages": {
+    ".": {
+      "release-type": "node",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": false,
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "apps/web/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "apps/desktop/tauri.conf.json",
+          "jsonpath": "$.version"
+        },
+        "apps/desktop/Cargo.toml"
+      ]
+    }
+  }
+}
