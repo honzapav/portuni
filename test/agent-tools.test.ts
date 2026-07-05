@@ -225,6 +225,18 @@ describe("portuni_status", () => {
     assert.ok(Array.isArray(payload.clean));
     assert.ok(Array.isArray(payload.push_candidates));
   });
+
+  it("honors include_discovery: false (no new_local scan)", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    await writeFile(join(mirrorRoot, "wip", "loose.txt"), "x");
+    const r = await callLocalTool(fake, "U1", "portuni_status", {
+      node_id: NODE_ID,
+      include_discovery: false,
+    });
+    const payload = JSON.parse(r.content[0].text);
+    assert.equal(payload.new_local.length, 0);
+  });
 });
 
 describe("portuni_store", () => {
@@ -258,6 +270,36 @@ describe("portuni_store", () => {
     const payload = JSON.parse(r.content[0].text);
     assert.equal(payload.hash, sha(Buffer.from("v2")));
     assert.equal(fake.bytes.get(posix.join(NODE_ROOT, "wip/a.md"))?.toString(), "v2");
+  });
+
+  it("fails loudly when description is passed (agent plane cannot persist it)", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "meta.md");
+    await writeFile(abs, "x");
+    const r = await callLocalTool(fake, "U1", "portuni_store", {
+      node_id: NODE_ID,
+      local_path: abs,
+      description: "will be lost",
+    });
+    assert.equal(r.isError, true);
+    assert.match(r.content[0].text, /not supported by the agent plane/);
+    // Nothing was registered or pushed.
+    assert.equal(fake.records.size, 0);
+  });
+
+  it("fails loudly for a source path outside the mirror sections", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    const outside = join(workspace, "external.md");
+    await writeFile(outside, "outside the mirror");
+    const r = await callLocalTool(fake, "U1", "portuni_store", {
+      node_id: NODE_ID,
+      local_path: outside,
+    });
+    assert.equal(r.isError, true);
+    assert.match(r.content[0].text, /not supported by the agent plane/);
+    assert.equal(fake.records.size, 0);
   });
 });
 
@@ -297,5 +339,20 @@ describe("portuni_adopt_files", () => {
     assert.equal(payload.adopted.length, 1);
     assert.equal(payload.adopted[0].filename, "loose.txt");
     assert.equal(payload.skipped.length, 0);
+    // Payload contract matches the local tool when paths is empty.
+    assert.equal("note" in payload, false);
+  });
+
+  it("surfaces a note when caller-provided paths are ignored", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    await writeFile(join(mirrorRoot, "wip", "loose.txt"), "adopt me");
+    const r = await callLocalTool(fake, "U1", "portuni_adopt_files", {
+      node_id: NODE_ID,
+      paths: [posix.join(NODE_ROOT, "wip/some-remote-file.md")],
+    });
+    const payload = JSON.parse(r.content[0].text);
+    assert.equal(payload.adopted.length, 1);
+    assert.match(payload.note, /ignores `paths`/);
   });
 });
