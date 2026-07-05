@@ -24,9 +24,24 @@ async function readJson<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
+// Mirrors api.ts's throwForStatus: the backend returns {error: "..."} bodies
+// (e.g. "target requires exactly one of shared_drive_id | my_drive") that
+// are worth surfacing verbatim instead of just the bare status code.
+async function throwForStatus(res: Response, label: string): Promise<never> {
+  let detail = "";
+  try {
+    const body = (await res.clone().json()) as { error?: string };
+    if (body?.error) detail = body.error;
+  } catch {
+    /* body not JSON -- fall through */
+  }
+  if (!detail) detail = await res.text().catch(() => "");
+  throw new Error(detail ? `${label}: ${res.status} ${detail}` : `${label}: ${res.status}`);
+}
+
 export async function fetchDriveStatus(): Promise<DriveStatus> {
   const res = await apiFetch("/sync/drive/status");
-  if (!res.ok) throw new Error(`GET /sync/drive/status failed: ${res.status}`);
+  if (!res.ok) await throwForStatus(res, "GET /sync/drive/status failed");
   return readJson<DriveStatus>(res);
 }
 
@@ -36,7 +51,7 @@ export async function fetchDriveStatus(): Promise<DriveStatus> {
 export async function fetchDriveTargets(): Promise<DriveTarget[]> {
   const res = await apiFetch("/sync/drive/targets");
   if (res.status === 409) return [];
-  if (!res.ok) throw new Error(`GET /sync/drive/targets failed: ${res.status}`);
+  if (!res.ok) await throwForStatus(res, "GET /sync/drive/targets failed");
   const body = await readJson<{ shared_drives: DriveTarget[] }>(res);
   return body.shared_drives;
 }
@@ -49,18 +64,18 @@ export async function setDriveTarget(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(sel),
   });
-  if (!res.ok) throw new Error(`POST /sync/drive/target failed: ${res.status}`);
+  if (!res.ok) await throwForStatus(res, "POST /sync/drive/target failed");
 }
 
 export async function testDrive(): Promise<TestDriveResult> {
   const res = await apiFetch("/sync/drive/test", { method: "POST" });
-  if (!res.ok) throw new Error(`POST /sync/drive/test failed: ${res.status}`);
+  if (!res.ok) await throwForStatus(res, "POST /sync/drive/test failed");
   return readJson<TestDriveResult>(res);
 }
 
 export async function disconnectDrive(): Promise<void> {
   const res = await apiFetch("/sync/drive/disconnect", { method: "POST" });
-  if (!res.ok) throw new Error(`POST /sync/drive/disconnect failed: ${res.status}`);
+  if (!res.ok) await throwForStatus(res, "POST /sync/drive/disconnect failed");
 }
 
 // Runs the PKCE + loopback OAuth flow in Rust and POSTs the refresh token

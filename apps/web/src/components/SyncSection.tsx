@@ -336,6 +336,11 @@ function ActivePanel({
   const [testBusy, setTestBusy] = useState(false);
   const [testResult, setTestResult] = useState<TestResultState>(null);
   const [disconnectBusy, setDisconnectBusy] = useState(false);
+  // Inline two-step disconnect confirm: window.confirm is a silent no-op in
+  // the Tauri webview on macOS (see WorkspacesSection.tsx, DetailPane.tsx:306,
+  // commit d229d84). Arms on the first "Odpojit" click, swaps the button for
+  // a warning + Potvrdit/Zrušit pair.
+  const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
   const mountedRef = useRef(true);
   useEffect(() => {
     return () => {
@@ -368,7 +373,7 @@ function ActivePanel({
   }
 
   async function handleDisconnect() {
-    if (!window.confirm(DISCONNECT_CONFIRM_MESSAGE)) return;
+    setConfirmingDisconnect(false);
     setDisconnectBusy(true);
     try {
       await disconnectDrive();
@@ -399,15 +404,42 @@ function ActivePanel({
         >
           {testBusy ? "Testuji…" : "Otestovat připojení"}
         </button>
-        <button
-          type="button"
-          disabled={disconnectBusy}
-          onClick={() => void handleDisconnect()}
-          className="rounded border border-[var(--color-border)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-dim)] transition-colors hover:border-red-900/50 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {disconnectBusy ? "…" : "Odpojit"}
-        </button>
+        {confirmingDisconnect ? (
+          <>
+            <button
+              type="button"
+              disabled={disconnectBusy}
+              onClick={() => void handleDisconnect()}
+              className="rounded border border-red-900/50 bg-red-950/20 px-2.5 py-1.5 text-[12.5px] font-medium text-red-300 transition-colors hover:border-red-800 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {disconnectBusy ? "…" : "Potvrdit"}
+            </button>
+            <button
+              type="button"
+              disabled={disconnectBusy}
+              onClick={() => setConfirmingDisconnect(false)}
+              className="rounded border border-[var(--color-border)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Zrušit
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            disabled={disconnectBusy}
+            onClick={() => setConfirmingDisconnect(true)}
+            className="rounded border border-[var(--color-border)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-dim)] transition-colors hover:border-red-900/50 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Odpojit
+          </button>
+        )}
       </div>
+
+      {confirmingDisconnect && (
+        <div className="max-w-[420px] text-[11px] leading-snug text-[var(--color-text-dim)]">
+          {DISCONNECT_CONFIRM_MESSAGE}
+        </div>
+      )}
 
       {testResult?.kind === "ok" && (
         <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-[12.5px] text-green-400">
