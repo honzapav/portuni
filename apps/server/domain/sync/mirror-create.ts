@@ -44,6 +44,13 @@ const TYPE_PLURAL: Record<string, string> = {
   principle: "principles",
 };
 
+// Central server has no local file plane, so PORTUNI_WORKSPACE_ROOT is never
+// set there; this hint redirects the caller to the device that owns the
+// mirror instead of reading as a generic misconfiguration.
+export const DEVICE_LOCAL_HINT =
+  "this is a device-local operation: this server has no local file plane. " +
+  "Run it via the Portuni desktop app (or its local agent MCP) on the device that owns the mirror.";
+
 export class MirrorCreateError extends Error {
   constructor(
     message: string,
@@ -238,7 +245,7 @@ export async function createMirrorForNode(
   const root = process.env.PORTUNI_WORKSPACE_ROOT?.replace(/^~/, homedir());
   if (!root) {
     throw new MirrorCreateError(
-      "PORTUNI_WORKSPACE_ROOT env variable is not set",
+      `PORTUNI_WORKSPACE_ROOT is not set — ${DEVICE_LOCAL_HINT}`,
       "WORKSPACE_ROOT_UNSET",
     );
   }
