@@ -169,30 +169,26 @@ fn global_entry_parts(
 ) -> Result<(String, String, String, String), String> {
     let name = workspace::mcp_server_name(ws_id, cfg);
     let token_env = workspace::token_env_var(ws_id);
-    if workspace::is_central(cfg) {
-        let server_url = cfg
-            .server_url
-            .clone()
-            .ok_or_else(|| format!("workspace {ws_id}: central mode requires server_url"))?;
-        let url = format!("{}/mcp", server_url.trim_end_matches('/'));
-        let claude_token = format!("${{{token_env}:-}}");
-        Ok((name, url, claude_token, token_env))
-    } else {
-        let port = cfg
-            .mcp_port
-            .ok_or_else(|| format!("workspace {ws_id}: no mcp_port assigned"))?;
-        let url = format!("http://127.0.0.1:{port}/mcp");
-        let token = app
-            .state::<AuthTokens>()
-            .0
-            .lock()
-            .map_err(|e| e.to_string())?
-            .get(ws_id)
-            .cloned()
-            .or_else(|| keychain_get_ws(KEYCHAIN_MCP_ACCOUNT, ws_id))
-            .ok_or_else(|| format!("workspace {ws_id}: MCP token unavailable"))?;
-        Ok((name, url, token, token_env))
-    }
+    // Both data modes run a local sidecar serving the MCP front door, so the
+    // global config always targets it — never the central `server_url`. A
+    // central URL would route device-local tools (portuni_mirror/store) to a
+    // server with no local file plane. See workspace::global_front_door_url.
+    let url =
+        workspace::global_front_door_url(cfg).map_err(|e| format!("workspace {ws_id}: {e}"))?;
+    // Claude's ~/.claude.json embeds the literal token (its http-server
+    // headers do not expand env vars for out-of-mirror shells); Codex/Vibe
+    // callers use the returned token_env instead. Loopback-only, rotating
+    // per-launch token — the same accepted trade-off local mode already made.
+    let token = app
+        .state::<AuthTokens>()
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(ws_id)
+        .cloned()
+        .or_else(|| keychain_get_ws(KEYCHAIN_MCP_ACCOUNT, ws_id))
+        .ok_or_else(|| format!("workspace {ws_id}: MCP token unavailable"))?;
+    Ok((name, url, token, token_env))
 }
 
 pub(crate) fn enabled_workspaces(

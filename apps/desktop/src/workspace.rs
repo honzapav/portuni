@@ -232,6 +232,22 @@ pub(crate) fn is_central(cfg: &WorkspaceConfig) -> bool {
     cfg.data_mode.as_deref() == Some("central")
 }
 
+/// URL for the user-scoped global MCP config (~/.claude.json, Codex, Vibe).
+/// Always the local sidecar's front door, in BOTH data modes: even in
+/// central/agent mode the sidecar serves MCP locally (device-local tools —
+/// portuni_mirror/store/status/pull/adopt_files — run on disk here; graph
+/// tools are proxied to the central server). Pointing the global config at
+/// the central `server_url` instead routes device-local tools to a server
+/// with no local file plane, which fails with "PORTUNI_WORKSPACE_ROOT is
+/// not set". See the agent-mode MCP front door (server: resolvePortuniMcpUrl
+/// does the equivalent for per-mirror configs).
+pub(crate) fn global_front_door_url(cfg: &WorkspaceConfig) -> Result<String, String> {
+    let port = cfg
+        .mcp_port
+        .ok_or_else(|| "workspace has no mcp_port assigned".to_string())?;
+    Ok(format!("http://127.0.0.1:{port}/mcp"))
+}
+
 /// Pure v1 -> v2 transform: wrap the flat config fields into a single
 /// workspace under `id`. The migrated workspace keeps the historical
 /// "portuni" MCP entry name and its existing port (or the base default).
@@ -261,6 +277,29 @@ mod tests {
             mcp_port: port,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn global_front_door_url_is_local_in_both_modes() {
+        // Local mode.
+        assert_eq!(
+            global_front_door_url(&ws(Some(47011))).unwrap(),
+            "http://127.0.0.1:47011/mcp"
+        );
+        // Central mode with a server_url must STILL resolve to the local
+        // front door — the regression this guards (was: {server_url}/mcp).
+        let mut central = ws(Some(47011));
+        central.data_mode = Some("central".to_string());
+        central.server_url = Some("https://api.portuni.com".to_string());
+        assert_eq!(
+            global_front_door_url(&central).unwrap(),
+            "http://127.0.0.1:47011/mcp"
+        );
+    }
+
+    #[test]
+    fn global_front_door_url_errors_without_port() {
+        assert!(global_front_door_url(&ws(None)).is_err());
     }
 
     #[test]
