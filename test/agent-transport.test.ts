@@ -70,9 +70,34 @@ const identity: RequestIdentity = {
   via: "env",
 };
 
-function startStubCentral(): Promise<{ base: string; close: () => Promise<void> }> {
+interface StubCentral {
+  base: string;
+  close: () => Promise<void>;
+  // Every request-target (path + query) the stub's HTTP layer saw. Used to
+  // assert the agent forwards ?home_node_id=... onto the upstream URL.
+  seenUrls: string[];
+  // Number of upstream MCP sessions initialized on the stub (one per
+  // openUpstream() in the agent transport).
+  sessionsInitialized: () => number;
+  // Live standalone GET SSE streams. The SDK client opens one after the
+  // initialized notification and its close() aborts it -- so an upstream
+  // client that was properly closed leaves no open GET behind, while a
+  // leaked one holds its stream open forever.
+  openGets: () => number;
+}
+
+function startStubCentral(): Promise<StubCentral> {
   const sessions = new Map<string, StreamableHTTPServerTransport>();
+  const seenUrls: string[] = [];
+  let openGets = 0;
   const httpServer = createServer(async (req, res) => {
+    seenUrls.push(req.url ?? "");
+    if (req.method === "GET") {
+      openGets++;
+      res.on("close", () => {
+        openGets--;
+      });
+    }
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
     const raw = Buffer.concat(chunks).toString("utf8");
@@ -111,15 +136,29 @@ function startStubCentral(): Promise<{ base: string; close: () => Promise<void> 
           new Promise<void>((r) => {
             for (const t of sessions.values()) t.close().catch(() => undefined);
             httpServer.close(() => r());
+            httpServer.closeAllConnections?.();
           }),
+        seenUrls,
+        sessionsInitialized: () => sessions.size,
+        openGets: () => openGets,
       });
     });
   });
 }
 
+async function waitFor(cond: () => boolean, ms = 2000): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (cond()) return true;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return cond();
+}
+
 let workspace: string;
-let central: { base: string; close: () => Promise<void> };
+let central: StubCentral;
 let agentServer: Server;
+let agentBase: string;
 let agentTransport: ReturnType<typeof createAgentMcpTransport>;
 let localClient: Client;
 
@@ -139,10 +178,13 @@ before(async () => {
   });
   await new Promise<void>((r) => agentServer.listen(0, "127.0.0.1", r));
   const addr = agentServer.address() as AddressInfo;
-  const agentBase = `http://127.0.0.1:${addr.port}`;
+  agentBase = `http://127.0.0.1:${addr.port}`;
 
   localClient = new Client({ name: "agent-transport-test", version: "0.0.0" });
   await localClient.connect(new StreamableHTTPClientTransport(new URL(`${agentBase}/mcp`)));
+  // Let the shared session's upstream standalone GET stream settle so the
+  // leak test below starts from a stable openGets baseline.
+  await waitFor(() => central.openGets() >= 1);
 });
 
 after(async () => {
@@ -190,5 +232,61 @@ describe("agent MCP front door", () => {
     });
     assert.equal(r.isError, true);
     assert.match(JSON.stringify(r.content), /no local mirror/);
+  });
+
+  it("forwards ?home_node_id onto the upstream central URL", async () => {
+    const homeClient = new Client({ name: "agent-transport-home", version: "0.0.0" });
+    await homeClient.connect(
+      new StreamableHTTPClientTransport(
+        new URL(`${agentBase}/mcp?home_node_id=01TESTHOME000000000000000`),
+      ),
+    );
+    try {
+      assert.ok(
+        central.seenUrls.some((u) => u.includes("home_node_id=01TESTHOME000000000000000")),
+        `central never saw home_node_id; urls: ${central.seenUrls.join(", ")}`,
+      );
+    } finally {
+      await homeClient.close().catch(() => undefined);
+    }
+    // Closing the local client does not tear down the agent-side session
+    // (streamable HTTP close is client-local), so this session's upstream --
+    // and its standalone GET stream -- stays alive until GC/shutdown. Wait
+    // for that GET to open so the leak test below starts from a stable
+    // baseline instead of racing it.
+    await waitFor(() => central.openGets() >= 2);
+  });
+
+  it("closes the upstream client when the first request never initializes a session", async () => {
+    const sessionsBefore = central.sessionsInitialized();
+    const getsBefore = central.openGets();
+
+    // A first request that is NOT an initialize (and carries no
+    // mcp-session-id): the SDK server transport rejects it with 400 and
+    // onsessioninitialized never fires -- the freshly opened upstream client
+    // must be closed by the transport, not orphaned.
+    const res = await fetch(`${agentBase}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    assert.equal(res.status, 400);
+    await res.body?.cancel();
+
+    // The agent DID open an upstream connection for the doomed request...
+    assert.equal(central.sessionsInitialized(), sessionsBefore + 1);
+    // ...and closed it: a leaked client would (eventually) hold its
+    // standalone GET SSE stream open forever, so openGets must return to
+    // the pre-request baseline and stay there.
+    const settled = await waitFor(() => central.openGets() === getsBefore);
+    assert.ok(
+      settled,
+      `orphaned upstream GET stream still open: ${central.openGets()} != ${getsBefore}`,
+    );
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(central.openGets(), getsBefore, "upstream GET stream reopened after close");
   });
 });

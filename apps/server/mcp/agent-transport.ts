@@ -37,7 +37,6 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
-  InitializeRequestSchema,
   ListToolsRequestSchema,
   CallToolRequestSchema,
   ListResourcesRequestSchema,
@@ -164,6 +163,16 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
   ): Promise<void> {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
+    // Pre-registration leak guard: the upstream Client is opened BEFORE the
+    // session entry exists (storage happens in onsessioninitialized during a
+    // successful initialize). If the first request is not an initialize, or
+    // anything throws before that callback fires, no session entry ever
+    // references the client -- onclose/GC/shutdown would never close it. Track
+    // the client and whether it got adopted by a session so every early-exit
+    // path below can close the orphan.
+    let upstream: Client | null = null;
+    let tracked = false;
+
     let body: unknown;
     try {
       body = await parseBody(req);
@@ -209,7 +218,6 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
       // upstream is a 503 with the underlying reason (same contract as the
       // auto-seed 503 in transport.ts) rather than an empty-scope session.
       const homeNodeId = parseHomeNodeIdFromUrl(req.url);
-      let upstream: Client;
       try {
         upstream = await openUpstream(opts, homeNodeId);
       } catch (err) {
@@ -225,34 +233,43 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
         return;
       }
 
+      const up = upstream;
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (newSessionId) => {
+          tracked = true;
           sessions.set(newSessionId, {
             transport,
-            upstream,
+            upstream: up,
             lastUsedAt: Date.now(),
             userId: identity.userId,
           });
         },
       });
 
+      // Each transport owns exactly one upstream client: whenever the local
+      // side closes (explicit close, GC, orphan cleanup), the upstream
+      // session goes with it. close() is idempotent, so overlap with the
+      // explicit orphan cleanup below is harmless.
       transport.onclose = () => {
-        if (transport.sessionId) {
-          const entry = sessions.get(transport.sessionId);
-          sessions.delete(transport.sessionId);
-          if (entry) entry.upstream.close().catch(() => undefined);
-          else upstream.close().catch(() => undefined);
-        } else {
-          upstream.close().catch(() => undefined);
-        }
+        if (transport.sessionId) sessions.delete(transport.sessionId);
+        up.close().catch(() => undefined);
       };
 
-      const server = buildAgentServer(opts, upstream, identity);
+      const server = buildAgentServer(opts, up, identity);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
+
+      if (!tracked) {
+        // The request never initialized a session (e.g. a non-initialize
+        // first request, which the SDK rejects with 400): without this the
+        // freshly opened upstream client would be orphaned forever.
+        transport.close().catch(() => undefined);
+        up.close().catch(() => undefined);
+      }
     } catch (error) {
       console.error("Agent MCP error:", error);
+      if (upstream && !tracked) upstream.close().catch(() => undefined);
       if (!res.headersSent) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Internal server error" }));
