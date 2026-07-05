@@ -11,6 +11,7 @@ import SettingsActorsPanel from "./SettingsPage.actors";
 import SettingsUsersPanel from "./SettingsPage.users";
 import AccountSection from "./AccountSection";
 import WorkspacesSection from "./WorkspacesSection";
+import SyncSection from "./SyncSection";
 import { fetchMe } from "../api";
 
 type Props = {
@@ -20,7 +21,7 @@ type Props = {
   onTerminalLaunchChange: (value: string) => void;
 };
 
-type SubTab = "general" | "actors" | "account" | "workspaces" | "users";
+type SubTab = "general" | "actors" | "account" | "workspaces" | "sync" | "users";
 
 export default function SettingsPage({
   agentCommand,
@@ -34,6 +35,7 @@ export default function SettingsPage({
     if (t === "actors") return "actors";
     if (t === "account") return "account";
     if (t === "workspaces") return "workspaces";
+    if (t === "sync") return "sync";
     if (t === "users") return "users";
     return "general";
   });
@@ -183,6 +185,16 @@ export default function SettingsPage({
             >
               Workspaces
             </button>
+            <button
+              onClick={() => setTab("sync")}
+              className={`rounded px-3 py-1 text-[13px] transition-colors ${
+                tab === "sync"
+                  ? "bg-[var(--color-bg)] text-[var(--color-text)]"
+                  : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+              }`}
+            >
+              Synchronizace
+            </button>
             {isAdmin && (
               <button
                 onClick={() => setTab("users")}
@@ -203,6 +215,8 @@ export default function SettingsPage({
         {tab === "account" && <AccountSection />}
 
         {tab === "workspaces" && <WorkspacesSection />}
+
+        {tab === "sync" && <SyncSection />}
 
         {tab === "users" && isAdmin && <SettingsUsersPanel />}
 
