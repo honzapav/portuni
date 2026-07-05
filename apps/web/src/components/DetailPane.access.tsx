@@ -469,7 +469,7 @@ function VisibilitySelector({
   disabled?: boolean;
 }) {
   const options: { value: VisibilityMode; label: string; Icon: typeof Users }[] = [
-    { value: "team", label: "Tým", Icon: Users },
+    { value: "team", label: "Všichni", Icon: Users },
     { value: "private", label: "Soukromé", Icon: Lock },
     { value: "group", label: "Skupina", Icon: Users },
   ];
