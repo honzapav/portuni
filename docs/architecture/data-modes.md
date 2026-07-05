@@ -98,9 +98,15 @@ REST routes or the webview.
 
 Follow-up gaps, not yet built:
 - `portuni_move_file`, `portuni_rename_folder`, `portuni_delete_file`,
-  `portuni_snapshot` have no agent-mode handler — they still proxy to
-  central, which answers with the device-local-operation error (same as the
-  REST 501 above).
+  `portuni_snapshot` have no agent-mode handler — they proxy to central,
+  and central **executes them**: it mutates the registry/remote and reports
+  `local_done: false` (verified for `portuni_move_file`: status ok,
+  `remote_done: true`, `local_done: false`). The teammate's local mirror
+  file is left in place, stale — until a later sync happens to reconcile
+  it, or forever. This is a known correctness gap (silent local/remote
+  divergence, not a clean error); the follow-up is either local
+  interception like store/pull, or a central-side guard that refuses these
+  calls for agent sessions.
 - Scope disk projection (`.portuni-scope/` copies via `ScopeReconciler`,
   see [`scope-disk-projection.md`](./scope-disk-projection.md)) is not
   implemented for agent-mode MCP sessions; scope lives only in the upstream

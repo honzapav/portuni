@@ -165,14 +165,25 @@ test -n "$MCP_SESSION" || { echo "FAIL: initialize did not return mcp-session-id
 echo "mcp session: $MCP_SESSION"
 
 mcp_call() { # $1=id $2=method $3=params(json) -> prints the SSE "data:" payload
-  curl -fsS -m 20 \
+  local body payload
+  body=$(curl -fsS -m 20 \
     -H "Authorization: Bearer agent-local-token" \
     -H "Content-Type: application/json" \
     -H "Accept: application/json, text/event-stream" \
     -H "mcp-session-id: $MCP_SESSION" \
     -X POST "http://127.0.0.1:$AGENT_PORT/mcp" \
-    -d "{\"jsonrpc\":\"2.0\",\"id\":$1,\"method\":\"$2\",\"params\":$3}" \
-    | grep '^data: ' | head -1 | sed 's/^data: //'
+    -d "{\"jsonrpc\":\"2.0\",\"id\":$1,\"method\":\"$2\",\"params\":$3}")
+  # `|| true`: grep exits 1 on no match, and under set -e/pipefail that would
+  # abort the script right here, silently -- before the FAIL message below.
+  payload=$(printf '%s\n' "$body" | grep '^data: ' | head -1 | sed 's/^data: //' || true)
+  if [ -z "$payload" ]; then
+    # Not SSE-framed (e.g. a plain-JSON error body, or an empty response):
+    # fail with the body head instead of letting the caller's JSON.parse
+    # choke on an empty string with a raw stack trace.
+    echo "FAIL: $2 response had no SSE data line; body head: ${body:0:200}" >&2
+    return 1
+  fi
+  printf '%s\n' "$payload"
 }
 
 # Lifecycle notification per the MCP spec -- notifications get 202 Accepted
