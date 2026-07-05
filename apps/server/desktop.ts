@@ -24,6 +24,19 @@ import { localHashFor } from "./domain/sync/engine.js";
 import { createMirrorWatcher, type MirrorWatcher } from "./domain/sync/mirror-watcher.js";
 import { listUserMirrors } from "./domain/sync/mirror-registry.js";
 import { createAgentRouter } from "./api/agent-router.js";
+import { createAgentMcpTransport } from "./mcp/agent-transport.js";
+
+// Reads a required env var, trimmed. Used for the two central-mode
+// connection settings: both are already validated non-empty by
+// createCentralClientFromEnv() by the time agentMain runs, but re-reading
+// them here (rather than threading raw strings through main()) keeps the
+// central-URL/token parsing local to the one place that needs the strings
+// rather than the CentralClient built from them.
+function requiredEnv(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`${name} must be set`);
+  return value;
+}
 
 // Single ping wrapped in a hard timeout. The libsql client doesn't expose a
 // connect timeout of its own, so without this a DNS hiccup or a slow Turso
@@ -99,12 +112,17 @@ async function agentMain(client: CentralClient): Promise<void> {
   const port = Number(process.env.PORTUNI_PORT ?? 0);
   process.env.PORT = String(port);
 
+  const mcpTransport = createAgentMcpTransport({
+    client,
+    centralUrl: requiredEnv("PORTUNI_CENTRAL_URL"),
+    centralToken: requiredEnv("PORTUNI_CENTRAL_TOKEN"),
+  });
   const handle = startHttpServer({
     port,
     host: "127.0.0.1",
     registerSigint: false,
     router: createAgentRouter(client),
-    mountMcp: false,
+    mcpTransport,
   });
   await bindAndAnnounce(handle);
   console.error("[boot] central-mode sync agent (no local graph db)");
