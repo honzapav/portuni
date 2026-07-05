@@ -145,7 +145,7 @@ export function AccessSection({
         setInherited(res.inherited);
         setSourceName(res.source_node_name);
         setMode(res.mode);
-        setVisibility(res.visibility as VisibilityMode);
+        setVisibility(res.visibility);
         const eff = res.entries.map(entryToDraft);
         setEntries(eff);
         setDraft(res.inherited ? [] : eff);
@@ -185,7 +185,7 @@ export function AccessSection({
       setInherited(res.inherited);
       setSourceName(res.source_node_name);
       setMode(res.mode);
-      setVisibility(res.visibility as VisibilityMode);
+      setVisibility(res.visibility);
       const eff = res.entries.map(entryToDraft);
       setEntries(eff);
       setDraft(res.inherited ? [] : eff);
@@ -308,6 +308,13 @@ export function AccessSection({
         value={displayedMode}
         onChange={selectMode}
         disabled={!canManage || saving}
+        disabledOptions={
+          effectiveInherited
+            ? {
+                team: "Node dědí omezení z nadřazeného uzlu – nelze ho zpřístupnit všem, jen zúžit nebo upravit kopii.",
+              }
+            : undefined
+        }
       />
 
       {displayedMode === "team" && (
@@ -463,10 +470,15 @@ function VisibilitySelector({
   value,
   onChange,
   disabled,
+  disabledOptions,
 }: {
   value: VisibilityMode;
   onChange: (mode: VisibilityMode) => void;
   disabled?: boolean;
+  // Individually-disabled options (with a reason as the title). Used to
+  // grey out "Všichni" on an inherited-restricted node, where loosening
+  // below the ancestor's restriction is impossible.
+  disabledOptions?: Partial<Record<VisibilityMode, string>>;
 }) {
   const options: { value: VisibilityMode; label: string; Icon: typeof Users }[] = [
     { value: "team", label: "Všichni", Icon: Users },
@@ -477,12 +489,15 @@ function VisibilitySelector({
     <div className="inline-flex overflow-hidden rounded-md border border-[var(--color-border)]">
       {options.map((opt, i) => {
         const active = value === opt.value;
+        const optReason = disabledOptions?.[opt.value];
+        const optDisabled = disabled || optReason !== undefined;
         return (
           <button
             key={opt.value}
             type="button"
             onClick={() => onChange(opt.value)}
-            disabled={disabled}
+            disabled={optDisabled}
+            title={optReason}
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-[13px] transition-colors disabled:opacity-50 ${
               i > 0 ? "border-l border-[var(--color-border)]" : ""
             } ${
