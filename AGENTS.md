@@ -39,10 +39,24 @@ auth token from env (hence varlock).
 Only when shipping a new `Portuni.app` or testing desktop-specific wiring
 (sidecar boot, per-launch auth token, env passing, Tauri commands).
 
+**Always build the installable `.app` signed — never adhoc/bare
+`cargo tauri build`.** An adhoc build reads to macOS as a *different*
+app (identity = binary hash), so every reinstall re-triggers the whole
+Keychain "Always Allow" gauntlet and breaks Gatekeeper trust. Use the
+wrapper, which signs with the Developer ID (identity stable across
+rebuilds → Keychain grants persist) and verifies the bundle:
+
 ```bash
-# run from the Tauri project dir (Tauri finds the project by cwd)
-cd apps/desktop && cargo tauri build
+# local reinstall (signed, not notarized — Gatekeeper only checks
+# downloaded apps, so notarization is unnecessary for your own machine)
+APPLE_SIGNING_IDENTITY='Developer ID Application: JAN PÁV (98H25UC996)' \
+  scripts/build-signed.sh --no-notarize
 cp -R apps/desktop/target/release/bundle/macos/Portuni.app /Applications/
+
+# distribution build (adds notarization + staples the DMG) — full run:
+#   scripts/build-signed.sh   (needs APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID,
+#   or the Keychain profile `portuni-notary`; secrets in Bitwarden
+#   "Portuni Apple signing"). See docs/release-process.md.
 ```
 
 First Rust build ~10–15 min, incremental 30–60 s. Tauri runs the
@@ -63,7 +77,7 @@ tmux loop for backend iteration.
 | MCP tools, scope, schema, REST | Backend tmux | `npm run build` + tmux restart |
 | React in `apps/web/` | Vite | save -> HMR |
 | `apps/server/desktop.ts`, Rust shell (`apps/desktop`) | Tauri dev | restart `cargo tauri dev` |
-| Ship new `.app` | Tauri build | `cargo tauri build` + cp |
+| Ship new `.app` | Signed build | `scripts/build-signed.sh` + cp (never adhoc) |
 
 ~95% of changes are the first row.
 
