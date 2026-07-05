@@ -104,10 +104,13 @@ async function bindAndAnnounce(
   process.stdout.write(`PORTUNI_LISTENING_PORT=${address.port}\n`);
 }
 
-// Central-mode sync agent (teammate mirrors): no Turso, no graph db, no MCP.
-// Serves the local-only sync/mirror/scope routes backed by the central
-// engine, runs the mirror watcher with a central reconcile, and refreshes
-// per-mirror harness configs pointing at the central MCP (PORTUNI_URL).
+// Central-mode sync agent (teammate mirrors): no Turso, no graph db. Serves
+// the local-only sync/mirror/scope routes backed by the central engine, runs
+// the mirror watcher with a central reconcile, and also serves MCP on /mcp
+// via createAgentMcpTransport -- the local front door: device-local tools
+// (agent-tools.ts) run on this box, everything else proxies to the central
+// MCP server. Refreshes per-mirror harness configs to point at this local
+// front door (resolvePortuniMcpUrl in domain/write-scope.ts).
 async function agentMain(client: CentralClient): Promise<void> {
   const port = Number(process.env.PORTUNI_PORT ?? 0);
   process.env.PORT = String(port);
@@ -176,8 +179,9 @@ async function agentMain(client: CentralClient): Promise<void> {
     }
   })();
 
-  // Refresh per-mirror harness configs; .mcp.json URLs resolve to the
-  // central MCP because the Tauri host sets PORTUNI_URL to the server URL.
+  // Refresh per-mirror harness configs; in agent mode .mcp.json URLs resolve
+  // to this local sidecar's front door (PORTUNI_AGENT_MODE branch of
+  // resolvePortuniMcpUrl), not to central directly.
   void (async () => {
     try {
       const r = await materializeAllRegisteredMirrors({
