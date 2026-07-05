@@ -36,6 +36,27 @@ describe("VarlockTokenStore read", () => {
     assert.equal(t!.access_token, "a");
     assert.equal(t!.expires_at, 1234567890);
   });
+  it("reads refresh_token mode when an OAuth client pair is present", async () => {
+    process.env[envKey("gdrive", "REFRESH_TOKEN")] = "r";
+    process.env[envKey("gdrive", "CLIENT_ID")] = "cid";
+    process.env[envKey("gdrive", "CLIENT_SECRET")] = "csecret";
+    process.env[envKey("gdrive", "ACCOUNT_EMAIL")] = "a@b.cz";
+    const store = createVarlockTokenStore();
+    const t = await store.read("gdrive");
+    assert.equal(t!.mode, "refresh_token");
+    assert.equal(t!.refresh_token, "r");
+    assert.equal(t!.client_id, "cid");
+    assert.equal(t!.client_secret, "csecret");
+    assert.equal(t!.account_email, "a@b.cz");
+  });
+  it("keeps legacy oauth mode for a bare refresh token (no client pair)", async () => {
+    process.env[envKey("central", "REFRESH_TOKEN")] = "r";
+    const store = createVarlockTokenStore();
+    const t = await store.read("central");
+    assert.equal(t!.mode, "oauth");
+    assert.equal(t!.refresh_token, "r");
+    assert.equal(t!.client_id, undefined);
+  });
   it("returns null when nothing present", async () => {
     const store = createVarlockTokenStore();
     assert.equal(await store.read("unknown"), null);

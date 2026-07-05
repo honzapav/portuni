@@ -4,7 +4,14 @@ import type { TokenStore } from "./token-store.js";
 import { type DeviceToken, TOKEN_ENV_PREFIX } from "./types.js";
 
 const execFileP = promisify(execFile);
-type Field = "ACCESS_TOKEN" | "REFRESH_TOKEN" | "EXPIRES_AT" | "SERVICE_ACCOUNT_JSON";
+type Field =
+  | "ACCESS_TOKEN"
+  | "REFRESH_TOKEN"
+  | "EXPIRES_AT"
+  | "SERVICE_ACCOUNT_JSON"
+  | "CLIENT_ID"
+  | "CLIENT_SECRET"
+  | "ACCOUNT_EMAIL";
 
 function envKey(name: string, field: Field): string {
   return `${TOKEN_ENV_PREFIX}${name.toUpperCase().replace(/-/g, "_")}__${field}`;
@@ -23,7 +30,23 @@ export function createVarlockTokenStore(): TokenStore {
       if (sa) return { mode: "service_account", service_account_json: sa };
       const refresh = process.env[envKey(remoteName, "REFRESH_TOKEN")];
       if (!refresh) return null;
-      const t: DeviceToken = { mode: "oauth", refresh_token: refresh };
+      const clientId = process.env[envKey(remoteName, "CLIENT_ID")];
+      const clientSecret = process.env[envKey(remoteName, "CLIENT_SECRET")];
+      // A refresh token accompanied by an OAuth client pair is the desktop
+      // user-OAuth remote (Settings -> Synchronizace); getUserAccessToken
+      // needs mode + client_id + client_secret. A bare refresh token stays
+      // the legacy "oauth" shape so central/device flows keep working.
+      const t: DeviceToken =
+        clientId && clientSecret
+          ? {
+              mode: "refresh_token",
+              refresh_token: refresh,
+              client_id: clientId,
+              client_secret: clientSecret,
+            }
+          : { mode: "oauth", refresh_token: refresh };
+      const email = process.env[envKey(remoteName, "ACCOUNT_EMAIL")];
+      if (email) t.account_email = email;
       const access = process.env[envKey(remoteName, "ACCESS_TOKEN")];
       if (access) t.access_token = access;
       const exp = process.env[envKey(remoteName, "EXPIRES_AT")];
@@ -43,6 +66,9 @@ export function createVarlockTokenStore(): TokenStore {
       if (tokens.service_account_json)
         fields.push(["SERVICE_ACCOUNT_JSON", tokens.service_account_json]);
       if (tokens.refresh_token) fields.push(["REFRESH_TOKEN", tokens.refresh_token]);
+      if (tokens.client_id) fields.push(["CLIENT_ID", tokens.client_id]);
+      if (tokens.client_secret) fields.push(["CLIENT_SECRET", tokens.client_secret]);
+      if (tokens.account_email) fields.push(["ACCOUNT_EMAIL", tokens.account_email]);
       if (tokens.access_token) fields.push(["ACCESS_TOKEN", tokens.access_token]);
       if (tokens.expires_at !== undefined)
         fields.push(["EXPIRES_AT", String(tokens.expires_at)]);
@@ -58,6 +84,9 @@ export function createVarlockTokenStore(): TokenStore {
         "REFRESH_TOKEN",
         "EXPIRES_AT",
         "SERVICE_ACCOUNT_JSON",
+        "CLIENT_ID",
+        "CLIENT_SECRET",
+        "ACCOUNT_EMAIL",
       ] as Field[]) {
         delete process.env[envKey(remoteName, f)];
       }

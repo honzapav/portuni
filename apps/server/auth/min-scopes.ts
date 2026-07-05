@@ -97,6 +97,14 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname === "/users" && m === "GET") return "manage";
   if (pathname === "/sync/pending" && m === "GET") return "read";
 
+  // --- Google Drive connect (Settings -> Synchronizace) ---
+  // Configuring, inspecting, or tearing down the Drive remote is the REST
+  // equivalent of portuni_setup_remote / portuni_set_routing_policy (both
+  // "manage"). Kept at "manage" for the whole surface — including the GET
+  // status/targets and POST test — since all six only exist to drive that
+  // one configuration flow, and there is no read-only consumer of them.
+  if (pathname.startsWith("/sync/drive/")) return "manage";
+
   // --- Device tokens ---
   if (pathname === "/device-tokens" && m === "GET") return "read";
   if (pathname === "/device-tokens" && m === "POST") return "write";

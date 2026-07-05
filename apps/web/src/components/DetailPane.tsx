@@ -82,7 +82,13 @@ import {
 // Sub-modules: file-tree + sync UI and event card live in sibling files;
 // DetailPane composes them with its own state.
 import { EventCard, AddEventForm } from "./DetailPane.events";
-import { FileTree, NewFileForm, SyncBar, TerminalSplitButton } from "./DetailPane.files";
+import {
+  DriveNotConfiguredBanner,
+  FileTree,
+  NewFileForm,
+  SyncBar,
+  TerminalSplitButton,
+} from "./DetailPane.files";
 import { AccessSection } from "./DetailPane.access";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
@@ -983,6 +989,9 @@ function DetailPaneBody({
             {/* Central mode uses the same full files UI: file content and
                 lifecycle go to the central server, sync + mirrors to the
                 local sync agent (teammate mirrors). */}
+            {/* Rendered here (not inside SyncBar) so the "connect Drive"
+                hint shows even on a node with no files yet. */}
+            <DriveNotConfiguredBanner />
             <div className="mb-3 flex items-center justify-between">
                   {(node.files.length > 0 || untracked.length > 0) ? (
                     <SyncBar
