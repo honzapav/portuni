@@ -106,6 +106,35 @@ describe("resolveSandboxScopeForNode", () => {
     assert.equal(scope, null);
   });
 
+  it("grants read on depth-1 neighbour mirrors, not the home", async () => {
+    const { db, nodeId, orgId } = await makeSharedDb(); // project belongs_to org
+    const orgDir = join(workspace, "org");
+    const homeDir = join(orgDir, "projects", "p1");
+    await mkdir(homeDir, { recursive: true });
+    await registerMirror(SOLO_USER, nodeId, homeDir);
+    await registerMirror(SOLO_USER, orgId, orgDir);
+
+    const scope = await resolveSandboxScopeForNode(db, SOLO_USER, nodeId);
+
+    assert.ok(scope);
+    // The org (depth-1 neighbour) real mirror is granted...
+    assert.equal(scope.readMirrors.length, 1);
+    assert.equal(scope.readMirrors[0].endsWith(join("", "org")), true);
+    // ...and the home mirror is NOT in readMirrors (it's granted rw separately).
+    assert.ok(!scope.readMirrors.includes(scope.homeMirror));
+  });
+
+  it("omits neighbours that have no local mirror", async () => {
+    const { db, nodeId } = await makeSharedDb(); // org neighbour, but no org mirror
+    const homeDir = join(workspace, "org", "projects", "p1");
+    await mkdir(homeDir, { recursive: true });
+    await registerMirror(SOLO_USER, nodeId, homeDir);
+
+    const scope = await resolveSandboxScopeForNode(db, SOLO_USER, nodeId);
+    assert.ok(scope);
+    assert.equal(scope.readMirrors.length, 0);
+  });
+
   it("resolves by cwd: deepest containing mirror wins", async () => {
     const { db, nodeId, orgId } = await makeSharedDb();
     const orgDir = join(workspace, "org");

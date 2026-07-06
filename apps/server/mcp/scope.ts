@@ -8,6 +8,7 @@
 
 import type { Client } from "@libsql/client";
 import { nodeVisibleTo, filterVisibleNodeIds, type GroupIdentityView } from "../auth/node-access.js";
+import { nodeNeighbourIds } from "../domain/queries/neighbours.js";
 
 export type ScopeMode = "strict" | "balanced" | "permissive";
 
@@ -130,16 +131,7 @@ export async function seedScopeFromHome(
   scope.homeNodeId = homeNodeId;
   scope.add(homeNodeId);
 
-  const neighbors = await db.execute({
-    sql: `SELECT DISTINCT
-            CASE WHEN e.source_id = ? THEN e.target_id ELSE e.source_id END AS peer_id
-          FROM edges e
-          WHERE e.source_id = ? OR e.target_id = ?`,
-    args: [homeNodeId, homeNodeId, homeNodeId],
-  });
-  const rawNeighborIds: string[] = neighbors.rows
-    .map((row) => row.peer_id as string)
-    .filter(Boolean);
+  const rawNeighborIds = await nodeNeighbourIds(db, homeNodeId);
 
   let neighborIds: string[];
   if (identity !== undefined) {

@@ -7,11 +7,12 @@
 // the root stays unrestricted (allow default) — this protects the
 // knowledge graph, it is not a general-purpose jail.
 //
-// Single-source model: neighbor nodes are NOT granted disk access here.
-// Instead, the ScopeReconciler (apps/server/mcp/scope-reconciler.ts)
-// copies them into <home>/.portuni-scope/<id>/. Those staged paths live
-// inside the home subpath and are therefore already covered by the home
-// rw rule — no second kernel grant needed.
+// Real-path model: the depth-1 neighbor set (the stable spawn scope) is
+// granted read-only on its REAL mirror paths (readMirrors), so the agent
+// reads the live file — no copy to go stale, no cleanup, edits land on the
+// real mirror. The set is stable for the session (scope only grows), so a
+// spawn-time grant does not drift for it; dynamic ad-hoc expansion is served
+// off the kernel grant (server-mediated), not by widening this profile.
 //
 // Profile shape and the two gotchas (Seatbelt matches realpaths only;
 // git discovery needs file-read-metadata on the denied root) were
@@ -21,6 +22,7 @@
 import { realpath } from "node:fs/promises";
 import type { Client } from "@libsql/client";
 import { getMirrorPath, listUserMirrors } from "./sync/mirror-registry.js";
+import { nodeNeighbourIds } from "./queries/neighbours.js";
 import { findContainingMirror, normalize, resolvePortuniRoot } from "./write-scope.js";
 
 // Seatbelt string literal: double-quoted, backslash and quote escaped.
@@ -82,13 +84,17 @@ async function resolveReal(path: string): Promise<string> {
 }
 
 // Resolve the disk scope for a node: its own mirror, the portuniRoot that
-// contains it, and the read-only mirrors of its in-scope neighbors.
-// Returns null when the node has no local mirror -- nothing to sandbox into.
+// contains it, and the read-only real mirrors of its depth-1 neighbors (the
+// stable spawn set). Returns null when the node has no local mirror --
+// nothing to sandbox into.
 //
-// readMirrors (the depth-1 neighbor grant) is filled by Task 2; kept empty
-// here so the profile is home-only until that lands.
+// readMirrors mirrors seedScopeFromHome's depth-1 set (shared nodeNeighbourIds)
+// so the kernel grant matches the seeded session scope. A neighbor with no
+// local mirror is simply omitted (no grant). When db is absent (central-mode
+// agent-router passes NO_DB) neighbors can't be resolved here -- readMirrors
+// stays empty and central mode fills it in Phase 3.
 export async function resolveSandboxScopeForNode(
-  _db: Client,
+  db: Client,
   userId: string,
   nodeId: string,
 ): Promise<SandboxScope | null> {
@@ -102,10 +108,25 @@ export async function resolveSandboxScopeForNode(
   });
   if (!portuniRoot) return null;
 
+  const homeReal = await resolveReal(home);
+  let readMirrors: string[] = [];
+  if (db) {
+    const neighborIds = await nodeNeighbourIds(db, nodeId);
+    const paths = await Promise.all(
+      neighborIds.map(async (id) => {
+        const p = await getMirrorPath(userId, id);
+        return p ? await resolveReal(p) : null;
+      }),
+    );
+    // Drop neighbors with no local mirror, and any that resolve to the home
+    // mirror itself (already granted rw). Dedupe.
+    readMirrors = [...new Set(paths.filter((p): p is string => p !== null && p !== homeReal))];
+  }
+
   return {
     portuniRoot: await resolveReal(portuniRoot),
-    homeMirror: await resolveReal(home),
-    readMirrors: [],
+    homeMirror: homeReal,
+    readMirrors,
   };
 }
 
