@@ -87,7 +87,20 @@ function buildFileTree(files: TreeFile[]): TreeNode {
 
 // Merge registered + untracked into one row list. Registered wins if a path
 // appears in both (a freshly-adopted file may briefly show in both).
-function toTreeFiles(files: DetailFile[], untracked: UntrackedFile[]): TreeFile[] {
+//
+// Central mode serves node-detail without device-derived paths
+// (relative_path/local_path null, because the central server has no device
+// state). Recover them from the per-node sync-status entry + the device
+// mirror: a file's relative_path is its path within the mirror, i.e. its
+// absolute local_path minus the mirror-root prefix -- the same strip
+// node-detail does server-side in local mode. Without this, central-mode
+// registered files fall back to a bare filename and open at the wrong path.
+function toTreeFiles(
+  files: DetailFile[],
+  untracked: UntrackedFile[],
+  syncStatus: Map<string, SyncStatusFile>,
+  mirrorPath: string | null,
+): TreeFile[] {
   const byPath = new Map<string, TreeFile>();
   for (const u of untracked) {
     byPath.set(u.relative_path, {
@@ -100,14 +113,20 @@ function toTreeFiles(files: DetailFile[], untracked: UntrackedFile[]): TreeFile[
     });
   }
   for (const f of files) {
-    const rel = f.relative_path ?? f.filename;
-    byPath.set(rel, {
-      relative_path: rel,
+    const st = syncStatus.get(f.id);
+    const localPath = f.local_path ?? st?.local_path ?? null;
+    let rel = f.relative_path;
+    if (!rel && localPath && mirrorPath && localPath.startsWith(mirrorPath + "/")) {
+      rel = localPath.slice(mirrorPath.length + 1);
+    }
+    const relative_path = rel ?? f.filename;
+    byPath.set(relative_path, {
+      relative_path,
       filename: f.filename,
       description: f.description,
       mime_type: f.mime_type,
       fileId: f.id,
-      local_path: f.local_path,
+      local_path: localPath,
     });
   }
   return Array.from(byPath.values());
@@ -252,6 +271,7 @@ export function FileTree({
   nodeId,
   syncStatus,
   syncLoaded,
+  mirrorPath,
   onOpenFile,
   onRename,
   onDelete,
@@ -262,13 +282,19 @@ export function FileTree({
   nodeId: string;
   syncStatus: Map<string, SyncStatusFile>;
   syncLoaded: boolean;
+  // The node's device mirror root, used to recover file relative paths in
+  // central mode (node-detail omits them there). Null when unknown.
+  mirrorPath: string | null;
   onOpenFile: (relPath: string) => void;
   onRename: (fileId: string, newName: string) => Promise<void>;
   onDelete: (fileId: string) => Promise<void>;
   // When true, hide rename/delete actions (e.g. central mode).
   readOnly?: boolean;
 }) {
-  const treeFiles = useMemo(() => toTreeFiles(files, untracked), [files, untracked]);
+  const treeFiles = useMemo(
+    () => toTreeFiles(files, untracked, syncStatus, mirrorPath),
+    [files, untracked, syncStatus, mirrorPath],
+  );
   const root = useMemo(() => buildFileTree(treeFiles), [treeFiles]);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const toggle = (path: string) =>

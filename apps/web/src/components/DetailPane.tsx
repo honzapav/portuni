@@ -1008,6 +1008,7 @@ function DetailPaneBody({
                     nodeId={node.id}
                     syncStatus={syncStatus}
                     syncLoaded={syncLoaded}
+                    mirrorPath={node.local_mirror?.local_path ?? null}
                     onOpenFile={(rel) => onOpenFile?.(node.id, rel)}
                     onRename={handleRenameFile}
                     onDelete={handleDeleteFile}
