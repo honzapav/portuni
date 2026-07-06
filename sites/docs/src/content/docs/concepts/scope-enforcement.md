@@ -3,8 +3,8 @@ title: Scope Enforcement
 description: How a session's reach is bounded – what an agent can read and where it can write.
 ---
 
-:::note[Phase A & B implemented]
-Read-scope enforcement (Phase A: session scope set, scope modes, expansion audit) and filesystem write-scope config generation (Phase B: per-harness configs, `/scope` endpoint, `portuni-guard` hook) are now in code. Phase C polish – session-close summary, harness-mode detection – is incremental. See `docs/superpowers/specs/2026-04-24-scope-model.md` for the full design.
+:::note[Scope enforcement is implemented]
+Both halves are in code: read-scope enforcement (session scope set, scope modes, expansion audit) and filesystem write-scope config generation (per-harness configs, `/scope` endpoint, `portuni-guard` hook). Session-close summaries and harness-mode detection are incremental polish. See `docs/superpowers/specs/2026-04-24-scope-model.md` for the full design.
 :::
 
 A Portuni session always has two boundaries: what files the agent can write to, and what nodes it can read from. Without bounds, the agent in a "Goldea Presale" project session can edit files in a sibling process mirror, or list every project across every organization the user can see. Neither is the intended behavior.
