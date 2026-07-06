@@ -21,32 +21,49 @@ import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
 
-describe("buildSeatbeltProfile (home-only, single-source model)", () => {
+describe("buildSeatbeltProfile (real-path model)", () => {
   it("grants rw on the home mirror and denies the rest of the root", () => {
     const p = buildSeatbeltProfile({
       portuniRoot: "/root",
       homeMirror: "/root/org/proj",
+      readMirrors: [],
     });
     assert.match(p, /\(deny file-read\* file-write\* \(subpath "\/root"\)\)/);
     assert.match(p, /\(allow file-read-metadata \(subpath "\/root"\)\)/);
     assert.match(p, /\(allow file-read\* file-write\* \(subpath "\/root\/org\/proj"\)\)/);
   });
 
-  it("emits NO standalone neighbor read-allow rules", () => {
+  it("emits exactly one read-allow (home rw) when readMirrors is empty", () => {
     const p = buildSeatbeltProfile({
       portuniRoot: "/root",
       homeMirror: "/root/org/proj",
+      readMirrors: [],
     });
-    // Count only allow lines that grant file-read*; the deny line is excluded.
-    // In the home-only model there is exactly one: the home rw line.
     const reads = p.split("\n").filter((l) => l.startsWith("(allow file-read*"));
     assert.equal(reads.length, 1); // just the home rw line
+  });
+
+  it("re-allows read on each granted mirror AFTER the deny line", () => {
+    const p = buildSeatbeltProfile({
+      portuniRoot: "/root",
+      homeMirror: "/root/a",
+      readMirrors: ["/root/b", "/root/c"],
+    });
+    const denyIdx = p.indexOf("(deny file-read*");
+    const bIdx = p.indexOf('(allow file-read* (subpath "/root/b"))');
+    const cIdx = p.indexOf('(allow file-read* (subpath "/root/c"))');
+    assert.ok(denyIdx >= 0, "deny line present");
+    assert.ok(bIdx > denyIdx, "neighbor b read-allow after deny");
+    assert.ok(cIdx > denyIdx, "neighbor c read-allow after deny");
+    // Neighbors are read-only, not rw.
+    assert.doesNotMatch(p, /\(allow file-read\* file-write\* \(subpath "\/root\/b"\)\)/);
   });
 
   it("escapes quotes and backslashes in paths", () => {
     const p = buildSeatbeltProfile({
       portuniRoot: '/ws/we"ird\\dir',
       homeMirror: '/ws/we"ird\\dir/home',
+      readMirrors: [],
     });
     assert.ok(p.includes('"/ws/we\\"ird\\\\dir"'));
   });

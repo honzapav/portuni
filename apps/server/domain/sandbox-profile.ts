@@ -31,19 +31,27 @@ function sbQuote(path: string): string {
 export interface SandboxScope {
   portuniRoot: string;
   homeMirror: string;
+  // Real mirror roots of the home node's in-scope neighbors (the stable
+  // spawn set = home + depth-1), granted read-only. Named as REAL paths
+  // because Seatbelt matches realpaths (a symlink resolves to the denied
+  // root). Empty falls back to the home-only profile.
+  readMirrors: string[];
 }
 
 // Render the Seatbelt profile. Paths must already be realpath-resolved.
 //
-// Single-source model: the home mirror is the only place the kernel grants
-// read/write. Every OTHER in-scope node is made readable not here but by
-// the ScopeReconciler, which copies it into <home>/.portuni-scope/<id>/
-// (inside the home subpath, so already covered by the home rw rule). This
-// removes the old depth-1 neighbor read-allow, which was a second,
-// spawn-frozen source of truth that drifted from the live session scope.
+// Real-path model: the kernel grants read+write in the home mirror and
+// read-only on each spawn-set neighbor's REAL mirror (readMirrors). This
+// replaces the old copy-into-<home>/.portuni-scope/ staging for the spawn
+// set: reads are the live file (no stale snapshot, no cleanup), edits land
+// on the real mirror. The spawn set (home + depth-1) is stable for the
+// session -- scope only grows -- so a spawn-frozen grant does not drift for
+// it; dynamic ad-hoc expansion is handled off the kernel grant (server-
+// mediated), not by widening this profile.
 //
-// Rule order is load-bearing: Seatbelt gives later rules precedence, so
-// the root deny comes first and the home allow overrides it.
+// Rule order is load-bearing: Seatbelt gives later rules precedence, so the
+// root deny comes first and the allows (which re-open specific subpaths
+// inside the denied root) come after it.
 export function buildSeatbeltProfile(scope: SandboxScope): string {
   const home = normalize(scope.homeMirror);
   const lines: string[] = [
@@ -53,8 +61,13 @@ export function buildSeatbeltProfile(scope: SandboxScope): string {
     // stat/traverse stays allowed so git repo discovery and path
     // resolution work; directory listings and file contents stay denied.
     `(allow file-read-metadata (subpath ${sbQuote(normalize(scope.portuniRoot))}))`,
-    `(allow file-read* file-write* (subpath ${sbQuote(home)}))`,
   ];
+  // Read-only re-allow for each in-scope neighbor mirror. After the deny so
+  // it wins; before the home rw allow (order among allows is immaterial).
+  for (const m of scope.readMirrors) {
+    lines.push(`(allow file-read* (subpath ${sbQuote(normalize(m))}))`);
+  }
+  lines.push(`(allow file-read* file-write* (subpath ${sbQuote(home)}))`);
   return lines.join("\n") + "\n";
 }
 
@@ -68,13 +81,12 @@ async function resolveReal(path: string): Promise<string> {
   }
 }
 
-// Resolve the disk scope for a node: its own mirror and the portuniRoot
-// that contains it. Returns null when the node has no local mirror —
-// there is nothing to sandbox into.
+// Resolve the disk scope for a node: its own mirror, the portuniRoot that
+// contains it, and the read-only mirrors of its in-scope neighbors.
+// Returns null when the node has no local mirror -- nothing to sandbox into.
 //
-// The old depth-1 neighbor query has been removed. Neighbors are now
-// staged under <home>/.portuni-scope/<id>/ by the ScopeReconciler and
-// need no separate kernel grant here.
+// readMirrors (the depth-1 neighbor grant) is filled by Task 2; kept empty
+// here so the profile is home-only until that lands.
 export async function resolveSandboxScopeForNode(
   _db: Client,
   userId: string,
@@ -93,6 +105,7 @@ export async function resolveSandboxScopeForNode(
   return {
     portuniRoot: await resolveReal(portuniRoot),
     homeMirror: await resolveReal(home),
+    readMirrors: [],
   };
 }
 
