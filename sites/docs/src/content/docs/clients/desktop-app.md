@@ -36,7 +36,7 @@ The app manages one or more workspaces — think of each as an independent Portu
 1. Open the [GitHub releases](https://github.com/honzapav/portuni/releases) page.
 2. Download the DMG matching your CPU:
    - `Portuni_<version>_aarch64.dmg` — Apple Silicon (M1/M2/M3/M4)
-   - `Portuni_<version>_x64.dmg` — Intel
+   - Intel Macs are no longer targeted; use the CLI install below if you're on Intel.
 3. Open the DMG and drag `Portuni.app` to `/Applications/`.
 4. Launch it.
 

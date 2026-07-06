@@ -28,7 +28,7 @@ Your AI agents then use Portuni to:
 
 ## How it fits together
 
-Portuni is an HTTP server that speaks MCP (Model Context Protocol). It exposes 46 tools for working with the graph, logging events, scope, files, remotes, actors, and responsibilities.
+Portuni is an HTTP server that speaks MCP (Model Context Protocol). It exposes 47 tools for working with the graph, logging events, scope, files, remotes, actors, and responsibilities.
 
 You can run it three ways:
 

@@ -12,7 +12,7 @@ Two install paths: the desktop app (recommended) or the standalone CLI server (f
 `Portuni.app` is a Tauri-built macOS application that bundles the MCP server as an embedded sidecar. You install one thing; you get the UI, the server, and the integration glue.
 
 1. Open the [GitHub releases](https://github.com/honzapav/portuni/releases) page.
-2. Download the DMG for your CPU — `aarch64` for Apple Silicon, `x86_64` for Intel.
+2. Download the `aarch64` DMG (Apple Silicon). Intel Macs are no longer targeted.
 3. Open the DMG and drag `Portuni.app` to `/Applications/`.
 4. Launch it. First run: see [Desktop App](/clients/desktop-app/) for the first-run flow (creating a workspace, entering Turso credentials — or signing in with Google if your organization runs a central server).
 
