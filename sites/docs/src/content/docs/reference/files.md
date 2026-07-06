@@ -114,10 +114,11 @@ List files across all nodes with optional filtering. Each row includes a
 **derived** `local_path` (from the current mirror + `remote_path` +
 `sync_key`); it is `null` when the node has no mirror on this device.
 
-For a non-home in-scope node, `local_path` points at the staged read-only
-copy under `<home-mirror>/.portuni-scope/<node_id>/` — the location the
-sandbox actually allows the agent to read — not the node's original
-mirror. See [disk read scope](/reference/scope/).
+`local_path` is the node's **real** mirror for the home node and its
+depth-1 neighbours (the seatbelt grants read on those real paths). For an
+ad-hoc in-scope node (deeper than depth-1) it is `null` — the files are
+not on disk; read their content with `portuni_read_file` (below). See
+[disk read scope](/concepts/scope-enforcement/).
 
 Scope gating: with `node_id` the node must be in session scope (out of
 scope returns `scope_expansion_required`). Without `node_id` the call is
@@ -136,6 +137,27 @@ Returns: Array of files, each with: `id`, `node_id`, `node_name`,
 `filename`, `status`, `description`, `remote_name`, `remote_path`,
 `current_remote_hash`, `last_pushed_at`, `is_native_format`, the derived
 `local_path`, and `updated_at`.
+
+## portuni_read_file
+
+Read a file's content from an in-scope node that the seatbelt does **not**
+expose on disk — an ad-hoc node reached by deeper graph traversal (beyond
+the home node and its depth-1 neighbours, whose folders you read natively
+via the `local_path` returned by `portuni_get_context` / `portuni_get_node`).
+The server reads the live file from the node's local mirror and returns it,
+so there is no stale copy and no `.portuni-scope` staging.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `node_id` | string | yes | Node the file belongs to |
+| `path` | string | yes | File path within the node, e.g. `wip/notes.md` |
+
+Returns the file content as UTF-8 text, or `[binary file, N bytes, base64]`
+followed by base64 for non-text files. Scope-gated exactly like
+`portuni_get_node`: reading a node not yet in scope returns
+`scope_expansion_required` (call `portuni_expand_scope` first). Errors when
+the node has no mirror on this device (`portuni_pull` it first), the file
+does not exist, or the file exceeds the 1 MB inline limit.
 
 ## portuni_status
 

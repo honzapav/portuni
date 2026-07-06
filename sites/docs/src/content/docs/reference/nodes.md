@@ -86,11 +86,12 @@ Returns: Full node object including:
 - `events` — recent active events (up to 50, newest first)
 - `local_mirror` — `{ local_path, registered_at }` if mirrored on this device, else `null`
 
-For a non-home in-scope node, file `local_path`s are rewritten to the
-staged read-only copy under `<home-mirror>/.portuni-scope/<node_id>/` —
-the location the sandbox actually allows reading. `local_mirror` is the
-exception: it keeps pointing at the node's real mirror path (it is
-registration metadata, not a read path).
+File `local_path`s are the node's **real** mirror for the home node and
+its depth-1 neighbours (the seatbelt grants read on those real paths). For
+an ad-hoc in-scope node (deeper than depth-1), file `local_path`s are
+`null` — not exposed on disk; read the content with
+[`portuni_read_file`](/reference/files/). `local_mirror` is always the
+node's real mirror registration path (metadata, not a read path).
 
 ## portuni_delete_node
 

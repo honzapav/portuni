@@ -55,7 +55,7 @@ Writes divide into three concentric zones, each with different default behavior:
 
 The primary mechanism is declarative: when a mirror is created or renamed, Portuni writes per-harness configuration into `local_path`, layering on top of user-owned files (never replacing them). Portuni does not try to intercept individual filesystem calls from arbitrary harnesses – cross-harness interception is fragile and easy to bypass.
 
-There is one runtime layer on top: agent terminals spawned from the desktop app run under a **Seatbelt kernel sandbox** whose profile Portuni generates per session (`apps/server/domain/sandbox-profile.ts`). The kernel grants read+write on the home mirror only and denies the rest of `PORTUNI_ROOT`; everything outside the root stays unrestricted – the sandbox protects the knowledge graph, it is not a general-purpose jail. Manual shells outside the app rely on the declarative configs alone.
+There is one runtime layer on top: agent terminals spawned from the desktop app run under a **Seatbelt kernel sandbox** whose profile Portuni generates per session (`apps/server/domain/sandbox-profile.ts`). The kernel grants read+write on the home mirror, read-only on the **real** mirrors of the home node's depth-1 neighbours (the stable spawn scope), and denies the rest of `PORTUNI_ROOT`; everything outside the root stays unrestricted – the sandbox protects the knowledge graph, it is not a general-purpose jail. Manual shells outside the app rely on the declarative configs alone.
 
 The generated files:
 
@@ -139,9 +139,12 @@ Every expansion is logged to the audit trail with the reason (the user's quoted 
 
 ### Disk projection – how read scope reaches the filesystem
 
-The session scope set is the single source of truth for disk reads too. The kernel sandbox grants read+write on the home mirror only – so how does an agent read files of a related node that's in scope? By **projection**: on every scope addition, a `ScopeReconciler` (`apps/server/mcp/scope-reconciler.ts`) copies each non-home in-scope node's mirror into `<home>/.portuni-scope/<node_id>/`, read-only. Those staged paths live inside the home mirror, so they're already covered by the existing kernel grant – no second sandbox rule needed.
+The session scope set is the single source of truth for disk reads too, projected onto **real** mirror paths — no copies. The scope splits into two tiers:
 
-Read tools return the staged path as `local_path` for related nodes. Read related-node files from that returned path, not from the node's original mirror – the original stays outside the sandbox's readable set. The canonical model is `docs/architecture/scope-disk-projection.md` in the repository.
+- **Seed set — home + depth-1 neighbours** (stable, known at spawn). The Seatbelt profile grants read on each neighbour's **real** mirror. Read tools (`portuni_get_node`, `portuni_get_context`, `portuni_list_files`) return those real paths as `local_path`; read the files natively with your own tools. Because the seed set does not shrink during a session (scope only grows), a spawn-time grant never drifts for it.
+- **Ad-hoc set — deeper than depth-1** (added mid-session by `portuni_expand_scope`). The Seatbelt profile is fixed at spawn and cannot be widened, so these nodes are **not** placed on disk. Read their content with [`portuni_read_file`](/reference/files/) (`node_id` + path) — the server reads the live file and returns it. Native `grep`/`glob` over ad-hoc file content is the deliberate trade for tight, hook-free dynamic scope; graph *structure* traversal is unaffected.
+
+The old `.portuni-scope/` copy staging is retired: copies went stale, edits to a copy were never written back, and out-of-scope copies lingered. Real paths dissolve all three. The canonical model is `docs/architecture/scope-disk-projection.md` in the repository.
 
 ## Why this is its own page (and not a permission system)
 

@@ -98,6 +98,13 @@ tmux loop for backend iteration.
   release-please open a `chore: release X.Y.Z` PR; merging *that* tags the
   version and fires `release.yml` (signed DMG). Full flow + one-time PAT setup:
   `CONTRIBUTING.md`, `docs/release-process.md`.
+- **Update the public docs site (`sites/docs/`) in the SAME branch as any
+  behaviour/tool/API change.** release-please only bumps the version and
+  CHANGELOG — it never touches `sites/docs/`, so a change shipped without a
+  docs edit leaves the published Netlify docs wrong. Before merging a release
+  PR, grep `sites/docs/src` for the changed concept and `npm --prefix
+  sites/docs run build`. Checklist: `docs/release-process.md` ("Before merging
+  the release PR").
 
 ## Gotchas
 

@@ -120,6 +120,24 @@ feat/foo branch → PR "feat(scope): summary"
   → users go to /releases and download the DMG matching their CPU
 ```
 
+**Before merging the release PR — review the published docs site.**
+release-please only bumps the version and regenerates `CHANGELOG.md`; it does
+**not** touch `sites/docs/` (the public Netlify docs). Any behaviour, tool, or
+API change in the release must be reflected there, or the shipped docs are
+wrong. Quick check:
+
+```
+# what changed in this release, vs what the docs describe
+git diff v<prev>..HEAD --stat -- apps/server/mcp apps/server/domain apps/server/api
+grep -rn "<changed concept>" sites/docs/src   # e.g. staged, .portuni-scope, a renamed tool
+npm --prefix sites/docs run build             # must pass before merge
+```
+
+Add tool reference pages for new MCP tools (`sites/docs/src/content/docs/reference/`)
+and update any concept page whose model changed. Fold the docs-site edits into
+the feature branch (a `docs:` commit) so they ship in the same release — not a
+follow-up.
+
 For the user the path is: download DMG → drag to /Applications →
 right-click → Open (one-time Gatekeeper dance) → onboarding wizard
 (URL + token, or "start locally") → done.
