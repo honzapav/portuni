@@ -715,10 +715,10 @@ export default function App() {
 
   const openSessionForNodeId = useCallback(
     async (nodeId: string) => {
-      if (isCentral) {
-        showSessionError("Terminál v Portuni je dostupný jen v lokálním režimu (fáze B).");
-        return;
-      }
+      // Terminals work in central (agent) mode too: createNodeMirror,
+      // fetchSandboxProfile and pty_spawn all have central-mode paths (the
+      // sidecar serves the mirror + sandbox profile locally, and the terminal
+      // connects to the local MCP front door which proxies to central).
       if (openingSessionNodeIdsRef.current.has(nodeId)) return;
       openingSessionNodeIdsRef.current.add(nodeId);
       try {
@@ -761,7 +761,7 @@ export default function App() {
         openingSessionNodeIdsRef.current.delete(nodeId);
       }
     },
-    [agentCommand, isCentral, openSession, showSessionError],
+    [agentCommand, openSession, showSessionError],
   );
 
   const workspaceNewSession = useCallback(
