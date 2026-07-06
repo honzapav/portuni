@@ -55,7 +55,7 @@ Auto mode v Claude Code (a jeho ekvivalenty) **není konkurence Portuni – je t
 **Důsledky:**
 
 1. **Komunikace** musí tuhle hranici držet. Portuni není "lepší auto mode", je to **control plane pro agentní práci se znalostmi**. README, talky, zmínky se tomuto pozicování musí přizpůsobit.
-2. **Scope model** (implementace v `src/mcp/scope.ts` + `src/mcp/tools/scope.ts`: `portuni_expand_scope`, `portuni_session_log`, `PORTUNI_SCOPE_MODE`) je technické vyjádření této pozice. Read scope set + filesystem write tier 1/2/3 + audit jsou mechanismy, jak control plane funguje. Bez nich Portuni "ten control" jen tvrdí, ale nemá ho čím doložit.
+2. **Scope model** (implementace v `apps/server/mcp/scope.ts` + `apps/server/mcp/tools/scope.ts`: `portuni_expand_scope`, `portuni_session_log`, `PORTUNI_SCOPE_MODE`) je technické vyjádření této pozice. Read scope set + filesystem write tier 1/2/3 + audit jsou mechanismy, jak control plane funguje. Bez nich Portuni "ten control" jen tvrdí, ale nemá ho čím doložit.
 
 ## Core UX moves
 
@@ -140,7 +140,7 @@ Portuni poskytuje **primitiva**. Aplikace nad nimi patří mimo core.
 **V core:**
 - Graf (POPP nodes, edges, lifecycle, events)
 - File sync s remote drivery + mirrors
-- Scope model + audit (impl: `src/mcp/scope.ts`, `src/mcp/tools/scope.ts`)
+- Scope model + audit (impl: `apps/server/mcp/scope.ts`, `apps/server/mcp/tools/scope.ts`)
 - MCP server s tools, REST endpoints (např. `/context`)
 - Referenční React UI
 
@@ -206,7 +206,7 @@ který token přebere a uloží – další spuštění už je tichá.
 Webview JS se k tokenu nedostane: HTTP volání mezi React frontendem
 a Node sidecarem teče přes Tauri command (`api_request`), který
 hlavičku `Authorization` injektuje až v Rust hostitelovi. Detaily v
-`docs/auth-refactor-plan.md`. Pluggable identity adapters (Google
+`docs/archive/auth-refactor-plan.md`. Pluggable identity adapters (Google
 první) + per-user permissions zůstávají Phase 2 territory – referenční
 model viz `docs/specs.md` → "Security model".
 
@@ -264,7 +264,7 @@ Začít, když:
 
 Logika: **Než stavím distribuci pro tezi, potřebuju mít ostrý value proposition s daty z vlastního použití.** Self-test je nejlevnější způsob, jak ho získat.
 
-1. **Scope-model Phase A** (read scope core) – session scope set, `portuni_expand_scope`, `portuni_session_log`, `PORTUNI_SCOPE_MODE` env. Implementace v `src/mcp/scope.ts` + `src/mcp/tools/scope.ts`. **Hodnota teď:** ochrana před context poisoning a leakem ve vlastní práci. **Hodnota později:** ready pro multi-user.
+1. **Scope-model Phase A** (read scope core) – session scope set, `portuni_expand_scope`, `portuni_session_log`, `PORTUNI_SCOPE_MODE` env. Implementace v `apps/server/mcp/scope.ts` + `apps/server/mcp/tools/scope.ts`. **Hodnota teď:** ochrana před context poisoning a leakem ve vlastní práci. **Hodnota později:** ready pro multi-user.
 2. **Scope-model Phase B** (filesystem write scope) – generování `.claude/settings.json` + `.codex/config.toml` s tier 1/2/3 deny rules na úrovni mirror. **Hodnota teď:** přestane se stávat, že agent edituje sourozeneckou mirror. **Hodnota později:** to samé pro tým a klientské oddělení.
 3. **Druhé zařízení s opencode** – Portuni mirror, scope-model aktivní, reálná práce na obou strojích po dobu týdne+. Testuje cross-device hodnotu (tu auto mode strukturálně neumí).
 4. **Měření** během celého období:

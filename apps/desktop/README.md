@@ -136,7 +136,7 @@ webview never sees the token: the React `apiFetch` helper calls the
 `Authorization: Bearer <token>` header (and strips any caller-supplied
 one) before forwarding to the loopback port (`src-tauri/src/lib.rs`).
 The old `get_auth_token` command that handed the token to the webview
-was removed in the auth refactor (see `docs/auth-refactor-plan.md`).
+was removed in the auth refactor (see `docs/archive/auth-refactor-plan.md`).
 
 Local-only desktop installs (no `turso_url` configured) still get the
 token — small extra defense against other local processes hitting the

@@ -242,7 +242,7 @@ async function main(): Promise<void> {
   // each change so the UI's status is correct without an agent calling
   // portuni_store / portuni_status. On by default in the desktop sidecar (the
   // single local owner of the mirrors); set PORTUNI_WATCH_MIRRORS=0 to disable.
-  // Design: docs/superpowers/specs/2026-06-28-deterministic-file-state-design.md.
+  // Design: docs/archive/specs/2026-06-28-deterministic-file-state-design.md.
   const watcher = startMirrorWatcher(process.env.PORTUNI_WATCH_MIRRORS !== "0");
 
   // Refresh every registered mirror's harness configs so any .mcp.json

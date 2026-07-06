@@ -30,7 +30,7 @@ rest are optional tunables with code defaults. Grep check:
 
 | Var | Default | Purpose |
 |---|---|---|
-| `PORTUNI_SESSION_TTL_MS` | see `src/mcp/transport.ts` | MCP session idle TTL |
+| `PORTUNI_SESSION_TTL_MS` | see `apps/server/mcp/transport.ts` | MCP session idle TTL |
 | `PORTUNI_SESSION_GC_INTERVAL_MS` | ditto | Session GC sweep interval |
 | `PORTUNI_MAX_SESSIONS` | ditto | Concurrent MCP session cap |
 | `PORTUNI_SCOPE_MODE` | default gating | List-tool scope gating mode (see `portuni://scope-rules`) |
@@ -41,12 +41,12 @@ rest are optional tunables with code defaults. Grep check:
 
 | Var | Default | Purpose |
 |---|---|---|
-| `PORTUNI_ROOT` | unset | Write-scope tier root for agent file writes (`src/domain/write-scope.ts`) — **distinct from** `PORTUNI_WORKSPACE_ROOT` |
+| `PORTUNI_ROOT` | unset | Write-scope tier root for agent file writes (`apps/server/domain/write-scope.ts`) — **distinct from** `PORTUNI_WORKSPACE_ROOT` |
 | `PORTUNI_DATA_DIR` | app-data dir | DB location for sidecar/stdio mode |
 | `PORTUNI_TOKEN_STORE` | per-OS | Token store backend: `keychain` \| `varlock` \| `file` |
 | `PORTUNI_VARLOCK_WRITE_PROGRAM` / `_ARGS`, `PORTUNI_VARLOCK_DELETE_PROGRAM` / `_ARGS` | varlock CLI | Override commands the varlock token store shells out to |
 | `PORTUNI_STATUS_SCAN_CONCURRENCY` | 8 | statusScan per-file fan-out |
-| `PORTUNI_WATCH_MIRRORS` | on in sidecar, off standalone | Mirror watcher (`src/domain/sync/mirror-watcher.ts`): registers new files and reconciles edits on disk so the UI's file status stays current without agent action. The desktop sidecar (`desktop.ts`) defaults ON; set `=0` to disable. The standalone server (`index.ts`) defaults OFF; set `=1` to enable (keep exactly one watcher per machine — both processes share `.portuni/sync.db`). Solo (env auth) only. |
+| `PORTUNI_WATCH_MIRRORS` | on in sidecar, off standalone | Mirror watcher (`apps/server/domain/sync/mirror-watcher.ts`): registers new files and reconciles edits on disk so the UI's file status stays current without agent action. The desktop sidecar (`desktop.ts`) defaults ON; set `=0` to disable. The standalone server (`index.ts`) defaults OFF; set `=1` to enable (keep exactly one watcher per machine — both processes share `.portuni/sync.db`). Solo (env auth) only. |
 | `PORTUNI_WORKSPACE_ID` | unset | Desktop sidecar only; the workspace's unique ID as set in `config.json`. Unset in standalone mode. Determines which token env var name the scope materializer generates for per-mirror configs (e.g., `PORTUNI_MCP_TOKEN_<ID>` when set, plain `PORTUNI_MCP_TOKEN` when unset). |
 | `PORTUNI_MCP_TOKEN_<ID>` | unset | Per-workspace MCP token (sensitive), injected into spawned terminal sessions. `<ID>` matches the workspace ID (from `PORTUNI_WORKSPACE_ID`). Each enabled workspace gets its own token env var so mirrors can reference the right one via scope materialization. |
 | `PORTUNI_REMOTE_<NAME>__SERVICE_ACCOUNT_JSON` | unset | Per-remote Google Drive Service Account key (sensitive), read by the `varlock` token store (`token-store-varlock.ts`). `<NAME>` is the remote name upper-cased with `-` → `_`. **Required on the VPS for Phase B** (central-mode file content over the server: the Drive-direct read/write in `file-content-remote.ts` resolves the adapter via this credential). Sibling fields: `__ACCESS_TOKEN`, `__REFRESH_TOKEN`, `__EXPIRES_AT`. |
@@ -60,7 +60,7 @@ rest are optional tunables with code defaults. Grep check:
 
 `PORTUNI_AUTH_MODE` selects how requests are authenticated and authorized.
 `env` (default) = single bearer token (solo/legacy). `google` = Google OAuth
-+ Workspace Groups, with server-side enforcement in `src/auth/`.
++ Workspace Groups, with server-side enforcement in `apps/server/auth/`.
 
 ### Auth mode: env (default, solo/legacy)
 
@@ -90,7 +90,7 @@ required when google mode is active (except the optional group mappings).
 Node-level *visibility* (who can see a given node, as opposed to the
 global read/write/manage/admin scopes above) is governed separately by
 the `node_access` ACL — see
-`docs/superpowers/specs/2026-07-04-node-sharing-design.md`.
+`docs/archive/specs/2026-07-04-node-sharing-design.md`.
 
 ### Scope mapping
 
@@ -116,5 +116,5 @@ Highest matching group wins. Admin-scoped users bypass all node-level group chec
   the session JWT expiry rather than relying on the caches alone.
 - `.env.schema` is committed and visible to agents; actual values are not.
 - Run `varlock scan` before committing to catch accidental secret leakage.
-- For the design rationale behind google mode see `docs/superpowers/specs/2026-06-09-google-groups-auth-design.md`.
-- Auth implementation lives in `src/auth/` (adapter.ts, env-adapter.ts, google-adapter.ts, session-token.ts, device-tokens.ts, roles.ts, request-identity.ts, min-scopes.ts, node-access.ts).
+- For the design rationale behind google mode see `docs/archive/specs/2026-06-09-google-groups-auth-design.md`.
+- Auth implementation lives in `apps/server/auth/` (adapter.ts, env-adapter.ts, google-adapter.ts, session-token.ts, device-tokens.ts, roles.ts, request-identity.ts, min-scopes.ts, node-access.ts).

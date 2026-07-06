@@ -81,7 +81,7 @@ export type DetailEdge = {
   // access) instead of being dropped like a mode='private' peer is.
   // Absent (not false) for a plainly-visible peer or for admins, who see
   // every peer without the flag. Spec: "Zamcene polozky v Propojeni"
-  // (docs/superpowers/specs/2026-07-04-node-sharing-design.md §4).
+  // (docs/archive/specs/2026-07-04-node-sharing-design.md §4).
   peer_restricted?: true;
 };
 

@@ -70,7 +70,7 @@ function modeLabel(m: AccessMode | null): string {
 }
 
 // The unified sharing selector's three modes -- one dimension stored in
-// `nodes.visibility` (spec: docs/superpowers/specs/2026-07-05-unified-sharing-tab-design.md).
+// `nodes.visibility` (spec: docs/archive/specs/2026-07-05-unified-sharing-tab-design.md).
 // "group" is the *detail* mode: it requires >= 1 node_access row (enforced
 // server-side, PUT 400s on an empty entries + visibility:"group" body).
 type VisibilityMode = "team" | "private" | "group";
@@ -463,7 +463,7 @@ export function AccessSection({
 }
 
 // Top-level segmented control for the unified sharing mode (spec:
-// docs/superpowers/specs/2026-07-05-unified-sharing-tab-design.md). Reflects
+// docs/archive/specs/2026-07-05-unified-sharing-tab-design.md). Reflects
 // `displayedMode` from AccessSection -- an inherited or own group ACL both
 // show as "Skupina", team/private nodes show their own column value.
 function VisibilitySelector({

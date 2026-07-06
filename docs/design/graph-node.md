@@ -4,8 +4,8 @@ Canonical visual language for nodes on the Portuni graph.
 
 - **Visual reference:** [`graph-node-design.html`](./graph-node-design.html) — interactive HTML mockup with light/dark theme toggle, the full pattern dictionary, the per-type state matrix, and zoom-level survival check.
 - **Background:** [`graph-node-exploration.html`](./graph-node-exploration.html) — the four-direction exploration (Aurora ring, Initials core, Status sigil, Constellation pip) that led to picking *Constellation pip* as the canonical direction.
-- **Implementation:** [`app/src/components/GraphView.tsx`](../../app/src/components/GraphView.tsx) — `stylesheet()` defines the cytoscape rules, `HATCH_OVERLAY_URI` / `STRIKE_OVERLAY_URI` / `DOT_OVERLAY_URI` / `CHECK_OVERLAY_URI` / `buildHalfFillUri()` define the SVG overlays.
-- **Tokens:** [`app/src/lib/theme.ts`](../../app/src/lib/theme.ts) — type colours, accent, edge tones, label background.
+- **Implementation:** [`apps/web/src/components/GraphView.tsx`](../../apps/web/src/components/GraphView.tsx) — `stylesheet()` defines the cytoscape rules, `HATCH_OVERLAY_URI` / `STRIKE_OVERLAY_URI` / `DOT_OVERLAY_URI` / `CHECK_OVERLAY_URI` / `buildHalfFillUri()` define the SVG overlays.
+- **Tokens:** [`apps/web/src/lib/theme.ts`](../../apps/web/src/lib/theme.ts) — type colours, accent, edge tones, label background.
 
 ## Encoding rules
 

@@ -117,7 +117,7 @@ tmux loop for backend iteration.
   (`PORTUNI_WATCH_MIRRORS`, on the standalone server it is opt-in `=1`); for
   backend dev against the tmux server, set `PORTUNI_WATCH_MIRRORS=1` if you
   want the same behavior. Model:
-  `docs/superpowers/specs/2026-06-28-deterministic-file-state-design.md`.
+  `docs/archive/specs/2026-06-28-deterministic-file-state-design.md`.
 - **Drive sync has two auth paths sharing one adapter.** Desktop local
   workspaces connect via per-user OAuth: Settings → Synchronizace →
   `google_drive_connect` (`apps/desktop/src/auth.rs`, PKCE loopback) hands the
@@ -136,7 +136,7 @@ tmux loop for backend iteration.
   MCP-only (`portuni_setup_remote`; `setup-drive-remote` prompt) for headless /
   central / multi-remote. `driveStatus.routed` guards the "connected but nothing
   routes to gdrive" trap. Spec/plan:
-  `docs/superpowers/{specs,plans}/2026-07-05-sync-settings*.md`.
+  `docs/archive/{specs,plans}/2026-07-05-sync-settings*.md`.
 - **Mirror scope configs are Portuni-managed.** `portuni_mirror` materializes
   `.mcp.json`, `.claude/settings.local.json`, `.codex/config.toml`,
   `.vibe/config.toml`, `.cursor/rules`, `PORTUNI_SCOPE.md` and marker blocks
@@ -177,8 +177,8 @@ tmux loop for backend iteration.
   proxují na central beze změny, device-local nástroje (mirror/status/
   store/pull/adopt_files) běží lokálně. E2E harness:
   `scripts/e2e/teammate-mirrors.sh`. Model: `docs/architecture/data-modes.md`;
-  plán: `docs/superpowers/plans/2026-07-03-teammate-mirrors.md`,
-  `docs/superpowers/plans/2026-07-05-agent-mode-mcp-front-door.md`.
+  plán: `docs/archive/plans/2026-07-03-teammate-mirrors.md`,
+  `docs/archive/plans/2026-07-05-agent-mode-mcp-front-door.md`.
 
 - **Multi-workspace desktop**: `config.json` v2 má `workspaces` mapu +
   `active_workspace`; sidecary všech zapnutých workspaces běží souběžně
@@ -188,7 +188,7 @@ tmux loop for backend iteration.
   `PORTUNI_WORKSPACE_ID`; bez něj — standalone — zůstává
   `PORTUNI_MCP_TOKEN`). Globální MCP entries: `portuni-<id>`, migrovaný
   workspace drží historické `portuni`. Model:
-  `docs/superpowers/specs/2026-07-04-desktop-multi-workspace-design.md`.
+  `docs/archive/specs/2026-07-04-desktop-multi-workspace-design.md`.
 
 - **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
   keys; `.env.schema` declares only the 6 core ones. Full inventory with

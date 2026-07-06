@@ -11,8 +11,8 @@ the discovery that produced it.
   2026-07-04, no Intel users), uses `tauri-apps/tauri-action@v0` to
   build and attach the DMG to a draft GitHub Release on the tag.
   Builds are Developer ID signed and notarized (see below).
-- **First-run onboarding wizard.** Shipped in `app/src/components/
-  TursoSetupGate.tsx` + `src-tauri/src/lib.rs`. A fresh install (no
+- **First-run onboarding wizard.** Shipped in `apps/web/src/components/
+  TursoSetupGate.tsx` + `apps/desktop/src/lib.rs`. A fresh install (no
   `config.json`) now sees a wizard that asks "connect to existing
   organisation" (URL + token) or "start locally", then writes the
   config and Keychain entry itself. Replaces the previous flow where
@@ -30,7 +30,7 @@ the discovery that produced it.
   tags don't trigger downstream workflows. `bootstrap-sha` in the config
   anchors the first changelog at wiring time so it doesn't replay all history.
   Flow + commit conventions: `CONTRIBUTING.md`. The "Plan" section below is the
-  original design; the paths there (`app/`, `src-tauri/`) predate the `apps/`
+  original design; the paths there (`app/`, `apps/desktop/`) predate the `apps/`
   restructure — the shipped config uses `apps/web` / `apps/desktop`.
 - **PR / branch hygiene.** Not yet enforced. See "Plan" below.
 - **Code signing + notarisation.** Wired (2026-07-04, account exists).
@@ -73,8 +73,8 @@ own (tauri-action notarizes the .app inside, which is stapled);
 ## Why this exists
 
 The repo carries the version string in **four manifests**: `package.json`
-(server), `app/package.json` (frontend), `src-tauri/Cargo.toml`,
-`src-tauri/tauri.conf.json`. There is no `CHANGELOG.md`. Today releases
+(server), `apps/web/package.json` (frontend), `apps/desktop/Cargo.toml`,
+`apps/desktop/tauri.conf.json`. There is no `CHANGELOG.md`. Today releases
 happen by running `cargo tauri build` on the maintainer's laptop and
 copying the `.app` to `/Applications/`. That's fine for one user; it
 does not survive a second contributor or a second machine.
@@ -127,9 +127,9 @@ right-click → Open (one-time Gatekeeper dance) → onboarding wizard
 repo root. Drives version bumps in:
 
 - `package.json` (`packageJson` strategy)
-- `app/package.json` (`packageJson` strategy)
-- `src-tauri/Cargo.toml` (`extra-files` regex)
-- `src-tauri/tauri.conf.json` (`extra-files` regex)
+- `apps/web/package.json` (`packageJson` strategy)
+- `apps/desktop/Cargo.toml` (`extra-files` regex)
+- `apps/desktop/tauri.conf.json` (`extra-files` regex)
 
 The `extra-files` regex approach is the canonical pattern for non-npm
 manifests; it matches `version = "..."` / `"version": "..."` lines and

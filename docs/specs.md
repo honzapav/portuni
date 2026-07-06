@@ -166,7 +166,7 @@ This applies to all MCP connections: Portuni server credentials, external tool A
 > The full implementation — IdentityAdapter, session JWT, device tokens,
 > per-request identity, global role enforcement (TOOL_MIN_SCOPE + route
 > gates), and node-level group visibility — is described in
-> `docs/superpowers/specs/2026-06-09-google-groups-auth-design.md`.
+> `docs/archive/specs/2026-06-09-google-groups-auth-design.md`.
 >
 > The `env` default preserves the Phase 1.5 single-shared-token behavior
 > so existing desktop installs continue to work. Switching to `google`
@@ -215,9 +215,9 @@ Nodes have a `visibility` field:
 |---|---|
 | team | All authenticated users (default) |
 | private | Only the creator |
-| group | Members of the Google Group stored in `meta.access_group`; membership is inherited via the `belongs_to` chain (a child node without its own `access_group` inherits the nearest ancestor's group). Implemented in `src/auth/node-access.ts`. |
+| group | Members of the Google Group stored in `meta.access_group`; membership is inherited via the `belongs_to` chain (a child node without its own `access_group` inherits the nearest ancestor's group). Implemented in `apps/server/auth/node-access.ts`. |
 
-Non-members do not see `group`-visibility nodes at all: the node is excluded from list, search, context expansion, and direct get. Admins (`PORTUNI_GROUPS_ADMIN`) bypass all node-level checks and see everything. This "hide entirely, no read-only fallback" decision is documented in the design spec at `docs/superpowers/specs/2026-06-09-google-groups-auth-design.md`.
+Non-members do not see `group`-visibility nodes at all: the node is excluded from list, search, context expansion, and direct get. Admins (`PORTUNI_GROUPS_ADMIN`) bypass all node-level checks and see everything. This "hide entirely, no read-only fallback" decision is documented in the design spec at `docs/archive/specs/2026-06-09-google-groups-auth-design.md`.
 
 The flow (implemented in `PORTUNI_AUTH_MODE=google`):
 
@@ -331,7 +331,7 @@ Relation types (strictly enforced, four flat relations):
 Enforcement spans three layers:
 - **Zod `z.enum`** on the MCP tool input (portuni_connect, portuni_disconnect)
 - **SQL `CHECK` constraint** on `edges.relation` (blocks direct inserts that bypass the tool layer, e.g. seed scripts or migrations)
-- **Single source of truth** in `src/popp.ts` — a dependency-free constants module imported by the backend (`src/schema.ts` and tools) and by the app frontend (`app/src/types.ts`) via a relative path. Backend and frontend cannot drift, because there is no duplicated list to synchronize
+- **Single source of truth** in `apps/server/shared/popp.ts` — a dependency-free constants module imported by the backend (`apps/server/infra/schema.ts` and tools) and by the app frontend (`apps/web/src/types.ts`) via a relative path. Backend and frontend cannot drift, because there is no duplicated list to synchronize
 
 Edges are directed. `source` is the entity that has the relationship, `target` is what it points to. For bidirectional relationships, create two edges or query both directions.
 
@@ -411,7 +411,7 @@ References to shared files in file storage, attached to nodes. Intentionally pub
 
 ### File sync state
 
-> **Implementation note (2026-04):** the actual Phase 1 implementation diverged from the per-user `file_sync` table sketched here. Sync state is now split across two layers — Turso holds canonical remote state on `files` (`current_remote_hash`, `last_pushed_by`, `last_pushed_at`), and each device keeps "what I last saw" in a local SQLite at `$PORTUNI_WORKSPACE_ROOT/.portuni/sync.db`. There is no `device_id` column in Turso. The pluggable `FileAdapter` interface (gdrive / dropbox / s3 / fs / webdav / sftp), routing via `remotes` + `remote_routing`, and `sync_key`-anchored paths replace the Drive-only assumptions in the schema below. See `docs/architecture/file-sync.md` for the live design and `src/domain/sync/README.md` for the user-facing summary.
+> **Implementation note (2026-04):** the actual Phase 1 implementation diverged from the per-user `file_sync` table sketched here. Sync state is now split across two layers — Turso holds canonical remote state on `files` (`current_remote_hash`, `last_pushed_by`, `last_pushed_at`), and each device keeps "what I last saw" in a local SQLite at `$PORTUNI_WORKSPACE_ROOT/.portuni/sync.db`. There is no `device_id` column in Turso. The pluggable `FileAdapter` interface (gdrive / dropbox / s3 / fs / webdav / sftp), routing via `remotes` + `remote_routing`, and `sync_key`-anchored paths replace the Drive-only assumptions in the schema below. See `docs/architecture/file-sync.md` for the live design and `apps/server/domain/sync/README.md` for the user-facing summary.
 
 Per-user tracking of when each file was last synced (pulled or pushed). Used for conflict detection.
 
@@ -565,7 +565,7 @@ This keeps context size manageable while still surfacing connected knowledge.
 ## MCP tools
 
 > **Outdated section.** The server registers 45 tools
-> (`src/mcp/server.ts`); the canonical reference is the docs-site. This
+> (`apps/server/mcp/server.ts`); the canonical reference is the docs-site. This
 > section misses the actor, responsibility, data-source/tool, scope/session
 > and sync tool families entirely, and `portuni_search`,
 > `portuni_promote`, `portuni_refresh_summary`, `portuni_sync_mirrors`

@@ -149,7 +149,7 @@ obrazovku (CentralLoginGate), ne graf.
 Pozn. (aktualizace 2026-07-03 večer): teammate v central režimu **má lokální
 mirrory** — sidecar běží jako sync agent (watcher, sync, mirror složky na
 disku), graf i bajty jdou přes server s device tokenem. Implementace:
-`docs/superpowers/plans/2026-07-03-teammate-mirrors.md`, E2E ověřeno
+`docs/archive/plans/2026-07-03-teammate-mirrors.md`, E2E ověřeno
 (`scripts/e2e/teammate-mirrors.sh`). **Funguje proti api.portuni.com až po
 deployi aktuálního main** (nasazený dist nemá sync-info/register/base64
 endpointy ani central file content).
