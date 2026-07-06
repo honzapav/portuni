@@ -189,12 +189,13 @@ export function createNode(input: {
   return jsonRequest<NodeDetail>("POST", "/nodes", input);
 }
 
-// Thrown when the backend returns 501 local_only — the operation is not
-// available in central mode. Components can catch this specific type to
-// show the friendly modal instead of a generic error toast.
+// Thrown when a device-local affordance (sync status, folder/file URL) is
+// requested but the local sync agent isn't running yet -- in central mode that
+// means you're not signed in. The backend returns 501 local_only. Components
+// can catch this specific type to show a friendly hint instead of a toast.
 export class LocalOnlyError extends Error {
   constructor() {
-    super("Dostupné jen v lokálním režimu (fáze B).");
+    super("Synchronizační agent neběží – přihlas se v Nastavení → Účet.");
     this.name = "LocalOnlyError";
   }
 }

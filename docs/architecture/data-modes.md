@@ -1,5 +1,12 @@
 # Data modes & the two sync planes
 
+> **Status (2026-07): Phase B has shipped.** Central mode now serves file
+> **content** and lifecycle over the server (`file-content-remote.ts`) and
+> supports agent **terminals** (local sync agent + MCP front door). The
+> "unbuilt Phase B" / "not yet" / `fáze B` framing below is historical — kept
+> for the design rationale, but the file-bytes plane and terminals work in
+> central mode today. The old `fáze B` UI string is gone.
+
 > **Purpose:** settle the recurring confusion between "local vs central mode" and
 > "syncing files to Google Drive." They are different axes. This doc is the
 > canonical mental model; link here instead of re-explaining.
