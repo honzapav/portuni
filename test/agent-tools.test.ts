@@ -138,8 +138,9 @@ class FakeCentral implements CentralClient {
     return [];
   }
 
+  neighbours: string[] = [];
   async nodeNeighbours(_nodeId: string): Promise<string[]> {
-    return [];
+    return this.neighbours;
   }
 
   async nodeExists(nodeId: string) {
@@ -475,6 +476,7 @@ describe("enrichGetNodeResult", () => {
 
 describe("enrichGetContextResult", () => {
   it("fills the home node's local_path as root and as a connected node", async () => {
+    const fake = new FakeCentral(); // no neighbours -> seed set is {home}
     await setupMirror();
     const result = {
       content: [
@@ -490,27 +492,53 @@ describe("enrichGetContextResult", () => {
         },
       ],
     };
-    const out = await enrichGetContextResult("U1", NODE_ID, result);
+    const out = await enrichGetContextResult(fake, "U1", NODE_ID, result);
     const payload = JSON.parse(out.content[0].text as string);
     assert.equal(payload.root.local_path, mirrorRoot);
     assert.equal(payload.connected[0].local_path, mirrorRoot);
-    // Non-home node stays null (not readable under the sandbox).
+    // Non-seed node stays null (not readable under the sandbox).
     assert.equal(payload.connected[1].local_path, null);
   });
 
+  it("fills a depth-1 neighbour's local_path with its OWN real mirror", async () => {
+    const fake = new FakeCentral();
+    const neighbourId = "N00000000000000000NEIGHB";
+    fake.neighbours = [neighbourId]; // central reports it as a depth-1 neighbour
+    await setupMirror();
+    const neighbourDir = join(workspace, ORG_KEY, "areas", "lidi");
+    await mkdir(neighbourDir, { recursive: true });
+    await registerMirror("U1", neighbourId, neighbourDir);
+    const result = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            root: { id: NODE_ID, local_path: null, depth: 0 },
+            connected: [{ id: neighbourId, local_path: null, depth: 1 }],
+          }),
+        },
+      ],
+    };
+    const out = await enrichGetContextResult(fake, "U1", NODE_ID, result);
+    const payload = JSON.parse(out.content[0].text as string);
+    assert.equal(payload.connected[0].local_path, neighbourDir);
+  });
+
   it("is a no-op when there is no home node id", async () => {
+    const fake = new FakeCentral();
     await setupMirror();
     const result = {
       content: [{ type: "text", text: JSON.stringify({ root: { id: NODE_ID, local_path: null } }) }],
     };
-    const out = await enrichGetContextResult("U1", null, result);
+    const out = await enrichGetContextResult(fake, "U1", null, result);
     const payload = JSON.parse(out.content[0].text as string);
     assert.equal(payload.root.local_path, null);
   });
 
   it("passes error results through untouched", async () => {
+    const fake = new FakeCentral();
     const result = { content: [{ type: "text", text: "boom" }], isError: true };
-    const out = await enrichGetContextResult("U1", NODE_ID, result);
+    const out = await enrichGetContextResult(fake, "U1", NODE_ID, result);
     assert.equal(out, result);
   });
 });

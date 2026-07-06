@@ -144,7 +144,7 @@ function buildAgentServer(
     }
     if (name === "portuni_get_context") {
       const result = await upstream.callTool({ name, arguments: args });
-      return enrichGetContextResult(identity.userId, homeNodeId, result as {
+      return enrichGetContextResult(opts.client, identity.userId, homeNodeId, result as {
         content: Array<{ type: string; text?: string }>;
         isError?: boolean;
       });
