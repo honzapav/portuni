@@ -7,6 +7,7 @@ export type {
   DetailFile,
   DetailEvent,
   NodeDetail,
+  NodeMirrorResponse,
   DetailResponsibility,
   DetailDataSource,
   DetailTool,

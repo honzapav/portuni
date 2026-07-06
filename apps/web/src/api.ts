@@ -1,6 +1,7 @@
 import type {
   GraphPayload,
   NodeDetail,
+  NodeMirrorResponse,
   DetailResponsibility,
   DetailDataSource,
   DetailTool,
@@ -60,6 +61,17 @@ export async function fetchGraph(): Promise<GraphPayload> {
 export async function fetchNode(id: string): Promise<NodeDetail> {
   const res = await apiFetch(`/nodes/${encodeURIComponent(id)}`);
   if (!res.ok) throw new Error(`node: ${res.status}`);
+  return res.json();
+}
+
+// Device-local mirror for a node. Central-mode node-detail carries
+// local_mirror:null (the central server has no device state); the web reads
+// this from the local sync agent and overlays it. Served by the agent router
+// in central mode; in local mode node-detail already carries the mirror so
+// callers only reach for this when local_mirror is absent.
+export async function fetchNodeMirror(id: string): Promise<NodeMirrorResponse> {
+  const res = await apiFetch(`/nodes/${encodeURIComponent(id)}/mirror`);
+  if (!res.ok) throw new Error(`mirror: ${res.status}`);
   return res.json();
 }
 

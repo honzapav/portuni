@@ -7,7 +7,13 @@ import EditorFullscreen from "./components/EditorFullscreen";
 import EditorPane from "./components/EditorPane";
 import StatusFooter from "./components/StatusFooter";
 import CreateNodeModal from "./components/CreateNodeModal";
-import { fetchGraph, fetchNode, createNodeMirror, fetchSandboxProfile } from "./api";
+import {
+  fetchGraph,
+  fetchNode,
+  fetchNodeMirror,
+  createNodeMirror,
+  fetchSandboxProfile,
+} from "./api";
 import { useFileEditor } from "./lib/use-file-editor";
 import { buildAgentCommand } from "./lib/prompt";
 import { useDataMode } from "./lib/central";
@@ -204,6 +210,24 @@ export default function App() {
   // Load detail when selection changes. The cancelled flag matters: without
   // it a slow response for node A lands after the user already clicked node
   // B and paints A's detail under B's selection.
+  // Central mode serves node-detail from the central server, which has no
+  // device state, so local_mirror comes back null even when this device owns
+  // the mirror. Overlay it from the local sync agent (GET /nodes/:id/mirror).
+  // Local mode already carries local_mirror in node-detail, so skip the extra
+  // call there; orgs never have a mirror.
+  const hydrateLocalMirror = useCallback(
+    async (node: NodeDetail): Promise<NodeDetail> => {
+      if (!isCentral || node.local_mirror || node.type === "organization") return node;
+      try {
+        const { local_mirror } = await fetchNodeMirror(node.id);
+        return local_mirror ? { ...node, local_mirror } : node;
+      } catch {
+        return node;
+      }
+    },
+    [isCentral],
+  );
+
   useEffect(() => {
     if (!selectedId) {
       setNodeDetail(null);
@@ -214,6 +238,7 @@ export default function App() {
     setDetailLoading(true);
     setDetailError(null);
     fetchNode(selectedId)
+      .then((n) => hydrateLocalMirror(n))
       .then((n) => {
         if (cancelled) return;
         setNodeDetail(n);
@@ -227,7 +252,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedId]);
+  }, [selectedId, hydrateLocalMirror]);
 
   // Refetch both the graph and the current node. Called by the DetailPane
   // after any mutation so the viz and the detail stay in sync.
@@ -238,8 +263,8 @@ export default function App() {
     ]);
     setGraph(graphRes);
     setGraphError(null);
-    if (nodeRes) setNodeDetail(nodeRes);
-  }, [selectedId]);
+    if (nodeRes) setNodeDetail(await hydrateLocalMirror(nodeRes));
+  }, [selectedId, hydrateLocalMirror]);
 
   const setSelectedId = useCallback(
     (id: string | null) => {
