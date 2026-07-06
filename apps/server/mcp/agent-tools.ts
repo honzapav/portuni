@@ -329,6 +329,47 @@ export async function enrichGetNodeResult<T extends ToolTextResult>(
   };
 }
 
+// Overlay device-local `local_path` (the node's readable mirror root) onto a
+// proxied portuni_get_context result. Central serves every node's local_path
+// null; only the session home node is readable under the seatbelt sandbox
+// (non-home nodes need .portuni-scope staging central mode does not do), so we
+// fill just the home node's mirror root wherever it appears (root or a
+// connected node). Any shape it does not recognise passes through unchanged.
+export async function enrichGetContextResult<T extends ToolTextResult>(
+  userId: string,
+  homeNodeId: string | null,
+  result: T,
+): Promise<T> {
+  if (result.isError || !homeNodeId) return result;
+  const first = result.content.find(
+    (c) => c.type === "text" && typeof c.text === "string",
+  );
+  if (!first || typeof first.text !== "string") return result;
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(first.text) as Record<string, unknown>;
+  } catch {
+    return result;
+  }
+  const homeMirror = await getMirrorPath(userId, homeNodeId);
+  if (!homeMirror) return result;
+  const fillIfHome = (n: unknown): void => {
+    if (n && typeof n === "object") {
+      const node = n as Record<string, unknown>;
+      if (node.id === homeNodeId && !node.local_path) node.local_path = homeMirror;
+    }
+  };
+  fillIfHome(payload.root);
+  if (Array.isArray(payload.connected)) {
+    for (const n of payload.connected) fillIfHome(n);
+  }
+  const text = JSON.stringify(payload, null, 2);
+  return {
+    ...result,
+    content: result.content.map((c) => (c === first ? { ...c, text } : c)),
+  };
+}
+
 export async function callLocalTool(
   client: CentralClient,
   userId: string,

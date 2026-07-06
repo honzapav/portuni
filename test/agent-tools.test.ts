@@ -11,6 +11,7 @@ import {
   LOCAL_TOOLS,
   callLocalTool,
   enrichGetNodeResult,
+  enrichGetContextResult,
 } from "../apps/server/mcp/agent-tools.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
@@ -465,5 +466,47 @@ describe("enrichGetNodeResult", () => {
     const result = { content: [{ type: "text", text: "not json" }] };
     const out = await enrichGetNodeResult(fake, "U1", null, result);
     assert.equal(out.content[0].text, "not json");
+  });
+});
+
+describe("enrichGetContextResult", () => {
+  it("fills the home node's local_path as root and as a connected node", async () => {
+    await setupMirror();
+    const result = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            root: { id: NODE_ID, local_path: null, depth: 0 },
+            connected: [
+              { id: NODE_ID, local_path: null, depth: 1 },
+              { id: "N00000000000000000000OTHER", local_path: null, depth: 1 },
+            ],
+          }),
+        },
+      ],
+    };
+    const out = await enrichGetContextResult("U1", NODE_ID, result);
+    const payload = JSON.parse(out.content[0].text as string);
+    assert.equal(payload.root.local_path, mirrorRoot);
+    assert.equal(payload.connected[0].local_path, mirrorRoot);
+    // Non-home node stays null (not readable under the sandbox).
+    assert.equal(payload.connected[1].local_path, null);
+  });
+
+  it("is a no-op when there is no home node id", async () => {
+    await setupMirror();
+    const result = {
+      content: [{ type: "text", text: JSON.stringify({ root: { id: NODE_ID, local_path: null } }) }],
+    };
+    const out = await enrichGetContextResult("U1", null, result);
+    const payload = JSON.parse(out.content[0].text as string);
+    assert.equal(payload.root.local_path, null);
+  });
+
+  it("passes error results through untouched", async () => {
+    const result = { content: [{ type: "text", text: "boom" }], isError: true };
+    const out = await enrichGetContextResult("U1", NODE_ID, result);
+    assert.equal(out, result);
   });
 });

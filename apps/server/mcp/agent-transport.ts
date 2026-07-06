@@ -47,7 +47,12 @@ import type { RequestIdentity } from "../auth/request-identity.js";
 import type { McpTransport } from "./transport.js";
 import { INSTRUCTIONS } from "./server.js";
 import { parseHomeNodeIdFromUrl } from "./auto-seed.js";
-import { LOCAL_TOOLS, callLocalTool, enrichGetNodeResult } from "./agent-tools.js";
+import {
+  LOCAL_TOOLS,
+  callLocalTool,
+  enrichGetNodeResult,
+  enrichGetContextResult,
+} from "./agent-tools.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 
 const MAX_SESSIONS = Number(process.env.PORTUNI_MAX_SESSIONS ?? 100);
@@ -133,6 +138,13 @@ function buildAgentServer(
     if (name === "portuni_get_node") {
       const result = await upstream.callTool({ name, arguments: args });
       return enrichGetNodeResult(opts.client, identity.userId, homeNodeId, result as {
+        content: Array<{ type: string; text?: string }>;
+        isError?: boolean;
+      });
+    }
+    if (name === "portuni_get_context") {
+      const result = await upstream.callTool({ name, arguments: args });
+      return enrichGetContextResult(identity.userId, homeNodeId, result as {
         content: Array<{ type: string; text?: string }>;
         isError?: boolean;
       });
