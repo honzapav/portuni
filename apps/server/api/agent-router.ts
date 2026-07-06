@@ -27,13 +27,18 @@ import {
   syncRunCentral,
 } from "../domain/sync/central/engine-central.js";
 import { mimeFor } from "../domain/sync/engine.js";
+import { getLocalMirror } from "../domain/sync/local-db.js";
 import { MirrorCreateError } from "../domain/sync/mirror-create.js";
 import {
   buildSeatbeltProfile,
   resolveSandboxScopeForCwd,
   resolveSandboxScopeForNode,
 } from "../domain/sandbox-profile.js";
-import type { SyncStatusResponse, UntrackedFile } from "../shared/api-types.js";
+import type {
+  NodeMirrorResponse,
+  SyncStatusResponse,
+  UntrackedFile,
+} from "../shared/api-types.js";
 
 // The sandbox resolvers take a db parameter their implementations no longer
 // touch (mirror registry + env only). The agent has no graph db; passing
@@ -169,6 +174,23 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
         if (respondCentral404(res, err)) return true;
         respondError(res, `POST /nodes/${nodeId}/sync`, err);
       }
+      return true;
+    }
+
+    // Read-only device mirror lookup. Central serves node-detail with
+    // local_mirror:null (no device state), so the web overlays this. Rust's
+    // is_local_only_path already routes /nodes/:id/mirror here for any method.
+    const mirrorReadMatch = pathname.match(/^\/nodes\/([^/]+)\/mirror$/);
+    if (mirrorReadMatch && method === "GET") {
+      const nodeId = decodeURIComponent(mirrorReadMatch[1]);
+      const m = await getLocalMirror(identity.userId, nodeId);
+      const payload: NodeMirrorResponse = {
+        node_id: nodeId,
+        local_mirror: m
+          ? { local_path: m.local_path, registered_at: m.registered_at }
+          : null,
+      };
+      respondJson(res, 200, payload);
       return true;
     }
 

@@ -220,6 +220,15 @@ export type LocalMirror = {
   registered_at: string;
 } | null;
 
+// GET /nodes/:id/mirror -- the device-local mirror for a node. Central mode
+// serves node-detail from the central server, which has no device state, so
+// local_mirror there is always null; the web reads this device-local endpoint
+// (served by the sync agent) and overlays it onto the node.
+export interface NodeMirrorResponse {
+  node_id: string;
+  local_mirror: LocalMirror;
+}
+
 export type DetailOwner = {
   id: string;
   name: string;

@@ -25,6 +25,7 @@ import {
 } from "../domain/sync/central/engine-central.js";
 import { MirrorCreateError } from "../domain/sync/mirror-create.js";
 import { getMirrorPath, listUserMirrors } from "../domain/sync/mirror-registry.js";
+import { getLocalMirror } from "../domain/sync/local-db.js";
 import { subpathFromMirror } from "../domain/sync/remote-path.js";
 import type { StatusFileEntry } from "../domain/sync/engine.js";
 
@@ -244,6 +245,47 @@ const HANDLERS: Record<string, LocalHandler> = {
     return note !== undefined ? { adopted, skipped, note } : { adopted, skipped };
   },
 };
+
+type ToolTextResult = {
+  content: Array<{ type: string; text?: string }>;
+  isError?: boolean;
+};
+
+// Overlay device-local `local_mirror` onto a proxied portuni_get_node result.
+// Central serves the node with local_mirror:null (it has no device state);
+// this fills it from getLocalMirror on the device that owns the mirror, so an
+// agent in central mode sees the same registration metadata a local session
+// would. Defensive: any shape it does not recognise passes through unchanged
+// (error result, no text block, non-JSON text, no string id, or a node that
+// already carries a truthy local_mirror).
+export async function enrichGetNodeResult<T extends ToolTextResult>(
+  userId: string,
+  result: T,
+): Promise<T> {
+  if (result.isError) return result;
+  const first = result.content.find(
+    (c) => c.type === "text" && typeof c.text === "string",
+  );
+  if (!first || typeof first.text !== "string") return result;
+  let node: Record<string, unknown>;
+  try {
+    node = JSON.parse(first.text) as Record<string, unknown>;
+  } catch {
+    return result;
+  }
+  const id = typeof node.id === "string" ? node.id : null;
+  if (!id) return result;
+  if (node.local_mirror) return result;
+  const m = await getLocalMirror(userId, id);
+  node.local_mirror = m
+    ? { local_path: m.local_path, registered_at: m.registered_at }
+    : null;
+  const text = JSON.stringify(node, null, 2);
+  return {
+    ...result,
+    content: result.content.map((c) => (c === first ? { ...c, text } : c)),
+  };
+}
 
 export async function callLocalTool(
   client: CentralClient,

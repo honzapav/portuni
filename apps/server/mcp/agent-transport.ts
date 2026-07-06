@@ -47,7 +47,7 @@ import type { RequestIdentity } from "../auth/request-identity.js";
 import type { McpTransport } from "./transport.js";
 import { INSTRUCTIONS } from "./server.js";
 import { parseHomeNodeIdFromUrl } from "./auto-seed.js";
-import { LOCAL_TOOLS, callLocalTool } from "./agent-tools.js";
+import { LOCAL_TOOLS, callLocalTool, enrichGetNodeResult } from "./agent-tools.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 
 const MAX_SESSIONS = Number(process.env.PORTUNI_MAX_SESSIONS ?? 100);
@@ -124,6 +124,17 @@ function buildAgentServer(
         const message = err instanceof Error ? err.message : String(err);
         return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
       }
+    }
+    // Graph reads proxy to central verbatim, but central has no device state,
+    // so portuni_get_node comes back with local_mirror:null. Overlay the
+    // device mirror here so an agent in central mode sees the same
+    // registration metadata a local session would.
+    if (name === "portuni_get_node") {
+      const result = await upstream.callTool({ name, arguments: args });
+      return enrichGetNodeResult(identity.userId, result as {
+        content: Array<{ type: string; text?: string }>;
+        isError?: boolean;
+      });
     }
     return upstream.callTool({ name, arguments: args });
   });

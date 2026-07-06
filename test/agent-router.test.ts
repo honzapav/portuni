@@ -225,4 +225,25 @@ describe("agent router over HTTP", () => {
     const body = (await r200.json()) as { profile: string; home_mirror: string };
     assert.ok(body.profile.includes("(deny default)") || body.profile.length > 0);
   });
+
+  it("GET /nodes/:id/mirror returns the registered device mirror", async () => {
+    await registerMirror(SOLO_USER, NODE_ID, mirrorRoot);
+    const res = await fetch(`${base}/nodes/${NODE_ID}/mirror`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      node_id: string;
+      local_mirror: { local_path: string; registered_at: string } | null;
+    };
+    assert.equal(body.node_id, NODE_ID);
+    assert.equal(body.local_mirror?.local_path, mirrorRoot);
+    assert.equal(typeof body.local_mirror?.registered_at, "string");
+  });
+
+  it("GET /nodes/:id/mirror returns null local_mirror when unregistered", async () => {
+    const res = await fetch(`${base}/nodes/${NODE_ID}/mirror`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { node_id: string; local_mirror: unknown };
+    assert.equal(body.node_id, NODE_ID);
+    assert.equal(body.local_mirror, null);
+  });
 });

@@ -7,7 +7,11 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 import type { CentralClient } from "../apps/server/domain/sync/central/client.js";
 import { CentralHttpError } from "../apps/server/domain/sync/central/client.js";
-import { LOCAL_TOOLS, callLocalTool } from "../apps/server/mcp/agent-tools.js";
+import {
+  LOCAL_TOOLS,
+  callLocalTool,
+  enrichGetNodeResult,
+} from "../apps/server/mcp/agent-tools.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import type { NodeSyncInfo } from "../apps/server/domain/sync/sync-remote-api.js";
@@ -354,5 +358,61 @@ describe("portuni_adopt_files", () => {
     const payload = JSON.parse(r.content[0].text);
     assert.equal(payload.adopted.length, 1);
     assert.match(payload.note, /ignores `paths`/);
+  });
+});
+
+describe("enrichGetNodeResult", () => {
+  it("fills local_mirror from the device registry", async () => {
+    await setupMirror();
+    const result = {
+      content: [
+        { type: "text", text: JSON.stringify({ id: NODE_ID, name: "G", local_mirror: null }) },
+      ],
+    };
+    const out = await enrichGetNodeResult("U1", result);
+    const node = JSON.parse(out.content[0].text as string);
+    assert.equal(node.local_mirror.local_path, mirrorRoot);
+    assert.equal(typeof node.local_mirror.registered_at, "string");
+  });
+
+  it("leaves local_mirror null when the node is unregistered", async () => {
+    const result = {
+      content: [
+        { type: "text", text: JSON.stringify({ id: NODE_ID, name: "G", local_mirror: null }) },
+      ],
+    };
+    const out = await enrichGetNodeResult("U1", result);
+    const node = JSON.parse(out.content[0].text as string);
+    assert.equal(node.local_mirror, null);
+  });
+
+  it("does not clobber an already-populated local_mirror", async () => {
+    await setupMirror();
+    const result = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            id: NODE_ID,
+            local_mirror: { local_path: "/pre/existing", registered_at: "x" },
+          }),
+        },
+      ],
+    };
+    const out = await enrichGetNodeResult("U1", result);
+    const node = JSON.parse(out.content[0].text as string);
+    assert.equal(node.local_mirror.local_path, "/pre/existing");
+  });
+
+  it("passes error results through untouched", async () => {
+    const result = { content: [{ type: "text", text: "boom" }], isError: true };
+    const out = await enrichGetNodeResult("U1", result);
+    assert.equal(out, result);
+  });
+
+  it("passes non-JSON text through untouched", async () => {
+    const result = { content: [{ type: "text", text: "not json" }] };
+    const out = await enrichGetNodeResult("U1", result);
+    assert.equal(out.content[0].text, "not json");
   });
 });
