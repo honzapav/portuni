@@ -61,7 +61,23 @@ export async function fetchGraph(): Promise<GraphPayload> {
 export async function fetchNode(id: string): Promise<NodeDetail> {
   const res = await apiFetch(`/nodes/${encodeURIComponent(id)}`);
   if (!res.ok) throw new Error(`node: ${res.status}`);
-  return res.json();
+  const node: NodeDetail = await res.json();
+  // Central mode serves node-detail with local_mirror:null (the central server
+  // has no device state). Overlay it from the device here, in the single fetch
+  // point, so EVERY consumer -- graph view, workspace ("Práce") view, the 5s
+  // detail poll -- gets the real path without each having to remember to
+  // hydrate. Local mode already carries local_mirror, so this only fires for a
+  // genuinely unmirrored node, where the endpoint returns null (or 404 in local
+  // mode) and we leave it as-is. Orgs never have a mirror.
+  if (!node.local_mirror && node.type !== "organization") {
+    try {
+      const { local_mirror } = await fetchNodeMirror(id);
+      if (local_mirror) return { ...node, local_mirror };
+    } catch {
+      /* mirror endpoint absent (local mode) or errored -- leave null */
+    }
+  }
+  return node;
 }
 
 // Device-local mirror for a node. Central-mode node-detail carries
