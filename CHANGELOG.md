@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.0](https://github.com/honzapav/portuni/compare/v0.2.0...v0.3.0) (2026-07-06)
+
+
+### Features
+
+* **scope:** add portuni_read_file content tool for ad-hoc nodes ([3bf9a12](https://github.com/honzapav/portuni/commit/3bf9a1253ade14c6bd1cccf9bf36e89394ab432f))
+* **scope:** grant depth-1 neighbour real mirrors in central mode ([c8317f0](https://github.com/honzapav/portuni/commit/c8317f0c1e879525d2af4e7b5e4532ce53eaea91))
+* **scope:** grant depth-1 neighbour real mirrors in the sandbox profile ([d8f5ef1](https://github.com/honzapav/portuni/commit/d8f5ef13ab2e3cd3217efd702d61767ca0b1d3b6))
+* **scope:** return real neighbour paths from central-mode read tools ([89dc287](https://github.com/honzapav/portuni/commit/89dc287d087421b735e9f42294accfe595a30253))
+* **scope:** seatbelt can grant read on in-scope real mirror roots ([3feb246](https://github.com/honzapav/portuni/commit/3feb246d5f613e88ec7d91ddbb902d00bcb8cece))
+* **scope:** serve real mirror paths for the spawn set, skip staging them ([ab05c8d](https://github.com/honzapav/portuni/commit/ab05c8d8a21c8d16f4841301e28d9e5e20dd07ab))
+
+
+### Bug Fixes
+
+* **mcp:** derive home-node file local_paths in central-mode get_node ([488ddfc](https://github.com/honzapav/portuni/commit/488ddfcac7af2e2296c47360bedcfe9dac24f469))
+* **mcp:** fill home-node local_path in central-mode get_context ([8ddb44a](https://github.com/honzapav/portuni/commit/8ddb44a4d6123c456808fc038c5f78c57367bb33))
+* **scope:** sweep stale ad-hoc staged copies once per session ([6121bd9](https://github.com/honzapav/portuni/commit/6121bd93d4d817b4616554eda6bfe453087d3d6b))
+* **security:** enforce scope on central-mode portuni_read_file ([3246878](https://github.com/honzapav/portuni/commit/3246878d3cd5cb4a0f4fcb7c2adaa97ba7f051bd))
+* **sync:** overlay device local_mirror on node reads in central mode ([3edaca6](https://github.com/honzapav/portuni/commit/3edaca604d2b5113bf7852d1baca8a0a8854ae5c))
+* **web:** disable 'Všichni' on inherited-restricted nodes; type NodeAccessResponse.visibility ([847acc3](https://github.com/honzapav/portuni/commit/847acc3531a8ad02185a9624f97864cb92ed16b7))
+* **web:** overlay device local_mirror in central-mode node detail ([61f236c](https://github.com/honzapav/portuni/commit/61f236c4e40c5bb04a33d94b2330d4049e47bfdf))
+* **web:** recover file relative paths in central mode from sync-status ([89c8ba5](https://github.com/honzapav/portuni/commit/89c8ba5c39c911ff697ba79ba525fda1f1b74db3))
+
 ## [0.2.0](https://github.com/honzapav/portuni/compare/v0.1.0...v0.2.0) (2026-07-05)
 
 
