@@ -7,6 +7,7 @@
 // auto-allow, expand_scope — projects to disk identically. Graph scope is
 // authoritative; a failed copy degrades to null, it never throws.
 
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { stageNodeIntoMirror } from "../domain/scope-staging.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
@@ -71,16 +72,36 @@ export function createScopeReconciler(args: {
     Promise<{ staged_path: string; files: number } | null>
   >();
 
+  // Once per session: clear the whole <home>/.portuni-scope before any ad-hoc
+  // staging, so stale copies from a previous session (which are readable in
+  // the home rw zone and out of THIS session's scope) never leak in. Shared
+  // promise so the fire-and-forget home reconcile and an awaited expand_scope
+  // reconcile can't double-sweep or stage into a half-swept dir.
+  let sweepPromise: Promise<void> | null = null;
+  function sweepStagedRootOnce(homeMirror: string): Promise<void> {
+    if (!sweepPromise) {
+      sweepPromise = rm(join(homeMirror, ".portuni-scope"), {
+        recursive: true,
+        force: true,
+      }).catch(() => undefined);
+    }
+    return sweepPromise;
+  }
+
   async function doReconcile(
     nodeId: string,
   ): Promise<{ staged_path: string; files: number } | null> {
     const homeNodeId = args.scope.homeNodeId;
-    if (!homeNodeId || nodeId === homeNodeId) return null;
+    if (!homeNodeId) return null;
+    const homeMirror = await resolveMirror(args.userId, homeNodeId);
+    if (!homeMirror) return null;
+    // Clear prior-session leftovers on the first reconcile (fired for the home
+    // node at seed time, before any ad-hoc staging).
+    await sweepStagedRootOnce(homeMirror);
+    if (nodeId === homeNodeId) return null;
     // Seed-set nodes are granted their real mirror by the seatbelt; never
     // stage them (staging would create a stale duplicate of a live file).
     if (args.scope.isSeed(nodeId)) return null;
-    const homeMirror = await resolveMirror(args.userId, homeNodeId);
-    if (!homeMirror) return null;
     const nodeMirror = await resolveMirror(args.userId, nodeId);
     if (!nodeMirror) return null;
     try {

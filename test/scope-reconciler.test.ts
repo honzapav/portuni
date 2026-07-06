@@ -121,6 +121,25 @@ describe("ScopeReconciler.reconcileNode", () => {
     assert.equal(await r.reconcileNode("GHOST"), null);
   });
 
+  it("sweeps stale staged copies from a prior session on first reconcile", async () => {
+    const scope = new SessionScope("strict");
+    scope.homeNodeId = "HOME";
+    // Leftover ad-hoc copy from a previous session.
+    await mkdir(join(home, ".portuni-scope", "OLD"), { recursive: true });
+    await writeFile(join(home, ".portuni-scope", "OLD", "x.md"), "stale\n");
+    const r = createScopeReconciler({
+      userId: "u",
+      scope,
+      resolveMirror: fakeResolver({ HOME: home, NEIGHBOR: neighbor }),
+    });
+    // First reconcile (the home node at seed time) triggers the one-time sweep.
+    await r.reconcileNode("HOME");
+    await assert.rejects(
+      () => readFile(join(home, ".portuni-scope", "OLD", "x.md"), "utf8"),
+      "stale leftover must be swept",
+    );
+  });
+
   it("returns null for a seed-set node (granted real mirror, never staged)", async () => {
     const scope = new SessionScope("strict");
     scope.homeNodeId = "HOME";
