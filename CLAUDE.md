@@ -194,13 +194,22 @@ tmux loop for backend iteration.
   keys; `.env.schema` declares only the 6 core ones. Full inventory with
   defaults: `docs/env-vars.md`. Watch out: `PORTUNI_ROOT` (write-scope
   tiering) is a different thing than `PORTUNI_WORKSPACE_ROOT` (mirrors).
-- **Disk read scope = the session scope, projected.** The MCP `SessionScope`
-  is the single source of truth; the Seatbelt sandbox grants rw on the home
-  mirror only. Every other in-scope node is made readable by copying it into
-  `<home>/.portuni-scope/<node_id>/` (the `ScopeReconciler`, fired on every
-  `scope.add`). Read related-node files from the `local_path` the read tools
-  return (it points into `.portuni-scope/`), not the node's original mirror.
-  Model: `docs/architecture/scope-disk-projection.md`.
+- **Disk read scope = the session scope, on REAL paths (no more copies).** The
+  MCP `SessionScope` is the single source of truth. The Seatbelt profile grants
+  rw on the home mirror and **read-only on the REAL mirrors of the depth-1
+  neighbour set** (the stable spawn scope), computed at spawn — locally from the
+  graph, in central mode from `CentralClient.nodeNeighbours`
+  (`sandbox-profile.ts` `readMirrors` / `resolveNeighbourReadMirrors`). Read
+  tools (`get_node`/`get_context`/`list_files`) return those real paths;
+  `readableMirrorRoot` returns the real mirror for home+seed nodes. **Ad-hoc
+  nodes** (deeper than depth-1, added mid-session by `expand_scope`) are NOT on
+  disk — read their content with **`portuni_read_file(node_id, path)`**
+  (`read-node-file.ts`), the universal no-hooks channel. The old
+  `.portuni-scope/` copy staging is **retired**; the `ScopeReconciler` survives
+  only as a one-time sweeper of legacy staged dirs. Why real paths beat copies:
+  no stale snapshot, no cleanup, edits land on the real mirror. Model:
+  `docs/architecture/scope-disk-projection.md`;
+  plan: `docs/superpowers/plans/2026-07-06-scope-real-paths.md`.
 
 ## Security rules (from the auth refactor post-mortem)
 

@@ -21,6 +21,10 @@
 - Seatbelt grants name REAL mirror roots only (never symlinks/staged paths).
 - Fail-closed: a terminal must never spawn with a broader profile than intended; if the in-scope mirror set can't be resolved, fall back to today's home-only grant, never to "allow all".
 
+**Status: all phases implemented** (Phase 1 real-path seed grants; Phase 2
+`portuni_read_file` + staging retirement; Phase 3 central-mode neighbour grants
++ front-door enrichment). Model doc: `docs/architecture/scope-disk-projection.md`.
+
 ## Phasing
 
 - **Phase 1 (this plan, detailed):** Seatbelt grants real read paths for the spawn set (home + depth-1); read tools return real paths for granted nodes; the reconciler stops staging granted nodes. LOCAL mode. Deeper ad-hoc keeps today's staging as an untouched fallback (no regression). Delivers ~90% of the value safely.
