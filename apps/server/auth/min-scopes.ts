@@ -17,6 +17,7 @@ export const TOOL_MIN_SCOPE: Record<string, GlobalScope> = {
   portuni_list_nodes: "read",
   portuni_list_events: "read",
   portuni_list_files: "read",
+  portuni_read_file: "read",
   portuni_list_actors: "read",
   portuni_list_responsibilities: "read",
   portuni_list_data_sources: "read",
