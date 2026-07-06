@@ -922,7 +922,7 @@ const MIGRATIONS: Migration[] = [
 
   // Migration 016: per-user identity (Google) columns on users +
   // device_tokens table for agent/MCP auth. Spec:
-  // docs/superpowers/specs/2026-06-09-google-groups-auth-design.md §4.
+  // docs/archive/specs/2026-06-09-google-groups-auth-design.md §4.
   {
     id: "016_users_identity",
     up: async (db) => {

@@ -1,5 +1,5 @@
 // REST endpoints for /nodes/:id/access -- read and set the node_access ACL
-// (spec: docs/superpowers/specs/2026-07-04-node-sharing-design.md §2).
+// (spec: docs/archive/specs/2026-07-04-node-sharing-design.md §2).
 // GET resolves the effective (possibly inherited) ACL for display; PUT
 // replaces the node's own ACL and derives `nodes.visibility` from whether
 // the new entry set is empty.

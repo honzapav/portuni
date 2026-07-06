@@ -86,7 +86,7 @@ stays central (the server can resolve a Drive web URL without a mirror).
 
 The `local_only` gate above is for the **REST** plane the webview drives. MCP
 is different: a teammate's "sync agent" sidecar (`PORTUNI_AGENT_MODE=1`, see
-`docs/superpowers/plans/2026-07-05-agent-mode-mcp-front-door.md`) now serves
+`docs/archive/plans/2026-07-05-agent-mode-mcp-front-door.md`) now serves
 `/mcp` itself, and the per-mirror `.mcp.json` in agent mode points at that
 local front door instead of central. Device-local tools (`portuni_mirror`,
 `portuni_status`, `portuni_store`, `portuni_pull`, `portuni_adopt_files`) run
@@ -166,5 +166,5 @@ Phase B needs a mirror-less, Drive-direct file-content service.
   hash identity, two-layer state).
 - [`central-file-content-phase-b.md`](./central-file-content-phase-b.md) — scope
   of the unbuilt cell.
-- `docs/superpowers/plans/2026-06-10-central-cutover.md` — the Phase A cutover
+- `docs/archive/plans/2026-06-10-central-cutover.md` — the Phase A cutover
   that shipped the graph over the server.

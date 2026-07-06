@@ -16,7 +16,7 @@
 // Profile shape and the two gotchas (Seatbelt matches realpaths only;
 // git discovery needs file-read-metadata on the denied root) were
 // validated against live sandbox-exec runs — see
-// docs/sandbox-spike-2026-06-10.md.
+// docs/archive/sandbox-spike-2026-06-10.md.
 
 import { realpath } from "node:fs/promises";
 import type { Client } from "@libsql/client";

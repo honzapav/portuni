@@ -1,5 +1,5 @@
 // Node-level access via the `node_access` ACL table (spec:
-// docs/superpowers/specs/2026-07-04-node-sharing-design.md §2). A node with
+// docs/archive/specs/2026-07-04-node-sharing-design.md §2). A node with
 // at least one node_access row is restricted to that row set; descendants
 // inherit the nearest restricted ancestor along the belongs_to chain (org
 // invariant guarantees a single scoping parent, so the walk is
@@ -17,7 +17,7 @@ export interface AccessEntry {
   principal: string;
 }
 
-// Node-level restriction mode (spec: docs/superpowers/specs/2026-07-04-node-sharing-design.md
+// Node-level restriction mode (spec: docs/archive/specs/2026-07-04-node-sharing-design.md
 // "Rezim omezeni"). Only meaningful for restricted nodes (entries !== null);
 // ignored for unrestricted ones. Inherits with the ACL: a child without its
 // own node_access rows takes the authoritative ancestor's mode along with

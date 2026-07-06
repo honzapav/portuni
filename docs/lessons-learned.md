@@ -6,7 +6,7 @@ Kompletni institucionalni znalost nasbirana behem vyvoje. Koncepty, rozhodnuti, 
 > (port 3001, `/context` endpoint, `scripts/portuni-context.sh`,
 > SessionStart hook) – nahradil je auto-seed přes `?home_node_id` na
 > portu 4011 a materializované scope configy. Registrace toolů je dnes
-> v `src/mcp/server.ts` (45 toolů). Testy běží v CI
+> v `apps/server/mcp/server.ts` (45 toolů). Testy běží v CI
 > (`.github/workflows/ci.yml`). Aktuální chování: docs-site + MCP
 > resources (`portuni://architecture` apod.).
 
@@ -30,7 +30,7 @@ Pet kategorii pokryvajicich veskere organizacni prace:
 
 ### Typy uzlu (node types)
 
-Petice POPP, striktne vymahana na trech vrstvach (Zod enum v tools, CHECK constraint v DB, jediny zdroj pravdy v `src/popp.ts` sdileny napric backendem a app frontendem pres relativni import):
+Petice POPP, striktne vymahana na trech vrstvach (Zod enum v tools, CHECK constraint v DB, jediny zdroj pravdy v `apps/server/shared/popp.ts` sdileny napric backendem a app frontendem pres relativni import):
 
 - `organization`
 - `project`
@@ -170,7 +170,7 @@ Kazda mutace (create, update, connect, disconnect, store) logovana do `audit_log
 
 ### Chyba: nodes tabulka chybi v DDL
 
-**Stav:** `src/schema.ts` neobsahoval `CREATE TABLE IF NOT EXISTS nodes`. Tabulka existovala v Turso (byla vytvorena driv), ale cista instalace by selhala.
+**Stav:** `apps/server/infra/schema.ts` neobsahoval `CREATE TABLE IF NOT EXISTS nodes`. Tabulka existovala v Turso (byla vytvorena driv), ale cista instalace by selhala.
 **Fix:** Pridani DDL.
 
 ### Chyba: summary field v get-node.ts
@@ -246,7 +246,7 @@ Kazdy modul exportuje jednu `register*Tools(server: McpServer)` funkci. Volana v
 
 ### Zod row schemas pro typovou bezpecnost
 
-`src/types.ts` definuje Zod schema pro kazdy DB radek. Tool moduly pouzivaji `.parse()` na vysledky queries. Integracni test (`test/schema-types.test.ts`) validuje soulad DDL a Zod schemas.
+`apps/server/shared/types.ts` definuje Zod schema pro kazdy DB radek. Tool moduly pouzivaji `.parse()` na vysledky queries. Integracni test (`test/schema-types.test.ts`) validuje soulad DDL a Zod schemas.
 
 ### Rekurzivni CTE pro grafovy traversal
 

@@ -113,5 +113,5 @@ Comparable to a single focused implementation session. The adapter, path
 resolution, auth, and Turso state already exist; the genuinely new work is the
 **mirror-less file-content service + remote-hash conflict + proxy gate change +
 VPS secrets**. The original cutover plan flagged Phase B as "samostatná session,
-mimo tento plán" (`docs/superpowers/plans/2026-06-10-central-cutover.md`); this
+mimo tento plán" (`docs/archive/plans/2026-06-10-central-cutover.md`); this
 doc is its concrete scope.
