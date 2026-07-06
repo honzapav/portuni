@@ -46,6 +46,11 @@ export class SessionScope {
   // to allow the second agent-initiated read of a node it has already asked
   // about. (Only nodes that were *added* via expansion populate this.)
   private readonly seenAgentExpansion = new Set<string>();
+  // Nodes granted their REAL mirror on disk at terminal spawn (home + depth-1,
+  // the stable seed set). The seatbelt read-allows exactly this set, so read
+  // tools return their real path and the reconciler must NOT stage them.
+  // Non-seed in-scope nodes (ad-hoc expansion) still stage into .portuni-scope.
+  private readonly seed = new Set<string>();
   private readonly addListeners: ((nodeId: string) => void)[] = [];
 
   homeNodeId: string | null = null;
@@ -100,6 +105,19 @@ export class SessionScope {
     return true;
   }
 
+  // Add a node AND mark it part of the spawn seed set (real-path granted).
+  // Marks before add() so onAdd listeners (the reconciler) already see
+  // isSeed()===true and skip staging it.
+  addSeed(nodeId: string): boolean {
+    this.seed.add(nodeId);
+    return this.add(nodeId);
+  }
+
+  // True for nodes granted their real mirror at spawn (home + depth-1).
+  isSeed(nodeId: string): boolean {
+    return this.seed.has(nodeId);
+  }
+
   recordExpansion(record: ExpansionRecord): void {
     this.history.push(record);
     if (record.triggered_by === "agent") {
@@ -129,7 +147,7 @@ export async function seedScopeFromHome(
   identity?: GroupIdentityView,
 ): Promise<string[]> {
   scope.homeNodeId = homeNodeId;
-  scope.add(homeNodeId);
+  scope.addSeed(homeNodeId);
 
   const rawNeighborIds = await nodeNeighbourIds(db, homeNodeId);
 
@@ -141,8 +159,10 @@ export async function seedScopeFromHome(
     neighborIds = rawNeighborIds;
   }
 
+  // Seed set = home + depth-1: the seatbelt grants these real paths, so mark
+  // them so read tools return the real mirror and the reconciler skips them.
   for (const id of neighborIds) {
-    scope.add(id);
+    scope.addSeed(id);
   }
   return [homeNodeId, ...neighborIds];
 }

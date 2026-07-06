@@ -22,7 +22,15 @@ export function readableMirrorRoot(args: {
   realMirror: string | null;
 }): string | null {
   const { scope, nodeId, homeMirror, realMirror } = args;
-  if (nodeId !== scope.homeNodeId && scope.has(nodeId) && homeMirror) {
+  // Home and the seed set (depth-1) are granted their REAL mirror by the
+  // seatbelt at spawn, so return it directly. Only non-seed in-scope nodes
+  // (ad-hoc expansion) are staged into <home>/.portuni-scope/<id>/.
+  if (
+    nodeId !== scope.homeNodeId &&
+    !scope.isSeed(nodeId) &&
+    scope.has(nodeId) &&
+    homeMirror
+  ) {
     return stagedMirrorRoot(homeMirror, nodeId);
   }
   return realMirror;
@@ -68,6 +76,9 @@ export function createScopeReconciler(args: {
   ): Promise<{ staged_path: string; files: number } | null> {
     const homeNodeId = args.scope.homeNodeId;
     if (!homeNodeId || nodeId === homeNodeId) return null;
+    // Seed-set nodes are granted their real mirror by the seatbelt; never
+    // stage them (staging would create a stale duplicate of a live file).
+    if (args.scope.isSeed(nodeId)) return null;
     const homeMirror = await resolveMirror(args.userId, homeNodeId);
     if (!homeMirror) return null;
     const nodeMirror = await resolveMirror(args.userId, nodeId);

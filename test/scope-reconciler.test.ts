@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { SessionScope } from "../apps/server/mcp/scope.js";
 import {
   stagedMirrorRoot,
+  readableMirrorRoot,
   createScopeReconciler,
 } from "../apps/server/mcp/scope-reconciler.js";
 
@@ -41,6 +42,41 @@ afterEach(async () => {
 describe("stagedMirrorRoot", () => {
   it("is home/.portuni-scope/<id>", () => {
     assert.equal(stagedMirrorRoot("/h", "01N"), join("/h", ".portuni-scope", "01N"));
+  });
+});
+
+describe("readableMirrorRoot", () => {
+  it("returns the REAL mirror for a seed-set (depth-1) node", () => {
+    const scope = new SessionScope("strict");
+    scope.homeNodeId = "HOME";
+    scope.addSeed("NEIGHBOR");
+    const p = readableMirrorRoot({
+      scope,
+      nodeId: "NEIGHBOR",
+      homeMirror: "/h",
+      realMirror: "/real/neighbor",
+    });
+    assert.equal(p, "/real/neighbor");
+  });
+
+  it("returns the staged path for a non-seed in-scope (ad-hoc) node", () => {
+    const scope = new SessionScope("strict");
+    scope.homeNodeId = "HOME";
+    scope.add("ADHOC"); // in scope but not seeded
+    const p = readableMirrorRoot({
+      scope,
+      nodeId: "ADHOC",
+      homeMirror: "/h",
+      realMirror: "/real/adhoc",
+    });
+    assert.equal(p, join("/h", ".portuni-scope", "ADHOC"));
+  });
+
+  it("returns the real mirror for the home node", () => {
+    const scope = new SessionScope("strict");
+    scope.homeNodeId = "HOME";
+    const p = readableMirrorRoot({ scope, nodeId: "HOME", homeMirror: "/h", realMirror: "/h" });
+    assert.equal(p, "/h");
   });
 });
 
@@ -83,6 +119,18 @@ describe("ScopeReconciler.reconcileNode", () => {
       resolveMirror: fakeResolver({ HOME: home }),
     });
     assert.equal(await r.reconcileNode("GHOST"), null);
+  });
+
+  it("returns null for a seed-set node (granted real mirror, never staged)", async () => {
+    const scope = new SessionScope("strict");
+    scope.homeNodeId = "HOME";
+    scope.addSeed("NEIGHBOR"); // depth-1, seatbelt grants its real path
+    const r = createScopeReconciler({
+      userId: "u",
+      scope,
+      resolveMirror: fakeResolver({ HOME: home, NEIGHBOR: neighbor }),
+    });
+    assert.equal(await r.reconcileNode("NEIGHBOR"), null);
   });
 
   it("returns null when there is no home node", async () => {

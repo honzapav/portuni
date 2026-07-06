@@ -1,7 +1,7 @@
 // Wire-level contract for GET /nodes/:id/sandbox-profile — the endpoint
 // the desktop app calls before spawning a terminal, to wrap the agent in
-// a Seatbelt profile matching the node's scope (home mirror rw,
-// rest of PORTUNI_ROOT denied; neighbors are staged under .portuni-scope/).
+// a Seatbelt profile matching the node's scope (home mirror rw, depth-1
+// neighbour mirrors read-only on their real paths, rest of PORTUNI_ROOT denied).
 
 // Pre-wire the server port BEFORE importing anything from src/ (the
 // middleware reads process.env.PORT at module load).
@@ -12,7 +12,7 @@ process.env.PORTUNI_AUTH_TOKEN = "";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { createClient } from "@libsql/client";
 import { ulid } from "ulid";
@@ -78,7 +78,7 @@ after(async () => {
 });
 
 describe("GET /nodes/:id/sandbox-profile", () => {
-  it("returns the profile with home rw and root deny (home-only model)", async () => {
+  it("returns the profile with home rw, root deny, and depth-1 neighbour read", async () => {
     const res = await fetch(`${BASE}/nodes/${projId}/sandbox-profile`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as {
@@ -90,11 +90,13 @@ describe("GET /nodes/:id/sandbox-profile", () => {
     assert.ok(body.profile.startsWith("(version 1)"));
     assert.ok(body.profile.includes(`(allow file-read* file-write* (subpath "${body.home_mirror}"))`));
     assert.ok(body.profile.includes(`(deny file-read* file-write* (subpath "${body.portuni_root}"))`));
-    // No standalone neighbor read-allow lines — neighbors go through staging.
+    // The org (depth-1 neighbour, which has a mirror) is granted read-only on
+    // its REAL path -- exactly one standalone read-allow, and it's the org dir.
     const neighborReadLines = body.profile.split("\n").filter(
       (l) => l.startsWith("(allow file-read* (subpath"),
     );
-    assert.equal(neighborReadLines.length, 0);
+    assert.equal(neighborReadLines.length, 1);
+    assert.ok(neighborReadLines[0].includes(`${sep}acme"`), "grants the org real mirror");
   });
 
   it("409 NO_MIRROR when the node has no local mirror", async () => {
