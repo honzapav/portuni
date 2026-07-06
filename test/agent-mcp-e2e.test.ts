@@ -88,7 +88,15 @@ function startStubCentral(): Promise<StubCentral> {
       mcp.tool(
         "portuni_get_node",
         { node_id: z.string() },
-        async () => ({ content: [{ type: "text" as const, text: "central-marker" }] }),
+        async (a) =>
+          // Central's scope gate: a node not in scope comes back as an error
+          // (the front door's portuni_read_file uses this as its authorization).
+          a.node_id === "N000000000000000000OUTSC"
+            ? {
+                content: [{ type: "text" as const, text: "expand scope first" }],
+                isError: true,
+              }
+            : { content: [{ type: "text" as const, text: "central-marker" }] },
       );
       const t = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
@@ -196,5 +204,44 @@ describe("agent sidecar MCP front door", () => {
     });
     assert.equal(res.status, 401);
     await res.body?.cancel();
+  });
+
+  it("portuni_read_file enforces the central scope gate, not just mirror-presence", async () => {
+    const { registerMirror } = await import("../apps/server/domain/sync/mirror-registry.js");
+    const { SOLO_USER } = await import("../apps/server/infra/schema.js");
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    const mirror = join(workspace, "org", "projects", "p");
+    await mkdir(join(mirror, "wip"), { recursive: true });
+    await writeFile(join(mirror, "wip", "n.md"), "hello ad-hoc\n");
+    const IN = "N00000000000000000000INSC";
+    const OUT = "N000000000000000000OUTSC"; // stub get_node returns isError for this
+    // BOTH nodes are mirrored on this device -- mirror-presence alone would
+    // expose both. Only the central scope gate distinguishes them.
+    await registerMirror(SOLO_USER, IN, mirror);
+    await registerMirror(SOLO_USER, OUT, mirror);
+
+    const client = new Client({ name: "rf-gate", version: "0.0.0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
+        requestInit: { headers: { Authorization: "Bearer test-token" } },
+      }),
+    );
+    try {
+      const ok = (await client.callTool({
+        name: "portuni_read_file",
+        arguments: { node_id: IN, path: "wip/n.md" },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.notEqual(ok.isError, true, "in-scope read must succeed");
+      assert.equal(ok.content[0].text, "hello ad-hoc\n");
+
+      const denied = (await client.callTool({
+        name: "portuni_read_file",
+        arguments: { node_id: OUT, path: "wip/n.md" },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.equal(denied.isError, true, "out-of-scope read must be denied");
+      assert.notEqual(denied.content[0].text, "hello ad-hoc\n", "content must not leak");
+    } finally {
+      await client.close().catch(() => undefined);
+    }
   });
 });

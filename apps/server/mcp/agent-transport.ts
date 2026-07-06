@@ -136,11 +136,22 @@ function buildAgentServer(
     // so portuni_get_node comes back with local_mirror:null. Overlay the
     // device mirror here so an agent in central mode sees the same
     // registration metadata a local session would.
-    // Device-local content read for ad-hoc nodes: served from THIS device's
-    // mirror, not central (the file is on disk here in teammate mode). The
-    // mirror registry is the scope boundary -- a node not mirrored on this
-    // device (out of the user's synced scope) reads back as no_mirror.
+    // Content read for ad-hoc nodes, served from THIS device's mirror (the
+    // file is on disk here in teammate mode) -- but scope + visibility MUST be
+    // enforced first, and the device has no graph DB to run guardNodeRead. So
+    // gate on central via get_node: a successful call means the node is in (or
+    // was just auto-added to) scope with the same guardNodeRead semantics the
+    // local tool uses; an elicit/not_found error means it is not, and we return
+    // that error verbatim (telling the agent to expand_scope). Mirror-presence
+    // alone is NOT sufficient -- the device mirrors a superset of the session
+    // scope, so gating on it would let an agent read out-of-scope nodes and
+    // bypass the seatbelt boundary.
     if (name === "portuni_read_file") {
+      const gate = (await upstream.callTool({
+        name: "portuni_get_node",
+        arguments: { node_id: args.node_id },
+      })) as { content: Array<{ type: string; text?: string }>; isError?: boolean };
+      if (gate.isError) return gate;
       const r = await readNodeFileFromMirror(
         identity.userId,
         args.node_id as string,
