@@ -53,6 +53,7 @@ import {
   enrichGetNodeResult,
   enrichGetContextResult,
 } from "./agent-tools.js";
+import { readNodeFileFromMirror, formatNodeFileContent } from "../domain/read-node-file.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 
 const MAX_SESSIONS = Number(process.env.PORTUNI_MAX_SESSIONS ?? 100);
@@ -135,6 +136,18 @@ function buildAgentServer(
     // so portuni_get_node comes back with local_mirror:null. Overlay the
     // device mirror here so an agent in central mode sees the same
     // registration metadata a local session would.
+    // Device-local content read for ad-hoc nodes: served from THIS device's
+    // mirror, not central (the file is on disk here in teammate mode). The
+    // mirror registry is the scope boundary -- a node not mirrored on this
+    // device (out of the user's synced scope) reads back as no_mirror.
+    if (name === "portuni_read_file") {
+      const r = await readNodeFileFromMirror(
+        identity.userId,
+        args.node_id as string,
+        args.path as string,
+      );
+      return formatNodeFileContent(r, args.path as string);
+    }
     if (name === "portuni_get_node") {
       const result = await upstream.callTool({ name, arguments: args });
       return enrichGetNodeResult(opts.client, identity.userId, homeNodeId, result as {

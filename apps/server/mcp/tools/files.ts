@@ -18,10 +18,46 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardListScope } from "../list-scope-gate.js";
 import { filterVisibleNodeIds } from "../../auth/node-access.js";
 import { readableMirrorRoot } from "../scope-reconciler.js";
+import { guardNodeRead } from "../scope.js";
+import { readNodeFileFromMirror, formatNodeFileContent } from "../../domain/read-node-file.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
   const { scope } = ctx;
+
+  server.tool(
+    "portuni_read_file",
+    "Read a file's content from an in-scope node that is NOT your home node or one of its direct neighbours. Those nodes' folders are directly readable on disk (use the native Read/Grep tools on the local_path from portuni_get_context/get_node); this tool is for nodes reached by deeper graph traversal, whose files the sandbox does not expose on disk. Returns UTF-8 text, or base64 for binary. `path` is the file's path within the node (e.g. \"wip/notes.md\"). Reading a node not yet in scope triggers a scope-expansion prompt, same as portuni_get_node.",
+    {
+      node_id: z.string().describe("Node the file belongs to"),
+      path: z.string().describe("File path within the node, e.g. 'wip/notes.md'"),
+    },
+    async (args) => {
+      const db = getDb();
+      const guard = await guardNodeRead(
+        db,
+        scope,
+        args.node_id,
+        ctx.identity.userId,
+        async (action, targetId, detail) => {
+          await logAudit(ctx.identity.userId, action, "scope", targetId, detail);
+        },
+        ctx.identity,
+      );
+      if (guard.kind === "not_found") {
+        return { content: [{ type: "text" as const, text: "Node not found" }], isError: true };
+      }
+      if (guard.kind === "elicit") {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(guard.error) }],
+          isError: true,
+        };
+      }
+      const r = await readNodeFileFromMirror(ctx.identity.userId, args.node_id, args.path);
+      return formatNodeFileContent(r, args.path);
+    },
+  );
+
   server.tool(
     "portuni_store",
     "Register a file with Portuni AND upload it to the routed remote (a deliberate push): copies into the node's local mirror if needed, uploads, and creates/updates the files row. New files in a mirror are normally registered automatically (without upload) by the desktop watcher, so reach for portuni_store when you explicitly want to push a file to the remote -- or to register+upload in an environment without the watcher (files there surface as new_local from portuni_status). For files surfaced as new_remote (created elsewhere, already on the remote), use portuni_adopt_files instead. Uses sync_key-based paths so renaming nodes does not break remote storage. See portuni://sync-model.",
