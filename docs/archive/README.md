@@ -31,6 +31,7 @@ single-source-of-truth, cluster A–D UX batch.
 | `auth-refactor-plan.md` | desktop auth refactor – dokončen, pravidla v CLAUDE.md |
 | `node-launch-flow-plan.md` | desktop node-launch UX – dokončeno |
 | `sandbox-spike-2026-06-10.md` | Seatbelt sandbox spike – proběhl, kód shipnut |
+| `central-file-content-phase-b.md` | central-mode file content spec – shipnuto (`file-content-remote.ts`) |
 | `multi-instance.md` | multi-vault supervisor návrh – superseded desktop multi-workspace |
 
 ## Co zůstalo živé (mimo archiv)
@@ -38,5 +39,5 @@ single-source-of-truth, cluster A–D UX batch.
 `docs/superpowers/plans/2026-07-03-share-portuni-runbook.md` je živý ops
 runbook. Nosné reference zůstávají v `docs/` a `docs/architecture/`
 (`data-modes`, `scope-disk-projection`, `env-vars`, `release-process`,
-`file-sync`, `central-file-content-phase-b`, `conceptual-map`, `graph-node`,
-`portuni-as-workspace`, plus `specs.md` a `lessons-learned.md` s bannery).
+`file-sync`, `conceptual-map`, `graph-node`, `portuni-as-workspace`, plus
+`specs.md` a `lessons-learned.md` s bannery).

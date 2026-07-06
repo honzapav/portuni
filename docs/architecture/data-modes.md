@@ -1,11 +1,13 @@
 # Data modes & the two sync planes
 
-> **Status (2026-07): Phase B has shipped.** Central mode now serves file
-> **content** and lifecycle over the server (`file-content-remote.ts`) and
-> supports agent **terminals** (local sync agent + MCP front door). The
-> "unbuilt Phase B" / "not yet" / `fáze B` framing below is historical — kept
-> for the design rationale, but the file-bytes plane and terminals work in
-> central mode today. The old `fáze B` UI string is gone.
+> **Status (2026-07):** Central mode now serves file **content** and lifecycle
+> (create / rename / delete) over the central server via a mirror-less,
+> Drive-direct service (`file-content-remote.ts`), and supports agent
+> **terminals** (the local sync agent serves the mirror + sandbox profile; the
+> terminal's agent reaches the local MCP front door, which proxies to central).
+> So a central-mode teammate gets **both** the graph **and** file bytes today.
+> The historical design rationale lives in
+> [`central-file-content-phase-b.md`](../archive/central-file-content-phase-b.md).
 
 > **Purpose:** settle the recurring confusion between "local vs central mode" and
 > "syncing files to Google Drive." They are different axes. This doc is the
@@ -15,9 +17,11 @@
 
 > The owner (**local mode**) runs the sync engine on his own machine and pushes
 > file bytes to Google Drive himself. A **central-mode** teammate reaches the
-> data through `api.portuni.com` with enforced permissions, and today gets the
-> **graph** but not **file bytes** — the file-bytes half over the server is the
-> unbuilt **Phase B** (see [`central-file-content-phase-b.md`](./central-file-content-phase-b.md)).
+> data through `api.portuni.com` with enforced permissions, and today gets
+> **both** the **graph** and **file bytes** — the file-bytes half over the
+> server is served mirror-less and Drive-direct by `file-content-remote.ts`
+> (design rationale archived in
+> [`central-file-content-phase-b.md`](../archive/central-file-content-phase-b.md)).
 
 ## "Sync" means two different things
 
@@ -44,11 +48,13 @@ feature toggle — it is a transport/trust boundary:
 - **local mode (default, owner):** the desktop spawns the **sidecar**, which
   talks **directly to Turso** (raw token) and runs the **local sync engine**
   (mirror folders <-> Drive). Full power, full trust.
-- **central mode (teammate):** the desktop does **not** spawn a sidecar. Every
-  request goes through the `api_request` Tauri command to **`server_url`
-  (`api.portuni.com`)** with a Google **JWT**, so the server can **enforce
-  permissions** (groups, node-access in `apps/server/auth/`). The teammate never holds
-  the raw Turso token.
+- **central mode (teammate):** the webview's data requests go through the
+  `api_request` Tauri command to **`server_url` (`api.portuni.com`)** with a
+  Google **JWT**, so the server can **enforce permissions** (groups, node-access
+  in `apps/server/auth/`). The teammate never holds the raw Turso token. The
+  desktop still runs a **local sidecar as the sync agent** (`PORTUNI_AGENT_MODE=1`)
+  for mirrors, file sync, and the MCP front door that agent **terminals** use —
+  but it never talks to Turso directly (see the agent-mode section below).
 
 In multi-workspace setups, **each workspace can have a different `data_mode`**:
 one workspace can be local (direct Turso + Drive access) while another is
@@ -59,51 +65,63 @@ The central server is literally the **same backend codebase** deployed to a VPS
 (`scripts/deploy-vps.sh` rsyncs `dist/`). It just has **no local mirror folders**
 and is reached by JWT instead of a bearer token.
 
-## The 2x2 — and the one empty cell
+## The 2x2 — both cells filled
 
 |  | Graph plane | File-bytes plane |
 |---|---|---|
 | **local mode** | sidecar -> Turso | sync engine -> Drive |
-| **central mode** | server -> Turso (**shipped**, the "Phase A" cutover) | **empty — Phase B** |
+| **central mode** | server -> Turso (shipped, the graph cutover) | server -> Drive (mirror-less, `file-content-remote.ts`) |
 
-The empty cell is the whole story. Central mode does **not** "drop Drive by
-design." It lacks file bytes because **nobody has built the piece that lets a
-central client reach them** — the central server has no local mirror and no
-file-content path that talks to Drive directly. So those routes return
-`501 local_only`. **MCP is the one exception** — see below.
+Central mode does **not** "drop Drive by design," and it no longer lacks file
+bytes: the central server reaches them through a **mirror-less, Drive-direct
+file-content service** (`file-content-remote.ts`) that resolves the Drive
+adapter from the remote's Service Account credential and reads/writes bytes
+without any local mirror. The file-content and lifecycle routes forward to the
+server for central clients; a `501 local_only` now means only that the **local
+sync agent is not running** (you are not signed in) — see below.
 
-### What is `local_only` / "fáze B" in the UI
+### What `local_only` means in the UI
 
-`is_local_only_path()` in `apps/desktop/src/lib.rs` short-circuits these routes to
-`501 {error:"local_only"}` **when in central mode** (in local mode the gate does
-not apply at all):
+Device-local routes are served by the **local sync agent** (the sidecar). When
+that agent is **not running** — i.e. the teammate is **not signed in** —
+`is_local_only_path()` (`apps/desktop/src/lib.rs`) short-circuits these routes
+to `501 {error:"local_only", detail:"sync agent not running"}` in central mode
+(in local mode the gate does not apply at all):
 
 ```
 /scope, /sandbox-profile
-/nodes/:id/file, /files, /files/*, /mirror, /sync-status, /sync, /sandbox-profile
+/nodes/:id/mirror, /nodes/:id/sync-status, /nodes/:id/sync, /nodes/:id/sandbox-profile
 ```
 
-The frontend catches the 501 -> `LocalOnlyError` (`apps/web/src/api.ts`) and shows
-*"Dostupné jen v lokálním režimu (fáze B)."* That string does **not** mean "file
-content is unimplemented." It means: "file content is implemented for **local**
-clients; reaching it over the **server** is Phase B." `/nodes/:id/folder-url`
-stays central (the server can resolve a Drive web URL without a mirror).
+So `local_only` now means exactly **"the local sync agent isn't up — sign
+in"**, not "this feature is unbuilt." File **content** and the file lifecycle
+are **not** on that list: `/nodes/:id/file` (GET/PUT), `POST /nodes/:id/files`,
+`.../files/:id/rename`, `DELETE .../files/:id`, plus `/nodes/:id/file-url` and
+`/nodes/:id/folder-url` all forward to the central server, which serves them
+mirror-less and Drive-direct (`file-content-remote.ts`). The old "available
+only in local mode" frontend string has been removed; the 501 is caught as
+`LocalOnlyError` (`apps/web/src/api.ts`) and now reads as "not signed in."
 
-### MCP in agent mode already crosses part of the gap
+### Agent-mode MCP: how terminals work in central mode
 
 The `local_only` gate above is for the **REST** plane the webview drives. MCP
-is different: a teammate's "sync agent" sidecar (`PORTUNI_AGENT_MODE=1`, see
-`docs/archive/plans/2026-07-05-agent-mode-mcp-front-door.md`) now serves
-`/mcp` itself, and the per-mirror `.mcp.json` in agent mode points at that
-local front door instead of central. Device-local tools (`portuni_mirror`,
-`portuni_status`, `portuni_store`, `portuni_pull`, `portuni_adopt_files`) run
-on-device against the local mirror + the central engine; every other tool
-(graph reads/writes, scope, responsibilities, ...) is proxied to central's
-`/mcp` unchanged. So an MCP client on a teammate's machine gets the
-file-bytes plane today, without waiting on Phase B — just not through the
-REST routes or the webview.
+terminals are served differently: a teammate's "sync agent" sidecar
+(`PORTUNI_AGENT_MODE=1`, see
+`docs/archive/plans/2026-07-05-agent-mode-mcp-front-door.md`) serves `/mcp`
+itself, and the per-mirror `.mcp.json` in agent mode points at that local front
+door instead of central. Device-local tools (`portuni_mirror`, `portuni_status`,
+`portuni_store`, `portuni_pull`, `portuni_adopt_files`) run on-device against
+the local mirror + the central engine; every other tool (graph reads/writes,
+scope, responsibilities, ...) is proxied to central's `/mcp` unchanged. So a
+teammate's agent works on real files locally, while graph writes land on central
+with permissions enforced. Scope disk projection in agent mode is implemented
+via **real** seatbelt-granted paths: the seed set (home + depth-1, resolved
+from central) is read at its real mirror, and ad-hoc nodes via
+`portuni_read_file` — the old `.portuni-scope/` copy staging is retired (see
+[`scope-disk-projection.md`](./scope-disk-projection.md)). The dynamic scope
+*set* is still tracked upstream on the central session, not on the device.
 
-Follow-up gaps, not yet built:
+Follow-up gap, not yet built:
 - `portuni_move_file`, `portuni_rename_folder`, `portuni_delete_file`,
   `portuni_snapshot` have no agent-mode handler — they proxy to central,
   and central **executes them**: it mutates the registry/remote and reports
@@ -114,22 +132,19 @@ Follow-up gaps, not yet built:
   divergence, not a clean error); the follow-up is either local
   interception like store/pull, or a central-side guard that refuses these
   calls for agent sessions.
-- Scope disk projection (`.portuni-scope/` copies via `ScopeReconciler`,
-  see [`scope-disk-projection.md`](./scope-disk-projection.md)) is not
-  implemented for agent-mode MCP sessions; scope lives only in the upstream
-  (central) session.
 
-## An important subtlety: editing a file is mirror-local, not Drive-direct
+## An important subtlety: local-mode editing is mirror-local, central is Drive-direct
 
-Today `readFileContent` / `writeFileContent`
+In **local mode**, `readFileContent` / `writeFileContent`
 (`apps/server/domain/sync/file-content.ts`) operate on the **local mirror folder**
 (`getMirrorPath` -> `readFile`/`writeFile` on disk). Saving in the editor writes
 the **mirror file only and never pushes**; pushing the bytes to Drive is a
 **separate** step (`POST /nodes/:id/sync`, surfaced as the unsynced overview).
 
-This is exactly why a central client cannot reuse the current path: a VPS (or a
-teammate's machine in central mode) has **no mirror folder** to read or write.
-Phase B needs a mirror-less, Drive-direct file-content service.
+A central client has **no mirror folder** to read or write, so it does **not**
+reuse that path. Instead the central server serves file content through a
+**mirror-less, Drive-direct** service (`file-content-remote.ts`) that talks to
+the Drive adapter directly — reading and writing bytes without any local mirror.
 
 ## Two collaboration models (do not conflate them)
 
@@ -145,17 +160,19 @@ Phase B needs a mirror-less, Drive-direct file-content service.
   token = full unrestricted DB access**. No per-user permissions. This is the
   exact problem the central server exists to fix.
 
-### Model 2 — brokered / central (the secure target, partly built)
+### Model 2 — brokered / central (the secure target, shipped)
 
 - Teammates run **central mode**, authenticate with Google, get **enforced
   permissions**, never touch the raw Turso token.
-- Graph works **today**. File bytes are **Phase B** — see
-  [`central-file-content-phase-b.md`](./central-file-content-phase-b.md).
+- Both the **graph** and **file bytes** work **today**: file content and
+  lifecycle are served over the server, mirror-less and Drive-direct
+  (`file-content-remote.ts`; design rationale archived in
+  [`central-file-content-phase-b.md`](../archive/central-file-content-phase-b.md)).
 
 | | Files work now? | Permissions enforced? | Teammate needs |
 |---|---|---|---|
 | **Model 1** (all local) | yes | no (raw Turso token) | Turso token + Drive share |
-| **Model 2** (central) | not yet (Phase B) | yes | Google login to `api.portuni.com` |
+| **Model 2** (central) | yes | yes | Google login to `api.portuni.com` |
 
 ## Glossary (clearer names for the overloaded terms)
 
@@ -165,13 +182,13 @@ Phase B needs a mirror-less, Drive-direct file-content service.
 | "sync" (Drive) | **file sync** — file bytes, local mirror <-> Drive |
 | `data_mode: "local"` | **direct mode** — client holds Turso token + Drive itself (owner) |
 | `data_mode: "central"` | **brokered mode** — client goes through `api.portuni.com`, permissions enforced |
-| "fáze B" (UI string) | "not reachable over the server yet" — needs the Drive-direct file path |
+| `local_only` (501 error) | "the local sync agent isn't running — sign in" (not "feature unbuilt") |
 
 ## See also
 
 - [`file-sync.md`](./file-sync.md) — the file-bytes plane in depth (adapters,
   hash identity, two-layer state).
-- [`central-file-content-phase-b.md`](./central-file-content-phase-b.md) — scope
-  of the unbuilt cell.
-- `docs/archive/plans/2026-06-10-central-cutover.md` — the Phase A cutover
-  that shipped the graph over the server.
+- [`central-file-content-phase-b.md`](../archive/central-file-content-phase-b.md)
+  — design rationale for file content over the server (now shipped).
+- `docs/archive/plans/2026-06-10-central-cutover.md` — the graph cutover that
+  shipped the graph over the server.

@@ -265,7 +265,7 @@ Začít, když:
 Logika: **Než stavím distribuci pro tezi, potřebuju mít ostrý value proposition s daty z vlastního použití.** Self-test je nejlevnější způsob, jak ho získat.
 
 1. **Scope-model Phase A** (read scope core) – session scope set, `portuni_expand_scope`, `portuni_session_log`, `PORTUNI_SCOPE_MODE` env. Implementace v `apps/server/mcp/scope.ts` + `apps/server/mcp/tools/scope.ts`. **Hodnota teď:** ochrana před context poisoning a leakem ve vlastní práci. **Hodnota později:** ready pro multi-user.
-2. **Scope-model Phase B** (filesystem write scope) – generování `.claude/settings.json` + `.codex/config.toml` s tier 1/2/3 deny rules na úrovni mirror. **Hodnota teď:** přestane se stávat, že agent edituje sourozeneckou mirror. **Hodnota později:** to samé pro tým a klientské oddělení.
+2. **Filesystem write-scope** (druhá půlka scope-modelu) – generuje `.claude/settings.json` + `.codex/config.toml` s tier 1/2/3 deny rules na úrovni mirror. **Hodnota teď:** přestane se stávat, že agent edituje sourozeneckou mirror. **Hodnota později:** to samé pro tým a klientské oddělení.
 3. **Druhé zařízení s opencode** – Portuni mirror, scope-model aktivní, reálná práce na obou strojích po dobu týdne+. Testuje cross-device hodnotu (tu auto mode strukturálně neumí).
 4. **Měření** během celého období:
    - **Token spotřeba** pro typické úkoly: před scope-modelem vs. po (precízní kontext = méně search calls = méně tokens).
