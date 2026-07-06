@@ -26,6 +26,7 @@ import {
 import { MirrorCreateError } from "../domain/sync/mirror-create.js";
 import { getMirrorPath, listUserMirrors } from "../domain/sync/mirror-registry.js";
 import { getLocalMirror } from "../domain/sync/local-db.js";
+import { buildNodeRoot, deriveLocalPath } from "../domain/sync/remote-path.js";
 import { subpathFromMirror } from "../domain/sync/remote-path.js";
 import type { StatusFileEntry } from "../domain/sync/engine.js";
 
@@ -251,15 +252,25 @@ type ToolTextResult = {
   isError?: boolean;
 };
 
-// Overlay device-local `local_mirror` onto a proxied portuni_get_node result.
-// Central serves the node with local_mirror:null (it has no device state);
-// this fills it from getLocalMirror on the device that owns the mirror, so an
-// agent in central mode sees the same registration metadata a local session
-// would. Defensive: any shape it does not recognise passes through unchanged
-// (error result, no text block, non-JSON text, no string id, or a node that
-// already carries a truthy local_mirror).
+// Overlay device-local fields onto a proxied portuni_get_node result. Central
+// serves the node with local_mirror:null and files[].local_path:null (it has
+// no device state); this fills them from the device that owns the mirror, so
+// an agent in central mode sees the same paths a local session would.
+//
+// - local_mirror: from getLocalMirror (registration metadata for any node).
+// - files[].local_path: derived real paths, but ONLY for the home node. Under
+//   the seatbelt sandbox the agent can read only its home mirror (non-home
+//   mirrors are denied; local mode surfaces them via .portuni-scope staging,
+//   which central mode does not do), so a real non-home path would be a path
+//   the agent cannot read. Non-home files stay null rather than misleading.
+//
+// Defensive: any shape it does not recognise passes through unchanged (error
+// result, no text block, non-JSON text, no string id). A syncInfo failure
+// leaves file paths null but still returns the local_mirror overlay.
 export async function enrichGetNodeResult<T extends ToolTextResult>(
+  client: CentralClient,
   userId: string,
+  homeNodeId: string | null,
   result: T,
 ): Promise<T> {
   if (result.isError) return result;
@@ -275,11 +286,42 @@ export async function enrichGetNodeResult<T extends ToolTextResult>(
   }
   const id = typeof node.id === "string" ? node.id : null;
   if (!id) return result;
-  if (node.local_mirror) return result;
-  const m = await getLocalMirror(userId, id);
-  node.local_mirror = m
-    ? { local_path: m.local_path, registered_at: m.registered_at }
-    : null;
+
+  if (!node.local_mirror) {
+    const m = await getLocalMirror(userId, id);
+    node.local_mirror = m
+      ? { local_path: m.local_path, registered_at: m.registered_at }
+      : null;
+  }
+
+  const mirrorPath =
+    (node.local_mirror as { local_path?: string } | null)?.local_path ?? null;
+  if (id === homeNodeId && mirrorPath && Array.isArray(node.files)) {
+    try {
+      const si = await client.syncInfo(id);
+      const nodeRoot = buildNodeRoot({
+        orgSyncKey: si.node.org_sync_key,
+        nodeType: si.node.type,
+        nodeSyncKey: si.node.sync_key,
+      });
+      const remoteById = new Map<string, string | null>(
+        si.files.map((f) => [f.id, f.remote_path]),
+      );
+      for (const f of node.files as Array<Record<string, unknown>>) {
+        if (f.local_path || typeof f.id !== "string") continue;
+        const remotePath = remoteById.get(f.id);
+        if (!remotePath) continue;
+        try {
+          f.local_path = deriveLocalPath({ mirrorRoot: mirrorPath, nodeRoot, remotePath });
+        } catch {
+          /* derivation failed (path escapes mirror etc.) -- leave null */
+        }
+      }
+    } catch {
+      /* syncInfo unavailable -- leave file paths null, mirror already set */
+    }
+  }
+
   const text = JSON.stringify(node, null, 2);
   return {
     ...result,

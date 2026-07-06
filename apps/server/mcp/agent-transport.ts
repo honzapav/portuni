@@ -106,6 +106,7 @@ function buildAgentServer(
   opts: AgentTransportOpts,
   upstream: Client,
   identity: RequestIdentity,
+  homeNodeId: string | null,
 ): Server {
   const server = new Server(
     { name: "portuni-agent", version: "0.1.0" },
@@ -131,7 +132,7 @@ function buildAgentServer(
     // registration metadata a local session would.
     if (name === "portuni_get_node") {
       const result = await upstream.callTool({ name, arguments: args });
-      return enrichGetNodeResult(identity.userId, result as {
+      return enrichGetNodeResult(opts.client, identity.userId, homeNodeId, result as {
         content: Array<{ type: string; text?: string }>;
         isError?: boolean;
       });
@@ -267,7 +268,7 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
         up.close().catch(() => undefined);
       };
 
-      const server = buildAgentServer(opts, up, identity);
+      const server = buildAgentServer(opts, up, identity, homeNodeId);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
 

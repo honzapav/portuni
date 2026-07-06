@@ -363,30 +363,33 @@ describe("portuni_adopt_files", () => {
 
 describe("enrichGetNodeResult", () => {
   it("fills local_mirror from the device registry", async () => {
+    const fake = new FakeCentral();
     await setupMirror();
     const result = {
       content: [
         { type: "text", text: JSON.stringify({ id: NODE_ID, name: "G", local_mirror: null }) },
       ],
     };
-    const out = await enrichGetNodeResult("U1", result);
+    const out = await enrichGetNodeResult(fake, "U1", null, result);
     const node = JSON.parse(out.content[0].text as string);
     assert.equal(node.local_mirror.local_path, mirrorRoot);
     assert.equal(typeof node.local_mirror.registered_at, "string");
   });
 
   it("leaves local_mirror null when the node is unregistered", async () => {
+    const fake = new FakeCentral();
     const result = {
       content: [
         { type: "text", text: JSON.stringify({ id: NODE_ID, name: "G", local_mirror: null }) },
       ],
     };
-    const out = await enrichGetNodeResult("U1", result);
+    const out = await enrichGetNodeResult(fake, "U1", null, result);
     const node = JSON.parse(out.content[0].text as string);
     assert.equal(node.local_mirror, null);
   });
 
   it("does not clobber an already-populated local_mirror", async () => {
+    const fake = new FakeCentral();
     await setupMirror();
     const result = {
       content: [
@@ -399,20 +402,68 @@ describe("enrichGetNodeResult", () => {
         },
       ],
     };
-    const out = await enrichGetNodeResult("U1", result);
+    const out = await enrichGetNodeResult(fake, "U1", null, result);
     const node = JSON.parse(out.content[0].text as string);
     assert.equal(node.local_mirror.local_path, "/pre/existing");
   });
 
+  it("derives home-node file local_paths from the real mirror", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    const reg = await fake.registerFile(NODE_ID, "wip/a.md");
+    const result = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            id: NODE_ID,
+            local_mirror: null,
+            files: [{ id: reg.id, filename: "a.md", local_path: null }],
+          }),
+        },
+      ],
+    };
+    // homeNodeId === NODE_ID -> the node is the session home, so its mirror is
+    // readable and file paths are derived.
+    const out = await enrichGetNodeResult(fake, "U1", NODE_ID, result);
+    const node = JSON.parse(out.content[0].text as string);
+    assert.equal(node.files[0].local_path, join(mirrorRoot, "wip", "a.md"));
+  });
+
+  it("leaves file local_paths null for a non-home node", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    const reg = await fake.registerFile(NODE_ID, "wip/a.md");
+    const result = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            id: NODE_ID,
+            local_mirror: null,
+            files: [{ id: reg.id, filename: "a.md", local_path: null }],
+          }),
+        },
+      ],
+    };
+    // homeNodeId is a different node -> not readable under the sandbox, so no
+    // file paths are surfaced even though the mirror exists on disk.
+    const out = await enrichGetNodeResult(fake, "U1", "N00000000000000000000OTHER", result);
+    const node = JSON.parse(out.content[0].text as string);
+    assert.equal(node.files[0].local_path, null);
+  });
+
   it("passes error results through untouched", async () => {
+    const fake = new FakeCentral();
     const result = { content: [{ type: "text", text: "boom" }], isError: true };
-    const out = await enrichGetNodeResult("U1", result);
+    const out = await enrichGetNodeResult(fake, "U1", null, result);
     assert.equal(out, result);
   });
 
   it("passes non-JSON text through untouched", async () => {
+    const fake = new FakeCentral();
     const result = { content: [{ type: "text", text: "not json" }] };
-    const out = await enrichGetNodeResult("U1", result);
+    const out = await enrichGetNodeResult(fake, "U1", null, result);
     assert.equal(out.content[0].text, "not json");
   });
 });
