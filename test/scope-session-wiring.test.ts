@@ -1,5 +1,6 @@
-// The session wires ScopeReconciler to scope.onAdd, so adding any node to
-// the authoritative scope set projects it to disk through the one path.
+// The session wires ScopeReconciler to scope.onAdd. Staging is retired, so the
+// wiring's job is now the one-time legacy .portuni-scope sweep: adding a node
+// to scope fires the reconciler, which clears any stale pre-real-path copies.
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -9,39 +10,38 @@ import { tmpdir } from "node:os";
 import { SessionScope } from "../apps/server/mcp/scope.js";
 import { createScopeReconciler } from "../apps/server/mcp/scope-reconciler.js";
 
-let dir: string, home: string, neighbor: string;
+let dir: string, home: string;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "portuni-wiring-"));
   home = join(dir, "home");
-  neighbor = join(dir, "neighbor");
   await mkdir(home, { recursive: true });
-  await mkdir(neighbor, { recursive: true });
-  await writeFile(join(neighbor, "n.md"), "n\n");
 });
-afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+afterEach(async () => {
+  await rm(dir, { recursive: true, force: true });
+});
 
 describe("scope.onAdd -> reconciler wiring", () => {
-  it("stages a node when it is added to scope (not via expand_scope)", async () => {
+  it("fires the reconciler sweep when a node is added to scope", async () => {
     const scope = new SessionScope("strict");
     scope.homeNodeId = "HOME";
+    // Stale leftover from a pre-real-path session.
+    await mkdir(join(home, ".portuni-scope", "OLD"), { recursive: true });
+    await writeFile(join(home, ".portuni-scope", "OLD", "x.md"), "stale\n");
     const reconciler = createScopeReconciler({
       userId: "u",
       scope,
-      resolveMirror: async (_u, id) =>
-        id === "HOME" ? home : id === "NEIGHBOR" ? neighbor : null,
+      resolveMirror: async (_u, id) => (id === "HOME" ? home : null),
     });
-    // This is the exact wiring createMcpServer performs:
+    // The exact wiring createMcpServer performs:
     scope.onAdd((id) => reconciler.schedule(id));
 
-    scope.add("NEIGHBOR");
-    // schedule() is fire-and-forget; await the deterministic reconcile to
-    // observe the completed copy.
-    await reconciler.reconcileNode("NEIGHBOR");
-    const staged = await readFile(
-      join(home, ".portuni-scope", "NEIGHBOR", "n.md"),
-      "utf8",
+    scope.add("HOME");
+    // schedule() is fire-and-forget; await the deterministic reconcile.
+    await reconciler.reconcileNode("HOME");
+    await assert.rejects(
+      () => readFile(join(home, ".portuni-scope", "OLD", "x.md"), "utf8"),
+      "stale leftover must be swept via the onAdd wiring",
     );
-    assert.equal(staged, "n\n");
   });
 });

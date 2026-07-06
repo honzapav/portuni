@@ -1,45 +1,30 @@
-// The single path that projects the authoritative SessionScope set onto
-// disk. The Seatbelt sandbox a terminal runs under grants rw on the home
-// mirror only; every other in-scope node is made readable by copying its
-// mirror into <home>/.portuni-scope/<id>/ (inside the visible zone,
-// read-only). Subscribed once per session to scope.onAdd, so ANY code path
-// that adds a node to scope — auto-seed, session_init, get_node/get_context
-// auto-allow, expand_scope — projects to disk identically. Graph scope is
-// authoritative; a failed copy degrades to null, it never throws.
+// Scope -> disk projection. Copy staging is retired: the Seatbelt profile now
+// grants the seed set (home + depth-1) their REAL mirror paths, and ad-hoc
+// in-scope nodes are read through portuni_read_file rather than a staged copy.
+// The reconciler survives only as a one-time sweeper of legacy .portuni-scope
+// directories from pre-real-path sessions (fired via scope.onAdd on the first
+// node added). readableMirrorRoot decides which nodes get a real disk path.
 
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { stageNodeIntoMirror } from "../domain/scope-staging.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import type { SessionScope } from "./scope.js";
 
-// The mirror root to surface to the agent for a node's files: the staged
-// copy for an in-scope non-home node (what the Seatbelt sandbox actually
-// lets it read), or the real mirror for the home node and everything else.
+// The readable mirror root the agent can use on disk for a node's files.
+// Home + the seed set (depth-1) are granted their REAL mirror by the seatbelt,
+// so return it. Ad-hoc (non-seed) in-scope nodes are NOT exposed on disk (no
+// staging any more), so return null -- the agent reads their content through
+// portuni_read_file instead of a stale copy.
 export function readableMirrorRoot(args: {
   scope: SessionScope;
   nodeId: string;
   homeMirror: string | null;
   realMirror: string | null;
 }): string | null {
-  const { scope, nodeId, homeMirror, realMirror } = args;
-  // Home and the seed set (depth-1) are granted their REAL mirror by the
-  // seatbelt at spawn, so return it directly. Only non-seed in-scope nodes
-  // (ad-hoc expansion) are staged into <home>/.portuni-scope/<id>/.
-  if (
-    nodeId !== scope.homeNodeId &&
-    !scope.isSeed(nodeId) &&
-    scope.has(nodeId) &&
-    homeMirror
-  ) {
-    return stagedMirrorRoot(homeMirror, nodeId);
-  }
+  const { scope, nodeId, realMirror } = args;
+  if (nodeId === scope.homeNodeId || scope.isSeed(nodeId)) return realMirror;
+  if (scope.has(nodeId)) return null; // ad-hoc: read via portuni_read_file
   return realMirror;
-}
-
-// Deterministic staged location for a node's files inside the home mirror.
-export function stagedMirrorRoot(homeMirror: string, nodeId: string): string {
-  return join(homeMirror, ".portuni-scope", nodeId);
 }
 
 export interface ScopeReconciler {
@@ -89,26 +74,17 @@ export function createScopeReconciler(args: {
   }
 
   async function doReconcile(
-    nodeId: string,
+    _nodeId: string,
   ): Promise<{ staged_path: string; files: number } | null> {
+    // Staging is retired: home + seed nodes are granted their real mirror by
+    // the seatbelt, and ad-hoc nodes are read via portuni_read_file. The only
+    // remaining job is a one-time sweep of legacy .portuni-scope copies left
+    // by pre-real-path sessions, so they can't linger as stale readable dirs.
     const homeNodeId = args.scope.homeNodeId;
     if (!homeNodeId) return null;
     const homeMirror = await resolveMirror(args.userId, homeNodeId);
-    if (!homeMirror) return null;
-    // Clear prior-session leftovers on the first reconcile (fired for the home
-    // node at seed time, before any ad-hoc staging).
-    await sweepStagedRootOnce(homeMirror);
-    if (nodeId === homeNodeId) return null;
-    // Seed-set nodes are granted their real mirror by the seatbelt; never
-    // stage them (staging would create a stale duplicate of a live file).
-    if (args.scope.isSeed(nodeId)) return null;
-    const nodeMirror = await resolveMirror(args.userId, nodeId);
-    if (!nodeMirror) return null;
-    try {
-      return await stageNodeIntoMirror({ homeMirror, nodeId, nodeMirror });
-    } catch {
-      return null;
-    }
+    if (homeMirror) await sweepStagedRootOnce(homeMirror);
+    return null;
   }
 
   async function reconcileNode(

@@ -211,17 +211,10 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
         });
       }
 
-      // Disk projection runs through the reconciler (also fired via
-      // scope.onAdd). Await it here so the response's `staged` list is
-      // accurate and the read-only copies are complete before the agent
-      // reads them.
-      const stagedResults = await Promise.all(
-        accepted.map(async (id) => {
-          const r = await ctx.reconciler.reconcileNode(id);
-          return r ? { node_id: id, staged_path: r.staged_path, files: r.files } : null;
-        }),
-      );
-      const staged = stagedResults.filter((s): s is NonNullable<typeof s> => s !== null);
+      // Fire the reconciler for the one-time legacy .portuni-scope sweep
+      // (staging is retired). Ad-hoc expanded nodes are not exposed on disk;
+      // the agent reads their files via portuni_read_file.
+      await Promise.all(accepted.map((id) => ctx.reconciler.reconcileNode(id)));
 
       return {
         content: [
@@ -232,11 +225,10 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
               unknown: rejected_unknown,
               refused_hard_floor,
               scope_size: scope.size(),
-              staged: staged.length > 0 ? staged : undefined,
               hint: refused_hard_floor.length > 0
                 ? "Re-call portuni_expand_scope with confirmed_hard_floor=true only after the user explicitly authorises the hard-floor node."
-                : staged.length > 0
-                  ? "Expanded nodes' files are staged read-only under .portuni-scope/<node_id>/ in the current mirror."
+                : accepted.length > 0
+                  ? "Expanded nodes are not on disk here; read their files with portuni_read_file (node_id + path)."
                   : undefined,
             }),
           },
