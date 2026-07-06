@@ -138,6 +138,10 @@ class FakeCentral implements CentralClient {
     return [];
   }
 
+  async nodeNeighbours(_nodeId: string): Promise<string[]> {
+    return [];
+  }
+
   async nodeExists(nodeId: string) {
     return nodeId === NODE_ID && this.exists;
   }

@@ -109,25 +109,34 @@ export async function resolveSandboxScopeForNode(
   if (!portuniRoot) return null;
 
   const homeReal = await resolveReal(home);
-  let readMirrors: string[] = [];
-  if (db) {
-    const neighborIds = await nodeNeighbourIds(db, nodeId);
-    const paths = await Promise.all(
-      neighborIds.map(async (id) => {
-        const p = await getMirrorPath(userId, id);
-        return p ? await resolveReal(p) : null;
-      }),
-    );
-    // Drop neighbors with no local mirror, and any that resolve to the home
-    // mirror itself (already granted rw). Dedupe.
-    readMirrors = [...new Set(paths.filter((p): p is string => p !== null && p !== homeReal))];
-  }
+  const readMirrors = db
+    ? await resolveNeighbourReadMirrors(userId, await nodeNeighbourIds(db, nodeId), homeReal)
+    : [];
 
   return {
     portuniRoot: await resolveReal(portuniRoot),
     homeMirror: homeReal,
     readMirrors,
   };
+}
+
+// Map a set of neighbour node ids to the real mirror paths granted read-only
+// in the seatbelt: their local mirror, realpath-resolved, dropping neighbours
+// with no local mirror and the home mirror itself (already granted rw), deduped.
+// Shared by the local resolver and the central-mode agent-router (which supplies
+// neighbour ids from central instead of a local graph query).
+export async function resolveNeighbourReadMirrors(
+  userId: string,
+  neighbourIds: string[],
+  homeReal: string,
+): Promise<string[]> {
+  const paths = await Promise.all(
+    neighbourIds.map(async (id) => {
+      const p = await getMirrorPath(userId, id);
+      return p ? await resolveReal(p) : null;
+    }),
+  );
+  return [...new Set(paths.filter((p): p is string => p !== null && p !== homeReal))];
 }
 
 // Resolve the disk scope from a working directory instead of a node id —

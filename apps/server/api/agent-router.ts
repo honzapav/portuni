@@ -31,6 +31,7 @@ import { getLocalMirror } from "../domain/sync/local-db.js";
 import { MirrorCreateError } from "../domain/sync/mirror-create.js";
 import {
   buildSeatbeltProfile,
+  resolveNeighbourReadMirrors,
   resolveSandboxScopeForCwd,
   resolveSandboxScopeForNode,
 } from "../domain/sandbox-profile.js";
@@ -44,6 +45,24 @@ import type {
 // touch (mirror registry + env only). The agent has no graph db; passing
 // this sentinel documents the contract instead of hiding it.
 const NO_DB = null as unknown as Client;
+
+// Central-mode read-grant set: the local graph replica is empty in central
+// mode, so depth-1 neighbours come from central node-detail, then map to
+// this device's mirrors (resolveNeighbourReadMirrors). Best-effort -- a
+// central hiccup degrades to a home-only profile, never a spawn failure.
+async function neighbourReadMirrorsCentral(
+  client: CentralClient,
+  userId: string,
+  nodeId: string,
+  homeMirror: string,
+): Promise<string[]> {
+  try {
+    const ids = await client.nodeNeighbours(nodeId);
+    return await resolveNeighbourReadMirrors(userId, ids, homeMirror);
+  } catch {
+    return [];
+  }
+}
 
 function respondCentral404(res: ServerResponse, err: unknown): boolean {
   if (err instanceof CentralHttpError && err.status === 404) {
@@ -99,6 +118,9 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
           });
           return true;
         }
+        // Central mode has no local graph, so resolveSandboxScope leaves
+        // readMirrors empty; fill it from central's depth-1 neighbours.
+        r.scope.readMirrors = await neighbourReadMirrorsCentral(client, identity.userId, r.nodeId, r.scope.homeMirror);
         respondJson(res, 200, {
           node_id: r.nodeId,
           profile: buildSeatbeltProfile(r.scope),
@@ -234,6 +256,7 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
           });
           return true;
         }
+        scope.readMirrors = await neighbourReadMirrorsCentral(client, identity.userId, nodeId, scope.homeMirror);
         respondJson(res, 200, {
           profile: buildSeatbeltProfile(scope),
           portuni_root: scope.portuniRoot,

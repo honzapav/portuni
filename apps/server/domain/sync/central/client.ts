@@ -51,6 +51,10 @@ export interface CentralClient {
   ): Promise<{ version: string; canonicalHash: string }>;
   dataSources(nodeId: string): Promise<DataSourceRow[]>;
   nodeExists(nodeId: string): Promise<boolean>;
+  // Depth-1 neighbour ids from central node-detail. Used to compute the
+  // seatbelt read grant in central mode (the local graph replica is empty).
+  // Restricted/blanked peers (peer_id === "") are dropped.
+  nodeNeighbours(nodeId: string): Promise<string[]>;
   // Drop any cached sync-info for the node (called automatically after
   // mutations through this client; exposed for external invalidation).
   invalidateSyncInfo(nodeId: string): void;
@@ -223,6 +227,20 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       if (r.status === 200) return true;
       if (r.status === 404) return false;
       throwFor(r.status, p, r.json);
+    },
+
+    async nodeNeighbours(nodeId) {
+      const p = `/nodes/${encodeURIComponent(nodeId)}`;
+      const r = await request("GET", p);
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      const edges = (r.json as { edges?: Array<{ peer_id?: string }> }).edges ?? [];
+      return [
+        ...new Set(
+          edges
+            .map((e) => e.peer_id)
+            .filter((id): id is string => typeof id === "string" && id.length > 0),
+        ),
+      ];
     },
 
     invalidateSyncInfo(nodeId) {

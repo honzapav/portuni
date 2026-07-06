@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
-import { join, posix } from "node:path";
+import { join, posix, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import type { AddressInfo } from "node:net";
@@ -102,6 +102,12 @@ class FakeCentral implements CentralClient {
 
   async nodeExists(nodeId: string) {
     return nodeId === NODE_ID;
+  }
+
+  // Configurable per test: which neighbour ids central reports for a node.
+  neighbours: string[] = [];
+  async nodeNeighbours(_nodeId: string): Promise<string[]> {
+    return this.neighbours;
   }
 }
 
@@ -224,6 +230,26 @@ describe("agent router over HTTP", () => {
     assert.equal(r200.status, 200);
     const body = (await r200.json()) as { profile: string; home_mirror: string };
     assert.ok(body.profile.includes("(deny default)") || body.profile.length > 0);
+  });
+
+  it("grants central depth-1 neighbour real mirrors in the sandbox profile", async () => {
+    await mkdir(join(mirrorRoot, "wip"), { recursive: true });
+    await registerMirror(SOLO_USER, NODE_ID, mirrorRoot);
+    // A neighbour node with a local mirror, reported by central node-detail.
+    const neighbourId = "N0000000000000000000NEIGH";
+    const neighbourDir = join(workspace, "workflow", "areas", "lidi");
+    await mkdir(neighbourDir, { recursive: true });
+    await registerMirror(SOLO_USER, neighbourId, neighbourDir);
+    fake.neighbours = [neighbourId];
+
+    const res = await fetch(`${base}/nodes/${NODE_ID}/sandbox-profile`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { profile: string };
+    // The neighbour's REAL mirror is granted read-only, after the deny line.
+    const denyIdx = body.profile.indexOf("(deny file-read*");
+    const neighIdx = body.profile.indexOf(`${sep}lidi"`);
+    assert.ok(denyIdx >= 0 && neighIdx > denyIdx, "neighbour real mirror granted after deny");
+    assert.match(body.profile, /\(allow file-read\* \(subpath "[^"]*lidi"\)\)/);
   });
 
   it("GET /nodes/:id/mirror returns the registered device mirror", async () => {
