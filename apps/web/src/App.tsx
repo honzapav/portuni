@@ -619,6 +619,7 @@ export default function App() {
       } else if (selectedId) {
         const requestId = selectedId;
         fetchNode(requestId)
+          .then((n) => hydrateLocalMirror(n))
           // Drop responses that arrive after the selection moved on --
           // otherwise a slow poll paints the previous node's detail.
           .then((n) => {
@@ -628,7 +629,7 @@ export default function App() {
       }
     }, 5000);
     return () => clearInterval(id);
-  }, [view, selectedWorkspaceNodeId, selectedId, refetchWorkspaceDetail]);
+  }, [view, selectedWorkspaceNodeId, selectedId, refetchWorkspaceDetail, hydrateLocalMirror]);
 
   // The 1s activity-dot clock lives in WorkspaceNodeList (useNowTick) --
   // ticking here re-rendered the whole tree every second forever.
