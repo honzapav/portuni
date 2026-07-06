@@ -72,14 +72,19 @@ own (tauri-action notarizes the .app inside, which is stapled);
 
 ## Why this exists
 
+> **Historical motivation.** This section describes the pre-release-please
+> state (before 2026-07-05) that justified the automation now live — see the
+> Status section at the top for what actually shipped. Kept as the "why".
+
 The repo carries the version string in **four manifests**: `package.json`
 (server), `apps/web/package.json` (frontend), `apps/desktop/Cargo.toml`,
-`apps/desktop/tauri.conf.json`. There is no `CHANGELOG.md`. Today releases
-happen by running `cargo tauri build` on the maintainer's laptop and
-copying the `.app` to `/Applications/`. That's fine for one user; it
-does not survive a second contributor or a second machine.
+`apps/desktop/tauri.conf.json`. Before release-please there was no
+`CHANGELOG.md`, and releases happened by running `cargo tauri build` on the
+maintainer's laptop and copying the `.app` to `/Applications/`. That was
+fine for one user; it did not survive a second contributor or a second
+machine.
 
-Concrete pain points the plan below addresses:
+Concrete pain points the automation below addressed:
 
 1. **Manifest drift.** Bumping the version in only three of four files
    ships a `0.1.1` server with a `0.1.0` `Portuni.app` bundle ID. There
@@ -96,9 +101,9 @@ Concrete pain points the plan below addresses:
    history per merge — which a stream of unsupervised direct pushes
    cannot guarantee.
 
-## How releases will work
+## How releases work
 
-Once the plan below is in place, the end-to-end flow is:
+The end-to-end flow (all wired since 2026-07-05):
 
 ```
 feat/foo branch → PR "feat(scope): summary"
@@ -119,7 +124,11 @@ For the user the path is: download DMG → drag to /Applications →
 right-click → Open (one-time Gatekeeper dance) → onboarding wizard
 (URL + token, or "start locally") → done.
 
-## Plan
+## Plan (shipped 2026-07-05)
+
+> The steps below were the build plan and are all done — they now double as a
+> reference for how the release-please config is wired. See the Status section
+> at the top for the current state.
 
 ### Manifest update (release-please config)
 
