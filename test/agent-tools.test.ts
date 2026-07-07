@@ -247,6 +247,19 @@ describe("portuni_status", () => {
     const payload = JSON.parse(r.content[0].text);
     assert.equal(payload.new_local.length, 0);
   });
+
+  it("scans across all mirrors when no node_id is given (cross-mirror)", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    await writeFile(join(mirrorRoot, "wip", "loose.txt"), "x");
+    // No node_id: fans out over the user's mirror registry and aggregates.
+    const r = await callLocalTool(fake, "U1", "portuni_status", {});
+    assert.notEqual(r.isError, true);
+    const payload = JSON.parse(r.content[0].text);
+    assert.equal(payload.new_local.length, 1);
+    assert.ok(Array.isArray(payload.clean));
+    assert.ok(Array.isArray(payload.moved));
+  });
 });
 
 describe("portuni_store", () => {
@@ -362,17 +375,35 @@ describe("portuni_adopt_files", () => {
     assert.equal("note" in payload, false);
   });
 
-  it("surfaces a note when caller-provided paths are ignored", async () => {
+  it("honours `paths`: adopts only matching untracked files", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    await writeFile(join(mirrorRoot, "wip", "keep.md"), "adopt me");
+    await writeFile(join(mirrorRoot, "wip", "ignore.md"), "leave me");
+    const r = await callLocalTool(fake, "U1", "portuni_adopt_files", {
+      node_id: NODE_ID,
+      paths: ["wip/keep.md"],
+    });
+    const payload = JSON.parse(r.content[0].text);
+    assert.equal(payload.adopted.length, 1);
+    assert.equal(payload.adopted[0].filename, "keep.md");
+    assert.equal("note" in payload, false);
+    assert.equal("not_found" in payload, false);
+  });
+
+  it("reports requested paths that match no untracked file as not_found", async () => {
     const fake = new FakeCentral();
     await setupMirror();
     await writeFile(join(mirrorRoot, "wip", "loose.txt"), "adopt me");
     const r = await callLocalTool(fake, "U1", "portuni_adopt_files", {
       node_id: NODE_ID,
-      paths: [posix.join(NODE_ROOT, "wip/some-remote-file.md")],
+      // Full remote-path form (as the local tool takes) still matches by suffix;
+      // this one genuinely is not present.
+      paths: [posix.join(NODE_ROOT, "wip/nope.md")],
     });
     const payload = JSON.parse(r.content[0].text);
-    assert.equal(payload.adopted.length, 1);
-    assert.match(payload.note, /ignores `paths`/);
+    assert.equal(payload.adopted.length, 0);
+    assert.deepEqual(payload.not_found, [posix.join(NODE_ROOT, "wip/nope.md")]);
   });
 });
 

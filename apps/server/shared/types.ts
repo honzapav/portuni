@@ -18,8 +18,6 @@ export const NodeRow = z.object({
   type: z.string(),
   name: z.string(),
   description: z.union([z.string(), z.null()]),
-  summary: z.union([z.string(), z.null()]),
-  summary_updated_at: z.union([z.string(), z.null()]),
   meta: z.union([z.string(), z.null()]),
   status: z.string(),
   visibility: z.string(),

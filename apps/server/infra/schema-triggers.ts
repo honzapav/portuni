@@ -78,8 +78,6 @@ export const DDL = [
     type TEXT NOT NULL CHECK(type IN (${NODE_TYPES_SQL})),
     name TEXT NOT NULL,
     description TEXT,
-    summary TEXT,
-    summary_updated_at DATETIME,
     meta TEXT,
     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN (${NODE_STATUSES_SQL})),
     visibility TEXT NOT NULL DEFAULT 'team' CHECK(visibility IN (${NODE_VISIBILITIES_SQL})),

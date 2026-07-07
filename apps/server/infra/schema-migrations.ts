@@ -148,6 +148,21 @@ export async function runMigration021(db: Client): Promise<void> {
   }
 }
 
+// Migration 022: drop `nodes.summary` and `nodes.summary_updated_at`. The
+// pair was scaffolded for a node-summary feature that was never wired: no
+// code writes them and nothing reads them. Neither is in an index or CHECK,
+// so native DROP COLUMN is safe; gated on PRAGMA table_info for idempotency.
+export async function runMigration022(db: Client): Promise<void> {
+  const info = await db.execute("PRAGMA table_info(nodes)");
+  const cols = new Set(info.rows.map((r) => r.name as string));
+  if (cols.has("summary_updated_at")) {
+    await db.execute("ALTER TABLE nodes DROP COLUMN summary_updated_at");
+  }
+  if (cols.has("summary")) {
+    await db.execute("ALTER TABLE nodes DROP COLUMN summary");
+  }
+}
+
 // Migration 010: additively extend `files` with the columns needed to track
 // the remote source-of-truth. Does NOT drop `local_path` — that happens in
 // a later plan (migration 012). Each ALTER is gated by a column-existence
@@ -1117,6 +1132,17 @@ const MIGRATIONS: Migration[] = [
       return !cols.has("description");
     },
     up: runMigration021,
+  },
+
+  // Migration 022: drop the never-wired `nodes.summary(_updated_at)` columns.
+  {
+    id: "022_drop_nodes_summary",
+    isApplied: async (db) => {
+      const info = await db.execute("PRAGMA table_info(nodes)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      return !cols.has("summary") && !cols.has("summary_updated_at");
+    },
+    up: runMigration022,
   },
 ];
 

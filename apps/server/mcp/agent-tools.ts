@@ -27,20 +27,7 @@ import { MirrorCreateError } from "../domain/sync/mirror-create.js";
 import { getMirrorPath, listUserMirrors } from "../domain/sync/mirror-registry.js";
 import { getLocalMirror } from "../domain/sync/local-db.js";
 import { buildNodeRoot, deriveLocalPath } from "../domain/sync/remote-path.js";
-import type { StatusFileEntry } from "../domain/sync/engine.js";
-
-// Raised when a caller asks for something the local tool supports but the
-// agent plane cannot serve faithfully (CentralClient API gaps). Failing
-// loudly beats silently dropping the arg -- the caller would otherwise
-// believe e.g. a description was persisted when it was not.
-class AgentUnsupportedError extends Error {
-  constructor(what: string) {
-    super(
-      `not supported by the agent plane yet: ${what}. Use the desktop app / local mode for this.`,
-    );
-    this.name = "AgentUnsupportedError";
-  }
-}
+import type { StatusFileEntry, StatusResult, NewLocalEntry } from "../domain/sync/engine.js";
 
 export const LOCAL_TOOLS: ReadonlySet<string> = new Set([
   "portuni_mirror",
@@ -122,20 +109,49 @@ const HANDLERS: Record<string, LocalHandler> = {
   },
 
   async portuni_status(client, userId, args) {
+    // Same default as the local tool (sync-status.ts): discovery on unless
+    // the caller explicitly opts out.
+    const includeDiscovery = args.include_discovery !== false;
     const nodeId = args.node_id as string | undefined;
-    if (!nodeId) {
-      // Central-mode statusScanCentral is single-node only (v1 scope cut --
-      // no cross-mirror scan without a graph db to enumerate nodes from).
-      throw new Error("portuni_status requires node_id in agent mode (single-node scan only)");
+    if (nodeId) {
+      return statusScanCentral(client, { userId, nodeId, includeDiscovery, fast: false });
     }
-    return statusScanCentral(client, {
-      userId,
-      nodeId,
-      // Same default as the local tool (sync-status.ts): discovery on
-      // unless the caller explicitly opts out.
-      includeDiscovery: args.include_discovery !== false,
-      fast: false,
-    });
+    // No node_id: scan across every mirror this user has and aggregate the
+    // buckets -- the central-mode analog of local statusScan's cross-mirror
+    // sweep. Fans out over listUserMirrors, same enumeration source as
+    // computeSyncPendingCentral (the local mirror registry, not a graph db).
+    const mirrors = await listUserMirrors(userId);
+    const agg: StatusResult = {
+      clean: [],
+      push_candidates: [],
+      pull_candidates: [],
+      conflicts: [],
+      orphan: [],
+      native: [],
+      new_local: [],
+      new_remote: [],
+      deleted_local: [],
+      moved: [],
+    };
+    for (const m of mirrors) {
+      const r = await statusScanCentral(client, {
+        userId,
+        nodeId: m.node_id,
+        includeDiscovery,
+        fast: false,
+      });
+      agg.clean.push(...r.clean);
+      agg.push_candidates.push(...r.push_candidates);
+      agg.pull_candidates.push(...r.pull_candidates);
+      agg.conflicts.push(...r.conflicts);
+      agg.orphan.push(...r.orphan);
+      agg.native.push(...r.native);
+      agg.new_local.push(...r.new_local);
+      agg.new_remote.push(...r.new_remote);
+      agg.deleted_local.push(...r.deleted_local);
+      agg.moved.push(...r.moved);
+    }
+    return agg;
   },
 
   async portuni_store(client, userId, args) {
@@ -191,26 +207,46 @@ const HANDLERS: Record<string, LocalHandler> = {
   },
 
   async portuni_adopt_files(client, userId, args) {
-    // engine-central has no remote-file listing (documented v1 scope cut --
-    // no new_remote discovery), so unlike the local tool's args.paths
-    // (untracked *remote* paths to adopt), agent mode discovers untracked
-    // *local* files itself and registers all of them. skipped.remote_path
-    // holds the local path for a failed entry since no remote path exists
-    // yet for it. When the caller did pass paths, surface the divergence
-    // via an extra `note` field: additive next to adopted/skipped, so it
-    // cannot break a consumer of the local payload contract, but the
-    // caller learns its path selection was not applied.
+    // Registers untracked files found under the node's local mirror. With
+    // `paths`, only matching untracked files are adopted -- matched by
+    // mirror-relative path "<section>[/<subpath>]/<filename>" or by bare
+    // filename; without it, every untracked local file is adopted.
+    //
+    // Unlike the owner-side local tool (whose `paths` are untracked *remote*
+    // objects), there is no untracked-remote set to discover here: in central
+    // mode the server tracks everything it stores, so "on the remote but not
+    // in Portuni" cannot arise. Adoption is therefore over local files.
+    // skipped.remote_path carries the local path of a failed entry (no remote
+    // path exists for it yet).
     const nodeId = args.node_id as string;
-    const paths = args.paths as unknown[] | undefined;
-    const note =
-      paths && paths.length > 0
-        ? "agent mode ignores `paths` (no remote listing on this plane): all untracked local files under the node's mirror were adopted instead"
-        : undefined;
+    const wanted = (Array.isArray(args.paths) ? (args.paths as unknown[]) : [])
+      .filter((p): p is string => typeof p === "string")
+      .map((p) => p.replace(/^\/+/, ""));
+    const relOf = (e: NewLocalEntry): string =>
+      e.subpath ? `${e.section}/${e.subpath}/${e.filename}` : `${e.section}/${e.filename}`;
+    // Lenient match: a requested path selects a file when it equals, or ends
+    // with, the file's mirror-relative path ("wip/foo.md") or bare filename.
+    // Handles callers passing either form or a full remote path.
+    const matchesWanted = (e: NewLocalEntry, w: string): boolean => {
+      const rel = relOf(e);
+      return (
+        w === rel ||
+        w === e.filename ||
+        w.endsWith(`/${rel}`) ||
+        w.endsWith(`/${e.filename}`)
+      );
+    };
+
     const untracked = await listUntrackedLocalCentral(client, { userId, nodeId });
+    const selected =
+      wanted.length === 0
+        ? untracked
+        : untracked.filter((e) => wanted.some((w) => matchesWanted(e, w)));
+
     const adopted: Array<{ file_id: string; remote_path: string; filename: string; hash: string }> =
       [];
     const skipped: Array<{ remote_path: string; reason: string }> = [];
-    for (const entry of untracked) {
+    for (const entry of selected) {
       try {
         const reg = await registerLocalFileCentral(client, {
           userId,
@@ -230,7 +266,10 @@ const HANDLERS: Record<string, LocalHandler> = {
         });
       }
     }
-    return note !== undefined ? { adopted, skipped, note } : { adopted, skipped };
+    // Honestly report requested paths that matched no untracked file -- a
+    // real "nothing to adopt there" signal, not a plane limitation.
+    const notFound = wanted.filter((w) => !untracked.some((e) => matchesWanted(e, w)));
+    return notFound.length > 0 ? { adopted, skipped, not_found: notFound } : { adopted, skipped };
   },
 };
 
@@ -387,11 +426,7 @@ export async function callLocalTool(
     const result = await handler(client, userId, args);
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   } catch (e) {
-    if (
-      e instanceof MirrorCreateError ||
-      e instanceof CentralHttpError ||
-      e instanceof AgentUnsupportedError
-    ) {
+    if (e instanceof MirrorCreateError || e instanceof CentralHttpError) {
       return {
         content: [{ type: "text", text: `Error: ${e.message}` }],
         isError: true,
