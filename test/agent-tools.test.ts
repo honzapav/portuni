@@ -282,7 +282,7 @@ describe("portuni_store", () => {
     assert.equal(fake.bytes.get(posix.join(NODE_ROOT, "wip/a.md"))?.toString(), "v2");
   });
 
-  it("fails loudly when description is passed (agent plane cannot persist it)", async () => {
+  it("stores bytes + status when description is passed, flagging description as unpersisted", async () => {
     const fake = new FakeCentral();
     await setupMirror();
     const abs = join(mirrorRoot, "wip", "meta.md");
@@ -290,15 +290,18 @@ describe("portuni_store", () => {
     const r = await callLocalTool(fake, "U1", "portuni_store", {
       node_id: NODE_ID,
       local_path: abs,
-      description: "will be lost",
+      description: "not persistable yet",
     });
-    assert.equal(r.isError, true);
-    assert.match(r.content[0].text, /not supported by the agent plane/);
-    // Nothing was registered or pushed.
-    assert.equal(fake.records.size, 0);
+    assert.notEqual(r.isError, true);
+    const payload = JSON.parse(r.content[0].text);
+    // The push still happened -- bytes landed and the file is registered.
+    assert.ok(payload.file_id);
+    assert.equal(fake.bytes.get(posix.join(NODE_ROOT, "wip/meta.md"))?.toString(), "x");
+    // The one unsupported field is surfaced additively, not silently dropped.
+    assert.match(payload.note, /description not persisted/);
   });
 
-  it("fails loudly for a source path outside the mirror sections", async () => {
+  it("copies a source outside the mirror into the routed section and pushes it", async () => {
     const fake = new FakeCentral();
     await setupMirror();
     const outside = join(workspace, "external.md");
@@ -306,10 +309,16 @@ describe("portuni_store", () => {
     const r = await callLocalTool(fake, "U1", "portuni_store", {
       node_id: NODE_ID,
       local_path: outside,
+      status: "wip",
     });
-    assert.equal(r.isError, true);
-    assert.match(r.content[0].text, /not supported by the agent plane/);
-    assert.equal(fake.records.size, 0);
+    assert.notEqual(r.isError, true);
+    const payload = JSON.parse(r.content[0].text);
+    assert.equal(payload.remote_path, posix.join(NODE_ROOT, "wip/external.md"));
+    assert.equal(payload.local_path, join(mirrorRoot, "wip", "external.md"));
+    assert.equal(
+      fake.bytes.get(posix.join(NODE_ROOT, "wip/external.md"))?.toString(),
+      "outside the mirror",
+    );
   });
 });
 

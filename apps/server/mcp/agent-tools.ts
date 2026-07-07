@@ -27,7 +27,6 @@ import { MirrorCreateError } from "../domain/sync/mirror-create.js";
 import { getMirrorPath, listUserMirrors } from "../domain/sync/mirror-registry.js";
 import { getLocalMirror } from "../domain/sync/local-db.js";
 import { buildNodeRoot, deriveLocalPath } from "../domain/sync/remote-path.js";
-import { subpathFromMirror } from "../domain/sync/remote-path.js";
 import type { StatusFileEntry } from "../domain/sync/engine.js";
 
 // Raised when a caller asks for something the local tool supports but the
@@ -140,29 +139,33 @@ const HANDLERS: Record<string, LocalHandler> = {
   },
 
   async portuni_store(client, userId, args) {
-    // CentralClient.registerFile only takes (nodeId, relPath) -- there is
-    // no way to persist description/status/subpath through the agent
-    // plane. Fail loudly rather than silently dropping metadata the
-    // caller believes was saved.
-    const unsupported = (["description", "status", "subpath"] as const).filter(
-      (k) => args[k] !== undefined && args[k] !== null,
-    );
-    if (unsupported.length > 0) {
-      throw new AgentUnsupportedError(`portuni_store args ${unsupported.join(", ")}`);
-    }
-    // Local storeFile copies an outside-the-mirror source file into the
-    // mirror (routing via status/subpath); the central path has no such
-    // copy-in, so an external path would fail deep inside with a
-    // confusing message. Reject it up front with the same loud error.
+    // storeFileCentral copies an outside-the-mirror source into the correct
+    // section (status/subpath routing) before pushing, and the server derives
+    // files.status from that section -- so status and outside-mirror sources
+    // both work on the agent plane, same as local storeFile.
     const nodeId = args.node_id as string;
     const localPath = args.local_path as string;
-    const mirrorRoot = await getMirrorPath(userId, nodeId);
-    if (mirrorRoot && subpathFromMirror(mirrorRoot, localPath) === null) {
-      throw new AgentUnsupportedError(
-        `storing a file from outside the mirror's tracked sections (${localPath})`,
-      );
+    const result = await storeFileCentral(client, {
+      userId,
+      nodeId,
+      localPath,
+      status: args.status as "wip" | "output" | undefined,
+      subpath: (args.subpath as string | null | undefined) ?? undefined,
+    });
+    // description has no central persistence path yet: neither the register
+    // nor the create endpoint accepts it. Store the bytes + status (the common
+    // case) and surface the one unsupported field additively, rather than
+    // failing the whole push or silently dropping metadata the caller believes
+    // was saved.
+    const description = args.description;
+    if (typeof description === "string" && description.length > 0) {
+      return {
+        ...result,
+        note:
+          "description not persisted: the agent plane has no central endpoint for file descriptions yet -- bytes and status were stored",
+      };
     }
-    return storeFileCentral(client, { userId, nodeId, localPath });
+    return result;
   },
 
   async portuni_pull(client, userId, args) {

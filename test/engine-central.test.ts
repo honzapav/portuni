@@ -9,6 +9,7 @@ import { CentralHttpError } from "../apps/server/domain/sync/central/client.js";
 import {
   statusScanCentral,
   registerLocalFileCentral,
+  storeFileCentral,
   pullFileCentral,
   reconcilePathCentral,
   syncRunCentral,
@@ -392,5 +393,86 @@ describe("createMirrorForNodeCentral", () => {
       () => createMirrorForNodeCentral(c, "U1", { nodeId: "NOPE" }),
       (e: unknown) => e instanceof MirrorCreateError && e.code === "NODE_NOT_FOUND",
     );
+  });
+});
+
+describe("storeFileCentral copy-in + section routing", () => {
+  it("copies an outside-mirror source into wip/ and pushes it", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const external = join(workspace, "external-note.md");
+    await writeFile(external, "outside content");
+
+    const res = await storeFileCentral(c, {
+      userId: "U1",
+      nodeId: NODE_ID,
+      localPath: external,
+      status: "wip",
+    });
+
+    // Pushed at wip/<name>, and the file now lives inside the mirror.
+    assert.equal(res.remote_path, posix.join(NODE_ROOT, "wip/external-note.md"));
+    assert.equal(res.local_path, join(mirrorRoot, "wip", "external-note.md"));
+    assert.equal(await readFile(res.local_path, "utf8"), "outside content");
+    assert.ok(c.bytes.has(posix.join(NODE_ROOT, "wip/external-note.md")));
+    // Original outside source is untouched (copy, not move).
+    assert.equal(await readFile(external, "utf8"), "outside content");
+  });
+
+  it("routes status:output to the outputs/ section (server derives status from path)", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const external = join(workspace, "report.md");
+    await writeFile(external, "final");
+
+    const res = await storeFileCentral(c, {
+      userId: "U1",
+      nodeId: NODE_ID,
+      localPath: external,
+      status: "output",
+    });
+
+    assert.equal(res.remote_path, posix.join(NODE_ROOT, "outputs/report.md"));
+    // The mock's registerFile derives status from the section, exactly like
+    // the real registerFileRecordRemote -- confirms status sticks via routing.
+    assert.equal(
+      c.records.get(posix.join(NODE_ROOT, "outputs/report.md"))?.status,
+      "output",
+    );
+  });
+
+  it("honours subpath for an outside source", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const external = join(workspace, "deep.md");
+    await writeFile(external, "x");
+
+    const res = await storeFileCentral(c, {
+      userId: "U1",
+      nodeId: NODE_ID,
+      localPath: external,
+      status: "wip",
+      subpath: "sub/dir",
+    });
+
+    assert.equal(res.remote_path, posix.join(NODE_ROOT, "wip/sub/dir/deep.md"));
+    assert.equal(res.local_path, join(mirrorRoot, "wip", "sub", "dir", "deep.md"));
+  });
+
+  it("stores an already-in-mirror file without duplicating it", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const inside = join(mirrorRoot, "wip", "already.md");
+    await writeFile(inside, "here");
+
+    const res = await storeFileCentral(c, {
+      userId: "U1",
+      nodeId: NODE_ID,
+      localPath: inside,
+    });
+
+    assert.equal(res.remote_path, posix.join(NODE_ROOT, "wip/already.md"));
+    assert.equal(res.local_path, inside);
+    assert.equal(await readFile(inside, "utf8"), "here");
   });
 });

@@ -12,8 +12,8 @@
 //   - no remote folder scaffold on mirror create; folders materialize when
 //     the first file is pushed (adapter.put resolves parents server-side).
 
-import { mkdir, readFile, writeFile, stat as fsStat, readdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { mkdir, readFile, writeFile, stat as fsStat, readdir, copyFile } from "node:fs/promises";
+import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
 import type { CentralClient } from "./client.js";
 import { CentralHttpError } from "./client.js";
@@ -30,6 +30,7 @@ import {
   buildNodeRoot,
   deriveLocalPath,
   subpathFromMirror,
+  safeMirrorJoin,
   type NodeInfo,
   type Section,
 } from "../remote-path.js";
@@ -431,6 +432,57 @@ export interface StoreFileCentralArgs {
   userId: string;
   nodeId: string;
   localPath: string;
+  // Section for a source that lives OUTSIDE the mirror (copy-in routing):
+  // "output" -> outputs/, anything else -> wip/. Ignored when the source is
+  // already inside a tracked section (the section is read from its path).
+  status?: "wip" | "output";
+  // Optional sub-directory within the section for an outside source.
+  subpath?: string | null;
+}
+
+// Resolve the in-mirror destination for a store, copying the source in when it
+// lives outside the mirror's tracked sections. The central analog of local
+// storeFile's copy-in (engine.ts): status -> section, subpath + filename route
+// the file. The server derives the files.status column from the section of the
+// resulting path (registerFileRecordRemote), so placing the file correctly is
+// what makes `status` stick -- no central metadata write needed.
+async function resolveMirrorDestination(
+  mirrorRoot: string,
+  a: StoreFileCentralArgs,
+): Promise<string> {
+  const inside = subpathFromMirror(mirrorRoot, a.localPath);
+  let section: Section;
+  let subpath: string | null;
+  let filename: string;
+  if (inside !== null) {
+    section = inside.section;
+    subpath = inside.subpath?.normalize("NFC") ?? null;
+    filename = inside.filename.normalize("NFC");
+  } else {
+    section = a.status === "output" ? "outputs" : "wip";
+    subpath = a.subpath?.normalize("NFC") ?? null;
+    filename = basename(a.localPath).normalize("NFC");
+  }
+  // safeMirrorJoin validates each segment and asserts the result stays under
+  // mirrorRoot (a caller subpath like "../.." cannot escape).
+  const dest = safeMirrorJoin(mirrorRoot, section, ...(subpath ? [subpath] : []), filename);
+  if (dest === a.localPath) return dest;
+
+  const sourceStat = await fsStat(a.localPath);
+  await mkdir(dirname(dest), { recursive: true });
+  // Guard against copying a file onto itself: on APFS (normalization- and
+  // case-insensitive) a byte-different path can resolve to the same inode, and
+  // copyFile opens the destination with O_TRUNC -- copying onto itself would
+  // zero it. Compare inode+device first.
+  let samePhysicalFile = false;
+  try {
+    const destStat = await fsStat(dest);
+    samePhysicalFile = destStat.ino === sourceStat.ino && destStat.dev === sourceStat.dev;
+  } catch {
+    /* destination absent -- normal copy */
+  }
+  if (!samePhysicalFile) await copyFile(a.localPath, dest);
+  return dest;
 }
 
 export interface StoreFileCentralResult {
@@ -457,22 +509,25 @@ export async function storeFileCentral(
   if (!mirrorRoot) {
     throw new Error(`Node ${a.nodeId} has no local mirror. Register via portuni_mirror first.`);
   }
-  const relPath = relPathFor(mirrorRoot, a.localPath);
+  // Copy an outside-the-mirror source into the correct section first, so the
+  // rest of the push operates on an in-mirror path (relPath, register, read).
+  const localPath = await resolveMirrorDestination(mirrorRoot, a);
+  const relPath = relPathFor(mirrorRoot, localPath);
   if (!relPath) {
     throw new Error(
-      `Path is outside the mirror's tracked sections (wip/outputs/resources): ${a.localPath}`,
+      `Path is outside the mirror's tracked sections (wip/outputs/resources): ${localPath}`,
     );
   }
 
   const reg = await registerLocalFileCentral(client, {
     userId: a.userId,
     nodeId: a.nodeId,
-    localPath: a.localPath,
+    localPath,
   });
 
   const state = await getFileState(reg.file_id);
   const baseline = state?.last_synced_hash ?? null;
-  const bytes = await readFile(a.localPath);
+  const bytes = await readFile(localPath);
 
   let put: { version: string; canonicalHash: string };
   try {
@@ -504,7 +559,7 @@ export async function storeFileCentral(
     }
   }
 
-  const fsInfo = await statForCache(a.localPath);
+  const fsInfo = await statForCache(localPath);
   await upsertFileState({
     file_id: reg.file_id,
     last_synced_hash: put.canonicalHash,
@@ -518,7 +573,7 @@ export async function storeFileCentral(
     file_id: reg.file_id,
     remote_name: reg.remote_name,
     remote_path: reg.remote_path,
-    local_path: a.localPath,
+    local_path: localPath,
     hash: put.canonicalHash,
   };
 }
