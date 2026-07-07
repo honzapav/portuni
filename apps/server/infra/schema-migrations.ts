@@ -134,6 +134,20 @@ export async function runMigration012(db: Client): Promise<void> {
   }
 }
 
+// Migration 021: drop `files.description`. The per-file description was set
+// once at store time and never maintained -- no update tool, no UI edit, and
+// re-store leaves it untouched (COALESCE), so it drifted stale against the
+// file's actual content. Removed in favour of no field at all. `description`
+// is in no index or CHECK, so a native DROP COLUMN is safe; gated on
+// PRAGMA table_info for idempotency (same shape as migration 012).
+export async function runMigration021(db: Client): Promise<void> {
+  const info = await db.execute("PRAGMA table_info(files)");
+  const cols = new Set(info.rows.map((r) => r.name as string));
+  if (cols.has("description")) {
+    await db.execute("ALTER TABLE files DROP COLUMN description");
+  }
+}
+
 // Migration 010: additively extend `files` with the columns needed to track
 // the remote source-of-truth. Does NOT drop `local_path` — that happens in
 // a later plan (migration 012). Each ALTER is gated by a column-existence
@@ -1092,6 +1106,17 @@ const MIGRATIONS: Migration[] = [
         );
       }
     },
+  },
+
+  // Migration 021: drop the unmaintained `files.description` column.
+  {
+    id: "021_drop_files_description",
+    isApplied: async (db) => {
+      const info = await db.execute("PRAGMA table_info(files)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      return !cols.has("description");
+    },
+    up: runMigration021,
   },
 ];
 

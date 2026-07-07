@@ -41,7 +41,6 @@ import { listWorkspaces } from "../lib/workspaces";
 type TreeFile = {
   relative_path: string;
   filename: string;
-  description: string | null;
   mime_type: string | null;
   fileId: string | null; // null = untracked (not in `files`)
   local_path: string | null;
@@ -106,7 +105,6 @@ function toTreeFiles(
     byPath.set(u.relative_path, {
       relative_path: u.relative_path,
       filename: u.filename,
-      description: null,
       mime_type: u.mime_type,
       fileId: null,
       local_path: u.local_path,
@@ -123,7 +121,6 @@ function toTreeFiles(
     byPath.set(relative_path, {
       relative_path,
       filename: f.filename,
-      description: f.description,
       mime_type: f.mime_type,
       fileId: f.id,
       local_path: localPath,
@@ -667,11 +664,6 @@ function FileRow({
             </span>
           )}
         </div>
-        {f.description && (
-          <div className="mt-0.5 line-clamp-2 text-[13.5px] leading-relaxed text-[var(--color-text-dim)]">
-            {f.description}
-          </div>
-        )}
       </div>
     </div>
   );

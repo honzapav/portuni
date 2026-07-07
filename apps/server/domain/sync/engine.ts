@@ -61,7 +61,6 @@ export interface StoreFileArgs {
   userId: string;
   nodeId: string;
   localPath: string;
-  description?: string | null;
   status?: "wip" | "output";
   subpath?: string | null;
 }
@@ -183,15 +182,14 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
   // only overwrite when explicitly provided.
   const now = new Date().toISOString();
   const upsert = await db.execute({
-    sql: `INSERT INTO files (id, node_id, filename, status, description, mime_type,
+    sql: `INSERT INTO files (id, node_id, filename, status, mime_type,
                               remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
                               is_native_format, created_by, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
           ON CONFLICT(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL
           DO UPDATE SET
             filename = excluded.filename,
             status = COALESCE(?, files.status),
-            description = COALESCE(?, files.description),
             current_remote_hash = excluded.current_remote_hash,
             last_pushed_by = excluded.last_pushed_by,
             last_pushed_at = excluded.last_pushed_at,
@@ -203,7 +201,6 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
       a.nodeId,
       filename,
       a.status ?? "wip",
-      a.description ?? null,
       mt,
       remoteName,
       remotePath,
@@ -214,7 +211,6 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
       now,
       now,
       a.status ?? null,
-      a.description ?? null,
     ],
   });
   const fileId = upsert.rows[0].id as string;
@@ -255,7 +251,6 @@ export interface RegisterLocalFileArgs {
   userId: string;
   nodeId: string;
   localPath: string;
-  description?: string | null;
   status?: "wip" | "output";
   subpath?: string | null;
 }
@@ -352,15 +347,14 @@ export async function registerLocalFile(
   // registered) we leave those columns untouched so a synced file is not
   // demoted.
   const upsert = await db.execute({
-    sql: `INSERT INTO files (id, node_id, filename, status, description, mime_type,
+    sql: `INSERT INTO files (id, node_id, filename, status, mime_type,
                               remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
                               is_native_format, created_by, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?, ?)
           ON CONFLICT(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL
           DO UPDATE SET
             filename = excluded.filename,
             status = COALESCE(?, files.status),
-            description = COALESCE(?, files.description),
             mime_type = excluded.mime_type,
             updated_at = excluded.updated_at
           RETURNING id`,
@@ -369,7 +363,6 @@ export async function registerLocalFile(
       a.nodeId,
       filename,
       a.status ?? "wip",
-      a.description ?? null,
       mt,
       remoteName,
       remotePath,
@@ -377,7 +370,6 @@ export async function registerLocalFile(
       now,
       now,
       a.status ?? null,
-      a.description ?? null,
     ],
   });
   const fileId = upsert.rows[0].id as string;

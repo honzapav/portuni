@@ -282,7 +282,7 @@ describe("portuni_store", () => {
     assert.equal(fake.bytes.get(posix.join(NODE_ROOT, "wip/a.md"))?.toString(), "v2");
   });
 
-  it("stores bytes + status when description is passed, flagging description as unpersisted", async () => {
+  it("stores cleanly and ignores a legacy description arg (field was removed)", async () => {
     const fake = new FakeCentral();
     await setupMirror();
     const abs = join(mirrorRoot, "wip", "meta.md");
@@ -290,15 +290,15 @@ describe("portuni_store", () => {
     const r = await callLocalTool(fake, "U1", "portuni_store", {
       node_id: NODE_ID,
       local_path: abs,
-      description: "not persistable yet",
+      description: "no longer a thing",
     });
     assert.notEqual(r.isError, true);
     const payload = JSON.parse(r.content[0].text);
-    // The push still happened -- bytes landed and the file is registered.
     assert.ok(payload.file_id);
     assert.equal(fake.bytes.get(posix.join(NODE_ROOT, "wip/meta.md"))?.toString(), "x");
-    // The one unsupported field is surfaced additively, not silently dropped.
-    assert.match(payload.note, /description not persisted/);
+    // description is gone: no such field on the result, no leftover note.
+    assert.equal(payload.description, undefined);
+    assert.equal(payload.note, undefined);
   });
 
   it("copies a source outside the mirror into the routed section and pushes it", async () => {

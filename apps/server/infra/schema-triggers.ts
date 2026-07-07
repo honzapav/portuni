@@ -139,7 +139,6 @@ export const DDL = [
     last_pushed_at DATETIME,
     is_native_format INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'wip' CHECK(status IN (${FILE_STATUSES_SQL})),
-    description TEXT,
     mime_type TEXT,
     created_by TEXT NOT NULL REFERENCES users(id),
     created_at DATETIME NOT NULL DEFAULT (datetime('now')),

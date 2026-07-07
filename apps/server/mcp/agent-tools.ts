@@ -143,29 +143,13 @@ const HANDLERS: Record<string, LocalHandler> = {
     // section (status/subpath routing) before pushing, and the server derives
     // files.status from that section -- so status and outside-mirror sources
     // both work on the agent plane, same as local storeFile.
-    const nodeId = args.node_id as string;
-    const localPath = args.local_path as string;
-    const result = await storeFileCentral(client, {
+    return storeFileCentral(client, {
       userId,
-      nodeId,
-      localPath,
+      nodeId: args.node_id as string,
+      localPath: args.local_path as string,
       status: args.status as "wip" | "output" | undefined,
       subpath: (args.subpath as string | null | undefined) ?? undefined,
     });
-    // description has no central persistence path yet: neither the register
-    // nor the create endpoint accepts it. Store the bytes + status (the common
-    // case) and surface the one unsupported field additively, rather than
-    // failing the whole push or silently dropping metadata the caller believes
-    // was saved.
-    const description = args.description;
-    if (typeof description === "string" && description.length > 0) {
-      return {
-        ...result,
-        note:
-          "description not persisted: the agent plane has no central endpoint for file descriptions yet -- bytes and status were stored",
-      };
-    }
-    return result;
   },
 
   async portuni_pull(client, userId, args) {

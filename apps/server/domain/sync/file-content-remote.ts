@@ -460,7 +460,6 @@ export interface CreateFileRemoteResult {
   id: string;
   filename: string;
   status: string;
-  description: string | null;
   local_path: string | null;
   relative_path: string;
   remote_path: string;
@@ -529,10 +528,10 @@ export async function createFileRemote(
   // the pre-check and this INSERT degrades to EXISTS instead of a duplicate
   // row (idx_files_unique_remote).
   const inserted = await db.execute({
-    sql: `INSERT INTO files (id, node_id, filename, status, description, mime_type,
+    sql: `INSERT INTO files (id, node_id, filename, status, mime_type,
                              remote_name, remote_path, current_remote_hash, is_native_format,
                              last_pushed_by, last_pushed_at, created_by, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL
           DO NOTHING
           RETURNING id`,
@@ -541,7 +540,6 @@ export async function createFileRemote(
       a.nodeId,
       a.filename,
       status,
-      null,
       mt,
       remoteName,
       remotePath,
@@ -565,7 +563,6 @@ export async function createFileRemote(
     id,
     filename: a.filename,
     status,
-    description: null,
     local_path: null,
     relative_path,
     remote_path: remotePath,

@@ -64,7 +64,6 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
     {
       node_id: z.string().describe("Target node ID"),
       local_path: z.string().describe("Absolute path of the source file on this device"),
-      description: z.string().optional(),
       status: z
         .enum(["wip", "output"])
         .optional()
@@ -81,7 +80,6 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         userId: ctx.identity.userId,
         nodeId: args.node_id,
         localPath: args.local_path,
-        description: args.description ?? null,
         status: args.status,
         subpath: args.subpath ?? null,
       });
@@ -176,7 +174,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
 
       const result = await db.execute({
         sql: `SELECT f.id, f.node_id, n.name AS node_name, n.type AS node_type, n.sync_key AS node_sync_key,
-                     f.filename, f.status, f.description,
+                     f.filename, f.status,
                      f.remote_name, f.remote_path, f.current_remote_hash,
                      f.last_pushed_at, f.is_native_format, f.updated_at,
                      (SELECT org.sync_key FROM edges e JOIN nodes org ON org.id = e.target_id
@@ -245,7 +243,6 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
             node_name: row.node_name,
             filename: row.filename,
             status: row.status,
-            description: row.description,
             remote_name: row.remote_name,
             remote_path: rp,
             current_remote_hash: row.current_remote_hash,

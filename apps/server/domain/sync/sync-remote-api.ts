@@ -128,17 +128,17 @@ export async function registerFileRecordRemote(
   const status = section === "outputs" ? "output" : "wip";
   const now = new Date().toISOString();
   const upsert = await db.execute({
-    sql: `INSERT INTO files (id, node_id, filename, status, description, mime_type,
+    sql: `INSERT INTO files (id, node_id, filename, status, mime_type,
                               remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
                               is_native_format, created_by, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?, ?)
           ON CONFLICT(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL
           DO UPDATE SET
             filename = excluded.filename,
             mime_type = excluded.mime_type,
             updated_at = excluded.updated_at
           RETURNING id`,
-    args: [ulid(), a.nodeId, filename, status, null, mt, remoteName, remotePath, a.userId, now, now],
+    args: [ulid(), a.nodeId, filename, status, mt, remoteName, remotePath, a.userId, now, now],
   });
   const fileId = upsert.rows[0].id as string;
 
@@ -188,17 +188,17 @@ export async function registerFileRecordsRemote(
 
   const upserts = await db.batch(
     parsed.map((p) => ({
-      sql: `INSERT INTO files (id, node_id, filename, status, description, mime_type,
+      sql: `INSERT INTO files (id, node_id, filename, status, mime_type,
                                 remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
                                 is_native_format, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?, ?)
             ON CONFLICT(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL
             DO UPDATE SET
               filename = excluded.filename,
               mime_type = excluded.mime_type,
               updated_at = excluded.updated_at
             RETURNING id`,
-      args: [ulid(), a.nodeId, p.filename, p.status, null, p.mt, remoteName, p.remotePath, a.userId, now, now],
+      args: [ulid(), a.nodeId, p.filename, p.status, p.mt, remoteName, p.remotePath, a.userId, now, now],
     })),
   );
 

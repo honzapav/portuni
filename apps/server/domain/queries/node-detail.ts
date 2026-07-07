@@ -95,7 +95,7 @@ export async function loadNodeDetail(
   }
 
   const fileRes = await db.execute({
-    sql: `SELECT id, filename, status, description, remote_path, mime_type
+    sql: `SELECT id, filename, status, remote_path, mime_type
           FROM files WHERE node_id = ? ORDER BY created_at DESC`,
     args: [row.id],
   });
@@ -122,7 +122,6 @@ export async function loadNodeDetail(
       id: f.id as string,
       filename: f.filename as string,
       status: f.status as string,
-      description: (f.description as string | null) ?? null,
       local_path: derivedLocal,
       relative_path,
       mime_type: (f.mime_type as string | null) ?? null,

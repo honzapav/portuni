@@ -161,7 +161,7 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
       //    from the per-device mirror + remote_path + sync_key; the column
       //    no longer exists on the files table.
       const fileResult = await db.execute({
-        sql: `SELECT id, filename, status, description, remote_path, mime_type
+        sql: `SELECT id, filename, status, remote_path, mime_type
               FROM files WHERE node_id = ? ORDER BY created_at DESC`,
         args: [row.id],
       });
@@ -185,7 +185,6 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
           id: f.id as string,
           filename: f.filename as string,
           status: f.status as string,
-          description: f.description as string | null,
           local_path: derivedLocal,
           mime_type: f.mime_type as string | null,
         };

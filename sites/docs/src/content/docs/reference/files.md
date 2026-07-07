@@ -64,7 +64,6 @@ instead.
 |-----------|------|----------|-------------|
 | `node_id` | string | yes | Node ID |
 | `local_path` | string | yes | Absolute path of the source file on this device |
-| `description` | string | no | File description |
 | `status` | enum | no | `wip` (default) or `output` |
 | `subpath` | string | no | Optional subfolder within the section |
 
@@ -134,7 +133,7 @@ scope set (empty scope returns an empty array) unless the mode is
 | `limit` | number | no | Max rows, newest first (default 500, max 2000) |
 
 Returns: Array of files, each with: `id`, `node_id`, `node_name`,
-`filename`, `status`, `description`, `remote_name`, `remote_path`,
+`filename`, `status`, `remote_name`, `remote_path`,
 `current_remote_hash`, `last_pushed_at`, `is_native_format`, the derived
 `local_path`, and `updated_at`.
 
