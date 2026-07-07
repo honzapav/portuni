@@ -1,4 +1,4 @@
-// Filesystem write-scope helpers (Phase B of the scope model spec).
+// Filesystem write-scope helpers (the write half of the scope model).
 //
 // PORTUNI_ROOT names the directory that contains every Portuni mirror on this
 // machine. Default: nearest common ancestor of every entry in local_mirrors.

@@ -1,4 +1,4 @@
-// Mirror-less, Drive-direct file content + lifecycle (Phase B, B1+B2+B3).
+// Mirror-less, Drive-direct file content + lifecycle for central mode.
 //
 // The local readFileContent/writeFileContent (file-content.ts) and the
 // engine-mutations lifecycle (createFile/renameFile/deleteFile) resolve a
