@@ -501,11 +501,16 @@ fn open_external(url: String) -> Result<(), String> {
 ///   /nodes/:id/mirror           — create mirror (local filesystem operation)
 ///   /nodes/:id/sync-status      — sync status (local sync DB)
 ///   /nodes/:id/sync             — sync run (local sync engine)
+///   /nodes/:id/file             — file content (GET/PUT); the agent serves a
+///                                 device mirror from disk so unsynced local
+///                                 files open in the editor, and falls back to
+///                                 central itself when there is no mirror or
+///                                 the file is pull-pending
 ///
-/// NOT local-only (served from the central server): file CONTENT
-/// (GET/PUT /nodes/:id/file) and the file lifecycle (POST /nodes/:id/files,
-/// POST /nodes/:id/files/:fileId/rename, DELETE /nodes/:id/files/:fileId) are
-/// adapter-direct on the server, so they forward in central mode.
+/// NOT local-only (served from the central server): the file lifecycle
+/// (POST /nodes/:id/files, POST /nodes/:id/files/:fileId/rename,
+/// DELETE /nodes/:id/files/:fileId) is adapter-direct on the server, so it
+/// forwards in central mode.
 /// /nodes/:id/folder-url and /nodes/:id/file-url also stay central (Drive URL
 /// lookups on the server). All graph, actor, responsibility, etc. routes are
 /// central.
@@ -520,11 +525,11 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
 
     // Node sub-paths that are local-only.
     // Matches: /nodes/<id>/mirror, /nodes/<id>/sync-status, /nodes/<id>/sync,
-    //          /nodes/<id>/sandbox-profile
+    //          /nodes/<id>/sandbox-profile, /nodes/<id>/file (content)
     //
-    // NOT matched (served centrally): /nodes/<id>/file (content),
-    // /nodes/<id>/files and /nodes/<id>/files/* (B3 lifecycle),
-    // /nodes/<id>/file-url, /nodes/<id>/folder-url.
+    // NOT matched (served centrally): /nodes/<id>/files and
+    // /nodes/<id>/files/* (B3 lifecycle), /nodes/<id>/file-url,
+    // /nodes/<id>/folder-url.
     if let Some(rest) = p.strip_prefix("/nodes/") {
         // rest = "<id>/<sub>" or "<id>/<sub>/..."
         if let Some(slash) = rest.find('/') {
@@ -533,6 +538,7 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
                 || sub == "sync-status"
                 || sub == "sync"
                 || sub == "sandbox-profile"
+                || sub == "file"
             {
                 return true;
             }
@@ -1913,10 +1919,12 @@ mod local_only_path_tests {
     }
 
     #[test]
-    fn node_file_content_is_central_phase_b() {
-        // File CONTENT (GET/PUT /nodes/:id/file) is served by the
-        // central server (Drive-direct), so it must NOT be gated local-only.
-        assert!(!is_local_only_path("/nodes/abc123/file"));
+    fn node_file_content_is_local_only() {
+        // File CONTENT (GET/PUT /nodes/:id/file) routes to the local sync
+        // agent so unsynced device-mirror files open in the editor; the agent
+        // falls back to central itself when there is no mirror.
+        assert!(is_local_only_path("/nodes/abc123/file"));
+        assert!(is_local_only_path("/nodes/abc123/file?path=wip%2Fa.md"));
     }
 
     #[test]
@@ -1984,10 +1992,10 @@ mod local_only_path_tests {
     #[test]
     fn query_string_stripped_before_matching() {
         assert!(is_local_only_path("/scope?cwd=/foo/bar"));
-        // file CONTENT is served centrally even with a query string.
-        assert!(!is_local_only_path("/nodes/abc/file?encoding=utf8"));
         assert!(is_local_only_path("/nodes/abc/sync-status?fast=1"));
         assert!(!is_local_only_path("/graph?filter=all"));
+        // file-url stays central even though it shares the /file prefix.
+        assert!(!is_local_only_path("/nodes/abc/file-url?file_id=xyz"));
     }
 }
 

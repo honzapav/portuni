@@ -70,15 +70,20 @@ and is reached by JWT instead of a bearer token.
 |  | Graph plane | File-bytes plane |
 |---|---|---|
 | **local mode** | sidecar -> Turso | sync engine -> Drive |
-| **central mode** | server -> Turso (shipped, the graph cutover) | server -> Drive (mirror-less, `file-content-remote.ts`) |
+| **central mode** | server -> Turso (shipped, the graph cutover) | sync agent -> device mirror; falls back to server -> Drive (mirror-less, `file-content-remote.ts`) |
 
 Central mode does **not** "drop Drive by design," and it no longer lacks file
 bytes: the central server reaches them through a **mirror-less, Drive-direct
 file-content service** (`file-content-remote.ts`) that resolves the Drive
 adapter from the remote's Service Account credential and reads/writes bytes
-without any local mirror. The file-content and lifecycle routes forward to the
-server for central clients; a `501 local_only` now means only that the **local
-sync agent is not running** (you are not signed in) — see below.
+without any local mirror. File **content** (`GET/PUT /nodes/:id/file`) routes
+to the **local sync agent first**: when the node has a device mirror the agent
+reads/writes the mirror file directly (so unsynced local files open in the
+editor — a registered-but-unpushed or untracked file does not exist on Drive
+yet), and the agent itself falls back to central when there is no mirror or
+the file is pull-pending. The file **lifecycle** routes forward to the server;
+a `501 local_only` now means only that the **local sync agent is not running**
+(you are not signed in) — see below.
 
 ### What `local_only` means in the UI
 
@@ -91,16 +96,19 @@ to `501 {error:"local_only", detail:"sync agent not running"}` in central mode
 ```
 /scope, /sandbox-profile
 /nodes/:id/mirror, /nodes/:id/sync-status, /nodes/:id/sync, /nodes/:id/sandbox-profile
+/nodes/:id/file
 ```
 
 So `local_only` now means exactly **"the local sync agent isn't up — sign
-in"**, not "this feature is unbuilt." File **content** and the file lifecycle
-are **not** on that list: `/nodes/:id/file` (GET/PUT), `POST /nodes/:id/files`,
-`.../files/:id/rename`, `DELETE .../files/:id`, plus `/nodes/:id/file-url` and
-`/nodes/:id/folder-url` all forward to the central server, which serves them
-mirror-less and Drive-direct (`file-content-remote.ts`). The old "available
-only in local mode" frontend string has been removed; the 501 is caught as
-`LocalOnlyError` (`apps/web/src/api.ts`) and now reads as "not signed in."
+in"**, not "this feature is unbuilt." `/nodes/:id/file` (GET/PUT) is on the
+list because the agent serves a device mirror from disk and proxies to central
+itself when there is no mirror. The file lifecycle is **not** on that list:
+`POST /nodes/:id/files`, `.../files/:id/rename`, `DELETE .../files/:id`, plus
+`/nodes/:id/file-url` and `/nodes/:id/folder-url` all forward to the central
+server, which serves them mirror-less and Drive-direct
+(`file-content-remote.ts`). The old "available only in local mode" frontend
+string has been removed; the 501 is caught as `LocalOnlyError`
+(`apps/web/src/api.ts`) and now reads as "not signed in."
 
 ### Agent-mode MCP: how terminals work in central mode
 

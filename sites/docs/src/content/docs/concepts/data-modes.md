@@ -32,15 +32,17 @@ project says "graph sync" it means the **Turso plane**.
   itself (the embedded sidecar), talks **directly to Turso**, and runs the
   **file sync engine** on your own machine (mirror folders ↔ Drive). Full power,
   full trust.
-- **Central mode** (a teammate). Every graph and file-content request goes to a
+- **Central mode** (a teammate). Every graph request goes to a
   shared server with a **Google login**, so the server can **enforce
   permissions** (groups, per-node visibility). The teammate never holds the raw
   database token or the Drive credentials. The desktop still runs its local
   sidecar — but as a **sync agent**, not as a graph server: it maintains local
-  mirror folders and a file watcher, and moves file bytes between those folders
-  and the central server using a per-device token. Everything is brokered
-  through the central server; nothing on the teammate's machine talks to Turso
-  or Drive directly.
+  mirror folders and a file watcher, moves file bytes between those folders
+  and the central server using a per-device token, and serves file content
+  from the device mirror when one exists (so a file you just created locally
+  opens in the editor before it has ever been pushed). When there is no
+  mirror, file content is brokered through the central server; nothing on the
+  teammate's machine talks to Turso or Drive directly.
 
 The central server is the **same Portuni backend**, just deployed centrally and
 reached with an identity instead of a shared secret. The key difference: it has
@@ -52,12 +54,16 @@ directly against the routed remote (Drive) on the teammate's behalf.
 |  | Graph plane | File-bytes plane |
 |---|---|---|
 | **Local mode** | sidecar → Turso | sync engine → Drive |
-| **Central mode** | central server → Turso | central server → Drive (adapter-direct); the local sync agent brokers mirror folders ↔ central server |
+| **Central mode** | central server → Turso | sync agent → device mirror, falling back to central server → Drive (adapter-direct); the agent also brokers mirror folders ↔ central server |
 
-Both cells of the central row are live. The central server has no mirror of its
-own, so it talks to the remote adapter directly: opening a file in central mode
-reads the bytes from Drive through the server, saving writes them back and
-refreshes the canonical hash in the graph so both planes stay consistent.
+Both cells of the central row are live. Opening a file in central mode reads
+the device mirror when the node has one — including files that exist only
+locally and have not been pushed yet — and otherwise reads the bytes from
+Drive through the server (which has no mirror of its own and talks to the
+remote adapter directly). Saving writes the mirror file when one exists (the
+sync engine pushes it later, exactly like local mode) or writes back through
+the server, which refreshes the canonical hash in the graph so both planes
+stay consistent.
 Optimistic concurrency works the same as locally — a stale base version is a
 conflict, not a silent overwrite.
 

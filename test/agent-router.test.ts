@@ -272,4 +272,97 @@ describe("agent router over HTTP", () => {
     assert.equal(body.node_id, NODE_ID);
     assert.equal(body.local_mirror, null);
   });
+
+  // File content over the local mirror: the editor/preview must open files
+  // that exist only on this device (registered or untracked, not yet pushed).
+  it("GET /nodes/:id/file serves an unsynced local file from the mirror", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await writeFile(join(mirrorRoot, "wip", "draft.md"), "# jen lokálně");
+
+    const res = await fetch(
+      `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/draft.md")}`,
+    );
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      content: string;
+      version: string;
+      filename: string;
+      local_path: string | null;
+    };
+    assert.equal(body.content, "# jen lokálně");
+    assert.equal(body.filename, "draft.md");
+    assert.equal(body.local_path, join(mirrorRoot, "wip", "draft.md"));
+    assert.equal(body.version, sha(Buffer.from("# jen lokálně")));
+  });
+
+  it("GET /nodes/:id/file falls back to central when the file is not on disk", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    // Pull-pending: registered on central with bytes, absent locally.
+    fake.bytes.set(posix.join(NODE_ROOT, "wip/remote.md"), Buffer.from("remote body"));
+
+    const res = await fetch(
+      `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/remote.md")}`,
+    );
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { content: string; local_path: string | null };
+    assert.equal(body.content, "remote body");
+    assert.equal(body.local_path, null);
+  });
+
+  it("GET /nodes/:id/file is 404 when the file exists nowhere", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const res = await fetch(
+      `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/missing.md")}`,
+    );
+    assert.equal(res.status, 404);
+  });
+
+  it("PUT /nodes/:id/file writes the local mirror and detects conflicts", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const abs = join(mirrorRoot, "wip", "edit.md");
+    await writeFile(abs, "v1");
+    const baseVersion = sha(Buffer.from("v1"));
+
+    const ok = await fetch(
+      `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/edit.md")}`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: "v2", baseVersion }),
+      },
+    );
+    assert.equal(ok.status, 200);
+    const okBody = (await ok.json()) as { version: string };
+    assert.equal(okBody.version, sha(Buffer.from("v2")));
+
+    // Stale baseVersion -> 409 CONFLICT with the current version.
+    const conflict = await fetch(
+      `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/edit.md")}`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: "v3", baseVersion }),
+      },
+    );
+    assert.equal(conflict.status, 409);
+    const cBody = (await conflict.json()) as { code: string; currentVersion: string };
+    assert.equal(cBody.code, "CONFLICT");
+    assert.equal(cBody.currentVersion, sha(Buffer.from("v2")));
+  });
+
+  it("PUT /nodes/:id/file forwards to central when no device mirror exists", async () => {
+    const res = await fetch(
+      `${base}/nodes/${NODE_ID}/file?path=${encodeURIComponent("wip/away.md")}`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: "central body" }),
+      },
+    );
+    assert.equal(res.status, 200);
+    assert.equal(
+      fake.bytes.get(posix.join(NODE_ROOT, "wip/away.md"))?.toString(),
+      "central body",
+    );
+  });
 });

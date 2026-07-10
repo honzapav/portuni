@@ -14,12 +14,19 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Client } from "@libsql/client";
+import { z } from "zod";
 import type { RequestIdentity } from "../auth/request-identity.js";
-import { respondError, respondJson } from "../http/middleware.js";
+import { parseJsonBody, respondError, respondJson } from "../http/middleware.js";
 import { handleHealth } from "./health.js";
 import { handleWriteScope } from "./write-scope.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 import { CentralHttpError } from "../domain/sync/central/client.js";
+import {
+  readFileContent,
+  writeFileContent,
+  FileContentError,
+  type FileContentErrorCode,
+} from "../domain/sync/file-content.js";
 import {
   computeSyncPendingCentral,
   createMirrorForNodeCentral,
@@ -36,6 +43,7 @@ import {
   resolveSandboxScopeForNode,
 } from "../domain/sandbox-profile.js";
 import type {
+  FileContentResponse,
   NodeMirrorResponse,
   SyncStatusResponse,
   UntrackedFile,
@@ -71,6 +79,69 @@ function respondCentral404(res: ServerResponse, err: unknown): boolean {
   }
   return false;
 }
+
+// --- File content over the device mirror -------------------------------
+//
+// GET/PUT /nodes/:id/file route HERE in central mode (Rust is_local_only_path)
+// so the editor/preview works on files that exist only on this device --
+// registered-but-unpushed or untracked mirror files are absent on the remote,
+// and the central Drive-direct read would 404 them. A node with a local
+// mirror reads/writes the mirror (same semantics as local mode: save is
+// local-only, sync pushes later); without a mirror -- or when the file is
+// pull-pending (registered remotely, not yet on disk) -- the call falls
+// through to central via the device token, preserving today's behaviour.
+
+// Status mapping for FileContentError, same table as api/files.ts.
+const AGENT_CODE_STATUS: Record<FileContentErrorCode, number> = {
+  NO_MIRROR: 409,
+  NO_REMOTE: 409,
+  NOT_FOUND: 404,
+  NOT_EDITABLE: 415,
+  CONFLICT: 409,
+  EXISTS: 409,
+  INVALID_PATH: 400,
+};
+
+function respondFileContentError(res: ServerResponse, err: unknown): boolean {
+  if (err instanceof FileContentError) {
+    const body: Record<string, unknown> = { error: err.message, code: err.code };
+    if (err.code === "CONFLICT" && err.currentVersion) {
+      body.currentVersion = err.currentVersion;
+    }
+    respondJson(res, AGENT_CODE_STATUS[err.code], body);
+    return true;
+  }
+  return false;
+}
+
+// Relay a central error verbatim (status + code + currentVersion) so the
+// webview sees the same shape the central text endpoint would produce.
+function respondCentralFileError(res: ServerResponse, err: unknown): boolean {
+  if (err instanceof CentralHttpError) {
+    const body: Record<string, unknown> = { error: err.message };
+    if (err.code) body.code = err.code;
+    if (err.currentVersion) body.currentVersion = err.currentVersion;
+    respondJson(res, err.status, body);
+    return true;
+  }
+  return false;
+}
+
+// Editable = text-ish; mirrors isEditableMime in file-content.ts (kept in
+// sync deliberately). Guards the central byte fallback, which is binary-safe
+// by design and would otherwise hand the text editor binary content.
+function agentIsEditableMime(mime: string | null): boolean {
+  if (mime === null) return true;
+  if (mime.startsWith("text/")) return true;
+  if (mime === "application/json") return true;
+  return false;
+}
+
+const agentPutFileSchema = z.object({
+  content: z.string(),
+  baseVersion: z.string().optional(),
+  force: z.boolean().optional(),
+});
 
 export type AgentRouteFn = (
   req: IncomingMessage,
@@ -195,6 +266,97 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
       } catch (err) {
         if (respondCentral404(res, err)) return true;
         respondError(res, `POST /nodes/${nodeId}/sync`, err);
+      }
+      return true;
+    }
+
+    const fileContentMatch = pathname.match(/^\/nodes\/([^/]+)\/file$/);
+    if (fileContentMatch && (method === "GET" || method === "PUT")) {
+      const nodeId = decodeURIComponent(fileContentMatch[1]);
+      const relPath = url.searchParams.get("path");
+      if (!relPath) {
+        respondJson(res, 400, { error: "path query param required" });
+        return true;
+      }
+      const mirror = await getLocalMirror(identity.userId, nodeId);
+
+      if (method === "GET") {
+        if (mirror) {
+          try {
+            const r = await readFileContent(NO_DB, {
+              userId: identity.userId,
+              nodeId,
+              relPath,
+            });
+            const payload: FileContentResponse = {
+              content: r.content,
+              version: r.version,
+              filename: r.filename,
+              mime_type: r.mime_type,
+              local_path: r.local_path,
+            };
+            respondJson(res, 200, payload);
+            return true;
+          } catch (err) {
+            // NOT_FOUND on disk = pull-pending file; try central below.
+            if (!(err instanceof FileContentError && err.code === "NOT_FOUND")) {
+              if (respondFileContentError(res, err)) return true;
+              respondError(res, `GET /nodes/${nodeId}/file`, err);
+              return true;
+            }
+          }
+        }
+        try {
+          const filename = relPath.split("/").pop() ?? relPath;
+          const mime = mimeFor(filename);
+          const raw = await client.getFileRaw(nodeId, relPath);
+          if (!agentIsEditableMime(mime) || raw.bytes.includes(0)) {
+            respondJson(res, 415, {
+              error: `file is not editable text: ${relPath}`,
+              code: "NOT_EDITABLE",
+            });
+            return true;
+          }
+          const payload: FileContentResponse = {
+            content: raw.bytes.toString("utf8"),
+            version: raw.version,
+            filename,
+            mime_type: mime,
+            local_path: null,
+          };
+          respondJson(res, 200, payload);
+        } catch (err) {
+          if (respondCentralFileError(res, err)) return true;
+          respondError(res, `GET /nodes/${nodeId}/file`, err);
+        }
+        return true;
+      }
+
+      // PUT
+      const body = await parseJsonBody(req, res, agentPutFileSchema);
+      if (!body) return true;
+      try {
+        if (mirror) {
+          const r = await writeFileContent(NO_DB, {
+            userId: identity.userId,
+            nodeId,
+            relPath,
+            content: body.content,
+            baseVersion: body.baseVersion,
+            force: body.force,
+          });
+          respondJson(res, 200, { version: r.version });
+          return true;
+        }
+        const r = await client.putFileRaw(nodeId, relPath, Buffer.from(body.content, "utf8"), {
+          baseVersion: body.baseVersion,
+          force: body.force,
+        });
+        respondJson(res, 200, { version: r.version });
+      } catch (err) {
+        if (respondFileContentError(res, err)) return true;
+        if (respondCentralFileError(res, err)) return true;
+        respondError(res, `PUT /nodes/${nodeId}/file`, err);
       }
       return true;
     }
