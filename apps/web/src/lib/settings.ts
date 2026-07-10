@@ -42,8 +42,12 @@ export const AGENT_PRESETS: AgentPreset[] = [
   {
     id: "opencode",
     label: "OpenCode",
-    command: "opencode run {prompt}",
-    hint: "OpenCode CLI, one-shot run with the prompt.",
+    // --prompt opens the interactive TUI with the prompt pre-filled.
+    // `opencode run {prompt}` is the headless one-shot mode: it streams the
+    // answer to stdout and exits, so no TUI ever appears — which reads as
+    // "opencode didn't open" when launched from a Portuni terminal.
+    command: "opencode --prompt {prompt}",
+    hint: "OpenCode CLI, interactive TUI with the prompt pre-filled.",
   },
   {
     id: "vibe",
@@ -67,6 +71,9 @@ const AGENT_COMMAND_MIGRATIONS: Record<string, string> = {
   // Vibe needs --trust so Portuni-spawned terminals load the per-mirror
   // ./.vibe/config.toml (scope auto-seed). Stored before that was added.
   "vibe {prompt}": "vibe --trust {prompt}",
+  // `opencode run` is headless one-shot (no TUI); the preset now opens the
+  // interactive TUI with the prompt pre-filled.
+  "opencode run {prompt}": "opencode --prompt {prompt}",
 };
 
 export function loadAgentCommand(): string {
