@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.0](https://github.com/honzapav/portuni/compare/v0.3.0...v0.4.0) (2026-07-10)
+
+
+### Features
+
+* **web:** enable terminals in central mode (drop stale Phase B gate) ([e2e494a](https://github.com/honzapav/portuni/commit/e2e494aebdbd323c53e8e775d526c39e9882fa49))
+
+
+### Bug Fixes
+
+* **sync:** agent-mode portuni_store copies in outside sources and routes by status ([6f9b77f](https://github.com/honzapav/portuni/commit/6f9b77f8b68bb9d7fd25845fbb61271fe0396ee4))
+* **sync:** serve file content from the device mirror in central mode ([5dada5d](https://github.com/honzapav/portuni/commit/5dada5dc00e34d602caea8be7e252b1fb29c2a04))
+* **web:** drop the 'fáze B' jargon from the local-only error message ([ac19009](https://github.com/honzapav/portuni/commit/ac1900920263696f2e68907a5f7bdff64177f5a1))
+* **web:** hydrate local_mirror in the node-detail poll too (central mode) ([ec7f89e](https://github.com/honzapav/portuni/commit/ec7f89efe5be6e3761a621a60b9240f466e3d0ae))
+* **web:** OpenCode preset opens the interactive TUI ([0e83f76](https://github.com/honzapav/portuni/commit/0e83f769ab73a6ff3618bc2ac61a1298c5976519))
+* **web:** overlay local_mirror in fetchNode itself (all detail paths) ([c7b7890](https://github.com/honzapav/portuni/commit/c7b7890b62671619d4b70f4d51128da896a9ffd2))
+
 ## [0.3.0](https://github.com/honzapav/portuni/compare/v0.2.0...v0.3.0) (2026-07-06)
 
 
