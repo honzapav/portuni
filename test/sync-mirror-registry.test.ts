@@ -9,6 +9,7 @@ import {
   unregisterMirror,
   listUserMirrors,
   tryCleanStaleMirrors,
+  onMirrorRegistryChange,
 } from "../apps/server/domain/sync/mirror-registry.js";
 import { createClient } from "@libsql/client";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
@@ -35,6 +36,39 @@ describe("mirror-registry basic", () => {
     assert.equal(await getMirrorPath("U1", "N1"), "/a");
     await unregisterMirror("U1", "N1");
     assert.equal(await getMirrorPath("U1", "N1"), null);
+  });
+});
+
+describe("mirror-registry change notifications", () => {
+  it("notifies subscribers on register and unregister; unsubscribe stops it", async () => {
+    let fired = 0;
+    const unsubscribe = onMirrorRegistryChange(() => {
+      fired += 1;
+    });
+    await registerMirror("U1", "N1", "/a");
+    assert.equal(fired, 1);
+    await unregisterMirror("U1", "N1");
+    assert.equal(fired, 2);
+    unsubscribe();
+    await registerMirror("U1", "N2", "/b");
+    assert.equal(fired, 2);
+  });
+
+  it("notifies once when stale cleanup removes mirrors, not when it removes none", async () => {
+    await registerMirror("U1", "N_exists", "/a");
+    await registerMirror("U1", "N_gone", "/b");
+    const shared = createClient({ url: ":memory:" });
+    await shared.execute("CREATE TABLE nodes (id TEXT PRIMARY KEY)");
+    await shared.execute("INSERT INTO nodes (id) VALUES ('N_exists')");
+    let fired = 0;
+    const unsubscribe = onMirrorRegistryChange(() => {
+      fired += 1;
+    });
+    await tryCleanStaleMirrors(shared, "U1");
+    assert.equal(fired, 1);
+    await tryCleanStaleMirrors(shared, "U1");
+    assert.equal(fired, 1);
+    unsubscribe();
   });
 });
 

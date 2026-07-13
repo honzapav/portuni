@@ -104,6 +104,30 @@ async function bindAndAnnounce(
   process.stdout.write(`PORTUNI_LISTENING_PORT=${address.port}\n`);
 }
 
+// Register anything on disk in one mirror that the central records don't
+// know yet: ONE batch registration per mirror, then cache local hashes so
+// fast status classifies the files push (same contract as the single-file
+// registration path). Used for the boot backfill sweep and, via the
+// watcher's backfillMirror seam, for mirrors registered while running.
+async function centralBackfillMirror(
+  client: CentralClient,
+  m: { node_id: string },
+): Promise<void> {
+  const untracked = await listUntrackedLocalCentral(client, {
+    userId: SOLO_USER,
+    nodeId: m.node_id,
+  });
+  if (untracked.length === 0) return;
+  const relPaths = untracked.map((u) => {
+    const sub = u.subpath ? `${u.subpath.normalize("NFC")}/` : "";
+    return `${u.section}/${sub}${u.filename.normalize("NFC")}`;
+  });
+  const regs = await client.registerFiles(m.node_id, relPaths);
+  for (let i = 0; i < regs.length; i += 1) {
+    await localHashFor(untracked[i].local_path, regs[i].id, null).catch(() => null);
+  }
+}
+
 // Central-mode sync agent (teammate mirrors): no Turso, no graph db. Serves
 // the local-only sync/mirror/scope routes backed by the central engine, runs
 // the mirror watcher with a central reconcile, and also serves MCP on /mcp
@@ -130,14 +154,16 @@ async function agentMain(client: CentralClient): Promise<void> {
   await bindAndAnnounce(handle);
   console.error("[boot] central-mode sync agent (no local graph db)");
 
-  // Watcher with the central reconcile; backfill is done here (the built-in
-  // backfill needs the local graph db the agent doesn't have).
+  // Watcher with the central reconcile; the boot backfill is done below (the
+  // built-in backfill needs the local graph db the agent doesn't have), and
+  // backfillMirror covers mirrors registered while running.
   let watcher: MirrorWatcher | null = null;
   if (process.env.PORTUNI_WATCH_MIRRORS !== "0") {
     watcher = createMirrorWatcher({
       userId: SOLO_USER,
       reconcile: (a) => reconcilePathCentral(client, a),
       backfill: false,
+      backfillMirror: (m) => centralBackfillMirror(client, m),
       onError: (e) => console.error("[portuni:watch]", e),
     });
     watcher
@@ -155,21 +181,7 @@ async function agentMain(client: CentralClient): Promise<void> {
       const mirrors = await listUserMirrors(SOLO_USER);
       await mapConcurrent(mirrors, 4, async (m) => {
         try {
-          const untracked = await listUntrackedLocalCentral(client, {
-            userId: SOLO_USER,
-            nodeId: m.node_id,
-          });
-          if (untracked.length === 0) return;
-          const relPaths = untracked.map((u) => {
-            const sub = u.subpath ? `${u.subpath.normalize("NFC")}/` : "";
-            return `${u.section}/${sub}${u.filename.normalize("NFC")}`;
-          });
-          const regs = await client.registerFiles(m.node_id, relPaths);
-          // Cache local hashes so fast status classifies them push (same
-          // contract as the single-file registration path).
-          for (let i = 0; i < regs.length; i += 1) {
-            await localHashFor(untracked[i].local_path, regs[i].id, null).catch(() => null);
-          }
+          await centralBackfillMirror(client, m);
         } catch (e) {
           console.error("[boot] central backfill failed for", m.node_id, e);
         }

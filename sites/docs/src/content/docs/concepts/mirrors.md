@@ -76,7 +76,8 @@ across devices and renames was actively misleading.
 File handling has two halves that are easy to conflate.
 
 **File-state metadata is kept current automatically.** A mirror watcher
-observes every mirror folder and reacts to each disk change: a new file in a
+observes every mirror folder — including mirrors registered while it is
+running, which it picks up immediately — and reacts to each disk change: a new file in a
 tracked section is registered in the local sync DB (local-only — no upload,
 no graph knowledge created), and edits and deletes are reconciled into the
 cached local hash. The result is that sync status in the UI is always
