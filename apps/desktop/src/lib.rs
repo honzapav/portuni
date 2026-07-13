@@ -518,8 +518,11 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
     // Strip query string for matching.
     let p = path.split('?').next().unwrap_or(path);
 
-    // Exact top-level paths.
-    if p == "/scope" || p == "/sandbox-profile" {
+    // Exact top-level paths. /sync/pending aggregates the DEVICE's mirrors
+    // (footer unsynced indicator + quit guard); the central server has none
+    // and would answer an empty aggregate. /sync/drive/* is NOT here: Drive
+    // remote config lives on the central server in central mode.
+    if p == "/scope" || p == "/sandbox-profile" || p == "/sync/pending" {
         return true;
     }
 
@@ -1954,6 +1957,22 @@ mod local_only_path_tests {
     #[test]
     fn node_sync_run_is_local_only() {
         assert!(is_local_only_path("/nodes/abc123/sync"));
+    }
+
+    #[test]
+    fn sync_pending_is_local_only() {
+        // The cross-mirror unsynced aggregate (footer indicator + quit
+        // guard) is device-local state: the central server has no mirrors
+        // and answers an empty aggregate, so this must hit the local agent.
+        assert!(is_local_only_path("/sync/pending"));
+    }
+
+    #[test]
+    fn sync_drive_stays_central() {
+        // Drive remote config lives on the central server in central mode
+        // (the agent has no Drive credentials) -- only /sync/pending is
+        // device-local, not the whole /sync/* namespace.
+        assert!(!is_local_only_path("/sync/drive/status"));
     }
 
     #[test]
