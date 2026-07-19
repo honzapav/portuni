@@ -86,6 +86,25 @@ freshly registered file simply shows as "needs push" until someone
 deliberately pushes it. The watcher runs by default in the desktop sidecar;
 on a standalone server it is opt-in via `PORTUNI_WATCH_MIRRORS=1`.
 
+The watcher also understands the two everyday shell operations:
+
+- **`mv` inside a mirror** is recognized by inode identity (the rename
+  keeps it on the same volume) and applied as a real move — one record,
+  remote rename with the Drive file ID preserved — instead of a
+  duplicate registration. A content-hash check guards the pairing; a
+  cross-volume move falls back to plain registration.
+- **`rm` of a file that was never pushed** unregisters it from Portuni
+  entirely (the record was metadata-only). Deleting a pushed file keeps
+  the record and the remote copy and shows as "deleted locally" for an
+  explicit decision.
+
+Deletions made elsewhere (web UI, MCP tool, another device) propagate
+back to every device through delete tombstones: an untracked disk copy
+that matches a tombstone — same path, same file identity, content
+byte-identical to the last synced state — is removed by the next sync
+run instead of being re-uploaded. A copy edited after the delete never
+matches and stays untracked; local data is never destroyed.
+
 **Moving bytes to the remote stays intentional.** Uploads happen the same way
 you'd make a git commit — on purpose, with meaning, via `portuni_store` or
 the app's Synchronize action. The watcher never pushes anything. The relevant
