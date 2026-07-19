@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, readdir, stat as fsStat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm, stat as fsStat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { Client } from "@libsql/client";
 import { ulid } from "ulid";
@@ -8,6 +8,7 @@ import { resolveRemote } from "./routing.js";
 import {
   upsertFileState,
   getFileState,
+  deleteFileState,
   getRemoteStat,
   upsertRemoteStat,
 } from "./local-db.js";
@@ -236,6 +237,8 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
     cached_local_hash: hash,
     cached_mtime: fsInfo.mtime,
     cached_size: fsInfo.size,
+    cached_ino: fsInfo.ino,
+    cached_dev: fsInfo.dev,
   });
 
   return {
@@ -385,6 +388,8 @@ export async function registerLocalFile(
     cached_local_hash: hash,
     cached_mtime: fsInfo.mtime,
     cached_size: fsInfo.size,
+    cached_ino: fsInfo.ino,
+    cached_dev: fsInfo.dev,
   });
 
   // Audit.
@@ -488,6 +493,8 @@ export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileRes
     cached_local_hash: hash,
     cached_mtime: fsInfo.mtime,
     cached_size: fsInfo.size,
+    cached_ino: fsInfo.ino,
+    cached_dev: fsInfo.dev,
   });
 
   await db.execute({
@@ -569,6 +576,19 @@ export interface MoveProposal {
   hash: string;
 }
 
+// An untracked disk file whose record was deliberately deleted elsewhere
+// (matched against a delete tombstone -- see matchDeleteTombstones). The
+// sync run removes the local copy and the orphaned file_state row instead
+// of adopting the file back.
+export interface DeletedRemoteEntry {
+  file_id: string;
+  node_id: string;
+  filename: string;
+  local_path: string;
+  remote_path: string;
+  hash: string;
+}
+
 export interface StatusResult {
   clean: StatusFileEntry[];
   push_candidates: StatusFileEntry[];
@@ -579,6 +599,7 @@ export interface StatusResult {
   new_local: NewLocalEntry[];
   new_remote: NewRemoteEntry[];
   deleted_local: StatusFileEntry[];
+  deleted_remote: DeletedRemoteEntry[];
   moved: MoveProposal[];
 }
 
@@ -628,6 +649,8 @@ export async function localHashFor(
     cached_local_hash: h,
     cached_mtime: now.mtime,
     cached_size: now.size,
+    cached_ino: now.ino,
+    cached_dev: now.dev,
   });
   return h;
 }
@@ -843,6 +866,7 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
     new_local: [],
     new_remote: [],
     deleted_local: [],
+    deleted_remote: [],
     moved: [],
   };
 
@@ -894,44 +918,135 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
 
   if (a.includeDiscovery !== false) {
     await runDiscovery(db, a, out);
-    await moveDetectionPhase(db, a, out);
+    const m = await matchDeleteTombstones(db, a.userId, out.new_local);
+    out.new_local = m.remaining;
+    out.deleted_remote = m.deleted_remote;
+    // NOTE: on-disk move detection lives in reconcile.ts (tryApplyDiskMove),
+    // keyed on inode identity at watcher registration time. The old
+    // moveDetectionPhase here paired deleted_local x new_local -- but with
+    // the watcher running, a moved file's new path is registered before any
+    // scan sees it as new_local, so the phase was dead code. The `moved`
+    // bucket stays in StatusResult for API compatibility (always empty).
   }
 
   return out;
 }
 
-async function moveDetectionPhase(
-  _db: Client,
-  _a: StatusArgs,
-  out: StatusResult,
-): Promise<void> {
-  if (out.deleted_local.length === 0 || out.new_local.length === 0) return;
-  // Queue per hash: several deleted files can share content (templates,
-  // empty files), and several new files can too. A single-slot map would
-  // drop all but the last deleted entry and propose moving the SAME
-  // file_id to every new location. Each candidate pairs exactly once.
-  const byHash = new Map<string, Array<{ file_id: string; old_local_path: string }>>();
-  for (const dl of out.deleted_local) {
-    if (dl.last_synced_hash && dl.local_path) {
-      if (!byHash.has(dl.last_synced_hash)) byHash.set(dl.last_synced_hash, []);
-      byHash.get(dl.last_synced_hash)!.push({
-        file_id: dl.file_id,
-        old_local_path: dl.local_path,
+// Tombstone reconciliation (GH #79): match untracked disk files against the
+// node's delete tombstones so a copy left behind on this device cannot
+// resurrect a deliberate deletion via adopt/store. Triple match -- the local
+// path derived from the tombstone's remote_path, a file_state row for the
+// tombstoned id on THIS device, and last_synced_hash equal to the current
+// disk hash -- makes the cleanup lossless by construction: any post-delete
+// edit fails the hash check and the file stays new_local.
+export async function matchDeleteTombstones<
+  T extends { node_id: string; local_path: string; filename: string; hash?: string },
+>(
+  db: Client,
+  userId: string,
+  entries: T[],
+): Promise<{ deleted_remote: DeletedRemoteEntry[]; remaining: T[] }> {
+  if (entries.length === 0) return { deleted_remote: [], remaining: entries };
+  const deleted: DeletedRemoteEntry[] = [];
+  const matchedPaths = new Set<string>();
+  const byNode = new Map<string, T[]>();
+  for (const e of entries) {
+    if (!byNode.has(e.node_id)) byNode.set(e.node_id, []);
+    byNode.get(e.node_id)!.push(e);
+  }
+  for (const [nodeId, nodeEntries] of byNode) {
+    const mirrorRoot = await getMirrorPath(userId, nodeId);
+    if (!mirrorRoot) continue;
+    let nodeRoot: string;
+    try {
+      nodeRoot = buildNodeRoot(await resolveNodeInfo(db, nodeId));
+    } catch {
+      continue;
+    }
+    const tombRes = await db.execute({
+      sql: `SELECT target_id, json_extract(detail, '$.remote_path') AS remote_path
+            FROM audit_log
+            WHERE target_type = 'file'
+              AND action IN ('sync_delete', 'sync_delete_remote')
+              AND json_extract(detail, '$.node_id') = ?
+            ORDER BY timestamp DESC LIMIT 200`,
+      args: [nodeId],
+    });
+    for (const t of tombRes.rows) {
+      const remotePath = t.remote_path as string | null;
+      if (!remotePath) continue;
+      let expectedLocal: string;
+      try {
+        expectedLocal = deriveLocalPath({ mirrorRoot, nodeRoot, remotePath }).normalize("NFC");
+      } catch {
+        continue;
+      }
+      const entry = nodeEntries.find(
+        (e) => e.local_path.normalize("NFC") === expectedLocal && !matchedPaths.has(e.local_path),
+      );
+      if (!entry) continue;
+      const st = await getFileState(t.target_id as string);
+      if (!st || st.last_synced_hash === null) continue;
+      const hash = await diskHashMatching(st.last_synced_hash, entry.local_path, entry.hash);
+      if (hash === null || hash !== st.last_synced_hash) continue;
+      matchedPaths.add(entry.local_path);
+      deleted.push({
+        file_id: t.target_id as string,
+        node_id: nodeId,
+        filename: entry.filename,
+        local_path: entry.local_path,
+        remote_path: remotePath,
+        hash,
       });
     }
   }
-  for (const nl of out.new_local) {
-    const queue = byHash.get(nl.hash);
-    const match = queue?.shift();
-    if (match) {
-      out.moved.push({
-        file_id: match.file_id,
-        old_local_path: match.old_local_path,
-        new_local_path: nl.local_path,
-        hash: nl.hash,
-      });
+  return {
+    deleted_remote: deleted,
+    remaining: entries.filter((e) => !matchedPaths.has(e.local_path)),
+  };
+}
+
+// Disk hash in the SAME algorithm as the reference hash: adapters report
+// different canonical hashes (Drive md5 = 32 hex, fs/sha256 = 64 hex), and a
+// cross-algorithm comparison would never match -- silently disabling the
+// tombstone cleanup on Drive-backed files. A precomputed sha256 (discovery
+// walk) is reused only when the reference is sha256 too. Exported for the
+// central engine's tombstone matcher.
+export async function diskHashMatching(
+  referenceHash: string,
+  localPath: string,
+  precomputedSha256?: string,
+): Promise<string | null> {
+  const useMd5 = referenceHash.length === 32;
+  if (!useMd5 && precomputedSha256 && precomputedSha256.length === 64) {
+    return precomputedSha256;
+  }
+  const content = await readFile(localPath).catch(() => null);
+  if (content === null) return null;
+  return useMd5 ? md5Buffer(content) : sha256Buffer(content);
+}
+
+// Apply the deleted_remote cleanup: remove the stale local copy and the
+// orphaned file_state row. Lossless by the matchDeleteTombstones contract --
+// only files byte-identical to their last synced state ever get here.
+export async function cleanupDeletedRemote(
+  entries: DeletedRemoteEntry[],
+): Promise<{
+  cleaned: DeletedRemoteEntry[];
+  errors: Array<{ file_id: string; filename: string; error: string }>;
+}> {
+  const cleaned: DeletedRemoteEntry[] = [];
+  const errors: Array<{ file_id: string; filename: string; error: string }> = [];
+  for (const e of entries) {
+    try {
+      await rm(e.local_path, { force: true });
+      await deleteFileState(e.file_id).catch(() => undefined);
+      cleaned.push(e);
+    } catch (err) {
+      errors.push({ file_id: e.file_id, filename: e.filename, error: String(err) });
     }
   }
+  return { cleaned, errors };
 }
 
 // discovery walks mirrors to find new_local files and lists adapters to find new_remote files.

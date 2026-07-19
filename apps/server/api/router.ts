@@ -58,6 +58,7 @@ import {
   handleRegisterFile,
   handleRegisterFilesBatch,
   handleRenameFile,
+  handleMoveFile,
   handleSyncInfoBatch,
 } from "./files.js";
 import {
@@ -416,6 +417,18 @@ async function routeFiles(
       identity,
       decodeURIComponent(renameMatch[1]),
       decodeURIComponent(renameMatch[2]),
+    );
+    return true;
+  }
+
+  const moveMatch = pathname.match(/^\/nodes\/([^/]+)\/files\/([^/]+)\/move$/);
+  if (moveMatch && method === "POST") {
+    await handleMoveFile(
+      req,
+      res,
+      identity,
+      decodeURIComponent(moveMatch[1]),
+      decodeURIComponent(moveMatch[2]),
     );
     return true;
   }

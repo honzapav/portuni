@@ -37,6 +37,8 @@ class FakeCentral implements CentralClient {
     { id: string; filename: string; status: string; is_native_format: boolean }
   >();
   bytes = new Map<string, Buffer>();
+  // Delete tombstones the server would derive from audit_log (GH #79).
+  deleted: Array<{ file_id: string; remote_path: string }> = [];
   nextId = 1;
   nodeName = "Stan GWS";
   nodeType = "project";
@@ -62,6 +64,7 @@ class FakeCentral implements CentralClient {
         is_native_format: r.is_native_format,
         mime_type: null,
       })),
+      deleted: this.deleted,
     };
   }
 
@@ -135,6 +138,47 @@ class FakeCentral implements CentralClient {
     }
     this.bytes.set(remotePath, Buffer.from(bytes));
     return { version: sha(bytes), canonicalHash: sha(bytes) };
+  }
+
+  moveCalls: Array<{ fileId: string; newRemotePath: string }> = [];
+  async moveFileRecord(
+    nodeId: string,
+    fileId: string,
+    body: {
+      new_section?: string;
+      new_subpath?: string | null;
+      new_filename?: string;
+      new_node_id?: string;
+      confirmed: boolean;
+    },
+  ): Promise<Record<string, unknown>> {
+    if (nodeId !== NODE_ID) throw new CentralHttpError("not found", 404, "NOT_FOUND");
+    const entry = [...this.records.entries()].find(([, r]) => r.id === fileId);
+    if (!entry) throw new CentralHttpError("not found", 404, "NOT_FOUND");
+    const [oldRemotePath, r] = entry;
+    const rel = [body.new_section, body.new_subpath, body.new_filename ?? r.filename]
+      .filter((x): x is string => typeof x === "string" && x.length > 0)
+      .join("/");
+    const newRemotePath = posix.join(NODE_ROOT, rel);
+    this.records.delete(oldRemotePath);
+    this.records.set(newRemotePath, { ...r, filename: body.new_filename ?? r.filename });
+    const bytes = this.bytes.get(oldRemotePath);
+    if (bytes) {
+      this.bytes.delete(oldRemotePath);
+      this.bytes.set(newRemotePath, bytes);
+    }
+    this.moveCalls.push({ fileId, newRemotePath });
+    return { status: "ok", file_id: fileId, new_remote_path: newRemotePath, moved_at: "now" };
+  }
+
+  async deleteFileRecord(nodeId: string, fileId: string): Promise<Record<string, unknown>> {
+    if (nodeId !== NODE_ID) throw new CentralHttpError("not found", 404, "NOT_FOUND");
+    const entry = [...this.records.entries()].find(([, r]) => r.id === fileId);
+    if (entry) {
+      this.records.delete(entry[0]);
+      this.bytes.delete(entry[0]);
+    }
+    return { status: "ok", file_id: fileId, mode: "complete", deleted_at: "now" };
   }
 
   async dataSources() {
@@ -268,6 +312,94 @@ describe("statusScanCentral", () => {
     const scan = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID, fast: true });
     assert.equal(scan.deleted_local.length, 1);
   });
+
+  it("watcher-observed mv of a pushed file pairs by inode and calls the central move", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const oldAbs = join(mirrorRoot, "wip", "a.md");
+    await writeFile(oldAbs, "obsah-mv");
+    await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+
+    const newAbs = join(mirrorRoot, "outputs", "b.md");
+    await mkdir(join(mirrorRoot, "outputs"), { recursive: true });
+    const { rename } = await import("node:fs/promises");
+    await rename(oldAbs, newAbs);
+    // Watcher fires both paths; order old -> new.
+    const r1 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: oldAbs });
+    const r2 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: newAbs });
+    assert.equal(r1.action, "deleted");
+    assert.equal(r2.action, "moved");
+    assert.equal(c.moveCalls.length, 1);
+    assert.match(c.moveCalls[0].newRemotePath, /outputs\/b\.md$/);
+    assert.equal(c.records.size, 1);
+  });
+
+  it("watcher-observed mv of a never-pushed file unregisters and re-registers (one record)", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const oldAbs = join(mirrorRoot, "wip", "a.md");
+    await writeFile(oldAbs, "lokalni-mv");
+    // Register only (watcher path), never push.
+    const reg = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: oldAbs });
+    assert.equal(reg.action, "registered");
+
+    const newAbs = join(mirrorRoot, "wip", "b.md");
+    const { rename } = await import("node:fs/promises");
+    await rename(oldAbs, newAbs);
+    const r1 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: newAbs });
+    const r2 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: oldAbs });
+    assert.equal(r1.action, "moved");
+    assert.equal(r2.action, "noop");
+    assert.equal(c.records.size, 1);
+    assert.equal([...c.records.values()][0].filename, "b.md");
+    assert.equal(c.bytes.size, 0); // nothing was ever uploaded
+  });
+
+  it("tombstoned local copy classifies deleted_remote and the sync run cleans it up", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "a.md");
+    await writeFile(abs, "v1");
+    await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+    // Deletion observed elsewhere: record gone, tombstone published, local
+    // copy + file_state left behind on this device.
+    const remotePath = posix.join(NODE_ROOT, "wip/a.md");
+    const fileId = c.records.get(remotePath)!.id;
+    c.records.delete(remotePath);
+    c.bytes.delete(remotePath);
+    c.deleted.push({ file_id: fileId, remote_path: remotePath });
+
+    const scan = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(scan.new_local.length, 0);
+    assert.equal(scan.deleted_remote.length, 1);
+    assert.equal(scan.deleted_remote[0].file_id, fileId);
+
+    const run = await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(run.deleted_remote.length, 1);
+    await assert.rejects(() => readFile(abs));
+    assert.equal(await getFileState(fileId), null);
+    // Nothing was adopted back -- the deletion stays deleted.
+    assert.equal(run.adopted.length, 0);
+  });
+
+  it("tombstoned copy modified after the delete stays new_local (adopted, not destroyed)", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "a.md");
+    await writeFile(abs, "v1");
+    await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+    const remotePath = posix.join(NODE_ROOT, "wip/a.md");
+    const fileId = c.records.get(remotePath)!.id;
+    c.records.delete(remotePath);
+    c.bytes.delete(remotePath);
+    c.deleted.push({ file_id: fileId, remote_path: remotePath });
+    await writeFile(abs, "upraveno po smazani");
+
+    const scan = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(scan.deleted_remote.length, 0);
+    assert.equal(scan.new_local.length, 1);
+    assert.equal(await readFile(abs, "utf8"), "upraveno po smazani");
+  });
 });
 
 describe("push/pull via syncRunCentral", () => {
@@ -342,10 +474,28 @@ describe("reconcilePathCentral", () => {
     assert.equal(r2.action, "rehashed");
 
     await rm(abs);
+    // Never pushed (registered only): deletion unregisters the record
+    // entirely -- one user action, one outcome.
     const r3 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: abs });
-    assert.equal(r3.action, "deleted");
-    const st = await getFileState(r3.file_id as string);
+    assert.equal(r3.action, "unregistered");
+    assert.equal(await getFileState(r3.file_id as string), null);
+    assert.equal(c.records.size, 0);
+  });
+
+  it("deletion of a PUSHED file keeps the record and clears the cache (deleted)", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "w.md");
+    await writeFile(abs, "v1");
+    await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+
+    await rm(abs);
+    const r = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: abs });
+    assert.equal(r.action, "deleted");
+    const st = await getFileState(r.file_id as string);
     assert.equal(st?.cached_local_hash, null);
+    assert.ok(st?.last_synced_hash);
+    assert.equal(c.records.size, 1); // remote copy + record intentionally kept
   });
 
   it("ignores paths outside tracked sections", async () => {

@@ -52,6 +52,9 @@ import {
   callLocalTool,
   enrichGetNodeResult,
   enrichGetContextResult,
+  isProxiedDiskMutation,
+  snapshotForDiskMutation,
+  applyLocalAfterProxiedMutation,
 } from "./agent-tools.js";
 import { readNodeFileFromMirror, formatNodeFileContent } from "../domain/read-node-file.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
@@ -131,6 +134,31 @@ function buildAgentServer(
         const message = err instanceof Error ? err.message : String(err);
         return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
       }
+    }
+    // Delete/move/rename proxy their record step to central, but the local
+    // disk step must run HERE -- central has no device mirrors, so without
+    // this the file survives on disk and a later scan resurrects it (GH #78).
+    // Snapshot before the proxy (afterwards the record is gone), apply after
+    // a successful result. Best-effort: a failure degrades to the tombstone
+    // reconciliation path instead of blocking the mutation.
+    if (isProxiedDiskMutation(name)) {
+      const snapshot = await snapshotForDiskMutation(
+        opts.client,
+        identity.userId,
+        name,
+        args,
+      ).catch(() => null);
+      const result = (await upstream.callTool({ name, arguments: args })) as {
+        content?: Array<{ type: string; text?: string }>;
+        isError?: boolean;
+      };
+      const text = result.content?.find((c) => c.type === "text")?.text;
+      if (snapshot && !result.isError && text) {
+        await applyLocalAfterProxiedMutation(opts.client, identity.userId, snapshot, text).catch(
+          (e) => console.error(`[portuni:agent] local disk step after ${name} failed:`, e),
+        );
+      }
+      return result;
     }
     // Graph reads proxy to central verbatim, but central has no device state,
     // so portuni_get_node comes back with local_mirror:null. Overlay the

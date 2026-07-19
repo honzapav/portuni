@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
@@ -12,9 +12,15 @@ import {
   callLocalTool,
   enrichGetNodeResult,
   enrichGetContextResult,
+  snapshotForDiskMutation,
+  applyLocalAfterProxiedMutation,
 } from "../apps/server/mcp/agent-tools.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
-import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import {
+  resetLocalDbForTests,
+  upsertFileState,
+  getFileState,
+} from "../apps/server/domain/sync/local-db.js";
 import type { NodeSyncInfo } from "../apps/server/domain/sync/sync-remote-api.js";
 
 const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
@@ -580,5 +586,152 @@ describe("enrichGetContextResult", () => {
     const result = { content: [{ type: "text", text: "boom" }], isError: true };
     const out = await enrichGetContextResult(fake, "U1", NODE_ID, result);
     assert.equal(out, result);
+  });
+});
+
+// GH #78: proxied disk mutations (delete/move/rename_folder) run their
+// remote/record step on central, whose local disk step no-ops (no mirror on
+// the server). The front door snapshots the affected record(s) before the
+// proxy and applies the disk step on this device after a successful result.
+describe("proxied disk mutations (GH #78)", () => {
+  it("applies the local rm + file_state cleanup after a confirmed delete", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "a.md");
+    await writeFile(abs, "obsah");
+    const fileId = fake.seedRemote("wip/a.md", "obsah");
+    await upsertFileState({
+      file_id: fileId,
+      last_synced_hash: sha(Buffer.from("obsah")),
+      cached_local_hash: sha(Buffer.from("obsah")),
+      cached_mtime: 1,
+      cached_size: 5,
+    });
+
+    const args = { file_id: fileId, confirmed: true };
+    const snapshot = await snapshotForDiskMutation(fake, "U1", "portuni_delete_file", args);
+    assert.ok(snapshot);
+    // Central applied the delete: record gone, success payload returned.
+    fake.records.delete(posix.join(NODE_ROOT, "wip/a.md"));
+    await applyLocalAfterProxiedMutation(
+      fake,
+      "U1",
+      snapshot!,
+      JSON.stringify({ file_id: fileId, mode: "complete", deleted_at: "now", status: "ok" }),
+    );
+    await assert.rejects(() => readFile(abs));
+    assert.equal(await getFileState(fileId), null);
+  });
+
+  it("does not snapshot an unconfirmed (preview) call", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    const fileId = fake.seedRemote("wip/a.md", "obsah");
+    const snapshot = await snapshotForDiskMutation(fake, "U1", "portuni_delete_file", {
+      file_id: fileId,
+    });
+    assert.equal(snapshot, null);
+  });
+
+  it("leaves the disk alone when the central result is not a success payload", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "a.md");
+    await writeFile(abs, "obsah");
+    const fileId = fake.seedRemote("wip/a.md", "obsah");
+    const snapshot = await snapshotForDiskMutation(fake, "U1", "portuni_delete_file", {
+      file_id: fileId,
+      confirmed: true,
+    });
+    await applyLocalAfterProxiedMutation(
+      fake,
+      "U1",
+      snapshot!,
+      JSON.stringify({ status: "repair_needed", detail: { phase: "remote" } }),
+    );
+    assert.equal((await readFile(abs, "utf8")), "obsah");
+  });
+
+  it("renames the local copy after a confirmed same-node move", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "a.md");
+    await writeFile(abs, "obsah");
+    const fileId = fake.seedRemote("wip/a.md", "obsah");
+
+    const args = { file_id: fileId, new_section: "outputs", confirmed: true };
+    const snapshot = await snapshotForDiskMutation(fake, "U1", "portuni_move_file", args);
+    assert.ok(snapshot);
+    // Central moved the record.
+    const newRemote = posix.join(NODE_ROOT, "outputs/a.md");
+    fake.records.delete(posix.join(NODE_ROOT, "wip/a.md"));
+    fake.records.set(newRemote, { id: fileId, filename: "a.md", status: "output", is_native_format: false });
+    await applyLocalAfterProxiedMutation(
+      fake,
+      "U1",
+      snapshot!,
+      JSON.stringify({
+        status: "ok",
+        file_id: fileId,
+        new_remote_name: "test-fs",
+        new_remote_path: newRemote,
+        new_local_path: null,
+        moved_at: "now",
+      }),
+    );
+    await assert.rejects(() => readFile(abs));
+    assert.equal(await readFile(join(mirrorRoot, "outputs", "a.md"), "utf8"), "obsah");
+  });
+
+  it("renames every affected local file after an applied rename_folder", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    await mkdir(join(mirrorRoot, "wip", "old"), { recursive: true });
+    const absA = join(mirrorRoot, "wip", "old", "a.md");
+    const absB = join(mirrorRoot, "wip", "old", "b.md");
+    await writeFile(absA, "A");
+    await writeFile(absB, "B");
+    fake.seedRemote("wip/old/a.md", "A");
+    fake.seedRemote("wip/old/b.md", "B");
+
+    // The real tool schema applies via dry_run: false (it has no confirmed
+    // param) -- the gate must key on that, not on a param the tool never
+    // sends.
+    const preview = await snapshotForDiskMutation(fake, "U1", "portuni_rename_folder", {
+      node_id: NODE_ID,
+      old_prefix: "wip/old",
+      new_prefix: "wip/new",
+    });
+    assert.equal(preview, null);
+    const args = { node_id: NODE_ID, old_prefix: "wip/old", new_prefix: "wip/new", dry_run: false };
+    const snapshot = await snapshotForDiskMutation(fake, "U1", "portuni_rename_folder", args);
+    assert.ok(snapshot);
+    await applyLocalAfterProxiedMutation(
+      fake,
+      "U1",
+      snapshot!,
+      JSON.stringify({
+        type: "applied",
+        renamed: 2,
+        failed: 0,
+        files: [
+          {
+            file_id: "F1",
+            status: "ok",
+            old_remote_path: posix.join(NODE_ROOT, "wip/old/a.md"),
+            new_remote_path: posix.join(NODE_ROOT, "wip/new/a.md"),
+          },
+          {
+            file_id: "F2",
+            status: "ok",
+            old_remote_path: posix.join(NODE_ROOT, "wip/old/b.md"),
+            new_remote_path: posix.join(NODE_ROOT, "wip/new/b.md"),
+          },
+        ],
+      }),
+    );
+    assert.equal(await readFile(join(mirrorRoot, "wip", "new", "a.md"), "utf8"), "A");
+    assert.equal(await readFile(join(mirrorRoot, "wip", "new", "b.md"), "utf8"), "B");
+    await assert.rejects(() => readFile(absA));
   });
 });

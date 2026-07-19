@@ -17,14 +17,20 @@ import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
 import type { CentralClient } from "./client.js";
 import { CentralHttpError } from "./client.js";
-import { localHashFor } from "../engine.js";
+import { localHashFor, cleanupDeletedRemote, diskHashMatching } from "../engine.js";
 import type {
   StatusResult,
   StatusFileEntry,
   NewLocalEntry,
   RegisterLocalFileResult,
+  DeletedRemoteEntry,
 } from "../engine.js";
-import { getFileState, upsertFileState } from "../local-db.js";
+import {
+  getFileState,
+  upsertFileState,
+  deleteFileState,
+  findFileStateByInode,
+} from "../local-db.js";
 import { getMirrorPath, listUserMirrors, registerMirror } from "../mirror-registry.js";
 import {
   buildNodeRoot,
@@ -253,6 +259,7 @@ async function statusScanForContext(
     new_local: [],
     new_remote: [],
     deleted_local: [],
+    deleted_remote: [],
     moved: [],
   };
   // Bounded fan-out: slow scans hash changed files (CPU+disk); fast scans
@@ -264,9 +271,59 @@ async function statusScanForContext(
     (out[r.bucket] as StatusFileEntry[]).push(r.entry);
   }
   if (a.includeDiscovery !== false) {
-    out.new_local = await untrackedForContext(ctx);
+    const m = await matchTombstonesForContext(ctx, await untrackedForContext(ctx));
+    out.new_local = m.remaining;
+    out.deleted_remote = m.deleted_remote;
   }
   return out;
+}
+
+// Tombstone reconciliation, central flavour (GH #79): sync-info already
+// carries the node's delete tombstones, so the match runs against ctx.si
+// instead of a local audit query. Same triple-match contract as the local
+// engine's matchDeleteTombstones -- path derived from the tombstone,
+// file_state row present on this device, disk hash equal to the last synced
+// hash -- so cleanup stays lossless by construction.
+async function matchTombstonesForContext(
+  ctx: NodeContext,
+  entries: NewLocalEntry[],
+): Promise<{ deleted_remote: DeletedRemoteEntry[]; remaining: NewLocalEntry[] }> {
+  const tombstones = ctx.si.deleted ?? [];
+  if (!ctx.mirrorRoot || entries.length === 0 || tombstones.length === 0) {
+    return { deleted_remote: [], remaining: entries };
+  }
+  const deleted: DeletedRemoteEntry[] = [];
+  const matchedPaths = new Set<string>();
+  for (const t of tombstones) {
+    let expectedLocal: string;
+    try {
+      expectedLocal = deriveLocalPath({
+        mirrorRoot: ctx.mirrorRoot,
+        nodeRoot: ctx.nodeRoot,
+        remotePath: t.remote_path,
+      }).normalize("NFC");
+    } catch {
+      continue;
+    }
+    const entry = entries.find(
+      (e) => e.local_path.normalize("NFC") === expectedLocal && !matchedPaths.has(e.local_path),
+    );
+    if (!entry) continue;
+    const st = await getFileState(t.file_id);
+    if (!st || st.last_synced_hash === null) continue;
+    const hash = await diskHashMatching(st.last_synced_hash, entry.local_path, entry.hash);
+    if (hash === null || hash !== st.last_synced_hash) continue;
+    matchedPaths.add(entry.local_path);
+    deleted.push({
+      file_id: t.file_id,
+      node_id: ctx.si.node.id,
+      filename: entry.filename,
+      local_path: entry.local_path,
+      remote_path: t.remote_path,
+      hash,
+    });
+  }
+  return { deleted_remote: deleted, remaining: entries.filter((e) => !matchedPaths.has(e.local_path)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +482,8 @@ async function pushEntryCentral(
     cached_local_hash: put.canonicalHash,
     cached_mtime: fsInfo.mtime,
     cached_size: fsInfo.size,
+    cached_ino: fsInfo.ino,
+    cached_dev: fsInfo.dev,
   });
 }
 
@@ -567,6 +626,8 @@ export async function storeFileCentral(
     cached_local_hash: put.canonicalHash,
     cached_mtime: fsInfo.mtime,
     cached_size: fsInfo.size,
+    cached_ino: fsInfo.ino,
+    cached_dev: fsInfo.dev,
   });
 
   return {
@@ -638,6 +699,8 @@ export async function pullFileCentral(
     cached_local_hash: cur.canonicalHash,
     cached_mtime: fsInfo.mtime,
     cached_size: fsInfo.size,
+    cached_ino: fsInfo.ino,
+    cached_dev: fsInfo.dev,
   });
   return { file_id: a.entry.file_id, local_path: localPath, hash: cur.canonicalHash };
 }
@@ -647,7 +710,7 @@ export async function pullFileCentral(
 // ---------------------------------------------------------------------------
 
 export type ReconcileCentralResult = {
-  action: "ignored" | "noop" | "registered" | "rehashed" | "deleted";
+  action: "ignored" | "noop" | "registered" | "rehashed" | "deleted" | "unregistered" | "moved";
   file_id?: string;
 };
 
@@ -697,6 +760,11 @@ export async function reconcilePathCentral(
 
   if (!rec) {
     if (!st.exists || !st.isFile) return { action: "noop" };
+    // On-disk mv pairing, central flavour (same contract as the local
+    // tryApplyDiskMove; candidates limited to this node's records --
+    // a cross-mirror mv falls back to plain registration).
+    const moved = await tryApplyDiskMoveCentral(client, ctx, a);
+    if (moved) return moved;
     const r = await registerLocalFileCentral(client, {
       userId: a.userId,
       nodeId: a.nodeId,
@@ -711,6 +779,16 @@ export async function reconcilePathCentral(
   }
 
   const existing = await getFileState(rec.id);
+  // Never pushed + deleted on disk: the record was metadata-only, remove it
+  // from Portuni entirely (one user action, one outcome) -- same rule as the
+  // local reconcile. The central DELETE is record-only for never-pushed.
+  const neverPushed =
+    rec.current_remote_hash === null && (existing?.last_synced_hash ?? null) === null;
+  if (neverPushed) {
+    await client.deleteFileRecord(a.nodeId, rec.id).catch(() => null);
+    await deleteFileState(rec.id).catch(() => undefined);
+    return { action: "unregistered", file_id: rec.id };
+  }
   await upsertFileState({
     file_id: rec.id,
     last_synced_hash: existing?.last_synced_hash ?? null,
@@ -718,8 +796,86 @@ export async function reconcilePathCentral(
     cached_local_hash: null,
     cached_mtime: null,
     cached_size: null,
+    // Keep the inode identity: an mv fires delete + create in arbitrary
+    // order, and the create-side move pairing needs it to survive.
+    cached_ino: existing?.cached_ino ?? null,
+    cached_dev: existing?.cached_dev ?? null,
   });
   return { action: "deleted", file_id: rec.id };
+}
+
+// Pair a to-be-registered path with a tracked record whose cached local copy
+// has the same inode identity -- an on-disk mv (same contract as the local
+// engine's tryApplyDiskMove: record still exists, old path gone, content
+// hash equal to the last known local hash). Applied via the central move
+// endpoint for pushed files (real adapter rename on the server, Drive file
+// ID preserved) or unregister+fresh-register for never-pushed ones.
+async function tryApplyDiskMoveCentral(
+  client: CentralClient,
+  ctx: NodeContext,
+  a: { userId: string; nodeId: string; absPath: string },
+): Promise<ReconcileCentralResult | null> {
+  if (!ctx.mirrorRoot) return null;
+  let st: { ino: number; dev: number };
+  try {
+    st = await fsStat(a.absPath);
+  } catch {
+    return null;
+  }
+  const candidates = await findFileStateByInode(st.ino, st.dev);
+  for (const c of candidates) {
+    const rec = ctx.si.files.find((f) => f.id === c.file_id);
+    if (!rec?.remote_path) continue;
+    const refHash = c.cached_local_hash ?? c.last_synced_hash;
+    if (!refHash) continue;
+    let oldLocal: string;
+    try {
+      oldLocal = deriveLocalPath({
+        mirrorRoot: ctx.mirrorRoot,
+        nodeRoot: ctx.nodeRoot,
+        remotePath: rec.remote_path,
+      });
+    } catch {
+      continue;
+    }
+    if (oldLocal.normalize("NFC") === a.absPath.normalize("NFC")) continue;
+    const oldStillThere = await fsStat(oldLocal).then(
+      () => true,
+      () => false,
+    );
+    if (oldStillThere) continue; // both paths exist: a copy, not a move
+    const content = await readFile(a.absPath).catch(() => null);
+    if (content === null) continue;
+    const diskHash = refHash.length === 32 ? md5Buffer(content) : sha256Buffer(content);
+    if (diskHash !== refHash) continue;
+
+    const sub = subpathFromMirror(ctx.mirrorRoot, a.absPath);
+    if (!sub) continue;
+    if (rec.current_remote_hash === null) {
+      await client.deleteFileRecord(a.nodeId, c.file_id).catch(() => null);
+      await deleteFileState(c.file_id).catch(() => undefined);
+      const r = await registerLocalFileCentral(client, {
+        userId: a.userId,
+        nodeId: a.nodeId,
+        localPath: a.absPath,
+      });
+      return { action: "moved", file_id: r.file_id };
+    }
+    const r = await client.moveFileRecord(a.nodeId, c.file_id, {
+      new_section: sub.section,
+      new_subpath: sub.subpath?.normalize("NFC") ?? null,
+      new_filename: sub.filename.normalize("NFC"),
+      confirmed: true,
+    });
+    if (r.status === "ok") {
+      client.invalidateSyncInfo(a.nodeId);
+      await localHashFor(a.absPath, c.file_id, null);
+      return { action: "moved", file_id: c.file_id };
+    }
+    // repair_needed on central: do not register a duplicate on top of it.
+    return { action: "noop", file_id: c.file_id };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -741,10 +897,20 @@ export async function syncRunCentral(
     adopted: [],
     conflicts: [],
     deleted_local: [],
+    deleted_remote: [],
     errors: [],
     skipped: [],
   };
   const mirrorRoot = ctx.mirrorRoot;
+
+  // Tombstoned copies are cleaned up, never adopted (statusScanForContext
+  // already kept them OUT of new_local, so the adopt block below cannot
+  // resurrect them).
+  const cleanup = await cleanupDeletedRemote(scan.deleted_remote);
+  for (const c of cleanup.cleaned) {
+    result.deleted_remote.push({ file_id: c.file_id, filename: c.filename });
+  }
+  result.errors.push(...cleanup.errors);
 
   await mapConcurrent(scan.push_candidates, SYNC_RUN_CONCURRENCY, async (e) => {
     if (!e.local_path || !mirrorRoot) {
@@ -888,7 +1054,9 @@ export async function computeSyncPendingCentral(
     if (!scan) return null;
     const push = scan.push_candidates.length;
     const conflict = scan.conflicts.length;
-    const untracked = scan.new_local.length;
+    // deleted_remote copies count as untracked pending work: the sync run
+    // resolves them (cleanup instead of adopt).
+    const untracked = scan.new_local.length + scan.deleted_remote.length;
     const orphan = scan.orphan.length;
     const deleted_local = scan.deleted_local.length;
     const total = push + conflict + untracked + orphan + deleted_local;

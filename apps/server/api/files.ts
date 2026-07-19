@@ -39,7 +39,7 @@ const FILE_BODY_MAX_BYTES = Number(
   process.env.PORTUNI_MAX_FILE_BODY_BYTES ?? 160 * 1024 * 1024,
 );
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
-import { renameFile, deleteFile } from "../domain/sync/engine-mutations.js";
+import { renameFile, deleteFile, moveFile } from "../domain/sync/engine-mutations.js";
 import { nodeVisibleTo } from "../auth/node-access.js";
 import type { FileContentResponse } from "../shared/api-types.js";
 
@@ -374,6 +374,47 @@ export async function handleCreateFile(
   } catch (err) {
     if (handleFileContentError(res, err)) return;
     respondError(res, `POST /nodes/${nodeId}/files`, err);
+  }
+}
+
+const moveSchema = z.object({
+  new_section: z.enum(["wip", "outputs", "resources"]).optional(),
+  new_subpath: z.string().nullable().optional(),
+  new_filename: z.string().min(1).optional(),
+  new_node_id: z.string().optional(),
+  confirmed: z.boolean().optional(),
+});
+
+// Record+remote move. On the central server getMirrorPath is null, so
+// moveFile's local disk step no-ops by design -- the device that owns the
+// mirror applies its own disk step (agent front door / watcher pairing).
+export async function handleMoveFile(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  nodeId: string,
+  fileId: string,
+): Promise<void> {
+  const body = await parseJsonBody(req, res, moveSchema);
+  if (!body) return;
+  try {
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    const r = await moveFile(db, {
+      userId: identity.userId,
+      fileId,
+      newSection: body.new_section,
+      newSubpath: body.new_subpath ?? null,
+      newFilename: body.new_filename,
+      newNodeId: body.new_node_id,
+      confirmed: body.confirmed,
+    });
+    respondJson(res, 200, r);
+  } catch (err) {
+    respondError(res, `POST /nodes/${nodeId}/files/${fileId}/move`, err);
   }
 }
 

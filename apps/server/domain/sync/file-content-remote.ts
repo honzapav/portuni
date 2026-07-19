@@ -693,7 +693,12 @@ export async function deleteFileRemote(
   if (remoteName && remotePath) {
     try {
       const adapter = await getAdapter(db, remoteName);
-      await adapter.delete(remotePath);
+      // A registered-but-never-pushed record has a routed remote_path with
+      // no object behind it -- deleting the nonexistent object would raise a
+      // bogus repair_needed. stat first; skip when nothing is there.
+      if ((await adapter.stat(remotePath)) !== null) {
+        await adapter.delete(remotePath);
+      }
     } catch (e) {
       // Remote delete failed: do NOT drop the DB row -- that would strand an
       // orphan on the remote with no Portuni record. Surface repair_needed.
@@ -715,6 +720,7 @@ export async function deleteFileRemote(
 
   await db.execute({ sql: "DELETE FROM files WHERE id = ?", args: [a.fileId] });
   await auditFile(db, a.userId, "sync_delete_remote", a.fileId, {
+    node_id: a.nodeId,
     remote_name: remoteName,
     remote_path: remotePath,
     filename,

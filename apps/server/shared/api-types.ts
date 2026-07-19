@@ -180,6 +180,9 @@ export type SyncRunResponse = {
   // on every sync makes the mirror impossible to clean up. Restore via
   // portuni_pull { file_id }, or remove via portuni_delete_file.
   deleted_local: SyncRunFile[];
+  // Local copies removed because their record was deliberately deleted
+  // elsewhere (tombstone match, byte-identical to the last synced state).
+  deleted_remote: SyncRunFile[];
   errors: SyncRunErrorFile[];
   skipped: SyncRunSkippedFile[];
 };

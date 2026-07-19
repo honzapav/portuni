@@ -48,7 +48,10 @@ export async function computeSyncPending(
     if (!scan) return null; // unscannable mirror — skip, don't break the overview
     const push = scan.push_candidates.length;
     const conflict = scan.conflicts.length;
-    const untracked = scan.new_local.length;
+    // deleted_remote copies count as untracked pending work: the sync run
+    // resolves them (cleanup instead of adopt), so they must keep the
+    // "something to sync" indicator alive.
+    const untracked = scan.new_local.length + scan.deleted_remote.length;
     const orphan = scan.orphan.length;
     const deleted_local = scan.deleted_local.length;
     const total = push + conflict + untracked + orphan + deleted_local;

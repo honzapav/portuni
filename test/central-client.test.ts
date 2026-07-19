@@ -202,39 +202,52 @@ describe("createHttpCentralClient", () => {
   });
 
   it("a hung request is aborted by the timeout and retried on a fresh call (GH #80)", async () => {
-    let attempts = 0;
-    const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
-      attempts += 1;
-      if (attempts === 1) {
-        // Simulate the zombie keep-alive slot: never settles on its own,
-        // rejects only when the timeout signal aborts it.
+    // AbortSignal.timeout timers are unref'd; a REF'd timer keeps the event
+    // loop alive until they fire (on Node 20 the loop otherwise drains and
+    // the runner reports a still-pending promise).
+    const keepAlive = setTimeout(() => undefined, 5_000);
+    try {
+      let attempts = 0;
+      const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+        attempts += 1;
+        if (attempts === 1) {
+          // Simulate the zombie keep-alive slot: never settles on its own,
+          // rejects only when the timeout signal aborts it.
+          return new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(new DOMException("aborted", "AbortError")),
+            );
+          });
+        }
+        return {
+          status: 201,
+          json: async () => ({ id: "F1", filename: "a.md", remote_name: "r", remote_path: "p" }),
+        } as Response;
+      }) as typeof fetch;
+      const c = createHttpCentralClient({ ...BASE, fetchImpl, requestTimeoutMs: 30 });
+      const r = await c.registerFile("N1", "wip/a.md");
+      assert.equal(r.id, "F1");
+      assert.equal(attempts, 2);
+    } finally {
+      clearTimeout(keepAlive);
+    }
+  });
+
+  it("two hung attempts surface as a rejection, not a silent hang", async () => {
+    const keepAlive = setTimeout(() => undefined, 5_000);
+    try {
+      const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
         return new Promise<Response>((_, reject) => {
           init?.signal?.addEventListener("abort", () =>
             reject(new DOMException("aborted", "AbortError")),
           );
         });
-      }
-      return {
-        status: 201,
-        json: async () => ({ id: "F1", filename: "a.md", remote_name: "r", remote_path: "p" }),
-      } as Response;
-    }) as typeof fetch;
-    const c = createHttpCentralClient({ ...BASE, fetchImpl, requestTimeoutMs: 30 });
-    const r = await c.registerFile("N1", "wip/a.md");
-    assert.equal(r.id, "F1");
-    assert.equal(attempts, 2);
-  });
-
-  it("two hung attempts surface as a rejection, not a silent hang", async () => {
-    const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
-      return new Promise<Response>((_, reject) => {
-        init?.signal?.addEventListener("abort", () =>
-          reject(new DOMException("aborted", "AbortError")),
-        );
-      });
-    }) as typeof fetch;
-    const c = createHttpCentralClient({ ...BASE, fetchImpl, requestTimeoutMs: 20 });
-    await assert.rejects(() => c.registerFile("N1", "wip/a.md"));
+      }) as typeof fetch;
+      const c = createHttpCentralClient({ ...BASE, fetchImpl, requestTimeoutMs: 20 });
+      await assert.rejects(() => c.registerFile("N1", "wip/a.md"));
+    } finally {
+      clearTimeout(keepAlive);
+    }
   });
 
   it("nodeExists maps 200/404 and throws on other statuses", async () => {
