@@ -125,6 +125,7 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (/^\/nodes\/[^/]+\/files\/register-batch$/.test(pathname) && m === "POST") return "write";
   if (/^\/nodes\/[^/]+\/files$/.test(pathname) && m === "POST") return "write";
   if (/^\/nodes\/[^/]+\/files\/[^/]+\/rename$/.test(pathname) && m === "POST") return "write";
+  if (/^\/nodes\/[^/]+\/files\/[^/]+\/move$/.test(pathname) && m === "POST") return "write";
   if (/^\/nodes\/[^/]+\/files\/[^/]+$/.test(pathname) && m === "DELETE") return "admin";
 
   // --- Sync/mirror triggers ---

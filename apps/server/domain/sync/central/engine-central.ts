@@ -25,7 +25,12 @@ import type {
   RegisterLocalFileResult,
   DeletedRemoteEntry,
 } from "../engine.js";
-import { getFileState, upsertFileState } from "../local-db.js";
+import {
+  getFileState,
+  upsertFileState,
+  deleteFileState,
+  findFileStateByInode,
+} from "../local-db.js";
 import { getMirrorPath, listUserMirrors, registerMirror } from "../mirror-registry.js";
 import {
   buildNodeRoot,
@@ -708,7 +713,7 @@ export async function pullFileCentral(
 // ---------------------------------------------------------------------------
 
 export type ReconcileCentralResult = {
-  action: "ignored" | "noop" | "registered" | "rehashed" | "deleted";
+  action: "ignored" | "noop" | "registered" | "rehashed" | "deleted" | "unregistered" | "moved";
   file_id?: string;
 };
 
@@ -758,6 +763,11 @@ export async function reconcilePathCentral(
 
   if (!rec) {
     if (!st.exists || !st.isFile) return { action: "noop" };
+    // On-disk mv pairing, central flavour (same contract as the local
+    // tryApplyDiskMove; candidates limited to this node's records --
+    // a cross-mirror mv falls back to plain registration).
+    const moved = await tryApplyDiskMoveCentral(client, ctx, a);
+    if (moved) return moved;
     const r = await registerLocalFileCentral(client, {
       userId: a.userId,
       nodeId: a.nodeId,
@@ -772,6 +782,16 @@ export async function reconcilePathCentral(
   }
 
   const existing = await getFileState(rec.id);
+  // Never pushed + deleted on disk: the record was metadata-only, remove it
+  // from Portuni entirely (one user action, one outcome) -- same rule as the
+  // local reconcile. The central DELETE is record-only for never-pushed.
+  const neverPushed =
+    rec.current_remote_hash === null && (existing?.last_synced_hash ?? null) === null;
+  if (neverPushed) {
+    await client.deleteFileRecord(a.nodeId, rec.id).catch(() => null);
+    await deleteFileState(rec.id).catch(() => undefined);
+    return { action: "unregistered", file_id: rec.id };
+  }
   await upsertFileState({
     file_id: rec.id,
     last_synced_hash: existing?.last_synced_hash ?? null,
@@ -785,6 +805,80 @@ export async function reconcilePathCentral(
     cached_dev: existing?.cached_dev ?? null,
   });
   return { action: "deleted", file_id: rec.id };
+}
+
+// Pair a to-be-registered path with a tracked record whose cached local copy
+// has the same inode identity -- an on-disk mv (same contract as the local
+// engine's tryApplyDiskMove: record still exists, old path gone, content
+// hash equal to the last known local hash). Applied via the central move
+// endpoint for pushed files (real adapter rename on the server, Drive file
+// ID preserved) or unregister+fresh-register for never-pushed ones.
+async function tryApplyDiskMoveCentral(
+  client: CentralClient,
+  ctx: NodeContext,
+  a: { userId: string; nodeId: string; absPath: string },
+): Promise<ReconcileCentralResult | null> {
+  if (!ctx.mirrorRoot) return null;
+  let st: { ino: number; dev: number };
+  try {
+    st = await fsStat(a.absPath);
+  } catch {
+    return null;
+  }
+  const candidates = await findFileStateByInode(st.ino, st.dev);
+  for (const c of candidates) {
+    const rec = ctx.si.files.find((f) => f.id === c.file_id);
+    if (!rec || !rec.remote_path) continue;
+    const refHash = c.cached_local_hash ?? c.last_synced_hash;
+    if (!refHash) continue;
+    let oldLocal: string;
+    try {
+      oldLocal = deriveLocalPath({
+        mirrorRoot: ctx.mirrorRoot,
+        nodeRoot: ctx.nodeRoot,
+        remotePath: rec.remote_path,
+      });
+    } catch {
+      continue;
+    }
+    if (oldLocal.normalize("NFC") === a.absPath.normalize("NFC")) continue;
+    const oldStillThere = await fsStat(oldLocal).then(
+      () => true,
+      () => false,
+    );
+    if (oldStillThere) continue; // both paths exist: a copy, not a move
+    const content = await readFile(a.absPath).catch(() => null);
+    if (content === null) continue;
+    const diskHash = refHash.length === 32 ? md5Buffer(content) : sha256Buffer(content);
+    if (diskHash !== refHash) continue;
+
+    const sub = subpathFromMirror(ctx.mirrorRoot, a.absPath);
+    if (!sub) continue;
+    if (rec.current_remote_hash === null) {
+      await client.deleteFileRecord(a.nodeId, c.file_id).catch(() => null);
+      await deleteFileState(c.file_id).catch(() => undefined);
+      const r = await registerLocalFileCentral(client, {
+        userId: a.userId,
+        nodeId: a.nodeId,
+        localPath: a.absPath,
+      });
+      return { action: "moved", file_id: r.file_id };
+    }
+    const r = await client.moveFileRecord(a.nodeId, c.file_id, {
+      new_section: sub.section,
+      new_subpath: sub.subpath?.normalize("NFC") ?? null,
+      new_filename: sub.filename.normalize("NFC"),
+      confirmed: true,
+    });
+    if (r.status === "ok") {
+      client.invalidateSyncInfo(a.nodeId);
+      await localHashFor(a.absPath, c.file_id, null);
+      return { action: "moved", file_id: c.file_id };
+    }
+    // repair_needed on central: do not register a duplicate on top of it.
+    return { action: "noop", file_id: c.file_id };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

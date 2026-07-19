@@ -49,6 +49,22 @@ export interface CentralClient {
     bytes: Buffer,
     opts?: PutFileOpts,
   ): Promise<{ version: string; canonicalHash: string }>;
+  // Record+remote move on central (POST /nodes/:id/files/:id/move). The
+  // caller owns the local disk side; central's own local step no-ops.
+  moveFileRecord(
+    nodeId: string,
+    fileId: string,
+    body: {
+      new_section?: string;
+      new_subpath?: string | null;
+      new_filename?: string;
+      new_node_id?: string;
+      confirmed: boolean;
+    },
+  ): Promise<Record<string, unknown>>;
+  // Confirmed record delete on central (DELETE /nodes/:id/files/:id). For a
+  // never-pushed record this is record-only (no remote object exists).
+  deleteFileRecord(nodeId: string, fileId: string): Promise<Record<string, unknown>>;
   dataSources(nodeId: string): Promise<DataSourceRow[]>;
   nodeExists(nodeId: string): Promise<boolean>;
   // Depth-1 neighbour ids from central node-detail. Used to compute the
@@ -240,6 +256,23 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       if (r.status !== 200) throwFor(r.status, p, r.json);
       const j = r.json as { version: string; canonical_hash: string };
       return { version: j.version, canonicalHash: j.canonical_hash };
+    },
+
+    async moveFileRecord(nodeId, fileId, body) {
+      const p = `/nodes/${encodeURIComponent(nodeId)}/files/${encodeURIComponent(fileId)}/move`;
+      const r = await request("POST", p, body);
+      invalidate(nodeId);
+      if (body.new_node_id) invalidate(body.new_node_id);
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      return r.json as Record<string, unknown>;
+    },
+
+    async deleteFileRecord(nodeId, fileId) {
+      const p = `/nodes/${encodeURIComponent(nodeId)}/files/${encodeURIComponent(fileId)}?confirmed=true`;
+      const r = await request("DELETE", p);
+      invalidate(nodeId);
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      return r.json as Record<string, unknown>;
     },
 
     async dataSources(nodeId) {
