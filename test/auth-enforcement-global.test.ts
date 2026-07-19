@@ -98,6 +98,18 @@ describe("minScopeForRoute", () => {
     assert.equal(minScopeForRoute("POST", "/auth/login"), "read");
   });
 
+  // Locks the min-scopes.ts entry added alongside GET /auth/desktop-config.
+  // Without it, the route falls through to the fail-closed "admin" default
+  // (see the "maps unknown route" test below) and the google-mode
+  // AUTH_PUBLIC_PATHS placeholder identity -- which carries "read" -- would
+  // be 403'd by routeApiRequest's scope gate before ever reaching the
+  // handler, silently breaking the endpoint in its actual target mode
+  // (env-mode tests can't catch this: the solo identity there is always
+  // "admin", so admin >= admin passes regardless of this line).
+  it("maps GET /auth/desktop-config -> read", () => {
+    assert.equal(minScopeForRoute("GET", "/auth/desktop-config"), "read");
+  });
+
   it("maps DELETE /actors/:id -> admin", () => {
     assert.equal(minScopeForRoute("DELETE", "/actors/01XYZ"), "admin");
   });
