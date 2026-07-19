@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.5.0](https://github.com/honzapav/portuni/compare/v0.4.0...v0.5.0) (2026-07-19)
+
+
+### Features
+
+* **sync:** expose per-node delete tombstones in sync-info ([fb3a00e](https://github.com/honzapav/portuni/commit/fb3a00e53029399934b4412368af856a9728f661))
+* **sync:** propagate on-disk moves and deletions in central mode ([0b4b768](https://github.com/honzapav/portuni/commit/0b4b7683acad46fefb4d754ebf5a00240c7f2db5))
+* **sync:** tombstone reconciliation stops deleted files resurrecting (GH [#79](https://github.com/honzapav/portuni/issues/79)) ([1ef3f09](https://github.com/honzapav/portuni/commit/1ef3f090f6ae90e313d66051dd211838ac4f0881))
+
+
+### Bug Fixes
+
+* **desktop:** route /sync/pending to the local sync agent in central mode ([8e6a176](https://github.com/honzapav/portuni/commit/8e6a17669df2882a04b8b3c02c7ff00e70a503cc))
+* **desktop:** ship portuni-guard.sh in the app bundle so tier-3 hooks materialize ([e7bf132](https://github.com/honzapav/portuni/commit/e7bf1321c77ee3f945951549d47e324cd8baa205))
+* **scope:** point the soft hint at real neighbour paths, not retired staging ([f95b04b](https://github.com/honzapav/portuni/commit/f95b04b368141dedf174c2b292c922beb5afc81c))
+* **sync:** apply the local disk step after proxied delete/move/rename in agent mode ([46003bc](https://github.com/honzapav/portuni/commit/46003bcbfdaf119de06f3e0a7f1a0c7dfd0bbe83)), closes [#78](https://github.com/honzapav/portuni/issues/78)
+* **sync:** complete delete/move/rename propagation between disk and record ([c1c3473](https://github.com/honzapav/portuni/commit/c1c3473f56014168e2092e6c0bf911ee4ceff878))
+* **sync:** detect on-disk moves by inode in the watcher instead of the dead move phase ([8aef4c1](https://github.com/honzapav/portuni/commit/8aef4c1c9af70c1c302e775ada16b8ecd3ee5c6c))
+* **sync:** keep the event loop alive in hung-request timeout tests ([b6f50be](https://github.com/honzapav/portuni/commit/b6f50bec4f0d4a163026a93484aa0e399bb04b5c))
+* **sync:** review fixes — hash-algorithm-aware tombstone match, rename_folder gate, UI cleanup line ([f20ad78](https://github.com/honzapav/portuni/commit/f20ad784b31deb75ef99c418b76ab027928f8de5))
+* **sync:** stop losing watcher registrations on hung central requests ([15b1088](https://github.com/honzapav/portuni/commit/15b10881976ab9487c1c0d7e3aa4b6780ab22580)), closes [#80](https://github.com/honzapav/portuni/issues/80)
+* **sync:** watch and backfill mirrors registered after the watcher starts ([17b5610](https://github.com/honzapav/portuni/commit/17b561031b7d0f5294dbc3e980ea685d778aedc9))
+* **web:** float the file-changed banner over the editor so it cannot be missed ([2de2eb8](https://github.com/honzapav/portuni/commit/2de2eb8fa6a21c3663c302a061ceace6004cca6a))
+
 ## [0.4.0](https://github.com/honzapav/portuni/compare/v0.3.0...v0.4.0) (2026-07-10)
 
 
