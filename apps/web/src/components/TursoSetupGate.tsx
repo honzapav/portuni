@@ -1,9 +1,11 @@
 // First-run gate. Two cases it handles:
 //
 // 1. Fresh install (no config.json) — shows an onboarding wizard with two
-//    paths: connect to an existing Turso org, or start locally. Without
-//    this, the sidecar silently falls back to a local SQLite DB and the
-//    user has no idea why they aren't seeing their team's graph.
+//    paths: join the org's central server (enter its URL; Google login
+//    follows after reload), or start locally. Without this, the sidecar
+//    silently falls back to a local SQLite DB and the user has no idea
+//    why they aren't seeing their team's graph. (The Turso path is
+//    config.json-only now, set during owner setup.)
 //
 // 2. Remote configured but no token (config.json has libsql:// turso_url
 //    but Keychain entry is missing) — shows the original token modal.
@@ -93,28 +95,19 @@ export default function TursoSetupGate({ children }: Props) {
     }
   }
 
-  async function handleConnectOrg() {
-    const trimmedUrl = urlInput.trim();
-    const trimmedToken = token.trim();
-    if (!trimmedUrl) {
-      setError("Turso URL nesmí být prázdné.");
-      return;
-    }
-    if (!trimmedUrl.startsWith("libsql://")) {
-      setError("URL musí začínat libsql://");
-      return;
-    }
-    if (!trimmedToken) {
-      setError("Auth token nesmí být prázdný.");
+  async function handleJoinTeam() {
+    const trimmed = urlInput.trim();
+    if (!trimmed) {
+      setError("Adresa serveru nesmí být prázdná.");
       return;
     }
     setSaving(true);
     setError(null);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("save_config", { tursoUrl: trimmedUrl });
-      await invoke("set_turso_token", { token: trimmedToken });
-      await invoke("restart_sidecar");
+      await invoke("setup_central", { serverUrl: trimmed });
+      // Reload: CentralLoginGate now sees data_mode=central + configured
+      // and takes over with the Google login screen.
       window.location.reload();
     } catch (e) {
       setError(String(e));
@@ -157,31 +150,25 @@ export default function TursoSetupGate({ children }: Props) {
           <div className="flex flex-col gap-4 px-5 py-4">
             <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
               <div className="text-[13px] font-medium text-[var(--color-text)]">
-                Připojit se k existující organizaci
+                Připojit se k týmu
               </div>
               <div className="mt-1 text-[12px] text-[var(--color-text-dim)]">
-                Sdílený graf na Turso — pro tým, kde už někdo Portuni má.
+                Tvoje organizace už provozuje Portuni server. Zadej jeho adresu
+                – přihlásíš se pak svým Google účtem.
               </div>
               <div className="mt-3 flex flex-col gap-2">
                 <input
                   type="text"
                   value={urlInput}
                   onChange={(e) => setUrlInput(e.target.value)}
-                  placeholder="libsql://your-db.turso.io"
+                  placeholder="api.tvoje-firma.com"
                   spellCheck={false}
+                  autoFocus
                   className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[12px] text-[var(--color-text)] outline-none focus:border-[var(--color-text-dim)]"
-                />
-                <textarea
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  placeholder="Auth token (eyJhbGciOiJFZERTQSIs...)"
-                  spellCheck={false}
-                  rows={3}
-                  className="w-full resize-y rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[12px] text-[var(--color-text)] outline-none focus:border-[var(--color-text-dim)]"
                 />
                 <button
                   disabled={saving}
-                  onClick={() => void handleConnectOrg()}
+                  onClick={() => void handleJoinTeam()}
                   className="self-end rounded bg-[var(--color-text)] px-4 py-1.5 text-[13px] font-medium text-[var(--color-bg)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {saving ? "Připojuji…" : "Připojit"}
