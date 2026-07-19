@@ -20,11 +20,15 @@ export function md5Buffer(b: Buffer): string {
 export interface StatForCache {
   mtime: number;
   size: number;
+  // Inode identity: rename(2) preserves it on the same volume, so the
+  // watcher pairs an on-disk mv with the tracked record it left behind.
+  ino: number;
+  dev: number;
 }
 
 export async function statForCache(path: string): Promise<StatForCache> {
   const s = await fs.stat(path);
-  return { mtime: s.mtimeMs, size: s.size };
+  return { mtime: s.mtimeMs, size: s.size, ino: s.ino, dev: s.dev };
 }
 
 function streamHash(path: string, algo: "sha256" | "md5"): Promise<string> {

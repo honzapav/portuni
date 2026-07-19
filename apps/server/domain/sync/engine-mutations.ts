@@ -42,6 +42,9 @@ export interface MoveFileArgs {
   newSubpath?: string | null;
   newSection?: Section;
   newNodeId?: string;
+  // Rename as part of the move (one adapter.rename covers both). Used by the
+  // watcher's on-disk mv detection, where the new path may carry a new name.
+  newFilename?: string;
   confirmed?: boolean;
 }
 
@@ -105,7 +108,7 @@ export async function moveFile(
   const newInfo = await resolveNodeInfo(db, targetNodeId);
   const newRemoteName = await resolveRemote(db, newInfo.nodeType, newInfo.orgSyncKey);
   if (!newRemoteName) throw new Error(`No remote for target node`);
-  const filename = fr.filename as string;
+  const filename = (a.newFilename ?? (fr.filename as string)).normalize("NFC");
   const newRemotePath = buildRemotePath({
     ...newInfo,
     section: a.newSection ?? inferSectionFromPath(oldRemotePath),
@@ -220,8 +223,8 @@ export async function moveFile(
       } else {
         const now = new Date().toISOString();
         await db.execute({
-          sql: `UPDATE files SET remote_name = ?, remote_path = ?, node_id = ?, updated_at = ? WHERE id = ?`,
-          args: [newRemoteName, newRemotePath, targetNodeId, now, a.fileId],
+          sql: `UPDATE files SET remote_name = ?, remote_path = ?, node_id = ?, filename = ?, updated_at = ? WHERE id = ?`,
+          args: [newRemoteName, newRemotePath, targetNodeId, filename, now, a.fileId],
         });
         await db.execute({
           sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
@@ -263,8 +266,8 @@ export async function moveFile(
   // 3. DB update.
   const now = new Date().toISOString();
   await db.execute({
-    sql: `UPDATE files SET remote_name = ?, remote_path = ?, node_id = ?, updated_at = ? WHERE id = ?`,
-    args: [newRemoteName, newRemotePath, targetNodeId, now, a.fileId],
+    sql: `UPDATE files SET remote_name = ?, remote_path = ?, node_id = ?, filename = ?, updated_at = ? WHERE id = ?`,
+    args: [newRemoteName, newRemotePath, targetNodeId, filename, now, a.fileId],
   });
 
   await db.execute({

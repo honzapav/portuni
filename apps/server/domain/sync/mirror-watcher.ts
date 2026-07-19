@@ -117,7 +117,12 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
   let stopped = false;
 
   // Coalesce the event burst editors emit on an atomic save (write temp +
-  // rename) into a single reconcile per path.
+  // rename) into a single reconcile per path. Reconciles are SERIALIZED in
+  // firing order: an mv emits events for the old and the new path, and the
+  // pairing logic (tryApplyDiskMove / the unregister branch) depends on the
+  // first event's outcome being visible to the second -- two concurrent
+  // reconciles for the same physical file race on the files row otherwise.
+  let reconcileChain: Promise<void> = Promise.resolve();
   function schedule(absPath: string): void {
     const existing = timers.get(absPath);
     if (existing) clearTimeout(existing);
@@ -128,7 +133,12 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
         if (stopped) return;
         const nodeId = ownerNodeForPath(mirrors, absPath);
         if (!nodeId) return;
-        reconcile({ userId: deps.userId, nodeId, absPath }).catch(onError);
+        reconcileChain = reconcileChain.then(() =>
+          reconcile({ userId: deps.userId, nodeId, absPath }).then(
+            () => undefined,
+            onError,
+          ),
+        );
       }, debounceMs),
     );
   }

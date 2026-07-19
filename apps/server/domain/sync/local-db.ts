@@ -13,6 +13,11 @@ export interface FileStateRow {
   cached_local_hash: string | null;
   cached_mtime: number | null;
   cached_size: number | null;
+  // Inode identity of the cached local copy. rename(2) keeps it on the same
+  // volume, so the watcher can pair an on-disk mv with the record whose old
+  // path just vanished (move detection) instead of registering a duplicate.
+  cached_ino: number | null;
+  cached_dev: number | null;
 }
 
 export interface RemoteStatRow {
@@ -45,11 +50,17 @@ async function ensureSchema(db: Client): Promise<void> {
     last_synced_at DATETIME,
     cached_local_hash TEXT,
     cached_mtime INTEGER,
-    cached_size INTEGER
+    cached_size INTEGER,
+    cached_ino INTEGER,
+    cached_dev INTEGER
   )`);
   await migrateFileStateNullableBaseline(db);
+  await migrateFileStateInode(db);
   await db.execute(
     "CREATE INDEX IF NOT EXISTS idx_file_state_cached_hash ON file_state(cached_local_hash)",
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_file_state_inode ON file_state(cached_ino, cached_dev)",
   );
   await db.execute(`CREATE TABLE IF NOT EXISTS remote_stat_cache (
     file_id TEXT PRIMARY KEY,
@@ -94,6 +105,15 @@ async function migrateFileStateNullableBaseline(db: Client): Promise<void> {
   );
 }
 
+// sync.db files created before the inode columns landed lack them; SQLite
+// ALTER TABLE ADD COLUMN is additive and cheap, run once per column.
+async function migrateFileStateInode(db: Client): Promise<void> {
+  const info = await db.execute("PRAGMA table_info(file_state)");
+  if (info.rows.some((r) => r.name === "cached_ino")) return;
+  await db.execute("ALTER TABLE file_state ADD COLUMN cached_ino INTEGER");
+  await db.execute("ALTER TABLE file_state ADD COLUMN cached_dev INTEGER");
+}
+
 export async function getLocalDb(): Promise<Client> {
   const dir = join(workspaceRoot(), ".portuni");
   const path = join(dir, "sync.db");
@@ -133,14 +153,16 @@ export async function upsertFileState(
         ? new Date().toISOString()
         : null;
   await db.execute({
-    sql: `INSERT INTO file_state (file_id, last_synced_hash, last_synced_at, cached_local_hash, cached_mtime, cached_size)
-          VALUES (?, ?, ?, ?, ?, ?)
+    sql: `INSERT INTO file_state (file_id, last_synced_hash, last_synced_at, cached_local_hash, cached_mtime, cached_size, cached_ino, cached_dev)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(file_id) DO UPDATE SET
             last_synced_hash = excluded.last_synced_hash,
             last_synced_at = excluded.last_synced_at,
             cached_local_hash = excluded.cached_local_hash,
             cached_mtime = excluded.cached_mtime,
-            cached_size = excluded.cached_size`,
+            cached_size = excluded.cached_size,
+            cached_ino = excluded.cached_ino,
+            cached_dev = excluded.cached_dev`,
     args: [
       row.file_id,
       row.last_synced_hash,
@@ -148,6 +170,8 @@ export async function upsertFileState(
       row.cached_local_hash ?? null,
       row.cached_mtime ?? null,
       row.cached_size ?? null,
+      row.cached_ino ?? null,
+      row.cached_dev ?? null,
     ],
   });
 }
@@ -159,7 +183,10 @@ export async function getFileState(fileId: string): Promise<FileStateRow | null>
     args: [fileId],
   });
   if (r.rows.length === 0) return null;
-  const row = r.rows[0];
+  return mapFileStateRow(r.rows[0]);
+}
+
+function mapFileStateRow(row: Record<string, unknown>): FileStateRow {
   return {
     file_id: row.file_id as string,
     last_synced_hash: (row.last_synced_hash as string | null) ?? null,
@@ -167,7 +194,24 @@ export async function getFileState(fileId: string): Promise<FileStateRow | null>
     cached_local_hash: (row.cached_local_hash as string | null) ?? null,
     cached_mtime: row.cached_mtime === null ? null : Number(row.cached_mtime),
     cached_size: row.cached_size === null ? null : Number(row.cached_size),
+    cached_ino: row.cached_ino == null ? null : Number(row.cached_ino),
+    cached_dev: row.cached_dev == null ? null : Number(row.cached_dev),
   };
+}
+
+// All rows whose cached local copy had this inode identity. Several rows can
+// share it only transiently (inode reuse after a delete) -- the caller
+// disambiguates via the content hash before acting on a match.
+export async function findFileStateByInode(
+  ino: number,
+  dev: number,
+): Promise<FileStateRow[]> {
+  const db = await getLocalDb();
+  const r = await db.execute({
+    sql: "SELECT * FROM file_state WHERE cached_ino = ? AND cached_dev = ?",
+    args: [ino, dev],
+  });
+  return r.rows.map((row) => mapFileStateRow(row as unknown as Record<string, unknown>));
 }
 
 export async function deleteFileState(fileId: string): Promise<void> {

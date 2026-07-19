@@ -237,6 +237,8 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
     cached_local_hash: hash,
     cached_mtime: fsInfo.mtime,
     cached_size: fsInfo.size,
+    cached_ino: fsInfo.ino,
+    cached_dev: fsInfo.dev,
   });
 
   return {
@@ -386,6 +388,8 @@ export async function registerLocalFile(
     cached_local_hash: hash,
     cached_mtime: fsInfo.mtime,
     cached_size: fsInfo.size,
+    cached_ino: fsInfo.ino,
+    cached_dev: fsInfo.dev,
   });
 
   // Audit.
@@ -489,6 +493,8 @@ export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileRes
     cached_local_hash: hash,
     cached_mtime: fsInfo.mtime,
     cached_size: fsInfo.size,
+    cached_ino: fsInfo.ino,
+    cached_dev: fsInfo.dev,
   });
 
   await db.execute({
@@ -643,6 +649,8 @@ export async function localHashFor(
     cached_local_hash: h,
     cached_mtime: now.mtime,
     cached_size: now.size,
+    cached_ino: now.ino,
+    cached_dev: now.dev,
   });
   return h;
 }
@@ -913,7 +921,12 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
     const m = await matchDeleteTombstones(db, a.userId, out.new_local);
     out.new_local = m.remaining;
     out.deleted_remote = m.deleted_remote;
-    await moveDetectionPhase(db, a, out);
+    // NOTE: on-disk move detection lives in reconcile.ts (tryApplyDiskMove),
+    // keyed on inode identity at watcher registration time. The old
+    // moveDetectionPhase here paired deleted_local x new_local -- but with
+    // the watcher running, a moved file's new path is registered before any
+    // scan sees it as new_local, so the phase was dead code. The `moved`
+    // bucket stays in StatusResult for API compatibility (always empty).
   }
 
   return out;
@@ -1018,40 +1031,6 @@ export async function cleanupDeletedRemote(
     }
   }
   return { cleaned, errors };
-}
-
-async function moveDetectionPhase(
-  _db: Client,
-  _a: StatusArgs,
-  out: StatusResult,
-): Promise<void> {
-  if (out.deleted_local.length === 0 || out.new_local.length === 0) return;
-  // Queue per hash: several deleted files can share content (templates,
-  // empty files), and several new files can too. A single-slot map would
-  // drop all but the last deleted entry and propose moving the SAME
-  // file_id to every new location. Each candidate pairs exactly once.
-  const byHash = new Map<string, Array<{ file_id: string; old_local_path: string }>>();
-  for (const dl of out.deleted_local) {
-    if (dl.last_synced_hash && dl.local_path) {
-      if (!byHash.has(dl.last_synced_hash)) byHash.set(dl.last_synced_hash, []);
-      byHash.get(dl.last_synced_hash)!.push({
-        file_id: dl.file_id,
-        old_local_path: dl.local_path,
-      });
-    }
-  }
-  for (const nl of out.new_local) {
-    const queue = byHash.get(nl.hash);
-    const match = queue?.shift();
-    if (match) {
-      out.moved.push({
-        file_id: match.file_id,
-        old_local_path: match.old_local_path,
-        new_local_path: nl.local_path,
-        hash: nl.hash,
-      });
-    }
-  }
 }
 
 // discovery walks mirrors to find new_local files and lists adapters to find new_remote files.

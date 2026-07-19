@@ -480,6 +480,8 @@ async function pushEntryCentral(
     cached_local_hash: put.canonicalHash,
     cached_mtime: fsInfo.mtime,
     cached_size: fsInfo.size,
+    cached_ino: fsInfo.ino,
+    cached_dev: fsInfo.dev,
   });
 }
 
@@ -622,6 +624,8 @@ export async function storeFileCentral(
     cached_local_hash: put.canonicalHash,
     cached_mtime: fsInfo.mtime,
     cached_size: fsInfo.size,
+    cached_ino: fsInfo.ino,
+    cached_dev: fsInfo.dev,
   });
 
   return {
@@ -693,6 +697,8 @@ export async function pullFileCentral(
     cached_local_hash: cur.canonicalHash,
     cached_mtime: fsInfo.mtime,
     cached_size: fsInfo.size,
+    cached_ino: fsInfo.ino,
+    cached_dev: fsInfo.dev,
   });
   return { file_id: a.entry.file_id, local_path: localPath, hash: cur.canonicalHash };
 }
@@ -773,6 +779,10 @@ export async function reconcilePathCentral(
     cached_local_hash: null,
     cached_mtime: null,
     cached_size: null,
+    // Keep the inode identity: an mv fires delete + create in arbitrary
+    // order, and the create-side move pairing needs it to survive.
+    cached_ino: existing?.cached_ino ?? null,
+    cached_dev: existing?.cached_dev ?? null,
   });
   return { action: "deleted", file_id: rec.id };
 }
