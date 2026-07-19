@@ -744,7 +744,12 @@ struct DesktopClientConfig {
 #[tauri::command]
 async fn setup_central(app: AppHandle, server_url: String) -> Result<(), String> {
     let server = workspace::normalize_server_url(&server_url)?;
-    let resp = reqwest::Client::new()
+    // bound the fetch — a typo'd host must fail, not hang the wizard
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("http client init failed: {e}"))?;
+    let resp = http
         .get(format!("{server}/auth/desktop-config"))
         .send()
         .await
