@@ -537,12 +537,14 @@ describe("buildSoftHint", () => {
     assert.match(hint, /portuni_list_data_sources/);
   });
 
-  it("documents the .portuni-scope read convention", () => {
+  it("documents the real-path read model, not the retired .portuni-scope staging", () => {
     const hint = buildSoftHint({
       currentMirror: "/root/org/proj",
       portuniRoot: "/root",
     });
-    assert.match(hint, /\.portuni-scope/);
+    assert.match(hint, /REAL paths/);
+    assert.match(hint, /portuni_read_file/);
+    assert.doesNotMatch(hint, /\.portuni-scope/);
   });
 });
 
