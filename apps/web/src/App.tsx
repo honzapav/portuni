@@ -13,6 +13,7 @@ import {
   fetchNodeMirror,
   createNodeMirror,
   fetchSandboxProfile,
+  fetchSyncPending,
 } from "./api";
 import { useFileEditor } from "./lib/use-file-editor";
 import { buildAgentCommand } from "./lib/prompt";
@@ -550,13 +551,18 @@ export default function App() {
   );
 
   // Browser: warn before unload while dirty. Tauri: intercept the window
-  // close request and route it through the same inline confirm.
+  // close request and route it through the same inline confirm. Cmd+Q /
+  // menu Quit never becomes a close request — the Rust host prevents that
+  // exit and emits `app-exit-requested` instead, so both paths end in the
+  // same guards. The exit path re-fetches the pending aggregate (bounded)
+  // because the 30s-poll ref can be stale right after focusing the app.
   useEffect(() => {
     const beforeUnload = (e: BeforeUnloadEvent) => {
       if (editorDirtyRef.current) e.preventDefault();
     };
     window.addEventListener("beforeunload", beforeUnload);
     let unlisten: (() => void) | null = null;
+    let unlistenExit: (() => void) | null = null;
     if (isTauri()) {
       void (async () => {
         try {
@@ -570,6 +576,26 @@ export default function App() {
               setSyncQuitGuard({ count: syncPendingRef.current });
             }
           });
+          const { listen } = await import("@tauri-apps/api/event");
+          const { invoke } = await import("@tauri-apps/api/core");
+          unlistenExit = await listen("app-exit-requested", () => {
+            void (async () => {
+              if (editorDirtyRef.current) {
+                setEditorGuard({ kind: "quit" });
+                return;
+              }
+              const fresh = await Promise.race([
+                fetchSyncPending().catch(() => null),
+                new Promise<null>((r) => setTimeout(() => r(null), 2000)),
+              ]);
+              const count = fresh ? fresh.total : syncPendingRef.current;
+              if (count > 0) {
+                setSyncQuitGuard({ count });
+              } else {
+                await invoke("approve_exit").catch(() => undefined);
+              }
+            })();
+          });
         } catch {
           /* not running in Tauri */
         }
@@ -579,6 +605,7 @@ export default function App() {
       window.removeEventListener("beforeunload", beforeUnload);
       try {
         unlisten?.();
+        unlistenExit?.();
       } catch {
         /* window already gone */
       }

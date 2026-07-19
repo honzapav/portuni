@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 mod auth;
@@ -23,6 +24,14 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+
+// Explicit-exit gate (Cmd+Q, menu Quit, app.exit). The first ExitRequested
+// that still has a live main window is prevented and delegated to the
+// webview guards (dirty editor, unsynced files); approve_exit sets this
+// and re-triggers the exit, which then passes. Window-close-driven exits
+// arrive after the window was destroyed and pass without consulting this
+// — the onCloseRequested guard already ran in JS on that path.
+static EXIT_APPROVED: AtomicBool = AtomicBool::new(false);
 
 // Per-workspace running sidecar children, keyed by workspace id. Concurrent
 // workspaces each get their own sidecar process on their own port.
@@ -441,6 +450,15 @@ fn random_token() -> String {
         .take(48)
         .map(char::from)
         .collect()
+}
+
+// The webview's answer to `app-exit-requested`: the user either had nothing
+// to guard or explicitly chose to leave. Marks the exit approved and
+// re-triggers it; the run-handler gate then lets it pass.
+#[tauri::command]
+fn approve_exit(app: AppHandle) {
+    EXIT_APPROVED.store(true, Ordering::SeqCst);
+    app.exit(0);
 }
 
 #[tauri::command]
@@ -1921,6 +1939,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            approve_exit,
             get_backend_port,
             get_data_mode,
             open_external,
@@ -1965,7 +1984,57 @@ pub fn run() {
             // caches the per-workspace MCP token into AuthTokens as it goes.
             // A v1/Missing config is a no-op until migration/onboarding.
             spawn_all_sidecars(&handle);
+            // Replace the native Quit menu item with our own. The default
+            // item uses the macOS `terminate:` selector, which destroys the
+            // window and ends the process WITHOUT ever firing
+            // RunEvent::ExitRequested (verified empirically) — so Cmd+Q
+            // bypassed every JS guard. A custom item with the same
+            // accelerator routes through on_menu_event instead, where the
+            // exit is delegated to the webview guards.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::menu::{Menu, MenuItem, MenuItemKind};
+                let menu = Menu::default(&handle)?;
+                if let Some(MenuItemKind::Submenu(app_menu)) =
+                    menu.items()?.into_iter().next()
+                {
+                    // The standard macOS app submenu always ends with Quit.
+                    let items = app_menu.items()?;
+                    if let Some(last) = items.last() {
+                        let _ = match last {
+                            MenuItemKind::MenuItem(i) => app_menu.remove(i),
+                            MenuItemKind::Predefined(i) => app_menu.remove(i),
+                            MenuItemKind::Submenu(i) => app_menu.remove(i),
+                            MenuItemKind::Check(i) => app_menu.remove(i),
+                            MenuItemKind::Icon(i) => app_menu.remove(i),
+                        };
+                    }
+                    let quit = MenuItem::with_id(
+                        &handle,
+                        "portuni-quit",
+                        "Quit Portuni",
+                        true,
+                        Some("CmdOrCtrl+Q"),
+                    )?;
+                    app_menu.append(&quit)?;
+                }
+                app.set_menu(menu)?;
+            }
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "portuni-quit" {
+                // Same contract as the run-handler gate: ask the webview
+                // guards when there is a window to ask; otherwise just exit.
+                if !EXIT_APPROVED.load(Ordering::SeqCst)
+                    && app.get_webview_window("main").is_some()
+                    && app.emit("app-exit-requested", ()).is_ok()
+                {
+                    info!("quit requested (menu/Cmd+Q) — delegated to webview guards");
+                } else {
+                    app.exit(0);
+                }
+            }
         })
         .on_window_event(|window, event| {
             // Only Destroyed, not CloseRequested: the webview registers an
@@ -1980,6 +2049,27 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            // Explicit exit: prevent it once and hand the decision to the
+            // webview guards (dirty editor, unsynced files) via
+            // `app-exit-requested`; the webview answers with approve_exit,
+            // whose re-exit passes the EXIT_APPROVED gate. macOS Cmd+Q /
+            // menu Quit arrives via the native `terminate:` selector as
+            // ExitRequested with code None — the same code the
+            // all-windows-closed exit carries — so the branches are told
+            // apart by whether the main window still exists: Cmd+Q fires
+            // with the window alive, the post-close exit fires after it
+            // was destroyed (its JS onCloseRequested guard already ran).
+            // If there is no window to ask — or the emit fails — never
+            // block the exit.
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
+                let approved = EXIT_APPROVED.load(Ordering::SeqCst);
+                let has_window = app.get_webview_window("main").is_some();
+                info!("exit requested (code={code:?}, approved={approved}, window={has_window})");
+                if !approved && has_window && app.emit("app-exit-requested", ()).is_ok() {
+                    api.prevent_exit();
+                    return;
+                }
+            }
             // Catch the macOS Cmd+Q / app-relaunch path that does not always
             // tear down the window first. ExitRequested fires before the
             // process exits; Exit is the final point where we still hold
