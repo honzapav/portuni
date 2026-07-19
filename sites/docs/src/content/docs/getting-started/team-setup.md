@@ -22,7 +22,7 @@ The central server is the same codebase as the standalone install — deployed t
 
 You'll need three things from Google Cloud / Workspace admin:
 
-1. **An OAuth client ID** for the desktop app sign-in flow (created in Google Cloud Console). Its ID goes into the server's `PORTUNI_GOOGLE_CLIENT_IDS` and into each teammate's app config.
+1. **An OAuth client ID** for the desktop app sign-in flow (created in Google Cloud Console). Its ID goes into the server's `PORTUNI_GOOGLE_CLIENT_IDS`, and — so the wizard can self-configure — into `PORTUNI_DESKTOP_GOOGLE_CLIENT_ID`/`PORTUNI_DESKTOP_GOOGLE_CLIENT_SECRET`.
 2. **A service account with domain-wide delegation**, scoped to `admin.directory.group.readonly`, so the server can read group memberships. The full key JSON goes into `PORTUNI_GOOGLE_SA_KEY_JSON`.
 3. **Google Groups for permission tiers** — e.g. `portuni-admin@yourdomain`, `portuni-manage@yourdomain`, `portuni-write@yourdomain`. Membership in these groups is how you grant access; any authenticated user from an allowed domain gets read access.
 
@@ -35,6 +35,8 @@ Alongside the core variables from [Setup](/getting-started/setup/) (`TURSO_URL`,
 | `PORTUNI_AUTH_MODE` | Set to `google` |
 | `PORTUNI_JWT_SECRET` | Secret for signing session JWTs (min 32 chars) |
 | `PORTUNI_GOOGLE_CLIENT_IDS` | Comma-separated accepted OAuth client IDs |
+| `PORTUNI_DESKTOP_GOOGLE_CLIENT_ID` | Desktop OAuth client id served publicly at `GET /auth/desktop-config` so the app's onboarding wizard can configure itself from just the server URL |
+| `PORTUNI_DESKTOP_GOOGLE_CLIENT_SECRET` | That client's secret — non-confidential for Google installed apps; served alongside the id |
 | `PORTUNI_ALLOWED_DOMAINS` | Workspace domains users must belong to, e.g. `yourcompany.com` |
 | `PORTUNI_GOOGLE_SA_KEY_JSON` | Service-account key JSON (single line) for group lookups |
 | `PORTUNI_GOOGLE_IMPERSONATE` | Admin user the service account impersonates, e.g. `admin@yourcompany.com` |
@@ -63,15 +65,17 @@ Put the server behind a reverse proxy with TLS (e.g. `api.yourcompany.com`). Tea
 
 ## Join as a teammate
 
-As a teammate you install the regular desktop app and point a workspace at your organization's server. You need from your admin: the **server URL** and the **Google OAuth client ID and secret**.
+As a teammate you install the regular desktop app and point it at your organization's server. All you need from your admin is the **server URL**.
 
 1. Install `Portuni.app` from [GitHub releases](https://github.com/honzapav/portuni/releases) as in [Setup](/getting-started/setup/).
-2. Create (or configure) a workspace with **central data mode**, entering the server URL and the OAuth client — in Settings → Workspaces, or directly in the app's `config.json` (`~/Library/Application Support/ooo.workflow.portuni/config.json`, keys `server_url`, `google_client_id`, `google_client_secret`, `data_mode: "central"`).
-3. Sign in with your Google account (Settings → Account). The app stores a device token in the macOS Keychain; no database or Drive credentials ever touch your machine.
+2. On first launch the app asks how to start — choose **Připojit se k týmu** and enter the server URL. The app fetches the organization's sign-in configuration from the server (`GET /auth/desktop-config`) and switches the workspace to central data mode.
+3. Sign in with your Google account when prompted. The app stores a device token in the macOS Keychain; no database or Drive credentials ever touch your machine.
 
 That's it. The graph you see — and everything your AI agents can do — is filtered through your permissions on the server.
 
-Mirror folders work in central mode too: the local sidecar runs as a **sync agent** that keeps your mirror folders and file status current, brokering every read and write through the central server with your device token. Mirrors become available after you sign in.
+Mirror folders work in central mode too: the local sidecar runs as a **sync agent** that keeps your mirror folders and file status current, brokering every read and write through the central server with your device token. Folders materialize per node — open a node and hit **Otevřít terminál v Portuni** (or run a sync) and the app creates the local mirror for you. The app walks you through this right after your first sign-in.
+
+Advanced: the same settings can still be written by hand into the app's `config.json` (`~/Library/Application Support/ooo.workflow.portuni/config.json`, keys `server_url`, `google_client_id`, `google_client_secret`, `data_mode: "central"`) — useful when the server does not serve `/auth/desktop-config`.
 
 ## See also
 

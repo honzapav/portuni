@@ -176,8 +176,7 @@ tmux loop for backend iteration.
   souborů; lokální sidecar běží jako **sync agent** (teammate mirrors: lokální
   mirror složky + watcher + sync přes server, `PORTUNI_AGENT_MODE=1`, bez Turso
   tokenu a bez Drive credentials — vše jde přes device token na central).
-  Teammate setup = config.json se `server_url`, `google_client_id`,
-  `google_client_secret`, `data_mode`. Agent se spouští až po Google loginu
+  Teammate setup = onboarding wizard („Připojit se k týmu": zadá se jen server URL; app si stáhne OAuth client z veřejného `GET /auth/desktop-config` — `setup_central` command — a zapíše config.json s `data_mode: "central"`). Ruční config.json se stejnými klíči dál funguje jako fallback. Agent se spouští až po Google loginu
   (device token); před loginem vrací local-only cesty 501. V agent módu
   navíc per-mirror `.mcp.json` míří na lokální sidecar front door
   (`http://127.0.0.1:<port>/mcp`), ne na central: graf/scope nástroje se
