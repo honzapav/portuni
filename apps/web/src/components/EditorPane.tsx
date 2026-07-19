@@ -101,23 +101,31 @@ export function EditorBody({
   }
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
+      {/* Floating change/conflict banner: an overlay pinned below the mode
+          toggle, centered over the content, so it stays in view (and in the
+          user's eyeline) regardless of scroll position or window width —
+          the old in-flow top strip was easy to miss on large monitors. */}
       {ed.conflict && (
-        <div className="flex items-center gap-3 border-b border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-danger)_12%,transparent)] px-3 py-2 text-[12.5px] text-[var(--color-text)]">
-          <span>Soubor se mezitím změnil na disku.</span>
-          <button onClick={ed.keepMine} className="underline hover:no-underline">
-            Ponechat moje
-          </button>
-          <button onClick={ed.reloadTheirs} className="underline hover:no-underline">
-            Načíst jejich
-          </button>
+        <div className="pointer-events-none absolute inset-x-0 top-12 z-20 flex justify-center px-3">
+          <div className="pointer-events-auto flex items-center gap-3 rounded-md border border-[var(--color-danger-border,var(--color-border))] bg-[color-mix(in_srgb,var(--color-danger)_14%,var(--color-bg))] px-4 py-2 text-[12.5px] text-[var(--color-text)] shadow-lg">
+            <span>Soubor se mezitím změnil na disku.</span>
+            <button onClick={ed.keepMine} className="font-medium underline hover:no-underline">
+              Ponechat moje
+            </button>
+            <button onClick={ed.reloadTheirs} className="font-medium underline hover:no-underline">
+              Načíst jejich
+            </button>
+          </div>
         </div>
       )}
       {!ed.conflict && ed.externalChange && (
-        <div className="flex items-center gap-3 border-b border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-accent)_12%,transparent)] px-3 py-2 text-[12.5px] text-[var(--color-text)]">
-          <span>Soubor se na disku změnil.</span>
-          <button onClick={ed.reloadTheirs} className="underline hover:no-underline">
-            Načíst aktuální verzi
-          </button>
+        <div className="pointer-events-none absolute inset-x-0 top-12 z-20 flex justify-center px-3">
+          <div className="pointer-events-auto flex items-center gap-3 rounded-md border border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-accent)_14%,var(--color-bg))] px-4 py-2 text-[12.5px] text-[var(--color-text)] shadow-lg">
+            <span>Soubor se na disku změnil.</span>
+            <button onClick={ed.reloadTheirs} className="font-medium underline hover:no-underline">
+              Načíst aktuální verzi
+            </button>
+          </div>
         </div>
       )}
       <ModeToggle mode={mode} onChange={onModeChange} />
