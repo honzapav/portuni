@@ -728,6 +728,75 @@ fn save_config(app: AppHandle, turso_url: Option<String>) -> Result<(), String> 
     Ok(())
 }
 
+// Onboarding wizard "join a team" path: from just a server URL, fetch the
+// public desktop OAuth client (/auth/desktop-config) and commit a central-
+// mode config. Mirrors save_config's fresh-install dance: create the v2
+// `default` workspace when config.json is missing and spawn sidecars so
+// the wizard's reload finds a running backend. After the reload,
+// CentralLoginGate sees data_mode=central + configured and runs the
+// Google login.
+#[derive(serde::Deserialize)]
+struct DesktopClientConfig {
+    google_client_id: String,
+    google_client_secret: String,
+}
+
+#[tauri::command]
+async fn setup_central(app: AppHandle, server_url: String) -> Result<(), String> {
+    let server = workspace::normalize_server_url(&server_url)?;
+    let resp = reqwest::Client::new()
+        .get(format!("{server}/auth/desktop-config"))
+        .send()
+        .await
+        .map_err(|e| format!("server unreachable: {e}"))?;
+    if resp.status().as_u16() == 404 {
+        return Err(format!(
+            "{server} does not serve a desktop client config — ask your admin to set PORTUNI_DESKTOP_GOOGLE_CLIENT_ID/SECRET"
+        ));
+    }
+    if !resp.status().is_success() {
+        return Err(format!(
+            "desktop-config request failed: HTTP {}",
+            resp.status().as_u16()
+        ));
+    }
+    let client: DesktopClientConfig = resp
+        .json()
+        .await
+        .map_err(|e| format!("invalid desktop-config response: {e}"))?;
+    if client.google_client_id.trim().is_empty() || client.google_client_secret.trim().is_empty() {
+        return Err("desktop-config response is missing the client id or secret".to_string());
+    }
+
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let loaded = workspace::load(&data_dir)?;
+    let fresh_install = matches!(loaded, workspace::LoadedConfig::Missing);
+    let mut file = match loaded {
+        workspace::LoadedConfig::V2(f) => f,
+        workspace::LoadedConfig::Missing => {
+            workspace::migrate_v1_value(&serde_json::json!({}), "default")
+        }
+        workspace::LoadedConfig::V1(_) => {
+            return Err("config awaiting workspace migration".to_string())
+        }
+    };
+    let active = file.active_workspace.clone();
+    let cfg = file
+        .workspaces
+        .get_mut(&active)
+        .ok_or_else(|| "active workspace missing from config".to_string())?;
+    cfg.server_url = Some(server);
+    cfg.google_client_id = Some(client.google_client_id.trim().to_string());
+    cfg.google_client_secret = Some(client.google_client_secret.trim().to_string());
+    cfg.data_mode = Some("central".to_string());
+    cfg.turso_url = None;
+    workspace::save(&data_dir, &file)?;
+    if fresh_install {
+        spawn_all_sidecars(&app);
+    }
+    Ok(())
+}
+
 // Spawn an external Terminal.app window in the given working directory
 // and run the given shell command. macOS-only; on other platforms returns
 // a "UNSUPPORTED_OS" error so the webview can fall back to clipboard
@@ -1855,6 +1924,7 @@ pub fn run() {
             clear_turso_token,
             get_turso_status,
             save_config,
+            setup_central,
             restart_sidecar,
             workspace_migration_status,
             migrate_to_workspaces,

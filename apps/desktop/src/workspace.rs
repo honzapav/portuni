@@ -248,6 +248,32 @@ pub(crate) fn global_front_door_url(cfg: &WorkspaceConfig) -> Result<String, Str
     Ok(format!("http://127.0.0.1:{port}/mcp"))
 }
 
+/// Normalize the server URL a user types into the onboarding wizard:
+/// trim, default to https:// when no scheme, strip the trailing slash.
+/// Plain http:// is allowed only for loopback (local dev) — on a real
+/// host a MITM could tamper with the desktop-config response and swap
+/// the OAuth client. Rejects non-http(s) schemes rather than guessing.
+pub(crate) fn normalize_server_url(input: &str) -> Result<String, String> {
+    let trimmed = input.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("server URL is required".to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix("http://") {
+        let host = rest.split(['/', ':']).next().unwrap_or("");
+        if host == "localhost" || host == "127.0.0.1" {
+            return Ok(trimmed.to_string());
+        }
+        return Err("http:// is allowed only for localhost — use https://".to_string());
+    }
+    if trimmed.starts_with("https://") {
+        return Ok(trimmed.to_string());
+    }
+    if trimmed.contains("://") {
+        return Err(format!("unsupported URL scheme: {trimmed}"));
+    }
+    Ok(format!("https://{trimmed}"))
+}
+
 /// Pure v1 -> v2 transform: wrap the flat config fields into a single
 /// workspace under `id`. The migrated workspace keeps the historical
 /// "portuni" MCP entry name and its existing port (or the base default).
@@ -469,5 +495,40 @@ mod tests {
             workspaces: m2,
         };
         assert!(super::validate(&file2).is_err());
+    }
+
+    #[test]
+    fn normalize_server_url_adds_https_and_strips_slash() {
+        assert_eq!(
+            normalize_server_url("api.portuni.com").unwrap(),
+            "https://api.portuni.com"
+        );
+        assert_eq!(
+            normalize_server_url("https://api.portuni.com/").unwrap(),
+            "https://api.portuni.com"
+        );
+        assert_eq!(
+            normalize_server_url(" http://localhost:4011 ").unwrap(),
+            "http://localhost:4011"
+        );
+        assert_eq!(
+            normalize_server_url("http://127.0.0.1:4011").unwrap(),
+            "http://127.0.0.1:4011"
+        );
+    }
+
+    #[test]
+    fn normalize_server_url_rejects_empty_and_garbage() {
+        assert!(normalize_server_url("").is_err());
+        assert!(normalize_server_url("   ").is_err());
+        assert!(normalize_server_url("ftp://x").is_err());
+    }
+
+    #[test]
+    fn normalize_server_url_rejects_non_loopback_http() {
+        // Plain http on a real host would let a MITM swap the OAuth client in
+        // the desktop-config response — https only, loopback excepted for dev.
+        assert!(normalize_server_url("http://api.example.com").is_err());
+        assert!(normalize_server_url("http://192.168.1.10:4011").is_err());
     }
 }
