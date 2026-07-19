@@ -1353,6 +1353,22 @@ pub(crate) fn spawn_sidecar_ws(
         ("HOME".to_string(), std::env::var("HOME").unwrap_or_default()),
         ("PATH".to_string(), std::env::var("PATH").unwrap_or_default()),
     ];
+    // portuni-guard.sh is staged into sidecar-deps by build-sidecar.mjs. The
+    // compiled sidecar cannot resolve it repo-relative, so hand it the staged
+    // path explicitly — without this, materialized mirrors get no hooks block
+    // and the tier-3 write guard is silently unenforced.
+    let guard_script = sidecar_cwd.join("portuni-guard.sh");
+    if guard_script.exists() {
+        envs.push((
+            "PORTUNI_GUARD_SCRIPT".to_string(),
+            guard_script.to_string_lossy().to_string(),
+        ));
+    } else {
+        warn!(
+            "portuni-guard.sh missing at {:?}; tier-3 guard hooks will be omitted",
+            guard_script
+        );
+    }
     match agent_env {
         // Central sync agent: central URL + device token, no Turso.
         Some(extra) => envs.extend(extra),

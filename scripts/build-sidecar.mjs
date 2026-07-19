@@ -124,7 +124,21 @@ function signNativeBindings() {
   }
 }
 
+// portuni-guard.sh ships inside the .app next to the native bindings: the
+// compiled sidecar cannot resolve it repo-relative (resolveGuardScriptPath
+// walks up from the module path, which does not exist in a bundle), so the
+// Tauri host points PORTUNI_GUARD_SCRIPT at this staged copy. Without it,
+// materialized mirrors get no hooks block and the tier-3 write guard is
+// silently unenforced.
+function stageGuardScript() {
+  const src = join(repoRoot, "scripts/portuni-guard.sh");
+  const dst = join(repoRoot, "apps/desktop/sidecar-deps/portuni-guard.sh");
+  cpSync(src, dst);
+  console.log(`staged: ${dst}`);
+}
+
 compile(join(repoRoot, "apps/server/desktop.ts"), "portuni-sidecar");
 stageNativeBindings();
+stageGuardScript();
 signNativeBindings();
 // MCP stdio binary is added by the Task 7 commit.
