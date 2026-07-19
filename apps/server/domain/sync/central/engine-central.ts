@@ -664,12 +664,11 @@ export async function reconcilePathCentral(
   const relPath = relPathFor(mirrorRoot, a.absPath);
   if (!relPath) return { action: "ignored" };
 
-  let ctx: NodeContext;
-  try {
-    ctx = await loadNodeContext(client, a.userId, a.nodeId);
-  } catch {
-    return { action: "noop" };
-  }
+  // A central hiccup here must NOT degrade to a silent noop: the watcher
+  // event is one-shot, so swallowing it leaves the path new_local until the
+  // next backfill sweep (GH #80). Propagate -- the watcher wiring logs the
+  // failure and re-schedules the path.
+  const ctx = await loadNodeContext(client, a.userId, a.nodeId);
 
   // Match the disk path to a tracked record via its derived local path.
   const target = a.absPath.normalize("NFC");

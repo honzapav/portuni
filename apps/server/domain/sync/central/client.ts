@@ -65,6 +65,8 @@ interface HttpClientArgs {
   token: string;
   // Injectable for tests; defaults to global fetch.
   fetchImpl?: typeof fetch;
+  // Per-request budget override (tests). Defaults: 10 s GET, 30 s mutations.
+  requestTimeoutMs?: number;
   // sync-info micro-cache TTL. Absorbs the request storms the perf review
   // flagged: a bulk of watcher events, the 5s status poll overlapping the
   // pending poll, and window-focus bursts all ask for the same document
@@ -72,6 +74,9 @@ interface HttpClientArgs {
   // bounded well under the UI's own 5s poll cadence.
   syncInfoTtlMs?: number;
 }
+
+const GET_TIMEOUT_MS = 10_000;
+const MUTATION_TIMEOUT_MS = 30_000;
 
 export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
   const base = args.baseUrl.replace(/\/+$/, "");
@@ -83,10 +88,11 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
     { promise: Promise<NodeSyncInfo>; resolvedAt: number | null }
   >();
 
-  async function request(
+  async function requestOnce(
     method: string,
     path: string,
-    body?: unknown,
+    body: unknown,
+    timeoutMs: number,
   ): Promise<{ status: number; json: unknown }> {
     const res = await doFetch(`${base}${path}`, {
       method,
@@ -95,6 +101,7 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(timeoutMs),
     });
     let json: unknown = null;
     try {
@@ -103,6 +110,27 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       /* non-JSON body (unexpected); error paths below still carry status */
     }
     return { status: res.status, json };
+  }
+
+  // fetch has no default timeout, so a request scheduled onto a dead
+  // keep-alive slot would otherwise hang forever and its payload silently
+  // never arrive (GH #80). Timeout every request and retry once on
+  // abort/network failure -- the retry opens a fresh connection instead of
+  // reusing the zombie slot. HTTP error statuses are returned, not thrown,
+  // so they never retry. A mutation whose first attempt did land surfaces
+  // as a version/precondition error to the caller rather than silent loss.
+  async function request(
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<{ status: number; json: unknown }> {
+    const timeoutMs =
+      args.requestTimeoutMs ?? (method === "GET" ? GET_TIMEOUT_MS : MUTATION_TIMEOUT_MS);
+    try {
+      return await requestOnce(method, path, body, timeoutMs);
+    } catch {
+      return requestOnce(method, path, body, timeoutMs);
+    }
   }
 
   function throwFor(status: number, path: string, json: unknown): never {

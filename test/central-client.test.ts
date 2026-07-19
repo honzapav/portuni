@@ -175,6 +175,68 @@ describe("createHttpCentralClient", () => {
     assert.equal(putBody.ifAbsent, true);
   });
 
+  it("request retries once on a network failure (GH #80)", async () => {
+    let attempts = 0;
+    const fetchImpl = (async () => {
+      attempts += 1;
+      if (attempts === 1) throw new TypeError("fetch failed");
+      return {
+        status: 200,
+        json: async () => ({ node: { id: "N1" }, remote_name: "r", files: [] }),
+      } as Response;
+    }) as typeof fetch;
+    const c = createHttpCentralClient({ ...BASE, fetchImpl, syncInfoTtlMs: 0 });
+    const info = await c.syncInfo("N1");
+    assert.equal(info.remote_name, "r");
+    assert.equal(attempts, 2);
+  });
+
+  it("request does NOT retry on an HTTP error status", async () => {
+    const { fetchImpl, calls } = fakeFetch([{ status: 500, json: { error: "boom" } }]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl, syncInfoTtlMs: 0 });
+    await assert.rejects(
+      () => c.syncInfo("N1"),
+      (e: unknown) => e instanceof CentralHttpError && e.status === 500,
+    );
+    assert.equal(calls.length, 1);
+  });
+
+  it("a hung request is aborted by the timeout and retried on a fresh call (GH #80)", async () => {
+    let attempts = 0;
+    const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      attempts += 1;
+      if (attempts === 1) {
+        // Simulate the zombie keep-alive slot: never settles on its own,
+        // rejects only when the timeout signal aborts it.
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
+        });
+      }
+      return {
+        status: 201,
+        json: async () => ({ id: "F1", filename: "a.md", remote_name: "r", remote_path: "p" }),
+      } as Response;
+    }) as typeof fetch;
+    const c = createHttpCentralClient({ ...BASE, fetchImpl, requestTimeoutMs: 30 });
+    const r = await c.registerFile("N1", "wip/a.md");
+    assert.equal(r.id, "F1");
+    assert.equal(attempts, 2);
+  });
+
+  it("two hung attempts surface as a rejection, not a silent hang", async () => {
+    const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new DOMException("aborted", "AbortError")),
+        );
+      });
+    }) as typeof fetch;
+    const c = createHttpCentralClient({ ...BASE, fetchImpl, requestTimeoutMs: 20 });
+    await assert.rejects(() => c.registerFile("N1", "wip/a.md"));
+  });
+
   it("nodeExists maps 200/404 and throws on other statuses", async () => {
     const { fetchImpl } = fakeFetch([
       { status: 200, json: {} },

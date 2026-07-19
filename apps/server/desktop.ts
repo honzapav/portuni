@@ -19,6 +19,7 @@ import {
   listUntrackedLocalCentral,
   mapConcurrent,
   reconcilePathCentral,
+  type ReconcileCentralResult,
 } from "./domain/sync/central/engine-central.js";
 import { localHashFor } from "./domain/sync/engine.js";
 import { createMirrorWatcher, type MirrorWatcher } from "./domain/sync/mirror-watcher.js";
@@ -32,6 +33,9 @@ import { createAgentMcpTransport } from "./mcp/agent-transport.js";
 // them here (rather than threading raw strings through main()) keeps the
 // central-URL/token parsing local to the one place that needs the strings
 // rather than the CentralClient built from them.
+const RECONCILE_RETRY_DELAY_MS = 15_000;
+const BACKFILL_SWEEP_INTERVAL_MS = 10 * 60_000;
+
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`${name} must be set`);
@@ -157,11 +161,30 @@ async function agentMain(client: CentralClient): Promise<void> {
   // Watcher with the central reconcile; the boot backfill is done below (the
   // built-in backfill needs the local graph db the agent doesn't have), and
   // backfillMirror covers mirrors registered while running.
+  // Watcher events are one-shot, so a failed reconcile (central unreachable,
+  // request timed out) gets ONE delayed re-run before we give up and leave
+  // the path to the periodic backfill sweep (GH #80).
+  const reconcileWithRetry = async (a: {
+    userId: string;
+    nodeId: string;
+    absPath: string;
+  }): Promise<ReconcileCentralResult> => {
+    try {
+      return await reconcilePathCentral(client, a);
+    } catch (e) {
+      console.error(
+        `[portuni:watch] reconcile failed for ${a.absPath}; retrying in ${RECONCILE_RETRY_DELAY_MS / 1000} s:`,
+        e,
+      );
+      await new Promise((r) => setTimeout(r, RECONCILE_RETRY_DELAY_MS));
+      return reconcilePathCentral(client, a);
+    }
+  };
   let watcher: MirrorWatcher | null = null;
   if (process.env.PORTUNI_WATCH_MIRRORS !== "0") {
     watcher = createMirrorWatcher({
       userId: SOLO_USER,
-      reconcile: (a) => reconcilePathCentral(client, a),
+      reconcile: reconcileWithRetry,
       backfill: false,
       backfillMirror: (m) => centralBackfillMirror(client, m),
       onError: (e) => console.error("[portuni:watch]", e),
@@ -176,20 +199,29 @@ async function agentMain(client: CentralClient): Promise<void> {
   // so files created while the agent was down are tracked. Best-effort.
   // Bounded fan-out across mirrors + ONE batch registration per mirror
   // instead of a strictly sequential per-file chain (perf review, scale-boot).
-  void (async () => {
+  // Runs at boot and then periodically -- the safety net for any watcher
+  // event that was still lost despite timeout+retry (GH #80).
+  let sweepRunning = false;
+  const backfillSweep = async (tag: string): Promise<void> => {
+    if (sweepRunning) return;
+    sweepRunning = true;
     try {
       const mirrors = await listUserMirrors(SOLO_USER);
       await mapConcurrent(mirrors, 4, async (m) => {
         try {
           await centralBackfillMirror(client, m);
         } catch (e) {
-          console.error("[boot] central backfill failed for", m.node_id, e);
+          console.error(`[${tag}] central backfill failed for`, m.node_id, e);
         }
       });
     } catch (e) {
-      console.error("[boot] central backfill skipped:", e);
+      console.error(`[${tag}] central backfill skipped:`, e);
+    } finally {
+      sweepRunning = false;
     }
-  })();
+  };
+  void backfillSweep("boot");
+  setInterval(() => void backfillSweep("sweep"), BACKFILL_SWEEP_INTERVAL_MS).unref();
 
   // Refresh per-mirror harness configs; in agent mode .mcp.json URLs resolve
   // to this local sidecar's front door (PORTUNI_AGENT_MODE branch of
