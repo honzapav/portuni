@@ -14,7 +14,8 @@ type GateStatus =
   | { kind: "checking" }
   | { kind: "ready" }
   | { kind: "not-configured" }
-  | { kind: "login" };
+  | { kind: "login" }
+  | { kind: "first-steps" };
 
 export default function CentralLoginGate({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<GateStatus>({ kind: "checking" });
@@ -36,7 +37,13 @@ export default function CentralLoginGate({ children }: { children: ReactNode }) 
       if (!s.configured) {
         setStatus({ kind: "not-configured" });
       } else if (s.logged_in) {
-        setStatus({ kind: "ready" });
+        // First login on this install: show the one-time guidance that
+        // mirror folders appear only after a terminal is opened on a node.
+        if (localStorage.getItem("portuni.first-steps-pending") === "1") {
+          setStatus({ kind: "first-steps" });
+        } else {
+          setStatus({ kind: "ready" });
+        }
       } else {
         setStatus({ kind: "login" });
       }
@@ -57,6 +64,7 @@ export default function CentralLoginGate({ children }: { children: ReactNode }) 
     setBusy(true);
     try {
       await googleLogin();
+      localStorage.setItem("portuni.first-steps-pending", "1");
       // Reload so the graph fetch, caches and auth-status re-run cleanly with
       // the freshly stored session JWT.
       window.location.reload();
@@ -66,8 +74,42 @@ export default function CentralLoginGate({ children }: { children: ReactNode }) 
     }
   }
 
+  function handleFirstStepsDone() {
+    localStorage.removeItem("portuni.first-steps-pending");
+    setStatus({ kind: "ready" });
+  }
+
   if (status.kind === "checking") return null;
   if (status.kind === "ready") return <>{children}</>;
+
+  if (status.kind === "first-steps") {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--color-bg)] p-6">
+        <div className="flex w-full max-w-[480px] flex-col gap-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-8 py-8 shadow-2xl">
+          <div className="text-[17px] font-semibold tracking-tight text-[var(--color-text)]">
+            Přihlášení proběhlo
+          </div>
+          <div className="text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
+            Sdílený graf uvidíš hned – co je v něm vidět, řídí oprávnění na
+            serveru.
+          </div>
+          <div className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
+            Pracovní složky na Macu vznikají po uzlech: otevři uzel v grafu a
+            klikni na <span className="font-medium text-[var(--color-text)]">Otevřít terminál v Portuni</span>.
+            Portuni založí lokální složku uzlu, spustí v ní agenta a stáhne
+            soubory. Bez tohoto kroku zůstává obsah jen na serveru.
+          </div>
+          <button
+            type="button"
+            onClick={handleFirstStepsDone}
+            className="self-end rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-5 py-2.5 text-[14px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]"
+          >
+            Rozumím, otevřít Portuni
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--color-bg)] p-6">
