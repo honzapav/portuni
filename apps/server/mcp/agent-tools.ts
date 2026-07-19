@@ -28,6 +28,7 @@ import { getMirrorPath, listUserMirrors } from "../domain/sync/mirror-registry.j
 import { getLocalMirror } from "../domain/sync/local-db.js";
 import { buildNodeRoot, deriveLocalPath } from "../domain/sync/remote-path.js";
 import type { StatusFileEntry, StatusResult, NewLocalEntry } from "../domain/sync/engine.js";
+import type { NodeSyncInfo } from "../domain/sync/sync-remote-api.js";
 
 export const LOCAL_TOOLS: ReadonlySet<string> = new Set([
   "portuni_mirror",
@@ -435,5 +436,211 @@ export async function callLocalTool(
       };
     }
     throw e;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Proxied disk mutations (GH #78)
+// ---------------------------------------------------------------------------
+//
+// portuni_delete_file / portuni_move_file / portuni_rename_folder are NOT
+// local tools -- their record/remote step must run on central. But central's
+// engine-mutations local disk step no-ops there (getMirrorPath is null on the
+// server), so the device that owns the mirror must apply it itself: snapshot
+// the affected record(s) BEFORE the proxy (afterwards the record is gone),
+// and after a successful confirmed result apply the rm/rename + file_state
+// cleanup here. Best-effort by design: the record mutation already succeeded
+// on central, and a failed local step degrades to the tombstone path (GH #79)
+// instead of corrupting state.
+
+const PROXIED_DISK_MUTATIONS = new Set([
+  "portuni_delete_file",
+  "portuni_move_file",
+  "portuni_rename_folder",
+]);
+
+export function isProxiedDiskMutation(name: string): boolean {
+  return PROXIED_DISK_MUTATIONS.has(name);
+}
+
+export interface DiskMutationSnapshot {
+  tool: string;
+  args: Record<string, unknown>;
+  nodeId: string;
+  mirrorRoot: string;
+  nodeRoot: string;
+  // delete/move: the affected record's remote path at snapshot time.
+  fileId: string | null;
+  oldRemotePath: string | null;
+}
+
+function nodeRootFor(si: NodeSyncInfo): string {
+  return buildNodeRoot({
+    orgSyncKey: si.node.org_sync_key,
+    nodeType: si.node.type,
+    nodeSyncKey: si.node.sync_key,
+  });
+}
+
+// Resolve the record + mirror context the local disk step will need. Returns
+// null when the call is a preview (unconfirmed), the record is unknown, or
+// this device has no mirror for the node -- in all three cases there is
+// nothing to do locally.
+export async function snapshotForDiskMutation(
+  client: CentralClient,
+  userId: string,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<DiskMutationSnapshot | null> {
+  if (!isProxiedDiskMutation(name)) return null;
+  // rename_folder confirms via dry_run:false-ish "confirmed"; delete/move use
+  // confirmed:true. A preview call mutates nothing -- skip the snapshot.
+  if (args.confirmed !== true) return null;
+
+  if (name === "portuni_rename_folder") {
+    const nodeId = args.node_id as string | undefined;
+    if (!nodeId) return null;
+    const mirrorRoot = await getMirrorPath(userId, nodeId);
+    if (!mirrorRoot) return null;
+    const si = await client.syncInfo(nodeId);
+    return {
+      tool: name,
+      args,
+      nodeId,
+      mirrorRoot,
+      nodeRoot: nodeRootFor(si),
+      fileId: null,
+      oldRemotePath: null,
+    };
+  }
+
+  const fileId = args.file_id as string | undefined;
+  if (!fileId) return null;
+  const found = await findEntryByFileId(client, userId, fileId);
+  if (!found || !found.entry.remote_path) return null;
+  const mirrorRoot = await getMirrorPath(userId, found.nodeId);
+  if (!mirrorRoot) return null;
+  const si = await client.syncInfo(found.nodeId);
+  return {
+    tool: name,
+    args,
+    nodeId: found.nodeId,
+    mirrorRoot,
+    nodeRoot: nodeRootFor(si),
+    fileId,
+    oldRemotePath: found.entry.remote_path,
+  };
+}
+
+function deriveOrNull(a: {
+  mirrorRoot: string;
+  nodeRoot: string;
+  remotePath: string;
+}): string | null {
+  try {
+    return deriveLocalPath(a);
+  } catch {
+    return null;
+  }
+}
+
+async function renameLocalBestEffort(oldPath: string, newPath: string): Promise<void> {
+  const { mkdir: fsMkdir, rename: fsRename } = await import("node:fs/promises");
+  const { dirname } = await import("node:path");
+  try {
+    await fsMkdir(dirname(newPath), { recursive: true });
+    await fsRename(oldPath, newPath);
+  } catch (e) {
+    // ENOENT = no local copy to move; anything else is logged by the caller.
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+}
+
+// Apply the disk step after central confirmed the mutation. resultText is the
+// proxied tool result's JSON payload; anything that does not parse into a
+// success shape (preview, repair_needed, error text) is a no-op.
+export async function applyLocalAfterProxiedMutation(
+  client: CentralClient,
+  userId: string,
+  snapshot: DiskMutationSnapshot,
+  resultText: string,
+): Promise<void> {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(resultText) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  const { rm } = await import("node:fs/promises");
+  const { deleteFileState } = await import("../domain/sync/local-db.js");
+  const { localHashFor } = await import("../domain/sync/engine.js");
+
+  if (snapshot.tool === "portuni_delete_file") {
+    if (parsed.status !== "ok" || !parsed.deleted_at) return;
+    if (!snapshot.fileId || !snapshot.oldRemotePath) return;
+    const localPath = deriveOrNull({
+      mirrorRoot: snapshot.mirrorRoot,
+      nodeRoot: snapshot.nodeRoot,
+      remotePath: snapshot.oldRemotePath,
+    });
+    if (localPath) await rm(localPath, { force: true }).catch(() => undefined);
+    await deleteFileState(snapshot.fileId).catch(() => undefined);
+    client.invalidateSyncInfo(snapshot.nodeId);
+    return;
+  }
+
+  if (snapshot.tool === "portuni_move_file") {
+    if (parsed.status !== "ok" || !parsed.moved_at) return;
+    if (!snapshot.fileId || !snapshot.oldRemotePath) return;
+    const newRemotePath = parsed.new_remote_path as string | undefined;
+    if (!newRemotePath) return;
+    const oldLocal = deriveOrNull({
+      mirrorRoot: snapshot.mirrorRoot,
+      nodeRoot: snapshot.nodeRoot,
+      remotePath: snapshot.oldRemotePath,
+    });
+    // Cross-node move: the new path lives under the TARGET node's mirror.
+    const targetNodeId = (snapshot.args.new_node_id as string | undefined) ?? snapshot.nodeId;
+    let targetMirror = snapshot.mirrorRoot;
+    let targetNodeRoot = snapshot.nodeRoot;
+    if (targetNodeId !== snapshot.nodeId) {
+      const m = await getMirrorPath(userId, targetNodeId);
+      if (!m) return; // target node not mirrored here -- nothing to place
+      targetMirror = m;
+      targetNodeRoot = nodeRootFor(await client.syncInfo(targetNodeId));
+    }
+    const newLocal = deriveOrNull({
+      mirrorRoot: targetMirror,
+      nodeRoot: targetNodeRoot,
+      remotePath: newRemotePath,
+    });
+    if (oldLocal && newLocal && oldLocal !== newLocal) {
+      await renameLocalBestEffort(oldLocal, newLocal);
+      await localHashFor(newLocal, snapshot.fileId, null).catch(() => null);
+    }
+    client.invalidateSyncInfo(snapshot.nodeId);
+    if (targetNodeId !== snapshot.nodeId) client.invalidateSyncInfo(targetNodeId);
+    return;
+  }
+
+  if (snapshot.tool === "portuni_rename_folder") {
+    if (parsed.type !== "applied" || !Array.isArray(parsed.files)) return;
+    for (const f of parsed.files as Array<Record<string, unknown>>) {
+      if (f.status !== "ok") continue;
+      const oldLocal = deriveOrNull({
+        mirrorRoot: snapshot.mirrorRoot,
+        nodeRoot: snapshot.nodeRoot,
+        remotePath: f.old_remote_path as string,
+      });
+      const newLocal = deriveOrNull({
+        mirrorRoot: snapshot.mirrorRoot,
+        nodeRoot: snapshot.nodeRoot,
+        remotePath: f.new_remote_path as string,
+      });
+      if (oldLocal && newLocal && oldLocal !== newLocal) {
+        await renameLocalBestEffort(oldLocal, newLocal);
+      }
+    }
+    client.invalidateSyncInfo(snapshot.nodeId);
   }
 }
