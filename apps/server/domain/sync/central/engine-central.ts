@@ -17,12 +17,13 @@ import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
 import type { CentralClient } from "./client.js";
 import { CentralHttpError } from "./client.js";
-import { localHashFor } from "../engine.js";
+import { localHashFor, cleanupDeletedRemote } from "../engine.js";
 import type {
   StatusResult,
   StatusFileEntry,
   NewLocalEntry,
   RegisterLocalFileResult,
+  DeletedRemoteEntry,
 } from "../engine.js";
 import { getFileState, upsertFileState } from "../local-db.js";
 import { getMirrorPath, listUserMirrors, registerMirror } from "../mirror-registry.js";
@@ -253,6 +254,7 @@ async function statusScanForContext(
     new_local: [],
     new_remote: [],
     deleted_local: [],
+    deleted_remote: [],
     moved: [],
   };
   // Bounded fan-out: slow scans hash changed files (CPU+disk); fast scans
@@ -264,9 +266,62 @@ async function statusScanForContext(
     (out[r.bucket] as StatusFileEntry[]).push(r.entry);
   }
   if (a.includeDiscovery !== false) {
-    out.new_local = await untrackedForContext(ctx);
+    const m = await matchTombstonesForContext(ctx, await untrackedForContext(ctx));
+    out.new_local = m.remaining;
+    out.deleted_remote = m.deleted_remote;
   }
   return out;
+}
+
+// Tombstone reconciliation, central flavour (GH #79): sync-info already
+// carries the node's delete tombstones, so the match runs against ctx.si
+// instead of a local audit query. Same triple-match contract as the local
+// engine's matchDeleteTombstones -- path derived from the tombstone,
+// file_state row present on this device, disk hash equal to the last synced
+// hash -- so cleanup stays lossless by construction.
+async function matchTombstonesForContext(
+  ctx: NodeContext,
+  entries: NewLocalEntry[],
+): Promise<{ deleted_remote: DeletedRemoteEntry[]; remaining: NewLocalEntry[] }> {
+  const tombstones = ctx.si.deleted ?? [];
+  if (!ctx.mirrorRoot || entries.length === 0 || tombstones.length === 0) {
+    return { deleted_remote: [], remaining: entries };
+  }
+  const deleted: DeletedRemoteEntry[] = [];
+  const matchedPaths = new Set<string>();
+  for (const t of tombstones) {
+    let expectedLocal: string;
+    try {
+      expectedLocal = deriveLocalPath({
+        mirrorRoot: ctx.mirrorRoot,
+        nodeRoot: ctx.nodeRoot,
+        remotePath: t.remote_path,
+      }).normalize("NFC");
+    } catch {
+      continue;
+    }
+    const entry = entries.find(
+      (e) => e.local_path.normalize("NFC") === expectedLocal && !matchedPaths.has(e.local_path),
+    );
+    if (!entry) continue;
+    const st = await getFileState(t.file_id);
+    if (!st || st.last_synced_hash === null) continue;
+    const hash =
+      entry.hash && entry.hash.length > 0
+        ? entry.hash
+        : sha256Buffer(await readFile(entry.local_path).catch(() => Buffer.alloc(0)));
+    if (hash !== st.last_synced_hash) continue;
+    matchedPaths.add(entry.local_path);
+    deleted.push({
+      file_id: t.file_id,
+      node_id: ctx.si.node.id,
+      filename: entry.filename,
+      local_path: entry.local_path,
+      remote_path: t.remote_path,
+      hash,
+    });
+  }
+  return { deleted_remote: deleted, remaining: entries.filter((e) => !matchedPaths.has(e.local_path)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -741,10 +796,20 @@ export async function syncRunCentral(
     adopted: [],
     conflicts: [],
     deleted_local: [],
+    deleted_remote: [],
     errors: [],
     skipped: [],
   };
   const mirrorRoot = ctx.mirrorRoot;
+
+  // Tombstoned copies are cleaned up, never adopted (statusScanForContext
+  // already kept them OUT of new_local, so the adopt block below cannot
+  // resurrect them).
+  const cleanup = await cleanupDeletedRemote(scan.deleted_remote);
+  for (const c of cleanup.cleaned) {
+    result.deleted_remote.push({ file_id: c.file_id, filename: c.filename });
+  }
+  result.errors.push(...cleanup.errors);
 
   await mapConcurrent(scan.push_candidates, SYNC_RUN_CONCURRENCY, async (e) => {
     if (!e.local_path || !mirrorRoot) {
@@ -888,7 +953,9 @@ export async function computeSyncPendingCentral(
     if (!scan) return null;
     const push = scan.push_candidates.length;
     const conflict = scan.conflicts.length;
-    const untracked = scan.new_local.length;
+    // deleted_remote copies count as untracked pending work: the sync run
+    // resolves them (cleanup instead of adopt).
+    const untracked = scan.new_local.length + scan.deleted_remote.length;
     const orphan = scan.orphan.length;
     const deleted_local = scan.deleted_local.length;
     const total = push + conflict + untracked + orphan + deleted_local;

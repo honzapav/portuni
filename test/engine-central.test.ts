@@ -37,6 +37,8 @@ class FakeCentral implements CentralClient {
     { id: string; filename: string; status: string; is_native_format: boolean }
   >();
   bytes = new Map<string, Buffer>();
+  // Delete tombstones the server would derive from audit_log (GH #79).
+  deleted: Array<{ file_id: string; remote_path: string }> = [];
   nextId = 1;
   nodeName = "Stan GWS";
   nodeType = "project";
@@ -62,6 +64,7 @@ class FakeCentral implements CentralClient {
         is_native_format: r.is_native_format,
         mime_type: null,
       })),
+      deleted: this.deleted,
     };
   }
 
@@ -267,6 +270,52 @@ describe("statusScanCentral", () => {
     await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: abs });
     const scan = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID, fast: true });
     assert.equal(scan.deleted_local.length, 1);
+  });
+
+  it("tombstoned local copy classifies deleted_remote and the sync run cleans it up", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "a.md");
+    await writeFile(abs, "v1");
+    await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+    // Deletion observed elsewhere: record gone, tombstone published, local
+    // copy + file_state left behind on this device.
+    const remotePath = posix.join(NODE_ROOT, "wip/a.md");
+    const fileId = c.records.get(remotePath)!.id;
+    c.records.delete(remotePath);
+    c.bytes.delete(remotePath);
+    c.deleted.push({ file_id: fileId, remote_path: remotePath });
+
+    const scan = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(scan.new_local.length, 0);
+    assert.equal(scan.deleted_remote.length, 1);
+    assert.equal(scan.deleted_remote[0].file_id, fileId);
+
+    const run = await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(run.deleted_remote.length, 1);
+    await assert.rejects(() => readFile(abs));
+    assert.equal(await getFileState(fileId), null);
+    // Nothing was adopted back -- the deletion stays deleted.
+    assert.equal(run.adopted.length, 0);
+  });
+
+  it("tombstoned copy modified after the delete stays new_local (adopted, not destroyed)", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "a.md");
+    await writeFile(abs, "v1");
+    await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+    const remotePath = posix.join(NODE_ROOT, "wip/a.md");
+    const fileId = c.records.get(remotePath)!.id;
+    c.records.delete(remotePath);
+    c.bytes.delete(remotePath);
+    c.deleted.push({ file_id: fileId, remote_path: remotePath });
+    await writeFile(abs, "upraveno po smazani");
+
+    const scan = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(scan.deleted_remote.length, 0);
+    assert.equal(scan.new_local.length, 1);
+    assert.equal(await readFile(abs, "utf8"), "upraveno po smazani");
   });
 });
 

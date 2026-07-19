@@ -8,6 +8,7 @@ import { resolveRemote } from "./routing.js";
 import {
   upsertFileState,
   getFileState,
+  deleteFileState,
   getRemoteStat,
   upsertRemoteStat,
 } from "./local-db.js";
@@ -569,6 +570,19 @@ export interface MoveProposal {
   hash: string;
 }
 
+// An untracked disk file whose record was deliberately deleted elsewhere
+// (matched against a delete tombstone -- see matchDeleteTombstones). The
+// sync run removes the local copy and the orphaned file_state row instead
+// of adopting the file back.
+export interface DeletedRemoteEntry {
+  file_id: string;
+  node_id: string;
+  filename: string;
+  local_path: string;
+  remote_path: string;
+  hash: string;
+}
+
 export interface StatusResult {
   clean: StatusFileEntry[];
   push_candidates: StatusFileEntry[];
@@ -579,6 +593,7 @@ export interface StatusResult {
   new_local: NewLocalEntry[];
   new_remote: NewRemoteEntry[];
   deleted_local: StatusFileEntry[];
+  deleted_remote: DeletedRemoteEntry[];
   moved: MoveProposal[];
 }
 
@@ -843,6 +858,7 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
     new_local: [],
     new_remote: [],
     deleted_local: [],
+    deleted_remote: [],
     moved: [],
   };
 
@@ -894,10 +910,114 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
 
   if (a.includeDiscovery !== false) {
     await runDiscovery(db, a, out);
+    const m = await matchDeleteTombstones(db, a.userId, out.new_local);
+    out.new_local = m.remaining;
+    out.deleted_remote = m.deleted_remote;
     await moveDetectionPhase(db, a, out);
   }
 
   return out;
+}
+
+// Tombstone reconciliation (GH #79): match untracked disk files against the
+// node's delete tombstones so a copy left behind on this device cannot
+// resurrect a deliberate deletion via adopt/store. Triple match -- the local
+// path derived from the tombstone's remote_path, a file_state row for the
+// tombstoned id on THIS device, and last_synced_hash equal to the current
+// disk hash -- makes the cleanup lossless by construction: any post-delete
+// edit fails the hash check and the file stays new_local.
+export async function matchDeleteTombstones<
+  T extends { node_id: string; local_path: string; filename: string; hash?: string },
+>(
+  db: Client,
+  userId: string,
+  entries: T[],
+): Promise<{ deleted_remote: DeletedRemoteEntry[]; remaining: T[] }> {
+  if (entries.length === 0) return { deleted_remote: [], remaining: entries };
+  const deleted: DeletedRemoteEntry[] = [];
+  const matchedPaths = new Set<string>();
+  const byNode = new Map<string, T[]>();
+  for (const e of entries) {
+    if (!byNode.has(e.node_id)) byNode.set(e.node_id, []);
+    byNode.get(e.node_id)!.push(e);
+  }
+  for (const [nodeId, nodeEntries] of byNode) {
+    const mirrorRoot = await getMirrorPath(userId, nodeId);
+    if (!mirrorRoot) continue;
+    let nodeRoot: string;
+    try {
+      nodeRoot = buildNodeRoot(await resolveNodeInfo(db, nodeId));
+    } catch {
+      continue;
+    }
+    const tombRes = await db.execute({
+      sql: `SELECT target_id, json_extract(detail, '$.remote_path') AS remote_path
+            FROM audit_log
+            WHERE target_type = 'file'
+              AND action IN ('sync_delete', 'sync_delete_remote')
+              AND json_extract(detail, '$.node_id') = ?
+            ORDER BY timestamp DESC LIMIT 200`,
+      args: [nodeId],
+    });
+    for (const t of tombRes.rows) {
+      const remotePath = t.remote_path as string | null;
+      if (!remotePath) continue;
+      let expectedLocal: string;
+      try {
+        expectedLocal = deriveLocalPath({ mirrorRoot, nodeRoot, remotePath }).normalize("NFC");
+      } catch {
+        continue;
+      }
+      const entry = nodeEntries.find(
+        (e) => e.local_path.normalize("NFC") === expectedLocal && !matchedPaths.has(e.local_path),
+      );
+      if (!entry) continue;
+      const st = await getFileState(t.target_id as string);
+      if (!st || st.last_synced_hash === null) continue;
+      const hash =
+        entry.hash && entry.hash.length > 0
+          ? entry.hash
+          : sha256Buffer(await readFile(entry.local_path).catch(() => Buffer.alloc(0)));
+      if (hash !== st.last_synced_hash) continue;
+      matchedPaths.add(entry.local_path);
+      deleted.push({
+        file_id: t.target_id as string,
+        node_id: nodeId,
+        filename: entry.filename,
+        local_path: entry.local_path,
+        remote_path: remotePath,
+        hash,
+      });
+    }
+  }
+  return {
+    deleted_remote: deleted,
+    remaining: entries.filter((e) => !matchedPaths.has(e.local_path)),
+  };
+}
+
+// Apply the deleted_remote cleanup: remove the stale local copy and the
+// orphaned file_state row. Lossless by the matchDeleteTombstones contract --
+// only files byte-identical to their last synced state ever get here.
+export async function cleanupDeletedRemote(
+  entries: DeletedRemoteEntry[],
+): Promise<{
+  cleaned: DeletedRemoteEntry[];
+  errors: Array<{ file_id: string; filename: string; error: string }>;
+}> {
+  const cleaned: DeletedRemoteEntry[] = [];
+  const errors: Array<{ file_id: string; filename: string; error: string }> = [];
+  for (const e of entries) {
+    try {
+      const { rm } = await import("node:fs/promises");
+      await rm(e.local_path, { force: true });
+      await deleteFileState(e.file_id).catch(() => undefined);
+      cleaned.push(e);
+    } catch (err) {
+      errors.push({ file_id: e.file_id, filename: e.filename, error: String(err) });
+    }
+  }
+  return { cleaned, errors };
 }
 
 async function moveDetectionPhase(

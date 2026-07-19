@@ -11,7 +11,13 @@ import {
 import { buildNodeRoot } from "../domain/sync/remote-path.js";
 import { resolveRemote } from "../domain/sync/routing.js";
 import { getAdapter } from "../domain/sync/adapter-cache.js";
-import { statusScan, storeFile, pullFile } from "../domain/sync/engine.js";
+import {
+  statusScan,
+  storeFile,
+  pullFile,
+  matchDeleteTombstones,
+  cleanupDeletedRemote,
+} from "../domain/sync/engine.js";
 import { listUntrackedLocal } from "../domain/sync/discover-local.js";
 import { mimeFor } from "../domain/sync/engine.js";
 import { createNodeInternal, updateNodeInternal, NodeVisibilityManagedError } from "../domain/nodes.js";
@@ -550,6 +556,7 @@ export async function handleSyncRun(
       adopted: [],
       conflicts: [],
       deleted_local: [],
+      deleted_remote: [],
       errors: [],
       skipped: [],
     };
@@ -609,7 +616,17 @@ export async function handleSyncRun(
     }
     // Deterministic registration: adopt any file the agent wrote to the
     // mirror but never registered. Each storeFile registers + pushes.
-    const untracked = await listUntrackedLocal(db, { userId: identity.userId, nodeId });
+    // Tombstoned copies (deliberately deleted elsewhere, byte-identical to
+    // the last synced state) are cleaned up instead of adopted -- adopting
+    // them would resurrect the deletion (GH #79).
+    const allUntracked = await listUntrackedLocal(db, { userId: identity.userId, nodeId });
+    const tombMatch = await matchDeleteTombstones(db, identity.userId, allUntracked);
+    const cleanup = await cleanupDeletedRemote(tombMatch.deleted_remote);
+    for (const c of cleanup.cleaned) {
+      result.deleted_remote.push({ file_id: c.file_id, filename: c.filename });
+    }
+    result.errors.push(...cleanup.errors);
+    const untracked = tombMatch.remaining;
     for (const u of untracked) {
       try {
         const sr = await storeFile(db, {
