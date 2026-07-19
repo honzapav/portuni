@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.0](https://github.com/honzapav/portuni/compare/v0.5.0...v0.6.0) (2026-07-19)
+
+
+### Features
+
+* **auth:** public /auth/desktop-config endpoint serving the desktop OAuth client ([2be1f8f](https://github.com/honzapav/portuni/commit/2be1f8fbf807e2cace9047fd3680df5d38890e31))
+* **desktop:** setup_central command — join a central server from just its URL ([2cd8c0c](https://github.com/honzapav/portuni/commit/2cd8c0c5829fad104fe0d6daf50c41d5427f5942))
+* **web:** onboarding wizard joins a team via server URL instead of Turso credentials ([b389354](https://github.com/honzapav/portuni/commit/b389354b818a7fd17a1d59b34c08f52b227fb5e1))
+* **web:** post-login first-steps screen points to the terminal-creates-mirror flow ([3bf0250](https://github.com/honzapav/portuni/commit/3bf02504fc41020658484e22d9f97379191407c6))
+
+
+### Bug Fixes
+
+* **desktop:** bound setup_central fetch with a 15 s timeout ([33deb8c](https://github.com/honzapav/portuni/commit/33deb8cba47a2496af511f09ccfc5095410a69b3))
+* **desktop:** route Cmd+Q through the unsynced-files quit guard ([80b6c51](https://github.com/honzapav/portuni/commit/80b6c516bfe264dfdf8d638827959fac17589cda))
+
 ## [0.5.0](https://github.com/honzapav/portuni/compare/v0.4.0...v0.5.0) (2026-07-19)
 
 
