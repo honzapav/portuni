@@ -715,6 +715,7 @@ export async function deleteFileRemote(
 
   await db.execute({ sql: "DELETE FROM files WHERE id = ?", args: [a.fileId] });
   await auditFile(db, a.userId, "sync_delete_remote", a.fileId, {
+    node_id: a.nodeId,
     remote_name: remoteName,
     remote_path: remotePath,
     filename,

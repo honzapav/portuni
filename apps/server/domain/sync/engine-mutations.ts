@@ -750,6 +750,7 @@ export async function deleteFile(
       a.fileId,
       JSON.stringify({
         mode,
+        node_id: nodeId,
         remote_name: remoteName,
         remote_path: remotePath,
         local_path: localPath,

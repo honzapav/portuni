@@ -34,6 +34,11 @@ export interface SyncInfoFile {
   mime_type: string | null;
 }
 
+export interface DeletedTombstone {
+  file_id: string;
+  remote_path: string;
+}
+
 export interface NodeSyncInfo {
   node: {
     id: string;
@@ -44,6 +49,12 @@ export interface NodeSyncInfo {
   };
   remote_name: string | null;
   files: SyncInfoFile[];
+  // Recent deliberate deletions on this node. Devices match untracked disk
+  // files against these during discovery (deleted_remote classification), so
+  // a copy left behind on another device cannot resurrect the file. Only the
+  // exact actions sync_delete / sync_delete_remote qualify — *_repair_needed
+  // rows mean the remote copy still exists and must never trigger cleanup.
+  deleted: DeletedTombstone[];
 }
 
 export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeSyncInfo> {
@@ -76,6 +87,18 @@ export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeS
           FROM files WHERE node_id = ?`,
     args: [nodeId],
   });
+  // Tombstones written before node_id landed in the audit detail never match
+  // the filter — the mechanism only works for deletions from here on, which
+  // is fine: old leftovers still surface as new_local for a human decision.
+  const tombRes = await db.execute({
+    sql: `SELECT target_id, json_extract(detail, '$.remote_path') AS remote_path
+          FROM audit_log
+          WHERE target_type = 'file'
+            AND action IN ('sync_delete', 'sync_delete_remote')
+            AND json_extract(detail, '$.node_id') = ?
+          ORDER BY timestamp DESC LIMIT 200`,
+    args: [nodeId],
+  });
   return {
     node: {
       id: nodeId,
@@ -94,6 +117,12 @@ export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeS
       is_native_format: Number(r.is_native_format) === 1,
       mime_type: (r.mime_type as string | null) ?? null,
     })),
+    deleted: tombRes.rows
+      .filter((r) => r.remote_path != null)
+      .map((r) => ({
+        file_id: r.target_id as string,
+        remote_path: r.remote_path as string,
+      })),
   };
 }
 

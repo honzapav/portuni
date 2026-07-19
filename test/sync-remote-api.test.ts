@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { ulid } from "ulid";
 import { makeSharedDb } from "./helpers/shared-db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
@@ -113,6 +114,38 @@ describe("getNodeSyncInfo", () => {
   it("throws for an unknown node (handler maps to 404)", async () => {
     const { db } = await makeSharedDb();
     await assert.rejects(() => getNodeSyncInfo(db, "NOPE"));
+  });
+
+  it("exposes delete tombstones for the node, excluding repair_needed rows", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const now = new Date().toISOString();
+    const mk = (action: string, fileId: string, tombNodeId: string) =>
+      db.execute({
+        sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+              VALUES (?, 'U1', ?, 'file', ?, ?, ?)`,
+        args: [
+          ulid(),
+          action,
+          fileId,
+          JSON.stringify({ node_id: tombNodeId, remote_path: `p/${fileId}.md` }),
+          now,
+        ],
+      });
+    await mk("sync_delete", "F1", nodeId);
+    await mk("sync_delete_remote", "F2", nodeId);
+    await mk("sync_delete_repair_needed", "F3", nodeId);
+    await mk("sync_delete_remote_repair_needed", "F4", nodeId);
+    await mk("sync_delete", "F5", "N-OTHER");
+
+    const info = await getNodeSyncInfo(db, nodeId);
+    assert.deepEqual(info.deleted.map((d) => d.file_id).sort(), ["F1", "F2"]);
+    assert.equal(info.deleted.find((d) => d.file_id === "F1")?.remote_path, "p/F1.md");
+  });
+
+  it("returns an empty tombstone list when nothing was deleted", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const info = await getNodeSyncInfo(db, nodeId);
+    assert.deepEqual(info.deleted, []);
   });
 });
 
