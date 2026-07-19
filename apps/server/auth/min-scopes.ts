@@ -79,6 +79,7 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // --- Public / read-only system routes ---
   if (pathname === "/health") return "read";
   if (pathname === "/mcp/info") return "read";
+  if (pathname === "/auth/desktop-config") return "read";
   if (pathname === "/auth/login") return "read";
   if (pathname === "/auth/groups" && m === "GET") return "manage";
   if (pathname === "/auth/users" && m === "GET") return "manage";

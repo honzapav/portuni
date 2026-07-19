@@ -80,6 +80,8 @@ required when google mode is active (except the optional group mappings).
 |---|---|---|---|
 | `PORTUNI_JWT_SECRET` | — | Yes | Secret for signing Portuni session JWTs (HS256). Min 32 chars |
 | `PORTUNI_GOOGLE_CLIENT_IDS` | — | No | Comma-separated accepted Google OAuth client IDs (Google Cloud Console) |
+| `PORTUNI_DESKTOP_GOOGLE_CLIENT_ID` | — | No | Google desktop OAuth client id served by public `GET /auth/desktop-config` (onboarding wizard). Must also be listed in `PORTUNI_GOOGLE_CLIENT_IDS` |
+| `PORTUNI_DESKTOP_GOOGLE_CLIENT_SECRET` | — | No | Secret of that desktop OAuth client — non-confidential per Google's installed-app model; served alongside the id |
 | `PORTUNI_ALLOWED_DOMAINS` | — | No | Comma-separated Workspace domains users must belong to (e.g. `workflow.ooo,tempo.ooo`); trimmed and lowercased. Singular `PORTUNI_ALLOWED_DOMAIN` still works as a fallback for a single domain when the plural var is unset |
 | `PORTUNI_GOOGLE_SA_KEY_JSON` | — | Yes | Service-account key JSON with domain-wide delegation scoped to `admin.directory.group.readonly`. Full JSON as a single line |
 | `PORTUNI_GOOGLE_IMPERSONATE` | — | No | Admin user the service account impersonates to read group memberships (e.g. `admin@workflow.ooo`) |

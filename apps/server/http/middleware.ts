@@ -127,8 +127,10 @@ export const AUTH_ENABLED = AUTH_TOKEN.length > 0;
 // Paths admitted past the bearer-token gate. /mcp/info exposes only
 // non-secret metadata (URL, port, has_auth_token boolean) so the
 // Settings UI can render the MCP server status before the user has
-// any way to obtain the token.
-const AUTH_PUBLIC_PATHS = new Set(["/health", "/mcp/info"]);
+// any way to obtain the token. /auth/desktop-config serves only the
+// Google desktop OAuth client (non-confidential by design) so the
+// onboarding wizard works before any token exists.
+const AUTH_PUBLIC_PATHS = new Set(["/health", "/mcp/info", "/auth/desktop-config"]);
 
 function timingSafeStringEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;

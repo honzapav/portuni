@@ -11,6 +11,7 @@ import { scopeAtLeast } from "../auth/roles.js";
 import { respondJson } from "../http/middleware.js";
 import {
   handleLogin,
+  handleDesktopConfig,
   handleMe,
   handleMintDeviceToken,
   handleListDeviceTokens,
@@ -132,6 +133,10 @@ export async function routeApiRequest(
   }
 
   // Auth routes handled first (login is public in google mode, others need identity).
+  if (url.pathname === "/auth/desktop-config" && req.method === "GET") {
+    handleDesktopConfig(res);
+    return true;
+  }
   if (url.pathname === "/auth/login" && req.method === "POST") {
     await handleLogin(req, res);
     return true;

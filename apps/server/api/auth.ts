@@ -208,3 +208,19 @@ export async function handleInviteUser(
     respondError(res, "POST /auth/users/invite", err);
   }
 }
+
+// Public desktop OAuth client config. The onboarding wizard fetches this
+// from just a server URL so a teammate never types client id/secret by
+// hand. A Google *desktop app* OAuth client's secret is non-confidential
+// by Google's own definition (it ships inside every installed app), so
+// serving it unauthenticated is deliberate. Env is read per request so
+// tests (and ops) can flip it without a restart.
+export function handleDesktopConfig(res: ServerResponse): void {
+  const id = (process.env.PORTUNI_DESKTOP_GOOGLE_CLIENT_ID ?? "").trim();
+  const secret = (process.env.PORTUNI_DESKTOP_GOOGLE_CLIENT_SECRET ?? "").trim();
+  if (!id || !secret) {
+    respondJson(res, 404, { error: "desktop config not available" });
+    return;
+  }
+  respondJson(res, 200, { google_client_id: id, google_client_secret: secret });
+}
