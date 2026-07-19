@@ -133,7 +133,7 @@ export async function routeApiRequest(
   }
 
   // Auth routes handled first. /auth/desktop-config is fully public (no
-  // token, no identity check -- see AUTH_PUBLIC_PATHS); login is public in
+  // token, no identity check — see AUTH_PUBLIC_PATHS); login is public in
   // google mode; the rest below need identity.
   if (url.pathname === "/auth/desktop-config" && req.method === "GET") {
     handleDesktopConfig(res);

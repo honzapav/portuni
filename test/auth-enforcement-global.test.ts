@@ -101,7 +101,7 @@ describe("minScopeForRoute", () => {
   // Locks the min-scopes.ts entry added alongside GET /auth/desktop-config.
   // Without it, the route falls through to the fail-closed "admin" default
   // (see the "maps unknown route" test below) and the google-mode
-  // AUTH_PUBLIC_PATHS placeholder identity -- which carries "read" -- would
+  // AUTH_PUBLIC_PATHS placeholder identity — which carries "read" — would
   // be 403'd by routeApiRequest's scope gate before ever reaching the
   // handler, silently breaking the endpoint in its actual target mode
   // (env-mode tests can't catch this: the solo identity there is always
