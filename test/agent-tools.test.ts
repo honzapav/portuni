@@ -694,7 +694,16 @@ describe("proxied disk mutations (GH #78)", () => {
     fake.seedRemote("wip/old/a.md", "A");
     fake.seedRemote("wip/old/b.md", "B");
 
-    const args = { node_id: NODE_ID, old_prefix: "wip/old", new_prefix: "wip/new", confirmed: true };
+    // The real tool schema applies via dry_run: false (it has no confirmed
+    // param) -- the gate must key on that, not on a param the tool never
+    // sends.
+    const preview = await snapshotForDiskMutation(fake, "U1", "portuni_rename_folder", {
+      node_id: NODE_ID,
+      old_prefix: "wip/old",
+      new_prefix: "wip/new",
+    });
+    assert.equal(preview, null);
+    const args = { node_id: NODE_ID, old_prefix: "wip/old", new_prefix: "wip/new", dry_run: false };
     const snapshot = await snapshotForDiskMutation(fake, "U1", "portuni_rename_folder", args);
     assert.ok(snapshot);
     await applyLocalAfterProxiedMutation(

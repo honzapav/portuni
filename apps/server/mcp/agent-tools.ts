@@ -493,9 +493,12 @@ export async function snapshotForDiskMutation(
   args: Record<string, unknown>,
 ): Promise<DiskMutationSnapshot | null> {
   if (!isProxiedDiskMutation(name)) return null;
-  // rename_folder confirms via dry_run:false-ish "confirmed"; delete/move use
-  // confirmed:true. A preview call mutates nothing -- skip the snapshot.
-  if (args.confirmed !== true) return null;
+  // A preview call mutates nothing -- skip the snapshot. delete/move confirm
+  // via confirmed:true; rename_folder applies via dry_run:false (its schema
+  // has no confirmed param and defaults to a dry run).
+  const applies =
+    name === "portuni_rename_folder" ? args.dry_run === false : args.confirmed === true;
+  if (!applies) return null;
 
   if (name === "portuni_rename_folder") {
     const nodeId = args.node_id as string | undefined;

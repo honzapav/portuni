@@ -74,6 +74,13 @@ where it can see the move — the watcher's registration path:
 
 ## Known limitations
 
+- A file **edited (not yet re-pushed) and then moved**, when the old-path
+  event happens to process first, fails the hash guard (the delete branch
+  nulls `cached_local_hash` and `last_synced_hash` still holds the pre-edit
+  content) and degrades to today's behavior: duplicate registration +
+  `deleted_local` on the old record for an explicit user decision. No data
+  is lost.
+
 - The per-node status endpoint (`GET /nodes/:id/sync/status`) runs without
   discovery, so its `untracked` list can transiently show a tombstoned copy;
   the next sync run cleans it.

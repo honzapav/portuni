@@ -20,7 +20,12 @@ import {
   cleanupDeletedRemote,
 } from "../apps/server/domain/sync/engine.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
-import { getFileState, resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import {
+  getFileState,
+  upsertFileState,
+  resetLocalDbForTests,
+} from "../apps/server/domain/sync/local-db.js";
+import { md5Buffer } from "../apps/server/domain/sync/hash.js";
 import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
 
 let workspace: string;
@@ -106,6 +111,29 @@ describe("tombstone reconciliation in discovery", () => {
     const r = await statusScan(db, { userId: "U1", nodeId, includeDiscovery: true });
     assert.equal(r.deleted_remote.length, 0);
     assert.equal(r.new_local.length, 1);
+  });
+});
+
+describe("tombstone matching across hash algorithms", () => {
+  it("matches when the synced baseline is a Drive-style md5 hash", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const { fileId } = await arrangeTombstonedFile(db, nodeId, mirrorRoot);
+    // Drive reports md5 as the canonical hash; the discovery walk computes
+    // sha256. A naive comparison would never match and silently disable the
+    // cleanup on Drive-backed files.
+    await upsertFileState({
+      file_id: fileId,
+      last_synced_hash: md5Buffer(Buffer.from("obsah")),
+      cached_local_hash: null,
+      cached_mtime: null,
+      cached_size: null,
+    });
+
+    const r = await statusScan(db, { userId: "U1", nodeId, includeDiscovery: true });
+    assert.equal(r.deleted_remote.length, 1);
+    assert.equal(r.deleted_remote[0].file_id, fileId);
   });
 });
 

@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, readdir, stat as fsStat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm, stat as fsStat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { Client } from "@libsql/client";
 import { ulid } from "ulid";
@@ -987,11 +987,8 @@ export async function matchDeleteTombstones<
       if (!entry) continue;
       const st = await getFileState(t.target_id as string);
       if (!st || st.last_synced_hash === null) continue;
-      const hash =
-        entry.hash && entry.hash.length > 0
-          ? entry.hash
-          : sha256Buffer(await readFile(entry.local_path).catch(() => Buffer.alloc(0)));
-      if (hash !== st.last_synced_hash) continue;
+      const hash = await diskHashMatching(st.last_synced_hash, entry.local_path, entry.hash);
+      if (hash === null || hash !== st.last_synced_hash) continue;
       matchedPaths.add(entry.local_path);
       deleted.push({
         file_id: t.target_id as string,
@@ -1009,6 +1006,26 @@ export async function matchDeleteTombstones<
   };
 }
 
+// Disk hash in the SAME algorithm as the reference hash: adapters report
+// different canonical hashes (Drive md5 = 32 hex, fs/sha256 = 64 hex), and a
+// cross-algorithm comparison would never match -- silently disabling the
+// tombstone cleanup on Drive-backed files. A precomputed sha256 (discovery
+// walk) is reused only when the reference is sha256 too. Exported for the
+// central engine's tombstone matcher.
+export async function diskHashMatching(
+  referenceHash: string,
+  localPath: string,
+  precomputedSha256?: string,
+): Promise<string | null> {
+  const useMd5 = referenceHash.length === 32;
+  if (!useMd5 && precomputedSha256 && precomputedSha256.length === 64) {
+    return precomputedSha256;
+  }
+  const content = await readFile(localPath).catch(() => null);
+  if (content === null) return null;
+  return useMd5 ? md5Buffer(content) : sha256Buffer(content);
+}
+
 // Apply the deleted_remote cleanup: remove the stale local copy and the
 // orphaned file_state row. Lossless by the matchDeleteTombstones contract --
 // only files byte-identical to their last synced state ever get here.
@@ -1022,7 +1039,6 @@ export async function cleanupDeletedRemote(
   const errors: Array<{ file_id: string; filename: string; error: string }> = [];
   for (const e of entries) {
     try {
-      const { rm } = await import("node:fs/promises");
       await rm(e.local_path, { force: true });
       await deleteFileState(e.file_id).catch(() => undefined);
       cleaned.push(e);

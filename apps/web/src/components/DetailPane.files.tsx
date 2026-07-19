@@ -826,6 +826,12 @@ export function SyncBar({
               {result.deleted_local.map((f) => f.filename).join(", ")}
             </div>
           )}
+          {(result.deleted_remote?.length ?? 0) > 0 && (
+            <div>
+              Uklizeno po smazání jinde:{" "}
+              {result.deleted_remote.map((f) => f.filename).join(", ")}
+            </div>
+          )}
           {result.errors.length > 0 && (
             <div style={{ color: "var(--color-danger)" }}>
               Chyby: {result.errors.length} (
@@ -837,6 +843,7 @@ export function SyncBar({
             result.adopted.length === 0 &&
             result.conflicts.length === 0 &&
             (result.deleted_local?.length ?? 0) === 0 &&
+            (result.deleted_remote?.length ?? 0) === 0 &&
             result.errors.length === 0 && <div>Nic k synchronizaci.</div>}
         </div>
       )}

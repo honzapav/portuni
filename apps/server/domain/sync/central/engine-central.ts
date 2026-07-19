@@ -17,7 +17,7 @@ import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
 import type { CentralClient } from "./client.js";
 import { CentralHttpError } from "./client.js";
-import { localHashFor, cleanupDeletedRemote } from "../engine.js";
+import { localHashFor, cleanupDeletedRemote, diskHashMatching } from "../engine.js";
 import type {
   StatusResult,
   StatusFileEntry,
@@ -311,11 +311,8 @@ async function matchTombstonesForContext(
     if (!entry) continue;
     const st = await getFileState(t.file_id);
     if (!st || st.last_synced_hash === null) continue;
-    const hash =
-      entry.hash && entry.hash.length > 0
-        ? entry.hash
-        : sha256Buffer(await readFile(entry.local_path).catch(() => Buffer.alloc(0)));
-    if (hash !== st.last_synced_hash) continue;
+    const hash = await diskHashMatching(st.last_synced_hash, entry.local_path, entry.hash);
+    if (hash === null || hash !== st.last_synced_hash) continue;
     matchedPaths.add(entry.local_path);
     deleted.push({
       file_id: t.file_id,
