@@ -517,7 +517,7 @@ export async function snapshotForDiskMutation(
   const fileId = args.file_id as string | undefined;
   if (!fileId) return null;
   const found = await findEntryByFileId(client, userId, fileId);
-  if (!found || !found.entry.remote_path) return null;
+  if (!found?.entry.remote_path) return null;
   const mirrorRoot = await getMirrorPath(userId, found.nodeId);
   if (!mirrorRoot) return null;
   const si = await client.syncInfo(found.nodeId);

@@ -828,7 +828,7 @@ async function tryApplyDiskMoveCentral(
   const candidates = await findFileStateByInode(st.ino, st.dev);
   for (const c of candidates) {
     const rec = ctx.si.files.find((f) => f.id === c.file_id);
-    if (!rec || !rec.remote_path) continue;
+    if (!rec?.remote_path) continue;
     const refHash = c.cached_local_hash ?? c.last_synced_hash;
     if (!refHash) continue;
     let oldLocal: string;
