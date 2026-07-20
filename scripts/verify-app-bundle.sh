@@ -5,13 +5,41 @@
 # from repo dist/ where the repo layout hides the gap).
 #
 # Signature checks live in build-signed.sh; this script checks CONTENT only,
-# so it also runs in CI against the tauri-action output.
+# so it also runs in CI against the release artifact.
 #
-# Usage: scripts/verify-app-bundle.sh /path/to/Portuni.app
+# Accepts either a .app bundle or a .dmg. The DMG form matters in CI: with
+# `--bundles dmg` Tauri deletes the intermediate .app once the DMG is built
+# ("Cleaning .../Portuni.app"), so the DMG is the only artifact left -- and
+# it is what users actually download.
+#
+# Usage:
+#   scripts/verify-app-bundle.sh /path/to/Portuni.app
+#   scripts/verify-app-bundle.sh /path/to/Portuni_0.7.0_aarch64.dmg
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-APP="${1:?usage: verify-app-bundle.sh /path/to/Portuni.app}"
+TARGET="${1:?usage: verify-app-bundle.sh /path/to/Portuni.app|.dmg}"
+
+MOUNTPOINT=""
+cleanup() {
+  if [[ -n "$MOUNTPOINT" ]]; then
+    hdiutil detach "$MOUNTPOINT" -quiet || true
+    rmdir "$MOUNTPOINT" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+if [[ "$TARGET" == *.dmg ]]; then
+  [[ -f "$TARGET" ]] || { echo "no such dmg: $TARGET" >&2; exit 1; }
+  MOUNTPOINT="$(mktemp -d /tmp/portuni-verify.XXXXXX)"
+  hdiutil attach "$TARGET" -nobrowse -readonly -mountpoint "$MOUNTPOINT" -quiet
+  # Exactly one .app is expected at the top level of the image.
+  APP="$(find "$MOUNTPOINT" -maxdepth 1 -type d -name "*.app" | head -1)"
+  [[ -n "$APP" ]] || { echo "no .app inside $TARGET" >&2; exit 1; }
+  echo "verifying $(basename "$APP") inside $(basename "$TARGET")"
+else
+  APP="$TARGET"
+fi
 
 [[ -d "$APP" ]] || { echo "not a bundle: $APP" >&2; exit 1; }
 

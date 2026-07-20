@@ -106,11 +106,18 @@ jobs:
           prerelease: false
           args: --target ${{ matrix.target }} --bundles dmg
 
-      # Content smoke test of the actual bundle: fails the release when a
+      # Content smoke test of the shipped artifact: fails the release when a
       # runtime dependency (guard script, native bindings) is missing from
-      # the .app -- the class of bug regular CI can never see because it
-      # only ever runs from repo dist/.
+      # the bundle -- the class of bug regular CI can never see because it
+      # only ever runs from repo dist/. Verifies the DMG, not the .app:
+      # with --bundles dmg Tauri deletes the intermediate .app once the DMG
+      # is built, and the DMG is what users download anyway.
       - name: Verify bundle content
-        run: >
-          scripts/verify-app-bundle.sh
-          "apps/desktop/target/${{ matrix.target }}/release/bundle/macos/Portuni.app"
+        run: |
+          shopt -s nullglob
+          dmgs=(apps/desktop/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
+          if [[ ${#dmgs[@]} -ne 1 ]]; then
+            echo "expected exactly one DMG, found ${#dmgs[@]}: ${dmgs[*]}" >&2
+            exit 1
+          fi
+          scripts/verify-app-bundle.sh "${dmgs[0]}"
