@@ -6,7 +6,7 @@
 // self-fetches on mount and whenever nodeId changes, the same way
 // DetailPane.tsx self-fetches sync status for the Files tab.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Copy, Lock, Plus, Search, User, Users, X } from "lucide-react";
 import type {
   NodeAccessEntry,
@@ -53,14 +53,9 @@ function draftToInput(d: DraftEntry): NodeAccessEntryInput {
   return { kind: "user", principal: d.principal };
 }
 
-// Sort-independent identity key for a set-equality check between the
-// draft and the node's own persisted entries (order doesn't matter).
+// Identity key for entry dedup and stable chip keys.
 function entryKey(d: DraftEntry): string {
   return `${d.kind}:${d.principal}`;
-}
-
-function draftSetKey(entries: DraftEntry[]): string {
-  return entries.map(entryKey).sort().join("|");
 }
 
 type AccessMode = "private" | "request";
@@ -99,14 +94,16 @@ export function AccessSection({
   // view, it never persists by itself (an empty group would 400 server
   // side). Reset whenever the node changes or a mutation actually lands.
   const [editingGroup, setEditingGroup] = useState(false);
-  // Armed when switching away from "Skupina" would drop this node's own
-  // (non-inherited) grants -- holds the target mode until "Potvrdit".
-  // window.confirm is a silent no-op in the Tauri macOS webview (see
-  // WorkspacesSection.tsx / SyncSection.tsx), hence the inline two-step
-  // pattern instead.
-  const [confirmTarget, setConfirmTarget] = useState<VisibilityMode | null>(
-    null,
-  );
+  // Armed when an action would drop this node's own (non-inherited) grants
+  // -- switching the selector away from "Skupina", or removing the last
+  // recipient (an empty group is not a persistable state). Holds the target
+  // mode until "Potvrdit". window.confirm is a silent no-op in the Tauri
+  // macOS webview (see WorkspacesSection.tsx / SyncSection.tsx), hence the
+  // inline two-step pattern instead.
+  const [confirm, setConfirm] = useState<{
+    target: VisibilityMode;
+    kind: "switch" | "last-entry";
+  } | null>(null);
   // Restriction mode of the authoritative node (self when !inherited, the
   // ancestor's when inherited). Null when unrestricted.
   const [mode, setMode] = useState<AccessMode | null>(null);
@@ -128,6 +125,24 @@ export function AccessSection({
   const [addingOpen, setAddingOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Transient "Uloženo" readout after a successful autosave -- the save
+  // button is gone, so this is the only feedback that a change landed.
+  const [justSaved, setJustSaved] = useState(false);
+  const savedTimerRef = useRef<number | null>(null);
+  const flashSaved = useCallback(() => {
+    if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
+    setJustSaved(true);
+    savedTimerRef.current = window.setTimeout(() => {
+      savedTimerRef.current = null;
+      setJustSaved(false);
+    }, 2000);
+  }, []);
+  useEffect(
+    () => () => {
+      if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -137,7 +152,8 @@ export function AccessSection({
     setSaveError(null);
     setOverriding(false);
     setEditingGroup(false);
-    setConfirmTarget(null);
+    setConfirm(null);
+    setJustSaved(false);
     fetchNodeAccess(nodeId)
       .then((res) => {
         if (cancelled) return;
@@ -162,15 +178,16 @@ export function AccessSection({
     };
   }, [nodeId]);
 
-  // `nextVisibility` is the authoritative arg added for the unified sharing
+  // `nextVisibility` is the authoritative arg of the unified sharing
   // control: "team"/"private" force entries empty server-side, "group"
-  // requires >= 1 entry. Omitted (the "Zrušit omezení" call below) keeps
-  // the legacy derive-from-entries behaviour, unchanged from before this
-  // feature.
+  // requires >= 1 entry. Autosave discipline: nothing is applied
+  // optimistically -- local state is overwritten from the PUT response on
+  // success only, so on failure the UI keeps showing what is actually
+  // persisted (plus the error) instead of a state the server never took.
   const persist = async (
     next: DraftEntry[],
     nextMode: AccessMode,
-    nextVisibility?: VisibilityMode,
+    nextVisibility: VisibilityMode,
   ) => {
     setSaving(true);
     setSaveError(null);
@@ -193,7 +210,8 @@ export function AccessSection({
       setOverriding(false);
       setAddingOpen(false);
       setEditingGroup(false);
-      setConfirmTarget(null);
+      setConfirm(null);
+      flashSaved();
       await onMutate();
     } catch (e) {
       console.error(e);
@@ -204,24 +222,50 @@ export function AccessSection({
   };
 
   // Seeds the draft with the ancestor's entries + mode so a manager can
-  // narrow an inherited ACL without re-adding every principal by hand. The
-  // copy only becomes a real override on this node once "Uložit" persists
-  // it -- until then this is purely a local editing-mode switch.
+  // narrow an inherited ACL without re-adding every principal by hand.
+  // Deliberately NOT persisted on click: saving an identical copy would
+  // already detach the node from the ancestor's future ACL changes, so the
+  // copy becomes a real override only with the first actual edit (which
+  // autosaves it).
   const startOverride = () => {
     setDraft(entries.map((e) => ({ ...e })));
     setDraftMode(mode ?? "private");
     setOverriding(true);
   };
 
+  // Autosave: every committed edit persists immediately, matching the rest
+  // of the detail pane (lifecycle, owner, organization all save on change).
+  // The only local-only moments are an empty "Skupina" draft (the server
+  // rightly 400s an empty group) and an untouched "Upravit kopii" seed.
   const addEntry = (entry: DraftEntry) => {
-    setDraft((prev) =>
-      prev.some((d) => entryKey(d) === entryKey(entry)) ? prev : [...prev, entry],
-    );
     setAddingOpen(false);
+    if (draft.some((d) => entryKey(d) === entryKey(entry))) return;
+    void persist([...draft, entry], draftMode, "group");
   };
 
   const removeEntry = (index: number) => {
-    setDraft((prev) => prev.filter((_, i) => i !== index));
+    const next = draft.filter((_, i) => i !== index);
+    if (next.length > 0) {
+      void persist(next, draftMode, "group");
+      return;
+    }
+    // Removing the last recipient: with own persisted grants this is a
+    // destructive switch to "Soukromé" -- same two-step confirm as the
+    // selector. With nothing persisted yet (peek/copy) it only clears the
+    // local seed.
+    if (restricted && !inherited) {
+      setConfirm({ target: "private", kind: "last-entry" });
+      return;
+    }
+    setDraft([]);
+  };
+
+  const changeDraftMode = (m: AccessMode) => {
+    if (draft.length === 0) {
+      setDraftMode(m);
+      return;
+    }
+    void persist(draft, m, "group");
   };
 
   if (loading) {
@@ -251,20 +295,6 @@ export function AccessSection({
   const showReadOnlyChips =
     restricted && (effectiveInherited || !canManage) && entries.length > 0;
 
-  // Dirty check: compare the draft's entry set + mode against what's
-  // actually persisted as this node's OWN acl (empty/"private" when
-  // inherited, since the node has no rows of its own yet). Always uses the
-  // raw (server-persisted) `inherited`/`mode`, not the local `overriding`
-  // switch, so starting a copy immediately shows as dirty (ready to save).
-  const ownKey = inherited ? "" : draftSetKey(entries);
-  const ownMode: AccessMode = inherited ? "private" : (mode ?? "private");
-  // Mode only has meaning once there's at least one entry (an empty draft
-  // has nothing to apply it to, and the server ignores `mode` when entries
-  // is empty) -- ignore it here so toggling mode with an empty draft
-  // doesn't spuriously enable "Uložit".
-  const dirty =
-    draftSetKey(draft) !== ownKey || (draft.length > 0 && draftMode !== ownMode);
-
   // The selector's displayed value: a node effectively governed by a group
   // ACL -- whether the rows are its own or inherited from an ancestor --
   // shows as "Skupina" even though `visibility` (the node's own column)
@@ -279,7 +309,7 @@ export function AccessSection({
     if (saving || target === displayedMode) return;
     if (target === "group") {
       setEditingGroup(true);
-      setConfirmTarget(null);
+      setConfirm(null);
       return;
     }
     // Switching away from "Skupina" to Tým/Soukromé. Only this node's OWN,
@@ -289,7 +319,7 @@ export function AccessSection({
     if (displayedMode === "group") {
       const ownGrantsExist = restricted && !inherited && entries.length > 0;
       if (ownGrantsExist) {
-        setConfirmTarget(target);
+        setConfirm({ target, kind: "switch" });
         return;
       }
     }
@@ -297,8 +327,8 @@ export function AccessSection({
   };
 
   const confirmSwitch = () => {
-    const target = confirmTarget;
-    setConfirmTarget(null);
+    const target = confirm?.target;
+    setConfirm(null);
     if (target) void persist([], "private", target);
   };
 
@@ -375,7 +405,12 @@ export function AccessSection({
 
       {canManage && (
         <>
-          <ModeToggle value={draftMode} onChange={setDraftMode} disabled={saving} />
+          {overriding && inherited && (
+            <p className="text-[12px] text-[var(--color-text-dim)]">
+              Upravuješ kopii zděděného sdílení – uloží se s první změnou.
+            </p>
+          )}
+          <ModeToggle value={draftMode} onChange={changeDraftMode} disabled={saving} />
           <div className="flex flex-wrap items-center gap-1.5">
             {draft.map((e, i) => (
               <Chip key={entryKey(e)} entry={e} onRemove={() => removeEntry(i)} />
@@ -399,38 +434,21 @@ export function AccessSection({
           </div>
           {draft.length === 0 && (
             <p className="text-[12px] text-[var(--color-text-dim)]">
-              Přidej aspoň jednoho příjemce, jinak node uvidí jen správci.
+              Zatím neuloženo – sdílení pro skupinu se uloží s prvním
+              příjemcem. Bez příjemců node uvidí jen správci.
             </p>
           )}
-          <div className="flex gap-2 pt-0.5">
-            <button
-              type="button"
-              onClick={() => void persist(draft, draftMode, "group")}
-              disabled={saving || !dirty || draft.length === 0}
-              className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[13px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
-            >
-              {saving ? "Ukládám..." : "Uložit"}
-            </button>
-            {restricted && !inherited && (
-              <button
-                type="button"
-                onClick={() => void persist([], "private")}
-                disabled={saving}
-                className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
-              >
-                Zrušit omezení
-              </button>
-            )}
-          </div>
         </>
       )}
       </div>
       )}
 
-      {confirmTarget && (
+      {confirm && (
         <div className="space-y-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
           <p className="text-[12.5px] text-[var(--color-text-muted)]">
-            Přepnutím odebereš {entries.length} sdílení.
+            {confirm.kind === "last-entry"
+              ? "Odebráním posledního příjemce se sdílení zruší a node bude Soukromý."
+              : `Přepnutím odebereš ${entries.length} sdílení.`}
           </p>
           <div className="flex gap-2">
             <button
@@ -443,7 +461,7 @@ export function AccessSection({
             </button>
             <button
               type="button"
-              onClick={() => setConfirmTarget(null)}
+              onClick={() => setConfirm(null)}
               disabled={saving}
               className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
             >
@@ -453,6 +471,12 @@ export function AccessSection({
         </div>
       )}
 
+      {saving && (
+        <p className="text-[12px] text-[var(--color-text-dim)]">Ukládám…</p>
+      )}
+      {!saving && justSaved && !saveError && (
+        <p className="text-[12px] text-[var(--color-text-dim)]">Uloženo</p>
+      )}
       {saveError && (
         <p className="text-[12px]" style={{ color: "var(--color-danger)" }}>
           {saveError}

@@ -71,7 +71,8 @@ The middle column of the workspace view holds full xterm.js terminals wired to a
 
 The detail pane on the right is editable in both Graph and Workspace views:
 
-- **Edit fields** — name, description, goal, lifecycle state, owner, visibility. Each field has its own `Pencil` toggle; changes commit on `Save`.
+- **Edit fields** — name, description and goal have their own `Pencil` toggle and commit on `Save`; lifecycle state and owner save immediately on selection.
+- **Sharing (Sdílení)** — the visibility selector (Všichni / Soukromé / Skupina) and the group recipient list autosave: every change persists immediately, with a brief "Uloženo" readout. The two destructive cases — switching away from a group with existing grants, or removing its last recipient — ask for an inline confirmation first. A group with no recipients yet is the only unsaved state; it persists once the first recipient is added.
 - **Responsibilities** — add, edit, reorder (drag), delete; assign actors per row.
 - **Data sources & tools** — add/remove with name + optional URL.
 - **Edges** — outgoing and incoming, with a `→` / `←` indicator. Click an edge target to navigate to it (updates `?node=`).
