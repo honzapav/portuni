@@ -16,6 +16,7 @@ import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { routeApiRequest } from "../apps/server/api/router.js";
+import { createNodeInternal } from "../apps/server/domain/nodes.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 import type { IdentityContext } from "../apps/server/auth/request-identity.js";
 import type { IdentityAdapter } from "../apps/server/auth/adapter.js";
@@ -324,6 +325,35 @@ describe("GET/PUT /nodes/:id/access", () => {
     assert.match(JSON.parse(captured.body).error, /group visibility requires at least one/);
     const nodeRow = await db.execute({ sql: "SELECT visibility FROM nodes WHERE id = ?", args: [nodeId] });
     assert.equal(nodeRow.rows[0].visibility, "team", "rejected PUT must not mutate visibility");
+  });
+
+  // Regression: the raw-INSERT fixtures above get created_at from the column
+  // DEFAULT datetime('now') ("YYYY-MM-DD HH:MM:SS"), but real nodes are
+  // created by createNodeInternal with an ISO created_at ("...T..."). The
+  // PUT handler used to write updated_at = datetime('now'), which
+  // string-compares BELOW any same-day ISO value (space < "T") and tripped
+  // CHECK(updated_at >= created_at) -- so changing sharing 500'd on every
+  // API-created node while passing against every test fixture.
+  test("U5. PUT succeeds on a node created through createNodeInternal (ISO created_at)", async () => {
+    const manager = makeManager();
+    const nodeId = await createNodeInternal(db, SOLO, {
+      type: "project",
+      name: "UNode5-real-created",
+      organization_id: orgId,
+    });
+    const { req, res, captured } = makeMockReqRes("PUT", `/nodes/${nodeId}/access`, {
+      entries: [{ kind: "group", principal: "eng@x.com", display_email: "eng@x.com" }],
+      visibility: "group",
+      mode: "private",
+    });
+    await routeApiRequest(req, res, new URL(`http://localhost/nodes/${nodeId}/access`), manager);
+    assert.equal(captured.statusCode, 200, captured.body);
+    const nodeRow = await db.execute({
+      sql: "SELECT visibility, updated_at >= created_at AS ordered FROM nodes WHERE id = ?",
+      args: [nodeId],
+    });
+    assert.equal(nodeRow.rows[0].visibility, "group");
+    assert.equal(Number(nodeRow.rows[0].ordered), 1);
   });
 
   // 2. GET returns own list, inherited false, display_name from users JOIN.

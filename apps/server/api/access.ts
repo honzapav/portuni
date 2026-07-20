@@ -243,8 +243,13 @@ export async function handlePutNodeAccess(
         ],
       })),
       {
-        sql: "UPDATE nodes SET visibility = ?, access_mode = ?, updated_at = datetime('now') WHERE id = ?",
-        args: [newVisibility, newAccessMode, nodeId],
+        // ISO timestamp like every other nodes.updated_at write: created_at
+        // is ISO ("...T..."), and datetime('now') produces "YYYY-MM-DD
+        // HH:MM:SS" which string-compares BELOW any same-day ISO value
+        // (space < "T"), tripping the CHECK(updated_at >= created_at) on
+        // every node created through the API.
+        sql: "UPDATE nodes SET visibility = ?, access_mode = ?, updated_at = ? WHERE id = ?",
+        args: [newVisibility, newAccessMode, new Date().toISOString(), nodeId],
       },
     ];
     await db.batch(statements, "write");
