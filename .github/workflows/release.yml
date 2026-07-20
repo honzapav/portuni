@@ -105,3 +105,12 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }} --bundles dmg
+
+      # Content smoke test of the actual bundle: fails the release when a
+      # runtime dependency (guard script, native bindings) is missing from
+      # the .app -- the class of bug regular CI can never see because it
+      # only ever runs from repo dist/.
+      - name: Verify bundle content
+        run: >
+          scripts/verify-app-bundle.sh
+          "apps/desktop/target/${{ matrix.target }}/release/bundle/macos/Portuni.app"

@@ -42,6 +42,9 @@ fi
 echo
 echo "=== verification: $APP"
 
+echo "--- bundle content (guard script, native bindings, sidecar)"
+"$REPO/scripts/verify-app-bundle.sh" "$APP"
+
 echo "--- codesign deep verify"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
