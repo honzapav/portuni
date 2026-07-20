@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/honzapav/portuni/compare/v0.6.0...v0.7.0) (2026-07-20)
+
+
+### Features
+
+* **web:** autosave the sharing tab ([e1b1f47](https://github.com/honzapav/portuni/commit/e1b1f47341af0343fd3f4054ecbca968316b3e70))
+
+
+### Bug Fixes
+
+* **api:** write ISO updated_at when saving node access ([9f65abe](https://github.com/honzapav/portuni/commit/9f65abe338dd1c0e620d0ad8bb1999e5127e4e42))
+
 ## [0.6.0](https://github.com/honzapav/portuni/compare/v0.5.0...v0.6.0) (2026-07-19)
 
 
