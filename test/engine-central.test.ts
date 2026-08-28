@@ -196,9 +196,35 @@ class FakeCentral implements CentralClient {
 
   sweepCalls = 0;
   sweepResult: RemoteSweepResult = { adopted: [], deleted_on_remote: [], errors: [] };
+  // Content to install for each `sweepResult.adopted` entry -- keyed by
+  // remote_path. The real remoteSweep confirms the object on the remote
+  // *before* adopting it, i.e. the record + bytes exist on the remote by
+  // the time it returns; this fake mirrors that by actually mutating
+  // `this.records`/`this.bytes` (which `syncInfo()` reads live) rather than
+  // just returning a canned result, so a caller that reads sync-info AFTER
+  // calling remoteSweep sees the adopted file, and one that reads it BEFORE
+  // (i.e. an incorrectly reordered syncRunCentral) does not.
+  sweepBytes = new Map<string, Buffer>();
   async remoteSweep(nodeId: string): Promise<RemoteSweepResult> {
     if (nodeId !== NODE_ID) throw new CentralHttpError("not found", 404, "NOT_FOUND");
     this.sweepCalls++;
+    for (const f of this.sweepResult.adopted) {
+      if (!this.records.has(f.remote_path)) {
+        this.records.set(f.remote_path, {
+          id: f.file_id,
+          filename: f.filename,
+          status: f.remote_path.includes("/outputs/") ? "output" : "wip",
+          is_native_format: false,
+        });
+      }
+      if (!this.bytes.has(f.remote_path)) {
+        this.bytes.set(f.remote_path, this.sweepBytes.get(f.remote_path) ?? Buffer.from(""));
+      }
+    }
+    for (const f of this.sweepResult.deleted_on_remote) {
+      this.records.delete(f.remote_path);
+      this.bytes.delete(f.remote_path);
+    }
     return this.sweepResult;
   }
 
@@ -467,17 +493,32 @@ describe("push/pull via syncRunCentral", () => {
     );
   });
 
-  it("sync run calls the central remote sweep first and reports its results", async () => {
+  it("sync run's scan sees the sweep's new record -- the sweep must run before loadNodeContext", async () => {
     const fake = new FakeCentral();
     await setupMirror();
+    const remotePath = posix.join(NODE_ROOT, "outputs/report.md");
+    const content = Buffer.from("swept in from remote");
     fake.sweepResult = {
-      adopted: [{ file_id: "F9", filename: "report.md", remote_path: posix.join(NODE_ROOT, "outputs/report.md") }],
+      adopted: [{ file_id: "F9", filename: "report.md", remote_path: remotePath }],
       deleted_on_remote: [],
       errors: [],
     };
+    fake.sweepBytes.set(remotePath, content);
     const r = await syncRunCentral(fake, { userId: "U1", nodeId: NODE_ID });
     assert.equal(fake.sweepCalls, 1);
     assert.deepEqual(r.adopted_remote, [{ file_id: "F9", filename: "report.md" }]);
+    // FakeCentral.remoteSweep() only puts the "F9" record + bytes into
+    // fake.records/fake.bytes when it runs -- FakeCentral.syncInfo() is a
+    // live snapshot of that state at call time, with no caching of its own.
+    // So the scan classifying this file as a pull, and this same run
+    // pulling it down to disk, is only possible if loadNodeContext's
+    // syncInfo() call happened AFTER remoteSweep() ran, not before.
+    // Swapping the two lines in syncRunCentral makes this assertion fail
+    // (pulled stays empty, the file is never written locally) even though
+    // the assertions above it still pass.
+    assert.deepEqual(r.pulled, [{ file_id: "F9", filename: "report.md" }]);
+    const localPath = join(mirrorRoot, "outputs", "report.md");
+    assert.equal(await readFile(localPath, "utf8"), "swept in from remote");
   });
 });
 

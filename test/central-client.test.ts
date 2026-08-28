@@ -264,4 +264,37 @@ describe("createHttpCentralClient", () => {
       (e: unknown) => e instanceof CentralHttpError && e.status === 500,
     );
   });
+
+  it("remoteSweep posts to the right URL and invalidates the sync-info cache", async () => {
+    const { fetchImpl, calls } = fakeFetch([
+      { status: 200, json: { node: { id: "N1" }, remote_name: "r", files: [] } },
+      {
+        status: 200,
+        json: {
+          adopted: [{ file_id: "F1", filename: "a.md", remote_path: "p/a.md" }],
+          deleted_on_remote: [],
+          errors: [],
+        },
+      },
+      { status: 200, json: { node: { id: "N1" }, remote_name: "r", files: [{ id: "F1" }] } },
+    ]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl, syncInfoTtlMs: 60_000 });
+    await c.syncInfo("N1");
+    const result = await c.remoteSweep("N1");
+    assert.equal(calls[1].method, "POST");
+    assert.equal(calls[1].url, "https://api.example.com/nodes/N1/sync/remote-sweep");
+    assert.deepEqual(result.adopted, [{ file_id: "F1", filename: "a.md", remote_path: "p/a.md" }]);
+    const after = await c.syncInfo("N1");
+    assert.equal(calls.length, 3); // info, sweep, fresh info -- the sweep must invalidate the cache
+    assert.equal((after.files as unknown[]).length, 1);
+  });
+
+  it("remoteSweep maps a non-200 status to CentralHttpError", async () => {
+    const { fetchImpl } = fakeFetch([{ status: 404, json: { error: "node not found", code: "NOT_FOUND" } }]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    await assert.rejects(
+      () => c.remoteSweep("N1"),
+      (e: unknown) => e instanceof CentralHttpError && e.status === 404 && e.code === "NOT_FOUND",
+    );
+  });
 });
