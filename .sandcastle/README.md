@@ -16,6 +16,7 @@ usage limits (waits for the reset, resumes). Harness derived from
 | `limit.mts` (+ test) | Limit message detection and reset-wait computation |
 | `prompt.md` | RALPH prompt: issue selection, gate, publish rules, `{{SCOPE}}` |
 | `start-loop.sh` | Launcher: fail-fast checks + tmux + caffeinate |
+| `launchd/` + `install-launchd.sh` | On-demand LaunchAgent so the launcher runs in the GUI session (unlocked keychain) |
 | `Dockerfile` | node:22 + gh + claude-code + Rust toolchain + Tauri Linux deps |
 | `.env` | Variable names only (empty values); `start-loop.sh` fills them from the Keychain |
 | `logs/` | `loop.log` (supervisor) + per-run agent logs |
@@ -41,11 +42,15 @@ usage limits (waits for the reset, resumes). Harness derived from
 ## Run
 
 ```bash
-ssh -t honzas-macbook-pro 'cd ~/Dev/projekty/portuni && ./.sandcastle/start-loop.sh'
+ssh honzas-macbook-pro 'launchctl kickstart gui/501/ooo.workflow.sandcastle.portuni'
 ```
 
-`-t` is required: the launcher runs `security unlock-keychain`, which prompts
-for the old Mac's login password, then reads the tokens.
+The LaunchAgent (`launchd/`, installed once with `./.sandcastle/install-launchd.sh`
+on the old Mac) runs `start-loop.sh` inside the GUI session, where the login
+keychain is unlocked, so no password prompt. Its output is in
+`.sandcastle/logs/launchd.{out,err}.log`; the loop itself runs in tmux as below.
+Fallback without the agent: `ssh -t … ./.sandcastle/start-loop.sh` (prompts for
+the login password to unlock the keychain).
 
 Watch: `ssh -t honzas-macbook-pro 'tmux attach -t sandcastle-portuni'` (detach Ctrl-b d).
 Stop: `ssh honzas-macbook-pro 'tmux kill-session -t sandcastle-portuni'`.

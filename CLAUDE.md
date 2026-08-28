@@ -86,8 +86,9 @@ tmux loop for backend iteration.
 `.sandcastle/` is the RALPH harness: an autonomous Claude Code agent in a
 Docker container working through GitHub issues labelled `ready-for-agent`
 on a batch branch, PR only (never merges). It runs on the old Mac (ssh host
-`honzas-macbook-pro`, clone `~/Dev/projekty/portuni`), started over
-`ssh -t … ./.sandcastle/start-loop.sh` (tmux session `sandcastle-portuni`);
+`honzas-macbook-pro`, clone `~/Dev/projekty/portuni`), started over ssh with
+`launchctl kickstart gui/501/ooo.workflow.sandcastle.portuni` (LaunchAgent →
+`start-loop.sh` → tmux session `sandcastle-portuni`);
 secrets come from that Mac's Keychain (`sandcastle.claude-code.oauth-token`,
 `sandcastle.portuni.github-pat`), never from disk. Docker image
 `sandcastle:portuni`. Never provision those entries, the image or a worktree
