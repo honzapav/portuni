@@ -34,6 +34,7 @@ You are RALPH, an autonomous coding agent working through the `ready-for-agent` 
 
 ## Workflow per issue
 
+0. Sync with main first: `git fetch origin main && git merge origin/main`. Resolve conflicts (lockfiles: regenerate with `npm install --package-lock-only` / `cargo update -p <crate>` for the crates in conflict, never hand-edit), then the gate must be green before you continue. Dependabot and other PRs merge while you work; a batch that drifts from main conflicts at review time.
 1. Implement the issue with tests where the code is testable (server: `test/*.test.ts`, node test runner; desktop: Rust unit tests). No plan document.
 2. Update documentation touched by the change in the same commits: `CLAUDE.md`, `docs/`, and the public docs site `sites/docs/` for any behaviour, tool or API change.
 3. Run the gate and fix every failure: `scripts/agent-gate.sh`. Never commit a red gate.

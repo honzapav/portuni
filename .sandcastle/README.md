@@ -27,7 +27,7 @@ usage limits (waits for the reset, resumes). Harness derived from
 2. `.sandcastle/.env` filled from `env.example`.
 3. `(cd .sandcastle && npm ci)`.
 4. Image built: `./.sandcastle/node_modules/.bin/sandcastle docker build-image --image-name sandcastle:portuni --dockerfile .sandcastle/Dockerfile`
-5. Main working tree not on the batch branch (`git checkout main`), fast-forward of `origin/main`.
+5. Main working tree on `main` and clean; the launcher fast-forwards it to `origin/main` and refuses to start when local commits are ahead (e.g. an `udrzba/` branch left by the AIQ maintenance lane).
 
 ## Run (from another Mac)
 

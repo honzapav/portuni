@@ -30,10 +30,23 @@ for key in CLAUDE_CODE_OAUTH_TOKEN GH_TOKEN; do
   fi
 done
 
-# Never start from a stale branch: the agent branches off HEAD.
+# The agent branches off HEAD of this clone, so HEAD must be exactly
+# origin/main: on main, clean, fast-forwarded. A stale clone is pulled
+# forward here; a clone that is AHEAD (local commits, e.g. an udrzba/ branch
+# left checked out by the AIQ maintenance lane) is refused, otherwise those
+# commits would leak into the agent's batch PR.
+if [[ "$(git rev-parse --abbrev-ref HEAD)" != "main" ]]; then
+  echo "Main working tree must have 'main' checked out (is on $(git rev-parse --abbrev-ref HEAD))." >&2
+  exit 1
+fi
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "Main working tree is not clean; commit, stash or discard the changes first." >&2
+  exit 1
+fi
 git fetch origin main --quiet
-if ! git merge-base --is-ancestor origin/main HEAD; then
-  echo "HEAD is not a fast-forward of origin/main. Run: git merge --ff-only origin/main, then start again." >&2
+git merge --ff-only origin/main --quiet
+if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+  echo "HEAD is ahead of origin/main ($(git log --oneline origin/main..HEAD | wc -l | tr -d ' ') local commits). Push or drop them first." >&2
   exit 1
 fi
 
