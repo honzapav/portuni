@@ -63,6 +63,14 @@ Bitwarden item **"Portuni Apple signing"** and in GitHub repo secrets.
    built app from a fresh user session / after
    `xattr -w com.apple.quarantine ...` to confirm Gatekeeper is happy.
 
+6. **Updater signing key** (done 2026-08-28): minisign keypair from
+   `cargo tauri signer generate`, private key + password as repo secrets
+   `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`,
+   backup in Bitwarden item **"Portuni updater signing"**, public key in
+   `apps/desktop/tauri.conf.json` → `plugins.updater.pubkey`. Losing the
+   private key means installed apps can never auto-update again (users must
+   download a DMG). Rotating it has the same effect.
+
 Done 2026-07-04. Values live in the Bitwarden item; ad-hoc `notarytool`
 commands (history, log, submit) can also use the Keychain credential
 profile `portuni-notary` (`--keychain-profile portuni-notary`) without

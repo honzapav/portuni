@@ -18,6 +18,10 @@ name: Release
 #   APPLE_ID                   Apple ID email of the developer account
 #   APPLE_PASSWORD             app-specific password (appleid.apple.com)
 #   APPLE_TEAM_ID              10-char team ID (developer.apple.com → Membership)
+# Updater signing (Bitwarden item "Portuni updater signing"; public key in
+# tauri.conf.json plugins.updater.pubkey):
+#   TAURI_SIGNING_PRIVATE_KEY          minisign private key (file content)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD its password
 # If any secret is missing the build still succeeds — Tauri skips
 # signing/notarization and ships an unsigned DMG (Gatekeeper dialog).
 
