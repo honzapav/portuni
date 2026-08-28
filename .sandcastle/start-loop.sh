@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 # Starts the sandcastle loop in a background tmux session (with caffeinate).
-# Watch:  tmux attach -t sandcastle-portuni   (detach Ctrl-b d)
-# Stop:   tmux kill-session -t sandcastle-portuni
+# Watch:  tmux -L sandcastle attach -t sandcastle-portuni   (detach Ctrl-b d)
+# Stop:   tmux -L sandcastle kill-session -t sandcastle-portuni
 set -euo pipefail
+
+# Own tmux socket, not the user's default server. A session created on an
+# already-running server inherits that server's global environment (captured
+# when the server started), not this shell's: only `update-environment` keys
+# (DISPLAY, SSH_AUTH_SOCK, ...) are copied from the client. The tokens
+# exported below would be dropped. A server started by this script takes its
+# global environment from this process, so the session sees them.
+TMUX_SOCKET=sandcastle
+SESSION=sandcastle-portuni
 
 cd "$(dirname "$0")/.."
 
@@ -94,12 +103,24 @@ if ! docker image inspect sandcastle:portuni >/dev/null 2>&1; then
   exit 1
 fi
 
-if tmux has-session -t sandcastle-portuni 2>/dev/null; then
-  echo "Session sandcastle-portuni is already running: tmux attach -t sandcastle-portuni" >&2
+if tmux -L "$TMUX_SOCKET" has-session -t "$SESSION" 2>/dev/null; then
+  echo "Session $SESSION is already running: tmux -L $TMUX_SOCKET attach -t $SESSION" >&2
   exit 1
 fi
 
 mkdir -p .sandcastle/logs
-tmux new-session -d -s sandcastle-portuni \
+tmux -L "$TMUX_SOCKET" new-session -d -s "$SESSION" \
   'caffeinate -is ./.sandcastle/node_modules/.bin/tsx .sandcastle/main.mts 2>&1 | tee -a .sandcastle/logs/loop.log'
-echo "Loop running in tmux session sandcastle-portuni. Log: .sandcastle/logs/loop.log"
+
+# Fail loudly instead of letting the agent run without credentials: without
+# them every run dies on `gh auth setup-git`. Values stay unprinted.
+for var in CLAUDE_CODE_OAUTH_TOKEN GH_TOKEN; do
+  if ! tmux -L "$TMUX_SOCKET" show-environment -t "$SESSION" "$var" >/dev/null 2>&1; then
+    tmux -L "$TMUX_SOCKET" kill-session -t "$SESSION" 2>/dev/null || true
+    echo "$var did not reach the tmux session; the loop would fail on every run." >&2
+    exit 1
+  fi
+done
+
+echo "Loop running in tmux session $SESSION (socket $TMUX_SOCKET). Log: .sandcastle/logs/loop.log"
+echo "Watch: tmux -L $TMUX_SOCKET attach -t $SESSION"

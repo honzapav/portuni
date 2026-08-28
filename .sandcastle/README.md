@@ -47,8 +47,15 @@ ssh -t honzas-macbook-pro 'cd ~/Dev/projekty/portuni && ./.sandcastle/start-loop
 `-t` is required: the launcher runs `security unlock-keychain`, which prompts
 for the old Mac's login password, then reads the tokens.
 
-Watch: `ssh -t honzas-macbook-pro 'tmux attach -t sandcastle-portuni'` (detach Ctrl-b d).
-Stop: `ssh honzas-macbook-pro 'tmux kill-session -t sandcastle-portuni'`.
+Watch: `ssh -t honzas-macbook-pro 'tmux -L sandcastle attach -t sandcastle-portuni'`
+(detach Ctrl-b d).
+Stop: `ssh honzas-macbook-pro 'tmux -L sandcastle kill-session -t sandcastle-portuni'`.
+
+The loop runs on its own tmux socket (`-L sandcastle`), not on the default
+server. A session on an already-running server inherits that server's global
+environment from when it started, so the tokens `start-loop.sh` exports would
+never reach the supervisor.
+
 Deploy harness changes: merge to `main`, then `ssh honzas-macbook-pro 'cd ~/Dev/projekty/portuni && git pull --ff-only'`
 (the image needs a rebuild only when the Dockerfile changes).
 
