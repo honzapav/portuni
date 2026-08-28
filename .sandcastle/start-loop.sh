@@ -13,11 +13,12 @@ if ! command -v node >/dev/null 2>&1; then
   [[ -n "$NVM_NODE" ]] && export PATH="$NVM_NODE:$PATH"
 fi
 
-# Docker credential helper lives in /usr/local/bin (symlink into Docker.app);
-# non-interactive PATH lacks it and image pulls fail with "error getting credentials".
-if ! command -v docker-credential-desktop >/dev/null 2>&1; then
-  export PATH="$PATH:/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin"
-fi
+# ssh sessions get a minimal PATH: Homebrew (tmux, docker CLI) and the Docker
+# credential helper (/usr/local/bin, symlink into Docker.app) are missing.
+export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin"
+for tool in tmux docker caffeinate; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "Missing $tool on PATH." >&2; exit 1; }
+done
 
 # Secrets live in the macOS Keychain, never on disk. The committed
 # .sandcastle/.env lists the variable names with empty values; sandcastle
