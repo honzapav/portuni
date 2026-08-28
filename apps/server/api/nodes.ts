@@ -8,15 +8,17 @@ import {
   NODE_TYPES,
   NODE_VISIBILITIES,
 } from "../infra/schema.js";
-import { buildNodeRoot } from "../domain/sync/remote-path.js";
+import { buildNodeRoot, deriveLocalPath } from "../domain/sync/remote-path.js";
 import { resolveRemote } from "../domain/sync/routing.js";
 import { getAdapter } from "../domain/sync/adapter-cache.js";
+import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import {
   statusScan,
   storeFile,
   pullFile,
   matchDeleteTombstones,
   cleanupDeletedRemote,
+  resolveNodeInfo,
 } from "../domain/sync/engine.js";
 import { listUntrackedLocal } from "../domain/sync/discover-local.js";
 import { remoteSweep } from "../domain/sync/remote-sweep.js";
@@ -688,6 +690,80 @@ export async function handleRemoteSweep(
     respondJson(res, 200, await remoteSweep(db, { userId: identity.userId, nodeId }));
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sync/remote-sweep`, err);
+  }
+}
+
+const RESOLVE_ACTIONS = new Set(["keep_local", "take_remote", "restore"]);
+
+// Resolves the two decisions the deterministic reconciler cannot make on
+// its own: a `conflict` (both sides changed -- keep_local pushes the local
+// version over the remote one, take_remote overwrites local with it) and a
+// `deleted_local` file (restore re-downloads it). Portuni never auto-merges,
+// so each action overwrites only the side the user did NOT pick --
+// keep_local/take_remote both act on exactly one file (never a bulk apply),
+// and restore is a plain (non-forced) pull, which already refuses to
+// clobber a local file with unpushed changes -- see pullFile's dirty guard.
+export async function handleResolveFile(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  nodeId: string,
+  fileId: string,
+): Promise<void> {
+  try {
+    const body = (await parseBody(req)) as { action?: string } | undefined;
+    const action = body?.action;
+    if (!action || !RESOLVE_ACTIONS.has(action)) {
+      respondJson(res, 400, { error: "action must be keep_local | take_remote | restore" });
+      return;
+    }
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    if (action === "keep_local") {
+      const row = await db.execute({
+        sql: "SELECT remote_path FROM files WHERE id = ?",
+        args: [fileId],
+      });
+      if (row.rows.length === 0) {
+        respondJson(res, 404, { error: "file not found" });
+        return;
+      }
+      const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
+      if (!mirrorRoot) {
+        respondJson(res, 409, { error: "node has no mirror on this device" });
+        return;
+      }
+      const localPath = deriveLocalPath({
+        mirrorRoot,
+        nodeRoot: buildNodeRoot(await resolveNodeInfo(db, nodeId)),
+        remotePath: row.rows[0].remote_path as string,
+      });
+      await storeFile(db, { userId: identity.userId, nodeId, localPath });
+    } else {
+      const pulled = await pullFile(db, {
+        userId: identity.userId,
+        fileId,
+        force: action === "take_remote",
+      });
+      // A resolve confirms exactly what is now on the remote. pullFile
+      // itself never touches files.current_remote_hash (a plain pull
+      // downloads exactly what that column already recorded from whichever
+      // device last pushed, so it stays correct on its own); it only goes
+      // stale when the remote was edited out of band -- precisely the
+      // scenario a conflict resolve exists for. Refresh it here so the
+      // fast-mode sync-status the UI reads doesn't keep showing the file as
+      // a pull candidate right after it was just resolved.
+      await db.execute({
+        sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
+        args: [pulled.hash, fileId],
+      });
+    }
+    respondJson(res, 200, { file_id: fileId, action, status: "ok" });
+  } catch (err) {
+    respondError(res, `POST /nodes/${nodeId}/files/${fileId}/resolve`, err);
   }
 }
 

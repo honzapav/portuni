@@ -48,9 +48,12 @@ type LocalHandler = (
 // CentralClient has no "look up by file id" endpoint (sync-info is scoped
 // per node), so -- like computeSyncPendingCentral's cross-mirror
 // aggregate -- this fans out to every mirrored node's sync-info. Builds
-// just enough of a StatusFileEntry for pullFileCentral to derive the local
-// path itself.
-async function findEntryByFileId(
+// just enough of a StatusFileEntry for pullFileCentral/storeFileCentral to
+// act on directly -- local_path is derived here (same technique as
+// classifyRecord in engine-central.ts) rather than left null, so a caller
+// like the resolve endpoint's "keep_local" can hand it straight to
+// storeFileCentral without a second round-trip.
+export async function findEntryByFileId(
   client: CentralClient,
   userId: string,
   fileId: string,
@@ -61,13 +64,32 @@ async function findEntryByFileId(
   for (const si of infos) {
     const rec = si.files.find((f) => f.id === fileId);
     if (rec) {
+      const mirrorRoot = await getMirrorPath(userId, si.node.id);
+      const localPath =
+        mirrorRoot && rec.remote_path
+          ? (() => {
+              try {
+                return deriveLocalPath({
+                  mirrorRoot,
+                  nodeRoot: buildNodeRoot({
+                    orgSyncKey: si.node.org_sync_key,
+                    nodeType: si.node.type,
+                    nodeSyncKey: si.node.sync_key,
+                  }),
+                  remotePath: rec.remote_path,
+                });
+              } catch {
+                return null;
+              }
+            })()
+          : null;
       return {
         nodeId: si.node.id,
         entry: {
           file_id: rec.id,
           node_id: si.node.id,
           filename: rec.filename,
-          local_path: null,
+          local_path: localPath,
           remote_name: si.remote_name,
           remote_path: rec.remote_path,
           local_hash: null,

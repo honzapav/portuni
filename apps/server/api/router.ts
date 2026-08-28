@@ -74,6 +74,7 @@ import {
   handlePatchNode,
   handlePositions,
   handleRemoteSweep,
+  handleResolveFile,
   handleSyncPending,
   handleSyncRun,
   handleSyncStatus,
@@ -437,6 +438,18 @@ async function routeFiles(
       identity,
       decodeURIComponent(moveMatch[1]),
       decodeURIComponent(moveMatch[2]),
+    );
+    return true;
+  }
+
+  const resolveMatch = pathname.match(/^\/nodes\/([^/]+)\/files\/([^/]+)\/resolve$/);
+  if (resolveMatch && method === "POST") {
+    await handleResolveFile(
+      req,
+      res,
+      identity,
+      decodeURIComponent(resolveMatch[1]),
+      decodeURIComponent(resolveMatch[2]),
     );
     return true;
   }

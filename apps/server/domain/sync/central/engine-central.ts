@@ -505,6 +505,11 @@ export interface StoreFileCentralArgs {
   status?: "wip" | "output";
   // Optional sub-directory within the section for an outside source.
   subpath?: string | null;
+  // Resolve-endpoint escape hatch (Task 7, "keep_local"): replace the
+  // normal baseCanonicalHash/ifAbsent precondition outright instead of
+  // layering on top of it, so a deliberate "keep the local version" choice
+  // can never be refused by a stale-hash conflict check.
+  force?: boolean;
 }
 
 // Resolve the in-mirror destination for a store, copying the source in when it
@@ -602,7 +607,11 @@ export async function storeFileCentral(
       a.nodeId,
       relPath,
       bytes,
-      baseline !== null ? { baseCanonicalHash: baseline } : { ifAbsent: true },
+      a.force
+        ? { force: true }
+        : baseline !== null
+          ? { baseCanonicalHash: baseline }
+          : { ifAbsent: true },
     );
   } catch (e) {
     if (e instanceof CentralHttpError && e.code === "EXISTS" && baseline === null) {
