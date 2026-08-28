@@ -38,8 +38,12 @@ steps are `human-only` issues.
 - Updater artefacts (`Portuni.app.tar.gz`, `.sig`, `latest.json`) are built
   only in CI: `apps/desktop/tauri.release.conf.json` sets
   `bundle.createUpdaterArtifacts: true` and `release.yml` passes it via
-  `--config`. Local `scripts/build-signed.sh` builds stay unchanged and need no
-  updater key.
+  `--config tauri.release.conf.json`. The bundle list must be `app,dmg`:
+  with `--bundles dmg` alone Tauri warns „no updater-enabled targets were
+  built“ and produces no tarball (verified locally, tauri-cli 2.11.4). The
+  `.app` then stays next to the DMG; `scripts/verify-app-bundle.sh` keeps
+  verifying the DMG. Local `scripts/build-signed.sh` builds stay unchanged and
+  need no updater key.
 - `release.yml`: the two new secrets in tauri-action env; `includeUpdaterJson:
   true`; the verify step asserts `Portuni.app.tar.gz` + `.sig` + `latest.json`
   exist and that `latest.json` `version` equals the tag without `v`.
@@ -88,10 +92,6 @@ Agent (Linux container, CI): `npm run qa`, `apps/web` typecheck + build,
 build.
 
 Human (macOS):
-- Before the issues start: confirm `cargo tauri build --bundles dmg --config
-  tauri.release.conf.json` with a throwaway key produces `Portuni.app.tar.gz` +
-  `.sig` next to the DMG (release.yml deletes the intermediate `.app`; the
-  updater tarball must be created before that).
 - Generate the real key, set the secrets, store the backup.
 - End-to-end on a branch: test config with endpoint
   `http://localhost:4012/latest.json` and

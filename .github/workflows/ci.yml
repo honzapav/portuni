@@ -37,3 +37,40 @@ jobs:
       - run: npm ci --prefix apps/web
       - run: npx --prefix apps/web tsc -b apps/web --noEmit
       - run: npm --prefix apps/web run build
+
+  desktop:
+    name: Desktop (cargo test, clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev libdbus-1-dev
+      # tauri-build validates externalBin + resources at compile time; the
+      # sidecar is not built here (release.yml does that), so stand in for it.
+      - run: scripts/desktop-dev-placeholders.sh
+      - run: cargo test
+        working-directory: apps/desktop
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: apps/desktop
+
+  docs:
+    name: Docs site (build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: sites/docs/package-lock.json
+      - run: npm ci --prefix sites/docs
+      - run: npm --prefix sites/docs run build

@@ -1,0 +1,13 @@
+{
+  "name": "portuni-sandcastle-harness",
+  "private": true,
+  "type": "module",
+  "description": "Sandcastle RALPH-loop harness for the Portuni ready-for-agent backlog. Self-contained. Launch via ./.sandcastle/start-loop.sh from the repo root.",
+  "scripts": {
+    "test": "node --test limit.test.mts"
+  },
+  "devDependencies": {
+    "@ai-hero/sandcastle": "^0.12.0",
+    "tsx": "^4.19.0"
+  }
+}

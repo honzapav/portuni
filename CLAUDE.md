@@ -81,6 +81,22 @@ tmux loop for backend iteration.
 
 ~95% of changes are the first row.
 
+## Agent loop (Sandcastle)
+
+`.sandcastle/` is the RALPH harness: an autonomous Claude Code agent in a
+Docker container working through GitHub issues labelled `ready-for-agent`
+on a batch branch, PR only (never merges). It runs on the old Mac in the clone
+`~/Dev/projekty/portuni` (ssh host `honzas-macbook-pro`) and is started by
+Honza via `./.sandcastle/start-loop.sh`; never provision `.sandcastle/.env`,
+the Docker image or a worktree for it elsewhere. Details: `.sandcastle/README.md`.
+
+The verification gate for agents and humans alike is `scripts/agent-gate.sh`
+(server qa, web typecheck + build, `cargo test` + `cargo clippy -D warnings`,
+docs site build), the same checks `ci.yml` runs. `scripts/desktop-dev-placeholders.sh`
+creates the gitignored sidecar placeholder tauri-build validates, so
+`cargo test`/`clippy` work without building the sidecar. `AGENTS.md` is a
+symlink to this file.
+
 ## Releases & commit conventions
 
 - **Conventional Commits are load-bearing, not style.** release-please parses

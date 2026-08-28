@@ -7,7 +7,7 @@
 // registered are otherwise lost.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
@@ -52,7 +52,7 @@ pub(crate) const KEYCHAIN_SERVICE: &str = "ooo.workflow.portuni";
 const KEYCHAIN_TURSO_ACCOUNT: &str = "turso_auth_token";
 pub(crate) const KEYCHAIN_MCP_ACCOUNT: &str = "mcp_auth_token";
 
-fn config_path(data_dir: &PathBuf) -> PathBuf {
+fn config_path(data_dir: &Path) -> PathBuf {
     data_dir.join("config.json")
 }
 
@@ -317,7 +317,7 @@ fn ensure_mcp_token_ws(ws_id: &str) -> Result<String, String> {
 // boot is plain. If the field is present but Keychain already has a value,
 // strip the field anyway — the keychain copy supersedes it and leaving the
 // plaintext sitting around defeats the point of this whole refactor.
-fn migrate_turso_token_to_keychain(data_dir: &PathBuf) {
+fn migrate_turso_token_to_keychain(data_dir: &Path) {
     let path = config_path(data_dir);
     let Ok(raw) = std::fs::read_to_string(&path) else { return };
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&raw) else { return };
@@ -1497,7 +1497,7 @@ pub(crate) fn spawn_sidecar_ws(
             match event {
                 CommandEvent::Stdout(line) => {
                     let line = String::from_utf8_lossy(&line).into_owned();
-                    let line = line.trim_end_matches(|c| c == '\n' || c == '\r');
+                    let line = line.trim_end_matches(['\n', '\r']);
                     append_ws_log(&ws_log_path, line);
                     if let Some(rest) = line.strip_prefix("PORTUNI_LISTENING_PORT=") {
                         if let Ok(port) = rest.trim().parse::<u16>() {
@@ -1530,7 +1530,7 @@ pub(crate) fn spawn_sidecar_ws(
                 }
                 CommandEvent::Stderr(line) => {
                     let line = String::from_utf8_lossy(&line).into_owned();
-                    let line = line.trim_end_matches(|c| c == '\n' || c == '\r');
+                    let line = line.trim_end_matches(['\n', '\r']);
                     append_ws_log(&ws_log_path, line);
                     warn!("sidecar[{ws}]:err: {line}");
                 }
