@@ -87,7 +87,8 @@ tmux loop for backend iteration.
 Docker container working through GitHub issues labelled `ready-for-agent`
 on a batch branch, PR only (never merges). It runs on the old Mac (ssh host
 `honzas-macbook-pro`, clone `~/Dev/projekty/portuni`), started over
-`ssh -t … ./.sandcastle/start-loop.sh` (tmux session `sandcastle-portuni`);
+`ssh -t … ./.sandcastle/start-loop.sh` (tmux session `sandcastle-portuni`
+on its own socket, `tmux -L sandcastle`);
 secrets come from that Mac's Keychain (`sandcastle.claude-code.oauth-token`,
 `sandcastle.portuni.github-pat`), never from disk. Docker image
 `sandcastle:portuni`. Never provision those entries, the image or a worktree
