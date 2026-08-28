@@ -27,6 +27,8 @@ export const TOOL_MIN_SCOPE: Record<string, GlobalScope> = {
   portuni_session_init: "read",
   portuni_session_log: "read",
   portuni_expand_scope: "read",
+  // Any authenticated user may create nodes (editing them stays manage).
+  portuni_create_node: "read",
   // portuni_resolve closes/finalises an event — it mutates state, so write.
   portuni_resolve: "write",
 
@@ -42,7 +44,6 @@ export const TOOL_MIN_SCOPE: Record<string, GlobalScope> = {
   portuni_rename_folder: "write",
 
   // --- manage ---
-  portuni_create_node: "manage",
   portuni_update_node: "manage",
   portuni_move_node: "manage",
   portuni_connect: "manage",
@@ -134,7 +135,8 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (/^\/nodes\/[^/]+\/mirror$/.test(pathname) && m === "POST") return "manage";
 
   // --- Nodes ---
-  if (pathname === "/nodes" && m === "POST") return "manage";
+  // Creating a node is open to any authenticated user; editing stays manage.
+  if (pathname === "/nodes" && m === "POST") return "read";
   if (/^\/nodes\/[^/]+$/.test(pathname) && m === "GET") return "read";
   if (/^\/nodes\/[^/]+$/.test(pathname) && m === "PATCH") return "manage";
   if (/^\/nodes\/[^/]+$/.test(pathname) && m === "DELETE") return "admin";

@@ -99,9 +99,9 @@ the `node_access` ACL — see
 | Group env var | Portuni scope | Capabilities |
 |---|---|---|
 | `PORTUNI_GROUPS_ADMIN` | admin | Everything: read, write, manage, POPP sync, summary refresh, user management |
-| `PORTUNI_GROUPS_MANAGE` | manage | Read + write + create/connect/disconnect/update nodes |
+| `PORTUNI_GROUPS_MANAGE` | manage | Read + write + connect/disconnect/update/move nodes |
 | `PORTUNI_GROUPS_WRITE` | write | Read + log events, resolve, supersede, store files |
-| (any authenticated user) | read | Get context, search, list nodes, get node |
+| (any authenticated user) | read | Get context, search, list nodes, get node, create nodes |
 
 Highest matching group wins. Admin-scoped users bypass all node-level group checks.
 
