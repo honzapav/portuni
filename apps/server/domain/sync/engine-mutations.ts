@@ -727,7 +727,7 @@ export async function deleteFile(
   a: DeleteFileArgs,
 ): Promise<DeleteFilePreview | DeleteFileSuccess | DeleteFileRepairNeeded> {
   const r = await db.execute({
-    sql: "SELECT id, node_id, filename, remote_name, remote_path FROM files WHERE id = ?",
+    sql: "SELECT id, node_id, filename, remote_name, remote_path, current_remote_hash, is_native_format FROM files WHERE id = ?",
     args: [a.fileId],
   });
   if (r.rows.length === 0) throw new Error(`File ${a.fileId} not found`);
@@ -737,6 +737,11 @@ export async function deleteFile(
   const remoteName = f.remote_name as string | null;
   const remotePath = f.remote_path as string | null;
   const filename = f.filename as string;
+  // Identity of the object being deleted, so a retry of a half-finished
+  // delete can tell it apart from a different file that has since taken
+  // the same remote path (see runDelete in pending-ops.ts).
+  const expectedHash = (f.current_remote_hash as string | null) ?? null;
+  const expectedRemoteObject = expectedHash !== null || Number(f.is_native_format) === 1;
 
   let localPath: string | null = null;
   const mirror = await getMirrorPath(a.userId, nodeId);
@@ -783,7 +788,14 @@ export async function deleteFile(
       userId: a.userId,
       nodeId,
       fileId: a.fileId,
-      payload: { op: "delete", remote_name: remoteName, remote_path: remotePath, filename },
+      payload: {
+        op: "delete",
+        remote_name: remoteName,
+        remote_path: remotePath,
+        filename,
+        expected_hash: expectedHash,
+        expected_remote_object: expectedRemoteObject,
+      },
     });
     try {
       const adapter = await getAdapter(db, remoteName);

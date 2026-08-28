@@ -1,10 +1,11 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, mkdir, rename, stat, copyFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, rm, writeFile, readFile, mkdir, rename, stat, copyFile } from "node:fs/promises";
+import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { storeFile } from "../apps/server/domain/sync/engine.js";
+import { storeFile, registerLocalFile } from "../apps/server/domain/sync/engine.js";
+import { sha256Buffer } from "../apps/server/domain/sync/hash.js";
 import { moveFile, deleteFile } from "../apps/server/domain/sync/engine-mutations.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
@@ -271,5 +272,124 @@ describe("pending file ops", () => {
     assert.ok(await stat(join(remoteRoot, a.remote_path)));
     const row = await db.execute({ sql: "SELECT id FROM files WHERE id = 'F-B'" });
     assert.equal(row.rows.length, 1);
+  });
+
+  // assertRecordStillMatches only covers the case where another RECORD
+  // claims the path. An un-adopted object -- someone re-creating that
+  // filename on the remote before the sweep's adoption step runs -- has no
+  // record, so nothing stopped the retry from deleting it: the only
+  // automatic destructive path in the system that can hit a file which was
+  // never the user's delete target. The op therefore carries the target's
+  // identity (its current_remote_hash at enqueue time) and the retry
+  // compares it against what stat() reports now.
+  //
+  // The fs adapter's stat has no content hash, so these tests wrap it in a
+  // hashing adapter -- the shape Drive's stat actually has (md5Checksum).
+  async function hashingAdapter(db: Awaited<ReturnType<typeof makeSharedDb>>["db"]) {
+    const real = await getAdapter(db, "test-fs");
+    return {
+      ...real,
+      stat: async (p: string) => {
+        const s = await real.stat(p);
+        if (!s) return null;
+        return { ...s, hash: sha256Buffer(await real.get(p)) };
+      },
+    };
+  }
+
+  it("a pending delete refuses an object whose hash is not the one it targeted", async () => {
+    const { db, nodeId, remoteRoot } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const r = await pushed(db, nodeId, mirrorRoot, "a.md");
+    const hashing = await hashingAdapter(db);
+    let failDelete = true;
+    setAdapterForTests("test-fs", {
+      ...hashing,
+      delete: async (p: string) => {
+        if (failDelete) throw new Error("boom");
+        return hashing.delete(p);
+      },
+    });
+    const d = await deleteFile(db, { userId: "U1", fileId: r.file_id, confirmed: true });
+    assert.equal(d.status, "repair_needed");
+    failDelete = false;
+
+    // Before the retry, a DIFFERENT file takes that exact remote path
+    // (re-created on the remote, not yet adopted -- no record, no tombstone).
+    await writeFile(join(remoteRoot, r.remote_path), "uplne jiny obsah");
+
+    const retry = await retryPendingFileOps(db, { userId: "U1", nodeId });
+    assert.equal(retry.repaired.length, 0);
+    assert.equal(retry.pending_repairs.length, 1);
+    assert.match(retry.pending_repairs[0].last_error ?? "", /not the file this delete targeted/);
+    assert.equal(
+      await readFile(join(remoteRoot, r.remote_path), "utf8"),
+      "uplne jiny obsah",
+      "the stranger's bytes must survive",
+    );
+  });
+
+  it("a pending delete still completes when the object is unchanged", async () => {
+    const { db, nodeId, remoteRoot } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const r = await pushed(db, nodeId, mirrorRoot, "a.md");
+    const hashing = await hashingAdapter(db);
+    let failDelete = true;
+    setAdapterForTests("test-fs", {
+      ...hashing,
+      delete: async (p: string) => {
+        if (failDelete) throw new Error("boom");
+        return hashing.delete(p);
+      },
+    });
+    assert.equal(
+      (await deleteFile(db, { userId: "U1", fileId: r.file_id, confirmed: true })).status,
+      "repair_needed",
+    );
+    failDelete = false;
+
+    const retry = await retryPendingFileOps(db, { userId: "U1", nodeId });
+    assert.equal(retry.pending_repairs.length, 0);
+    assert.equal(retry.repaired.length, 1);
+    await assert.rejects(() => stat(join(remoteRoot, r.remote_path)));
+  });
+
+  it("a pending delete for a never-pushed record refuses an object that appeared meanwhile", async () => {
+    const { db, nodeId, remoteRoot } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    await mkdir(join(mirrorRoot, "wip"), { recursive: true });
+    const localPath = join(mirrorRoot, "wip", "n.md");
+    await writeFile(localPath, "jen registrovano");
+    const reg = await registerLocalFile(db, { userId: "U1", nodeId, localPath });
+    // Registered, never pushed: current_remote_hash IS NULL, so the op has
+    // no content identity to compare against -- but the record also had
+    // NOTHING on the remote, so an object at that path now is by definition
+    // not the delete's target.
+    const real = await getAdapter(db, "test-fs");
+    let failStat = true;
+    setAdapterForTests("test-fs", {
+      ...real,
+      stat: async (p: string) => {
+        if (failStat) throw new Error("remote unreachable");
+        return real.stat(p);
+      },
+    });
+    const d = await deleteFile(db, { userId: "U1", fileId: reg.file_id, confirmed: true });
+    assert.equal(d.status, "repair_needed");
+    failStat = false;
+
+    await mkdir(dirname(join(remoteRoot, reg.remote_path)), { recursive: true });
+    await writeFile(join(remoteRoot, reg.remote_path), "nekdo jiny sem nahral soubor");
+
+    const retry = await retryPendingFileOps(db, { userId: "U1", nodeId });
+    assert.equal(retry.repaired.length, 0);
+    assert.equal(retry.pending_repairs.length, 1);
+    assert.equal(
+      await readFile(join(remoteRoot, reg.remote_path), "utf8"),
+      "nekdo jiny sem nahral soubor",
+    );
   });
 });

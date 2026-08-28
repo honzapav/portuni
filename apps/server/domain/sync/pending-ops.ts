@@ -27,7 +27,21 @@ export type PendingOp =
       to_node_id: string;
       filename: string;
     }
-  | { op: "delete"; remote_name: string; remote_path: string; filename: string };
+  | {
+      op: "delete";
+      remote_name: string;
+      remote_path: string;
+      filename: string;
+      // Identity of the object this delete was aimed at, captured when the
+      // op was enqueued. `expected_hash` is the record's current_remote_hash
+      // (the cheapest identity available -- Drive reports md5Checksum from
+      // stat, so it compares directly); `expected_remote_object` says
+      // whether the record had an object on the remote AT ALL (pushed, or a
+      // native Google doc, which has no hash by construction). Both are
+      // optional so rows enqueued before this field existed still run.
+      expected_hash?: string | null;
+      expected_remote_object?: boolean;
+    };
 
 export interface PendingOpRow {
   id: string;
@@ -187,7 +201,36 @@ async function runDelete(
     { remote_name: p.remote_name, remote_path: p.remote_path },
   ]);
   const adapter = await getAdapter(db, p.remote_name);
-  if ((await adapter.stat(p.remote_path)) !== null) await adapter.delete(p.remote_path);
+  const cur = await adapter.stat(p.remote_path);
+  if (cur !== null) {
+    // assertRecordStillMatches above covers another RECORD claiming this
+    // path. It cannot see an UN-ADOPTED object: the remote step failed, the
+    // op stayed pending, and someone re-created that filename on the remote
+    // before the sweep's adoption step ran. Deleting it would destroy a file
+    // that was never the user's target, with no record and no tombstone --
+    // the only automatic destructive path that can do that. So compare the
+    // object in front of us against the identity captured at enqueue time
+    // and refuse on a mismatch (reported through pending_repairs), per the
+    // rule that an ambiguous remote is never acted on.
+    if (p.expected_remote_object === false) {
+      // The record had nothing on the remote when the delete was ordered
+      // (registered, never pushed). Whatever is at the path now arrived
+      // afterwards and belongs to someone else.
+      throw new Error(
+        `${p.remote_path} now holds an object, but the record being deleted had never been pushed -- refusing to delete a file this op did not target`,
+      );
+    }
+    if (
+      p.expected_hash != null &&
+      cur.hash != null &&
+      cur.hash !== p.expected_hash
+    ) {
+      throw new Error(
+        `${p.remote_path} is not the file this delete targeted (remote hash ${cur.hash}, expected ${p.expected_hash}) -- refusing to delete it`,
+      );
+    }
+    await adapter.delete(p.remote_path);
+  }
   await db.execute({ sql: "DELETE FROM files WHERE id = ?", args: [row.file_id] });
   await deleteFileState(row.file_id).catch(() => undefined);
   await db.execute({
