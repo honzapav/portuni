@@ -65,10 +65,11 @@ tombstones. Order:
 1. **Retry pending file ops** -- replay any half-finished move/rename/
    delete from a prior run (see below).
 2. **Remote sweep** -- records whose remote object is confirmed gone are
-   deleted and tombstoned; files newly present on the remote under
+   deleted and tombstoned; files newly present directly under
    `wip/`, `outputs/`, or `resources/` are adopted and pulled in the
-   same run. Never-pushed records are untouched; if the remote itself
-   can't be confirmed reachable, nothing is destroyed.
+   same run (a dot-prefixed filename or subfolder is skipped). Never-pushed
+   records are untouched; if the remote itself can't be confirmed
+   reachable, nothing is destroyed.
 3. Status scan.
 4. Push `push` candidates, pull `pull` candidates. `deleted_local` is
    reported, not auto-pulled -- restoring a locally deleted file is an

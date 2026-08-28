@@ -9,7 +9,7 @@ deterministic — no agent involvement, no silent skips.
 | MCP tool on this device (central mode) | Agent front door: snapshot before proxy, local disk step after a confirmed success | `mcp/agent-tools.ts` (`snapshotForDiskMutation` / `applyLocalAfterProxiedMutation`), wired in `mcp/agent-transport.ts` (GH #78) |
 | Web UI / another device / any remote plane | Delete tombstones in sync-info, matched during discovery, cleaned by the sync run | `sync-remote-api.ts` (`NodeSyncInfo.deleted`), `engine.ts` (`matchDeleteTombstones` / `cleanupDeletedRemote`), `engine-central.ts` (`matchTombstonesForContext`) (GH #79) |
 | Raw `mv` / `rm` on disk | Watcher pairing at registration time by inode identity; unregister of never-pushed deletions | `reconcile.ts` (`tryApplyDiskMove`, unregister branch), `engine-central.ts` (`tryApplyDiskMoveCentral`) |
-| Deleted / added on the remote (Drive UI, another tool) | Remote sweep at the start of every deliberate sync run: a pushed record whose object is confirmed gone is deleted + tombstoned; a file new on the remote under `wip/`/`outputs/`/`resources/` is adopted | `remote-sweep.ts` (`remoteSweep`), called from `handleSyncRun` and `POST /nodes/:id/sync/remote-sweep` |
+| Deleted / added on the remote (Drive UI, another tool) | Remote sweep at the start of every deliberate sync run: a pushed record whose object is confirmed gone is deleted + tombstoned; a file new on the remote directly under `wip/`, `outputs/`, or `resources/` is adopted (skipped if any path segment past the section starts with `.`) | `remote-sweep.ts` (`remoteSweep`, `adoptableSection`), called from `handleSyncRun` and `POST /nodes/:id/sync/remote-sweep` |
 | Half-finished mutation (move/rename/delete's remote step failed) | Intent recorded in `pending_file_ops` before the first side effect, retried idempotently at the start of the next sync run until it completes | `pending-ops.ts` (`enqueuePendingOp` / `retryPendingFileOps`) |
 
 ## Tombstones (GH #79)
@@ -29,9 +29,15 @@ Match rule (all three required, makes cleanup lossless by construction):
 
 A file modified after the delete fails (3) and stays `new_local`. Matched
 files classify `deleted_remote`; the sync run (`handleSyncRun` local,
-`syncRunCentral` central) removes the local copy and the orphaned
-`file_state` row and reports them in `SyncRunResponse.deleted_remote`. The
-pending aggregates count `deleted_remote` as untracked pending work.
+`syncRunCentral` central) removes the local copy and reports it in
+`SyncRunResponse.deleted_remote`. What happens to the `file_state` row
+depends on the tombstone's `record_alive` flag (`sync-remote-api.ts`): a
+plain delete tombstone (`record_alive: false`) also removes the
+`file_state` row; a move/rename tombstone (`record_alive: true`) means the
+record is alive at its new path, so cleanup removes only the stale copy at
+the old path and keeps `file_state` for that new location (`engine.ts`
+`cleanupDeletedRemote`, `if (!e.record_alive) await deleteFileState(...)`).
+The pending aggregates count `deleted_remote` as untracked pending work.
 Tombstones written before `node_id` landed in the detail never match — the
 mechanism works going forward only.
 

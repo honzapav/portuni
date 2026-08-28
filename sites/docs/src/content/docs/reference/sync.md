@@ -92,7 +92,7 @@ Returns: `{ file_id, filename, remote_path }` — the exported buffer is stored 
 `portuni_status` only reports the current classification — it never touches the remote or cleans anything up. Reconciling drift against the remote happens in a **deliberate sync run**, triggered by the desktop/web UI's "Synchronizovat" action (or, for a teammate mirror in central mode, by the sync agent). One run does, in order:
 
 1. **Retry pending file ops** — replays any move/rename/delete whose remote step didn't finish last time (see [Destructive operations](#destructive-operations) below).
-2. **Remote sweep** — a tracked file whose remote object is confirmed gone is removed and tombstoned; a file that appeared on the remote under `wip/`, `outputs/`, or `resources/` is adopted and pulled in the same run. A record never pushed from this device is left alone, and nothing is destroyed if the remote itself can't be confirmed reachable.
+2. **Remote sweep** — a tracked file whose remote object is confirmed gone is removed and tombstoned; a file that appeared directly under `wip/`, `outputs/`, or `resources/` is adopted and pulled in the same run (a dot-prefixed filename or subfolder is skipped). A record never pushed from this device is left alone, and nothing is destroyed if the remote itself can't be confirmed reachable.
 3. Status scan.
 4. Push every `push` candidate, pull every `pull` candidate. A `deleted_local` file is reported, not auto-restored — that needs an explicit decision (see [Resolving conflicts and deletions](#resolving-conflicts-and-deletions)).
 5. Clean up untracked local copies that match a delete or move/rename tombstone.
@@ -170,7 +170,7 @@ A `conflict` (both sides changed) or `deleted_local` (locally removed, still on 
 | `conflict`, take the remote version | Overwrite local with remote | `portuni_pull(file_id, force: true)` |
 | `deleted_local`, restore it | Download the remote copy back into the mirror | `portuni_pull(file_id)` |
 
-The desktop/web UI exposes the same three actions as buttons on the file row, backed by `POST /nodes/:id/files/:fileId/resolve` with `{ action: "keep_local" | "take_remote" | "restore" }`. It 404s if the file doesn't belong to the node, and 409s on `restore` when it would clobber a local change that was never pushed — the same guard `portuni_pull` applies without `force`.
+The desktop/web UI exposes the same three actions as buttons on the file row, backed by `POST /nodes/:id/files/:fileId/resolve` with `{ action: "keep_local" | "take_remote" | "restore" }`. It 404s if the file doesn't belong to the node; it 409s on `restore` when it would clobber a local change that was never pushed (the same guard `portuni_pull` applies without `force`), and on `keep_local` when the node has no mirror on this device.
 
 ## See also
 
