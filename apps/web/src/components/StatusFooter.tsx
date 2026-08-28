@@ -5,6 +5,7 @@
 
 import { useMcpStatus } from "../lib/use-mcp-status";
 import { pluralFiles } from "../lib/plural-files";
+import type { AppUpdate } from "../lib/updater";
 
 type Props = {
   onOpenSettings: () => void;
@@ -12,6 +13,7 @@ type Props = {
   onOpenWorkspace: () => void;
   pendingCount: number;
   onOpenSyncOverview: () => void;
+  appUpdate: AppUpdate;
 };
 
 export default function StatusFooter({
@@ -20,8 +22,10 @@ export default function StatusFooter({
   onOpenWorkspace,
   pendingCount,
   onOpenSyncOverview,
+  appUpdate,
 }: Props) {
   const status = useMcpStatus();
+  const updateState = appUpdate.state;
 
   const dotColor =
     status.state === "running"
@@ -78,6 +82,26 @@ export default function StatusFooter({
         >
           <span aria-hidden="true" className="inline-block h-2 w-2 rounded-full bg-amber-500" />
           <span className="font-mono">↑ {pendingCount} nesynced</span>
+        </button>
+      )}
+      {updateState.kind === "available" && (
+        <button
+          type="button"
+          title="Nová verze Portuni – klikni pro aktualizaci"
+          onClick={onOpenSettings}
+          className="ml-auto flex items-center gap-2 rounded px-2 py-0.5 transition-colors hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
+        >
+          <span className="font-mono">↑ {updateState.info.version}</span>
+        </button>
+      )}
+      {updateState.kind === "ready" && (
+        <button
+          type="button"
+          title="Restartovat pro dokončení aktualizace"
+          onClick={() => void appUpdate.restart()}
+          className="ml-auto flex items-center gap-2 rounded px-2 py-0.5 transition-colors hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
+        >
+          <span className="font-mono">Restartovat</span>
         </button>
       )}
     </footer>

@@ -30,6 +30,7 @@ import {
   deriveWorkspaceNodeRows,
 } from "./lib/sessions";
 import { isTauri } from "./lib/backend-url";
+import { useAppUpdate } from "./lib/updater";
 import { useSyncPending } from "./lib/use-sync-pending";
 import { pluralFiles } from "./lib/plural-files";
 import SyncOverview from "./components/SyncOverview";
@@ -499,6 +500,8 @@ export default function App() {
   useEffect(() => {
     editorDirtyRef.current = editorDirty;
   }, [editorDirty]);
+
+  const appUpdate = useAppUpdate();
 
   const { pending: syncPending, refresh: refreshSyncPending } = useSyncPending();
   const [syncOverviewOpen, setSyncOverviewOpen] = useState(false);
@@ -1038,6 +1041,7 @@ export default function App() {
             onAgentCommandChange={setAgentCommand}
             terminalLaunch={terminalLaunch}
             onTerminalLaunchChange={setTerminalLaunch}
+            appUpdate={appUpdate}
           />
         )}
       </main>
@@ -1083,6 +1087,7 @@ export default function App() {
         onOpenWorkspace={openWorkspaceView}
         pendingCount={syncPending.total}
         onOpenSyncOverview={() => setSyncOverviewOpen(true)}
+        appUpdate={appUpdate}
       />
       {createModalOpen && graph && (
         <CreateNodeModal
