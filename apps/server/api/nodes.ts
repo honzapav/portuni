@@ -19,6 +19,7 @@ import {
   matchDeleteTombstones,
   cleanupDeletedRemote,
   resolveNodeInfo,
+  PullDirtyLocalError,
 } from "../domain/sync/engine.js";
 import { listUntrackedLocal } from "../domain/sync/discover-local.js";
 import { remoteSweep } from "../domain/sync/remote-sweep.js";
@@ -722,15 +723,25 @@ export async function handleResolveFile(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    // IDOR guard: the URL's nodeId only gates node-level visibility above --
+    // pullFile resolves everything else (mirror, path) from the file's OWN
+    // node_id and ignores the URL entirely, and deriveLocalPath's prefix
+    // check below is not a substitute (an organization's nodeRoot is a
+    // prefix of every child project's remote paths, so org access alone
+    // would satisfy it for a file that actually lives in a restricted child
+    // project). Require the file to actually belong to this node, checked
+    // before any adapter or filesystem work, same not-found shape as an
+    // invisible node so this doesn't disclose whether the file id exists
+    // elsewhere.
+    const fileRow = await db.execute({
+      sql: "SELECT node_id, remote_path FROM files WHERE id = ?",
+      args: [fileId],
+    });
+    if (fileRow.rows.length === 0 || (fileRow.rows[0].node_id as string) !== nodeId) {
+      respondJson(res, 404, { error: "file not found" });
+      return;
+    }
     if (action === "keep_local") {
-      const row = await db.execute({
-        sql: "SELECT remote_path FROM files WHERE id = ?",
-        args: [fileId],
-      });
-      if (row.rows.length === 0) {
-        respondJson(res, 404, { error: "file not found" });
-        return;
-      }
       const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
       if (!mirrorRoot) {
         respondJson(res, 409, { error: "node has no mirror on this device" });
@@ -739,30 +750,25 @@ export async function handleResolveFile(
       const localPath = deriveLocalPath({
         mirrorRoot,
         nodeRoot: buildNodeRoot(await resolveNodeInfo(db, nodeId)),
-        remotePath: row.rows[0].remote_path as string,
+        remotePath: fileRow.rows[0].remote_path as string,
       });
       await storeFile(db, { userId: identity.userId, nodeId, localPath });
     } else {
-      const pulled = await pullFile(db, {
+      // pullFile itself keeps files.current_remote_hash in step with what
+      // it just downloaded (see engine.ts), so nothing further is needed
+      // here to make the post-resolve fast-mode status read clean.
+      await pullFile(db, {
         userId: identity.userId,
         fileId,
         force: action === "take_remote",
       });
-      // A resolve confirms exactly what is now on the remote. pullFile
-      // itself never touches files.current_remote_hash (a plain pull
-      // downloads exactly what that column already recorded from whichever
-      // device last pushed, so it stays correct on its own); it only goes
-      // stale when the remote was edited out of band -- precisely the
-      // scenario a conflict resolve exists for. Refresh it here so the
-      // fast-mode sync-status the UI reads doesn't keep showing the file as
-      // a pull candidate right after it was just resolved.
-      await db.execute({
-        sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
-        args: [pulled.hash, fileId],
-      });
     }
     respondJson(res, 200, { file_id: fileId, action, status: "ok" });
   } catch (err) {
+    if (err instanceof PullDirtyLocalError) {
+      respondJson(res, 409, { error: err.message });
+      return;
+    }
     respondError(res, `POST /nodes/${nodeId}/files/${fileId}/resolve`, err);
   }
 }

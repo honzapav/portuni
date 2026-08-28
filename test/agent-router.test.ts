@@ -473,4 +473,59 @@ describe("POST /nodes/:id/files/:fileId/resolve (agent mode)", () => {
     });
     assert.equal(r.status, 404);
   });
+
+  it("404s when the file belongs to a different node than the URL (IDOR)", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await writeFile(join(mirrorRoot, "wip", "h.md"), "v1");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    const fileId = synced1.adopted[0].file_id;
+
+    // findEntryByFileId fans out across every node this device has mirrored;
+    // OTHER_NODE_ID is not where this file lives, so it must not resolve.
+    const OTHER_NODE_ID = "N0000000000000000000OTHER";
+    const r = await fetch(`${base}/nodes/${OTHER_NODE_ID}/files/${fileId}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "keep_local" }),
+    });
+    assert.equal(r.status, 404);
+
+    assert.equal(
+      await readFile(join(mirrorRoot, "wip", "h.md"), "utf8"),
+      "v1",
+      "local copy must be untouched",
+    );
+    assert.equal(
+      fake.bytes.get(posix.join(NODE_ROOT, "wip/h.md"))?.toString(),
+      "v1",
+      "remote copy must be untouched",
+    );
+  });
+
+  it("restore over a dirty local copy returns 409 instead of clobbering it", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await writeFile(join(mirrorRoot, "wip", "i.md"), "v1");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    const fileId = synced1.adopted[0].file_id;
+
+    // Unpushed local edit -- pullFileCentral's dirty guard must refuse.
+    await writeFile(join(mirrorRoot, "wip", "i.md"), "unpushed local edit");
+
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "restore" }),
+    });
+    assert.equal(r.status, 409);
+    const body = (await r.json()) as { error: string };
+    assert.match(body.error, /never pushed/);
+
+    assert.equal(
+      await readFile(join(mirrorRoot, "wip", "i.md"), "utf8"),
+      "unpushed local edit",
+      "local copy must be untouched",
+    );
+  });
 });

@@ -28,6 +28,19 @@ import { loadMirrorIgnore } from "./mirror-ignore.js";
 // Re-export so existing imports `from "./engine.js"` keep working.
 export { resolveNodeInfo };
 
+// Thrown by pullFile's (and pullFileCentral's) dirty-local guard: the local
+// copy has changes this device never pushed, and force was not passed. A
+// distinct, expected condition -- not a crash -- so callers that give the
+// user a way out of it (the resolve endpoint's `restore`) can map it to a
+// real HTTP status instead of respondError's generic 500. Same pattern as
+// FileContentError / MirrorCreateError elsewhere in this module.
+export class PullDirtyLocalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PullDirtyLocalError";
+  }
+}
+
 // Appended to "No remote routing configured" errors (and surfaced in the
 // portuni_mirror scaffold hint) so the failure is self-explanatory to
 // whoever hits it -- a desktop user with the OAuth path, or an agent/admin
@@ -475,7 +488,7 @@ export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileRes
     const dirty =
       localCur !== hash && (baseline === null || localCur !== baseline);
     if (dirty) {
-      throw new Error(
+      throw new PullDirtyLocalError(
         `File ${a.fileId} has local changes that were never pushed from this device ` +
           `(${localPath}). Push them with portuni_store, or pass force: true to overwrite.`,
       );
@@ -495,6 +508,20 @@ export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileRes
     cached_size: fsInfo.size,
     cached_ino: fsInfo.ino,
     cached_dev: fsInfo.dev,
+  });
+
+  // Keep files.current_remote_hash in step with what we just confirmed is
+  // on the remote. It normally only advances via a push (storeFile) --
+  // this device's own pull downloads exactly what that column already
+  // recorded from whichever device last pushed, so writing it here is a
+  // no-op in the common case. It only diverges when the remote was edited
+  // out of band of any Portuni push; without this write, a fast-mode
+  // status scan (files.current_remote_hash + file_state, no disk or
+  // adapter I/O) would keep reporting the file as a pull candidate right
+  // after it was just pulled.
+  await db.execute({
+    sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
+    args: [hash, a.fileId],
   });
 
   await db.execute({

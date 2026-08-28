@@ -17,7 +17,7 @@ import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
 import type { CentralClient } from "./client.js";
 import { CentralHttpError } from "./client.js";
-import { localHashFor, cleanupDeletedRemote, diskHashMatching } from "../engine.js";
+import { localHashFor, cleanupDeletedRemote, diskHashMatching, PullDirtyLocalError } from "../engine.js";
 import type {
   StatusResult,
   StatusFileEntry,
@@ -700,7 +700,7 @@ export async function pullFileCentral(
     const dirty =
       localCur !== cur.canonicalHash && (baseline === null || localCur !== baseline);
     if (dirty) {
-      throw new Error(
+      throw new PullDirtyLocalError(
         `File ${a.entry.file_id} has local changes that were never pushed from this device (${localPath}). Sync them first, or force the pull.`,
       );
     }

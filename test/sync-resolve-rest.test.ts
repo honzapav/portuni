@@ -176,4 +176,56 @@ describe("POST /nodes/:id/files/:fileId/resolve", () => {
     const body = (await r.json()) as { error: string };
     assert.match(body.error, /keep_local/);
   });
+
+  it("404s when the file belongs to a different node than the URL (IDOR)", async () => {
+    const stored = await seedFile("e");
+    // The organization is the file's node's PARENT -- its nodeRoot is a
+    // prefix of the project's remote paths, so this specifically exercises
+    // the case deriveLocalPath's prefix check alone would NOT have caught.
+    const r = await fetch(
+      `${base}/nodes/${shared.orgId}/files/${stored.file_id}/resolve`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "keep_local" }),
+      },
+    );
+    assert.equal(r.status, 404);
+
+    assert.equal(
+      await readFile(stored.local_path, "utf8"),
+      "v1",
+      "local copy must be untouched",
+    );
+    assert.equal(
+      await readFile(join(shared.remoteRoot, stored.remote_path), "utf8"),
+      "v1",
+      "remote copy must be untouched",
+    );
+  });
+
+  it("restore over a dirty local copy returns 409 instead of clobbering it", async () => {
+    const stored = await seedFile("f");
+    // Unpushed local edit -- neither a deleted_local file nor a copy that
+    // already matches the remote, so pullFile's dirty guard must refuse.
+    await writeFile(stored.local_path, "unpushed local edit");
+
+    const r = await fetch(
+      `${base}/nodes/${shared.nodeId}/files/${stored.file_id}/resolve`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "restore" }),
+      },
+    );
+    assert.equal(r.status, 409);
+    const body = (await r.json()) as { error: string };
+    assert.match(body.error, /never pushed/);
+
+    assert.equal(
+      await readFile(stored.local_path, "utf8"),
+      "unpushed local edit",
+      "local copy must be untouched",
+    );
+  });
 });

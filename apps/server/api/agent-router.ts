@@ -36,7 +36,7 @@ import {
   syncRunCentral,
 } from "../domain/sync/central/engine-central.js";
 import { findEntryByFileId } from "../mcp/agent-tools.js";
-import { mimeFor } from "../domain/sync/engine.js";
+import { mimeFor, PullDirtyLocalError } from "../domain/sync/engine.js";
 import { getLocalMirror } from "../domain/sync/local-db.js";
 import { MirrorCreateError } from "../domain/sync/mirror-create.js";
 import {
@@ -291,6 +291,12 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
           respondJson(res, 400, { error: "action must be keep_local | take_remote | restore" });
           return true;
         }
+        // findEntryByFileId fans out across every node this device has
+        // mirrored, not just the URL's nodeId -- IDOR guard: require the
+        // file to actually resolve to THIS node before touching it (a
+        // caller cannot resolve node B's file by addressing node A's URL),
+        // checked before any adapter or filesystem work. Same not-found
+        // shape either way.
         const found = await findEntryByFileId(client, identity.userId, fileId);
         if (!found || found.nodeId !== nodeId || !found.entry.local_path) {
           respondJson(res, 404, { error: "file not found on this device" });
@@ -313,6 +319,10 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
         }
         respondJson(res, 200, { file_id: fileId, action, status: "ok" });
       } catch (err) {
+        if (err instanceof PullDirtyLocalError) {
+          respondJson(res, 409, { error: err.message });
+          return true;
+        }
         if (respondCentral404(res, err)) return true;
         respondError(res, `POST /nodes/${nodeId}/files/${fileId}/resolve`, err);
       }
