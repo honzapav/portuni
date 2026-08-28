@@ -29,7 +29,8 @@ export interface RemoteSweepResult {
 
 const SECTIONS = new Set(["wip", "outputs", "resources"]);
 
-// Only files directly under <nodeRoot>/<section>/... qualify for adoption.
+// Files at any depth under <nodeRoot>/<section>/ qualify for adoption; a
+// path segment starting with "." is skipped.
 // An organization's root spans its children's subtrees; those paths have a
 // type-plural segment (projects/...) where the section would be and are
 // skipped here -- the child node's own sweep handles them.
