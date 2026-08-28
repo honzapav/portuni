@@ -894,6 +894,14 @@ export async function syncRunCentral(
   client: CentralClient,
   a: { userId: string; nodeId: string },
 ): Promise<SyncRunResponse> {
+  // The remote credentials live on the central server, so the sweep runs
+  // there (POST /nodes/:id/sync/remote-sweep) before anything else: records
+  // whose remote object is confirmed gone are dropped, and files that
+  // appeared on the remote out of band are adopted. loadNodeContext then
+  // fetches sync-info fresh (the client invalidates its cache after the
+  // sweep call), so the scan below sees the sweep's tombstones and new
+  // records rather than a stale snapshot.
+  const sweep = await client.remoteSweep(a.nodeId);
   // One sync-info for the whole run: the scan reuses this context, pulls
   // reuse it too, and pushes/adopts run through a bounded worker pool
   // instead of a strictly sequential per-file chain.
@@ -903,15 +911,12 @@ export async function syncRunCentral(
     pushed: [],
     pulled: [],
     adopted: [],
-    // Central mode does not run the remote sweep here -- task 5 exposes it
-    // through its own REST endpoint (the remote credentials live server
-    // side, not on the teammate device this code runs on).
-    adopted_remote: [],
+    adopted_remote: sweep.adopted.map((f) => ({ file_id: f.file_id, filename: f.filename })),
     conflicts: [],
     deleted_local: [],
     deleted_remote: [],
-    deleted_on_remote: [],
-    sweep_errors: [],
+    deleted_on_remote: sweep.deleted_on_remote.map((f) => ({ file_id: f.file_id, filename: f.filename })),
+    sweep_errors: [...sweep.errors],
     errors: [],
     skipped: [],
   };

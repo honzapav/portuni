@@ -157,6 +157,10 @@ class FakeCentral implements CentralClient {
     /* fake has no cache */
   }
 
+  async remoteSweep() {
+    return { adopted: [], deleted_on_remote: [], errors: [] };
+  }
+
   seedRemote(relPath: string, content: string): string {
     const remotePath = posix.join(NODE_ROOT, relPath);
     const id = `F${this.nextId++}`;

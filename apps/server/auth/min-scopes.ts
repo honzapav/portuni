@@ -132,6 +132,7 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
 
   // --- Sync/mirror triggers ---
   if (/^\/nodes\/[^/]+\/sync$/.test(pathname) && m === "POST") return "manage";
+  if (/^\/nodes\/[^/]+\/sync\/remote-sweep$/.test(pathname) && m === "POST") return "manage";
   if (/^\/nodes\/[^/]+\/mirror$/.test(pathname) && m === "POST") return "manage";
 
   // --- Nodes ---

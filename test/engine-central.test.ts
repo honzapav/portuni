@@ -19,6 +19,7 @@ import {
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetLocalDbForTests, getFileState } from "../apps/server/domain/sync/local-db.js";
 import type { NodeSyncInfo } from "../apps/server/domain/sync/sync-remote-api.js";
+import type { RemoteSweepResult } from "../apps/server/domain/sync/remote-sweep.js";
 import { MirrorCreateError } from "../apps/server/domain/sync/mirror-create.js";
 
 const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
@@ -191,6 +192,14 @@ class FakeCentral implements CentralClient {
 
   async nodeExists(nodeId: string) {
     return nodeId === NODE_ID;
+  }
+
+  sweepCalls = 0;
+  sweepResult: RemoteSweepResult = { adopted: [], deleted_on_remote: [], errors: [] };
+  async remoteSweep(nodeId: string): Promise<RemoteSweepResult> {
+    if (nodeId !== NODE_ID) throw new CentralHttpError("not found", 404, "NOT_FOUND");
+    this.sweepCalls++;
+    return this.sweepResult;
   }
 
   // Test helper: seed a record whose bytes exist remotely.
@@ -456,6 +465,19 @@ describe("push/pull via syncRunCentral", () => {
       c.bytes.get(posix.join(NODE_ROOT, "wip/a.md"))?.toString(),
       "v2-remote",
     );
+  });
+
+  it("sync run calls the central remote sweep first and reports its results", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    fake.sweepResult = {
+      adopted: [{ file_id: "F9", filename: "report.md", remote_path: posix.join(NODE_ROOT, "outputs/report.md") }],
+      deleted_on_remote: [],
+      errors: [],
+    };
+    const r = await syncRunCentral(fake, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(fake.sweepCalls, 1);
+    assert.deepEqual(r.adopted_remote, [{ file_id: "F9", filename: "report.md" }]);
   });
 });
 

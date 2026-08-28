@@ -664,6 +664,27 @@ export async function handleSyncRun(
   }
 }
 
+// Central-mode entry point for the sync agent: the remote credentials live
+// here, so the sweep (and pending-op retry, Task 6) runs server side and the
+// device consumes the outcome through sync-info tombstones + pull.
+export async function handleRemoteSweep(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  nodeId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    respondJson(res, 200, await remoteSweep(db, { userId: identity.userId, nodeId }));
+  } catch (err) {
+    respondError(res, `${req.method} /nodes/${nodeId}/sync/remote-sweep`, err);
+  }
+}
+
 // Idempotent "make me a working folder for this node" entry point. Wraps
 // the same domain function the MCP `portuni_mirror` tool calls. New mirror
 // returns 201; existing one returns 200 with the current path. The UI

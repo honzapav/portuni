@@ -109,6 +109,10 @@ class FakeCentral implements CentralClient {
   async nodeNeighbours(_nodeId: string): Promise<string[]> {
     return this.neighbours;
   }
+
+  async remoteSweep() {
+    return { adopted: [], deleted_on_remote: [], errors: [] };
+  }
 }
 
 let workspace: string;
