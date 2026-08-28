@@ -10,6 +10,9 @@ import { isTauri } from "../lib/backend-url";
 import { listWorkspaces, switchWorkspace, type WorkspaceInfo } from "../lib/workspaces";
 import WorkspaceNodeList from "./WorkspaceNodeList";
 
+// Shown on disabled create-node buttons (global scope below POST /nodes).
+const CREATE_NODE_DENIED_TITLE = "Vytváření uzlů vyžaduje vyšší roli";
+
 export type AppView = "graph" | "workspace" | "settings";
 
 type Props = {
@@ -34,6 +37,9 @@ type Props = {
   // Open the "create node" modal. Always visible at the top of the
   // graph view so it's the first action a user sees.
   onCreateNode: () => void;
+  // False when the caller's global scope is below what POST /nodes needs;
+  // both create-node buttons render disabled with an explanatory title.
+  canCreateNode: boolean;
   workspaceBadge?: number;
   // Workspace state -- the left column of the workspace view (the list of
   // open nodes + their terminal tabs) lives here so the layout collapses to
@@ -112,6 +118,7 @@ function Sidebar({
   onViewChange,
   onOpenSettings,
   onCreateNode,
+  canCreateNode,
   workspaceBadge,
   workspaceRows,
   workspaceSessions,
@@ -190,6 +197,7 @@ function Sidebar({
             graph={graph}
             onOpenNode={onWorkspaceOpenNode}
             onCreateNode={onWorkspaceCreateNode}
+            canCreateNode={canCreateNode}
           />
           <div className="flex-1 overflow-x-hidden overflow-y-auto scroll-thin">
             <WorkspaceNodeList
@@ -214,8 +222,13 @@ function Sidebar({
             <button
               type="button"
               onClick={onCreateNode}
-              title="Vytvořit nový uzel (organizace, projekt, proces, oblast, princip)"
-              className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-3 py-2 text-[13px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-text)]"
+              disabled={!canCreateNode}
+              title={
+                canCreateNode
+                  ? "Vytvořit nový uzel (organizace, projekt, proces, oblast, princip)"
+                  : CREATE_NODE_DENIED_TITLE
+              }
+              className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-3 py-2 text-[13px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-[var(--color-accent-soft)] disabled:hover:text-[var(--color-accent)]"
             >
               <Plus size={13} />
               Nový uzel
@@ -317,10 +330,12 @@ function WorkspaceActions({
   graph,
   onOpenNode,
   onCreateNode,
+  canCreateNode,
 }: {
   graph: GraphPayload;
   onOpenNode: (nodeId: string) => void;
   onCreateNode: () => void;
+  canCreateNode: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
@@ -447,8 +462,9 @@ function WorkspaceActions({
       <button
         type="button"
         onClick={onCreateNode}
-        title="Vytvoří nový uzel a otevře ho v Práci"
-        className="mt-2 flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-[12.5px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)]"
+        disabled={!canCreateNode}
+        title={canCreateNode ? "Vytvoří nový uzel a otevře ho v Práci" : CREATE_NODE_DENIED_TITLE}
+        className="mt-2 flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-[12.5px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-[var(--color-text-dim)]"
       >
         <Plus size={13} />
         Nebo vytvoř nový uzel…

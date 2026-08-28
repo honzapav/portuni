@@ -14,7 +14,9 @@ import {
   createNodeMirror,
   fetchSandboxProfile,
   fetchSyncPending,
+  fetchMe,
 } from "./api";
+import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
 import { useFileEditor } from "./lib/use-file-editor";
 import { buildAgentCommand } from "./lib/prompt";
 import { useDataMode } from "./lib/central";
@@ -151,6 +153,27 @@ export default function App() {
     },
     [],
   );
+
+  // Whether the caller's global scope allows POST /nodes. Drives the
+  // create-node buttons (sidebar, workspace, empty-state CTA) so a user
+  // below the required scope sees a disabled control instead of a 403 on
+  // submit. Optimistic (true) until /me resolves -- the server still
+  // enforces, and a fetch failure must not hide the primary action.
+  const [canCreateNode, setCanCreateNode] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    void fetchMe()
+      .then((me) => {
+        if (cancelled || !isGlobalScope(me.global_scope)) return;
+        setCanCreateNode(scopeAtLeast(me.global_scope, CREATE_NODE_SCOPE));
+      })
+      .catch(() => {
+        /* stays true -- server gates the request */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Stable identities for props of memoized children (Sidebar, GraphView,
   // DetailPane). Inline arrows would defeat React.memo on every render.
@@ -889,6 +912,7 @@ export default function App() {
           onViewChange={setView}
           onOpenSettings={openSettingsView}
           onCreateNode={handleCreateNodeClick}
+          canCreateNode={canCreateNode}
           workspaceBadge={workspaceRows.length}
           workspaceRows={workspaceRows}
           workspaceSessions={sessions}
@@ -956,6 +980,7 @@ export default function App() {
               theme={theme}
               onSelect={setSelectedId}
               onCreateOrganization={handleCreateOrganization}
+              canCreateNode={canCreateNode}
             />
           </Suspense>
         )}

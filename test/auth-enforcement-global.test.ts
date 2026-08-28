@@ -35,7 +35,8 @@ describe("TOOL_MIN_SCOPE map", () => {
     assert.equal(TOOL_MIN_SCOPE.portuni_get_node, "read");
     assert.equal(TOOL_MIN_SCOPE.portuni_read_file, "read");
     assert.equal(TOOL_MIN_SCOPE.portuni_log, "write");
-    assert.equal(TOOL_MIN_SCOPE.portuni_create_node, "manage");
+    assert.equal(TOOL_MIN_SCOPE.portuni_create_node, "read");
+    assert.equal(TOOL_MIN_SCOPE.portuni_update_node, "manage");
     assert.equal(TOOL_MIN_SCOPE.portuni_delete_node, "admin");
   });
 
@@ -53,8 +54,8 @@ describe("minScopeForRoute", () => {
     assert.equal(minScopeForRoute("POST", "/events"), "write");
   });
 
-  it("maps POST /nodes -> manage", () => {
-    assert.equal(minScopeForRoute("POST", "/nodes"), "manage");
+  it("maps POST /nodes -> read (any authenticated user may create nodes)", () => {
+    assert.equal(minScopeForRoute("POST", "/nodes"), "read");
   });
 
   it("maps DELETE /nodes/:id -> admin", () => {
@@ -120,12 +121,16 @@ describe("minScopeForRoute", () => {
 });
 
 describe("scopeAtLeast drives allow/deny", () => {
-  it("write < manage (portuni_create_node) -> false", () => {
-    assert.equal(scopeAtLeast("write", TOOL_MIN_SCOPE.portuni_create_node), false);
+  it("write < manage (portuni_update_node) -> false", () => {
+    assert.equal(scopeAtLeast("write", TOOL_MIN_SCOPE.portuni_update_node), false);
   });
 
-  it("manage >= manage (portuni_create_node) -> true", () => {
-    assert.equal(scopeAtLeast("manage", TOOL_MIN_SCOPE.portuni_create_node), true);
+  it("manage >= manage (portuni_update_node) -> true", () => {
+    assert.equal(scopeAtLeast("manage", TOOL_MIN_SCOPE.portuni_update_node), true);
+  });
+
+  it("read >= read (portuni_create_node) -> true", () => {
+    assert.equal(scopeAtLeast("read", TOOL_MIN_SCOPE.portuni_create_node), true);
   });
 
   it("read < write (portuni_log) -> false", () => {
@@ -138,14 +143,14 @@ describe("scopeAtLeast drives allow/deny", () => {
 });
 
 describe("gateRoute (REST gate unit test)", () => {
-  it("read identity denied POST /nodes (requires manage)", () => {
-    const r = gateRoute({ globalScope: "read" }, "POST", "/nodes");
+  it("read identity denied PATCH /nodes/:id (requires manage)", () => {
+    const r = gateRoute({ globalScope: "read" }, "PATCH", "/nodes/01ABC");
     assert.equal(r.allowed, false);
     assert.equal(r.required, "manage");
   });
 
-  it("manage identity allowed POST /nodes", () => {
-    const r = gateRoute({ globalScope: "manage" }, "POST", "/nodes");
+  it("read identity allowed POST /nodes", () => {
+    const r = gateRoute({ globalScope: "read" }, "POST", "/nodes");
     assert.equal(r.allowed, true);
   });
 
@@ -197,6 +202,13 @@ before(async () => {
   await ensureSchemaOn(db);
   setDbForTesting(db);
 
+  // created_by on nodes is a FK into users -- the read identity below must
+  // exist as a row for portuni_create_node to succeed.
+  await db.execute({
+    sql: "INSERT INTO users (id, email, name) VALUES (?, ?, ?)",
+    args: ["01READ0000000000000000001", "reader@example.com", "Reader"],
+  });
+
   orgId = ulid();
   await db.execute({
     sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
@@ -232,16 +244,25 @@ after(async () => {
 });
 
 describe("MCP gate with read-scope identity", () => {
-  it("portuni_create_node (manage) is forbidden for read identity", async () => {
+  it("portuni_update_node (manage) is forbidden for read identity", async () => {
     const result = await readClient.callTool({
-      name: "portuni_create_node",
-      arguments: { type: "project", name: "Forbidden", organization_id: orgId },
+      name: "portuni_update_node",
+      arguments: { node_id: orgId, name: "Forbidden" },
     });
     assert.equal(result.isError, true);
     const text = (result.content as Array<{ type: string; text: string }>)[0].text;
     const parsed = JSON.parse(text) as { error: string; required_scope: string };
     assert.equal(parsed.error, "forbidden");
     assert.equal(parsed.required_scope, "manage");
+  });
+
+  it("portuni_create_node (read) is allowed for read identity", async () => {
+    const result = await readClient.callTool({
+      name: "portuni_create_node",
+      arguments: { type: "project", name: "Allowed", organization_id: orgId },
+    });
+    const text = (result.content as Array<{ type: string; text: string }>)[0]?.text;
+    assert.notEqual(result.isError, true, text);
   });
 
   it("portuni_list_nodes (read) is allowed for read identity", async () => {

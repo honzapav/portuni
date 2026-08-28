@@ -194,9 +194,9 @@ Permission groups (in Google Workspace):
 | Google Group | Portuni scope | Can do |
 |---|---|---|
 | admins@example.com | admin | everything + POPP sync, summary refresh, user management |
-| managers@example.com | manage | read + write + create nodes, connect, disconnect, update nodes |
+| managers@example.com | manage | read + write + connect, disconnect, update nodes |
 | team@example.com | write | read + log events, resolve, supersede, store files |
-| (any authenticated user) | read | get context, search, list nodes, get node |
+| (any authenticated user) | read | get context, search, list nodes, get node, create nodes |
 
 Highest matching group wins. User in both portuni-team and portuni-managers gets `manage`.
 

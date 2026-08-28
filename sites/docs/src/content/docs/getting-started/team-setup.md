@@ -51,9 +51,9 @@ The full variable inventory, including tunables not listed here, lives in [`docs
 | Scope | Who | Capabilities |
 |-------|-----|--------------|
 | admin | `PORTUNI_GROUPS_ADMIN` members | Everything, including user management; bypasses node-level visibility checks |
-| manage | `PORTUNI_GROUPS_MANAGE` members | Read + write + create/connect/update nodes |
+| manage | `PORTUNI_GROUPS_MANAGE` members | Read + write + connect/update/move nodes |
 | write | `PORTUNI_GROUPS_WRITE` members | Read + log events, resolve, supersede, store files |
-| read | any authenticated user from an allowed domain | Get context, list nodes, get node |
+| read | any authenticated user from an allowed domain | Get context, list nodes, get node, create nodes |
 
 Highest matching group wins. On top of these global scopes, individual nodes can be restricted with `group` visibility — a node a user can't see simply answers "not found."
 
