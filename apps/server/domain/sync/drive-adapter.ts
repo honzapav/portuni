@@ -30,7 +30,7 @@ export function __setDriveFetchForTests(f: typeof fetch): void {
   });
 }
 
-interface DriveFile { id: string; name: string; mimeType: string; parents?: string[]; size?: string; md5Checksum?: string; modifiedTime?: string; }
+interface DriveFile { id: string; name: string; mimeType: string; parents?: string[]; size?: string; md5Checksum?: string; modifiedTime?: string; createdTime?: string; }
 
 export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): FileAdapter {
   const cfg: DriveConfig = parseDriveConfig(remote.config);
@@ -48,13 +48,30 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
     );
   }
   const driveRoot = cfg.root_folder_id ?? cfg.shared_drive_id!;
+  // path -> Drive ID. For folders this is the PINNED id: when Drive holds
+  // several same-name siblings (it allows that), the oldest one wins so every
+  // caller and every process resolves the same folder. `alternates` keeps the
+  // other siblings so content that already lives in one of them still
+  // resolves; `inflight` single-flights folder creation so concurrent puts
+  // into one new folder (the sync run's worker pool) cannot each create it.
   const pathCache = new Map<string, string>([["", driveRoot]]);
+  const alternates = new Map<string, string[]>();
+  const inflight = new Map<string, Promise<string>>();
+  const warnedDuplicates = new Set<string>();
 
   function invalidatePrefix(prefix: string): void {
-    if (prefix === "") { pathCache.clear(); pathCache.set("", driveRoot); return; }
+    if (prefix === "") {
+      pathCache.clear();
+      pathCache.set("", driveRoot);
+      alternates.clear();
+      return;
+    }
     const prefixSlash = `${prefix}/`;
     for (const key of Array.from(pathCache.keys())) {
       if (key === prefix || key.startsWith(prefixSlash)) pathCache.delete(key);
+    }
+    for (const key of Array.from(alternates.keys())) {
+      if (key === prefix || key.startsWith(prefixSlash)) alternates.delete(key);
     }
   }
 
@@ -77,32 +94,138 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
     return params;
   }
 
+  function escapeQ(s: string): string {
+    return s.replace(/'/g, "\\'");
+  }
+
+  // Children of `parentId` named `name`, oldest first (Drive returns
+  // same-name siblings in arbitrary order otherwise).
+  async function childrenNamed(parentId: string, name: string, foldersOnly: boolean): Promise<DriveFile[]> {
+    const mime = foldersOnly ? " and mimeType = 'application/vnd.google-apps.folder'" : "";
+    const q = `name = '${escapeQ(name)}' and '${parentId}' in parents${mime} and trashed = false`;
+    const params = withCorpora(withSAD(new URLSearchParams({
+      q, fields: "files(id,name,mimeType,createdTime)",
+      orderBy: "createdTime",
+      includeItemsFromAllDrives: "true",
+    })));
+    const res = await driveFetch(`${DRIVE_API}/files?${params.toString()}`, { headers: await authHeaders() });
+    if (!res.ok) throw new Error(`Drive list: ${res.status} ${await res.text()}`);
+    const b = (await res.json()) as { files?: DriveFile[] };
+    return b.files ?? [];
+  }
+
+  function isFolder(f: DriveFile): boolean {
+    return f.mimeType === "application/vnd.google-apps.folder";
+  }
+
+  // Pin the oldest of `folders` (already oldest-first) for `walked`, remember
+  // the rest as alternates, and warn once per path so the duplicates get
+  // merged by hand instead of silently splitting content.
+  function pinFolder(walked: string, folders: DriveFile[]): string {
+    const pinned = folders[0].id;
+    pathCache.set(walked, pinned);
+    if (folders.length > 1) {
+      alternates.set(walked, folders.slice(1).map((f) => f.id));
+      if (!warnedDuplicates.has(walked)) {
+        warnedDuplicates.add(walked);
+        console.warn(
+          `[portuni:drive] ${remote.name}: duplicate folders for "${walked}" (${folders.map((f) => f.id).join(", ")}); using oldest ${pinned}. Merge the others into it manually.`,
+        );
+      }
+    } else {
+      alternates.delete(walked);
+    }
+    return pinned;
+  }
+
+  // All Drive ids a folder path may refer to: the pinned one first, then the
+  // duplicate siblings seen when it was resolved.
+  function folderIdsFor(walked: string): string[] {
+    const pinned = pathCache.get(walked);
+    if (pinned === undefined) return [];
+    return [pinned, ...(alternates.get(walked) ?? [])];
+  }
+
   async function resolvePathToFileId(path: string): Promise<string | null> {
     if (pathCache.has(path)) return pathCache.get(path)!;
     const segments = path.split("/").filter(Boolean);
-    let parentId = driveRoot;
     let walked = "";
     for (const seg of segments) {
+      const parentWalked = walked;
       walked = walked ? `${walked}/${seg}` : seg;
-      if (pathCache.has(walked)) { parentId = pathCache.get(walked)!; continue; }
-      const q = `name = '${seg.replace(/'/g, "\\'")}' and '${parentId}' in parents and trashed = false`;
-      // orderBy pins the winner when same-name siblings exist (concurrent
-      // puts from two devices): the oldest copy resolves consistently
-      // instead of files[0] flapping between duplicates per call.
-      const params = withCorpora(withSAD(new URLSearchParams({
-        q, fields: "files(id,name,mimeType)",
-        orderBy: "createdTime",
-        includeItemsFromAllDrives: "true",
-      })));
-      const res = await driveFetch(`${DRIVE_API}/files?${params.toString()}`, { headers: await authHeaders() });
-      if (!res.ok) throw new Error(`Drive list: ${res.status} ${await res.text()}`);
-      const b = (await res.json()) as { files?: DriveFile[] };
-      const hit = b.files?.[0];
-      if (!hit) return null;
-      parentId = hit.id;
-      pathCache.set(walked, parentId);
+      if (pathCache.has(walked)) continue;
+      let found: DriveFile[] = [];
+      // Search the pinned parent first, then its duplicate siblings: a file
+      // pushed while the folder was still split may live in any of them.
+      for (const parentId of folderIdsFor(parentWalked)) {
+        found = await childrenNamed(parentId, seg, false);
+        if (found.length > 0) break;
+      }
+      if (found.length === 0) return null;
+      const folders = found.filter(isFolder);
+      if (folders.length > 0) {
+        pinFolder(walked, folders);
+      } else {
+        pathCache.set(walked, found[0].id);
+      }
     }
-    return parentId;
+    return pathCache.get(path)!;
+  }
+
+  async function createFolder(name: string, parentId: string): Promise<DriveFile> {
+    const createParams = withSAD(new URLSearchParams({ fields: "id,name,mimeType,createdTime" }));
+    const metadata = { name, mimeType: "application/vnd.google-apps.folder", parents: [parentId] };
+    const createRes = await driveFetch(`${DRIVE_API}/files?${createParams.toString()}`, {
+      method: "POST",
+      headers: { ...await authHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify(metadata),
+    });
+    if (!createRes.ok) throw new Error(`Drive folder create: ${createRes.status} ${await createRes.text()}`);
+    return (await createRes.json()) as DriveFile;
+  }
+
+  async function trashId(id: string): Promise<void> {
+    const params = withSAD(new URLSearchParams());
+    const res = await driveFetch(`${DRIVE_API}/files/${id}?${params.toString()}`, {
+      method: "PATCH",
+      headers: { ...await authHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ trashed: true }),
+    });
+    if (!res.ok) throw new Error(`Drive trash: ${res.status} ${await res.text()}`);
+  }
+
+  // Resolve-or-create one folder segment. Single-flighted per path so N
+  // concurrent callers share one search+create. After a create, re-list the
+  // siblings: if an older same-name folder shows up (another process created
+  // it, or Drive's search index lagged behind its own create), trash ours
+  // and pin the older one -- Drive has no create-if-absent, so this
+  // compensation is the only way to keep one folder per path.
+  function ensureSegment(parentId: string, walked: string, seg: string): Promise<string> {
+    const cached = pathCache.get(walked);
+    if (cached !== undefined) return Promise.resolve(cached);
+    const running = inflight.get(walked);
+    if (running) return running;
+    const task = (async () => {
+      const existing = await childrenNamed(parentId, seg, true);
+      if (existing.length > 0) return pinFolder(walked, existing);
+      const created = await createFolder(seg, parentId);
+      const after = await childrenNamed(parentId, seg, true);
+      const others = after.filter((f) => f.id !== created.id);
+      if (others.length > 0) {
+        const older = others.filter((f) => (f.createdTime ?? "") < (created.createdTime ?? ""));
+        if (older.length > 0) {
+          await trashId(created.id);
+          return pinFolder(walked, after.filter((f) => f.id !== created.id));
+        }
+        return pinFolder(walked, after);
+      }
+      pathCache.set(walked, created.id);
+      return created.id;
+    })();
+    inflight.set(walked, task);
+    return task.finally(() => {
+      if (inflight.get(walked) === task) inflight.delete(walked);
+    });
   }
 
   async function ensureFolderPath(path: string): Promise<string> {
@@ -111,32 +234,16 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
     let walked = "";
     for (const seg of segments) {
       walked = walked ? `${walked}/${seg}` : seg;
-      if (pathCache.has(walked)) { parentId = pathCache.get(walked)!; continue; }
-      const q = `name = '${seg.replace(/'/g, "\\'")}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
-      const params = withCorpora(withSAD(new URLSearchParams({
-        q, fields: "files(id,name)",
-        orderBy: "createdTime",
-        includeItemsFromAllDrives: "true",
-      })));
-      const res = await driveFetch(`${DRIVE_API}/files?${params.toString()}`, { headers: await authHeaders() });
-      if (!res.ok) throw new Error(`Drive folder search: ${res.status} ${await res.text()}`);
-      const b = (await res.json()) as { files?: DriveFile[] };
-      if (b.files?.[0]) {
-        parentId = b.files[0].id;
-      } else {
-        const createParams = withSAD(new URLSearchParams());
-        const metadata = { name: seg, mimeType: "application/vnd.google-apps.folder", parents: [parentId] };
-        const createRes = await driveFetch(`${DRIVE_API}/files?${createParams.toString()}`, {
-          method: "POST",
-          headers: { ...await authHeaders(), "Content-Type": "application/json" },
-          body: JSON.stringify(metadata),
-        });
-        if (!createRes.ok) throw new Error(`Drive folder create: ${createRes.status} ${await createRes.text()}`);
-        parentId = ((await createRes.json()) as DriveFile).id;
-      }
-      pathCache.set(walked, parentId);
+      parentId = await ensureSegment(parentId, walked, seg);
     }
     return parentId;
+  }
+
+  async function parentsOf(id: string): Promise<string[]> {
+    const params = withSAD(new URLSearchParams({ fields: "id,parents" }));
+    const res = await driveFetch(`${DRIVE_API}/files/${id}?${params.toString()}`, { headers: await authHeaders() });
+    if (!res.ok) throw new Error(`Drive get: ${res.status} ${await res.text()}`);
+    return ((await res.json()) as DriveFile).parents ?? [];
   }
 
   function fileRefFrom(f: DriveFile, path: string): FileRef {
@@ -209,15 +316,18 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
     },
 
     async list(prefix) {
-      const rootId = await resolvePathToFileId(prefix.replace(/\/$/, ""));
+      const root = prefix.replace(/\/$/, "");
+      const rootId = await resolvePathToFileId(root);
       if (!rootId) return [];
       const out: FileRef[] = [];
-      async function walk(folderId: string, prefixPath: string): Promise<void> {
+      const seen = new Set<string>();
+      async function children(folderId: string): Promise<DriveFile[]> {
+        const all: DriveFile[] = [];
         let pageToken: string | undefined;
         do {
           const params = withCorpora(withSAD(new URLSearchParams({
             q: `'${folderId}' in parents and trashed = false`,
-            fields: "nextPageToken,files(id,name,mimeType,size,md5Checksum,modifiedTime)",
+            fields: "nextPageToken,files(id,name,mimeType,size,md5Checksum,modifiedTime,createdTime)",
             includeItemsFromAllDrives: "true",
             pageSize: "200",
           })));
@@ -225,19 +335,36 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
           const res = await driveFetch(`${DRIVE_API}/files?${params.toString()}`, { headers: await authHeaders() });
           if (!res.ok) throw new Error(`Drive list: ${res.status} ${await res.text()}`);
           const b = (await res.json()) as { files?: DriveFile[]; nextPageToken?: string };
-          for (const f of b.files ?? []) {
-            const childPath = prefixPath ? `${prefixPath}/${f.name}` : f.name;
-            if (f.mimeType === "application/vnd.google-apps.folder") {
-              pathCache.set(childPath, f.id);
-              await walk(f.id, childPath);
-            } else {
-              out.push(fileRefFrom(f, childPath));
-            }
-          }
+          all.push(...(b.files ?? []));
           pageToken = b.nextPageToken;
         } while (pageToken);
+        return all;
       }
-      await walk(rootId, prefix.replace(/\/$/, ""));
+      // One path may map to several Drive folders (duplicates). Walk all of
+      // them so content split across duplicates is still visible; the first
+      // (oldest) copy of a file path wins.
+      async function walk(folderIds: string[], prefixPath: string): Promise<void> {
+        const entries: DriveFile[] = [];
+        for (const fid of folderIds) entries.push(...(await children(fid)));
+        entries.sort((a, b) => (a.createdTime ?? "").localeCompare(b.createdTime ?? ""));
+        const folderGroups = new Map<string, DriveFile[]>();
+        for (const f of entries) {
+          const childPath = prefixPath ? `${prefixPath}/${f.name}` : f.name;
+          if (isFolder(f)) {
+            const g = folderGroups.get(childPath) ?? [];
+            g.push(f);
+            folderGroups.set(childPath, g);
+          } else if (!seen.has(childPath)) {
+            seen.add(childPath);
+            out.push(fileRefFrom(f, childPath));
+          }
+        }
+        for (const [childPath, group] of folderGroups) {
+          pinFolder(childPath, group);
+          await walk(group.map((f) => f.id), childPath);
+        }
+      }
+      await walk(folderIdsFor(root).length > 0 ? folderIdsFor(root) : [rootId], root);
       return out;
     },
 
@@ -257,16 +384,19 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
     async rename(from, to) {
       const id = await resolvePathToFileId(from);
       if (!id) throw new Error(`Drive rename: source ${from} not found`);
-      const fromParts = from.split("/"); fromParts.pop();
       const toParts = to.split("/"); const newName = toParts.pop()!;
-      const newFolderPath = toParts.join("/");
-      const newParentId = await ensureFolderPath(newFolderPath);
-      const oldParentPath = fromParts.join("/");
-      const oldParentId = await resolvePathToFileId(oldParentPath) ?? driveRoot;
-      const params = withSAD(new URLSearchParams({
-        addParents: newParentId, removeParents: oldParentId,
-        fields: "id,name,parents",
-      }));
+      const newParentId = await ensureFolderPath(toParts.join("/"));
+      // removeParents must name the file's ACTUAL parent. Deriving it from the
+      // old path picks the pinned folder, which is a different Drive id
+      // whenever the file sits in a duplicate sibling -- Drive then ignores
+      // the removal, adds the new parent and rejects the second parent with
+      // 403 teamDrivesParentLimit on a shared drive.
+      const currentParents = await parentsOf(id);
+      const params = withSAD(new URLSearchParams({ fields: "id,name,parents" }));
+      if (!currentParents.includes(newParentId)) {
+        params.set("addParents", newParentId);
+        if (currentParents.length > 0) params.set("removeParents", currentParents.join(","));
+      }
       const res = await driveFetch(`${DRIVE_API}/files/${id}?${params.toString()}`, {
         method: "PATCH",
         headers: { ...await authHeaders(), "Content-Type": "application/json" },

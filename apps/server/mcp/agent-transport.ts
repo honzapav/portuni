@@ -152,11 +152,20 @@ function buildAgentServer(
         content?: Array<{ type: string; text?: string }>;
         isError?: boolean;
       };
-      const text = result.content?.find((c) => c.type === "text")?.text;
-      if (snapshot && !result.isError && text) {
-        await applyLocalAfterProxiedMutation(opts.client, identity.userId, snapshot, text).catch(
-          (e) => console.error(`[portuni:agent] local disk step after ${name} failed:`, e),
-        );
+      const textPart = result.content?.find((c) => c.type === "text");
+      if (snapshot && !result.isError && textPart?.text) {
+        const rewritten = await applyLocalAfterProxiedMutation(
+          opts.client,
+          identity.userId,
+          snapshot,
+          textPart.text,
+        ).catch((e) => {
+          console.error(`[portuni:agent] local disk step after ${name} failed:`, e);
+          return null;
+        });
+        // The device's local step outcome replaces central's (which has no
+        // mirror and would report local_done:false for every move).
+        if (rewritten !== null) textPart.text = rewritten;
       }
       return result;
     }

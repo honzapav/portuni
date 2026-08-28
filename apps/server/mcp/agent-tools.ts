@@ -547,40 +547,49 @@ function deriveOrNull(a: {
   }
 }
 
-async function renameLocalBestEffort(oldPath: string, newPath: string): Promise<void> {
+// true when the local copy was moved; false when there was none (ENOENT).
+// Anything else is thrown for the caller to log.
+async function renameLocalBestEffort(oldPath: string, newPath: string): Promise<boolean> {
   const { mkdir: fsMkdir, rename: fsRename } = await import("node:fs/promises");
   const { dirname } = await import("node:path");
   try {
     await fsMkdir(dirname(newPath), { recursive: true });
     await fsRename(oldPath, newPath);
+    return true;
   } catch (e) {
-    // ENOENT = no local copy to move; anything else is logged by the caller.
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    return false;
   }
 }
 
 // Apply the disk step after central confirmed the mutation. resultText is the
 // proxied tool result's JSON payload; anything that does not parse into a
 // success shape (preview, repair_needed, error text) is a no-op.
+//
+// Returns the result text to hand back to the agent, or null to pass the
+// central text through unchanged. For a move the central payload's
+// `detail.local_done` / `new_local_path` describe the SERVER's disk (always
+// false / null -- it has no mirror); they are rewritten here with what
+// happened on this device so the agent is not told the local step failed.
 export async function applyLocalAfterProxiedMutation(
   client: CentralClient,
   userId: string,
   snapshot: DiskMutationSnapshot,
   resultText: string,
-): Promise<void> {
+): Promise<string | null> {
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(resultText) as Record<string, unknown>;
   } catch {
-    return;
+    return null;
   }
   const { rm } = await import("node:fs/promises");
   const { deleteFileState } = await import("../domain/sync/local-db.js");
   const { localHashFor } = await import("../domain/sync/engine.js");
 
   if (snapshot.tool === "portuni_delete_file") {
-    if (parsed.status !== "ok" || !parsed.deleted_at) return;
-    if (!snapshot.fileId || !snapshot.oldRemotePath) return;
+    if (parsed.status !== "ok" || !parsed.deleted_at) return null;
+    if (!snapshot.fileId || !snapshot.oldRemotePath) return null;
     const localPath = deriveOrNull({
       mirrorRoot: snapshot.mirrorRoot,
       nodeRoot: snapshot.nodeRoot,
@@ -589,14 +598,14 @@ export async function applyLocalAfterProxiedMutation(
     if (localPath) await rm(localPath, { force: true }).catch(() => undefined);
     await deleteFileState(snapshot.fileId).catch(() => undefined);
     client.invalidateSyncInfo(snapshot.nodeId);
-    return;
+    return null;
   }
 
   if (snapshot.tool === "portuni_move_file") {
-    if (parsed.status !== "ok" || !parsed.moved_at) return;
-    if (!snapshot.fileId || !snapshot.oldRemotePath) return;
+    if (parsed.status !== "ok" || !parsed.moved_at) return null;
+    if (!snapshot.fileId || !snapshot.oldRemotePath) return null;
     const newRemotePath = parsed.new_remote_path as string | undefined;
-    if (!newRemotePath) return;
+    if (!newRemotePath) return null;
     const oldLocal = deriveOrNull({
       mirrorRoot: snapshot.mirrorRoot,
       nodeRoot: snapshot.nodeRoot,
@@ -608,7 +617,7 @@ export async function applyLocalAfterProxiedMutation(
     let targetNodeRoot = snapshot.nodeRoot;
     if (targetNodeId !== snapshot.nodeId) {
       const m = await getMirrorPath(userId, targetNodeId);
-      if (!m) return; // target node not mirrored here -- nothing to place
+      if (!m) return null; // target node not mirrored here -- nothing to place
       targetMirror = m;
       targetNodeRoot = nodeRootFor(await client.syncInfo(targetNodeId));
     }
@@ -617,17 +626,26 @@ export async function applyLocalAfterProxiedMutation(
       nodeRoot: targetNodeRoot,
       remotePath: newRemotePath,
     });
+    let localDone = false;
     if (oldLocal && newLocal && oldLocal !== newLocal) {
-      await renameLocalBestEffort(oldLocal, newLocal);
-      await localHashFor(newLocal, snapshot.fileId, null).catch(() => null);
+      localDone = await renameLocalBestEffort(oldLocal, newLocal);
+      if (localDone) await localHashFor(newLocal, snapshot.fileId, null).catch(() => null);
     }
     client.invalidateSyncInfo(snapshot.nodeId);
     if (targetNodeId !== snapshot.nodeId) client.invalidateSyncInfo(targetNodeId);
-    return;
+    const detail =
+      parsed.detail && typeof parsed.detail === "object"
+        ? (parsed.detail as Record<string, unknown>)
+        : {};
+    return JSON.stringify({
+      ...parsed,
+      new_local_path: newLocal,
+      detail: { ...detail, local_done: localDone },
+    });
   }
 
   if (snapshot.tool === "portuni_rename_folder") {
-    if (parsed.type !== "applied" || !Array.isArray(parsed.files)) return;
+    if (parsed.type !== "applied" || !Array.isArray(parsed.files)) return null;
     for (const f of parsed.files as Array<Record<string, unknown>>) {
       if (f.status !== "ok") continue;
       const oldLocal = deriveOrNull({
@@ -646,4 +664,5 @@ export async function applyLocalAfterProxiedMutation(
     }
     client.invalidateSyncInfo(snapshot.nodeId);
   }
+  return null;
 }

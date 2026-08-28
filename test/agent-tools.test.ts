@@ -683,6 +683,77 @@ describe("proxied disk mutations (GH #78)", () => {
     assert.equal(await readFile(join(mirrorRoot, "outputs", "a.md"), "utf8"), "obsah");
   });
 
+  it("reports THIS device's move step in detail.local_done instead of central's", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "a.md");
+    await writeFile(abs, "obsah");
+    const fileId = fake.seedRemote("wip/a.md", "obsah");
+    const args = { file_id: fileId, new_section: "outputs", confirmed: true };
+    const snapshot = await snapshotForDiskMutation(fake, "U1", "portuni_move_file", args);
+    const newRemote = posix.join(NODE_ROOT, "outputs/a.md");
+    // Central has no mirror, so its own local step reports false -- that
+    // value must not reach the agent as if it described this device.
+    const central = {
+      status: "ok",
+      file_id: fileId,
+      new_remote_name: "test-fs",
+      new_remote_path: newRemote,
+      new_local_path: null,
+      moved_at: "now",
+      detail: { remote_done: true, local_done: false },
+    };
+    const out = await applyLocalAfterProxiedMutation(fake, "U1", snapshot!, JSON.stringify(central));
+    assert.ok(out, "expected a rewritten result text");
+    const parsed = JSON.parse(out!);
+    assert.equal(parsed.detail.remote_done, true);
+    assert.equal(parsed.detail.local_done, true);
+    assert.equal(parsed.new_local_path, join(mirrorRoot, "outputs", "a.md"));
+    assert.equal(await readFile(join(mirrorRoot, "outputs", "a.md"), "utf8"), "obsah");
+  });
+
+  it("reports local_done false when there was no local copy to move", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    const fileId = fake.seedRemote("wip/a.md", "obsah");
+    const args = { file_id: fileId, new_section: "outputs", confirmed: true };
+    const snapshot = await snapshotForDiskMutation(fake, "U1", "portuni_move_file", args);
+    const newRemote = posix.join(NODE_ROOT, "outputs/a.md");
+    const out = await applyLocalAfterProxiedMutation(
+      fake,
+      "U1",
+      snapshot!,
+      JSON.stringify({
+        status: "ok",
+        file_id: fileId,
+        new_remote_name: "test-fs",
+        new_remote_path: newRemote,
+        new_local_path: null,
+        moved_at: "now",
+        detail: { remote_done: true, local_done: false },
+      }),
+    );
+    const parsed = JSON.parse(out!);
+    assert.equal(parsed.detail.local_done, false);
+  });
+
+  it("returns null when the central result was not applied locally", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    const fileId = fake.seedRemote("wip/a.md", "obsah");
+    const snapshot = await snapshotForDiskMutation(fake, "U1", "portuni_delete_file", {
+      file_id: fileId,
+      confirmed: true,
+    });
+    const out = await applyLocalAfterProxiedMutation(
+      fake,
+      "U1",
+      snapshot!,
+      JSON.stringify({ status: "repair_needed", detail: { phase: "remote" } }),
+    );
+    assert.equal(out, null);
+  });
+
   it("renames every affected local file after an applied rename_folder", async () => {
     const fake = new FakeCentral();
     await setupMirror();
