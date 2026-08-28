@@ -162,6 +162,52 @@ describe("POST /nodes/:id/files/:fileId/resolve", () => {
     assert.equal(await syncClassFor(stored.file_id), "clean");
   });
 
+  // keep_local means "push my copy over the remote one". Two states make
+  // that impossible, and both used to fall through deriveLocalPath/storeFile
+  // and surface as a 500 with no usable message: a record with no remote
+  // binding, and a record whose local copy is not on this device.
+  it("keep_local on a record with no remote_path returns 409, not 500", async () => {
+    const stored = await seedFile("g");
+    await shared.db.execute({
+      sql: "UPDATE files SET remote_path = NULL WHERE id = ?",
+      args: [stored.file_id],
+    });
+
+    const r = await fetch(
+      `${base}/nodes/${shared.nodeId}/files/${stored.file_id}/resolve`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "keep_local" }),
+      },
+    );
+    assert.equal(r.status, 409);
+    const body = (await r.json()) as { error: string };
+    assert.match(body.error, /remote/i);
+  });
+
+  it("keep_local without a local copy on this device returns 409, not 500", async () => {
+    const stored = await seedFile("h");
+    await rm(stored.local_path);
+
+    const r = await fetch(
+      `${base}/nodes/${shared.nodeId}/files/${stored.file_id}/resolve`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "keep_local" }),
+      },
+    );
+    assert.equal(r.status, 409);
+    const body = (await r.json()) as { error: string };
+    assert.match(body.error, /lokální|local/i);
+    assert.equal(
+      await readFile(join(shared.remoteRoot, stored.remote_path), "utf8"),
+      "v1",
+      "the remote copy must be untouched",
+    );
+  });
+
   it("rejects an unknown action with 400", async () => {
     const stored = await seedFile("d");
     const r = await fetch(

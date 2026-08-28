@@ -92,7 +92,7 @@ Returns: `{ file_id, filename, remote_path }` — the exported buffer is stored 
 `portuni_status` only reports the current classification — it never touches the remote or cleans anything up. Reconciling drift against the remote happens in a **deliberate sync run**, triggered by the desktop/web UI's "Synchronizovat" action (or, for a teammate mirror in central mode, by the sync agent). One run does, in order:
 
 1. **Retry pending file ops** — replays any move/rename/delete whose remote step didn't finish last time (see [Destructive operations](#destructive-operations) below).
-2. **Remote sweep** — a tracked file whose remote object is confirmed gone is removed and tombstoned; a file that appeared directly under `wip/`, `outputs/`, or `resources/` is adopted and pulled in the same run (a dot-prefixed filename or subfolder is skipped). A record never pushed from this device is left alone, and nothing is destroyed if the remote itself can't be confirmed reachable.
+2. **Remote sweep** — a tracked file whose remote object is confirmed gone is removed and tombstoned; a file that appeared anywhere under `wip/`, `outputs/`, or `resources/` (at any depth) is adopted and pulled in the same run (a dot-prefixed filename or subfolder is skipped). A record never pushed from this device is left alone, and nothing is destroyed if the remote itself can't be confirmed reachable.
 3. Status scan.
 4. Push every `push` candidate, pull every `pull` candidate. A `deleted_local` file is reported, not auto-restored — that needs an explicit decision (see [Resolving conflicts and deletions](#resolving-conflicts-and-deletions)).
 5. Clean up untracked local copies that match a delete or move/rename tombstone.

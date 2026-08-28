@@ -145,9 +145,9 @@ symlink to this file.
   want the same behavior. A deliberate sync run additionally sweeps the
   remote first (`remote-sweep.ts`): a record whose remote object is
   confirmed gone is deleted + tombstoned, and a file newly present on the
-  remote directly under `wip/outputs/resources` (skipping any dot-prefixed
-  path segment) is adopted and pulled in the same run — `portuni_status`
-  alone never triggers this. Sync classes are
+  remote anywhere under `wip/`, `outputs/` or `resources/` — at any depth,
+  skipping any dot-prefixed path segment — is adopted and pulled in the
+  same run; `portuni_status` alone never triggers this. Sync classes are
   `clean | push | pull | conflict | remote_missing | remote_error | native
   | deleted_local`; there is no `orphan` class. `moveFile`/`renameFile`/
   `renameFolder`/`deleteFile` record their intent in `pending_file_ops`

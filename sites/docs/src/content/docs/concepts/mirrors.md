@@ -109,8 +109,8 @@ A file deleted directly on the remote (Drive UI, another tool — nothing
 that goes through Portuni) is only noticed by the **remote sweep**, which
 runs at the start of every deliberate sync ("Synchronizovat"): it removes
 the record and writes the tombstone above, and — symmetrically — adopts
-any file that showed up directly under `wip/`, `outputs/`, or
-`resources/` without going through `portuni_store`/`portuni_adopt_files`
+any file that showed up anywhere under `wip/`, `outputs/`, or
+`resources/` — at any depth — without going through `portuni_store`/`portuni_adopt_files`
 (a dot-prefixed filename or subfolder is skipped) —
 the run that discovers it pulls it into that device's own mirror in the
 same pass, and any other device mirroring the same node picks it up the

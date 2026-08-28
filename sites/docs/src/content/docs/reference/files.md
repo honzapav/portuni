@@ -196,8 +196,8 @@ Returns: classified buckets (`clean`, `push_candidates`, `pull_candidates`,
 - **`remote_missing`** and a new-on-the-remote file are only reconciled by
   a deliberate sync run's remote sweep, not by `portuni_status` itself —
   the sweep deletes+tombstones a record whose remote object is confirmed
-  gone, and adopts a file newly present directly under `wip/`,
-  `outputs/`, or `resources/` (a dot-prefixed filename or subfolder is
+  gone, and adopts a file newly present anywhere under `wip/`,
+  `outputs/`, or `resources/` at any depth (a dot-prefixed filename or subfolder is
   skipped).
 :::
 

@@ -362,9 +362,9 @@ a plain pull and refuses (409) to clobber unpushed local changes.
 2. **Remote sweep.** `remoteSweep` (`remote-sweep.ts`) reconciles the node's
    `files` rows against the live remote listing: a pushed record whose
    object is confirmed gone is deleted and tombstoned (`sync_delete_remote`);
-   a remote file newly present directly under `wip/`, `outputs/`, or
-   `resources/` is adopted (`adoptableSection` skips it if any path segment
-   past the section starts with `.`). Both classes only fire once the node
+   a remote file newly present anywhere under `wip/`, `outputs/`, or
+   `resources/` — at any depth — is adopted (`adoptableSection` skips it
+   if any path segment past the section starts with `.`). Both classes only fire once the node
    root itself is confirmed reachable, so a remote that's merely unreachable
    never destroys records.
    Never-pushed records (`current_remote_hash IS NULL`) are untouched.

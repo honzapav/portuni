@@ -2,6 +2,7 @@
 // /nodes/:id/folder-url, /nodes/:id/sync, /nodes/:id/move, /positions.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { stat as fsStat } from "node:fs/promises";
 import { getDb } from "../infra/db.js";
 import { logAudit } from "../infra/audit.js";
 import {
@@ -696,6 +697,13 @@ export async function handleRemoteSweep(
 
 const RESOLVE_ACTIONS = new Set(["keep_local", "take_remote", "restore"]);
 
+async function fileExists(path: string): Promise<boolean> {
+  return fsStat(path).then(
+    (s) => s.isFile(),
+    () => false,
+  );
+}
+
 // Resolves the two decisions the deterministic reconciler cannot make on
 // its own: a `conflict` (both sides changed -- keep_local pushes the local
 // version over the remote one, take_remote overwrites local with it) and a
@@ -747,11 +755,28 @@ export async function handleResolveFile(
         respondJson(res, 409, { error: "node has no mirror on this device" });
         return;
       }
+      // Same shape as the missing-mirror case above: keep_local means "push
+      // MY copy over the remote one", and both of these make that
+      // impossible. Without the checks they fall through deriveLocalPath /
+      // storeFile and surface as a 500 that names nothing.
+      const remotePath = fileRow.rows[0].remote_path as string | null;
+      if (!remotePath) {
+        respondJson(res, 409, {
+          error: "file has no remote path -- nothing to keep the local version over",
+        });
+        return;
+      }
       const localPath = deriveLocalPath({
         mirrorRoot,
         nodeRoot: buildNodeRoot(await resolveNodeInfo(db, nodeId)),
-        remotePath: fileRow.rows[0].remote_path as string,
+        remotePath,
       });
+      if (!(await fileExists(localPath))) {
+        respondJson(res, 409, {
+          error: `no local copy of this file on this device (${localPath}) -- nothing to keep`,
+        });
+        return;
+      }
       await storeFile(db, { userId: identity.userId, nodeId, localPath });
     } else {
       // pullFile itself keeps files.current_remote_hash in step with what
