@@ -24,13 +24,16 @@ usage limits (waits for the reset, resumes). Harness derived from
 ## Prerequisites
 
 1. Docker Desktop running.
-2. Keychain entries on this Mac (values never on disk):
+2. Keychain entries on the old Mac (values never on disk). Its login keychain
+   is locked in ssh sessions, so unlock it in the same `ssh -t` command:
    ```bash
-   claude setup-token   # personal profile; paste the token into:
-   security add-generic-password -U -s sandcastle.claude-code.oauth-token -a "$USER" -w
-   # fine-grained PAT for honzapav/portuni: Issues, Pull requests, Contents (RW), Metadata
-   security add-generic-password -U -s sandcastle.portuni.github-pat -a "$USER" -w
+   ssh -t honzas-macbook-pro 'security unlock-keychain ~/Library/Keychains/login.keychain-db && \
+     security add-generic-password -U -s sandcastle.claude-code.oauth-token -a "$USER" -w && \
+     security add-generic-password -U -s sandcastle.portuni.github-pat -a "$USER" -w'
    ```
+   Each `-w` without a value prompts for it hidden. Claude token: `claude setup-token`
+   (personal profile). GitHub: PAT with Issues, Pull requests, Contents (RW),
+   Metadata on `honzapav/portuni`.
 3. `(cd .sandcastle && npm ci)`.
 4. Image built: `./.sandcastle/node_modules/.bin/sandcastle docker build-image --image-name sandcastle:portuni --dockerfile .sandcastle/Dockerfile`
 5. Main working tree on `main` and clean; the launcher fast-forwards it to `origin/main` and refuses to start when local commits are ahead (e.g. an `udrzba/` branch left by the AIQ maintenance lane).
@@ -38,13 +41,16 @@ usage limits (waits for the reset, resumes). Harness derived from
 ## Run
 
 ```bash
-./.sandcastle/start-loop.sh
+ssh -t honzas-macbook-pro 'cd ~/Dev/projekty/portuni && ./.sandcastle/start-loop.sh'
 ```
 
-Watch: `tmux attach -t sandcastle-portuni` (detach Ctrl-b d).
-Stop: `tmux kill-session -t sandcastle-portuni`.
-Over ssh use `ssh -t`: the login keychain is locked in ssh sessions and the
-launcher runs `security unlock-keychain`, which prompts for the login password.
+`-t` is required: the launcher runs `security unlock-keychain`, which prompts
+for the old Mac's login password, then reads the tokens.
+
+Watch: `ssh -t honzas-macbook-pro 'tmux attach -t sandcastle-portuni'` (detach Ctrl-b d).
+Stop: `ssh honzas-macbook-pro 'tmux kill-session -t sandcastle-portuni'`.
+Deploy harness changes: merge to `main`, then `ssh honzas-macbook-pro 'cd ~/Dev/projekty/portuni && git pull --ff-only'`
+(the image needs a rebuild only when the Dockerfile changes).
 
 Environment knobs: `SANDCASTLE_MODEL`, `SANDCASTLE_BRANCH`, `SANDCASTLE_SCOPE`
 (e.g. `"only issue #84"`), `SANDCASTLE_MAX_ITERATIONS`, `SANDCASTLE_MAX_RUNS`.
