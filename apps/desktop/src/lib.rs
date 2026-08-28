@@ -14,6 +14,7 @@ use std::sync::Mutex;
 mod auth;
 mod mcp_install;
 mod pty;
+mod updater;
 mod workspace;
 
 use log::{error, info, warn};
@@ -1844,6 +1845,7 @@ pub fn run() {
     // MCP token into AuthTokens and its bound port into BackendPorts.
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Logger plugin is initialised before spawn_all_sidecars so every line we
         // emit during boot — including the auth-token confirmation and any
         // sidecar stdout/stderr — lands in the file at
@@ -1865,6 +1867,7 @@ pub fn run() {
         .manage(BackendPorts(Mutex::new(HashMap::new())))
         .manage(AuthTokens(Mutex::new(HashMap::new())))
         .manage(pty::PtyState::default())
+        .manage(updater::PendingUpdate::default())
         .register_uri_scheme_protocol("portuni-html", |ctx, request| {
             use tauri::http::Response;
             let app = ctx.app_handle();
@@ -1977,6 +1980,10 @@ pub fn run() {
             set_active_workspace,
             set_workspace_enabled,
             delete_workspace,
+            updater::check_update,
+            updater::install_update,
+            updater::restart_app,
+            updater::get_app_version,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
