@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
@@ -10,6 +10,7 @@ import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { registerLocalFile } from "../apps/server/domain/sync/engine.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { resetAdapterCacheForTests, setAdapterForTests } from "../apps/server/domain/sync/adapter-cache.js";
+import { enqueuePendingOp } from "../apps/server/domain/sync/pending-ops.js";
 import type { FileAdapter, FileRef } from "../apps/server/domain/sync/types.js";
 
 let workspace: string;
@@ -163,5 +164,37 @@ describe("remoteSweep", () => {
     assert.equal(out.errors.length, 1);
     const row = await db.execute({ sql: "SELECT id FROM files WHERE id = ?", args: [r.file_id] });
     assert.equal(row.rows.length, 1);
+  });
+
+  it("retries a leftover pending file op first and reports it as repaired", async () => {
+    const { db, nodeId, remoteRoot, orgSyncKey, nodeSyncKey } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const r = await pushed(db, nodeId, mirrorRoot, "a.md");
+    const nodeRoot = `${orgSyncKey}/projects/${nodeSyncKey}`;
+    const to = `${nodeRoot}/outputs/a.md`;
+    await mkdir(join(remoteRoot, nodeRoot, "outputs"), { recursive: true });
+    // Simulate a move whose remote step already applied (e.g. the process
+    // crashed after the rename but before the op was marked complete).
+    await rename(join(remoteRoot, r.remote_path), join(remoteRoot, to));
+    await enqueuePendingOp(db, {
+      userId: "U1",
+      nodeId,
+      fileId: r.file_id,
+      payload: {
+        op: "move",
+        from_remote_name: "test-fs",
+        from_remote_path: r.remote_path,
+        to_remote_name: "test-fs",
+        to_remote_path: to,
+        to_node_id: nodeId,
+        filename: "a.md",
+      },
+    });
+    const out = await remoteSweep(db, { userId: "U1", nodeId });
+    assert.deepEqual(out.repaired, [{ file_id: r.file_id, op: "move", filename: "a.md" }]);
+    assert.deepEqual(out.pending_repairs, []);
+    const row = await db.execute({ sql: "SELECT remote_path FROM files WHERE id = ?", args: [r.file_id] });
+    assert.equal(row.rows[0].remote_path, to);
   });
 });

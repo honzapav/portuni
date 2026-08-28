@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, mkdir, rename, stat } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, rename, stat, copyFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
@@ -147,7 +147,7 @@ describe("pending file ops", () => {
     assert.equal(tomb.rows.length, 1);
   });
 
-  it("an op that keeps failing is reported, not dropped", async () => {
+  it("an op targeting an already-gone record and remote object completes as a no-op delete (idempotent)", async () => {
     const { db, nodeId } = await makeSharedDb();
     await enqueuePendingOp(db, {
       userId: "U1",
@@ -164,5 +164,112 @@ describe("pending file ops", () => {
     // The record is gone and the remote object never existed: the op can
     // complete as a no-op delete (idempotent).
     assert.equal(retry.repaired.length, 1);
+  });
+
+  it("an op whose executor keeps failing is reported with attempts/last_error, not dropped", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const r = await pushed(db, nodeId, mirrorRoot, "a.md");
+    const real = await getAdapter(db, "test-fs");
+    const broken = {
+      ...real,
+      stat: async () => {
+        throw new Error("stat unavailable");
+      },
+    };
+    setAdapterForTests("test-fs", broken);
+    await enqueuePendingOp(db, {
+      userId: "U1",
+      nodeId,
+      fileId: r.file_id,
+      payload: { op: "delete", remote_name: "test-fs", remote_path: r.remote_path, filename: "a.md" },
+    });
+
+    const retry1 = await retryPendingFileOps(db, { userId: "U1", nodeId });
+    assert.equal(retry1.repaired.length, 0);
+    assert.equal(retry1.pending_repairs.length, 1);
+    assert.equal(retry1.pending_repairs[0].attempts, 1);
+    assert.equal(retry1.pending_repairs[0].last_error, "stat unavailable");
+    const pendingAfterFirst = await listPendingOps(db, nodeId);
+    assert.equal(pendingAfterFirst.length, 1);
+    assert.equal(pendingAfterFirst[0].attempts, 1);
+    assert.equal(pendingAfterFirst[0].last_error, "stat unavailable");
+
+    const retry2 = await retryPendingFileOps(db, { userId: "U1", nodeId });
+    assert.equal(retry2.pending_repairs[0].attempts, 2);
+    const pendingAfterSecond = await listPendingOps(db, nodeId);
+    assert.equal(pendingAfterSecond.length, 1);
+    assert.equal(pendingAfterSecond[0].attempts, 2);
+  });
+
+  it("a move whose source and destination BOTH exist on the remote fails without deleting either", async () => {
+    const { db, nodeId, remoteRoot, orgSyncKey, nodeSyncKey } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const r = await pushed(db, nodeId, mirrorRoot, "a.md");
+    const nodeRoot = `${orgSyncKey}/projects/${nodeSyncKey}`;
+    const to = `${nodeRoot}/outputs/a.md`;
+    await mkdir(join(remoteRoot, nodeRoot, "outputs"), { recursive: true });
+    // Copy (not move): both the source and destination objects exist on the
+    // remote at once, the ambiguous case the executor must refuse to guess
+    // its way out of.
+    await copyFile(join(remoteRoot, r.remote_path), join(remoteRoot, to));
+    await enqueuePendingOp(db, {
+      userId: "U1",
+      nodeId,
+      fileId: r.file_id,
+      payload: {
+        op: "move",
+        from_remote_name: "test-fs",
+        from_remote_path: r.remote_path,
+        to_remote_name: "test-fs",
+        to_remote_path: to,
+        to_node_id: nodeId,
+        filename: "a.md",
+      },
+    });
+
+    const retry = await retryPendingFileOps(db, { userId: "U1", nodeId });
+    assert.equal(retry.repaired.length, 0);
+    assert.equal(retry.pending_repairs.length, 1);
+    assert.match(retry.pending_repairs[0].last_error ?? "", /both/);
+    // Neither remote object was touched.
+    assert.ok(await stat(join(remoteRoot, r.remote_path)));
+    assert.ok(await stat(join(remoteRoot, to)));
+    // The record is untouched too.
+    const row = await db.execute({ sql: "SELECT remote_path FROM files WHERE id = ?", args: [r.file_id] });
+    assert.equal(row.rows[0].remote_path, r.remote_path);
+  });
+
+  it("a stale delete op refuses to remove a different file's remote object that now occupies its path", async () => {
+    const { db, nodeId, remoteRoot } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const a = await pushed(db, nodeId, mirrorRoot, "a.md");
+    // A pending delete op for file "a" targeting its remote path...
+    await enqueuePendingOp(db, {
+      userId: "U1",
+      nodeId,
+      fileId: a.file_id,
+      payload: { op: "delete", remote_name: "test-fs", remote_path: a.remote_path, filename: "a.md" },
+    });
+    // ...but the record for "a" is gone (deleted out of band) and a
+    // DIFFERENT file "b" now claims that exact remote path.
+    await db.execute({ sql: "DELETE FROM files WHERE id = ?", args: [a.file_id] });
+    await db.execute({
+      sql: `INSERT INTO files (id, node_id, filename, remote_name, remote_path, status, created_by)
+            VALUES (?, ?, ?, ?, ?, 'wip', 'U1')`,
+      args: ["F-B", nodeId, "a.md", "test-fs", a.remote_path],
+    });
+
+    const retry = await retryPendingFileOps(db, { userId: "U1", nodeId });
+    assert.equal(retry.repaired.length, 0);
+    assert.equal(retry.pending_repairs.length, 1);
+    assert.match(retry.pending_repairs[0].last_error ?? "", /claimed by a different file/);
+    // File B's remote object must still be there.
+    assert.ok(await stat(join(remoteRoot, a.remote_path)));
+    const row = await db.execute({ sql: "SELECT id FROM files WHERE id = 'F-B'" });
+    assert.equal(row.rows.length, 1);
   });
 });

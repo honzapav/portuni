@@ -840,7 +840,6 @@ export async function deleteFile(
 
   await db.execute({ sql: "DELETE FROM files WHERE id = ?", args: [a.fileId] });
   await deleteFileState(a.fileId).catch(() => undefined);
-  if (pendingOpId) await completePendingOp(db, pendingOpId);
 
   await db.execute({
     sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
@@ -860,6 +859,10 @@ export async function deleteFile(
       now,
     ],
   });
+  // Complete the op only after the tombstone is written -- if the audit
+  // insert fails, the op must stay pending so a retry writes the tombstone
+  // instead of the delete going unrecorded forever.
+  if (pendingOpId) await completePendingOp(db, pendingOpId);
 
   return { file_id: a.fileId, mode, deleted_at: now, status: "ok" };
 }
@@ -947,8 +950,8 @@ export async function renameFile(
       filename: fn,
     },
   });
-  const adapter = await getAdapter(db, remoteName);
   try {
+    const adapter = await getAdapter(db, remoteName);
     await adapter.rename(oldRemotePath, newRemotePath);
   } catch (e) {
     await failPendingOp(db, pendingOpId, (e as Error).message);

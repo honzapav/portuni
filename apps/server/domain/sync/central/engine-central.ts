@@ -917,8 +917,12 @@ export async function syncRunCentral(
     deleted_remote: [],
     deleted_on_remote: sweep.deleted_on_remote.map((f) => ({ file_id: f.file_id, filename: f.filename })),
     sweep_errors: [...sweep.errors],
-    repaired: sweep.repaired.map((f) => ({ file_id: f.file_id, filename: f.filename })),
-    pending_repairs: [...sweep.pending_repairs],
+    // A central server older than this change (Task 6) answers without
+    // these fields -- client.ts casts the JSON body to RemoteSweepResult
+    // unchecked, so an old deployment hands back `undefined` here rather
+    // than an empty array. Default defensively instead of throwing.
+    repaired: (sweep.repaired ?? []).map((f) => ({ file_id: f.file_id, filename: f.filename })),
+    pending_repairs: [...(sweep.pending_repairs ?? [])],
     errors: [],
     skipped: [],
   };

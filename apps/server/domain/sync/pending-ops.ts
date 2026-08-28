@@ -78,6 +78,52 @@ export async function listPendingOps(db: Client, nodeId: string): Promise<Pendin
   }));
 }
 
+// Refuse to touch the remote on a guess. The op's payload captured the
+// file's remote binding at enqueue time; by retry time something else may
+// have happened -- a manual repair, another device, or (worst case) a
+// completely different file adopted/pushed to the exact path this op names.
+// Acting on the payload alone could delete or move a DIFFERENT file's remote
+// object. Require the CURRENT `files` row for this op's file_id to still
+// point at one of the paths the op describes (the untouched starting state,
+// or -- for a move -- the already-applied destination, which is what makes
+// the retry idempotent). If the row is gone, only proceed when no other row
+// has since claimed any of those paths; otherwise fail with an ambiguity
+// message instead of guessing, exactly like the both-present branch below.
+async function assertRecordStillMatches(
+  db: Client,
+  row: PendingOpRow,
+  candidates: Array<{ remote_name: string; remote_path: string }>,
+): Promise<void> {
+  const cur = await db.execute({
+    sql: "SELECT remote_name, remote_path FROM files WHERE id = ?",
+    args: [row.file_id],
+  });
+  if (cur.rows.length > 0) {
+    const curName = cur.rows[0].remote_name as string | null;
+    const curPath = cur.rows[0].remote_path as string | null;
+    const matches = candidates.some(
+      (c) => c.remote_name === curName && c.remote_path === curPath,
+    );
+    if (!matches) {
+      throw new Error(
+        `file ${row.file_id} record now points at ${curName}:${curPath}, which does not match the pending op -- refusing to guess`,
+      );
+    }
+    return;
+  }
+  for (const c of candidates) {
+    const claim = await db.execute({
+      sql: "SELECT id FROM files WHERE remote_name = ? AND remote_path = ?",
+      args: [c.remote_name, c.remote_path],
+    });
+    if (claim.rows.length > 0) {
+      throw new Error(
+        `file ${row.file_id} record is gone and ${c.remote_name}:${c.remote_path} is now claimed by a different file (${claim.rows[0].id as string}) -- refusing to guess`,
+      );
+    }
+  }
+}
+
 // Idempotent executors. Each one looks at the remote first and only does the
 // steps that are still missing, then fixes the record and audits the outcome
 // with the same rows the first-time path writes (tombstones included).
@@ -86,6 +132,10 @@ async function runMove(
   row: PendingOpRow,
   p: Extract<PendingOp, { op: "move" }>,
 ): Promise<void> {
+  await assertRecordStillMatches(db, row, [
+    { remote_name: p.from_remote_name, remote_path: p.from_remote_path },
+    { remote_name: p.to_remote_name, remote_path: p.to_remote_path },
+  ]);
   const src = await getAdapter(db, p.from_remote_name);
   const dst = p.to_remote_name === p.from_remote_name ? src : await getAdapter(db, p.to_remote_name);
   const atFrom = await src.stat(p.from_remote_path);
@@ -133,6 +183,9 @@ async function runDelete(
   row: PendingOpRow,
   p: Extract<PendingOp, { op: "delete" }>,
 ): Promise<void> {
+  await assertRecordStillMatches(db, row, [
+    { remote_name: p.remote_name, remote_path: p.remote_path },
+  ]);
   const adapter = await getAdapter(db, p.remote_name);
   if ((await adapter.stat(p.remote_path)) !== null) await adapter.delete(p.remote_path);
   await db.execute({ sql: "DELETE FROM files WHERE id = ?", args: [row.file_id] });
