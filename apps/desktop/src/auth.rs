@@ -336,7 +336,9 @@ min-height:100vh;margin:0;background:#0a0f1e;color:#e0e6f0;}</style></head>\
 /// The receiver yields Result<(code, state), error_string> exactly once,
 /// then the background thread exits. The caller should use recv_timeout
 /// on the returned receiver to enforce the overall deadline.
-fn start_loopback() -> Result<(u16, mpsc::Receiver<Result<(String, String), String>>), String> {
+type LoopbackResult = Result<(String, String), String>;
+
+fn start_loopback() -> Result<(u16, mpsc::Receiver<LoopbackResult>), String> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|e| format!("failed to bind loopback: {e}"))?;
     let port = listener

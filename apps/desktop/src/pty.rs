@@ -38,7 +38,7 @@ pub(crate) const KEYCHAIN_DEVICE_TOKEN_ACCOUNT: &str = "portuni_device_token";
 /// pub(crate): the sync-agent sidecar spawn (lib.rs) authenticates with the
 /// same device token.
 pub(crate) fn ensure_device_token(
-    app: &AppHandle,
+    _app: &AppHandle,
     ws_id: &str,
     server_url: &str,
 ) -> Result<String, String> {
