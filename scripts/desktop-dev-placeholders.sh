@@ -14,3 +14,8 @@ if [[ ! -e "$bin" ]]; then
   chmod +x "$bin"
   echo "created placeholder $bin"
 fi
+# The resources glob sidecar-deps/**/* must match at least one file.
+if [[ -z "$(ls -A sidecar-deps)" ]]; then
+  echo "placeholder for tauri-build; real deps come from scripts/build-sidecar.mjs" > sidecar-deps/PLACEHOLDER.txt
+  echo "created placeholder sidecar-deps/PLACEHOLDER.txt"
+fi
