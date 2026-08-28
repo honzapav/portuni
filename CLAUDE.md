@@ -87,8 +87,10 @@ tmux loop for backend iteration.
 Docker container working through GitHub issues labelled `ready-for-agent`
 on a batch branch, PR only (never merges). It runs on the old Mac in the clone
 `~/Dev/projekty/portuni` (ssh host `honzas-macbook-pro`) and is started by
-Honza via `./.sandcastle/start-loop.sh`; never provision `.sandcastle/.env`,
-the Docker image or a worktree for it elsewhere. Details: `.sandcastle/README.md`.
+Honza via `./.sandcastle/start-loop.sh`; secrets come from the Keychain
+(`sandcastle.claude-code.oauth-token`, `sandcastle.portuni.github-pat`), never
+from disk. Never provision those entries, the Docker image or a worktree for it
+elsewhere. Details: `.sandcastle/README.md`.
 
 The verification gate for agents and humans alike is `scripts/agent-gate.sh`
 (server qa, web typecheck + build, `cargo test` + `cargo clippy -D warnings`,

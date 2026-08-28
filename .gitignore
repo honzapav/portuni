@@ -27,7 +27,6 @@ apps/desktop/sidecar-deps/
 .*.bun-build
 
 # Sandcastle loop (agent harness) runtime state
-.sandcastle/.env
 .sandcastle/logs/
 .sandcastle/worktrees/
 .sandcastle/node_modules/
