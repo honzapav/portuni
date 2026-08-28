@@ -133,6 +133,12 @@ export async function remoteSweep(db: Client, a: RemoteSweepArgs): Promise<Remot
   });
   const knownSet = new Set(known.rows.map((r) => (r.remote_path as string).normalize("NFC")));
   const bySection = new Map<"wip" | "output", string[]>();
+  // adoptFiles echoes back whatever path string it was given as
+  // `remote_path`, so this doubles as a lookup from that path back to the
+  // FileRef the listing produced for it -- needed below to tell "this
+  // backend never reports hashes" (fs/OpenDAL) from "this file structurally
+  // has no content hash" (a Drive native Doc/Sheet/Slide).
+  const refsByPath = new Map<string, FileRef>();
   for (const [path, ref] of present) {
     if (knownSet.has(path)) continue;
     const section = adoptableSection(nodeRoot, ref.path);
@@ -140,6 +146,7 @@ export async function remoteSweep(db: Client, a: RemoteSweepArgs): Promise<Remot
     const status = section === "outputs" ? "output" : "wip";
     if (!bySection.has(status)) bySection.set(status, []);
     bySection.get(status)!.push(ref.path);
+    refsByPath.set(ref.path, ref);
   }
   for (const [status, paths] of bySection) {
     const res = await adoptFiles(db, { userId: a.userId, nodeId: a.nodeId, paths, status });
@@ -150,7 +157,14 @@ export async function remoteSweep(db: Client, a: RemoteSweepArgs): Promise<Remot
       // adapter) is null. Backfill it here by hashing the content directly,
       // so an adopted record carries the same kind of hash storeFile does --
       // otherwise every later statusScan comparison against it is starved.
-      if (!f.hash) {
+      // Native-format remote objects (Drive Docs/Sheets/Slides) are the
+      // structural exception: they have no bytes `get()` can fetch with
+      // alt=media, `hash: null` is by design, and there is nothing to
+      // backfill -- AdoptFilesResult doesn't carry is_native_format, so look
+      // the listing's FileRef back up by path instead of guessing from the
+      // hash alone.
+      const isNative = refsByPath.get(f.remote_path)?.is_native_format === true;
+      if (!f.hash && !isNative) {
         try {
           const content = await adapter.get(f.remote_path);
           await db.execute({

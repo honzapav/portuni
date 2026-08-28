@@ -9,7 +9,8 @@ import { remoteSweep } from "../apps/server/domain/sync/remote-sweep.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { registerLocalFile } from "../apps/server/domain/sync/engine.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
-import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
+import { resetAdapterCacheForTests, setAdapterForTests } from "../apps/server/domain/sync/adapter-cache.js";
+import type { FileAdapter, FileRef } from "../apps/server/domain/sync/types.js";
 
 let workspace: string;
 let originalEnv: string | undefined;
@@ -33,6 +34,40 @@ async function pushed(db: Awaited<ReturnType<typeof makeSharedDb>>["db"], nodeId
   const localPath = join(mirrorRoot, "wip", name);
   await writeFile(localPath, `obsah ${name}`);
   return storeFile(db, { userId: "U1", nodeId, localPath });
+}
+
+// A minimal FileAdapter double that reports a single native-format remote
+// object (the shape drive-adapter.ts's fileRefFrom produces for a Google
+// Doc/Sheet/Slide: hash null by construction) and fails loudly if the
+// sweep ever tries to fetch its bytes -- the real Drive API rejects
+// alt=media for native files, so a naive hash backfill would hit exactly
+// this. Everything else is unused by the adoption path and throws if
+// called, so an unexpected call surfaces as a test failure instead of
+// silently no-opping.
+function fakeNativeAdapter(nativeRef: FileRef): FileAdapter {
+  return {
+    async put() {
+      throw new Error("fakeNativeAdapter: put not implemented");
+    },
+    async get(path) {
+      throw new Error(`fakeNativeAdapter: native files have no bytes to fetch via alt=media (${path})`);
+    },
+    async stat(path) {
+      return path === nativeRef.path ? nativeRef : null;
+    },
+    async list() {
+      return [nativeRef];
+    },
+    async delete() {
+      throw new Error("fakeNativeAdapter: delete not implemented");
+    },
+    async rename() {
+      throw new Error("fakeNativeAdapter: rename not implemented");
+    },
+    async url() {
+      throw new Error("fakeNativeAdapter: url not implemented");
+    },
+  };
 }
 
 describe("remoteSweep", () => {
@@ -89,6 +124,32 @@ describe("remoteSweep", () => {
     });
     assert.equal(row.rows[0].status, "output");
     assert.ok(row.rows[0].current_remote_hash);
+  });
+
+  it("adopts a native-format remote file without a hash backfill or a spurious error", async () => {
+    const { db, nodeId, orgSyncKey, nodeSyncKey } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const nodeRoot = `${orgSyncKey}/projects/${nodeSyncKey}`;
+    const nativePath = `${nodeRoot}/outputs/Quarterly Report`;
+    const nativeRef: FileRef = {
+      path: nativePath,
+      hash: null,
+      size: 0,
+      modified_at: new Date(),
+      is_native_format: true,
+      native_format: "gdoc",
+    };
+    setAdapterForTests("test-fs", fakeNativeAdapter(nativeRef));
+    const out = await remoteSweep(db, { userId: "U1", nodeId });
+    assert.deepEqual(out.adopted.map((f) => f.remote_path), [nativePath]);
+    assert.deepEqual(out.errors, []);
+    const row = await db.execute({
+      sql: "SELECT current_remote_hash, is_native_format FROM files WHERE id = ?",
+      args: [out.adopted[0].file_id],
+    });
+    assert.equal(row.rows[0].current_remote_hash, null);
+    assert.equal(Number(row.rows[0].is_native_format), 1);
   });
 
   it("does not delete anything when the listing fails", async () => {
