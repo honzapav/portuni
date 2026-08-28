@@ -81,7 +81,7 @@ async function findEntryByFileId(
   return null;
 }
 
-type PreviewStatus = "unchanged" | "updated" | "conflict" | "orphan" | "native";
+type PreviewStatus = "unchanged" | "updated" | "conflict" | "remote_missing" | "remote_error" | "native";
 
 function toPreviewEntry(e: StatusFileEntry, status: PreviewStatus) {
   return {
@@ -127,7 +127,8 @@ const HANDLERS: Record<string, LocalHandler> = {
       push_candidates: [],
       pull_candidates: [],
       conflicts: [],
-      orphan: [],
+      remote_missing: [],
+      remote_error: [],
       native: [],
       new_local: [],
       new_remote: [],
@@ -146,7 +147,8 @@ const HANDLERS: Record<string, LocalHandler> = {
       agg.push_candidates.push(...r.push_candidates);
       agg.pull_candidates.push(...r.pull_candidates);
       agg.conflicts.push(...r.conflicts);
-      agg.orphan.push(...r.orphan);
+      agg.remote_missing.push(...r.remote_missing);
+      agg.remote_error.push(...r.remote_error);
       agg.native.push(...r.native);
       agg.new_local.push(...r.new_local);
       agg.new_remote.push(...r.new_remote);
@@ -203,7 +205,8 @@ const HANDLERS: Record<string, LocalHandler> = {
         ...scan.push_candidates.map((e) => toPreviewEntry(e, "updated")),
         ...scan.pull_candidates.map((e) => toPreviewEntry(e, "updated")),
         ...scan.conflicts.map((e) => toPreviewEntry(e, "conflict")),
-        ...scan.orphan.map((e) => toPreviewEntry(e, "orphan")),
+        ...scan.remote_missing.map((e) => toPreviewEntry(e, "remote_missing")),
+        ...scan.remote_error.map((e) => toPreviewEntry(e, "remote_error")),
         ...scan.native.map((e) => toPreviewEntry(e, "native")),
       ],
     };

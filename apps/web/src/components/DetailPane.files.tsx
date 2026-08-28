@@ -139,7 +139,7 @@ function aggregateFolderSync(
 ): { color: string; title: string } | null {
   let hasConflict = false;
   let hasPending = false;
-  let hasOrphan = false;
+  let hasRemoteMissing = false;
   let hasClean = false;
   let any = false;
   const stack: TreeNode[] = [node];
@@ -156,7 +156,7 @@ function aggregateFolderSync(
         sync.sync_class === "deleted_local"
       ) {
         hasPending = true;
-      } else if (sync.sync_class === "orphan") hasOrphan = true;
+      } else if (sync.sync_class === "remote_missing") hasRemoteMissing = true;
       else if (sync.sync_class === "clean") hasClean = true;
     } else if (cur.children) {
       for (const c of cur.children.values()) stack.push(c);
@@ -170,10 +170,10 @@ function aggregateFolderSync(
       color: "var(--color-node-process)",
       title: "Soubory čekají na synchronizaci",
     };
-  if (hasOrphan)
+  if (hasRemoteMissing)
     return {
       color: "var(--color-status-archived)",
-      title: "Některé soubory jsou orphan",
+      title: "Některé soubory chybí na remote",
     };
   if (hasClean)
     return {
@@ -888,7 +888,8 @@ const SYNC_LABEL: Record<SyncClass, string> = {
   push: "push",
   pull: "pull",
   conflict: "conflict",
-  orphan: "orphan",
+  remote_missing: "chybí na remote",
+  remote_error: "remote nedostupný",
   native: "native",
   deleted_local: "missing",
 };
@@ -903,7 +904,8 @@ function syncCssVar(c: SyncClass): string {
       return "var(--color-node-process)";
     case "conflict":
       return "var(--color-danger)";
-    case "orphan":
+    case "remote_missing":
+    case "remote_error":
       return "var(--color-status-archived)";
     case "native":
       return "var(--color-accent)";

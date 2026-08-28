@@ -236,7 +236,8 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
         push(result.push_candidates, "push");
         push(result.pull_candidates, "pull");
         push(result.conflicts, "conflict");
-        push(result.orphan, "orphan");
+        push(result.remote_missing, "remote_missing");
+        push(result.remote_error, "remote_error");
         push(result.native, "native");
         push(result.deleted_local, "deleted_local");
         const untracked: UntrackedFile[] = result.new_local.map((u) => ({

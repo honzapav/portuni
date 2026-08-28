@@ -45,7 +45,10 @@ local. Each tracked file is classified:
 - **push** -- local newer than remote
 - **pull** -- remote newer than local
 - **conflict** -- both diverged
-- **orphan** -- DB row exists, file gone from both sides
+- **remote_missing** -- DB row exists, no local content, and the
+  remote object is gone (or was never pushed)
+- **remote_error** -- remote stat failed (network/auth); transient,
+  skipped by the sync run
 - **native** -- non-byte-stream remote (e.g. Google Doc) where hash
   comparison doesn't apply
 

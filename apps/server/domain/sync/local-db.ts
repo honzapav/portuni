@@ -122,7 +122,7 @@ export async function getLocalDb(): Promise<Client> {
   const db = createClient({ url: `file:${path}` });
   // Two processes share this file (desktop sidecar + tmux MCP server).
   // Without a busy timeout a write lock in one makes the other's reads
-  // fail instantly with SQLITE_BUSY -- files then flicker to "orphan".
+  // fail instantly with SQLITE_BUSY -- files then flicker to "remote_error".
   try {
     await db.execute("PRAGMA busy_timeout = 5000");
   } catch {

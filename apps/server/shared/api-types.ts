@@ -137,7 +137,11 @@ export type SyncClass =
   | "push"
   | "pull"
   | "conflict"
-  | "orphan"
+  // Record exists, remote object does not: registered elsewhere and never
+  // pushed, or gone from the remote and awaiting the next sync run's sweep.
+  | "remote_missing"
+  // Remote stat failed (network/auth). Transient; skipped by the sync run.
+  | "remote_error"
   | "native"
   | "deleted_local";
 
@@ -188,7 +192,7 @@ export type SyncRunResponse = {
 };
 
 // Cross-mirror "what is not yet on a remote" aggregate, per node. Only the
-// local-not-on-remote classes count (push/conflict/untracked/orphan/deleted);
+// local-not-on-remote classes count (push/conflict/untracked/remote_missing/deleted);
 // incoming pull candidates are excluded.
 export type SyncPendingNode = {
   node_id: string;
@@ -197,7 +201,7 @@ export type SyncPendingNode = {
   push: number;
   conflict: number;
   untracked: number;
-  orphan: number;
+  remote_missing: number;
   deleted_local: number;
   total: number;
 };

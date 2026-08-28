@@ -77,7 +77,7 @@ describe("registerLocalFile", () => {
     );
   });
 
-  it("classifies a register-only file as push (pending upload), not orphan", async () => {
+  it("classifies a register-only file as push (pending upload), not remote_missing", async () => {
     const { db, nodeId } = await makeSharedDb();
     const mirrorRoot = join(workspace, "mirror");
     await registerMirror("U1", nodeId, mirrorRoot);
@@ -96,6 +96,6 @@ describe("registerLocalFile", () => {
       scan.push_candidates.map((f) => f.filename),
       ["note.md"],
     );
-    assert.equal(scan.orphan.length, 0);
+    assert.equal(scan.remote_missing.length, 0);
   });
 });

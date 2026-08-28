@@ -845,7 +845,7 @@ export async function renameFile(
 
   // From here on the remote object lives at the new path. A local failure
   // must NOT abort before the DB UPDATE below -- that would leave the row
-  // pointing at the old remote path (every scan classifies it orphan).
+  // pointing at the old remote path (every scan classifies it remote_missing).
   // Record the failure and report repair_needed instead, like moveFile.
   let localError: string | null = null;
   if (oldLocalPath && newLocalPath && oldLocalPath !== newLocalPath) {

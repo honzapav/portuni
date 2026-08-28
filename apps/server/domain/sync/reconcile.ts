@@ -131,8 +131,9 @@ export async function reconcilePath(
   // one outcome:
   //   - never pushed (no remote copy, no synced baseline): the record was
   //     metadata-only, so deleting the file removes it from Portuni entirely
-  //     (unregister). Leaving it produced the confusing "orphan" state, and
-  //     for an mv it blocked the create-side pairing (no hash to verify).
+  //     (unregister). Leaving it produced the confusing "remote_missing"
+  //     state, and for an mv it blocked the create-side pairing (no hash
+  //     to verify).
   //   - pushed: keep the record, drop the cached hash so fast-mode reports
   //     deleted_local; the remote copy is intentionally preserved.
   const existing = await getFileState(fileId);

@@ -91,8 +91,9 @@ Two modes:
   the local hash cache. Used to restore a deleted local copy or pull a
   teammate's update.
 - **`node_id`** -- preview only. Classifies each file as
-  `unchanged | updated | conflict | orphan | native` without modifying
-  anything. Use this before pulling to see what would change.
+  `unchanged | updated | conflict | remote_missing | remote_error | native`
+  without modifying anything. Use this before pulling to see what would
+  change.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -171,8 +172,8 @@ migrations, or whenever the user asks about sync state.
 | `include_discovery` | boolean | no | Walk the mirror + list the remote for new files (default: true) |
 
 Returns: classified buckets (`clean`, `push_candidates`, `pull_candidates`,
-`conflicts`, `orphan`, `native`, `new_local`, `new_remote`,
-`deleted_local`, `deleted_remote`, `moved`).
+`conflicts`, `remote_missing`, `remote_error`, `native`, `new_local`,
+`new_remote`, `deleted_local`, `deleted_remote`, `moved`).
 
 :::note[Deletions and moves propagate deterministically]
 - **`deleted_remote`** — an untracked disk copy whose record was

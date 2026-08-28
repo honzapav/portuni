@@ -170,7 +170,7 @@ describe("sync lifecycle with an active watcher (fast-mode scan truth)", () => {
     await stat(join(remoteRoot, remote_path));
   });
 
-  it("deleting a never-pushed file unregisters it entirely (no orphan row)", async () => {
+  it("deleting a never-pushed file unregisters it entirely (no dangling row)", async () => {
     const { db, nodeId } = await makeSharedDb();
     const mirrorRoot = join(workspace, "mirror");
     await registerMirror("U1", nodeId, mirrorRoot);
@@ -196,7 +196,7 @@ describe("sync lifecycle with an active watcher (fast-mode scan truth)", () => {
     const scan = await fastScan(db, nodeId);
     assert.equal(scan.push_candidates.length, 0);
     assert.equal(scan.deleted_local.length, 0);
-    assert.equal(scan.orphan.length, 0);
+    assert.equal(scan.remote_missing.length, 0);
   });
 
   it("two devices with a live watcher on the writer: B's pull baseline still detects A's edit", async () => {

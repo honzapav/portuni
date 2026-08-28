@@ -346,9 +346,9 @@ export async function registerLocalFile(
 
   // files row: routed (stable destination) but NEVER pushed --
   // current_remote_hash + last_pushed_* stay NULL so the file reads as a
-  // pending upload, not a synced or orphan file. On conflict (already
-  // registered) we leave those columns untouched so a synced file is not
-  // demoted.
+  // pending upload, not a synced or remote-missing file. On conflict
+  // (already registered) we leave those columns untouched so a synced file
+  // is not demoted.
   const upsert = await db.execute({
     sql: `INSERT INTO files (id, node_id, filename, status, mime_type,
                               remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
@@ -549,7 +549,7 @@ export interface StatusFileEntry {
   local_hash: string | null;
   remote_hash: string | null;
   last_synced_hash: string | null;
-  class: "clean" | "push" | "pull" | "conflict" | "orphan" | "native";
+  class: "clean" | "push" | "pull" | "conflict" | "remote_missing" | "remote_error" | "native";
 }
 
 export interface NewLocalEntry {
@@ -578,7 +578,7 @@ export interface MoveProposal {
 
 // An untracked disk file whose record was deliberately deleted elsewhere
 // (matched against a delete tombstone -- see matchDeleteTombstones). The
-// sync run removes the local copy and the orphaned file_state row instead
+// sync run removes the local copy and the dangling file_state row instead
 // of adopting the file back.
 export interface DeletedRemoteEntry {
   file_id: string;
@@ -594,7 +594,8 @@ export interface StatusResult {
   push_candidates: StatusFileEntry[];
   pull_candidates: StatusFileEntry[];
   conflicts: StatusFileEntry[];
-  orphan: StatusFileEntry[];
+  remote_missing: StatusFileEntry[];
+  remote_error: StatusFileEntry[];
   native: StatusFileEntry[];
   new_local: NewLocalEntry[];
   new_remote: NewRemoteEntry[];
@@ -679,13 +680,13 @@ async function cachedRemoteStat(
     });
     return stat === null ? { hash: null, exists: false } : { hash: stat.hash, exists: true };
   } catch (e) {
-    // Returning null classifies the file as orphan -- when the cause is a
-    // transient SQLITE_BUSY on the shared sync.db (sidecar + tmux server)
-    // or an adapter hiccup, a silent catch makes those flickers
+    // Returning null classifies the file as remote_error -- when the cause
+    // is a transient SQLITE_BUSY on the shared sync.db (sidecar + tmux
+    // server) or an adapter hiccup, a silent catch makes those flickers
     // undiagnosable. Log once per remote+error to keep scans quiet.
     warnOncePerKey(
       `${remoteName}:${e instanceof Error ? e.message.slice(0, 80) : String(e)}`,
-      `[portuni:sync] remote stat failed (files will show as orphan until it recovers): remote=${remoteName} err=${String(e)}`,
+      `[portuni:sync] remote stat failed (files will show as remote_error until it recovers): remote=${remoteName} err=${String(e)}`,
     );
     return null;
   }
@@ -698,7 +699,7 @@ function warnOncePerKey(key: string, message: string): void {
   console.warn(message);
 }
 
-type ScanBucket = "clean" | "push_candidates" | "pull_candidates" | "conflicts" | "orphan" | "native" | "deleted_local";
+type ScanBucket = "clean" | "push_candidates" | "pull_candidates" | "conflicts" | "remote_missing" | "remote_error" | "native" | "deleted_local";
 
 interface ScanRowResult {
   bucket: ScanBucket;
@@ -722,7 +723,7 @@ async function scanRow(
   const info = nodeInfoCache.get(nodeId) ?? null;
   if (info === null) {
     return {
-      bucket: "orphan",
+      bucket: "remote_error",
       entry: {
         file_id: fileId,
         node_id: nodeId,
@@ -733,7 +734,7 @@ async function scanRow(
         local_hash: null,
         remote_hash: null,
         last_synced_hash: null,
-        class: "orphan",
+        class: "remote_error",
       },
     };
   }
@@ -764,7 +765,7 @@ async function scanRow(
   };
 
   if (isNative) return { bucket: "native", entry: { ...base, class: "native" } };
-  if (!remoteName || !remotePath) return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+  if (!remoteName || !remotePath) return { bucket: "remote_error", entry: { ...base, class: "remote_error" } };
 
   const state = await getFileState(fileId);
   base.last_synced_hash = state?.last_synced_hash ?? null;
@@ -778,24 +779,25 @@ async function scanRow(
   const rs = a.fast
     ? { hash: currentRemoteHash, exists: currentRemoteHash !== null }
     : await cachedRemoteStat(db, fileId, remoteName, remotePath);
-  if (rs === null) return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+  if (rs === null) return { bucket: "remote_error", entry: { ...base, class: "remote_error" } };
   base.remote_hash = rs.hash;
   if (!rs.exists) {
     // Registered locally but not on the remote. A brand-new file staged for
     // the next push -- local content present, never synced -- reads as
     // `push` (pending upload). A file whose remote vanished after a sync
-    // (baseline present) or one with no local content stays `orphan`.
+    // (baseline present) or one with no local content is `remote_missing`.
     if (localHash !== null && base.last_synced_hash === null) {
       return { bucket: "push_candidates", entry: { ...base, class: "push" } };
     }
-    return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+    return { bucket: "remote_missing", entry: { ...base, class: "remote_missing" } };
   }
 
   if (localHash === null) {
     if (base.last_synced_hash) {
       return { bucket: "deleted_local", entry: { ...base, class: "clean" } };
     }
-    return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+    // Remote content exists but this device never synced it -> fetchable.
+    return { bucket: "pull_candidates", entry: { ...base, class: "pull" } };
   }
 
   const last = base.last_synced_hash;
@@ -861,7 +863,8 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
     push_candidates: [],
     pull_candidates: [],
     conflicts: [],
-    orphan: [],
+    remote_missing: [],
+    remote_error: [],
     native: [],
     new_local: [],
     new_remote: [],
@@ -1027,7 +1030,7 @@ export async function diskHashMatching(
 }
 
 // Apply the deleted_remote cleanup: remove the stale local copy and the
-// orphaned file_state row. Lossless by the matchDeleteTombstones contract --
+// dangling file_state row. Lossless by the matchDeleteTombstones contract --
 // only files byte-identical to their last synced state ever get here.
 export async function cleanupDeletedRemote(
   entries: DeletedRemoteEntry[],
@@ -1220,7 +1223,7 @@ export interface PreviewNodeArgs {
 export interface PreviewFileEntry {
   file_id: string;
   filename: string;
-  status: "new" | "updated" | "unchanged" | "conflict" | "orphan" | "native";
+  status: "new" | "updated" | "unchanged" | "conflict" | "remote_missing" | "remote_error" | "native";
   remote_hash: string | null;
   local_hash: string | null;
   last_synced_hash: string | null;
@@ -1241,7 +1244,7 @@ export async function previewNode(
   });
   const files: PreviewFileEntry[] = [];
   const toEntry =
-    (cls: "new" | "updated" | "unchanged" | "conflict" | "orphan" | "native") =>
+    (cls: "new" | "updated" | "unchanged" | "conflict" | "remote_missing" | "remote_error" | "native") =>
     (e: StatusFileEntry): PreviewFileEntry => ({
       file_id: e.file_id,
       filename: e.filename,
@@ -1254,7 +1257,8 @@ export async function previewNode(
   for (const e of scan.push_candidates) files.push(toEntry("updated")(e));
   for (const e of scan.pull_candidates) files.push(toEntry("updated")(e));
   for (const e of scan.conflicts) files.push(toEntry("conflict")(e));
-  for (const e of scan.orphan) files.push(toEntry("orphan")(e));
+  for (const e of scan.remote_missing) files.push(toEntry("remote_missing")(e));
+  for (const e of scan.remote_error) files.push(toEntry("remote_error")(e));
   for (const e of scan.native) files.push(toEntry("native")(e));
   return { files };
 }

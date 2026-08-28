@@ -183,7 +183,7 @@ async function classifyRecord(
 
   if (rec.is_native_format) return { bucket: "native", entry: { ...base, class: "native" } };
   if (!ctx.si.remote_name || !rec.remote_path) {
-    return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+    return { bucket: "remote_error", entry: { ...base, class: "remote_error" } };
   }
 
   const state = await getFileState(rec.id);
@@ -199,12 +199,13 @@ async function classifyRecord(
 
   const remoteExists = remoteHash !== null;
   if (!remoteExists) {
-    // Registered but never pushed: pending upload reads as push; a file whose
-    // remote vanished after a sync, or with no local content, stays orphan.
+    // Registered but never pushed: pending upload reads as push; a file
+    // whose remote vanished after a sync, or with no local content, is
+    // remote_missing.
     if (localHash !== null && base.last_synced_hash === null) {
       return { bucket: "push_candidates", entry: { ...base, class: "push" } };
     }
-    return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+    return { bucket: "remote_missing", entry: { ...base, class: "remote_missing" } };
   }
 
   if (localHash === null) {
@@ -254,7 +255,8 @@ async function statusScanForContext(
     push_candidates: [],
     pull_candidates: [],
     conflicts: [],
-    orphan: [],
+    remote_missing: [],
+    remote_error: [],
     native: [],
     new_local: [],
     new_remote: [],
@@ -944,7 +946,7 @@ export async function syncRunCentral(
   for (const e of scan.conflicts) {
     result.conflicts.push({ file_id: e.file_id, filename: e.filename });
   }
-  for (const e of [...scan.clean, ...scan.orphan, ...scan.native]) {
+  for (const e of [...scan.clean, ...scan.remote_missing, ...scan.remote_error, ...scan.native]) {
     result.skipped.push({ file_id: e.file_id, filename: e.filename, sync_class: e.class });
   }
 
@@ -1057,9 +1059,9 @@ export async function computeSyncPendingCentral(
     // deleted_remote copies count as untracked pending work: the sync run
     // resolves them (cleanup instead of adopt).
     const untracked = scan.new_local.length + scan.deleted_remote.length;
-    const orphan = scan.orphan.length;
+    const remote_missing = scan.remote_missing.length;
     const deleted_local = scan.deleted_local.length;
-    const total = push + conflict + untracked + orphan + deleted_local;
+    const total = push + conflict + untracked + remote_missing + deleted_local;
     if (total === 0) return null;
     return {
       node_id: m.node_id,
@@ -1068,7 +1070,7 @@ export async function computeSyncPendingCentral(
       push,
       conflict,
       untracked,
-      orphan,
+      remote_missing,
       deleted_local,
       total,
     };

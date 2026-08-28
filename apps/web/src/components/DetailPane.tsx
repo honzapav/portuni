@@ -608,15 +608,15 @@ function DetailPaneBody({
   }
 
   // Aggregate sync state across all files for the Files-tab indicator.
-  // Worst-class wins: conflict > pending (push/pull/missing) > orphan >
-  // clean. Native is treated as benign (no dot needed). Returns null
+  // Worst-class wins: conflict > pending (push/pull/missing) > remote_missing
+  // > clean. Native is treated as benign (no dot needed). Returns null
   // until the read-only fetch finishes, so the user does not see a
   // misleading green before the data arrives.
   const syncDot: { color: string; title: string } | null = (() => {
     if (!syncLoaded || node.files.length === 0) return null;
     let hasConflict = false;
     let hasPending = false;
-    let hasOrphan = false;
+    let hasRemoteMissing = false;
     let hasClean = false;
     for (const f of syncStatus.values()) {
       if (f.sync_class === "conflict") hasConflict = true;
@@ -626,7 +626,7 @@ function DetailPaneBody({
         f.sync_class === "deleted_local"
       ) {
         hasPending = true;
-      } else if (f.sync_class === "orphan") hasOrphan = true;
+      } else if (f.sync_class === "remote_missing") hasRemoteMissing = true;
       else if (f.sync_class === "clean") hasClean = true;
     }
     if (hasConflict)
@@ -636,10 +636,10 @@ function DetailPaneBody({
         color: "var(--color-node-process)",
         title: "Soubory čekají na synchronizaci",
       };
-    if (hasOrphan)
+    if (hasRemoteMissing)
       return {
         color: "var(--color-status-archived)",
-        title: "Některé soubory jsou orphan (chybí remote vazba)",
+        title: "Některé soubory chybí na remote",
       };
     if (hasClean)
       return {

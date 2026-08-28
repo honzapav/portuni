@@ -280,7 +280,8 @@ export async function handleDeleteNode(
 }
 
 // Per-node sync status. Wraps engine.statusScan so the UI can show a class
-// (clean/push/pull/conflict/orphan/native) per tracked file. Discovery is
+// (clean/push/pull/conflict/remote_missing/remote_error/native) per tracked
+// file. Discovery is
 // disabled: untracked files are not listed in the detail pane and discovery
 // would do costly remote-list calls.
 export async function handleSyncStatus(
@@ -335,7 +336,8 @@ export async function handleSyncStatus(
     push(result.push_candidates, "push");
     push(result.pull_candidates, "pull");
     push(result.conflicts, "conflict");
-    push(result.orphan, "orphan");
+    push(result.remote_missing, "remote_missing");
+    push(result.remote_error, "remote_error");
     push(result.native, "native");
     push(result.deleted_local, "deleted_local");
     const untrackedRaw = await listUntrackedLocal(getDb(), { userId: identity.userId, nodeId });
@@ -607,7 +609,7 @@ export async function handleSyncRun(
     for (const e of scan.conflicts) {
       result.conflicts.push({ file_id: e.file_id, filename: e.filename });
     }
-    for (const e of [...scan.clean, ...scan.orphan, ...scan.native]) {
+    for (const e of [...scan.clean, ...scan.remote_missing, ...scan.remote_error, ...scan.native]) {
       result.skipped.push({
         file_id: e.file_id,
         filename: e.filename,

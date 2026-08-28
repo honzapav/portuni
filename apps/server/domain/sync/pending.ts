@@ -52,9 +52,9 @@ export async function computeSyncPending(
     // resolves them (cleanup instead of adopt), so they must keep the
     // "something to sync" indicator alive.
     const untracked = scan.new_local.length + scan.deleted_remote.length;
-    const orphan = scan.orphan.length;
+    const remote_missing = scan.remote_missing.length;
     const deleted_local = scan.deleted_local.length;
-    const total = push + conflict + untracked + orphan + deleted_local;
+    const total = push + conflict + untracked + remote_missing + deleted_local;
     if (total === 0) return null;
     return {
       node_id: m.node_id,
@@ -63,7 +63,7 @@ export async function computeSyncPending(
       push,
       conflict,
       untracked,
-      orphan,
+      remote_missing,
       deleted_local,
       total,
     };
