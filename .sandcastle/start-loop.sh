@@ -19,16 +19,38 @@ if ! command -v docker-credential-desktop >/dev/null 2>&1; then
   export PATH="$PATH:/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin"
 fi
 
-if [[ ! -f .sandcastle/.env ]]; then
-  echo "Missing .sandcastle/.env: create it from .sandcastle/env.example." >&2
+# Secrets live in the macOS Keychain, never on disk. The committed
+# .sandcastle/.env lists the variable names with empty values; sandcastle
+# fills each listed key from this process's environment. A non-empty value in
+# .env would be a plaintext secret, so refuse it.
+if grep -qE "^[A-Z_]+=.+" .sandcastle/.env; then
+  echo ".sandcastle/.env must not carry values; put secrets in the Keychain (see README)." >&2
   exit 1
 fi
-for key in CLAUDE_CODE_OAUTH_TOKEN GH_TOKEN; do
-  if ! grep -qE "^${key}=.+" .sandcastle/.env && [[ -z "${!key:-}" ]]; then
-    echo "${key} has no value in .sandcastle/.env or the environment." >&2
-    exit 1
-  fi
-done
+keychain_read() {
+  security find-generic-password -s "$1" -w 2>/dev/null || true
+}
+CLAUDE_CODE_OAUTH_TOKEN="$(keychain_read sandcastle.claude-code.oauth-token)"
+GH_TOKEN="$(keychain_read sandcastle.portuni.github-pat)"
+if [[ -z "$CLAUDE_CODE_OAUTH_TOKEN" || -z "$GH_TOKEN" ]]; then
+  # Over ssh the login keychain is locked; unlocking prompts for the login
+  # password (needs a TTY: ssh -t).
+  security unlock-keychain "$HOME/Library/Keychains/login.keychain-db" || true
+  CLAUDE_CODE_OAUTH_TOKEN="$(keychain_read sandcastle.claude-code.oauth-token)"
+  GH_TOKEN="$(keychain_read sandcastle.portuni.github-pat)"
+fi
+if [[ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]]; then
+  echo "Keychain entry sandcastle.claude-code.oauth-token is missing or unreadable. Add it:" >&2
+  echo "  claude setup-token   # personal profile, then:" >&2
+  echo "  security add-generic-password -U -s sandcastle.claude-code.oauth-token -a \"\$USER\" -w" >&2
+  exit 1
+fi
+if [[ -z "$GH_TOKEN" ]]; then
+  echo "Keychain entry sandcastle.portuni.github-pat is missing or unreadable. Add it:" >&2
+  echo "  security add-generic-password -U -s sandcastle.portuni.github-pat -a \"\$USER\" -w" >&2
+  exit 1
+fi
+export CLAUDE_CODE_OAUTH_TOKEN GH_TOKEN
 
 # The agent branches off HEAD of this clone, so HEAD must be exactly
 # origin/main: on main, clean, fast-forwarded. A stale clone is pulled

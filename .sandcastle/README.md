@@ -17,14 +17,20 @@ usage limits (waits for the reset, resumes). Harness derived from
 | `prompt.md` | RALPH prompt: issue selection, gate, publish rules, `{{SCOPE}}` |
 | `start-loop.sh` | Launcher: fail-fast checks + tmux + caffeinate |
 | `Dockerfile` | node:22 + gh + claude-code + Rust toolchain + Tauri Linux deps |
-| `env.example` | Template for `.env` (gitignored): Claude token + GitHub PAT |
+| `.env` | Variable names only (empty values); `start-loop.sh` fills them from the Keychain |
 | `logs/` | `loop.log` (supervisor) + per-run agent logs |
 | `worktrees/` | Agent git worktree (bind-mounted into the container) |
 
 ## Prerequisites
 
 1. Docker Desktop running.
-2. `.sandcastle/.env` filled from `env.example`.
+2. Keychain entries on the old Mac (values never on disk):
+   ```bash
+   claude setup-token   # personal profile; paste the token into:
+   security add-generic-password -U -s sandcastle.claude-code.oauth-token -a "$USER" -w
+   # fine-grained PAT for honzapav/portuni: Issues, Pull requests, Contents (RW), Metadata
+   security add-generic-password -U -s sandcastle.portuni.github-pat -a "$USER" -w
+   ```
 3. `(cd .sandcastle && npm ci)`.
 4. Image built: `./.sandcastle/node_modules/.bin/sandcastle docker build-image --image-name sandcastle:portuni --dockerfile .sandcastle/Dockerfile`
 5. Main working tree on `main` and clean; the launcher fast-forwards it to `origin/main` and refuses to start when local commits are ahead (e.g. an `udrzba/` branch left by the AIQ maintenance lane).
@@ -32,8 +38,11 @@ usage limits (waits for the reset, resumes). Harness derived from
 ## Run (from another Mac)
 
 ```bash
-ssh honzas-macbook-pro 'cd ~/Dev/projekty/portuni && ./.sandcastle/start-loop.sh'
+ssh -t honzas-macbook-pro 'cd ~/Dev/projekty/portuni && ./.sandcastle/start-loop.sh'
 ```
+
+`-t` because the login keychain is locked in ssh sessions; the launcher runs
+`security unlock-keychain`, which prompts for the login password.
 
 Watch: `ssh -t honzas-macbook-pro 'tmux attach -t sandcastle-portuni'` (detach Ctrl-b d).
 Stop: `ssh honzas-macbook-pro 'tmux kill-session -t sandcastle-portuni'`.
