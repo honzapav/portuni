@@ -120,6 +120,11 @@ export const DDL = [
     timestamp DATETIME NOT NULL DEFAULT (datetime('now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)`,
+  // File tombstone lookups (sync-info's time-bounded window, and the local
+  // matcher's per-candidate-path query) filter on target_type + action and
+  // order by timestamp. Without this they are a full table scan of a log
+  // that only grows.
+  `CREATE INDEX IF NOT EXISTS idx_audit_file_action_ts ON audit_log(target_type, action, timestamp)`,
   // Task 6: intents for the remote+local+DB mutations (moveFile, renameFile,
   // renameFolder, deleteFile, deleteFileRemote). A row is written before the
   // first side effect and cleared on success; leftovers are retried

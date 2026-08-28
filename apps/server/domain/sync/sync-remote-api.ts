@@ -66,6 +66,12 @@ export interface NodeSyncInfo {
   deleted: DeletedTombstone[];
 }
 
+// How far back sync-info reports file tombstones. A device that has been
+// offline longer than this and still holds a copy of a file deleted while it
+// was away gets that copy back as new_local (a human decision), which is the
+// safe direction: nothing is destroyed, the file is just offered for adopt.
+const TOMBSTONE_WINDOW_DAYS = 180;
+
 export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeSyncInfo> {
   // One JOIN gets the node row AND its belongs_to organization sync_key --
   // the same answer resolveNodeInfo assembles from two round-trips. The
@@ -99,6 +105,24 @@ export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeS
   // Tombstones written before node_id landed in the audit detail never match
   // the filter — the mechanism only works for deletions from here on, which
   // is fine: old leftovers still surface as new_local for a human decision.
+  // Bounded by TIME, not by row count. This endpoint does not know which
+  // untracked local files the calling device is trying to match (the local
+  // matcher in engine.ts does, and constrains its query by exactly those
+  // paths), so a row-count window is the only thing available -- and a
+  // row-count window is unsafe here: one renameFolder writes a sync_rename
+  // row per affected file and a sweep of a folder deleted on the remote
+  // writes a sync_delete_remote row per file, so a few hundred rows can bury
+  // older DELETE tombstones. A dropped delete tombstone is a local copy the
+  // agent adopts and pushes back, i.e. the resurrection tombstones exist to
+  // prevent. The window is a date prefix so it compares correctly against
+  // both timestamp formats in this table (ISO from the sync domain,
+  // "YYYY-MM-DD HH:MM:SS" from datetime('now') in infra/audit.ts). The LIMIT
+  // that remains is a payload guard far above any realistic per-node volume,
+  // and rows are deduped by remote_path below (only the newest tombstone per
+  // path can ever match).
+  const cutoff = new Date(Date.now() - TOMBSTONE_WINDOW_DAYS * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
   const tombRes = await db.execute({
     sql: `SELECT target_id, action,
                  COALESCE(json_extract(detail, '$.remote_path'),
@@ -107,8 +131,9 @@ export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeS
           WHERE target_type = 'file'
             AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename')
             AND json_extract(detail, '$.node_id') = ?
-          ORDER BY timestamp DESC LIMIT 200`,
-    args: [nodeId],
+            AND timestamp >= ?
+          ORDER BY timestamp DESC LIMIT 20000`,
+    args: [nodeId, cutoff],
   });
   return {
     node: {
@@ -128,14 +153,32 @@ export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeS
       is_native_format: Number(r.is_native_format) === 1,
       mime_type: (r.mime_type as string | null) ?? null,
     })),
-    deleted: tombRes.rows
-      .filter((r) => r.remote_path != null)
-      .map((r) => ({
-        file_id: r.target_id as string,
-        remote_path: r.remote_path as string,
-        record_alive: r.action === "sync_move" || r.action === "sync_rename",
-      })),
+    deleted: dedupeByRemotePath(tombRes.rows),
   };
+}
+
+// Only the newest tombstone per remote_path can ever match on the device
+// (the matcher takes the first match for a path and moves on), so collapsing
+// the rest keeps the payload proportional to the number of distinct paths
+// touched in the window rather than to the number of mutations. Rows arrive
+// newest-first, so the first row seen for a path is the one to keep.
+function dedupeByRemotePath(
+  rows: Array<Record<string, unknown>>,
+): DeletedTombstone[] {
+  const out: DeletedTombstone[] = [];
+  const seen = new Set<string>();
+  for (const r of rows) {
+    const remotePath = r.remote_path as string | null;
+    if (remotePath == null) continue;
+    if (seen.has(remotePath)) continue;
+    seen.add(remotePath);
+    out.push({
+      file_id: r.target_id as string,
+      remote_path: remotePath,
+      record_alive: r.action === "sync_move" || r.action === "sync_rename",
+    });
+  }
+  return out;
 }
 
 export interface RegisterFileRecordResult {

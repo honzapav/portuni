@@ -1,5 +1,5 @@
 import { copyFile, mkdir, readFile, readdir, rm, stat as fsStat, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import type { Client } from "@libsql/client";
 import { ulid } from "ulid";
 import { md5Buffer, sha256Buffer, sha256File, statForCache } from "./hash.js";
@@ -1002,18 +1002,46 @@ export async function matchDeleteTombstones<
     } catch {
       continue;
     }
-    const tombRes = await db.execute({
-      sql: `SELECT target_id, action,
-                   COALESCE(json_extract(detail, '$.remote_path'),
-                            json_extract(detail, '$.old_remote_path')) AS remote_path
-            FROM audit_log
-            WHERE target_type = 'file'
-              AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename')
-              AND json_extract(detail, '$.node_id') = ?
-            ORDER BY timestamp DESC LIMIT 200`,
-      args: [nodeId],
-    });
-    for (const t of tombRes.rows) {
+    // Bound the query by the CANDIDATE SET, never by row count. One
+    // renameFolder writes a sync_rename row per affected file and a sweep of
+    // a folder deleted on the remote writes a sync_delete_remote row per
+    // file, so an `ORDER BY timestamp DESC LIMIT n` window silently drops
+    // older delete tombstones -- and a dropped delete tombstone means the
+    // local copy falls through to adopt and gets pushed back, resurrecting
+    // the deletion. We already know exactly which paths could match: the
+    // remote path each untracked local file would occupy.
+    const expectedRemotePaths = new Set<string>();
+    for (const e of nodeEntries) {
+      const rel = relative(mirrorRoot, e.local_path);
+      if (!rel || rel.startsWith("..")) continue;
+      const remotePath = `${nodeRoot}/${rel.split(sep).join("/")}`;
+      expectedRemotePaths.add(remotePath);
+      expectedRemotePaths.add(remotePath.normalize("NFC"));
+    }
+    if (expectedRemotePaths.size === 0) continue;
+    const tombRows: Awaited<ReturnType<Client["execute"]>>["rows"] = [];
+    // Chunked so a folder-sized candidate set stays well under any SQL
+    // variable limit.
+    const allPaths = [...expectedRemotePaths];
+    for (let i = 0; i < allPaths.length; i += 300) {
+      const chunk = allPaths.slice(i, i + 300);
+      const placeholders = chunk.map(() => "?").join(", ");
+      const res = await db.execute({
+        sql: `SELECT target_id, action,
+                     COALESCE(json_extract(detail, '$.remote_path'),
+                              json_extract(detail, '$.old_remote_path')) AS remote_path
+              FROM audit_log
+              WHERE target_type = 'file'
+                AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename')
+                AND json_extract(detail, '$.node_id') = ?
+                AND COALESCE(json_extract(detail, '$.remote_path'),
+                             json_extract(detail, '$.old_remote_path')) IN (${placeholders})
+              ORDER BY timestamp DESC`,
+        args: [nodeId, ...chunk],
+      });
+      tombRows.push(...res.rows);
+    }
+    for (const t of tombRows) {
       const remotePath = t.remote_path as string | null;
       if (!remotePath) continue;
       const action = t.action as string;
