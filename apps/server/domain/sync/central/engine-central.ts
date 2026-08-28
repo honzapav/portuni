@@ -903,9 +903,15 @@ export async function syncRunCentral(
     pushed: [],
     pulled: [],
     adopted: [],
+    // Central mode does not run the remote sweep here -- task 5 exposes it
+    // through its own REST endpoint (the remote credentials live server
+    // side, not on the teammate device this code runs on).
+    adopted_remote: [],
     conflicts: [],
     deleted_local: [],
     deleted_remote: [],
+    deleted_on_remote: [],
+    sweep_errors: [],
     errors: [],
     skipped: [],
   };

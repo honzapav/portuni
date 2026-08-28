@@ -832,6 +832,22 @@ export function SyncBar({
               {result.deleted_remote.map((f) => f.filename).join(", ")}
             </div>
           )}
+          {(result.adopted_remote?.length ?? 0) > 0 && (
+            <div>
+              Nové z remote: {result.adopted_remote.map((f) => f.filename).join(", ")}
+            </div>
+          )}
+          {(result.deleted_on_remote?.length ?? 0) > 0 && (
+            <div>
+              Smazáno na remote: {result.deleted_on_remote.map((f) => f.filename).join(", ")}
+            </div>
+          )}
+          {(result.sweep_errors?.length ?? 0) > 0 && (
+            <div style={{ color: "var(--color-danger)" }}>
+              Kontrola remote selhala:{" "}
+              {result.sweep_errors.map((e) => e.remote_path).join(", ")}
+            </div>
+          )}
           {result.errors.length > 0 && (
             <div style={{ color: "var(--color-danger)" }}>
               Chyby: {result.errors.length} (

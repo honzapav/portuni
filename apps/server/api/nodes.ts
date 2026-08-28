@@ -19,6 +19,7 @@ import {
   cleanupDeletedRemote,
 } from "../domain/sync/engine.js";
 import { listUntrackedLocal } from "../domain/sync/discover-local.js";
+import { remoteSweep } from "../domain/sync/remote-sweep.js";
 import { mimeFor } from "../domain/sync/engine.js";
 import { createNodeInternal, updateNodeInternal, NodeVisibilityManagedError } from "../domain/nodes.js";
 import { moveNodeToOrganization } from "../domain/edges.js";
@@ -547,6 +548,12 @@ export async function handleSyncRun(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    // Sweep the remote before scanning: records whose remote object is
+    // confirmed gone are dropped (their local copy is untracked afterward
+    // and picked up by the tombstone cleanup below), and files that
+    // appeared on the remote out of band are adopted so the scan classifies
+    // them as pull candidates in this same run.
+    const sweep = await remoteSweep(db, { userId: identity.userId, nodeId });
     const scan = await statusScan(db, {
       userId: identity.userId,
       nodeId,
@@ -556,12 +563,22 @@ export async function handleSyncRun(
       pushed: [],
       pulled: [],
       adopted: [],
+      adopted_remote: [],
       conflicts: [],
       deleted_local: [],
       deleted_remote: [],
+      deleted_on_remote: [],
+      sweep_errors: [],
       errors: [],
       skipped: [],
     };
+    for (const f of sweep.adopted) {
+      result.adopted_remote.push({ file_id: f.file_id, filename: f.filename });
+    }
+    for (const f of sweep.deleted_on_remote) {
+      result.deleted_on_remote.push({ file_id: f.file_id, filename: f.filename });
+    }
+    result.sweep_errors.push(...sweep.errors);
     for (const e of scan.push_candidates) {
       if (!e.local_path) {
         result.errors.push({

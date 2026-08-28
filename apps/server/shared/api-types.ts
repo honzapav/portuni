@@ -178,6 +178,9 @@ export type SyncRunResponse = {
   pushed: SyncRunFile[];
   pulled: SyncRunFile[];
   adopted: SyncRunFile[];
+  // Records created for files that appeared on the remote (remote sweep);
+  // they are pulled in the same run.
+  adopted_remote: SyncRunFile[];
   conflicts: SyncRunFile[];
   // Locally deleted but still tracked + on the remote. Reported, never
   // auto-restored: the deletion may be intentional, and resurrecting it
@@ -187,6 +190,9 @@ export type SyncRunResponse = {
   // Local copies removed because their record was deliberately deleted
   // elsewhere (tombstone match, byte-identical to the last synced state).
   deleted_remote: SyncRunFile[];
+  // Records removed because their remote object is gone (remote sweep).
+  deleted_on_remote: SyncRunFile[];
+  sweep_errors: Array<{ remote_path: string; error: string }>;
   errors: SyncRunErrorFile[];
   skipped: SyncRunSkippedFile[];
 };
