@@ -61,8 +61,10 @@ if [[ "$(git rev-parse --abbrev-ref HEAD)" != "main" ]]; then
   echo "Main working tree must have 'main' checked out (is on $(git rev-parse --abbrev-ref HEAD))." >&2
   exit 1
 fi
-if [[ -n "$(git status --porcelain)" ]]; then
-  echo "Main working tree is not clean; commit, stash or discard the changes first." >&2
+# Untracked files never reach the agent's worktree; modified tracked files
+# would block the fast-forward below.
+if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+  echo "Main working tree has uncommitted changes to tracked files; commit, stash or discard them first." >&2
   exit 1
 fi
 git fetch origin main --quiet

@@ -24,7 +24,7 @@ usage limits (waits for the reset, resumes). Harness derived from
 ## Prerequisites
 
 1. Docker Desktop running.
-2. Keychain entries on the old Mac (values never on disk):
+2. Keychain entries on this Mac (values never on disk):
    ```bash
    claude setup-token   # personal profile; paste the token into:
    security add-generic-password -U -s sandcastle.claude-code.oauth-token -a "$USER" -w
@@ -35,17 +35,16 @@ usage limits (waits for the reset, resumes). Harness derived from
 4. Image built: `./.sandcastle/node_modules/.bin/sandcastle docker build-image --image-name sandcastle:portuni --dockerfile .sandcastle/Dockerfile`
 5. Main working tree on `main` and clean; the launcher fast-forwards it to `origin/main` and refuses to start when local commits are ahead (e.g. an `udrzba/` branch left by the AIQ maintenance lane).
 
-## Run (from another Mac)
+## Run
 
 ```bash
-ssh -t honzas-macbook-pro 'cd ~/Dev/projekty/portuni && ./.sandcastle/start-loop.sh'
+./.sandcastle/start-loop.sh
 ```
 
-`-t` because the login keychain is locked in ssh sessions; the launcher runs
-`security unlock-keychain`, which prompts for the login password.
-
-Watch: `ssh -t honzas-macbook-pro 'tmux attach -t sandcastle-portuni'` (detach Ctrl-b d).
-Stop: `ssh honzas-macbook-pro 'tmux kill-session -t sandcastle-portuni'`.
+Watch: `tmux attach -t sandcastle-portuni` (detach Ctrl-b d).
+Stop: `tmux kill-session -t sandcastle-portuni`.
+Over ssh use `ssh -t`: the login keychain is locked in ssh sessions and the
+launcher runs `security unlock-keychain`, which prompts for the login password.
 
 Environment knobs: `SANDCASTLE_MODEL`, `SANDCASTLE_BRANCH`, `SANDCASTLE_SCOPE`
 (e.g. `"only issue #84"`), `SANDCASTLE_MAX_ITERATIONS`, `SANDCASTLE_MAX_RUNS`.
