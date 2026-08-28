@@ -30,6 +30,18 @@ function buildOperator(remote: AdapterRemote, _tokens: DeviceTokens): Operator {
   }
 }
 
+// OpenDAL's napi binding (0.49.x) flattens every backend error into a plain
+// Error with `code: "GenericFailure"` -- the only thing that carries the
+// ErrorKind is the message, which always starts with the kind:
+//   "NotFound (permanent) at stat, context: { ... } => entity not found"
+//   "PermissionDenied (permanent) at stat, context: { ... }"
+//   "Unexpected (temporary) at stat, context: { ... }"
+// So the kind is matched off the head of the message. Anything we cannot
+// positively identify as NotFound counts as a failure, not as absence.
+function isNotFound(e: unknown): boolean {
+  return e instanceof Error && /^NotFound\b/.test(e.message);
+}
+
 function sha256Buffer(buf: Buffer): string {
   return createHash("sha256").update(buf).digest("hex");
 }
@@ -63,8 +75,16 @@ export function createOpenDALAdapter(
     try {
       const meta = await op.stat(path);
       return metadataToFileRef(path, meta);
-    } catch {
-      return null;
+    } catch (e) {
+      // "Absent" and "could not find out" are different answers, and the
+      // remote sweep acts destructively on the first one: it deletes the
+      // record (and every device then removes its byte-identical local copy)
+      // when stat reports null. So only OpenDAL's NotFound kind may answer
+      // null here -- an auth failure, a 5xx or a timeout must throw, and the
+      // sweep's catch turns that into a reported error with the record left
+      // alone.
+      if (isNotFound(e)) return null;
+      throw e;
     }
   }
 

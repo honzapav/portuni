@@ -149,4 +149,26 @@ describe("opendal-adapter (fs backend)", () => {
     const ls = await a.list("does/not/exist/");
     assert.deepEqual(ls, []);
   });
+
+  // The remote sweep deletes a record when stat() answers null. Mapping
+  // EVERY stat failure to null therefore turns an auth failure, a 5xx or a
+  // timeout into "the file is gone" -- and the resulting tombstone makes
+  // every device remove its byte-identical local copy. Only OpenDAL's
+  // NotFound kind may answer null; anything else must throw so the sweep's
+  // catch records an error and skips the record. OpenDAL 0.49 surfaces the
+  // kind as the first token of the napi error message ("NotFound
+  // (permanent) at stat, ...", "Unexpected (temporary) at stat, ..."); the
+  // napi `code` is "GenericFailure" for all of them.
+  it("stat rethrows a non-NotFound failure instead of reporting absence", async () => {
+    const a = createOpenDALAdapter(fsRemote(), noTokens);
+    await a.put("a.txt", Buffer.from("X"));
+    // A path segment that is a FILE, not a directory: the OS answers
+    // ENOTDIR, which OpenDAL maps to the Unexpected kind.
+    await assert.rejects(() => a.stat("a.txt/child.txt"));
+  });
+
+  it("stat still answers null for a genuinely missing path", async () => {
+    const a = createOpenDALAdapter(fsRemote(), noTokens);
+    assert.equal(await a.stat("nope.txt"), null);
+  });
 });
