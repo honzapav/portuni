@@ -121,3 +121,107 @@ describe("DriveAdapter REST contract", () => {
     assert.equal(after, null);
   });
 });
+
+// The remote sweep asks stat() whether an object is still there, and the
+// adapter instance is cached for the whole process (adapter-cache.ts, no
+// TTL). Two ways stat can answer "still there" about something that is not:
+// Drive's trash (list() filters trashed=false, stat() did not look at it)
+// and a stale pathCache entry (the id was cached under a path the file has
+// since left). Both are modelled here through the fetch seam -- no Drive
+// account required.
+describe("DriveAdapter stat vs. trash and a stale path cache", () => {
+  // A tiny Drive: `files` maps id -> metadata, `children` maps
+  // "parentId/name" -> id for the non-trashed search Drive actually does.
+  function fakeDrive(files: Map<string, Record<string, unknown>>) {
+    __setDriveFetchForTests(async (url) => {
+      const u = url.toString();
+      if (u.includes("oauth2.googleapis.com/token")) {
+        return new Response(JSON.stringify({ access_token: "A", expires_in: 3600 }), { status: 200 });
+      }
+      if (u.includes("/files?q=")) {
+        const q = decodeURIComponent(new URL(u).searchParams.get("q") ?? "");
+        const nameMatch = /name = '([^']*)'/.exec(q);
+        const parentMatch = /'([^']*)' in parents/.exec(q);
+        const name = nameMatch?.[1];
+        const parent = parentMatch?.[1];
+        const hits = [...files.entries()]
+          // Drive's own query carries `trashed = false`, so a trashed
+          // object is simply not in the search result.
+          .filter(([, f]) => f.name === name && f.parent === parent && f.trashed !== true)
+          .map(([id, f]) => ({ id, name: f.name, mimeType: f.mimeType, createdTime: f.createdTime }));
+        return new Response(JSON.stringify({ files: hits }), { status: 200 });
+      }
+      const idMatch = /\/files\/([^?]+)/.exec(u);
+      const f = idMatch ? files.get(idMatch[1]) : undefined;
+      if (!f) return new Response("{}", { status: 404 });
+      return new Response(JSON.stringify({ id: idMatch![1], ...f }), { status: 200 });
+    });
+  }
+
+  beforeEach(() => {
+    resetSaTokenCacheForTests();
+  });
+
+  it("reports a file trashed after it was cached as absent", async () => {
+    const files = new Map<string, Record<string, unknown>>([
+      ["wipId", { name: "wip", mimeType: "application/vnd.google-apps.folder", parent: "0AXy" }],
+      ["fileId", { name: "a.md", mimeType: "text/markdown", parent: "wipId", md5Checksum: "abc" }],
+    ]);
+    fakeDrive(files);
+    const adapter = createDriveAdapter(remote, tokens);
+    assert.ok(await adapter.stat("wip/a.md"), "precondition: the file is there and cached");
+
+    // The user trashes it in the Drive UI. The id still resolves (Drive
+    // answers 200 for trashed files), and the path cache still points at it.
+    files.get("fileId")!.trashed = true;
+    assert.equal(await adapter.stat("wip/a.md"), null);
+  });
+
+  it("reports a trashed node folder as absent (the sweep's reachability guard)", async () => {
+    const files = new Map<string, Record<string, unknown>>([
+      ["nodeId", { name: "stan-gws", mimeType: "application/vnd.google-apps.folder", parent: "0AXy" }],
+    ]);
+    fakeDrive(files);
+    const adapter = createDriveAdapter(remote, tokens);
+    assert.ok(await adapter.stat("stan-gws"), "precondition: the node folder is there and cached");
+
+    files.get("nodeId")!.trashed = true;
+    assert.equal(
+      await adapter.stat("stan-gws"),
+      null,
+      "a trashed node root must not read as reachable -- otherwise the sweep deletes every record of the node",
+    );
+  });
+
+  it("does not answer from a path cache entry whose object has been renamed away", async () => {
+    // The move retry's deadlock: a Drive rename applies but the response is
+    // lost, so the cache still maps the OLD path to the id. stat(old) must
+    // not keep saying yes, or runMove throws "both ... exist" forever.
+    const files = new Map<string, Record<string, unknown>>([
+      ["wipId", { name: "wip", mimeType: "application/vnd.google-apps.folder", parent: "0AXy" }],
+      ["fileId", { name: "a.md", mimeType: "text/markdown", parent: "wipId", md5Checksum: "abc" }],
+    ]);
+    fakeDrive(files);
+    const adapter = createDriveAdapter(remote, tokens);
+    assert.ok(await adapter.stat("wip/a.md"), "precondition: cached under the old path");
+
+    files.get("fileId")!.name = "b.md";
+    assert.equal(await adapter.stat("wip/a.md"), null);
+    assert.ok(await adapter.stat("wip/b.md"), "the file is findable at its new path");
+  });
+
+  it("re-resolves to a different object that has since taken the path", async () => {
+    const files = new Map<string, Record<string, unknown>>([
+      ["wipId", { name: "wip", mimeType: "application/vnd.google-apps.folder", parent: "0AXy" }],
+      ["oldId", { name: "a.md", mimeType: "text/markdown", parent: "wipId", md5Checksum: "old" }],
+    ]);
+    fakeDrive(files);
+    const adapter = createDriveAdapter(remote, tokens);
+    assert.equal((await adapter.stat("wip/a.md"))?.hash, "old");
+
+    // The original is renamed away and a brand new file takes the path.
+    files.get("oldId")!.name = "gone.md";
+    files.set("newId", { name: "a.md", mimeType: "text/markdown", parent: "wipId", md5Checksum: "new" });
+    assert.equal((await adapter.stat("wip/a.md"))?.hash, "new");
+  });
+});
