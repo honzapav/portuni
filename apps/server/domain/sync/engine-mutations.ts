@@ -168,6 +168,42 @@ export async function moveFile(
     };
   }
 
+  // The remote object has already moved once step 1 succeeds, local outcome
+  // notwithstanding -- another device (or this one, on retry) must not
+  // adopt/push back the copy left at the old local path. Both the
+  // local-phase-failure branch and the success branch call this with the
+  // same detail shape (matchDeleteTombstones reads node_id/old_remote_path),
+  // `extra` only carries the failure-branch's local_error.
+  async function writeMoveTombstone(now: string, extra?: Record<string, unknown>): Promise<void> {
+    await db.execute({
+      sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+            VALUES (?, ?, 'sync_move', 'file', ?, ?, ?)`,
+      args: [
+        ulid(),
+        a.userId,
+        a.fileId,
+        JSON.stringify({
+          node_id: fr.node_id as string,
+          old_remote_path: oldRemotePath,
+          old: {
+            remote_name: oldRemoteName,
+            remote_path: oldRemotePath,
+            local_path: oldLocalPath,
+          },
+          new: {
+            remote_name: newRemoteName,
+            remote_path: newRemotePath,
+            local_path: newLocalPath,
+          },
+          cross_node: crossNode,
+          cross_remote: crossRemote,
+          ...extra,
+        }),
+        now,
+      ],
+    });
+  }
+
   // Best-effort ordered execution.
   // 1. Remote move. Track which sub-step failed: in the cross-remote copy
   // the destination put can succeed before the source delete fails, and
@@ -242,37 +278,9 @@ export async function moveFile(
             now,
           ],
         });
-        // The remote object has already moved -- another device (or this
-        // one, on retry) must not adopt/push back the copy left at the old
-        // local path. Write the regular sync_move tombstone too, alongside
+        // Write the regular sync_move tombstone too, alongside
         // sync_move_partial, so matchDeleteTombstones picks it up.
-        await db.execute({
-          sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
-                VALUES (?, ?, 'sync_move', 'file', ?, ?, ?)`,
-          args: [
-            ulid(),
-            a.userId,
-            a.fileId,
-            JSON.stringify({
-              node_id: fr.node_id as string,
-              old_remote_path: oldRemotePath,
-              old: {
-                remote_name: oldRemoteName,
-                remote_path: oldRemotePath,
-                local_path: oldLocalPath,
-              },
-              new: {
-                remote_name: newRemoteName,
-                remote_path: newRemotePath,
-                local_path: newLocalPath,
-              },
-              cross_node: crossNode,
-              cross_remote: crossRemote,
-              local_error: (e as Error).message,
-            }),
-            now,
-          ],
-        });
+        await writeMoveTombstone(now, { local_error: (e as Error).message });
         return {
           status: "repair_needed",
           file_id: a.fileId,
@@ -301,32 +309,7 @@ export async function moveFile(
     args: [newRemoteName, newRemotePath, targetNodeId, filename, now, a.fileId],
   });
 
-  await db.execute({
-    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
-          VALUES (?, ?, 'sync_move', 'file', ?, ?, ?)`,
-    args: [
-      ulid(),
-      a.userId,
-      a.fileId,
-      JSON.stringify({
-        node_id: fr.node_id as string,
-        old_remote_path: oldRemotePath,
-        old: {
-          remote_name: oldRemoteName,
-          remote_path: oldRemotePath,
-          local_path: oldLocalPath,
-        },
-        new: {
-          remote_name: newRemoteName,
-          remote_path: newRemotePath,
-          local_path: newLocalPath,
-        },
-        cross_node: crossNode,
-        cross_remote: crossRemote,
-      }),
-      now,
-    ],
-  });
+  await writeMoveTombstone(now);
 
   return {
     status: "ok",

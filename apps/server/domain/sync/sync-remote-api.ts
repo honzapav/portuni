@@ -53,11 +53,16 @@ export interface NodeSyncInfo {
   };
   remote_name: string | null;
   files: SyncInfoFile[];
-  // Recent deliberate deletions on this node. Devices match untracked disk
-  // files against these during discovery (deleted_remote classification), so
-  // a copy left behind on another device cannot resurrect the file. Only the
-  // exact actions sync_delete / sync_delete_remote qualify — *_repair_needed
-  // rows mean the remote copy still exists and must never trigger cleanup.
+  // Recent deliberate deletions AND moves/renames on this node. Devices
+  // match untracked disk files against these during discovery
+  // (deleted_remote classification), so a copy left behind on another
+  // device cannot resurrect a deletion, or get pushed back to a path the
+  // file has since moved away from. Qualifying actions are exactly
+  // sync_delete / sync_delete_remote / sync_move / sync_rename —
+  // *_repair_needed and sync_move_partial rows mean the remote copy still
+  // exists at the old path and must never trigger cleanup. record_alive
+  // distinguishes the two: true for a move/rename (the record is still
+  // alive, just at a new path), false for a delete.
   deleted: DeletedTombstone[];
 }
 

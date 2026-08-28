@@ -940,12 +940,17 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
 }
 
 // Tombstone reconciliation (GH #79): match untracked disk files against the
-// node's delete tombstones so a copy left behind on this device cannot
-// resurrect a deliberate deletion via adopt/store. Triple match -- the local
-// path derived from the tombstone's remote_path, a file_state row for the
-// tombstoned id on THIS device, and last_synced_hash equal to the current
-// disk hash -- makes the cleanup lossless by construction: any post-delete
-// edit fails the hash check and the file stays new_local.
+// node's delete AND move/rename tombstones so a copy left behind on this
+// device cannot resurrect a deliberate deletion, or get adopted/pushed back
+// to a path the file has since moved away from, via adopt/store. Triple
+// match -- the local path derived from the tombstone's (old) remote_path, a
+// file_state row for the tombstoned id on THIS device, and last_synced_hash
+// equal to the current disk hash -- makes the cleanup lossless by
+// construction: any post-tombstone edit fails the hash check and the file
+// stays new_local. A move/rename tombstone additionally sets record_alive:
+// true (the files row is still alive, just at a new path) and is skipped
+// outright if the record has since moved back to the tombstoned path --
+// cleanupDeletedRemote uses record_alive to keep that row's file_state.
 export async function matchDeleteTombstones<
   T extends { node_id: string; local_path: string; filename: string; hash?: string },
 >(
@@ -1050,9 +1055,13 @@ export async function diskHashMatching(
   return useMd5 ? md5Buffer(content) : sha256Buffer(content);
 }
 
-// Apply the deleted_remote cleanup: remove the stale local copy and the
-// dangling file_state row. Lossless by the matchDeleteTombstones contract --
-// only files byte-identical to their last synced state ever get here.
+// Apply the deleted_remote cleanup: remove the stale local copy always, and
+// the file_state row only when record_alive is false. A delete tombstone's
+// file_state is dangling (its files row is gone) and must go with it; a
+// move/rename tombstone's file_state still belongs to a live files row at
+// the new path and must survive -- only the stale copy at the old path is
+// cleaned up. Lossless by the matchDeleteTombstones contract -- only files
+// byte-identical to their last synced state ever get here.
 export async function cleanupDeletedRemote(
   entries: DeletedRemoteEntry[],
 ): Promise<{
