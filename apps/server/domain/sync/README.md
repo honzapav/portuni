@@ -121,4 +121,6 @@ implemented in v3.
 - Delete is soft (Drive Trash, 30-day recovery). Portuni never hard-deletes.
 - Rename of a Portuni node does NOT rename anything on Drive -- Portuni uses immutable `sync_key` for paths, not display names.
 - Native files (Google Docs/Sheets/Slides) are tracked by URL + modified_at but not round-trip synced. Use `portuni_snapshot` to export + store a PDF/markdown/docx copy as a regular tracked file.
+- One folder per path: folder creation is single-flighted and re-checked after create (older same-name sibling wins, own copy is trashed). Existing duplicates resolve to the oldest folder, the others stay readable, and a `[portuni:drive] ... duplicate folders` warning names the IDs to merge by hand.
+- Move/rename sends `removeParents` from the file's actual `parents`, never from a path lookup -- on a shared drive a wrong `removeParents` leaves two parents and fails with 403 `teamDrivesParentLimit`.
 - Drive versioning (30 days) is Portuni's safety net under the explicit audit log.
