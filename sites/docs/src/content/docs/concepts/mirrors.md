@@ -98,12 +98,34 @@ The watcher also understands the two everyday shell operations:
   the record and the remote copy and shows as "deleted locally" for an
   explicit decision.
 
-Deletions made elsewhere (web UI, MCP tool, another device) propagate
-back to every device through delete tombstones: an untracked disk copy
-that matches a tombstone — same path, same file identity, content
-byte-identical to the last synced state — is removed by the next sync
-run instead of being re-uploaded. A copy edited after the delete never
-matches and stays untracked; local data is never destroyed.
+Deletions made elsewhere (web UI, MCP tool, another device, or straight in
+Drive) propagate back to every device through delete tombstones: an
+untracked disk copy that matches a tombstone — same path, same file
+identity, content byte-identical to the last synced state — is removed by
+the next sync run instead of being re-uploaded. A copy edited after the
+delete never matches and stays untracked; local data is never destroyed.
+
+A file deleted directly on the remote (Drive UI, another tool — nothing
+that goes through Portuni) is only noticed by the **remote sweep**, which
+runs at the start of every deliberate sync ("Synchronizovat"): it removes
+the record and writes the tombstone above, and — symmetrically — adopts
+any file that showed up on the remote under `wip/`, `outputs/`, or
+`resources/` without going through `portuni_store`/`portuni_adopt_files` —
+the run that discovers it pulls it into that device's own mirror in the
+same pass, and any other device mirroring the same node picks it up the
+next time it runs its own sync. `portuni_status` alone never triggers the
+sweep; a record it reports as `remote_missing` (or a file as `new_remote`)
+only gets reconciled by an actual sync run. Moves
+and renames leave their own tombstone, so a device that missed one cleans
+up the stale copy at the old path instead of pushing it back.
+
+Two situations need a human decision, and the sync run never guesses:
+a **conflict** (both sides changed) and a **deleted_local** file (removed
+locally, still on the remote). The file row in the app shows the choice —
+"Ponechat lokální" / "Vzít z remote" for a conflict, "Obnovit" to restore
+a deleted local copy — backed by `POST /nodes/:id/files/:fileId/resolve`.
+Restoring refuses (with a clear error) to overwrite a local change that
+was never pushed.
 
 **Moving bytes to the remote stays intentional.** Uploads happen the same way
 you'd make a git commit — on purpose, with meaning, via `portuni_store` or

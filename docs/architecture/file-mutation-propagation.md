@@ -9,6 +9,8 @@ deterministic — no agent involvement, no silent skips.
 | MCP tool on this device (central mode) | Agent front door: snapshot before proxy, local disk step after a confirmed success | `mcp/agent-tools.ts` (`snapshotForDiskMutation` / `applyLocalAfterProxiedMutation`), wired in `mcp/agent-transport.ts` (GH #78) |
 | Web UI / another device / any remote plane | Delete tombstones in sync-info, matched during discovery, cleaned by the sync run | `sync-remote-api.ts` (`NodeSyncInfo.deleted`), `engine.ts` (`matchDeleteTombstones` / `cleanupDeletedRemote`), `engine-central.ts` (`matchTombstonesForContext`) (GH #79) |
 | Raw `mv` / `rm` on disk | Watcher pairing at registration time by inode identity; unregister of never-pushed deletions | `reconcile.ts` (`tryApplyDiskMove`, unregister branch), `engine-central.ts` (`tryApplyDiskMoveCentral`) |
+| Deleted / added on the remote (Drive UI, another tool) | Remote sweep at the start of every deliberate sync run: a pushed record whose object is confirmed gone is deleted + tombstoned; a file new on the remote under `wip/`/`outputs/`/`resources/` is adopted | `remote-sweep.ts` (`remoteSweep`), called from `handleSyncRun` and `POST /nodes/:id/sync/remote-sweep` |
+| Half-finished mutation (move/rename/delete's remote step failed) | Intent recorded in `pending_file_ops` before the first side effect, retried idempotently at the start of the next sync run until it completes | `pending-ops.ts` (`enqueuePendingOp` / `retryPendingFileOps`) |
 
 ## Tombstones (GH #79)
 
@@ -63,8 +65,8 @@ where it can see the move — the watcher's registration path:
 ## Deletion semantics (one action, one outcome)
 
 - Never-pushed file deleted on disk → the record is unregistered entirely
-  (`sync_unregister` audit locally; record-only DELETE on central). It was
-  metadata-only; keeping it produced the confusing `orphan` state.
+  (`sync_unregister` audit locally; record-only DELETE on central) — it was
+  metadata-only, so there is no remote object to reconcile.
 - Pushed file deleted on disk → record + remote copy intentionally kept,
   classifies `deleted_local` for an explicit decision (restore via
   `portuni_pull`, remove via `portuni_delete_file`). Unchanged behavior.

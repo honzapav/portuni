@@ -43,14 +43,63 @@ local. Each tracked file is classified:
 
 - **clean** -- local hash == remote hash == last-synced hash
 - **push** -- local newer than remote
-- **pull** -- remote newer than local
+- **pull** -- remote newer than local, or the remote object exists and
+  this device has no local copy and no last-synced baseline for it
 - **conflict** -- both diverged
-- **remote_missing** -- DB row exists, no local content, and the
-  remote object is gone (or was never pushed)
+- **remote_missing** -- DB row exists but the remote object does not:
+  either registered elsewhere and never pushed, or deleted on the
+  remote and awaiting the next sync run's remote sweep. Skipped by
+  the sync run.
 - **remote_error** -- remote stat failed (network/auth); transient,
   skipped by the sync run
 - **native** -- non-byte-stream remote (e.g. Google Doc) where hash
   comparison doesn't apply
+
+## Deliberate sync run
+
+A "Synchronizovat" run (`POST /nodes/:id/sync`) is the only place drift
+against the remote gets reconciled -- `portuni_status` only reports the
+current classification, it never sweeps the remote or cleans up
+tombstones. Order:
+
+1. **Retry pending file ops** -- replay any half-finished move/rename/
+   delete from a prior run (see below).
+2. **Remote sweep** -- records whose remote object is confirmed gone are
+   deleted and tombstoned; files newly present on the remote under
+   `wip/`, `outputs/`, or `resources/` are adopted and pulled in the
+   same run. Never-pushed records are untouched; if the remote itself
+   can't be confirmed reachable, nothing is destroyed.
+3. Status scan.
+4. Push `push` candidates, pull `pull` candidates. `deleted_local` is
+   reported, not auto-pulled -- restoring a locally deleted file is an
+   explicit decision.
+5. Tombstone cleanup of untracked local copies that match a delete or
+   move/rename tombstone.
+6. Adopt any remaining untracked local file (including an edited copy
+   of a file just deleted on the remote -- the edit wins and gets
+   pushed back).
+
+## Half-finished mutations
+
+`portuni_move_file`, `portuni_rename_folder`, and `portuni_delete_file`
+record their intent before touching the remote and clear it on success.
+If the remote step fails partway (network blip, crash), the call still
+returns `repair_needed`; the next sync run retries the same op
+idempotently until it completes, or reports it under `pending_repairs`
+with the last error if it can't (e.g. the remote state is now
+ambiguous, or the record no longer matches the path the op expected).
+
+## Resolving conflicts and deleted files
+
+A `conflict` or `deleted_local` file needs a human decision -- Portuni
+never auto-merges or auto-restores. As an agent, resolve directly:
+`portuni_store` (push local over remote, i.e. "keep local"),
+`portuni_pull(file_id, force: true)` (overwrite local with remote), or
+`portuni_pull(file_id)` (restore a deleted local copy -- refuses to
+clobber unpushed local changes). The desktop/web UI calls the REST
+equivalent, `POST /nodes/:id/files/:fileId/resolve` with
+`{ action: "keep_local" | "take_remote" | "restore" }`, for the same
+three actions.
 
 Reconcile drift via:
 
