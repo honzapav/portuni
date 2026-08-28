@@ -114,8 +114,11 @@ tmux -L "$TMUX_SOCKET" new-session -d -s "$SESSION" \
 
 # Fail loudly instead of letting the agent run without credentials: without
 # them every run dies on `gh auth setup-git`. Values stay unprinted.
+# The check reads the server's global environment (-g), which is what child
+# processes inherit; `show-environment -t <session>` does not list variables
+# that only arrived with the server's environment.
 for var in CLAUDE_CODE_OAUTH_TOKEN GH_TOKEN; do
-  if ! tmux -L "$TMUX_SOCKET" show-environment -t "$SESSION" "$var" >/dev/null 2>&1; then
+  if ! tmux -L "$TMUX_SOCKET" show-environment -g "$var" >/dev/null 2>&1; then
     tmux -L "$TMUX_SOCKET" kill-session -t "$SESSION" 2>/dev/null || true
     echo "$var did not reach the tmux session; the loop would fail on every run." >&2
     exit 1
