@@ -456,32 +456,112 @@ test("visibilityWithRestriction: dedupes repeated ids, one entry per id", async 
   assert.equal(result.size, 2);
 });
 
-test("visibilityWithRestriction: resolves each distinct node's chain exactly once, whether admin or member", async () => {
-  const { db, orgId } = await makeSharedDb();
-  const restricted = await addNode(db, orgId, "group");
-  await addAccessRow(db, restricted, "group", "GROUP_A");
-  const sibling = await addNode(db, orgId, "team");
-
-  let chainQueries = 0;
+// Counts round trips that resolve belongs_to chains. The batch helpers must
+// issue ONE such query per call regardless of how many ids they get: the
+// server has no embedded replica, so per-node resolution costs one Turso
+// round trip per node and GET /graph over ~100 nodes took ~3 s.
+function countChainQueries(db: ReturnType<typeof createDbClient>) {
+  const counter = { n: 0 };
   const originalExecute = db.execute.bind(db);
   db.execute = ((...args: Parameters<typeof db.execute>) => {
     const first = args[0];
     const sql = typeof first === "string" ? first : first.sql;
-    if (sql.includes("WITH RECURSIVE chain")) chainQueries++;
+    if (sql.includes("WITH RECURSIVE chain")) counter.n++;
     return (originalExecute as (...a: unknown[]) => unknown)(...args);
   }) as typeof db.execute;
+  return { counter, restore: () => { db.execute = originalExecute; } };
+}
+
+test("visibilityWithRestriction: resolves the whole id set in a single chain query, whether admin or member", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const restricted = await addNode(db, orgId, "group");
+  await addAccessRow(db, restricted, "group", "GROUP_A");
+  const sibling = await addNode(db, orgId, "team");
+  const more = [];
+  for (let i = 0; i < 20; i++) more.push(await addNode(db, orgId, "team"));
+
+  const { counter, restore } = countChainQueries(db);
 
   const member = identity({ globalScope: "write", groupIds: ["GROUP_A"] });
-  chainQueries = 0;
-  await visibilityWithRestriction(db, member, [restricted, sibling]);
-  assert.equal(chainQueries, 2, "member: exactly one chain resolution per distinct node id (visible+restricted from the same pass)");
+  counter.n = 0;
+  await visibilityWithRestriction(db, member, [restricted, sibling, ...more]);
+  assert.equal(counter.n, 1, "member: one batched chain query for the whole set");
 
   const admin = identity({ globalScope: "admin" });
-  chainQueries = 0;
-  await visibilityWithRestriction(db, admin, [restricted, sibling]);
-  assert.equal(chainQueries, 2, "admin: still exactly one chain resolution per distinct node id, not one for visibility + one for the flag");
+  counter.n = 0;
+  await visibilityWithRestriction(db, admin, [restricted, sibling, ...more]);
+  assert.equal(counter.n, 1, "admin: one batched chain query for the whole set (restricted flag still needs chains)");
 
-  db.execute = originalExecute;
+  restore();
+});
+
+test("filterVisibleNodeIds / classifyNodeVisibility: one chain query per call for a non-admin", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const restricted = await addNode(db, orgId, "group");
+  await addAccessRow(db, restricted, "group", "GROUP_A");
+  const ids = [restricted, orgId];
+  for (let i = 0; i < 10; i++) ids.push(await addNode(db, orgId, "team"));
+
+  const { counter, restore } = countChainQueries(db);
+  const outsider = identity({ globalScope: "write" });
+
+  counter.n = 0;
+  await filterVisibleNodeIds(db, outsider, ids);
+  assert.equal(counter.n, 1, "filterVisibleNodeIds: single batched query");
+
+  counter.n = 0;
+  await classifyNodeVisibility(db, outsider, ids);
+  assert.equal(counter.n, 1, "classifyNodeVisibility: single batched query");
+
+  restore();
+});
+
+test("batch resolution matches per-node resolveAccessChain across every chain shape", async () => {
+  const { db, orgId } = await makeSharedDb();
+  const unrestricted = await addNode(db, orgId, "team");
+  const restricted = await addNode(db, orgId, "group", "request");
+  await addAccessRow(db, restricted, "group", "GROUP_A");
+  await addAccessRow(db, restricted, "user", "01USER0000000000000000009");
+  const inherits = await addNode(db, restricted, "team");
+  const overrides = await addNode(db, restricted, "team", "private");
+  await addAccessRow(db, overrides, "group", "GROUP_B");
+  const failClosed = await addNode(db, orgId, "group");
+  const privateNode = await addNode(db, orgId, "private");
+  const deep = await addNode(db, inherits, "team");
+  const missing = ulid();
+  const ids = [unrestricted, restricted, inherits, overrides, failClosed, privateNode, deep, missing, restricted];
+
+  const identities = [
+    identity({ globalScope: "write" }),
+    identity({ globalScope: "write", groupIds: ["GROUP_A"] }),
+    identity({ globalScope: "write", groupIds: ["GROUP_B"] }),
+    identity({ globalScope: "write", userId: SOLO }),
+    identity({ globalScope: "admin" }),
+  ];
+
+  for (const who of identities) {
+    const expectedVisible = new Set<string>();
+    const expectedFlags = new Map<string, { visible: boolean; restricted: boolean }>();
+    const expectedClass = new Map<string, "visible" | "request" | "hidden">();
+    for (const id of ids) {
+      const chain = await resolveAccessChain(db, id);
+      const visible = who.globalScope === "admin" ? true : canSeeNode(who, chain.entries);
+      if (canSeeNode(who, chain.entries)) expectedVisible.add(id);
+      expectedFlags.set(id, { visible, restricted: chain.entries !== null });
+      expectedClass.set(
+        id,
+        who.globalScope === "admin" || canSeeNode(who, chain.entries)
+          ? "visible"
+          : chain.mode === "request"
+            ? "request"
+            : "hidden",
+      );
+    }
+
+    assert.deepEqual(await filterVisibleNodeIds(db, who, ids), expectedVisible, `filterVisibleNodeIds ${who.globalScope}/${who.groupIds}`);
+    assert.deepEqual(await visibilityWithRestriction(db, who, ids), expectedFlags, `visibilityWithRestriction ${who.globalScope}/${who.groupIds}`);
+    assert.deepEqual(await classifyNodeVisibility(db, who, ids), expectedClass, `classifyNodeVisibility ${who.globalScope}/${who.groupIds}`);
+  }
 });
 
 test("filterVisibleNodeIds: admin sees everything without resolving chains", async () => {

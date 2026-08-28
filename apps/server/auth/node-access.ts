@@ -43,41 +43,92 @@ interface ChainRow {
   principal: string | null;
 }
 
-async function loadChain(db: Client, nodeId: string): Promise<ChainRow[]> {
-  // One recursive-CTE round-trip instead of two queries per belongs_to hop
-  // (the old walk cost 2xdepth Turso round-trips on EVERY enforced request;
-  // the server has no embedded replica). The correlated LIMIT 1 subquery
-  // preserves the original single-path semantics -- the org invariant
-  // guarantees one scoping parent, and if data ever violates it we follow
-  // the same arbitrary-first edge the loop did.
-  const r = await db.execute({
-    sql: `WITH RECURSIVE chain(id, depth) AS (
-            SELECT ?, 0
-            UNION ALL
-            SELECT (SELECT e.target_id FROM edges e
-                    WHERE e.source_id = c.id AND e.relation = 'belongs_to' LIMIT 1),
-                   c.depth + 1
+// Upper bound on ids per chain query. Keeps the json_each seed and the CTE
+// working set bounded; a whole-graph call (GET /graph) fits in one batch at
+// today's sizes and degrades to a handful of round trips, not N.
+const CHAIN_BATCH = 500;
+
+// Loads the belongs_to chains of many nodes in ONE round trip, keyed by the
+// node each chain was seeded from. One recursive CTE seeded from json_each
+// instead of one query per node: the server has no embedded replica, so
+// per-node resolution over a ~100-node graph cost ~100 sequential Turso
+// round trips (~3 s for GET /graph). The correlated LIMIT 1 subquery
+// preserves the single-path semantics -- the org invariant guarantees one
+// scoping parent, and if data ever violates it we follow the same
+// arbitrary-first edge the old loop did. A missing node yields no rows for
+// its root (the JOIN on nodes drops it), which callers treat as unrestricted
+// -- same contract as before.
+async function loadChains(db: Client, nodeIds: string[]): Promise<Map<string, ChainRow[]>> {
+  const byRoot = new Map<string, ChainRow[]>();
+  const distinct = [...new Set(nodeIds)];
+  for (let i = 0; i < distinct.length; i += CHAIN_BATCH) {
+    const batch = distinct.slice(i, i + CHAIN_BATCH);
+    const r = await db.execute({
+      sql: `WITH RECURSIVE chain(root, id, depth) AS (
+              SELECT value, value, 0 FROM json_each(?)
+              UNION ALL
+              SELECT c.root,
+                     (SELECT e.target_id FROM edges e
+                      WHERE e.source_id = c.id AND e.relation = 'belongs_to' LIMIT 1),
+                     c.depth + 1
+              FROM chain c
+              WHERE c.depth < ${MAX_CHAIN}
+                AND (SELECT e.target_id FROM edges e
+                     WHERE e.source_id = c.id AND e.relation = 'belongs_to' LIMIT 1) IS NOT NULL
+            )
+            SELECT c.root, c.id AS node_id, c.depth, n.visibility, n.access_mode, n.created_by, na.kind, na.principal
             FROM chain c
-            WHERE c.depth < ${MAX_CHAIN}
-              AND (SELECT e.target_id FROM edges e
-                   WHERE e.source_id = c.id AND e.relation = 'belongs_to' LIMIT 1) IS NOT NULL
-          )
-          SELECT c.id AS node_id, c.depth, n.visibility, n.access_mode, n.created_by, na.kind, na.principal
-          FROM chain c
-          JOIN nodes n ON n.id = c.id
-          LEFT JOIN node_access na ON na.node_id = c.id
-          ORDER BY c.depth`,
-    args: [nodeId],
-  });
-  return r.rows.map((row) => ({
-    node_id: String(row.node_id),
-    depth: Number(row.depth),
-    visibility: String(row.visibility),
-    access_mode: String(row.access_mode) as AccessMode,
-    created_by: String(row.created_by),
-    kind: row.kind === null ? null : (String(row.kind) as "group" | "user"),
-    principal: row.principal === null ? null : String(row.principal),
-  }));
+            JOIN nodes n ON n.id = c.id
+            LEFT JOIN node_access na ON na.node_id = c.id
+            ORDER BY c.root, c.depth`,
+      args: [JSON.stringify(batch)],
+    });
+    for (const row of r.rows) {
+      const root = String(row.root);
+      const rows = byRoot.get(root);
+      const chainRow: ChainRow = {
+        node_id: String(row.node_id),
+        depth: Number(row.depth),
+        visibility: String(row.visibility),
+        access_mode: String(row.access_mode) as AccessMode,
+        created_by: String(row.created_by),
+        kind: row.kind === null ? null : (String(row.kind) as "group" | "user"),
+        principal: row.principal === null ? null : String(row.principal),
+      };
+      if (rows) rows.push(chainRow);
+      else byRoot.set(root, [chainRow]);
+    }
+  }
+  return byRoot;
+}
+
+async function loadChain(db: Client, nodeId: string): Promise<ChainRow[]> {
+  return (await loadChains(db, [nodeId])).get(nodeId) ?? [];
+}
+
+interface ResolvedChain {
+  sourceNodeId: string | null;
+  entries: AccessEntry[] | null;
+  mode: AccessMode | null;
+  // True when `entries` is a synthetic "only the creator" list derived from
+  // visibility='private' (no real node_access rows). Enforcement treats it
+  // like any other ACL; display (buildAccessView) must NOT show it as a
+  // group restriction -- a private node has no shared grantees.
+  implicitPrivate: boolean;
+}
+
+// Resolves many nodes' ACLs with one chain query (see loadChains). Each
+// distinct id appears once in the result even if repeated in the input.
+async function resolveAccessChains(
+  db: Client,
+  nodeIds: string[],
+): Promise<Map<string, ResolvedChain>> {
+  const chains = await loadChains(db, nodeIds);
+  const result = new Map<string, ResolvedChain>();
+  for (const id of nodeIds) {
+    if (!result.has(id)) result.set(id, resolveChainRows(chains.get(id) ?? []));
+  }
+  return result;
 }
 
 // Groups the flat chain rows by depth (a depth can carry multiple
@@ -87,17 +138,11 @@ async function loadChain(db: Client, nodeId: string): Promise<ChainRow[]> {
 export async function resolveAccessChain(
   db: Client,
   nodeId: string,
-): Promise<{
-  sourceNodeId: string | null;
-  entries: AccessEntry[] | null;
-  mode: AccessMode | null;
-  // True when `entries` is a synthetic "only the creator" list derived from
-  // visibility='private' (no real node_access rows). Enforcement treats it
-  // like any other ACL; display (buildAccessView) must NOT show it as a
-  // group restriction -- a private node has no shared grantees.
-  implicitPrivate: boolean;
-}> {
-  const rows = await loadChain(db, nodeId);
+): Promise<ResolvedChain> {
+  return resolveChainRows(await loadChain(db, nodeId));
+}
+
+function resolveChainRows(rows: ChainRow[]): ResolvedChain {
   if (rows.length === 0 || rows[0].depth !== 0) {
     // Missing node -- old contract keeps this null/null (guards handle
     // existence separately).
@@ -184,23 +229,18 @@ export async function nodeVisibleTo(
   return canSeeNode(identity, await effectiveAccessEntries(db, nodeId));
 }
 
-// Request-scoped memoized batch filter for list paths: resolves each
-// distinct chain once.
+// Batch filter for list paths: one chain query for the whole id set
+// (loadChains), each distinct id resolved once.
 export async function filterVisibleNodeIds(
   db: Client,
   identity: GroupIdentityView,
   nodeIds: string[],
 ): Promise<Set<string>> {
   if (identity.globalScope === "admin") return new Set(nodeIds);
-  const memo = new Map<string, AccessEntry[] | null>();
+  const resolved = await resolveAccessChains(db, nodeIds);
   const visible = new Set<string>();
-  for (const id of nodeIds) {
-    let entries = memo.get(id);
-    if (entries === undefined) {
-      entries = await effectiveAccessEntries(db, id);
-      memo.set(id, entries);
-    }
-    if (canSeeNode(identity, entries)) visible.add(id);
+  for (const [id, chain] of resolved) {
+    if (canSeeNode(identity, chain.entries)) visible.add(id);
   }
   return visible;
 }
@@ -211,25 +251,22 @@ export async function filterVisibleNodeIds(
 // filterVisibleNodeIds + restrictedNodeIds two-pass combo, which cost
 // members up to 2x the chain resolutions (once to filter, once again for the
 // flag on the visible subset) and cost admins a full N resolutions purely
-// for the flag despite their visibility being trivially true. Same per-call
-// memo shape as filterVisibleNodeIds/classifyNodeVisibility -- resolves each
-// distinct id once even if it repeats in the input.
+// for the flag despite their visibility being trivially true. Like
+// filterVisibleNodeIds/classifyNodeVisibility it loads every chain in ONE
+// query (loadChains) -- the flag needs the chains even for admins, and
+// resolving them one node at a time made GET /graph cost N Turso round
+// trips (~3 s at ~100 nodes).
 export async function visibilityWithRestriction(
   db: Client,
   identity: GroupIdentityView,
   nodeIds: string[],
 ): Promise<Map<string, { visible: boolean; restricted: boolean }>> {
   const isAdmin = identity.globalScope === "admin";
-  const memo = new Map<string, AccessEntry[] | null>();
+  const resolved = await resolveAccessChains(db, nodeIds);
   const result = new Map<string, { visible: boolean; restricted: boolean }>();
-  for (const id of nodeIds) {
-    let entries = memo.get(id);
-    if (entries === undefined) {
-      entries = await effectiveAccessEntries(db, id);
-      memo.set(id, entries);
-    }
-    const visible = isAdmin ? true : canSeeNode(identity, entries);
-    result.set(id, { visible, restricted: entries !== null });
+  for (const [id, chain] of resolved) {
+    const visible = isAdmin ? true : canSeeNode(identity, chain.entries);
+    result.set(id, { visible, restricted: chain.entries !== null });
   }
   return result;
 }
@@ -237,8 +274,8 @@ export async function visibilityWithRestriction(
 // Three-way classification for edge/related-node filters (spec: "Rezim
 // omezeni"): a `mode='request'` node that a non-member cannot see still
 // surfaces as a locked chip (name + type only) instead of disappearing
-// entirely like a `private` one does. Same per-call memo shape as
-// filterVisibleNodeIds -- resolves each distinct chain once.
+// entirely like a `private` one does. One chain query for the whole id set
+// (loadChains), each distinct id resolved once.
 export async function classifyNodeVisibility(
   db: Client,
   identity: GroupIdentityView,
@@ -250,17 +287,11 @@ export async function classifyNodeVisibility(
     return result;
   }
 
-  const memo = new Map<string, { entries: AccessEntry[] | null; mode: AccessMode | null }>();
-  for (const id of nodeIds) {
-    let resolved = memo.get(id);
-    if (resolved === undefined) {
-      const chain = await resolveAccessChain(db, id);
-      resolved = { entries: chain.entries, mode: chain.mode };
-      memo.set(id, resolved);
-    }
-    if (canSeeNode(identity, resolved.entries)) {
+  const resolved = await resolveAccessChains(db, nodeIds);
+  for (const [id, chain] of resolved) {
+    if (canSeeNode(identity, chain.entries)) {
       result.set(id, "visible");
-    } else if (resolved.mode === "request") {
+    } else if (chain.mode === "request") {
       result.set(id, "request");
     } else {
       result.set(id, "hidden");
