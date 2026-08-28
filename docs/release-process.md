@@ -11,6 +11,13 @@ the discovery that produced it.
   2026-07-04, no Intel users), uses `tauri-apps/tauri-action@v0` to
   build and attach the DMG to a draft GitHub Release on the tag.
   Builds are Developer ID signed and notarized (see below).
+- **Auto-updater artefacts.** Shipped (2026-08-28). `release.yml` builds with
+  `--bundles app,dmg --config apps/desktop/tauri.release.conf.json`
+  (`createUpdaterArtifacts: true`) and `includeUpdaterJson: true`, so the
+  draft release also gets `Portuni.app.tar.gz`, its minisign `.sig`, and
+  `latest.json`. Signed with the `TAURI_SIGNING_PRIVATE_KEY` secret (see the
+  signing checklist below); the verify step fails the job if any of the
+  three is missing or `latest.json`'s version doesn't match the tag.
 - **First-run onboarding wizard.** Shipped in `apps/web/src/components/
   TursoSetupGate.tsx` + `apps/desktop/src/lib.rs`. A fresh install (no
   `config.json`) now sees a wizard that asks "connect to existing
@@ -122,8 +129,9 @@ feat/foo branch → PR "feat(scope): summary"
        └─ regenerates CHANGELOG.md from feat:/fix: since v0.1.0
   → review + squash merge release PR
   → release-please-bot tags v0.1.1 + creates GitHub Release
-  → release.yml fires on the tag → builds the aarch64 DMG
-  → tauri-action attaches the DMG to the Release (still draft)
+  → release.yml fires on the tag → builds the aarch64 DMG + updater artefacts
+  → tauri-action attaches the DMG, Portuni.app.tar.gz, .sig and
+    latest.json to the Release (still draft)
   → maintainer edits release notes, clicks Publish
   → users go to /releases and download the DMG matching their CPU
 ```
@@ -238,10 +246,6 @@ from 228 commits of pre-release work.
   history. Cleaner than most. `git filter-repo` would break every
   existing clone and reference for negligible benefit; release-please
   reads only commits *after* the last tag, so past noise costs nothing.
-- **Auto-updater.** Tauri 2 has `tauri-plugin-updater` with built-in
-  signature verification, but it requires signed builds plus a hosted
-  update manifest. Signing is now in place, so this is unblocked —
-  still deferred until DMG distribution has a second regular user.
 - **Intel build.** Dropped 2026-07-04: GitHub retired `macos-13` in
   2025-12 and the user base has no Intel Macs. If ever needed again,
   `macos-15-intel` is the last x86_64 runner image (until 2027-08).

@@ -22,8 +22,17 @@ name: Release
 # tauri.conf.json plugins.updater.pubkey):
 #   TAURI_SIGNING_PRIVATE_KEY          minisign private key (file content)
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD its password
-# If any secret is missing the build still succeeds — Tauri skips
-# signing/notarization and ships an unsigned DMG (Gatekeeper dialog).
+# If any Apple secret is missing the build still succeeds — Tauri skips
+# signing/notarization and ships an unsigned DMG (Gatekeeper dialog). The
+# updater secrets are not optional: without them tauri-action fails to
+# produce Portuni.app.tar.gz/.sig, since --config tauri.release.conf.json
+# turns createUpdaterArtifacts on unconditionally.
+#
+# Bundle list is `app,dmg` with `--config tauri.release.conf.json`
+# (createUpdaterArtifacts: true): `--bundles dmg` alone builds no updater
+# tarball ("no updater-enabled targets were built", verified locally,
+# tauri-cli 2.11.4). `includeUpdaterJson: true` makes tauri-action generate
+# and attach latest.json to the draft release.
 
 on:
   push:
@@ -102,20 +111,22 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
           releaseName: "Portuni ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
-          args: --target ${{ matrix.target }} --bundles dmg
+          includeUpdaterJson: true
+          args: --target ${{ matrix.target }} --bundles app,dmg --config tauri.release.conf.json
 
       # Content smoke test of the shipped artifact: fails the release when a
       # runtime dependency (guard script, native bindings) is missing from
       # the bundle -- the class of bug regular CI can never see because it
-      # only ever runs from repo dist/. Verifies the DMG, not the .app:
-      # with --bundles dmg Tauri deletes the intermediate .app once the DMG
-      # is built, and the DMG is what users download anyway.
+      # only ever runs from repo dist/. Verifies the DMG, not the .app,
+      # since the DMG is what users download.
       - name: Verify bundle content
         run: |
           shopt -s nullglob
@@ -125,3 +136,47 @@ jobs:
             exit 1
           fi
           scripts/verify-app-bundle.sh "${dmgs[0]}"
+
+      # Updater artefacts: --config tauri.release.conf.json turns on
+      # createUpdaterArtifacts, which produces Portuni.app.tar.gz + .sig next
+      # to the .app in bundle/macos (the DMG build no longer deletes the
+      # intermediate .app once `app` is also in --bundles). includeUpdaterJson
+      # makes tauri-action generate and attach latest.json to the draft
+      # release; fetch that release asset back down to check its content,
+      # since tauri-action does not expose it as a job output.
+      - name: Verify updater artefacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s nullglob
+          bundle_dir="apps/desktop/target/${{ matrix.target }}/release/bundle/macos"
+          tarballs=("$bundle_dir"/*.app.tar.gz)
+          sigs=("$bundle_dir"/*.app.tar.gz.sig)
+          if [[ ${#tarballs[@]} -ne 1 ]]; then
+            echo "expected exactly one Portuni.app.tar.gz, found ${#tarballs[@]}: ${tarballs[*]}" >&2
+            exit 1
+          fi
+          if [[ ${#sigs[@]} -ne 1 ]]; then
+            echo "expected exactly one Portuni.app.tar.gz.sig, found ${#sigs[@]}: ${sigs[*]}" >&2
+            exit 1
+          fi
+          echo "ok: $(basename "${tarballs[0]}")"
+          echo "ok: $(basename "${sigs[0]}")"
+
+          tag="${{ github.ref_name }}"
+          expected_version="${tag#v}"
+          work="$RUNNER_TEMP/latest.json"
+          rm -f "$work"
+          gh release download "$tag" --repo "${{ github.repository }}" \
+            --pattern latest.json --output "$work"
+
+          actual_version="$(jq -r '.version' "$work")"
+          if [[ "$actual_version" != "$expected_version" ]]; then
+            echo "latest.json version '$actual_version' != tag version '$expected_version'" >&2
+            exit 1
+          fi
+          if ! jq -e '.platforms["darwin-aarch64"]' "$work" > /dev/null; then
+            echo "latest.json is missing a darwin-aarch64 platform entry" >&2
+            exit 1
+          fi
+          echo "ok: latest.json version $actual_version, darwin-aarch64 present"
