@@ -315,6 +315,11 @@ async function matchTombstonesForContext(
     if (!st || st.last_synced_hash === null) continue;
     const hash = await diskHashMatching(st.last_synced_hash, entry.local_path, entry.hash);
     if (hash === null || hash !== st.last_synced_hash) continue;
+    if (t.record_alive && ctx.si.files.find((f) => f.id === t.file_id)?.remote_path === t.remote_path) {
+      // The file's record moved right back to this exact path (the move
+      // was undone) -- skip so a live file doesn't lose its file_state.
+      continue;
+    }
     matchedPaths.add(entry.local_path);
     deleted.push({
       file_id: t.file_id,
@@ -323,6 +328,7 @@ async function matchTombstonesForContext(
       local_path: entry.local_path,
       remote_path: t.remote_path,
       hash,
+      record_alive: t.record_alive,
     });
   }
   return { deleted_remote: deleted, remaining: entries.filter((e) => !matchedPaths.has(e.local_path)) };

@@ -242,6 +242,37 @@ export async function moveFile(
             now,
           ],
         });
+        // The remote object has already moved -- another device (or this
+        // one, on retry) must not adopt/push back the copy left at the old
+        // local path. Write the regular sync_move tombstone too, alongside
+        // sync_move_partial, so matchDeleteTombstones picks it up.
+        await db.execute({
+          sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+                VALUES (?, ?, 'sync_move', 'file', ?, ?, ?)`,
+          args: [
+            ulid(),
+            a.userId,
+            a.fileId,
+            JSON.stringify({
+              node_id: fr.node_id as string,
+              old_remote_path: oldRemotePath,
+              old: {
+                remote_name: oldRemoteName,
+                remote_path: oldRemotePath,
+                local_path: oldLocalPath,
+              },
+              new: {
+                remote_name: newRemoteName,
+                remote_path: newRemotePath,
+                local_path: newLocalPath,
+              },
+              cross_node: crossNode,
+              cross_remote: crossRemote,
+              local_error: (e as Error).message,
+            }),
+            now,
+          ],
+        });
         return {
           status: "repair_needed",
           file_id: a.fileId,
@@ -278,6 +309,8 @@ export async function moveFile(
       a.userId,
       a.fileId,
       JSON.stringify({
+        node_id: fr.node_id as string,
+        old_remote_path: oldRemotePath,
         old: {
           remote_name: oldRemoteName,
           remote_path: oldRemotePath,
@@ -419,6 +452,30 @@ export async function renameFolder(
   }> = [];
   const now = new Date().toISOString();
 
+  // The remote object has already moved once adapter.rename succeeds, local
+  // outcome notwithstanding -- another device (or this one, on a missed
+  // watcher event) must not adopt/push back the copy left at the old local
+  // path. One sync_rename tombstone per successfully-renamed file, matched
+  // by matchDeleteTombstones same as sync_move.
+  async function writeRenameTombstone(f: (typeof affected)[number]): Promise<void> {
+    await db.execute({
+      sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+            VALUES (?, ?, 'sync_rename', 'file', ?, ?, ?)`,
+      args: [
+        ulid(),
+        a.userId,
+        f.file_id,
+        JSON.stringify({
+          node_id: a.nodeId,
+          old_remote_path: f.old_remote_path,
+          new_remote_path: f.new_remote_path,
+          via: "rename_folder",
+        }),
+        now,
+      ],
+    });
+  }
+
   for (const f of affected) {
     try {
       const adapter = await getAdapter(db, f.remote_name);
@@ -433,6 +490,7 @@ export async function renameFolder(
               sql: "UPDATE files SET remote_path = ?, updated_at = ? WHERE id = ?",
               args: [f.new_remote_path, now, f.file_id],
             });
+            await writeRenameTombstone(f);
             results.push({
               file_id: f.file_id,
               status: "repair_needed",
@@ -448,6 +506,7 @@ export async function renameFolder(
         sql: "UPDATE files SET remote_path = ?, updated_at = ? WHERE id = ?",
         args: [f.new_remote_path, now, f.file_id],
       });
+      await writeRenameTombstone(f);
       results.push({
         file_id: f.file_id,
         status: "ok",
@@ -872,6 +931,7 @@ export async function renameFile(
       a.userId,
       a.fileId,
       JSON.stringify({
+        node_id: nodeId,
         old_filename: oldFilename,
         new_filename: fn,
         old_remote_path: oldRemotePath,

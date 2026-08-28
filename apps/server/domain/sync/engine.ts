@@ -587,6 +587,10 @@ export interface DeletedRemoteEntry {
   local_path: string;
   remote_path: string;
   hash: string;
+  // True when the tombstone came from a move/rename, not a delete: the
+  // files row is still alive (at a new path), so cleanup must remove the
+  // stale local copy but MUST NOT delete its file_state row.
+  record_alive: boolean;
 }
 
 export interface StatusResult {
@@ -967,10 +971,12 @@ export async function matchDeleteTombstones<
       continue;
     }
     const tombRes = await db.execute({
-      sql: `SELECT target_id, json_extract(detail, '$.remote_path') AS remote_path
+      sql: `SELECT target_id, action,
+                   COALESCE(json_extract(detail, '$.remote_path'),
+                            json_extract(detail, '$.old_remote_path')) AS remote_path
             FROM audit_log
             WHERE target_type = 'file'
-              AND action IN ('sync_delete', 'sync_delete_remote')
+              AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename')
               AND json_extract(detail, '$.node_id') = ?
             ORDER BY timestamp DESC LIMIT 200`,
       args: [nodeId],
@@ -978,6 +984,8 @@ export async function matchDeleteTombstones<
     for (const t of tombRes.rows) {
       const remotePath = t.remote_path as string | null;
       if (!remotePath) continue;
+      const action = t.action as string;
+      const recordAlive = action === "sync_move" || action === "sync_rename";
       let expectedLocal: string;
       try {
         expectedLocal = deriveLocalPath({ mirrorRoot, nodeRoot, remotePath }).normalize("NFC");
@@ -992,6 +1000,18 @@ export async function matchDeleteTombstones<
       if (!st || st.last_synced_hash === null) continue;
       const hash = await diskHashMatching(st.last_synced_hash, entry.local_path, entry.hash);
       if (hash === null || hash !== st.last_synced_hash) continue;
+      if (recordAlive) {
+        // The file's record moved on -- skip the tombstone if it moved
+        // right back to this exact path (the move was undone), otherwise
+        // a live file would get its file_state deleted out from under it.
+        const cur = await db.execute({
+          sql: "SELECT remote_path FROM files WHERE id = ?",
+          args: [t.target_id as string],
+        });
+        if (cur.rows.length > 0 && (cur.rows[0].remote_path as string | null) === remotePath) {
+          continue;
+        }
+      }
       matchedPaths.add(entry.local_path);
       deleted.push({
         file_id: t.target_id as string,
@@ -1000,6 +1020,7 @@ export async function matchDeleteTombstones<
         local_path: entry.local_path,
         remote_path: remotePath,
         hash,
+        record_alive: recordAlive,
       });
     }
   }
@@ -1043,7 +1064,9 @@ export async function cleanupDeletedRemote(
   for (const e of entries) {
     try {
       await rm(e.local_path, { force: true });
-      await deleteFileState(e.file_id).catch(() => undefined);
+      // A move/rename tombstone's record is still alive at its new path --
+      // its file_state must survive the cleanup of the stale old copy.
+      if (!e.record_alive) await deleteFileState(e.file_id).catch(() => undefined);
       cleaned.push(e);
     } catch (err) {
       errors.push({ file_id: e.file_id, filename: e.filename, error: String(err) });

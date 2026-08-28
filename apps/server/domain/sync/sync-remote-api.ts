@@ -37,6 +37,10 @@ export interface SyncInfoFile {
 export interface DeletedTombstone {
   file_id: string;
   remote_path: string;
+  // True when the tombstone came from a move/rename, not a delete: the
+  // files row is still alive at a new path, so a matching agent-side
+  // cleanup must not delete its file_state.
+  record_alive: boolean;
 }
 
 export interface NodeSyncInfo {
@@ -91,10 +95,12 @@ export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeS
   // the filter — the mechanism only works for deletions from here on, which
   // is fine: old leftovers still surface as new_local for a human decision.
   const tombRes = await db.execute({
-    sql: `SELECT target_id, json_extract(detail, '$.remote_path') AS remote_path
+    sql: `SELECT target_id, action,
+                 COALESCE(json_extract(detail, '$.remote_path'),
+                          json_extract(detail, '$.old_remote_path')) AS remote_path
           FROM audit_log
           WHERE target_type = 'file'
-            AND action IN ('sync_delete', 'sync_delete_remote')
+            AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename')
             AND json_extract(detail, '$.node_id') = ?
           ORDER BY timestamp DESC LIMIT 200`,
     args: [nodeId],
@@ -122,6 +128,7 @@ export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeS
       .map((r) => ({
         file_id: r.target_id as string,
         remote_path: r.remote_path as string,
+        record_alive: r.action === "sync_move" || r.action === "sync_rename",
       })),
   };
 }
