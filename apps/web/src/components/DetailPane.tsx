@@ -75,8 +75,10 @@ import {
   createFile,
   renameFile,
   deleteFile,
+  resolveFileSync,
   fetchMe,
 } from "../api";
+import type { ResolveAction } from "../api";
 // Sub-modules: file-tree + sync UI and event card live in sibling files;
 // DetailPane composes them with its own state.
 import { EventCard, AddEventForm } from "./DetailPane.events";
@@ -601,6 +603,19 @@ function DetailPaneBody({
     }
   };
 
+  // Human decision on a conflict or deleted_local file (see resolveFileSync).
+  // The 409 case carries a human-readable message from the server -- surface
+  // it as-is rather than wrapping it in a generic failure line.
+  const handleResolveFile = async (fileId: string, action: ResolveAction) => {
+    setFileOpError(null);
+    try {
+      await resolveFileSync(node.id, fileId, action);
+      await Promise.all([onMutate(), loadSyncStatus()]);
+    } catch (e) {
+      setFileOpError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const grouped = new Map<string, DetailEdge[]>();
   for (const edge of node.edges) {
     if (!grouped.has(edge.relation)) grouped.set(edge.relation, []);
@@ -1012,6 +1027,7 @@ function DetailPaneBody({
                     onOpenFile={(rel) => onOpenFile?.(node.id, rel)}
                     onRename={handleRenameFile}
                     onDelete={handleDeleteFile}
+                    onResolve={handleResolveFile}
                   />
                 ) : (
                   <div className="text-[14px] text-[var(--color-text-dim)]">
