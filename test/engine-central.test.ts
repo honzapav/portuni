@@ -211,7 +211,11 @@ class FakeCentral implements CentralClient {
   // calling remoteSweep sees the adopted file, and one that reads it BEFORE
   // (i.e. an incorrectly reordered syncRunCentral) does not.
   sweepBytes = new Map<string, Buffer>();
+  // Set to make the sweep call fail the way a real central server can:
+  // CentralHttpError for a 403/404, anything else for a genuine bug.
+  sweepError: Error | null = null;
   async remoteSweep(nodeId: string): Promise<RemoteSweepResult> {
+    if (this.sweepError) throw this.sweepError;
     if (nodeId !== NODE_ID) throw new CentralHttpError("not found", 404, "NOT_FOUND");
     this.sweepCalls++;
     for (const f of this.sweepResult.adopted) {
@@ -527,6 +531,44 @@ describe("push/pull via syncRunCentral", () => {
     assert.deepEqual(r.pulled, [{ file_id: "F9", filename: "report.md" }]);
     const localPath = join(mirrorRoot, "outputs", "report.md");
     assert.equal(await readFile(localPath, "utf8"), "swept in from remote");
+  });
+
+  // The sweep is an ADDITION to the teammate sync run, so a central server
+  // that refuses it (a write-scope teammate against a manage-gated route ->
+  // 403) or does not know the route yet (desktop updated before the VPS ->
+  // 404) must degrade to the pre-branch behaviour, not take the whole run
+  // down. Anything that is not a CentralHttpError (a bug in our own code)
+  // still propagates.
+  for (const [status, code] of [
+    [403, "FORBIDDEN"],
+    [404, "NOT_FOUND"],
+  ] as const) {
+    it(`a sweep rejected with ${status} degrades to an empty sweep and the run still pushes`, async () => {
+      const fake = new FakeCentral();
+      await setupMirror();
+      fake.sweepError = new CentralHttpError(`sweep ${status}`, status, code);
+      await writeFile(join(mirrorRoot, "wip", "a.md"), "local only");
+
+      const r = await syncRunCentral(fake, { userId: "U1", nodeId: NODE_ID });
+
+      assert.equal(r.adopted.length, 1, "the adopt/push half of the run must still happen");
+      assert.equal(
+        fake.bytes.get(posix.join(NODE_ROOT, "wip/a.md"))?.toString(),
+        "local only",
+      );
+      assert.equal(r.sweep_errors.length, 1);
+      assert.match(r.sweep_errors[0].error, new RegExp(String(status)));
+    });
+  }
+
+  it("a non-CentralHttpError from the sweep still fails the run", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    fake.sweepError = new TypeError("undefined is not a function");
+    await assert.rejects(
+      () => syncRunCentral(fake, { userId: "U1", nodeId: NODE_ID }),
+      /undefined is not a function/,
+    );
   });
 });
 

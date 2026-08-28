@@ -43,6 +43,7 @@ import {
 import { loadMirrorIgnore, type MirrorIgnore } from "../mirror-ignore.js";
 import { md5Buffer, sha256Buffer, statForCache } from "../hash.js";
 import type { NodeSyncInfo, SyncInfoFile } from "../sync-remote-api.js";
+import type { RemoteSweepResult } from "../remote-sweep.js";
 import type {
   SyncPendingNode,
   SyncPendingResponse,
@@ -910,7 +911,36 @@ export async function syncRunCentral(
   // fetches sync-info fresh (the client invalidates its cache after the
   // sweep call), so the scan below sees the sweep's tombstones and new
   // records rather than a stale snapshot.
-  const sweep = await client.remoteSweep(a.nodeId);
+  //
+  // The sweep is an ADDITION to a run that worked without it, so a central
+  // server that refuses or does not know the route must not take the whole
+  // run down: a 403 (write-scope teammate against an over-gated route) or a
+  // 404 (desktop updated before the VPS) degrades to an empty sweep and is
+  // reported through sweep_errors, leaving push/pull/adopt to run exactly as
+  // they did before this branch. Only CentralHttpError is absorbed — a
+  // TypeError or the like is our own bug and must still surface.
+  const EMPTY_SWEEP: RemoteSweepResult = {
+    adopted: [],
+    deleted_on_remote: [],
+    errors: [],
+    repaired: [],
+    pending_repairs: [],
+  };
+  let sweep: RemoteSweepResult;
+  try {
+    sweep = await client.remoteSweep(a.nodeId);
+  } catch (e) {
+    if (!(e instanceof CentralHttpError)) throw e;
+    sweep = {
+      ...EMPTY_SWEEP,
+      errors: [
+        {
+          remote_path: "",
+          error: `remote sweep unavailable (HTTP ${e.status}): ${e.message} -- sync ran without it`,
+        },
+      ],
+    };
+  }
   // One sync-info for the whole run: the scan reuses this context, pulls
   // reuse it too, and pushes/adopts run through a bounded worker pool
   // instead of a strictly sequential per-file chain.

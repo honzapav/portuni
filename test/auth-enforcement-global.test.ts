@@ -118,6 +118,15 @@ describe("minScopeForRoute", () => {
   it("maps PATCH /nodes/:id -> manage", () => {
     assert.equal(minScopeForRoute("PATCH", "/nodes/01ABC"), "manage");
   });
+
+  // The remote sweep is a STEP of the teammate (central-mode) sync run, not
+  // a configuration action: the agent calls it before its own scan, and
+  // every other call that run makes is read/write (sync-info, files/register,
+  // GET/PUT /nodes/:id/file). Gating it at "manage" 403s a write-scope
+  // teammate and takes the whole "Synchronizovat" run down with it.
+  it("maps POST /nodes/:id/sync/remote-sweep -> write (same tier as the rest of the agent sync run)", () => {
+    assert.equal(minScopeForRoute("POST", "/nodes/01ABC/sync/remote-sweep"), "write");
+  });
 });
 
 describe("scopeAtLeast drives allow/deny", () => {
