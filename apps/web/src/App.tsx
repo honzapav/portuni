@@ -485,6 +485,10 @@ export default function App() {
     | { kind: "open"; nodeId: string; relPath: string }
     | { kind: "quit" }
   >(null);
+  // Set only while `confirmExit()` has a promise pending on the "quit" editor
+  // guard or the sync-quit guard, so the dialogs' resolution can answer that
+  // promise instead of (or as well as) doing their legacy direct action.
+  const confirmExitResolverRef = useRef<((ok: boolean) => void) | null>(null);
 
   // One shared editor instance, owned here and handed to BOTH the pane and
   // the fullscreen shell. Hooks must run unconditionally, so we call it with
@@ -501,8 +505,6 @@ export default function App() {
     editorDirtyRef.current = editorDirty;
   }, [editorDirty]);
 
-  const appUpdate = useAppUpdate();
-
   const { pending: syncPending, refresh: refreshSyncPending } = useSyncPending();
   const [syncOverviewOpen, setSyncOverviewOpen] = useState(false);
 
@@ -511,6 +513,36 @@ export default function App() {
     syncPendingRef.current = syncPending.total;
   }, [syncPending.total]);
   const [syncQuitGuard, setSyncQuitGuard] = useState<{ count: number } | null>(null);
+
+  // Shared by the Cmd+Q-equivalent exit path (app-exit-requested) and the
+  // updater's "Restartovat": same guards (dirty editor, unsynced files), only
+  // the action taken on approval differs (approve_exit vs. restart_app).
+  // Resolves once the user answers whichever dialog it raised (or
+  // immediately if neither guard applies).
+  const confirmExit = useCallback((): Promise<boolean> => {
+    return new Promise<boolean>((resolve) => {
+      void (async () => {
+        if (editorDirtyRef.current) {
+          confirmExitResolverRef.current = resolve;
+          setEditorGuard({ kind: "quit" });
+          return;
+        }
+        const fresh = await Promise.race([
+          fetchSyncPending().catch(() => null),
+          new Promise<null>((r) => setTimeout(() => r(null), 2000)),
+        ]);
+        const count = fresh ? fresh.total : syncPendingRef.current;
+        if (count > 0) {
+          confirmExitResolverRef.current = resolve;
+          setSyncQuitGuard({ count });
+        } else {
+          resolve(true);
+        }
+      })();
+    });
+  }, []);
+
+  const appUpdate = useAppUpdate(confirmExit);
 
   const reallyOpenFile = useCallback((nodeId: string, relPath: string) => {
     // Always open in the right-side pane first (replacing the detail pane in
@@ -551,8 +583,9 @@ export default function App() {
   }, [reallyCloseEditor]);
 
   // Resolve the guarded action: either after saving or after an explicit
-  // discard. Quit destroys the Tauri window (the close request that opened
-  // the guard was prevented).
+  // discard. Quit either answers a pending confirmExit() promise (the
+  // app-exit-requested / restart paths decide the actual action) or, for a
+  // plain window close request, destroys the Tauri window directly.
   const resolveEditorGuard = useCallback(
     async (how: "save" | "discard") => {
       const guard = editorGuard;
@@ -567,7 +600,11 @@ export default function App() {
         reallyCloseEditor();
       } else {
         setEditorGuard(null);
-        if (isTauri()) {
+        const resolveExit = confirmExitResolverRef.current;
+        if (resolveExit) {
+          confirmExitResolverRef.current = null;
+          resolveExit(true);
+        } else if (isTauri()) {
           const { getCurrentWindow } = await import("@tauri-apps/api/window");
           await getCurrentWindow().destroy().catch(() => undefined);
         }
@@ -606,18 +643,8 @@ export default function App() {
           const { invoke } = await import("@tauri-apps/api/core");
           unlistenExit = await listen("app-exit-requested", () => {
             void (async () => {
-              if (editorDirtyRef.current) {
-                setEditorGuard({ kind: "quit" });
-                return;
-              }
-              const fresh = await Promise.race([
-                fetchSyncPending().catch(() => null),
-                new Promise<null>((r) => setTimeout(() => r(null), 2000)),
-              ]);
-              const count = fresh ? fresh.total : syncPendingRef.current;
-              if (count > 0) {
-                setSyncQuitGuard({ count });
-              } else {
+              const proceed = await confirmExit();
+              if (proceed) {
                 await invoke("approve_exit").catch(() => undefined);
               }
             })();
@@ -636,7 +663,7 @@ export default function App() {
         /* window already gone */
       }
     };
-  }, []);
+  }, [confirmExit]);
 
   // Refetch on focus AND tab-visible. Covers BOTH the graph selection and
   // the workspace selection so files registered elsewhere (MCP / another
@@ -1151,7 +1178,14 @@ export default function App() {
             <div className="flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setEditorGuard(null)}
+                onClick={() => {
+                  setEditorGuard(null);
+                  const resolveExit = confirmExitResolverRef.current;
+                  if (resolveExit) {
+                    confirmExitResolverRef.current = null;
+                    resolveExit(false);
+                  }
+                }}
                 className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
               >
                 Zpět do editoru
@@ -1201,7 +1235,14 @@ export default function App() {
             <div className="flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setSyncQuitGuard(null)}
+                onClick={() => {
+                  setSyncQuitGuard(null);
+                  const resolveExit = confirmExitResolverRef.current;
+                  if (resolveExit) {
+                    confirmExitResolverRef.current = null;
+                    resolveExit(false);
+                  }
+                }}
                 className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
               >
                 Zrušit
@@ -1211,6 +1252,11 @@ export default function App() {
                 onClick={() => {
                   setSyncQuitGuard(null);
                   setSyncOverviewOpen(true);
+                  const resolveExit = confirmExitResolverRef.current;
+                  if (resolveExit) {
+                    confirmExitResolverRef.current = null;
+                    resolveExit(false);
+                  }
                 }}
                 className="rounded-md border border-[var(--color-accent-dim)] px-3 py-1.5 text-[12.5px] text-[var(--color-accent)] hover:bg-[var(--color-surface)]"
               >
@@ -1220,6 +1266,12 @@ export default function App() {
                 type="button"
                 onClick={async () => {
                   setSyncQuitGuard(null);
+                  const resolveExit = confirmExitResolverRef.current;
+                  if (resolveExit) {
+                    confirmExitResolverRef.current = null;
+                    resolveExit(true);
+                    return;
+                  }
                   const { getCurrentWindow } = await import("@tauri-apps/api/window");
                   await getCurrentWindow().destroy().catch(() => undefined);
                 }}

@@ -67,7 +67,7 @@ function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-export function useAppUpdate(): AppUpdate {
+export function useAppUpdate(confirmExit: () => Promise<boolean>): AppUpdate {
   const [state, setState] = useState<AppUpdateState>({ kind: "idle" });
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -171,11 +171,13 @@ export function useAppUpdate(): AppUpdate {
       .catch((e) => setState({ kind: "error", message: errorMessage(e) }));
   }, []);
 
-  // The Cmd+Q-style dirty-editor / unsynced-files guard is wired in a
-  // follow-up issue; for now this restarts unconditionally.
+  // Same guards as Cmd+Q (dirty editor, unsynced files); on cancel the
+  // update stays installed and the state remains "ready" for a later retry.
   const restart = useCallback(async () => {
+    const proceed = await confirmExit();
+    if (!proceed) return;
     await restartApp();
-  }, []);
+  }, [confirmExit]);
 
   return { state, currentVersion, updateInfo, hasChecked, checkNow, install, restart };
 }
