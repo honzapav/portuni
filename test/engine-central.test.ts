@@ -195,7 +195,13 @@ class FakeCentral implements CentralClient {
   }
 
   sweepCalls = 0;
-  sweepResult: RemoteSweepResult = { adopted: [], deleted_on_remote: [], errors: [] };
+  sweepResult: RemoteSweepResult = {
+    adopted: [],
+    deleted_on_remote: [],
+    errors: [],
+    repaired: [],
+    pending_repairs: [],
+  };
   // Content to install for each `sweepResult.adopted` entry -- keyed by
   // remote_path. The real remoteSweep confirms the object on the remote
   // *before* adopting it, i.e. the record + bytes exist on the remote by
@@ -502,6 +508,8 @@ describe("push/pull via syncRunCentral", () => {
       adopted: [{ file_id: "F9", filename: "report.md", remote_path: remotePath }],
       deleted_on_remote: [],
       errors: [],
+      repaired: [],
+      pending_repairs: [],
     };
     fake.sweepBytes.set(remotePath, content);
     const r = await syncRunCentral(fake, { userId: "U1", nodeId: NODE_ID });

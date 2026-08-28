@@ -569,6 +569,8 @@ export async function handleSyncRun(
       deleted_remote: [],
       deleted_on_remote: [],
       sweep_errors: [],
+      repaired: [],
+      pending_repairs: [],
       errors: [],
       skipped: [],
     };
@@ -579,6 +581,10 @@ export async function handleSyncRun(
       result.deleted_on_remote.push({ file_id: f.file_id, filename: f.filename });
     }
     result.sweep_errors.push(...sweep.errors);
+    for (const r of sweep.repaired) {
+      result.repaired.push({ file_id: r.file_id, filename: r.filename });
+    }
+    result.pending_repairs.push(...sweep.pending_repairs);
     for (const e of scan.push_candidates) {
       if (!e.local_path) {
         result.errors.push({

@@ -848,6 +848,15 @@ export function SyncBar({
               {result.sweep_errors.map((e) => e.remote_path).join(", ")}
             </div>
           )}
+          {(result.repaired?.length ?? 0) > 0 && (
+            <div>Opraveno: {result.repaired.map((f) => f.filename).join(", ")}</div>
+          )}
+          {(result.pending_repairs?.length ?? 0) > 0 && (
+            <div style={{ color: "var(--color-danger)" }}>
+              Nedokončené operace: {result.pending_repairs.length} (poslední chyba:{" "}
+              {result.pending_repairs[0].last_error})
+            </div>
+          )}
           {result.errors.length > 0 && (
             <div style={{ color: "var(--color-danger)" }}>
               Chyby: {result.errors.length} (

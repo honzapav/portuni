@@ -193,6 +193,12 @@ export type SyncRunResponse = {
   // Records removed because their remote object is gone (remote sweep).
   deleted_on_remote: SyncRunFile[];
   sweep_errors: Array<{ remote_path: string; error: string }>;
+  // Pending file-op intents (Task 6: moveFile/renameFile/renameFolder/
+  // deleteFile/deleteFileRemote) that the sweep's retry finished this run.
+  repaired: SyncRunFile[];
+  // Pending file-op intents that failed again this run and are still
+  // waiting for a future sync run to retry.
+  pending_repairs: Array<{ file_id: string; op: string; attempts: number; last_error: string | null }>;
   errors: SyncRunErrorFile[];
   skipped: SyncRunSkippedFile[];
 };

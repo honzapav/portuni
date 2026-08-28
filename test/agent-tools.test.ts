@@ -158,7 +158,7 @@ class FakeCentral implements CentralClient {
   }
 
   async remoteSweep() {
-    return { adopted: [], deleted_on_remote: [], errors: [] };
+    return { adopted: [], deleted_on_remote: [], errors: [], repaired: [], pending_repairs: [] };
   }
 
   seedRemote(relPath: string, content: string): string {

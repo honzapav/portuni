@@ -15,6 +15,7 @@ import { buildNodeRoot } from "./remote-path.js";
 import { adoptFiles } from "./engine-mutations.js";
 import { sha256Buffer } from "./hash.js";
 import type { FileRef } from "./types.js";
+import { retryPendingFileOps, type RetryResult } from "./pending-ops.js";
 
 export interface RemoteSweepArgs { userId: string; nodeId: string }
 export interface RemoteSweepFile { file_id: string; filename: string; remote_path: string }
@@ -22,6 +23,8 @@ export interface RemoteSweepResult {
   adopted: RemoteSweepFile[];
   deleted_on_remote: RemoteSweepFile[];
   errors: Array<{ remote_path: string; error: string }>;
+  repaired: RetryResult["repaired"];
+  pending_repairs: RetryResult["pending_repairs"];
 }
 
 const SECTIONS = new Set(["wip", "outputs", "resources"]);
@@ -40,7 +43,19 @@ function adoptableSection(nodeRoot: string, remotePath: string): "wip" | "output
 }
 
 export async function remoteSweep(db: Client, a: RemoteSweepArgs): Promise<RemoteSweepResult> {
-  const out: RemoteSweepResult = { adopted: [], deleted_on_remote: [], errors: [] };
+  const out: RemoteSweepResult = {
+    adopted: [],
+    deleted_on_remote: [],
+    errors: [],
+    repaired: [],
+    pending_repairs: [],
+  };
+  // Retry any leftover pending file ops (Task 6) before reconciling the
+  // remote listing -- a still-half-moved/deleted file should be fixed up
+  // first, otherwise the sweep below could misclassify it.
+  const retry = await retryPendingFileOps(db, a);
+  out.repaired.push(...retry.repaired);
+  out.pending_repairs.push(...retry.pending_repairs);
   const info = await resolveNodeInfo(db, a.nodeId);
   const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
   if (!remoteName) return out;

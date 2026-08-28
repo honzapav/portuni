@@ -741,7 +741,13 @@ describe("IDOR fixes: FK guards on sync / mirror / move / create", () => {
       deleted_on_remote: unknown[];
       errors: unknown[];
     };
-    assert.deepEqual(body, { adopted: [], deleted_on_remote: [], errors: [] });
+    assert.deepEqual(body, {
+      adopted: [],
+      deleted_on_remote: [],
+      errors: [],
+      repaired: [],
+      pending_repairs: [],
+    });
   });
 
   test("outsider POST /nodes/:id/mirror on a restricted node -> 404", async () => {

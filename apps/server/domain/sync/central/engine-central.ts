@@ -917,6 +917,8 @@ export async function syncRunCentral(
     deleted_remote: [],
     deleted_on_remote: sweep.deleted_on_remote.map((f) => ({ file_id: f.file_id, filename: f.filename })),
     sweep_errors: [...sweep.errors],
+    repaired: sweep.repaired.map((f) => ({ file_id: f.file_id, filename: f.filename })),
+    pending_repairs: [...sweep.pending_repairs],
     errors: [],
     skipped: [],
   };
