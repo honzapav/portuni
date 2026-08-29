@@ -1,9 +1,11 @@
 name: Release
 
-# Tag-triggered: pushing a `v*` tag (e.g. `v0.1.1`) kicks off a matrix
-# build on Apple Silicon and Intel macOS runners, then attaches both
-# DMGs to a draft GitHub Release on that tag. Edit the release body
-# and click "Publish" once both jobs go green.
+# Tag-triggered: pushing a `v*` tag (e.g. `v0.1.1`) kicks off a build on
+# an Apple Silicon macOS runner and attaches the DMG and updater artefacts
+# to the GitHub Release release-please created for that tag. That release
+# is a pre-release: `releases/latest` (the updater endpoint) skips
+# pre-releases, so nothing reaches installed apps until a maintainer
+# unchecks "Set as a pre-release" on the release page.
 #
 # Builds are Developer ID signed and notarized. The certificate is
 # imported into a build keychain as an explicit step BEFORE tauri-action:
@@ -32,7 +34,7 @@ name: Release
 # (createUpdaterArtifacts: true): `--bundles dmg` alone builds no updater
 # tarball ("no updater-enabled targets were built", verified locally,
 # tauri-cli 2.11.4). `includeUpdaterJson: true` makes tauri-action generate
-# and attach latest.json to the draft release.
+# and attach latest.json to the release.
 
 on:
   push:
@@ -117,8 +119,11 @@ jobs:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
           releaseName: "Portuni ${{ github.ref_name }}"
+          # Only used when no release exists for the tag (release-please
+          # normally creates it first); keep the fallback hidden from the
+          # updater too.
           releaseDraft: true
-          prerelease: false
+          prerelease: true
           includeUpdaterJson: true
           args: --target ${{ matrix.target }} --bundles app,dmg --config tauri.release.conf.json
 
@@ -141,7 +146,7 @@ jobs:
       # createUpdaterArtifacts, which produces Portuni.app.tar.gz + .sig next
       # to the .app in bundle/macos (the DMG build no longer deletes the
       # intermediate .app once `app` is also in --bundles). includeUpdaterJson
-      # makes tauri-action generate and attach latest.json to the draft
+      # makes tauri-action generate and attach latest.json to the
       # release; fetch that release asset back down to check its content,
       # since tauri-action does not expose it as a job output.
       - name: Verify updater artefacts

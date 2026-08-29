@@ -5,6 +5,7 @@
     ".": {
       "release-type": "node",
       "changelog-path": "CHANGELOG.md",
+      "prerelease": true,
       "include-component-in-tag": false,
       "extra-files": [
         {
