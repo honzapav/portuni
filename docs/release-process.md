@@ -9,12 +9,13 @@ the discovery that produced it.
 - **DMG build pipeline.** Shipped as `.github/workflows/release.yml`.
   Tag-triggered (`v*`), `macos-14` (Apple Silicon only — Intel dropped
   2026-07-04, no Intel users), uses `tauri-apps/tauri-action@v0` to
-  build and attach the DMG to a draft GitHub Release on the tag.
+  build and attach the DMG to the GitHub Release release-please created
+  for the tag (a pre-release until a maintainer promotes it).
   Builds are Developer ID signed and notarized (see below).
 - **Auto-updater artefacts.** Shipped (2026-08-28). `release.yml` builds with
   `--bundles app,dmg --config apps/desktop/tauri.release.conf.json`
   (`createUpdaterArtifacts: true`) and `includeUpdaterJson: true`, so the
-  draft release also gets `Portuni.app.tar.gz`, its minisign `.sig`, and
+  release also gets `Portuni.app.tar.gz`, its minisign `.sig`, and
   `latest.json`. Signed with the `TAURI_SIGNING_PRIVATE_KEY` secret (see the
   signing checklist below); the verify step fails the job if any of the
   three is missing or `latest.json`'s version doesn't match the tag.
@@ -128,12 +129,19 @@ feat/foo branch → PR "feat(scope): summary"
        └─ bumps version in all 4 manifests
        └─ regenerates CHANGELOG.md from feat:/fix: since v0.1.0
   → review + squash merge release PR
-  → release-please-bot tags v0.1.1 + creates GitHub Release
+  → release-please-bot tags v0.1.1 + creates GitHub Release as a pre-release
   → release.yml fires on the tag → builds the aarch64 DMG + updater artefacts
   → tauri-action attaches the DMG, Portuni.app.tar.gz, .sig and
-    latest.json to the Release (still draft)
-  → maintainer edits release notes, clicks Publish
-  → users go to /releases and download the DMG matching their CPU
+    latest.json to the Release (still a pre-release: the updater endpoint
+    releases/latest/download/latest.json skips pre-releases, so installed
+    apps see nothing yet)
+  → maintainer installs the DMG, checks it, edits the release notes
+  → rollout: release page → Edit → uncheck "Set as a pre-release" → Update
+    release (or `gh release edit vX.Y.Z --prerelease=false`); the release
+    becomes "latest" and installed apps offer the update on their next check
+  → rollback: mark it a pre-release again (or delete it) — latest.json then
+    points to the previous release
+  → new users download the DMG from /releases
 ```
 
 **Before merging the release PR — review the published docs site.**

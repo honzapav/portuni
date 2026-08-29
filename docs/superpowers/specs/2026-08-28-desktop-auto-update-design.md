@@ -33,8 +33,12 @@ steps are done by hand (Verification → Human), not filed as issues.
   `apps/desktop/tauri.conf.json`. Losing the private key means installed apps
   can never update again (users must download a DMG).
 - Endpoint: `https://github.com/honzapav/portuni/releases/latest/download/latest.json`.
-  Draft releases are not served, so publishing the draft is the rollout gate.
-  Rollback = unpublish or delete the release.
+  `releases/latest` skips drafts and pre-releases. release-please creates
+  every release as a pre-release (`prerelease: true` in
+  `release-please-config.json`; a draft would not create the tag, so
+  `release.yml` would never run before publishing). Rollout = uncheck
+  "Set as a pre-release" on the release; rollback = mark it a pre-release
+  again or delete it.
 - Updater artefacts (`Portuni.app.tar.gz`, `.sig`, `latest.json`) are built
   only in CI: `apps/desktop/tauri.release.conf.json` sets
   `bundle.createUpdaterArtifacts: true` and `release.yml` passes it via
@@ -47,7 +51,7 @@ steps are done by hand (Verification → Human), not filed as issues.
 - `release.yml`: the two new secrets in tauri-action env; `includeUpdaterJson:
   true`; the verify step asserts `Portuni.app.tar.gz` + `.sig` + `latest.json`
   exist and that `latest.json` `version` equals the tag without `v`.
-- `notes` in `latest.json` are not shown in the UI (generated from the draft
+- `notes` in `latest.json` are not shown in the UI (generated from the release
   body before it is edited).
 - release-please is unchanged.
 
@@ -140,6 +144,6 @@ Feature: Desktop auto-update
   Scenario: Release artefacts
     Given a v* tag is pushed
     When release.yml finishes
-    Then the draft release has the DMG, Portuni.app.tar.gz, its .sig and latest.json
+    Then the pre-release has the DMG, Portuni.app.tar.gz, its .sig and latest.json
     And latest.json version equals the tag
 ```

@@ -53,11 +53,14 @@ The release flow is automated:
 1. Land conventional commits on `main` (directly or via merged PRs).
 2. **release-please** opens/maintains a `chore: release X.Y.Z` PR that bumps
    the four manifests and updates `CHANGELOG.md`. Review it like any PR.
-3. **Merge the release PR.** release-please tags `vX.Y.Z` and creates a draft
-   GitHub Release.
+3. **Merge the release PR.** release-please tags `vX.Y.Z` and creates the
+   GitHub Release as a **pre-release**.
 4. The tag triggers `release.yml`, which builds the signed, notarized macOS
-   DMG and attaches it to that release.
-5. A maintainer edits the release notes and clicks **Publish**.
+   DMG plus the updater artefacts and attaches them to that release.
+5. A maintainer installs and checks the DMG, edits the release notes, then
+   **unchecks "Set as a pre-release"**. That is the rollout: the updater
+   endpoint (`releases/latest`) ignores pre-releases, so installed apps offer
+   the update only from this point.
 
 The tag is pushed by a fine-grained PAT (`RELEASE_PLEASE_TOKEN`), not the
 default `GITHUB_TOKEN` — otherwise it would not trigger the DMG build. See
