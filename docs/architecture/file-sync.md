@@ -360,7 +360,9 @@ a plain pull and refuses (409) to clobber unpushed local changes.
    destination present, or neither) or the `files` record no longer matches
    the op's payload.
 2. **Remote sweep.** `remoteSweep` (`remote-sweep.ts`) reconciles the node's
-   `files` rows against the live remote listing: a pushed record whose
+   `files` rows against the live listing of its three section folders
+   (`wip/`, `outputs/`, `resources/` -- never the node root, which for an
+   organization would span every child node beneath it): a pushed record whose
    object is confirmed gone is deleted and tombstoned (`sync_delete_remote`);
    a remote file newly present anywhere under `wip/`, `outputs/`, or
    `resources/` — at any depth — is adopted (`adoptableSection` skips it

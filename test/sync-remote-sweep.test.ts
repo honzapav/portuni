@@ -166,6 +166,35 @@ describe("remoteSweep", () => {
     assert.equal(row.rows.length, 1);
   });
 
+  it("lists only the three sections of the node, never its whole root", async () => {
+    // An organization's root spans every child project/process/area under it.
+    // Listing it recursively is a crawl of the whole org tree for content the
+    // sweep never adopts (only <root>/wip|outputs|resources qualify), so the
+    // sweep must ask for the three section prefixes and nothing else.
+    const { db, orgId, remoteRoot, orgSyncKey } = await makeSharedDb();
+    const listed: string[] = [];
+    const real = (await import("../apps/server/domain/sync/adapter-cache.js")).getAdapter;
+    const inner = await real(db, "test-fs");
+    setAdapterForTests("test-fs", {
+      ...inner,
+      async list(prefix) {
+        listed.push(prefix);
+        return inner.list(prefix);
+      },
+    });
+    await mkdir(join(remoteRoot, orgSyncKey, "wip"), { recursive: true });
+    await writeFile(join(remoteRoot, orgSyncKey, "wip", "org-note.md"), "org level");
+    await mkdir(join(remoteRoot, orgSyncKey, "projects", "child", "wip"), { recursive: true });
+    await writeFile(join(remoteRoot, orgSyncKey, "projects", "child", "wip", "child.md"), "belongs to the child");
+    const out = await remoteSweep(db, { userId: "U1", nodeId: orgId });
+    assert.deepEqual(
+      listed.sort(),
+      [`${orgSyncKey}/outputs`, `${orgSyncKey}/resources`, `${orgSyncKey}/wip`],
+      "the sweep must list exactly the three section prefixes",
+    );
+    assert.deepEqual(out.adopted.map((f) => f.remote_path), [`${orgSyncKey}/wip/org-note.md`]);
+  });
+
   it("retries a leftover pending file op first and reports it as repaired", async () => {
     const { db, nodeId, remoteRoot, orgSyncKey, nodeSyncKey } = await makeSharedDb();
     const mirrorRoot = join(workspace, "mirror");

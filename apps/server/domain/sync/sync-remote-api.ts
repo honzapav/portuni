@@ -157,11 +157,13 @@ export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeS
   };
 }
 
-// Only the newest tombstone per remote_path can ever match on the device
-// (the matcher takes the first match for a path and moves on), so collapsing
-// the rest keeps the payload proportional to the number of distinct paths
-// touched in the window rather than to the number of mutations. Rows arrive
-// newest-first, so the first row seen for a path is the one to keep.
+// One tombstone per (remote_path, file): the device matcher verifies a
+// candidate against the tombstoned FILE's own file_state hash, so two files
+// that occupied the same path at different times (A deleted at P, then B
+// pushed to P and moved away) each need their own newest tombstone -- a
+// device still holding A's copy can only match A's. Collapsing per path
+// alone would drop A's and let that copy get adopted and pushed back. Rows
+// arrive newest-first, so the first row seen per key is the one to keep.
 function dedupeByRemotePath(
   rows: Array<Record<string, unknown>>,
 ): DeletedTombstone[] {
@@ -170,8 +172,9 @@ function dedupeByRemotePath(
   for (const r of rows) {
     const remotePath = r.remote_path as string | null;
     if (remotePath == null) continue;
-    if (seen.has(remotePath)) continue;
-    seen.add(remotePath);
+    const key = `${remotePath}\u0000${r.target_id as string}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push({
       file_id: r.target_id as string,
       remote_path: remotePath,
