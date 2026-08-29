@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.8.0](https://github.com/honzapav/portuni/compare/v0.7.0...v0.8.0) (2026-08-29)
+
+
+### Features
+
+* **api:** resolve endpoint for conflicts and locally deleted files ([fa1f56f](https://github.com/honzapav/portuni/commit/fa1f56fd68391680706c8cbaeaeaffa9492e016d))
+* **auth:** let any authenticated user create nodes ([f952df8](https://github.com/honzapav/portuni/commit/f952df83b1c236dd45f09c98f3a504f06f194a6b))
+* **desktop:** auto-update ([#144](https://github.com/honzapav/portuni/issues/144)) ([c67203d](https://github.com/honzapav/portuni/commit/c67203d86ff117a9e6cb5a1b82e5cf1069dcf28d))
+* **sync:** central remote-sweep endpoint, agent sync run calls it first ([597a36f](https://github.com/honzapav/portuni/commit/597a36fc6afaa670fc965b83302825b4da08a59c))
+* **sync:** file mutations are pending ops, retried by the sync run until complete ([e51f342](https://github.com/honzapav/portuni/commit/e51f342bb9f163b13184936166b98d869c9232ac))
+* **sync:** moves and renames leave tombstones so stale copies are cleaned up, not pushed back ([f54cdaf](https://github.com/honzapav/portuni/commit/f54cdaf7730e09390ba1225be4410b11ca9c94d1))
+* **sync:** remote sweep reconciles deletions and new files on the remote ([a24e574](https://github.com/honzapav/portuni/commit/a24e57470c5c1edd3ee476e4cc35e8fbdd055f3d))
+* **sync:** replace the orphan class with pull / remote_missing / remote_error ([ad2831e](https://github.com/honzapav/portuni/commit/ad2831e8ba3dd619f0e266a574c2508464cb9129))
+* **sync:** sync run sweeps the remote before scanning ([2fca122](https://github.com/honzapav/portuni/commit/2fca1226fb191aff1479b50a4b82a8a49610a050))
+* **web:** disable create-node buttons below the required scope ([368c357](https://github.com/honzapav/portuni/commit/368c3573bd90b11ca30e72a1451594271d72e158))
+* **web:** resolve buttons for conflicts and locally deleted files ([65f4212](https://github.com/honzapav/portuni/commit/65f4212dba62c7833c12d64ca854a95be7631855))
+
+
+### Bug Fixes
+
+* **api:** 409 for an impossible keep_local; correct sweep adoption depth in docs ([90f1d53](https://github.com/honzapav/portuni/commit/90f1d53894af98739c629cf4546d1ee2361aa6d3))
+* **api:** close resolve endpoint IDOR, map dirty-pull to 409, fix hash refresh at the source ([e0d4047](https://github.com/honzapav/portuni/commit/e0d4047ff9740f17b52faae8cbd1568cc3bfca9a))
+* **mcp:** report the device's local step for proxied moves ([b8cd75e](https://github.com/honzapav/portuni/commit/b8cd75e5e471ad5a6b0aee9c261c36d53bdecc07))
+* **sandcastle:** check the global tmux environment, not the session one ([#143](https://github.com/honzapav/portuni/issues/143)) ([12dbee9](https://github.com/honzapav/portuni/commit/12dbee9e069d6b36b709ead55f38870a3183e5a2))
+* **sandcastle:** homebrew on PATH for ssh sessions (tmux, docker) ([#139](https://github.com/honzapav/portuni/issues/139)) ([8ffd7b3](https://github.com/honzapav/portuni/commit/8ffd7b395c7abfd5d1110c60dcf0eebe02a9e7b4))
+* **sandcastle:** start the loop on its own tmux socket ([#142](https://github.com/honzapav/portuni/issues/142)) ([a069a63](https://github.com/honzapav/portuni/commit/a069a63fb33df2f3bc7f2e6850be18f179847a04))
+* **sandcastle:** tell the agent to run commands in the foreground ([#145](https://github.com/honzapav/portuni/issues/145)) ([75e513f](https://github.com/honzapav/portuni/commit/75e513fea5bf087c63a465b0e4f3f69c51df38bb))
+* **sync:** a pending delete verifies the target object before removing it ([453c0a1](https://github.com/honzapav/portuni/commit/453c0a139bca0bf76484dd3b5d11e8109daf2f8e))
+* **sync:** a rejected central sweep no longer kills the teammate sync run ([eefcc88](https://github.com/honzapav/portuni/commit/eefcc8876ba3142f5a3b74e3a9d74cdf0dddd22e))
+* **sync:** bound tombstone lookups by candidate set / time, not row count ([6d6e6a4](https://github.com/honzapav/portuni/commit/6d6e6a4bb97d1d584a42f1c8c70674144d7cd775))
+* **sync:** dedupe moveFile tombstone detail, correct stale doc comments ([b5eda45](https://github.com/honzapav/portuni/commit/b5eda458a36eba96e450b6243cc6f5027d8c67ab))
+* **sync:** Drive stat honours trash and revalidates the path cache ([0b184ad](https://github.com/honzapav/portuni/commit/0b184ada51b00da423aa8ce39f728844d17cf8bb))
+* **sync:** guard pending-op retry against stale/ambiguous record state ([08dcc42](https://github.com/honzapav/portuni/commit/08dcc42af56297e6cf7007a80e3188080dd4b6fc))
+* **sync:** one Drive folder per path, move from the file's real parents ([ae8926f](https://github.com/honzapav/portuni/commit/ae8926f7494b4a73105419f751cab75fe7168c6c))
+* **sync:** OpenDAL stat distinguishes NotFound from a failure ([6c05698](https://github.com/honzapav/portuni/commit/6c056985beaab42f0bc498bee7c6486aadb4ab9a))
+* **sync:** skip hash backfill for native-format adopted remote files ([24f7547](https://github.com/honzapav/portuni/commit/24f7547d1c23e5ffba5350967ec9e37273574181))
+* **sync:** sweep lists only the three sections; central tombstones dedupe per (path, file) ([fe0fad0](https://github.com/honzapav/portuni/commit/fe0fad02dfd3cb54211c45215f22a421f674c9cd))
+
+
+### Performance Improvements
+
+* **auth:** resolve node ACL chains in one batched query ([ab12da4](https://github.com/honzapav/portuni/commit/ab12da463c687448e096c90cc9eff1b394eccb2b))
+
 ## [0.7.0](https://github.com/honzapav/portuni/compare/v0.6.0...v0.7.0) (2026-07-20)
 
 
