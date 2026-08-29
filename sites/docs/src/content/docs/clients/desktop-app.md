@@ -51,9 +51,15 @@ A fresh install creates your first workspace and walks you through its setup. Wh
 
 After that, you land in the Workspace view. Create your first organization node, then add projects / processes / areas / principles under it. (Upgrading from an older single-workspace install? The app migrates your existing configuration into the first workspace automatically.)
 
-## Updating
+## Aktualizace (auto-update)
 
-Releases are tag-driven (`v*`). When a new release lands, download the new DMG and drag-replace `Portuni.app` in `/Applications/`. There is no in-app auto-update yet. Your settings, database (local SQLite or Turso), and mirror folders are unaffected.
+Starting with 0.8.0, the app checks for updates itself — no more manual DMG downloads for every release.
+
+- **Check cadence.** The app checks the latest GitHub release 10 s after the backend is ready, then every 6 h while running, plus on demand from Settings. Checks only run in a release build — `cargo tauri dev` and the web app opened in a browser never check, and Settings explains updates are desktop-only there.
+- **Footer button.** When a newer version is published, the status footer shows `↑ X.Y.Z` on the right. Clicking it opens Settings → Obecné.
+- **Settings → Obecné → „Aktualizace".** Shows the current version and, once a check has run, whether it's up to date or a newer version is available. „Zkontrolovat nyní" checks on demand. „Stáhnout a nainstalovat" downloads and installs the update, with a progress bar; „Co je nového" links to the GitHub release page. A download or signature-verification failure leaves the running app untouched and shows the error inline — retry by clicking the button again.
+- **Restart behaviour.** Installing an update replaces `Portuni.app` on disk, but the running process keeps executing the old version until you click „Restartovat" (footer or Settings). „Restartovat" runs the same guards as ⌘Q — it warns about a dirty editor or unsynced files before proceeding — then stops all sidecars and relaunches the app, which now runs the new version. If you quit without restarting, the next launch runs the new version regardless.
+- **Versions before 0.8.0** have no updater: download the DMG from [GitHub releases](https://github.com/honzapav/portuni/releases) and drag-replace `Portuni.app` in `/Applications/` one last time to get onto 0.8.0 or later. From then on, updates happen in-app. Your settings, database (local SQLite or Turso), and mirror folders are unaffected either way.
 
 ## Connecting external MCP clients to the app's sidecar
 

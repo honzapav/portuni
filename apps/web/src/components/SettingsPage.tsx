@@ -12,13 +12,16 @@ import SettingsUsersPanel from "./SettingsPage.users";
 import AccountSection from "./AccountSection";
 import WorkspacesSection from "./WorkspacesSection";
 import SyncSection from "./SyncSection";
+import UpdateSection from "./UpdateSection";
 import { fetchMe } from "../api";
+import type { AppUpdate } from "../lib/updater";
 
 type Props = {
   agentCommand: string;
   onAgentCommandChange: (value: string) => void;
   terminalLaunch: string;
   onTerminalLaunchChange: (value: string) => void;
+  appUpdate: AppUpdate;
 };
 
 type SubTab = "general" | "actors" | "account" | "workspaces" | "sync" | "users";
@@ -28,6 +31,7 @@ export default function SettingsPage({
   onAgentCommandChange,
   terminalLaunch,
   onTerminalLaunchChange,
+  appUpdate,
 }: Props) {
   const [tab, setTab] = useState<SubTab>(() => {
     const p = new URLSearchParams(window.location.search);
@@ -228,6 +232,8 @@ export default function SettingsPage({
 
         {tab === "general" && (
           <>
+            <UpdateSection appUpdate={appUpdate} />
+
             <McpServerSection />
 
             <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">

@@ -59,6 +59,13 @@ cp -R apps/desktop/target/release/bundle/macos/Portuni.app /Applications/
 #   "Portuni Apple signing"). See docs/release-process.md.
 ```
 
+Updater artefacts (`Portuni.app.tar.gz`, `.sig`, `latest.json`) are CI-only:
+`release.yml` builds with `--bundles app,dmg --config
+apps/desktop/tauri.release.conf.json` (`createUpdaterArtifacts: true`) and
+signs with the `TAURI_SIGNING_PRIVATE_KEY` secret. `scripts/build-signed.sh`
+is unchanged and never produces updater artefacts — a local/manual build
+needs no updater key and installs by drag-replacing `Portuni.app` as before.
+
 First Rust build ~10–15 min, incremental 30–60 s. Tauri runs the
 `beforeBuildCommand` from `apps/` (the parent of `apps/desktop`), so the
 web build + `scripts/build-sidecar.mjs` are wired relative to that; the
