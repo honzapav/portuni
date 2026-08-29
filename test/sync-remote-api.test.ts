@@ -175,6 +175,31 @@ describe("getNodeSyncInfo", () => {
     );
   });
 
+  // Delete A at path P, push a new file B to P, then move B away: the newest
+  // tombstone for P is B's move, but a device still holding A's old copy can
+  // only match A's delete tombstone (the hash guard is per file). Collapsing
+  // to one tombstone per path would drop A's and let that copy get adopted
+  // and pushed back -- so the dedupe key is (path, file), not path.
+  it("keeps a delete tombstone alongside a newer move tombstone for the same path", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const mk = (action: string, fileId: string, detail: Record<string, unknown>, timestamp: string) =>
+      db.execute({
+        sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+              VALUES (?, 'U1', ?, 'file', ?, ?, ?)`,
+        args: [ulid(), action, fileId, JSON.stringify({ node_id: nodeId, ...detail }), timestamp],
+      });
+    const t0 = Date.now() - 3600_000;
+    await mk("sync_delete", "A", { remote_path: "p/x.md" }, new Date(t0).toISOString());
+    await mk("sync_move", "B", { old_remote_path: "p/x.md" }, new Date(t0 + 60_000).toISOString());
+
+    const info = await getNodeSyncInfo(db, nodeId);
+    const forPath = info.deleted.filter((d) => d.remote_path === "p/x.md");
+    assert.deepEqual(
+      forPath.map((d) => [d.file_id, d.record_alive]).sort(),
+      [["A", false], ["B", true]],
+    );
+  });
+
   it("returns an empty tombstone list when nothing was deleted", async () => {
     const { db, nodeId } = await makeSharedDb();
     const info = await getNodeSyncInfo(db, nodeId);

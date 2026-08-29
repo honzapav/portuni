@@ -63,12 +63,20 @@ export async function remoteSweep(db: Client, a: RemoteSweepArgs): Promise<Remot
   const adapter = await getAdapter(db, remoteName);
   const nodeRoot = buildNodeRoot(info);
 
-  let listing: FileRef[];
-  try {
-    listing = await adapter.list(nodeRoot);
-  } catch (e) {
-    out.errors.push({ remote_path: nodeRoot, error: `list failed: ${(e as Error).message}` });
-    return out;
+  // List the three tracked sections, not the node root. Every synced record
+  // lives under <root>/<section>/ and only those paths are ever adopted, so
+  // the root itself adds nothing -- and for an organization the root spans
+  // every child project/process/area beneath it, which turns one sync into a
+  // crawl of the whole org tree.
+  const listing: FileRef[] = [];
+  for (const section of SECTIONS) {
+    const prefix = `${nodeRoot}/${section}`;
+    try {
+      listing.push(...(await adapter.list(prefix)));
+    } catch (e) {
+      out.errors.push({ remote_path: prefix, error: `list failed: ${(e as Error).message}` });
+      return out;
+    }
   }
   const present = new Map<string, FileRef>();
   for (const f of listing) present.set(f.path.normalize("NFC"), f);
