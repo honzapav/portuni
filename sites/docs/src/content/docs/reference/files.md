@@ -91,8 +91,9 @@ Two modes:
   the local hash cache. Used to restore a deleted local copy or pull a
   teammate's update.
 - **`node_id`** -- preview only. Classifies each file as
-  `unchanged | updated | conflict | orphan | native` without modifying
-  anything. Use this before pulling to see what would change.
+  `unchanged | updated | conflict | remote_missing | remote_error | native`
+  without modifying anything. Use this before pulling to see what would
+  change.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -171,17 +172,18 @@ migrations, or whenever the user asks about sync state.
 | `include_discovery` | boolean | no | Walk the mirror + list the remote for new files (default: true) |
 
 Returns: classified buckets (`clean`, `push_candidates`, `pull_candidates`,
-`conflicts`, `orphan`, `native`, `new_local`, `new_remote`,
-`deleted_local`, `deleted_remote`, `moved`).
+`conflicts`, `remote_missing`, `remote_error`, `native`, `new_local`,
+`new_remote`, `deleted_local`, `deleted_remote`, `moved`).
 
 :::note[Deletions and moves propagate deterministically]
-- **`deleted_remote`** — an untracked disk copy whose record was
-  deliberately deleted elsewhere (web UI, another device). Discovery
-  matches it against the node's delete tombstones — same path, a local
-  `file_state` row for the tombstoned id, and a disk hash equal to the
-  last synced state — and the next sync run removes the local copy
-  instead of re-uploading it. A file **modified after** the delete fails
-  the hash check and stays `new_local`; local data is never destroyed.
+- **`deleted_remote`** — an untracked disk copy whose record was removed
+  from the remote (web UI, another device, or noticed by a deliberate sync
+  run's remote sweep — see [Deliberate sync run](/reference/sync/#deliberate-sync-run)).
+  Discovery matches it against the node's delete tombstones — same path, a
+  local `file_state` row for the tombstoned id, and a disk hash equal to the
+  last synced state — and the next sync run removes the local copy instead
+  of re-uploading it. A file **modified after** the delete fails the hash
+  check and stays `new_local`; local data is never destroyed.
 - **On-disk `mv`** is paired by inode identity at watcher registration
   time and applied through the real move (remote rename, Drive file ID
   preserved) — one record, no duplicate. A cross-volume move (inode
@@ -189,7 +191,14 @@ Returns: classified buckets (`clean`, `push_candidates`, `pull_candidates`,
   for API compatibility and is always empty.
 - **Deleting a never-pushed file on disk unregisters it** from Portuni
   entirely (it was metadata-only). Deleting a pushed file keeps the
-  record and the remote copy (`deleted_local`) for an explicit decision.
+  record and the remote copy (`deleted_local`) for an explicit decision —
+  see [Resolving conflicts and deletions](/reference/sync/#resolving-conflicts-and-deletions).
+- **`remote_missing`** and a new-on-the-remote file are only reconciled by
+  a deliberate sync run's remote sweep, not by `portuni_status` itself —
+  the sweep deletes+tombstones a record whose remote object is confirmed
+  gone, and adopts a file newly present anywhere under `wip/`,
+  `outputs/`, or `resources/` at any depth (a dot-prefixed filename or subfolder is
+  skipped).
 :::
 
 ## portuni_list_remotes / portuni_setup_remote / portuni_set_routing_policy

@@ -1144,6 +1144,29 @@ const MIGRATIONS: Migration[] = [
     },
     up: runMigration022,
   },
+
+  // Migration 023: pending_file_ops table (Task 6, deterministic file
+  // reconciliation). Fresh installs already get it via DDL; existing
+  // installs need it added explicitly.
+  {
+    id: "023_pending_file_ops",
+    isApplied: async (db) => {
+      const r = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_file_ops'",
+      );
+      return r.rows.length > 0;
+    },
+    up: async (db) => {
+      await db.execute(`CREATE TABLE IF NOT EXISTS pending_file_ops (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL, node_id TEXT NOT NULL, file_id TEXT NOT NULL,
+        payload TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+        created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+        updated_at DATETIME NOT NULL DEFAULT (datetime('now')))`);
+      await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pending_file_ops_node ON pending_file_ops(node_id)",
+      );
+    },
+  },
 ];
 
 export async function runMigrations(db: Client): Promise<void> {

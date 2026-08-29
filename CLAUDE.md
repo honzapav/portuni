@@ -143,8 +143,22 @@ symlink to this file.
   it to the remote. The watcher runs in the desktop sidecar by default
   (`PORTUNI_WATCH_MIRRORS`, on the standalone server it is opt-in `=1`); for
   backend dev against the tmux server, set `PORTUNI_WATCH_MIRRORS=1` if you
-  want the same behavior. Model:
-  `docs/archive/specs/2026-06-28-deterministic-file-state-design.md`.
+  want the same behavior. A deliberate sync run additionally sweeps the
+  remote first (`remote-sweep.ts`): a record whose remote object is
+  confirmed gone is deleted + tombstoned, and a file newly present on the
+  remote anywhere under `wip/`, `outputs/` or `resources/` — at any depth,
+  skipping any dot-prefixed path segment — is adopted and pulled in the
+  same run; `portuni_status` alone never triggers this. Sync classes are
+  `clean | push | pull | conflict | remote_missing | remote_error | native
+  | deleted_local`; there is no `orphan` class. `moveFile`/`renameFile`/
+  `renameFolder`/`deleteFile` record their intent in `pending_file_ops`
+  before touching the remote, so a half-finished mutation is retried
+  idempotently by the next sync run instead of needing manual repair.
+  `conflict`/`deleted_local` are resolved via `POST
+  /nodes/:id/files/:fileId/resolve` (`keep_local | take_remote | restore`)
+  or the equivalent `portuni_store`/`portuni_pull` calls. Model:
+  `docs/archive/specs/2026-06-28-deterministic-file-state-design.md`,
+  `docs/superpowers/specs/2026-08-28-deterministic-file-reconciliation-design.md`.
 - **Drive sync has two auth paths sharing one adapter.** Desktop local
   workspaces connect via per-user OAuth: Settings → Synchronizace →
   `google_drive_connect` (`apps/desktop/src/auth.rs`, PKCE loopback) hands the

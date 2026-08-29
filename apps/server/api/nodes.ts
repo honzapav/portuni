@@ -2,23 +2,28 @@
 // /nodes/:id/folder-url, /nodes/:id/sync, /nodes/:id/move, /positions.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { stat as fsStat } from "node:fs/promises";
 import { getDb } from "../infra/db.js";
 import { logAudit } from "../infra/audit.js";
 import {
   NODE_TYPES,
   NODE_VISIBILITIES,
 } from "../infra/schema.js";
-import { buildNodeRoot } from "../domain/sync/remote-path.js";
+import { buildNodeRoot, deriveLocalPath } from "../domain/sync/remote-path.js";
 import { resolveRemote } from "../domain/sync/routing.js";
 import { getAdapter } from "../domain/sync/adapter-cache.js";
+import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import {
   statusScan,
   storeFile,
   pullFile,
   matchDeleteTombstones,
   cleanupDeletedRemote,
+  resolveNodeInfo,
+  PullDirtyLocalError,
 } from "../domain/sync/engine.js";
 import { listUntrackedLocal } from "../domain/sync/discover-local.js";
+import { remoteSweep } from "../domain/sync/remote-sweep.js";
 import { mimeFor } from "../domain/sync/engine.js";
 import { createNodeInternal, updateNodeInternal, NodeVisibilityManagedError } from "../domain/nodes.js";
 import { moveNodeToOrganization } from "../domain/edges.js";
@@ -280,7 +285,8 @@ export async function handleDeleteNode(
 }
 
 // Per-node sync status. Wraps engine.statusScan so the UI can show a class
-// (clean/push/pull/conflict/orphan/native) per tracked file. Discovery is
+// (clean/push/pull/conflict/remote_missing/remote_error/native) per tracked
+// file. Discovery is
 // disabled: untracked files are not listed in the detail pane and discovery
 // would do costly remote-list calls.
 export async function handleSyncStatus(
@@ -335,7 +341,8 @@ export async function handleSyncStatus(
     push(result.push_candidates, "push");
     push(result.pull_candidates, "pull");
     push(result.conflicts, "conflict");
-    push(result.orphan, "orphan");
+    push(result.remote_missing, "remote_missing");
+    push(result.remote_error, "remote_error");
     push(result.native, "native");
     push(result.deleted_local, "deleted_local");
     const untrackedRaw = await listUntrackedLocal(getDb(), { userId: identity.userId, nodeId });
@@ -545,6 +552,12 @@ export async function handleSyncRun(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    // Sweep the remote before scanning: records whose remote object is
+    // confirmed gone are dropped (their local copy is untracked afterward
+    // and picked up by the tombstone cleanup below), and files that
+    // appeared on the remote out of band are adopted so the scan classifies
+    // them as pull candidates in this same run.
+    const sweep = await remoteSweep(db, { userId: identity.userId, nodeId });
     const scan = await statusScan(db, {
       userId: identity.userId,
       nodeId,
@@ -554,12 +567,28 @@ export async function handleSyncRun(
       pushed: [],
       pulled: [],
       adopted: [],
+      adopted_remote: [],
       conflicts: [],
       deleted_local: [],
       deleted_remote: [],
+      deleted_on_remote: [],
+      sweep_errors: [],
+      repaired: [],
+      pending_repairs: [],
       errors: [],
       skipped: [],
     };
+    for (const f of sweep.adopted) {
+      result.adopted_remote.push({ file_id: f.file_id, filename: f.filename });
+    }
+    for (const f of sweep.deleted_on_remote) {
+      result.deleted_on_remote.push({ file_id: f.file_id, filename: f.filename });
+    }
+    result.sweep_errors.push(...sweep.errors);
+    for (const r of sweep.repaired) {
+      result.repaired.push({ file_id: r.file_id, filename: r.filename });
+    }
+    result.pending_repairs.push(...sweep.pending_repairs);
     for (const e of scan.push_candidates) {
       if (!e.local_path) {
         result.errors.push({
@@ -607,7 +636,7 @@ export async function handleSyncRun(
     for (const e of scan.conflicts) {
       result.conflicts.push({ file_id: e.file_id, filename: e.filename });
     }
-    for (const e of [...scan.clean, ...scan.orphan, ...scan.native]) {
+    for (const e of [...scan.clean, ...scan.remote_missing, ...scan.remote_error, ...scan.native]) {
       result.skipped.push({
         file_id: e.file_id,
         filename: e.filename,
@@ -642,6 +671,130 @@ export async function handleSyncRun(
     respondJson(res, 200, result);
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sync`, err);
+  }
+}
+
+// Central-mode entry point for the sync agent: the remote credentials live
+// here, so the sweep (and pending-op retry, Task 6) runs server side and the
+// device consumes the outcome through sync-info tombstones + pull.
+export async function handleRemoteSweep(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  nodeId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    respondJson(res, 200, await remoteSweep(db, { userId: identity.userId, nodeId }));
+  } catch (err) {
+    respondError(res, `${req.method} /nodes/${nodeId}/sync/remote-sweep`, err);
+  }
+}
+
+const RESOLVE_ACTIONS = new Set(["keep_local", "take_remote", "restore"]);
+
+async function fileExists(path: string): Promise<boolean> {
+  return fsStat(path).then(
+    (s) => s.isFile(),
+    () => false,
+  );
+}
+
+// Resolves the two decisions the deterministic reconciler cannot make on
+// its own: a `conflict` (both sides changed -- keep_local pushes the local
+// version over the remote one, take_remote overwrites local with it) and a
+// `deleted_local` file (restore re-downloads it). Portuni never auto-merges,
+// so each action overwrites only the side the user did NOT pick --
+// keep_local/take_remote both act on exactly one file (never a bulk apply),
+// and restore is a plain (non-forced) pull, which already refuses to
+// clobber a local file with unpushed changes -- see pullFile's dirty guard.
+export async function handleResolveFile(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  nodeId: string,
+  fileId: string,
+): Promise<void> {
+  try {
+    const body = (await parseBody(req)) as { action?: string } | undefined;
+    const action = body?.action;
+    if (!action || !RESOLVE_ACTIONS.has(action)) {
+      respondJson(res, 400, { error: "action must be keep_local | take_remote | restore" });
+      return;
+    }
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    // IDOR guard: the URL's nodeId only gates node-level visibility above --
+    // pullFile resolves everything else (mirror, path) from the file's OWN
+    // node_id and ignores the URL entirely, and deriveLocalPath's prefix
+    // check below is not a substitute (an organization's nodeRoot is a
+    // prefix of every child project's remote paths, so org access alone
+    // would satisfy it for a file that actually lives in a restricted child
+    // project). Require the file to actually belong to this node, checked
+    // before any adapter or filesystem work, same not-found shape as an
+    // invisible node so this doesn't disclose whether the file id exists
+    // elsewhere.
+    const fileRow = await db.execute({
+      sql: "SELECT node_id, remote_path FROM files WHERE id = ?",
+      args: [fileId],
+    });
+    if (fileRow.rows.length === 0 || (fileRow.rows[0].node_id as string) !== nodeId) {
+      respondJson(res, 404, { error: "file not found" });
+      return;
+    }
+    if (action === "keep_local") {
+      const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
+      if (!mirrorRoot) {
+        respondJson(res, 409, { error: "node has no mirror on this device" });
+        return;
+      }
+      // Same shape as the missing-mirror case above: keep_local means "push
+      // MY copy over the remote one", and both of these make that
+      // impossible. Without the checks they fall through deriveLocalPath /
+      // storeFile and surface as a 500 that names nothing.
+      const remotePath = fileRow.rows[0].remote_path as string | null;
+      if (!remotePath) {
+        respondJson(res, 409, {
+          error: "file has no remote path -- nothing to keep the local version over",
+        });
+        return;
+      }
+      const localPath = deriveLocalPath({
+        mirrorRoot,
+        nodeRoot: buildNodeRoot(await resolveNodeInfo(db, nodeId)),
+        remotePath,
+      });
+      if (!(await fileExists(localPath))) {
+        respondJson(res, 409, {
+          error: `no local copy of this file on this device (${localPath}) -- nothing to keep`,
+        });
+        return;
+      }
+      await storeFile(db, { userId: identity.userId, nodeId, localPath });
+    } else {
+      // pullFile itself keeps files.current_remote_hash in step with what
+      // it just downloaded (see engine.ts), so nothing further is needed
+      // here to make the post-resolve fast-mode status read clean.
+      await pullFile(db, {
+        userId: identity.userId,
+        fileId,
+        force: action === "take_remote",
+      });
+    }
+    respondJson(res, 200, { file_id: fileId, action, status: "ok" });
+  } catch (err) {
+    if (err instanceof PullDirtyLocalError) {
+      respondJson(res, 409, { error: err.message });
+      return;
+    }
+    respondError(res, `POST /nodes/${nodeId}/files/${fileId}/resolve`, err);
   }
 }
 

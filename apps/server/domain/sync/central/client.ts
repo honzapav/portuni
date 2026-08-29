@@ -10,6 +10,7 @@
 
 import type { DataSourceRow } from "../../../shared/types.js";
 import type { NodeSyncInfo, RegisterFileRecordResult } from "../sync-remote-api.js";
+import type { RemoteSweepResult } from "../remote-sweep.js";
 
 export class CentralHttpError extends Error {
   constructor(
@@ -65,6 +66,10 @@ export interface CentralClient {
   // Confirmed record delete on central (DELETE /nodes/:id/files/:id). For a
   // never-pushed record this is record-only (no remote object exists).
   deleteFileRecord(nodeId: string, fileId: string): Promise<Record<string, unknown>>;
+  // Remote credentials live on the central server, so the sweep runs there
+  // (POST /nodes/:id/sync/remote-sweep) -- the agent calls this and folds
+  // the outcome into its own sync run instead of sweeping locally.
+  remoteSweep(nodeId: string): Promise<RemoteSweepResult>;
   dataSources(nodeId: string): Promise<DataSourceRow[]>;
   nodeExists(nodeId: string): Promise<boolean>;
   // Depth-1 neighbour ids from central node-detail. Used to compute the
@@ -273,6 +278,14 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       invalidate(nodeId);
       if (r.status !== 200) throwFor(r.status, p, r.json);
       return r.json as Record<string, unknown>;
+    },
+
+    async remoteSweep(nodeId) {
+      const p = `/nodes/${encodeURIComponent(nodeId)}/sync/remote-sweep`;
+      const r = await request("POST", p);
+      invalidate(nodeId);
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      return r.json as RemoteSweepResult;
     },
 
     async dataSources(nodeId) {

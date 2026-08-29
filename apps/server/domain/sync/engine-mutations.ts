@@ -17,6 +17,7 @@ import { getAdapter } from "./adapter-cache.js";
 import { resolveRemote } from "./routing.js";
 import { deleteFileState } from "./local-db.js";
 import { getMirrorPath } from "./mirror-registry.js";
+import { enqueuePendingOp, completePendingOp, failPendingOp } from "./pending-ops.js";
 import {
   buildNodeRoot,
   buildRemotePath,
@@ -168,6 +169,60 @@ export async function moveFile(
     };
   }
 
+  // The remote object has already moved once step 1 succeeds, local outcome
+  // notwithstanding -- another device (or this one, on retry) must not
+  // adopt/push back the copy left at the old local path. Both the
+  // local-phase-failure branch and the success branch call this with the
+  // same detail shape (matchDeleteTombstones reads node_id/old_remote_path),
+  // `extra` only carries the failure-branch's local_error.
+  async function writeMoveTombstone(now: string, extra?: Record<string, unknown>): Promise<void> {
+    await db.execute({
+      sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+            VALUES (?, ?, 'sync_move', 'file', ?, ?, ?)`,
+      args: [
+        ulid(),
+        a.userId,
+        a.fileId,
+        JSON.stringify({
+          node_id: fr.node_id as string,
+          old_remote_path: oldRemotePath,
+          old: {
+            remote_name: oldRemoteName,
+            remote_path: oldRemotePath,
+            local_path: oldLocalPath,
+          },
+          new: {
+            remote_name: newRemoteName,
+            remote_path: newRemotePath,
+            local_path: newLocalPath,
+          },
+          cross_node: crossNode,
+          cross_remote: crossRemote,
+          ...extra,
+        }),
+        now,
+      ],
+    });
+  }
+
+  // Record the intent before the first side effect (Task 6): if the remote
+  // step below throws, the op stays pending and the next sync run's retry
+  // finishes it idempotently instead of leaving a silent half-move.
+  const pendingOpId = await enqueuePendingOp(db, {
+    userId: a.userId,
+    nodeId: fr.node_id as string,
+    fileId: a.fileId,
+    payload: {
+      op: "move",
+      from_remote_name: oldRemoteName,
+      from_remote_path: oldRemotePath,
+      to_remote_name: newRemoteName,
+      to_remote_path: newRemotePath,
+      to_node_id: targetNodeId,
+      filename,
+    },
+  });
+
   // Best-effort ordered execution.
   // 1. Remote move. Track which sub-step failed: in the cross-remote copy
   // the destination put can succeed before the source delete fails, and
@@ -187,6 +242,7 @@ export async function moveFile(
       await src.delete(oldRemotePath);
     }
   } catch (e) {
+    await failPendingOp(db, pendingOpId, (e as Error).message);
     const copied = remoteSubStep === "delete_source";
     return {
       status: "repair_needed",
@@ -242,6 +298,13 @@ export async function moveFile(
             now,
           ],
         });
+        // Write the regular sync_move tombstone too, alongside
+        // sync_move_partial, so matchDeleteTombstones picks it up.
+        await writeMoveTombstone(now, { local_error: (e as Error).message });
+        // The remote object and the DB row are both already at the new
+        // location -- only the local copy is stale, and that is the
+        // tombstone's job to clean up, not the retry's.
+        await completePendingOp(db, pendingOpId);
         return {
           status: "repair_needed",
           file_id: a.fileId,
@@ -270,30 +333,8 @@ export async function moveFile(
     args: [newRemoteName, newRemotePath, targetNodeId, filename, now, a.fileId],
   });
 
-  await db.execute({
-    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
-          VALUES (?, ?, 'sync_move', 'file', ?, ?, ?)`,
-    args: [
-      ulid(),
-      a.userId,
-      a.fileId,
-      JSON.stringify({
-        old: {
-          remote_name: oldRemoteName,
-          remote_path: oldRemotePath,
-          local_path: oldLocalPath,
-        },
-        new: {
-          remote_name: newRemoteName,
-          remote_path: newRemotePath,
-          local_path: newLocalPath,
-        },
-        cross_node: crossNode,
-        cross_remote: crossRemote,
-      }),
-      now,
-    ],
-  });
+  await writeMoveTombstone(now);
+  await completePendingOp(db, pendingOpId);
 
   return {
     status: "ok",
@@ -419,7 +460,45 @@ export async function renameFolder(
   }> = [];
   const now = new Date().toISOString();
 
+  // The remote object has already moved once adapter.rename succeeds, local
+  // outcome notwithstanding -- another device (or this one, on a missed
+  // watcher event) must not adopt/push back the copy left at the old local
+  // path. One sync_rename tombstone per successfully-renamed file, matched
+  // by matchDeleteTombstones same as sync_move.
+  async function writeRenameTombstone(f: (typeof affected)[number]): Promise<void> {
+    await db.execute({
+      sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+            VALUES (?, ?, 'sync_rename', 'file', ?, ?, ?)`,
+      args: [
+        ulid(),
+        a.userId,
+        f.file_id,
+        JSON.stringify({
+          node_id: a.nodeId,
+          old_remote_path: f.old_remote_path,
+          new_remote_path: f.new_remote_path,
+          via: "rename_folder",
+        }),
+        now,
+      ],
+    });
+  }
+
   for (const f of affected) {
+    const pendingOpId = await enqueuePendingOp(db, {
+      userId: a.userId,
+      nodeId: a.nodeId,
+      fileId: f.file_id,
+      payload: {
+        op: "move",
+        from_remote_name: f.remote_name,
+        from_remote_path: f.old_remote_path,
+        to_remote_name: f.remote_name,
+        to_remote_path: f.new_remote_path,
+        to_node_id: a.nodeId,
+        filename: f.filename,
+      },
+    });
     try {
       const adapter = await getAdapter(db, f.remote_name);
       await adapter.rename(f.old_remote_path, f.new_remote_path);
@@ -433,6 +512,8 @@ export async function renameFolder(
               sql: "UPDATE files SET remote_path = ?, updated_at = ? WHERE id = ?",
               args: [f.new_remote_path, now, f.file_id],
             });
+            await writeRenameTombstone(f);
+            await completePendingOp(db, pendingOpId);
             results.push({
               file_id: f.file_id,
               status: "repair_needed",
@@ -448,6 +529,8 @@ export async function renameFolder(
         sql: "UPDATE files SET remote_path = ?, updated_at = ? WHERE id = ?",
         args: [f.new_remote_path, now, f.file_id],
       });
+      await writeRenameTombstone(f);
+      await completePendingOp(db, pendingOpId);
       results.push({
         file_id: f.file_id,
         status: "ok",
@@ -455,6 +538,7 @@ export async function renameFolder(
         new_remote_path: f.new_remote_path,
       });
     } catch (e) {
+      await failPendingOp(db, pendingOpId, (e as Error).message);
       results.push({
         file_id: f.file_id,
         status: "repair_needed",
@@ -643,7 +727,7 @@ export async function deleteFile(
   a: DeleteFileArgs,
 ): Promise<DeleteFilePreview | DeleteFileSuccess | DeleteFileRepairNeeded> {
   const r = await db.execute({
-    sql: "SELECT id, node_id, filename, remote_name, remote_path FROM files WHERE id = ?",
+    sql: "SELECT id, node_id, filename, remote_name, remote_path, current_remote_hash, is_native_format FROM files WHERE id = ?",
     args: [a.fileId],
   });
   if (r.rows.length === 0) throw new Error(`File ${a.fileId} not found`);
@@ -653,6 +737,11 @@ export async function deleteFile(
   const remoteName = f.remote_name as string | null;
   const remotePath = f.remote_path as string | null;
   const filename = f.filename as string;
+  // Identity of the object being deleted, so a retry of a half-finished
+  // delete can tell it apart from a different file that has since taken
+  // the same remote path (see runDelete in pending-ops.ts).
+  const expectedHash = (f.current_remote_hash as string | null) ?? null;
+  const expectedRemoteObject = expectedHash !== null || Number(f.is_native_format) === 1;
 
   let localPath: string | null = null;
   const mirror = await getMirrorPath(a.userId, nodeId);
@@ -693,7 +782,21 @@ export async function deleteFile(
 
   const now = new Date().toISOString();
 
+  let pendingOpId: string | null = null;
   if (mode === "complete" && remoteName && remotePath) {
+    pendingOpId = await enqueuePendingOp(db, {
+      userId: a.userId,
+      nodeId,
+      fileId: a.fileId,
+      payload: {
+        op: "delete",
+        remote_name: remoteName,
+        remote_path: remotePath,
+        filename,
+        expected_hash: expectedHash,
+        expected_remote_object: expectedRemoteObject,
+      },
+    });
     try {
       const adapter = await getAdapter(db, remoteName);
       // A registered-but-never-pushed record has a routed remote_path with
@@ -706,6 +809,7 @@ export async function deleteFile(
       // Remote delete failed. Do NOT delete the DB row or the local file —
       // that would silently desync state and leave an orphan on the remote
       // with no Portuni record. Surface a repair_needed result instead.
+      await failPendingOp(db, pendingOpId, (e as Error).message);
       await db.execute({
         sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
               VALUES (?, ?, 'sync_delete_repair_needed', 'file', ?, ?, ?)`,
@@ -767,6 +871,10 @@ export async function deleteFile(
       now,
     ],
   });
+  // Complete the op only after the tombstone is written -- if the audit
+  // insert fails, the op must stay pending so a retry writes the tombstone
+  // instead of the delete going unrecorded forever.
+  if (pendingOpId) await completePendingOp(db, pendingOpId);
 
   return { file_id: a.fileId, mode, deleted_at: now, status: "ok" };
 }
@@ -840,12 +948,31 @@ export async function renameFile(
     }
   }
 
-  const adapter = await getAdapter(db, remoteName);
-  await adapter.rename(oldRemotePath, newRemotePath);
+  const pendingOpId = await enqueuePendingOp(db, {
+    userId: a.userId,
+    nodeId,
+    fileId: a.fileId,
+    payload: {
+      op: "move",
+      from_remote_name: remoteName,
+      from_remote_path: oldRemotePath,
+      to_remote_name: remoteName,
+      to_remote_path: newRemotePath,
+      to_node_id: nodeId,
+      filename: fn,
+    },
+  });
+  try {
+    const adapter = await getAdapter(db, remoteName);
+    await adapter.rename(oldRemotePath, newRemotePath);
+  } catch (e) {
+    await failPendingOp(db, pendingOpId, (e as Error).message);
+    throw e;
+  }
 
   // From here on the remote object lives at the new path. A local failure
   // must NOT abort before the DB UPDATE below -- that would leave the row
-  // pointing at the old remote path (every scan classifies it orphan).
+  // pointing at the old remote path (every scan classifies it remote_missing).
   // Record the failure and report repair_needed instead, like moveFile.
   let localError: string | null = null;
   if (oldLocalPath && newLocalPath && oldLocalPath !== newLocalPath) {
@@ -872,6 +999,7 @@ export async function renameFile(
       a.userId,
       a.fileId,
       JSON.stringify({
+        node_id: nodeId,
         old_filename: oldFilename,
         new_filename: fn,
         old_remote_path: oldRemotePath,
@@ -880,6 +1008,7 @@ export async function renameFile(
       now,
     ],
   });
+  await completePendingOp(db, pendingOpId);
 
   return {
     file_id: a.fileId,

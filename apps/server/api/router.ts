@@ -73,6 +73,8 @@ import {
   handleNodeSandboxProfile,
   handlePatchNode,
   handlePositions,
+  handleRemoteSweep,
+  handleResolveFile,
   handleSyncPending,
   handleSyncRun,
   handleSyncStatus,
@@ -440,6 +442,18 @@ async function routeFiles(
     return true;
   }
 
+  const resolveMatch = pathname.match(/^\/nodes\/([^/]+)\/files\/([^/]+)\/resolve$/);
+  if (resolveMatch && method === "POST") {
+    await handleResolveFile(
+      req,
+      res,
+      identity,
+      decodeURIComponent(resolveMatch[1]),
+      decodeURIComponent(resolveMatch[2]),
+    );
+    return true;
+  }
+
   const createMatch = pathname.match(/^\/nodes\/([^/]+)\/files$/);
   if (createMatch && method === "POST") {
     await handleCreateFile(req, res, identity, decodeURIComponent(createMatch[1]));
@@ -485,6 +499,11 @@ async function routeNodes(
   const fileUrlMatch = pathname.match(/^\/nodes\/([^/]+)\/file-url$/);
   if (fileUrlMatch && method === "GET") {
     await handleFileUrl(req, res, identity, decodeURIComponent(fileUrlMatch[1]));
+    return true;
+  }
+  const sweepMatch = pathname.match(/^\/nodes\/([^/]+)\/sync\/remote-sweep$/);
+  if (sweepMatch && method === "POST") {
+    await handleRemoteSweep(req, res, identity, decodeURIComponent(sweepMatch[1]));
     return true;
   }
   const syncRunMatch = pathname.match(/^\/nodes\/([^/]+)\/sync$/);

@@ -16,7 +16,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Client } from "@libsql/client";
 import { z } from "zod";
 import type { RequestIdentity } from "../auth/request-identity.js";
-import { parseJsonBody, respondError, respondJson } from "../http/middleware.js";
+import { parseBody, parseJsonBody, respondError, respondJson } from "../http/middleware.js";
 import { handleHealth } from "./health.js";
 import { handleWriteScope } from "./write-scope.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
@@ -31,9 +31,12 @@ import {
   computeSyncPendingCentral,
   createMirrorForNodeCentral,
   statusScanCentral,
+  storeFileCentral,
+  pullFileCentral,
   syncRunCentral,
 } from "../domain/sync/central/engine-central.js";
-import { mimeFor } from "../domain/sync/engine.js";
+import { findEntryByFileId } from "../mcp/agent-tools.js";
+import { mimeFor, PullDirtyLocalError } from "../domain/sync/engine.js";
 import { getLocalMirror } from "../domain/sync/local-db.js";
 import { MirrorCreateError } from "../domain/sync/mirror-create.js";
 import {
@@ -236,7 +239,8 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
         push(result.push_candidates, "push");
         push(result.pull_candidates, "pull");
         push(result.conflicts, "conflict");
-        push(result.orphan, "orphan");
+        push(result.remote_missing, "remote_missing");
+        push(result.remote_error, "remote_error");
         push(result.native, "native");
         push(result.deleted_local, "deleted_local");
         const untracked: UntrackedFile[] = result.new_local.map((u) => ({
@@ -266,6 +270,61 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
       } catch (err) {
         if (respondCentral404(res, err)) return true;
         respondError(res, `POST /nodes/${nodeId}/sync`, err);
+      }
+      return true;
+    }
+
+    // Conflict / deleted_local resolution -- the agent-mode counterpart of
+    // handleResolveFile in api/nodes.ts. findEntryByFileId fans out across
+    // this user's mirrored nodes (there is no local graph db to look the
+    // file up by id directly) and derives the real local path; keep_local
+    // force-pushes it past any stale-hash precondition, take_remote/restore
+    // force/plain-pull the remote bytes down.
+    const resolveMatch = pathname.match(/^\/nodes\/([^/]+)\/files\/([^/]+)\/resolve$/);
+    if (resolveMatch && method === "POST") {
+      const nodeId = decodeURIComponent(resolveMatch[1]);
+      const fileId = decodeURIComponent(resolveMatch[2]);
+      try {
+        const body = (await parseBody(req)) as { action?: string } | undefined;
+        const action = body?.action;
+        if (action !== "keep_local" && action !== "take_remote" && action !== "restore") {
+          respondJson(res, 400, { error: "action must be keep_local | take_remote | restore" });
+          return true;
+        }
+        // findEntryByFileId fans out across every node this device has
+        // mirrored, not just the URL's nodeId -- IDOR guard: require the
+        // file to actually resolve to THIS node before touching it (a
+        // caller cannot resolve node B's file by addressing node A's URL),
+        // checked before any adapter or filesystem work. Same not-found
+        // shape either way.
+        const found = await findEntryByFileId(client, identity.userId, fileId);
+        if (!found || found.nodeId !== nodeId || !found.entry.local_path) {
+          respondJson(res, 404, { error: "file not found on this device" });
+          return true;
+        }
+        if (action === "keep_local") {
+          await storeFileCentral(client, {
+            userId: identity.userId,
+            nodeId,
+            localPath: found.entry.local_path,
+            force: true,
+          });
+        } else {
+          await pullFileCentral(client, {
+            userId: identity.userId,
+            nodeId,
+            entry: found.entry,
+            force: action === "take_remote",
+          });
+        }
+        respondJson(res, 200, { file_id: fileId, action, status: "ok" });
+      } catch (err) {
+        if (err instanceof PullDirtyLocalError) {
+          respondJson(res, 409, { error: err.message });
+          return true;
+        }
+        if (respondCentral404(res, err)) return true;
+        respondError(res, `POST /nodes/${nodeId}/files/${fileId}/resolve`, err);
       }
       return true;
     }

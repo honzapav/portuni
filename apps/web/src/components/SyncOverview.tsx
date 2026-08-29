@@ -113,7 +113,7 @@ export default function SyncOverview({
                     {n.conflict > 0 && (
                       <span className="text-[var(--color-danger)]" title="Konflikt">{"⚠"}{n.conflict} </span>
                     )}
-                    {n.orphan > 0 && <span title="Orphan">{"⊘"}{n.orphan} </span>}
+                    {n.remote_missing > 0 && <span title="Chybí na remote">{"⊘"}{n.remote_missing} </span>}
                     {n.deleted_local > 0 && <span title="Smazáno lokálně">{"␡"}{n.deleted_local} </span>}
                   </span>
                   <button

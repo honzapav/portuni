@@ -68,11 +68,11 @@ describe("moveNodeToOrganization migrates tracked files", () => {
     await stat(join(remoteRoot, newRemote));
     await assert.rejects(() => stat(join(remoteRoot, remote_path)));
 
-    // And the scan must not classify the file as orphan afterwards.
+    // And the scan must not classify the file as remote_missing afterwards.
     const scan = await statusScan(db, { userId: "U1", nodeId, includeDiscovery: false });
     assert.ok(
-      !scan.orphan.some((f) => f.file_id === file_id),
-      "file must not be orphaned by the org move",
+      !scan.remote_missing.some((f) => f.file_id === file_id),
+      "file must not read as remote_missing after the org move",
     );
   });
 

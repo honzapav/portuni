@@ -17,7 +17,7 @@ import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
 import type { CentralClient } from "./client.js";
 import { CentralHttpError } from "./client.js";
-import { localHashFor, cleanupDeletedRemote, diskHashMatching } from "../engine.js";
+import { localHashFor, cleanupDeletedRemote, diskHashMatching, PullDirtyLocalError } from "../engine.js";
 import type {
   StatusResult,
   StatusFileEntry,
@@ -43,6 +43,7 @@ import {
 import { loadMirrorIgnore, type MirrorIgnore } from "../mirror-ignore.js";
 import { md5Buffer, sha256Buffer, statForCache } from "../hash.js";
 import type { NodeSyncInfo, SyncInfoFile } from "../sync-remote-api.js";
+import type { RemoteSweepResult } from "../remote-sweep.js";
 import type {
   SyncPendingNode,
   SyncPendingResponse,
@@ -183,7 +184,7 @@ async function classifyRecord(
 
   if (rec.is_native_format) return { bucket: "native", entry: { ...base, class: "native" } };
   if (!ctx.si.remote_name || !rec.remote_path) {
-    return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+    return { bucket: "remote_error", entry: { ...base, class: "remote_error" } };
   }
 
   const state = await getFileState(rec.id);
@@ -199,12 +200,13 @@ async function classifyRecord(
 
   const remoteExists = remoteHash !== null;
   if (!remoteExists) {
-    // Registered but never pushed: pending upload reads as push; a file whose
-    // remote vanished after a sync, or with no local content, stays orphan.
+    // Registered but never pushed: pending upload reads as push; a file
+    // whose remote vanished after a sync, or with no local content, is
+    // remote_missing.
     if (localHash !== null && base.last_synced_hash === null) {
       return { bucket: "push_candidates", entry: { ...base, class: "push" } };
     }
-    return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+    return { bucket: "remote_missing", entry: { ...base, class: "remote_missing" } };
   }
 
   if (localHash === null) {
@@ -254,7 +256,8 @@ async function statusScanForContext(
     push_candidates: [],
     pull_candidates: [],
     conflicts: [],
-    orphan: [],
+    remote_missing: [],
+    remote_error: [],
     native: [],
     new_local: [],
     new_remote: [],
@@ -313,6 +316,11 @@ async function matchTombstonesForContext(
     if (!st || st.last_synced_hash === null) continue;
     const hash = await diskHashMatching(st.last_synced_hash, entry.local_path, entry.hash);
     if (hash === null || hash !== st.last_synced_hash) continue;
+    if (t.record_alive && ctx.si.files.find((f) => f.id === t.file_id)?.remote_path === t.remote_path) {
+      // The file's record moved right back to this exact path (the move
+      // was undone) -- skip so a live file doesn't lose its file_state.
+      continue;
+    }
     matchedPaths.add(entry.local_path);
     deleted.push({
       file_id: t.file_id,
@@ -321,6 +329,7 @@ async function matchTombstonesForContext(
       local_path: entry.local_path,
       remote_path: t.remote_path,
       hash,
+      record_alive: t.record_alive,
     });
   }
   return { deleted_remote: deleted, remaining: entries.filter((e) => !matchedPaths.has(e.local_path)) };
@@ -497,6 +506,11 @@ export interface StoreFileCentralArgs {
   status?: "wip" | "output";
   // Optional sub-directory within the section for an outside source.
   subpath?: string | null;
+  // Resolve-endpoint escape hatch (Task 7, "keep_local"): replace the
+  // normal baseCanonicalHash/ifAbsent precondition outright instead of
+  // layering on top of it, so a deliberate "keep the local version" choice
+  // can never be refused by a stale-hash conflict check.
+  force?: boolean;
 }
 
 // Resolve the in-mirror destination for a store, copying the source in when it
@@ -594,7 +608,11 @@ export async function storeFileCentral(
       a.nodeId,
       relPath,
       bytes,
-      baseline !== null ? { baseCanonicalHash: baseline } : { ifAbsent: true },
+      a.force
+        ? { force: true }
+        : baseline !== null
+          ? { baseCanonicalHash: baseline }
+          : { ifAbsent: true },
     );
   } catch (e) {
     if (e instanceof CentralHttpError && e.code === "EXISTS" && baseline === null) {
@@ -683,7 +701,7 @@ export async function pullFileCentral(
     const dirty =
       localCur !== cur.canonicalHash && (baseline === null || localCur !== baseline);
     if (dirty) {
-      throw new Error(
+      throw new PullDirtyLocalError(
         `File ${a.entry.file_id} has local changes that were never pushed from this device (${localPath}). Sync them first, or force the pull.`,
       );
     }
@@ -886,6 +904,43 @@ export async function syncRunCentral(
   client: CentralClient,
   a: { userId: string; nodeId: string },
 ): Promise<SyncRunResponse> {
+  // The remote credentials live on the central server, so the sweep runs
+  // there (POST /nodes/:id/sync/remote-sweep) before anything else: records
+  // whose remote object is confirmed gone are dropped, and files that
+  // appeared on the remote out of band are adopted. loadNodeContext then
+  // fetches sync-info fresh (the client invalidates its cache after the
+  // sweep call), so the scan below sees the sweep's tombstones and new
+  // records rather than a stale snapshot.
+  //
+  // The sweep is an ADDITION to a run that worked without it, so a central
+  // server that refuses or does not know the route must not take the whole
+  // run down: a 403 (write-scope teammate against an over-gated route) or a
+  // 404 (desktop updated before the VPS) degrades to an empty sweep and is
+  // reported through sweep_errors, leaving push/pull/adopt to run exactly as
+  // they did before this branch. Only CentralHttpError is absorbed — a
+  // TypeError or the like is our own bug and must still surface.
+  const EMPTY_SWEEP: RemoteSweepResult = {
+    adopted: [],
+    deleted_on_remote: [],
+    errors: [],
+    repaired: [],
+    pending_repairs: [],
+  };
+  let sweep: RemoteSweepResult;
+  try {
+    sweep = await client.remoteSweep(a.nodeId);
+  } catch (e) {
+    if (!(e instanceof CentralHttpError)) throw e;
+    sweep = {
+      ...EMPTY_SWEEP,
+      errors: [
+        {
+          remote_path: "",
+          error: `remote sweep unavailable (HTTP ${e.status}): ${e.message} -- sync ran without it`,
+        },
+      ],
+    };
+  }
   // One sync-info for the whole run: the scan reuses this context, pulls
   // reuse it too, and pushes/adopts run through a bounded worker pool
   // instead of a strictly sequential per-file chain.
@@ -895,9 +950,18 @@ export async function syncRunCentral(
     pushed: [],
     pulled: [],
     adopted: [],
+    adopted_remote: sweep.adopted.map((f) => ({ file_id: f.file_id, filename: f.filename })),
     conflicts: [],
     deleted_local: [],
     deleted_remote: [],
+    deleted_on_remote: sweep.deleted_on_remote.map((f) => ({ file_id: f.file_id, filename: f.filename })),
+    sweep_errors: [...sweep.errors],
+    // A central server older than this change (Task 6) answers without
+    // these fields -- client.ts casts the JSON body to RemoteSweepResult
+    // unchecked, so an old deployment hands back `undefined` here rather
+    // than an empty array. Default defensively instead of throwing.
+    repaired: (sweep.repaired ?? []).map((f) => ({ file_id: f.file_id, filename: f.filename })),
+    pending_repairs: [...(sweep.pending_repairs ?? [])],
     errors: [],
     skipped: [],
   };
@@ -944,7 +1008,7 @@ export async function syncRunCentral(
   for (const e of scan.conflicts) {
     result.conflicts.push({ file_id: e.file_id, filename: e.filename });
   }
-  for (const e of [...scan.clean, ...scan.orphan, ...scan.native]) {
+  for (const e of [...scan.clean, ...scan.remote_missing, ...scan.remote_error, ...scan.native]) {
     result.skipped.push({ file_id: e.file_id, filename: e.filename, sync_class: e.class });
   }
 
@@ -1057,9 +1121,9 @@ export async function computeSyncPendingCentral(
     // deleted_remote copies count as untracked pending work: the sync run
     // resolves them (cleanup instead of adopt).
     const untracked = scan.new_local.length + scan.deleted_remote.length;
-    const orphan = scan.orphan.length;
+    const remote_missing = scan.remote_missing.length;
     const deleted_local = scan.deleted_local.length;
-    const total = push + conflict + untracked + orphan + deleted_local;
+    const total = push + conflict + untracked + remote_missing + deleted_local;
     if (total === 0) return null;
     return {
       node_id: m.node_id,
@@ -1068,7 +1132,7 @@ export async function computeSyncPendingCentral(
       push,
       conflict,
       untracked,
-      orphan,
+      remote_missing,
       deleted_local,
       total,
     };

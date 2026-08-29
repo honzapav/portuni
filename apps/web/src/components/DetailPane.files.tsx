@@ -29,6 +29,7 @@ import type {
 import { buildAgentCommand } from "../lib/prompt";
 import { agentDisplayName } from "../lib/settings";
 import { createNodeMirror, fetchNodeFileUrl } from "../api";
+import type { ResolveAction } from "../api";
 import { isTauri, openInFinder } from "../lib/backend-url";
 import { getCachedDriveStatus } from "../lib/sync-drive";
 import { listWorkspaces } from "../lib/workspaces";
@@ -139,7 +140,7 @@ function aggregateFolderSync(
 ): { color: string; title: string } | null {
   let hasConflict = false;
   let hasPending = false;
-  let hasOrphan = false;
+  let hasRemoteMissing = false;
   let hasClean = false;
   let any = false;
   const stack: TreeNode[] = [node];
@@ -156,7 +157,7 @@ function aggregateFolderSync(
         sync.sync_class === "deleted_local"
       ) {
         hasPending = true;
-      } else if (sync.sync_class === "orphan") hasOrphan = true;
+      } else if (sync.sync_class === "remote_missing") hasRemoteMissing = true;
       else if (sync.sync_class === "clean") hasClean = true;
     } else if (cur.children) {
       for (const c of cur.children.values()) stack.push(c);
@@ -170,10 +171,10 @@ function aggregateFolderSync(
       color: "var(--color-node-process)",
       title: "Soubory čekají na synchronizaci",
     };
-  if (hasOrphan)
+  if (hasRemoteMissing)
     return {
       color: "var(--color-status-archived)",
-      title: "Některé soubory jsou orphan",
+      title: "Některé soubory chybí na remote",
     };
   if (hasClean)
     return {
@@ -272,6 +273,7 @@ export function FileTree({
   onOpenFile,
   onRename,
   onDelete,
+  onResolve,
   readOnly,
 }: {
   files: DetailFile[];
@@ -285,6 +287,7 @@ export function FileTree({
   onOpenFile: (relPath: string) => void;
   onRename: (fileId: string, newName: string) => Promise<void>;
   onDelete: (fileId: string) => Promise<void>;
+  onResolve: (fileId: string, action: ResolveAction) => Promise<void>;
   // When true, hide rename/delete actions (e.g. central mode).
   readOnly?: boolean;
 }) {
@@ -318,6 +321,7 @@ export function FileTree({
           onOpenFile={onOpenFile}
           onRename={onRename}
           onDelete={onDelete}
+          onResolve={onResolve}
           readOnly={readOnly}
         />
       ))}
@@ -336,6 +340,7 @@ function FileTreeNode({
   onOpenFile,
   onRename,
   onDelete,
+  onResolve,
   readOnly,
 }: {
   node: TreeNode;
@@ -348,6 +353,7 @@ function FileTreeNode({
   onOpenFile: (relPath: string) => void;
   onRename: (fileId: string, newName: string) => Promise<void>;
   onDelete: (fileId: string) => Promise<void>;
+  onResolve: (fileId: string, action: ResolveAction) => Promise<void>;
   readOnly?: boolean;
 }) {
   const indent = depth * 14;
@@ -361,6 +367,7 @@ function FileTreeNode({
         onOpenFile={onOpenFile}
         onRename={onRename}
         onDelete={onDelete}
+        onResolve={onResolve}
         readOnly={readOnly}
       />
     );
@@ -414,6 +421,7 @@ function FileTreeNode({
               onOpenFile={onOpenFile}
               onRename={onRename}
               onDelete={onDelete}
+              onResolve={onResolve}
               readOnly={readOnly}
             />
           ))}
@@ -478,6 +486,11 @@ function CopyDriveLinkButton({ nodeId, fileId }: { nodeId: string; fileId: strin
   );
 }
 
+// Shared class for the row's plain (non-destructive) text actions --
+// Přejmenovat's class, reused for the resolve buttons below.
+const ACTION_BTN =
+  "text-[11px] text-[var(--color-text-dim)] hover:text-[var(--color-text)]";
+
 // One file row. Rename is an inline input (Enter saves, Escape cancels);
 // delete is a two-step confirm that auto-resets after a few seconds. Both
 // replace window.prompt/confirm, which are no-ops in the Tauri webview.
@@ -489,6 +502,7 @@ function FileRow({
   onOpenFile,
   onRename,
   onDelete,
+  onResolve,
   readOnly,
 }: {
   file: TreeFile;
@@ -498,6 +512,7 @@ function FileRow({
   onOpenFile: (relPath: string) => void;
   onRename: (fileId: string, newName: string) => Promise<void>;
   onDelete: (fileId: string) => Promise<void>;
+  onResolve: (fileId: string, action: ResolveAction) => Promise<void>;
   readOnly?: boolean;
 }) {
   const [renaming, setRenaming] = useState(false);
@@ -543,6 +558,11 @@ function FileRow({
     setConfirmingDelete(false);
     setBusy(true);
     void onDelete(f.fileId!).finally(() => setBusy(false));
+  };
+
+  const act = (action: ResolveAction) => {
+    setBusy(true);
+    void onResolve(f.fileId!, action).finally(() => setBusy(false));
   };
 
   return (
@@ -661,6 +681,39 @@ function FileRow({
               >
                 {confirmingDelete ? "Opravdu smazat?" : "Smazat"}
               </button>
+              {sync?.sync_class === "conflict" && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => act("keep_local")}
+                    disabled={busy}
+                    title="Nahrát lokální verzi na remote"
+                    className={ACTION_BTN}
+                  >
+                    Ponechat lokální
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => act("take_remote")}
+                    disabled={busy}
+                    title="Přepsat lokální kopii verzí z remote"
+                    className={ACTION_BTN}
+                  >
+                    Vzít z remote
+                  </button>
+                </>
+              )}
+              {sync?.sync_class === "deleted_local" && (
+                <button
+                  type="button"
+                  onClick={() => act("restore")}
+                  disabled={busy}
+                  title="Stáhnout znovu z remote"
+                  className={ACTION_BTN}
+                >
+                  Obnovit
+                </button>
+              )}
             </span>
           )}
         </div>
@@ -783,7 +836,7 @@ export function SyncBar({
               border:
                 "1px solid color-mix(in srgb, var(--color-danger) 25%, transparent)",
             }}
-            title="Konflikty se neresolvují automaticky -- vyřešte ručně přes shell."
+            title="Konflikt: vyber verzi u souboru (Ponechat lokální / Vzít z remote)."
           >
             {conflicts} konflikt{conflicts === 1 ? "" : "y"}
           </span>
@@ -798,7 +851,7 @@ export function SyncBar({
               border:
                 "1px solid color-mix(in srgb, var(--color-status-archived) 25%, transparent)",
             }}
-            title="Soubor byl smazán lokálně, ale na remote existuje. Obnov přes portuni_pull, nebo smaž všude přes portuni_delete_file -- synchronizace ho neobnovuje automaticky."
+            title="Smazáno lokálně: Obnovit stáhne kopii znovu, Smazat odstraní soubor všude."
           >
             {deletedLocal} smazáno lokálně
           </span>
@@ -830,6 +883,31 @@ export function SyncBar({
             <div>
               Uklizeno po smazání jinde:{" "}
               {result.deleted_remote.map((f) => f.filename).join(", ")}
+            </div>
+          )}
+          {(result.adopted_remote?.length ?? 0) > 0 && (
+            <div>
+              Nové z remote: {result.adopted_remote.map((f) => f.filename).join(", ")}
+            </div>
+          )}
+          {(result.deleted_on_remote?.length ?? 0) > 0 && (
+            <div>
+              Smazáno na remote: {result.deleted_on_remote.map((f) => f.filename).join(", ")}
+            </div>
+          )}
+          {(result.sweep_errors?.length ?? 0) > 0 && (
+            <div style={{ color: "var(--color-danger)" }}>
+              Kontrola remote selhala:{" "}
+              {result.sweep_errors.map((e) => e.remote_path).join(", ")}
+            </div>
+          )}
+          {(result.repaired?.length ?? 0) > 0 && (
+            <div>Opraveno: {result.repaired.map((f) => f.filename).join(", ")}</div>
+          )}
+          {(result.pending_repairs?.length ?? 0) > 0 && (
+            <div style={{ color: "var(--color-danger)" }}>
+              Nedokončené operace: {result.pending_repairs.length} (poslední chyba:{" "}
+              {result.pending_repairs[0].last_error})
             </div>
           )}
           {result.errors.length > 0 && (
@@ -888,7 +966,8 @@ const SYNC_LABEL: Record<SyncClass, string> = {
   push: "push",
   pull: "pull",
   conflict: "conflict",
-  orphan: "orphan",
+  remote_missing: "chybí na remote",
+  remote_error: "remote nedostupný",
   native: "native",
   deleted_local: "missing",
 };
@@ -903,7 +982,8 @@ function syncCssVar(c: SyncClass): string {
       return "var(--color-node-process)";
     case "conflict":
       return "var(--color-danger)";
-    case "orphan":
+    case "remote_missing":
+    case "remote_error":
       return "var(--color-status-archived)";
     case "native":
       return "var(--color-accent)";

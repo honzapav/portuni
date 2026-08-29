@@ -572,6 +572,33 @@ export function renameFile(
   );
 }
 
+export type ResolveAction = "keep_local" | "take_remote" | "restore";
+
+// Human decision on a file the deterministic sync could not resolve on its
+// own: `conflict` (both sides changed -- keep_local/take_remote pick a
+// side) or `deleted_local` (restore re-downloads it). The 409 case (restore
+// would clobber an unpushed local change) carries a human-readable message
+// in `error` -- surface it as-is rather than a generic failure line.
+export async function resolveFileSync(
+  nodeId: string,
+  fileId: string,
+  action: ResolveAction,
+): Promise<{ file_id: string; action: ResolveAction; status: "ok" }> {
+  const res = await apiFetch(
+    `/nodes/${encodeURIComponent(nodeId)}/files/${encodeURIComponent(fileId)}/resolve`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    },
+  );
+  if (!res.ok) {
+    const j = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(j.error ?? `resolve: ${res.status}`);
+  }
+  return res.json();
+}
+
 export function deleteFile(nodeId: string, fileId: string): Promise<unknown> {
   return jsonRequest(
     "DELETE",

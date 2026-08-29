@@ -142,6 +142,39 @@ describe("getNodeSyncInfo", () => {
     assert.equal(info.deleted.find((d) => d.file_id === "F1")?.remote_path, "p/F1.md");
   });
 
+  // renameFolder writes one sync_rename row per affected file, and a sweep
+  // of a folder deleted on the remote writes one sync_delete_remote row per
+  // file. A row-count window (LIMIT 200) lets either push older DELETE
+  // tombstones out of the answer -- and a delete tombstone the agent never
+  // sees is a local copy that gets adopted and pushed back, i.e. the exact
+  // resurrection tombstones exist to prevent.
+  it("still exposes an older delete tombstone behind 300 newer rename rows", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const mk = (action: string, fileId: string, path: string, timestamp: string) =>
+      db.execute({
+        sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+              VALUES (?, 'U1', ?, 'file', ?, ?, ?)`,
+        args: [
+          ulid(),
+          action,
+          fileId,
+          JSON.stringify({ node_id: nodeId, remote_path: path, old_remote_path: path }),
+          timestamp,
+        ],
+      });
+    const t0 = Date.now() - 3 * 86_400_000;
+    await mk("sync_delete", "OLD", "p/old.md", new Date(t0).toISOString());
+    for (let i = 0; i < 300; i++) {
+      await mk("sync_rename", `R${i}`, `p/r${i}.md`, new Date(t0 + 60_000 + i).toISOString());
+    }
+
+    const info = await getNodeSyncInfo(db, nodeId);
+    assert.ok(
+      info.deleted.some((d) => d.file_id === "OLD"),
+      "the delete tombstone must survive a folder-sized batch of newer rename rows",
+    );
+  });
+
   it("returns an empty tombstone list when nothing was deleted", async () => {
     const { db, nodeId } = await makeSharedDb();
     const info = await getNodeSyncInfo(db, nodeId);

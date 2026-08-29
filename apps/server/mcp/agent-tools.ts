@@ -48,9 +48,12 @@ type LocalHandler = (
 // CentralClient has no "look up by file id" endpoint (sync-info is scoped
 // per node), so -- like computeSyncPendingCentral's cross-mirror
 // aggregate -- this fans out to every mirrored node's sync-info. Builds
-// just enough of a StatusFileEntry for pullFileCentral to derive the local
-// path itself.
-async function findEntryByFileId(
+// just enough of a StatusFileEntry for pullFileCentral/storeFileCentral to
+// act on directly -- local_path is derived here (same technique as
+// classifyRecord in engine-central.ts) rather than left null, so a caller
+// like the resolve endpoint's "keep_local" can hand it straight to
+// storeFileCentral without a second round-trip.
+export async function findEntryByFileId(
   client: CentralClient,
   userId: string,
   fileId: string,
@@ -61,13 +64,32 @@ async function findEntryByFileId(
   for (const si of infos) {
     const rec = si.files.find((f) => f.id === fileId);
     if (rec) {
+      const mirrorRoot = await getMirrorPath(userId, si.node.id);
+      const localPath =
+        mirrorRoot && rec.remote_path
+          ? (() => {
+              try {
+                return deriveLocalPath({
+                  mirrorRoot,
+                  nodeRoot: buildNodeRoot({
+                    orgSyncKey: si.node.org_sync_key,
+                    nodeType: si.node.type,
+                    nodeSyncKey: si.node.sync_key,
+                  }),
+                  remotePath: rec.remote_path,
+                });
+              } catch {
+                return null;
+              }
+            })()
+          : null;
       return {
         nodeId: si.node.id,
         entry: {
           file_id: rec.id,
           node_id: si.node.id,
           filename: rec.filename,
-          local_path: null,
+          local_path: localPath,
           remote_name: si.remote_name,
           remote_path: rec.remote_path,
           local_hash: null,
@@ -81,7 +103,7 @@ async function findEntryByFileId(
   return null;
 }
 
-type PreviewStatus = "unchanged" | "updated" | "conflict" | "orphan" | "native";
+type PreviewStatus = "unchanged" | "updated" | "conflict" | "remote_missing" | "remote_error" | "native";
 
 function toPreviewEntry(e: StatusFileEntry, status: PreviewStatus) {
   return {
@@ -127,7 +149,8 @@ const HANDLERS: Record<string, LocalHandler> = {
       push_candidates: [],
       pull_candidates: [],
       conflicts: [],
-      orphan: [],
+      remote_missing: [],
+      remote_error: [],
       native: [],
       new_local: [],
       new_remote: [],
@@ -146,7 +169,8 @@ const HANDLERS: Record<string, LocalHandler> = {
       agg.push_candidates.push(...r.push_candidates);
       agg.pull_candidates.push(...r.pull_candidates);
       agg.conflicts.push(...r.conflicts);
-      agg.orphan.push(...r.orphan);
+      agg.remote_missing.push(...r.remote_missing);
+      agg.remote_error.push(...r.remote_error);
       agg.native.push(...r.native);
       agg.new_local.push(...r.new_local);
       agg.new_remote.push(...r.new_remote);
@@ -203,7 +227,8 @@ const HANDLERS: Record<string, LocalHandler> = {
         ...scan.push_candidates.map((e) => toPreviewEntry(e, "updated")),
         ...scan.pull_candidates.map((e) => toPreviewEntry(e, "updated")),
         ...scan.conflicts.map((e) => toPreviewEntry(e, "conflict")),
-        ...scan.orphan.map((e) => toPreviewEntry(e, "orphan")),
+        ...scan.remote_missing.map((e) => toPreviewEntry(e, "remote_missing")),
+        ...scan.remote_error.map((e) => toPreviewEntry(e, "remote_error")),
         ...scan.native.map((e) => toPreviewEntry(e, "native")),
       ],
     };

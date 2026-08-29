@@ -27,3 +27,12 @@ export function invalidateAdapter(name: string): void {
 export function resetAdapterCacheForTests(): void {
   cache.clear();
 }
+
+// Test-only seam: pre-populate the cache with a caller-supplied adapter
+// (getAdapter checks the cache before ever calling getRemote/constructing a
+// real backend, so this lets tests substitute a fake FileAdapter -- e.g. one
+// that reports Drive-native-format behaviour -- without a real Drive
+// account or a real fs-backed remote).
+export function setAdapterForTests(name: string, adapter: FileAdapter): void {
+  cache.set(name, adapter);
+}

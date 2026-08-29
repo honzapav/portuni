@@ -85,6 +85,37 @@ describe("tombstone reconciliation in discovery", () => {
     assert.equal(r.deleted_remote[0].file_id, fileId);
   });
 
+  // A folder rename (one sync_rename row per file) or a sweep of a folder
+  // deleted on the remote (one sync_delete_remote row per file) can bury an
+  // older delete tombstone under hundreds of newer rows. If the tombstone
+  // query is bounded by row count, the buried delete stops matching and the
+  // local copy falls through to adopt -- resurrecting the deletion.
+  it("matches a tombstone buried under 300 newer rename rows", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const { fileId } = await arrangeTombstonedFile(db, nodeId, mirrorRoot);
+    // 300 newer sync_rename rows for other files of the same node, exactly
+    // what renameFolder writes.
+    for (let i = 0; i < 300; i++) {
+      await db.execute({
+        sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+              VALUES (?, 'U1', 'sync_rename', 'file', ?, ?, ?)`,
+        args: [
+          ulid(),
+          `R${i}`,
+          JSON.stringify({ node_id: nodeId, old_remote_path: `noise/r${i}.md` }),
+          new Date(Date.now() + 60_000 + i).toISOString(),
+        ],
+      });
+    }
+
+    const r = await statusScan(db, { userId: "U1", nodeId, includeDiscovery: true });
+    assert.equal(r.new_local.length, 0, "the tombstoned copy must not be adopted");
+    assert.equal(r.deleted_remote.length, 1);
+    assert.equal(r.deleted_remote[0].file_id, fileId);
+  });
+
   it("keeps a file modified after the remote delete as new_local", async () => {
     const { db, nodeId } = await makeSharedDb();
     const mirrorRoot = join(workspace, "mirror");
@@ -165,5 +196,47 @@ describe("cleanupDeletedRemote (sync-run cleanup)", () => {
     const st = await stat(localPath);
     assert.ok(st.isFile());
     assert.equal(scan.new_local.length, 1);
+  });
+});
+
+describe("move tombstones", () => {
+  it("an untracked copy left at a moved-from path is cleaned up, not adopted", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    await mkdir(join(mirrorRoot, "wip"), { recursive: true });
+    const oldLocal = join(mirrorRoot, "wip", "a.md");
+    await writeFile(oldLocal, "obsah");
+    const r = await storeFile(db, { userId: "U1", nodeId, localPath: oldLocal });
+    // Move through Portuni; then put the old copy back as if this device
+    // had missed the local step (another device, or a failed front door).
+    const { moveFile } = await import("../apps/server/domain/sync/engine-mutations.js");
+    const mv = await moveFile(db, { userId: "U1", fileId: r.file_id, newSection: "outputs", confirmed: true });
+    assert.equal("status" in mv && mv.status, "ok");
+    await writeFile(oldLocal, "obsah");
+    const scan = await statusScan(db, { userId: "U1", nodeId, includeDiscovery: true });
+    assert.equal(scan.new_local.length, 0, "old copy must not surface as new_local");
+    assert.equal(scan.deleted_remote.length, 1);
+    assert.equal(scan.deleted_remote[0].record_alive, true);
+    const cleaned = await cleanupDeletedRemote(scan.deleted_remote);
+    assert.equal(cleaned.cleaned.length, 1);
+    await assert.rejects(() => stat(oldLocal));
+    assert.ok(await getFileState(r.file_id), "file_state of a live record must survive");
+  });
+
+  it("an old copy edited after the move stays new_local", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    await mkdir(join(mirrorRoot, "wip"), { recursive: true });
+    const oldLocal = join(mirrorRoot, "wip", "a.md");
+    await writeFile(oldLocal, "obsah");
+    const r = await storeFile(db, { userId: "U1", nodeId, localPath: oldLocal });
+    const { moveFile } = await import("../apps/server/domain/sync/engine-mutations.js");
+    await moveFile(db, { userId: "U1", fileId: r.file_id, newSection: "outputs", confirmed: true });
+    await writeFile(oldLocal, "obsah upraveny");
+    const scan = await statusScan(db, { userId: "U1", nodeId, includeDiscovery: true });
+    assert.equal(scan.new_local.length, 1);
+    assert.equal(scan.deleted_remote.length, 0);
   });
 });

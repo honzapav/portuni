@@ -699,6 +699,57 @@ describe("IDOR fixes: FK guards on sync / mirror / move / create", () => {
     );
   });
 
+  test("outsider POST /nodes/:id/sync/remote-sweep on a restricted node -> 404", async () => {
+    const outsider = makeOutsider(["other@x.com"]);
+    const { req, res, captured } = makeMockReqRes(
+      "POST",
+      `/nodes/${restrictedNodeId}/sync/remote-sweep`,
+    );
+    await routeApiRequest(
+      req,
+      res,
+      new URL(`http://localhost/nodes/${restrictedNodeId}/sync/remote-sweep`),
+      outsider,
+    );
+    assert.equal(
+      captured.statusCode,
+      404,
+      `expected 404, got ${captured.statusCode}; body: ${captured.body}`,
+    );
+  });
+
+  test("POST /nodes/:id/sync/remote-sweep on a visible node -> 200 with the sweep result", async () => {
+    const outsider = makeOutsider(["other@x.com"]);
+    const { req, res, captured } = makeMockReqRes("POST", `/nodes/${teamNodeId}/sync/remote-sweep`);
+    await routeApiRequest(
+      req,
+      res,
+      new URL(`http://localhost/nodes/${teamNodeId}/sync/remote-sweep`),
+      outsider,
+    );
+    assert.equal(
+      captured.statusCode,
+      200,
+      `expected 200, got ${captured.statusCode}; body: ${captured.body}`,
+    );
+    // No remote is routed to teamNodeId in this fixture, so the sweep is a
+    // real no-op run (resolveRemote finds nothing and returns empty), not a
+    // mocked result -- this proves the route reaches handleRemoteSweep ->
+    // remoteSweep() rather than a stub.
+    const body = JSON.parse(captured.body) as {
+      adopted: unknown[];
+      deleted_on_remote: unknown[];
+      errors: unknown[];
+    };
+    assert.deepEqual(body, {
+      adopted: [],
+      deleted_on_remote: [],
+      errors: [],
+      repaired: [],
+      pending_repairs: [],
+    });
+  });
+
   test("outsider POST /nodes/:id/mirror on a restricted node -> 404", async () => {
     const outsider = makeOutsider(["other@x.com"]);
     const { req, res, captured } = makeMockReqRes("POST", `/nodes/${restrictedNodeId}/mirror`);

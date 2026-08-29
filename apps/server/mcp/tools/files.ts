@@ -99,7 +99,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_pull",
-    "Two modes selected by which argument you pass. With file_id: download the remote version into the mirror and refresh the local hash cache — use to restore a deleted local copy or pull a teammate's update. With node_id: classify each file (unchanged/updated/conflict/orphan/native) without modifying anything — use as a preview before pulling. Exactly one of file_id or node_id must be provided.",
+    "Two modes selected by which argument you pass. With file_id: download the remote version into the mirror and refresh the local hash cache — use to restore a deleted local copy or pull a teammate's update. With node_id: classify each file (unchanged/updated/conflict/remote_missing/remote_error/native) without modifying anything — use as a preview before pulling. Exactly one of file_id or node_id must be provided.",
     {
       file_id: z.string().optional().describe("File ID (ULID). Download mode — fetches the remote version into the mirror."),
       node_id: z.string().optional().describe("Node ID (ULID). Preview mode — classifies each file without modifying anything."),

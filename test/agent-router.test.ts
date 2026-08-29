@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
 import { join, posix, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
@@ -69,8 +69,25 @@ class FakeCentral implements CentralClient {
     return { bytes: b, version: sha(b), canonicalHash: sha(b) };
   }
 
-  async putFileRaw(_nodeId: string, relPath: string, bytes: Buffer) {
-    this.bytes.set(posix.join(NODE_ROOT, relPath), Buffer.from(bytes));
+  // Precondition-enforcing, same pattern as test/agent-tools.test.ts's
+  // FakeCentral -- required so the resolve tests below actually exercise
+  // force:true bypassing a stale-hash rejection, rather than a fake that
+  // always accepts the write regardless of what precondition was sent.
+  async putFileRaw(
+    _nodeId: string,
+    relPath: string,
+    bytes: Buffer,
+    opts?: { baseCanonicalHash?: string; ifAbsent?: boolean; force?: boolean },
+  ) {
+    const remotePath = posix.join(NODE_ROOT, relPath);
+    const cur = this.bytes.get(remotePath);
+    if (opts?.ifAbsent && !opts.force && cur) {
+      throw new CentralHttpError("exists", 409, "EXISTS");
+    }
+    if (opts?.baseCanonicalHash && !opts.force && cur && sha(cur) !== opts.baseCanonicalHash) {
+      throw new CentralHttpError("changed", 409, "CONFLICT", sha(cur));
+    }
+    this.bytes.set(remotePath, Buffer.from(bytes));
     return { version: sha(bytes), canonicalHash: sha(bytes) };
   }
 
@@ -108,6 +125,10 @@ class FakeCentral implements CentralClient {
   neighbours: string[] = [];
   async nodeNeighbours(_nodeId: string): Promise<string[]> {
     return this.neighbours;
+  }
+
+  async remoteSweep() {
+    return { adopted: [], deleted_on_remote: [], errors: [], repaired: [], pending_repairs: [] };
   }
 }
 
@@ -363,6 +384,148 @@ describe("agent router over HTTP", () => {
     assert.equal(
       fake.bytes.get(posix.join(NODE_ROOT, "wip/away.md"))?.toString(),
       "central body",
+    );
+  });
+});
+
+describe("POST /nodes/:id/files/:fileId/resolve (agent mode)", () => {
+  async function seedConflict(filename: string): Promise<string> {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const abs = join(mirrorRoot, "wip", filename);
+    await writeFile(abs, "v1");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    assert.equal(sync1.status, 200);
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    assert.equal(synced1.adopted.length, 1, `expected one adopted file, got ${JSON.stringify(synced1)}`);
+    const fileId = synced1.adopted[0].file_id;
+
+    // Both sides changed since the last push -- a real conflict. The
+    // FakeCentral's baseCanonicalHash precondition now sees a stale
+    // baseline, so an un-forced push/pull would be refused.
+    fake.bytes.set(posix.join(NODE_ROOT, `wip/${filename}`), Buffer.from("remote"));
+    await writeFile(abs, "local");
+    return fileId;
+  }
+
+  it("keep_local force-pushes local bytes past a stale remote hash", async () => {
+    const fileId = await seedConflict("a.md");
+
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "keep_local" }),
+    });
+    assert.equal(r.status, 200);
+    const body = (await r.json()) as { file_id: string; action: string; status: string };
+    assert.deepEqual(body, { file_id: fileId, action: "keep_local", status: "ok" });
+
+    assert.equal(
+      fake.bytes.get(posix.join(NODE_ROOT, "wip/a.md"))?.toString(),
+      "local",
+      "remote must now carry the local version",
+    );
+    assert.equal(
+      await readFile(join(mirrorRoot, "wip", "a.md"), "utf8"),
+      "local",
+      "local copy must be untouched",
+    );
+  });
+
+  it("take_remote overwrites the local edit with the remote version", async () => {
+    const fileId = await seedConflict("b.md");
+
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "take_remote" }),
+    });
+    assert.equal(r.status, 200);
+
+    assert.equal(
+      await readFile(join(mirrorRoot, "wip", "b.md"), "utf8"),
+      "remote",
+      "local copy must now carry the remote version",
+    );
+    assert.equal(
+      fake.bytes.get(posix.join(NODE_ROOT, "wip/b.md"))?.toString(),
+      "remote",
+      "remote must be untouched",
+    );
+  });
+
+  it("rejects an unknown action with 400", async () => {
+    const fileId = await seedConflict("c.md");
+
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "nope" }),
+    });
+    assert.equal(r.status, 400);
+  });
+
+  it("404s for a file id not on any mirror this device has", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/NOPE/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "keep_local" }),
+    });
+    assert.equal(r.status, 404);
+  });
+
+  it("404s when the file belongs to a different node than the URL (IDOR)", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await writeFile(join(mirrorRoot, "wip", "h.md"), "v1");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    const fileId = synced1.adopted[0].file_id;
+
+    // findEntryByFileId fans out across every node this device has mirrored;
+    // OTHER_NODE_ID is not where this file lives, so it must not resolve.
+    const OTHER_NODE_ID = "N0000000000000000000OTHER";
+    const r = await fetch(`${base}/nodes/${OTHER_NODE_ID}/files/${fileId}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "keep_local" }),
+    });
+    assert.equal(r.status, 404);
+
+    assert.equal(
+      await readFile(join(mirrorRoot, "wip", "h.md"), "utf8"),
+      "v1",
+      "local copy must be untouched",
+    );
+    assert.equal(
+      fake.bytes.get(posix.join(NODE_ROOT, "wip/h.md"))?.toString(),
+      "v1",
+      "remote copy must be untouched",
+    );
+  });
+
+  it("restore over a dirty local copy returns 409 instead of clobbering it", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await writeFile(join(mirrorRoot, "wip", "i.md"), "v1");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    const fileId = synced1.adopted[0].file_id;
+
+    // Unpushed local edit -- pullFileCentral's dirty guard must refuse.
+    await writeFile(join(mirrorRoot, "wip", "i.md"), "unpushed local edit");
+
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "restore" }),
+    });
+    assert.equal(r.status, 409);
+    const body = (await r.json()) as { error: string };
+    assert.match(body.error, /never pushed/);
+
+    assert.equal(
+      await readFile(join(mirrorRoot, "wip", "i.md"), "utf8"),
+      "unpushed local edit",
+      "local copy must be untouched",
     );
   });
 });

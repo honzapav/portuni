@@ -30,7 +30,7 @@ export function __setDriveFetchForTests(f: typeof fetch): void {
   });
 }
 
-interface DriveFile { id: string; name: string; mimeType: string; parents?: string[]; size?: string; md5Checksum?: string; modifiedTime?: string; createdTime?: string; }
+interface DriveFile { id: string; name: string; mimeType: string; parents?: string[]; size?: string; md5Checksum?: string; modifiedTime?: string; createdTime?: string; trashed?: boolean; }
 
 export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): FileAdapter {
   const cfg: DriveConfig = parseDriveConfig(remote.config);
@@ -303,16 +303,50 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
       return Buffer.from(await res.arrayBuffer());
     },
 
+    // The remote sweep deletes a record when stat() answers null, so stat is
+    // the one call that has to be right about presence. Two ways a naive
+    // implementation lies "still there":
+    //   - Drive's trash. list() filters trashed=false, but GET files/{id}
+    //     happily answers 200 for a trashed file, so a file this process
+    //     pushed (hence cached) and the user then trashed in the Drive UI
+    //     would never be reconciled -- and a trashed NODE FOLDER would keep
+    //     the sweep's reachability guard passing while every record under it
+    //     looks gone.
+    //   - a stale pathCache entry. The adapter instance lives for the whole
+    //     process (adapter-cache.ts, no TTL) and the cache is only
+    //     invalidated by this process's own rename/delete, so a rename done
+    //     elsewhere -- or one of ours whose response was lost -- leaves the
+    //     old path pointing at an id that has moved on. runMove then sees
+    //     both source and destination and throws "both ... exist" forever.
+    // Both are caught by asking for `trashed` and checking the returned
+    // `name` against the last path segment: on a miss the cached entry is
+    // dropped and the path is resolved from Drive once more, which also
+    // finds a DIFFERENT object that has since taken the path.
     async stat(path) {
-      const id = await resolvePathToFileId(path);
-      if (!id) return null;
-      const params = withSAD(new URLSearchParams({ fields: "id,name,mimeType,size,md5Checksum,modifiedTime,parents" }));
-      const res = await driveFetch(`${DRIVE_API}/files/${id}?${params.toString()}`, { headers: await authHeaders() });
-      if (!res.ok) {
-        if (res.status === 404) { pathCache.delete(path); return null; }
-        throw new Error(`Drive stat: ${res.status} ${await res.text()}`);
+      const expectedName = path.split("/").filter(Boolean).pop() ?? null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const fromCache = pathCache.has(path);
+        const id = await resolvePathToFileId(path);
+        if (!id) return null;
+        const params = withSAD(new URLSearchParams({ fields: "id,name,mimeType,size,md5Checksum,modifiedTime,parents,trashed" }));
+        const res = await driveFetch(`${DRIVE_API}/files/${id}?${params.toString()}`, { headers: await authHeaders() });
+        if (!res.ok) {
+          if (res.status === 404) { invalidatePrefix(path); return null; }
+          throw new Error(`Drive stat: ${res.status} ${await res.text()}`);
+        }
+        const file = (await res.json()) as DriveFile;
+        const stale =
+          file.trashed === true ||
+          (expectedName !== null && file.name !== undefined && file.name !== expectedName);
+        if (!stale) return fileRefFrom(file, path);
+        // The object behind this path is not the one the path names. Drop
+        // the cached mapping (and anything under it, if this is a folder)
+        // and, if that mapping is what we just used, resolve again from
+        // Drive -- a fresh search may find the real object at this path.
+        invalidatePrefix(path);
+        if (!fromCache) return null;
       }
-      return fileRefFrom((await res.json()) as DriveFile, path);
+      return null;
     },
 
     async list(prefix) {

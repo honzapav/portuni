@@ -120,6 +120,27 @@ export const DDL = [
     timestamp DATETIME NOT NULL DEFAULT (datetime('now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)`,
+  // File tombstone lookups (sync-info's time-bounded window, and the local
+  // matcher's per-candidate-path query) filter on target_type + action and
+  // order by timestamp. Without this they are a full table scan of a log
+  // that only grows.
+  `CREATE INDEX IF NOT EXISTS idx_audit_file_action_ts ON audit_log(target_type, action, timestamp)`,
+  // Task 6: intents for the remote+local+DB mutations (moveFile, renameFile,
+  // renameFolder, deleteFile, deleteFileRemote). A row is written before the
+  // first side effect and cleared on success; leftovers are retried
+  // idempotently by retryPendingFileOps at the start of every sync run.
+  `CREATE TABLE IF NOT EXISTS pending_file_ops (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_pending_file_ops_node ON pending_file_ops(node_id)`,
   // NOTE: `local_mirrors` is NOT created in Turso. Per-device mirror paths
   // live in the local sync.db (see src/sync/local-db.ts). Migration 011
   // drops the legacy Turso `local_mirrors` table on existing installs.

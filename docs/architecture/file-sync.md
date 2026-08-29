@@ -287,7 +287,7 @@ Mode B – preview node (no side effects):
   Output: {
     files: [{
       file_id, filename,
-      status: "new"|"updated"|"unchanged"|"conflict",
+      status: "unchanged"|"updated"|"conflict"|"remote_missing"|"remote_error"|"native",
       remote_hash, local_hash, last_synced_hash
     }]
   }
@@ -314,12 +314,16 @@ Algorithm:
     4. Classify:
        in_sync         local = last_synced = remote
        push            local != last_synced, remote == last_synced
-       pull            local == last_synced, remote != last_synced
+       pull            local == last_synced, remote != last_synced (also: remote object
+                       exists, this device has no copy and no last-synced baseline)
        conflict        local != last_synced, remote != last_synced
        new_local       local file present, no files row
        new_remote      files row present, no local file, no sync.db entry (never had it locally)
        deleted_local   files row present, no local file, sync.db entry exists (had it, then removed)
-       orphan          files row present, local may or may not exist, remote returned null
+       remote_missing  files row present, remote object confirmed gone (never pushed, or
+                       removed and awaiting the next sync run's remote sweep)
+       remote_error    remote stat could not be confirmed (network/auth); transient,
+                       skipped by the sync run
        native          is_native_format = true (report modified_at only)
 
   Also run move detection:
@@ -331,15 +335,59 @@ Algorithm:
 Output: {
   clean: [...], push: [...], pull: [...], conflict: [...],
   new_local: [...], new_remote: [...], deleted_local: [...],
-  orphan: [...], native: [...],
+  remote_missing: [...], remote_error: [...], native: [...],
   moved: [{ file_id, old_path, new_path, hash }],
   renamed_folders: [{ old_prefix, new_prefix, file_ids: [...] }]
 }
 
-For deleted_local entries, the payload includes resolution_options so the agent
-can offer: restore_from_remote (pull it back), propagate_delete (delete remote
-and unregister), unregister_only (keep remote, drop Portuni row).
+For deleted_local entries, resolve with `portuni_pull(file_id)` (restore) or
+`portuni_delete_file(file_id, mode)` (`complete` removes remote+local+row,
+`unregister_only` drops just the row). The web UI's equivalent is
+`POST /nodes/:id/files/:fileId/resolve` with `{ action: "restore" }`, which is
+a plain pull and refuses (409) to clobber unpushed local changes.
 ```
+
+### Deliberate sync run
+
+`POST /nodes/:id/sync` ("Synchronizovat" in the UI; `handleSyncRun` in
+`apps/server/api/nodes.ts`) runs, in order:
+
+1. **Retry pending file ops.** `retryPendingFileOps` (`pending-ops.ts`)
+   replays any `pending_file_ops` row left over from a move/rename/delete
+   whose remote step didn't complete last time. Idempotent: each executor
+   inspects the remote first and performs only the missing step; it refuses
+   (rather than guesses) when the remote is ambiguous (both source and
+   destination present, or neither) or the `files` record no longer matches
+   the op's payload.
+2. **Remote sweep.** `remoteSweep` (`remote-sweep.ts`) reconciles the node's
+   `files` rows against the live remote listing: a pushed record whose
+   object is confirmed gone is deleted and tombstoned (`sync_delete_remote`);
+   a remote file newly present anywhere under `wip/`, `outputs/`, or
+   `resources/` — at any depth — is adopted (`adoptableSection` skips it
+   if any path segment past the section starts with `.`). Both classes only fire once the node
+   root itself is confirmed reachable, so a remote that's merely unreachable
+   never destroys records.
+   Never-pushed records (`current_remote_hash IS NULL`) are untouched.
+3. **Status scan.** `statusScan` classifies every tracked file, now against
+   the sweep's up-to-date rows.
+4. **Push / pull.** `push_candidates` are pushed, `pull_candidates` pulled.
+   `deleted_local` is reported, not auto-pulled — restoring it needs an
+   explicit decision.
+5. **Tombstone cleanup.** Untracked local copies matching a delete or
+   move/rename tombstone (`matchDeleteTombstones` / `cleanupDeletedRemote`)
+   are removed instead of re-adopted.
+6. **Adopt untracked local files.** Anything left in the mirror with no
+   `files` row (including an edited copy of a file just deleted on the
+   remote — the edit wins) is registered and pushed.
+
+`portuni_status` never runs the sweep or step 5/6 — it's read-only. Only a
+deliberate sync run reconciles the remote; this keeps status polling cheap
+and side-effect-free (see [file-mutation-propagation.md](./file-mutation-propagation.md)).
+
+In central mode (teammate mirrors) the agent has no Drive credentials, so
+it calls `POST /nodes/:id/sync/remote-sweep` on the central server first
+(steps 1–2 run there), then continues with the rest of the run against the
+refreshed sync-info.
 
 ### portuni_snapshot
 
@@ -505,30 +553,30 @@ The two-call protocol ensures agents always surface the consequence before execu
 
 ## Conflict resolution UX
 
-When `portuni_status` classifies a file as conflict, the payload carries enough context for the user to choose:
+When `portuni_status` classifies a file as `conflict`, the entry carries
+enough context for the user to choose (`StatusFileEntry`, `engine.ts`):
 
 ```json
 {
   "file_id": "01FOO...",
+  "node_id": "01BAR...",
   "filename": "report.pdf",
-  "reason": "both_modified",
   "local_hash": "abc123",
-  "local_modified_at": "2026-04-24T09:15:00Z",
   "remote_hash": "def456",
-  "remote_modified_at": "2026-04-24T11:30:00Z",
-  "remote_modified_by": "alice@example.com",
   "last_synced_hash": "ghi789",
-  "last_synced_at": "2026-04-23T20:00:00Z",
-  "resolution_options": [
-    "keep_local_push",
-    "keep_remote_pull",
-    "keep_both_rename_local",
-    "inspect_manually"
-  ]
+  "class": "conflict"
 }
 ```
 
-Agent presents, user decides, agent invokes the corresponding explicit tool. Portuni never auto-merges and never silently overwrites.
+There is no `resolution_options` field — the agent presents the two
+possible outcomes directly and invokes the matching tool once the user
+decides: `portuni_store` keeps the local version (pushes it over the
+remote), `portuni_pull(file_id, force: true)` takes the remote version.
+The same choice for a `deleted_local` file is `portuni_pull(file_id)`
+(restore) or `portuni_delete_file` (remove everywhere). The web UI's
+equivalent is `POST /nodes/:id/files/:fileId/resolve` with
+`{ action: "keep_local" | "take_remote" | "restore" }`. Portuni never
+auto-merges and never silently overwrites.
 
 ## Setup flow
 

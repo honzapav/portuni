@@ -1,5 +1,5 @@
 import { copyFile, mkdir, readFile, readdir, rm, stat as fsStat, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import type { Client } from "@libsql/client";
 import { ulid } from "ulid";
 import { md5Buffer, sha256Buffer, sha256File, statForCache } from "./hash.js";
@@ -27,6 +27,19 @@ import { loadMirrorIgnore } from "./mirror-ignore.js";
 
 // Re-export so existing imports `from "./engine.js"` keep working.
 export { resolveNodeInfo };
+
+// Thrown by pullFile's (and pullFileCentral's) dirty-local guard: the local
+// copy has changes this device never pushed, and force was not passed. A
+// distinct, expected condition -- not a crash -- so callers that give the
+// user a way out of it (the resolve endpoint's `restore`) can map it to a
+// real HTTP status instead of respondError's generic 500. Same pattern as
+// FileContentError / MirrorCreateError elsewhere in this module.
+export class PullDirtyLocalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PullDirtyLocalError";
+  }
+}
 
 // Appended to "No remote routing configured" errors (and surfaced in the
 // portuni_mirror scaffold hint) so the failure is self-explanatory to
@@ -346,9 +359,9 @@ export async function registerLocalFile(
 
   // files row: routed (stable destination) but NEVER pushed --
   // current_remote_hash + last_pushed_* stay NULL so the file reads as a
-  // pending upload, not a synced or orphan file. On conflict (already
-  // registered) we leave those columns untouched so a synced file is not
-  // demoted.
+  // pending upload, not a synced or remote-missing file. On conflict
+  // (already registered) we leave those columns untouched so a synced file
+  // is not demoted.
   const upsert = await db.execute({
     sql: `INSERT INTO files (id, node_id, filename, status, mime_type,
                               remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
@@ -475,7 +488,7 @@ export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileRes
     const dirty =
       localCur !== hash && (baseline === null || localCur !== baseline);
     if (dirty) {
-      throw new Error(
+      throw new PullDirtyLocalError(
         `File ${a.fileId} has local changes that were never pushed from this device ` +
           `(${localPath}). Push them with portuni_store, or pass force: true to overwrite.`,
       );
@@ -495,6 +508,20 @@ export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileRes
     cached_size: fsInfo.size,
     cached_ino: fsInfo.ino,
     cached_dev: fsInfo.dev,
+  });
+
+  // Keep files.current_remote_hash in step with what we just confirmed is
+  // on the remote. It normally only advances via a push (storeFile) --
+  // this device's own pull downloads exactly what that column already
+  // recorded from whichever device last pushed, so writing it here is a
+  // no-op in the common case. It only diverges when the remote was edited
+  // out of band of any Portuni push; without this write, a fast-mode
+  // status scan (files.current_remote_hash + file_state, no disk or
+  // adapter I/O) would keep reporting the file as a pull candidate right
+  // after it was just pulled.
+  await db.execute({
+    sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
+    args: [hash, a.fileId],
   });
 
   await db.execute({
@@ -549,7 +576,7 @@ export interface StatusFileEntry {
   local_hash: string | null;
   remote_hash: string | null;
   last_synced_hash: string | null;
-  class: "clean" | "push" | "pull" | "conflict" | "orphan" | "native";
+  class: "clean" | "push" | "pull" | "conflict" | "remote_missing" | "remote_error" | "native";
 }
 
 export interface NewLocalEntry {
@@ -578,7 +605,7 @@ export interface MoveProposal {
 
 // An untracked disk file whose record was deliberately deleted elsewhere
 // (matched against a delete tombstone -- see matchDeleteTombstones). The
-// sync run removes the local copy and the orphaned file_state row instead
+// sync run removes the local copy and the dangling file_state row instead
 // of adopting the file back.
 export interface DeletedRemoteEntry {
   file_id: string;
@@ -587,6 +614,10 @@ export interface DeletedRemoteEntry {
   local_path: string;
   remote_path: string;
   hash: string;
+  // True when the tombstone came from a move/rename, not a delete: the
+  // files row is still alive (at a new path), so cleanup must remove the
+  // stale local copy but MUST NOT delete its file_state row.
+  record_alive: boolean;
 }
 
 export interface StatusResult {
@@ -594,7 +625,8 @@ export interface StatusResult {
   push_candidates: StatusFileEntry[];
   pull_candidates: StatusFileEntry[];
   conflicts: StatusFileEntry[];
-  orphan: StatusFileEntry[];
+  remote_missing: StatusFileEntry[];
+  remote_error: StatusFileEntry[];
   native: StatusFileEntry[];
   new_local: NewLocalEntry[];
   new_remote: NewRemoteEntry[];
@@ -679,13 +711,13 @@ async function cachedRemoteStat(
     });
     return stat === null ? { hash: null, exists: false } : { hash: stat.hash, exists: true };
   } catch (e) {
-    // Returning null classifies the file as orphan -- when the cause is a
-    // transient SQLITE_BUSY on the shared sync.db (sidecar + tmux server)
-    // or an adapter hiccup, a silent catch makes those flickers
+    // Returning null classifies the file as remote_error -- when the cause
+    // is a transient SQLITE_BUSY on the shared sync.db (sidecar + tmux
+    // server) or an adapter hiccup, a silent catch makes those flickers
     // undiagnosable. Log once per remote+error to keep scans quiet.
     warnOncePerKey(
       `${remoteName}:${e instanceof Error ? e.message.slice(0, 80) : String(e)}`,
-      `[portuni:sync] remote stat failed (files will show as orphan until it recovers): remote=${remoteName} err=${String(e)}`,
+      `[portuni:sync] remote stat failed (files will show as remote_error until it recovers): remote=${remoteName} err=${String(e)}`,
     );
     return null;
   }
@@ -698,7 +730,7 @@ function warnOncePerKey(key: string, message: string): void {
   console.warn(message);
 }
 
-type ScanBucket = "clean" | "push_candidates" | "pull_candidates" | "conflicts" | "orphan" | "native" | "deleted_local";
+type ScanBucket = "clean" | "push_candidates" | "pull_candidates" | "conflicts" | "remote_missing" | "remote_error" | "native" | "deleted_local";
 
 interface ScanRowResult {
   bucket: ScanBucket;
@@ -722,7 +754,7 @@ async function scanRow(
   const info = nodeInfoCache.get(nodeId) ?? null;
   if (info === null) {
     return {
-      bucket: "orphan",
+      bucket: "remote_error",
       entry: {
         file_id: fileId,
         node_id: nodeId,
@@ -733,7 +765,7 @@ async function scanRow(
         local_hash: null,
         remote_hash: null,
         last_synced_hash: null,
-        class: "orphan",
+        class: "remote_error",
       },
     };
   }
@@ -764,7 +796,7 @@ async function scanRow(
   };
 
   if (isNative) return { bucket: "native", entry: { ...base, class: "native" } };
-  if (!remoteName || !remotePath) return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+  if (!remoteName || !remotePath) return { bucket: "remote_error", entry: { ...base, class: "remote_error" } };
 
   const state = await getFileState(fileId);
   base.last_synced_hash = state?.last_synced_hash ?? null;
@@ -778,24 +810,25 @@ async function scanRow(
   const rs = a.fast
     ? { hash: currentRemoteHash, exists: currentRemoteHash !== null }
     : await cachedRemoteStat(db, fileId, remoteName, remotePath);
-  if (rs === null) return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+  if (rs === null) return { bucket: "remote_error", entry: { ...base, class: "remote_error" } };
   base.remote_hash = rs.hash;
   if (!rs.exists) {
     // Registered locally but not on the remote. A brand-new file staged for
     // the next push -- local content present, never synced -- reads as
     // `push` (pending upload). A file whose remote vanished after a sync
-    // (baseline present) or one with no local content stays `orphan`.
+    // (baseline present) or one with no local content is `remote_missing`.
     if (localHash !== null && base.last_synced_hash === null) {
       return { bucket: "push_candidates", entry: { ...base, class: "push" } };
     }
-    return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+    return { bucket: "remote_missing", entry: { ...base, class: "remote_missing" } };
   }
 
   if (localHash === null) {
     if (base.last_synced_hash) {
       return { bucket: "deleted_local", entry: { ...base, class: "clean" } };
     }
-    return { bucket: "orphan", entry: { ...base, class: "orphan" } };
+    // Remote content exists but this device never synced it -> fetchable.
+    return { bucket: "pull_candidates", entry: { ...base, class: "pull" } };
   }
 
   const last = base.last_synced_hash;
@@ -861,7 +894,8 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
     push_candidates: [],
     pull_candidates: [],
     conflicts: [],
-    orphan: [],
+    remote_missing: [],
+    remote_error: [],
     native: [],
     new_local: [],
     new_remote: [],
@@ -933,12 +967,17 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
 }
 
 // Tombstone reconciliation (GH #79): match untracked disk files against the
-// node's delete tombstones so a copy left behind on this device cannot
-// resurrect a deliberate deletion via adopt/store. Triple match -- the local
-// path derived from the tombstone's remote_path, a file_state row for the
-// tombstoned id on THIS device, and last_synced_hash equal to the current
-// disk hash -- makes the cleanup lossless by construction: any post-delete
-// edit fails the hash check and the file stays new_local.
+// node's delete AND move/rename tombstones so a copy left behind on this
+// device cannot resurrect a deliberate deletion, or get adopted/pushed back
+// to a path the file has since moved away from, via adopt/store. Triple
+// match -- the local path derived from the tombstone's (old) remote_path, a
+// file_state row for the tombstoned id on THIS device, and last_synced_hash
+// equal to the current disk hash -- makes the cleanup lossless by
+// construction: any post-tombstone edit fails the hash check and the file
+// stays new_local. A move/rename tombstone additionally sets record_alive:
+// true (the files row is still alive, just at a new path) and is skipped
+// outright if the record has since moved back to the tombstoned path --
+// cleanupDeletedRemote uses record_alive to keep that row's file_state.
 export async function matchDeleteTombstones<
   T extends { node_id: string; local_path: string; filename: string; hash?: string },
 >(
@@ -963,18 +1002,50 @@ export async function matchDeleteTombstones<
     } catch {
       continue;
     }
-    const tombRes = await db.execute({
-      sql: `SELECT target_id, json_extract(detail, '$.remote_path') AS remote_path
-            FROM audit_log
-            WHERE target_type = 'file'
-              AND action IN ('sync_delete', 'sync_delete_remote')
-              AND json_extract(detail, '$.node_id') = ?
-            ORDER BY timestamp DESC LIMIT 200`,
-      args: [nodeId],
-    });
-    for (const t of tombRes.rows) {
+    // Bound the query by the CANDIDATE SET, never by row count. One
+    // renameFolder writes a sync_rename row per affected file and a sweep of
+    // a folder deleted on the remote writes a sync_delete_remote row per
+    // file, so an `ORDER BY timestamp DESC LIMIT n` window silently drops
+    // older delete tombstones -- and a dropped delete tombstone means the
+    // local copy falls through to adopt and gets pushed back, resurrecting
+    // the deletion. We already know exactly which paths could match: the
+    // remote path each untracked local file would occupy.
+    const expectedRemotePaths = new Set<string>();
+    for (const e of nodeEntries) {
+      const rel = relative(mirrorRoot, e.local_path);
+      if (!rel || rel.startsWith("..")) continue;
+      const remotePath = `${nodeRoot}/${rel.split(sep).join("/")}`;
+      expectedRemotePaths.add(remotePath);
+      expectedRemotePaths.add(remotePath.normalize("NFC"));
+    }
+    if (expectedRemotePaths.size === 0) continue;
+    const tombRows: Awaited<ReturnType<Client["execute"]>>["rows"] = [];
+    // Chunked so a folder-sized candidate set stays well under any SQL
+    // variable limit.
+    const allPaths = [...expectedRemotePaths];
+    for (let i = 0; i < allPaths.length; i += 300) {
+      const chunk = allPaths.slice(i, i + 300);
+      const placeholders = chunk.map(() => "?").join(", ");
+      const res = await db.execute({
+        sql: `SELECT target_id, action,
+                     COALESCE(json_extract(detail, '$.remote_path'),
+                              json_extract(detail, '$.old_remote_path')) AS remote_path
+              FROM audit_log
+              WHERE target_type = 'file'
+                AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename')
+                AND json_extract(detail, '$.node_id') = ?
+                AND COALESCE(json_extract(detail, '$.remote_path'),
+                             json_extract(detail, '$.old_remote_path')) IN (${placeholders})
+              ORDER BY timestamp DESC`,
+        args: [nodeId, ...chunk],
+      });
+      tombRows.push(...res.rows);
+    }
+    for (const t of tombRows) {
       const remotePath = t.remote_path as string | null;
       if (!remotePath) continue;
+      const action = t.action as string;
+      const recordAlive = action === "sync_move" || action === "sync_rename";
       let expectedLocal: string;
       try {
         expectedLocal = deriveLocalPath({ mirrorRoot, nodeRoot, remotePath }).normalize("NFC");
@@ -989,6 +1060,18 @@ export async function matchDeleteTombstones<
       if (!st || st.last_synced_hash === null) continue;
       const hash = await diskHashMatching(st.last_synced_hash, entry.local_path, entry.hash);
       if (hash === null || hash !== st.last_synced_hash) continue;
+      if (recordAlive) {
+        // The file's record moved on -- skip the tombstone if it moved
+        // right back to this exact path (the move was undone), otherwise
+        // a live file would get its file_state deleted out from under it.
+        const cur = await db.execute({
+          sql: "SELECT remote_path FROM files WHERE id = ?",
+          args: [t.target_id as string],
+        });
+        if (cur.rows.length > 0 && (cur.rows[0].remote_path as string | null) === remotePath) {
+          continue;
+        }
+      }
       matchedPaths.add(entry.local_path);
       deleted.push({
         file_id: t.target_id as string,
@@ -997,6 +1080,7 @@ export async function matchDeleteTombstones<
         local_path: entry.local_path,
         remote_path: remotePath,
         hash,
+        record_alive: recordAlive,
       });
     }
   }
@@ -1026,9 +1110,13 @@ export async function diskHashMatching(
   return useMd5 ? md5Buffer(content) : sha256Buffer(content);
 }
 
-// Apply the deleted_remote cleanup: remove the stale local copy and the
-// orphaned file_state row. Lossless by the matchDeleteTombstones contract --
-// only files byte-identical to their last synced state ever get here.
+// Apply the deleted_remote cleanup: remove the stale local copy always, and
+// the file_state row only when record_alive is false. A delete tombstone's
+// file_state is dangling (its files row is gone) and must go with it; a
+// move/rename tombstone's file_state still belongs to a live files row at
+// the new path and must survive -- only the stale copy at the old path is
+// cleaned up. Lossless by the matchDeleteTombstones contract -- only files
+// byte-identical to their last synced state ever get here.
 export async function cleanupDeletedRemote(
   entries: DeletedRemoteEntry[],
 ): Promise<{
@@ -1040,7 +1128,9 @@ export async function cleanupDeletedRemote(
   for (const e of entries) {
     try {
       await rm(e.local_path, { force: true });
-      await deleteFileState(e.file_id).catch(() => undefined);
+      // A move/rename tombstone's record is still alive at its new path --
+      // its file_state must survive the cleanup of the stale old copy.
+      if (!e.record_alive) await deleteFileState(e.file_id).catch(() => undefined);
       cleaned.push(e);
     } catch (err) {
       errors.push({ file_id: e.file_id, filename: e.filename, error: String(err) });
@@ -1220,7 +1310,7 @@ export interface PreviewNodeArgs {
 export interface PreviewFileEntry {
   file_id: string;
   filename: string;
-  status: "new" | "updated" | "unchanged" | "conflict" | "orphan" | "native";
+  status: "new" | "updated" | "unchanged" | "conflict" | "remote_missing" | "remote_error" | "native";
   remote_hash: string | null;
   local_hash: string | null;
   last_synced_hash: string | null;
@@ -1241,7 +1331,7 @@ export async function previewNode(
   });
   const files: PreviewFileEntry[] = [];
   const toEntry =
-    (cls: "new" | "updated" | "unchanged" | "conflict" | "orphan" | "native") =>
+    (cls: "new" | "updated" | "unchanged" | "conflict" | "remote_missing" | "remote_error" | "native") =>
     (e: StatusFileEntry): PreviewFileEntry => ({
       file_id: e.file_id,
       filename: e.filename,
@@ -1254,7 +1344,8 @@ export async function previewNode(
   for (const e of scan.push_candidates) files.push(toEntry("updated")(e));
   for (const e of scan.pull_candidates) files.push(toEntry("updated")(e));
   for (const e of scan.conflicts) files.push(toEntry("conflict")(e));
-  for (const e of scan.orphan) files.push(toEntry("orphan")(e));
+  for (const e of scan.remote_missing) files.push(toEntry("remote_missing")(e));
+  for (const e of scan.remote_error) files.push(toEntry("remote_error")(e));
   for (const e of scan.native) files.push(toEntry("native")(e));
   return { files };
 }

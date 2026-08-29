@@ -128,10 +128,20 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (/^\/nodes\/[^/]+\/files$/.test(pathname) && m === "POST") return "write";
   if (/^\/nodes\/[^/]+\/files\/[^/]+\/rename$/.test(pathname) && m === "POST") return "write";
   if (/^\/nodes\/[^/]+\/files\/[^/]+\/move$/.test(pathname) && m === "POST") return "write";
+  if (/^\/nodes\/[^/]+\/files\/[^/]+\/resolve$/.test(pathname) && m === "POST") return "write";
   if (/^\/nodes\/[^/]+\/files\/[^/]+$/.test(pathname) && m === "DELETE") return "admin";
 
   // --- Sync/mirror triggers ---
   if (/^\/nodes\/[^/]+\/sync$/.test(pathname) && m === "POST") return "manage";
+  // The remote sweep is a STEP of the central-mode (teammate) sync run, not
+  // a configuration action: the agent calls it before its own scan, and the
+  // rest of that run is read/write (sync-info, files/register, GET/PUT
+  // /nodes/:id/file, files/:id/move). It takes no input beyond the node id
+  // and its outcome is decided entirely by what the remote itself holds, so
+  // "write" is the tier that matches the flow. Gating it at "manage" 403s a
+  // write-scope teammate mid-run — the owner-only POST /nodes/:id/sync above
+  // stays "manage" because it is the local-mode trigger, not on this path.
+  if (/^\/nodes\/[^/]+\/sync\/remote-sweep$/.test(pathname) && m === "POST") return "write";
   if (/^\/nodes\/[^/]+\/mirror$/.test(pathname) && m === "POST") return "manage";
 
   // --- Nodes ---

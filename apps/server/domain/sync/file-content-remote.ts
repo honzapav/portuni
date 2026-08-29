@@ -36,6 +36,7 @@ import {
   type Section,
 } from "./remote-path.js";
 import { FileContentError } from "./file-content.js";
+import { enqueuePendingOp, completePendingOp, failPendingOp } from "./pending-ops.js";
 
 const SECTIONS = ["wip", "outputs", "resources"] as const;
 
@@ -661,14 +662,20 @@ export async function deleteFileRemote(
   a: { userId: string; nodeId?: string; fileId: string; mode?: "complete"; confirmed?: boolean },
 ): Promise<DeleteFileRemotePreview | DeleteFileRemoteSuccess | DeleteFileRemoteRepairNeeded> {
   const r = await db.execute({
-    sql: "SELECT id, filename, remote_name, remote_path FROM files WHERE id = ?",
+    sql: "SELECT id, node_id, filename, remote_name, remote_path, current_remote_hash, is_native_format FROM files WHERE id = ?",
     args: [a.fileId],
   });
   if (r.rows.length === 0) throw new Error(`File ${a.fileId} not found`);
   const f = r.rows[0];
+  const nodeId = a.nodeId ?? (f.node_id as string);
   const filename = f.filename as string;
   const remoteName = f.remote_name as string | null;
   const remotePath = f.remote_path as string | null;
+  // See deleteFile in engine-mutations.ts: the retry needs the target
+  // object's identity to avoid deleting a different file that has since
+  // taken this remote path.
+  const expectedHash = (f.current_remote_hash as string | null) ?? null;
+  const expectedRemoteObject = expectedHash !== null || Number(f.is_native_format) === 1;
 
   if (!a.confirmed) {
     const willRemove: string[] = [];
@@ -690,7 +697,21 @@ export async function deleteFileRemote(
   }
 
   const now = new Date().toISOString();
+  let pendingOpId: string | null = null;
   if (remoteName && remotePath) {
+    pendingOpId = await enqueuePendingOp(db, {
+      userId: a.userId,
+      nodeId,
+      fileId: a.fileId,
+      payload: {
+        op: "delete",
+        remote_name: remoteName,
+        remote_path: remotePath,
+        filename,
+        expected_hash: expectedHash,
+        expected_remote_object: expectedRemoteObject,
+      },
+    });
     try {
       const adapter = await getAdapter(db, remoteName);
       // A registered-but-never-pushed record has a routed remote_path with
@@ -702,6 +723,7 @@ export async function deleteFileRemote(
     } catch (e) {
       // Remote delete failed: do NOT drop the DB row -- that would strand an
       // orphan on the remote with no Portuni record. Surface repair_needed.
+      await failPendingOp(db, pendingOpId, (e as Error).message);
       await auditFile(db, a.userId, "sync_delete_remote_repair_needed", a.fileId, {
         remote_name: remoteName,
         remote_path: remotePath,
@@ -720,11 +742,12 @@ export async function deleteFileRemote(
 
   await db.execute({ sql: "DELETE FROM files WHERE id = ?", args: [a.fileId] });
   await auditFile(db, a.userId, "sync_delete_remote", a.fileId, {
-    node_id: a.nodeId,
+    node_id: nodeId,
     remote_name: remoteName,
     remote_path: remotePath,
     filename,
   }, now);
+  if (pendingOpId) await completePendingOp(db, pendingOpId);
 
   return { file_id: a.fileId, mode: "complete", deleted_at: now, status: "ok" };
 }
