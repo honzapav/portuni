@@ -3,7 +3,7 @@
 // check/download/restart state machine for the footer button and the
 // Settings "Aktualizace" section.
 //
-// The webview never talks to tauri-plugin-updater directly -- only through
+// The webview never talks to tauri-plugin-updater directly, only through
 // these Tauri commands (no updater permission in capabilities/default.json).
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -52,7 +52,7 @@ export type AppUpdate = {
   // installed and build the "Co je nového" release-notes link.
   updateInfo: UpdateInfo | null;
   // Set after the first check (auto or manual) resolves without error, so
-  // the UI can tell "never checked" apart from "checked, up to date" --
+  // the UI can tell "never checked" apart from "checked, up to date";
   // both are the `idle` state.
   hasChecked: boolean;
   checkNow: () => void;
@@ -90,8 +90,13 @@ export function useAppUpdate(confirmExit: () => Promise<boolean>): AppUpdate {
     };
   }, []);
 
+  // No check while a download runs or an installed update awaits restart:
+  // the running binary is still the old version, so a check would find the
+  // same release again and turn "ready" back into "available".
   const checkNow = useCallback(() => {
     if (!isTauri()) return;
+    const kind = stateRef.current.kind;
+    if (kind === "downloading" || kind === "ready") return;
     setState({ kind: "checking" });
     void checkForUpdate()
       .then((info) => {

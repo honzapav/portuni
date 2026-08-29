@@ -1,6 +1,6 @@
 // "Aktualizace" section on Settings -> Obecné. Shows the current version,
 // lets the user check on demand, download + install and restart. Desktop
-// only -- see AppUpdate.updateInfo comment in lib/updater.ts for why
+// only; see AppUpdate.updateInfo comment in lib/updater.ts for why
 // downloading/ready reuse the last "available" info instead of carrying
 // their own.
 
@@ -29,7 +29,10 @@ export default function UpdateSection({ appUpdate }: Props) {
     );
   }
 
-  const busy = state.kind === "checking" || state.kind === "downloading";
+  // "ready" counts as busy for the check button: checkNow ignores that state
+  // (the old binary would find the same release again), so keep it disabled.
+  const busy =
+    state.kind === "checking" || state.kind === "downloading" || state.kind === "ready";
   const releaseVersion = state.kind === "available" ? state.info.version : updateInfo?.version;
 
   return (
@@ -51,7 +54,7 @@ export default function UpdateSection({ appUpdate }: Props) {
         {state.kind === "available" && `K dispozici ${state.info.version}.`}
         {state.kind === "downloading" &&
           `Stahuji a instaluji${state.pct != null ? ` (${state.pct} %)` : "…"}`}
-        {state.kind === "ready" && "Aktualizace nainstalována -- restartuj pro dokončení."}
+        {state.kind === "ready" && "Aktualizace nainstalována – restartuj pro dokončení."}
         {state.kind === "error" && (
           <span className="text-[var(--color-danger)]">{state.message}</span>
         )}
