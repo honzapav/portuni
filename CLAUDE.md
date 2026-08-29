@@ -123,7 +123,10 @@ symlink to this file.
   `# x-release-please-version` annotation; don't remove it.
 - **Don't manually tag `v*` or cut releases.** Merging to `main` makes
   release-please open a `chore: release X.Y.Z` PR; merging *that* tags the
-  version and fires `release.yml` (signed DMG). Full flow + one-time PAT setup:
+  version and fires `release.yml` (signed DMG + updater artefacts) on a
+  **pre-release**. Installed apps see nothing until a maintainer unchecks
+  "Set as a pre-release" on the release — that click is the rollout; ticking
+  it again is the rollback. Full flow + one-time PAT setup:
   `CONTRIBUTING.md`, `docs/release-process.md`.
 - **Update the public docs site (`sites/docs/`) in the SAME branch as any
   behaviour/tool/API change.** release-please only bumps the version and
