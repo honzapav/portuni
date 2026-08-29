@@ -73,6 +73,7 @@ Environment knobs: `SANDCASTLE_MODEL`, `SANDCASTLE_BRANCH`, `SANDCASTLE_SCOPE`
   tauri-build expects; the real sidecar and the DMG are built by `release.yml`.
 - No production credentials in the container: no Turso, Apple, Google or Drive
   secrets. macOS-only work (updater signing key, `.app` end-to-end tests,
-  release publishing) is filed as `human-only` issues.
+  release publishing) is not filed as issues: issues are the agent's backlog.
+  Human steps live in the spec (Verification) and the PR review.
 - The agent opens or updates one PR per batch branch and never merges it.
   PR title must be a Conventional Commit (`pr-title.yml`, release-please).

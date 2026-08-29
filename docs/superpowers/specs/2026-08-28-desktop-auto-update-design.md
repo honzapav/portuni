@@ -2,7 +2,7 @@
 
 Status: approved in chat (2026-08-28). Implementation is split into GitHub
 issues (tracking issue in the repo) worked by the Sandcastle loop; macOS-only
-steps are `human-only` issues.
+steps are done by hand (Verification → Human), not filed as issues.
 
 ## Behaviour
 
