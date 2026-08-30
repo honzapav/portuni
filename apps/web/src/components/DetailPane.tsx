@@ -88,6 +88,7 @@ import {
   FileTree,
   NewFileForm,
   SyncBar,
+  DownloadMirrorButton,
   TerminalSplitButton,
 } from "./DetailPane.files";
 import { AccessSection } from "./DetailPane.access";
@@ -981,7 +982,14 @@ function DetailPaneBody({
                 hint shows even on a node with no files yet. */}
             <DriveNotConfiguredBanner />
             <div className="mb-3 flex items-center justify-between">
-                  {(node.files.length > 0 || untracked.length > 0) ? (
+                  {!node.local_mirror ? (
+                    <DownloadMirrorButton
+                      nodeId={node.id}
+                      onDone={async () => {
+                        await Promise.all([onMutate(), loadSyncStatus()]);
+                      }}
+                    />
+                  ) : (node.files.length > 0 || untracked.length > 0) ? (
                     <SyncBar
                       running={syncRunning}
                       result={syncRunResult}
