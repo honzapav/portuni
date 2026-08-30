@@ -298,6 +298,22 @@ export default function TerminalPane({
           if (event.type === "keydown") void writePty("\x1b\r");
           return false;
         }
+        // Shift+PageUp / Shift+PageDown — page through the scrollback.
+        // xterm has no default binding for these (only wheel/arrow-driven
+        // scrolling), so wire them explicitly via the public scrollPages()
+        // API, which already clamps at the buffer's top/bottom.
+        if (
+          (event.key === "PageUp" || event.key === "PageDown") &&
+          event.shiftKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.altKey
+        ) {
+          if (event.type === "keydown") {
+            term.scrollPages(event.key === "PageUp" ? -1 : 1);
+          }
+          return false;
+        }
         // Cmd (Meta) + Arrow — macOS line/document navigation. The webview
         // otherwise swallows these chords (Cmd+Left/Right would even trigger
         // history back/forward), so the shell's line editor never sees them.
@@ -528,16 +544,28 @@ export default function TerminalPane({
   // (C) Active-fit effect — refits when a pane becomes the active tab.
   useEffect(() => {
     if (!active) return;
-    // One animation frame to let the browser apply display:block on a
-    // previously hidden pane before we measure cell sizes.
-    const id = window.setTimeout(() => {
-      try {
-        fitRef.current?.fit();
-      } catch {
-        // fit may throw if container is 0x0 — ignore
-      }
-    }, 16);
-    return () => window.clearTimeout(id);
+    // Two animation frames: the first lets the browser apply the
+    // display:block the parent just set on a previously hidden pane, the
+    // second runs after that layout has actually been committed. A fixed
+    // setTimeout can race ahead of a slow first layout/paint and measure
+    // the container before it has its real size, leaving xterm's row count
+    // (and its internal scroll-range calculation) stuck at the stale
+    // hidden-tab value — the terminal then looks clipped with no way to
+    // reach the rest of the content.
+    let raf2 = 0;
+    const raf1 = window.requestAnimationFrame(() => {
+      raf2 = window.requestAnimationFrame(() => {
+        try {
+          fitRef.current?.fit();
+        } catch {
+          // fit may throw if container is 0x0 — ignore
+        }
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      if (raf2) window.cancelAnimationFrame(raf2);
+    };
   }, [active]);
 
   if (!isTauri()) {
