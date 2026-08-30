@@ -125,27 +125,22 @@ fn clear_turso_token(app: AppHandle) -> Result<(), String> {
 // frontend reads it only when the user explicitly asks (Settings → Show /
 // Copy) so it doesn't sit in webview JS state by default.
 //
-// Local mode: the workspace's persisted MCP auth token from the AuthTokens map.
-// Central mode: the long-lived device token from Keychain (minted on
-// demand) — the central server rejects the local sidecar token, so
-// handing that out here would give the user a credential that 401s.
+// Both data modes hand out the workspace's local sidecar token: the URL the
+// Settings panel shows next to it is always the local MCP front door
+// (`workspace::global_front_door_url`), which authenticates with
+// PORTUNI_AUTH_TOKEN — in central mode the front door proxies graph tools
+// to the central server with the device token itself, so the device token
+// is never the credential a client needs.
 #[tauri::command]
 fn get_mcp_token(app: AppHandle) -> Result<String, String> {
-    let (ws_id, cfg) = active_workspace(&app)?;
-    if workspace::is_central(&cfg) {
-        let server_url = cfg
-            .server_url
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .ok_or_else(|| "central mode requires server_url in config.json".to_string())?;
-        return pty::ensure_device_token(&app, &ws_id, server_url);
-    }
+    let (ws_id, _cfg) = active_workspace(&app)?;
     app.state::<AuthTokens>()
         .0
         .lock()
         .map_err(|e| e.to_string())?
         .get(&ws_id)
         .cloned()
+        .or_else(|| keychain_get_ws(KEYCHAIN_MCP_ACCOUNT, &ws_id))
         .ok_or_else(|| "backend not ready (no token)".to_string())
 }
 

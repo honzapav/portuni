@@ -303,9 +303,9 @@ export default function McpServerSection() {
             <div className="text-[12px] text-[var(--color-text-dim)]">
               Lokální front door: nástroje grafu se proxují na{" "}
               <span className="font-mono">{dataMode.server_url ?? "centrální server"}</span>,
-              nástroje pro soubory a složky běží na tomto zařízení.
-              Token je device token pro centrální server — spravuje se
-              (revokace, nové zařízení) v sekci Účet.
+              nástroje pro soubory a složky běží na tomto zařízení. Token
+              patří lokálnímu front dooru; device token pro centrální server
+              se spravuje v sekci Účet.
             </div>
           )}
 
