@@ -95,11 +95,11 @@ Docker container working through GitHub issues labelled `ready-for-agent`
 on a batch branch, PR only (never merges). It runs on the old Mac (ssh host
 `honzas-macbook-pro`, clone `~/Dev/projekty/portuni`), started over
 `ssh -t … ./.sandcastle/start-loop.sh` (tmux session `sandcastle-portuni`
-on its own per-project socket, `tmux -L sandcastle-portuni` — never a socket
-shared with another project's loop, its server env would carry the other
-project's tokens);
+on its own per-project socket, `tmux -L sandcastle-portuni`);
 secrets come from that Mac's Keychain (`sandcastle.claude-code.oauth-token`,
-`sandcastle.portuni.github-pat`), never from disk. Docker image
+`sandcastle.portuni.github-pat`), read by the loop process inside the tmux
+command — never exported from the launcher shell (a tmux server's env is
+not the launcher's), never from disk. Docker image
 `sandcastle:portuni`. Never provision those entries, the image or a worktree
 for it on another machine. Details: `.sandcastle/README.md`.
 
