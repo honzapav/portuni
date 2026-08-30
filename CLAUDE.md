@@ -94,12 +94,14 @@ tmux loop for backend iteration.
 Docker container working through GitHub issues labelled `ready-for-agent`
 on a batch branch, PR only (never merges). It runs on the old Mac (ssh host
 `honzas-macbook-pro`, clone `~/Dev/projekty/portuni`), started over
-`ssh -t … ./.sandcastle/start-loop.sh` (tmux session `sandcastle-portuni`
-on its own per-project socket, `tmux -L sandcastle-portuni` — never a socket
-shared with another project's loop, its server env would carry the other
-project's tokens);
-secrets come from that Mac's Keychain (`sandcastle.claude-code.oauth-token`,
-`sandcastle.portuni.github-pat`), never from disk. Docker image
+`ssh -t … ./.sandcastle/node_modules/.bin/sandcastle-loop start` (tmux
+session `sandcastle-portuni` on its own socket; `watch`/`stop`/`status` are
+the other subcommands). Launcher, supervisor and prompt core come from the
+pinned package `honzapav/sandcastle-harness`; `.sandcastle/` holds only
+`config.json`, `prompt.project.md` and the Dockerfile. Secrets come from that
+Mac's Keychain (`sandcastle.claude-code.oauth-token`,
+`sandcastle.portuni.github-pat`), read by the loop process inside the tmux
+command, never from disk. Docker image
 `sandcastle:portuni`. Never provision those entries, the image or a worktree
 for it on another machine. Details: `.sandcastle/README.md`.
 

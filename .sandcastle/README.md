@@ -1,78 +1,63 @@
 # Sandcastle loop (Portuni)
 
-Autonomous agent (Claude Code, personal account, model from `SANDCASTLE_MODEL`,
-default Sonnet 5) that works through GitHub issues labelled `ready-for-agent`
-and commits to a batch branch `ralph/backlog-YYYY-MM-DD`. Orchestrated by
-[`@ai-hero/sandcastle`](https://github.com/mattpocock/sandcastle): the agent
-runs in a Docker container over a bind-mounted git worktree, survives Claude
-usage limits (waits for the reset, resumes). Harness derived from
-`workflow-account-manager/.sandcastle`.
+Autonomous agent (Claude Code, personal account) that works through GitHub
+issues labelled `ready-for-agent` and commits to a batch branch
+`ralph/backlog-YYYY-MM-DD`, PR only. The launcher, supervisor and prompt core
+come from [`honzapav/sandcastle-harness`](https://github.com/honzapav/sandcastle-harness)
+(pinned by tag in `package.json`); this directory holds only what is Portuni
+specific.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `main.mts` | Supervisor: `run()` in a limit-survival loop with backoff |
-| `limit.mts` (+ test) | Limit message detection and reset-wait computation |
-| `prompt.md` | RALPH prompt: issue selection, gate, publish rules, `{{SCOPE}}` |
-| `start-loop.sh` | Launcher: fail-fast checks + tmux + caffeinate |
+| `config.json` | Project id, image, Keychain entries, model, sandbox setup commands (harness README: Config) |
+| `prompt.project.md` | Project section of the prompt: gate, tests, docs, repo rules |
 | `Dockerfile` | node:22 + gh + claude-code + Rust toolchain + Tauri Linux deps |
-| `.env` | Variable names only (empty values); `start-loop.sh` fills them from the Keychain |
-| `logs/` | `loop.log` (supervisor) + per-run agent logs |
-| `worktrees/` | Agent git worktree (bind-mounted into the container) |
+| `package.json` | Pins the harness version |
+| `logs/`, `worktrees/`, `prompt.generated.md` | Runtime state, gitignored |
 
-## Prerequisites
+## Prerequisites (old Mac)
 
 1. Docker Desktop running.
-2. Keychain entries on the old Mac (values never on disk). Its login keychain
-   is locked in ssh sessions, so unlock it in the same `ssh -t` command:
+2. Keychain entries `sandcastle.claude-code.oauth-token` and
+   `sandcastle.portuni.github-pat` (values never on disk; the login keychain is
+   locked over ssh, unlock it in the same `ssh -t` command):
    ```bash
    ssh -t honzas-macbook-pro 'security unlock-keychain ~/Library/Keychains/login.keychain-db && \
      security add-generic-password -U -s sandcastle.claude-code.oauth-token -a "$USER" -w && \
      security add-generic-password -U -s sandcastle.portuni.github-pat -a "$USER" -w'
    ```
-   Each `-w` without a value prompts for it hidden. Claude token: `claude setup-token`
-   (personal profile). GitHub: PAT with Issues, Pull requests, Contents (RW),
-   Metadata on `honzapav/portuni`.
+   Claude token: `claude setup-token` (personal profile). GitHub: fine-grained
+   PAT with `honzapav/portuni` selected and Contents, Issues, Pull requests:
+   read and write. One PAT per repo.
 3. `(cd .sandcastle && npm ci)`.
-4. Image built: `./.sandcastle/node_modules/.bin/sandcastle docker build-image --image-name sandcastle:portuni --dockerfile .sandcastle/Dockerfile`
-5. Main working tree on `main` and clean; the launcher fast-forwards it to `origin/main` and refuses to start when local commits are ahead (e.g. an `udrzba/` branch left by the AIQ maintenance lane).
+4. Image: `./.sandcastle/node_modules/.bin/sandcastle docker build-image --image-name sandcastle:portuni --dockerfile .sandcastle/Dockerfile`
+5. Main working tree on `main` and clean; the launcher fast-forwards it to
+   `origin/main` and refuses to start when local commits are ahead.
 
 ## Run
 
 ```bash
-ssh -t honzas-macbook-pro 'cd ~/Dev/projekty/portuni && ./.sandcastle/start-loop.sh'
+ssh -t honzas-macbook-pro 'cd ~/Dev/projekty/portuni && ./.sandcastle/node_modules/.bin/sandcastle-loop start'
+ssh -t honzas-macbook-pro 'cd ~/Dev/projekty/portuni && ./.sandcastle/node_modules/.bin/sandcastle-loop watch'    # detach Ctrl-b d
+ssh    honzas-macbook-pro 'cd ~/Dev/projekty/portuni && ./.sandcastle/node_modules/.bin/sandcastle-loop status'
+ssh    honzas-macbook-pro 'cd ~/Dev/projekty/portuni && ./.sandcastle/node_modules/.bin/sandcastle-loop stop'
 ```
 
-`-t` is required: the launcher runs `security unlock-keychain`, which prompts
-for the old Mac's login password, then reads the tokens.
+`-t` is required: the launcher may prompt for the old Mac's login password to
+unlock the keychain. Knobs: `SANDCASTLE_MODEL`, `SANDCASTLE_BRANCH`,
+`SANDCASTLE_SCOPE` (e.g. `"only issue #84"`), `SANDCASTLE_MAX_ITERATIONS`,
+`SANDCASTLE_MAX_RUNS`.
 
-Watch: `ssh -t honzas-macbook-pro 'tmux -L sandcastle-portuni attach -t sandcastle-portuni'`
-(detach Ctrl-b d).
-Stop: `ssh honzas-macbook-pro 'tmux -L sandcastle-portuni kill-session -t sandcastle-portuni'`.
-
-The loop runs on its own tmux socket (`-L sandcastle-portuni`), not on the
-default server and not on a socket shared with another project's loop. A
-session on an already-running server inherits that server's global
-environment from when it started, so the tokens `start-loop.sh` exports would
-never reach the supervisor; on a shared socket the loop would run with the
-other project's `GH_TOKEN` and its pushes would fail with 403. The launcher
-verifies that the server's tokens equal the Keychain values and refuses to
-start otherwise (`tmux -L sandcastle-portuni kill-server`, then rerun).
-
-Deploy harness changes: merge to `main`, then `ssh honzas-macbook-pro 'cd ~/Dev/projekty/portuni && git pull --ff-only'`
+Deploy harness or config changes: merge to `main`, then
+`ssh honzas-macbook-pro 'cd ~/Dev/projekty/portuni && git pull --ff-only && (cd .sandcastle && npm ci)'`
 (the image needs a rebuild only when the Dockerfile changes).
-
-Environment knobs: `SANDCASTLE_MODEL`, `SANDCASTLE_BRANCH`, `SANDCASTLE_SCOPE`
-(e.g. `"only issue #84"`), `SANDCASTLE_MAX_ITERATIONS`, `SANDCASTLE_MAX_RUNS`.
 
 ## Portuni specifics
 
-- The gate is `scripts/agent-gate.sh`, the same checks CI runs (server qa,
-  web typecheck + build, `cargo test` + clippy, docs site build). The container
-  carries the Rust toolchain and Tauri Linux dependencies for that; the first
-  `cargo` run in a fresh worktree takes ~10 min, later runs are incremental
-  (`target/` lives in the worktree).
+- The gate is `scripts/agent-gate.sh`, the same checks CI runs. The container
+  carries the Rust toolchain and Tauri Linux dependencies for that.
 - `scripts/desktop-dev-placeholders.sh` stands in for the sidecar binary
   tauri-build expects; the real sidecar and the DMG are built by `release.yml`.
 - No production credentials in the container: no Turso, Apple, Google or Drive

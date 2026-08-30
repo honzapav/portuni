@@ -1,0 +1,30 @@
+{
+  "project": "portuni",
+  "image": "sandcastle:portuni",
+  "keychain": {
+    "claudeToken": "sandcastle.claude-code.oauth-token",
+    "githubToken": "sandcastle.portuni.github-pat"
+  },
+  "model": "claude-sonnet-5",
+  "branchPrefix": "ralph/backlog",
+  "maxIterations": 10,
+  "maxRuns": 24,
+  "idleTimeoutSeconds": 1800,
+  "sandboxSetup": [
+    "npm ci",
+    "npm ci --prefix apps/web",
+    "npm ci --prefix sites/docs",
+    "scripts/desktop-dev-placeholders.sh"
+  ],
+  "sandboxEnv": {},
+  "hostPreStart": [],
+  "labels": {
+    "ready": "ready-for-agent",
+    "tracking": "ralph-tracking",
+    "humanOnly": "human-only"
+  },
+  "commitPrefix": "RALPH",
+  "promptProject": ".sandcastle/prompt.project.md",
+  "mainBranch": "main",
+  "requireMain": true
+}
