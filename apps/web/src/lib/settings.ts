@@ -242,3 +242,44 @@ export function saveOpenNodes(ids: readonly string[]): void {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(OPEN_NODES_KEY, JSON.stringify(ids));
 }
+
+// --- File tree collapsed folders --------------------------------------------
+//
+// Which folders the user collapsed in a node's file tree, per node, so the
+// tree doesn't reset to fully expanded every time the node detail remounts
+// (switching node, switching tab and back, app restart). Stored as
+// { [nodeId]: string[] } (TreeNode.path values); a node's entry is removed
+// once its collapsed set is empty.
+const COLLAPSED_FOLDERS_KEY = "portuni:fileTreeCollapsed";
+
+export function loadCollapsedFolders(nodeId: string): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = window.localStorage.getItem(COLLAPSED_FOLDERS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return new Set();
+    const paths = parsed[nodeId];
+    if (!Array.isArray(paths)) return new Set();
+    return new Set(paths.filter((p): p is string => typeof p === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+export function saveCollapsedFolders(nodeId: string, paths: Set<string>): void {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = window.localStorage.getItem(COLLAPSED_FOLDERS_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const all = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    if (paths.size === 0) {
+      delete all[nodeId];
+    } else {
+      all[nodeId] = Array.from(paths);
+    }
+    window.localStorage.setItem(COLLAPSED_FOLDERS_KEY, JSON.stringify(all));
+  } catch {
+    // localStorage unavailable/full — collapsed state stays in-memory only.
+  }
+}

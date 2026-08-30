@@ -28,7 +28,7 @@ import type {
   UntrackedFile,
 } from "../types";
 import { buildAgentCommand } from "../lib/prompt";
-import { agentDisplayName } from "../lib/settings";
+import { agentDisplayName, loadCollapsedFolders, saveCollapsedFolders } from "../lib/settings";
 import {
   createNodeMirror,
   fetchNodeFileUrl,
@@ -302,12 +302,16 @@ export function FileTree({
     [files, untracked, syncStatus, mirrorPath],
   );
   const root = useMemo(() => buildFileTree(treeFiles), [treeFiles]);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => loadCollapsedFolders(nodeId));
+  useEffect(() => {
+    setCollapsed(loadCollapsedFolders(nodeId));
+  }, [nodeId]);
   const toggle = (path: string) =>
     setCollapsed((prev) => {
       const next = new Set(prev);
       if (next.has(path)) next.delete(path);
       else next.add(path);
+      saveCollapsedFolders(nodeId, next);
       return next;
     });
 
