@@ -119,6 +119,22 @@ function startStubCentral(): Promise<StubCentral> {
         }),
       );
       mcp.tool(
+        "portuni_snapshot",
+        { node_id: z.string(), doc_url: z.string() },
+        async (a) => ({
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                file_id: "F1",
+                filename: "snap.pdf",
+                remote_path: `workflow/projects/${a.node_id}/wip/snap.pdf`,
+              }),
+            },
+          ],
+        }),
+      );
+      mcp.tool(
         "portuni_mirror",
         { node_id: z.string(), targets: z.array(z.string()).optional() },
         async () => ({
@@ -231,6 +247,18 @@ describe("agent MCP front door", () => {
     })) as { content: Array<{ text: string }>; isError?: boolean };
     assert.notEqual(r.isError, true, r.content[0]?.text);
     assert.equal(r.content[0].text, "central-file:01NOMIRROR000000000000000:wip/n.md");
+  });
+
+  it("portuni_snapshot proxies to central and reports local_path null without a device mirror", async () => {
+    const r = (await localClient.callTool({
+      name: "portuni_snapshot",
+      arguments: { node_id: "N1", doc_url: "https://docs.google.com/document/d/X/edit" },
+    })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+    assert.ok(!r.isError);
+    const payload = JSON.parse(r.content[0].text);
+    assert.equal(payload.file_id, "F1");
+    assert.equal(payload.remote_path, "workflow/projects/N1/wip/snap.pdf");
+    assert.equal(payload.local_path, null);
   });
 
   it("tools/list mirrors the central tool list", async () => {

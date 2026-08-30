@@ -54,6 +54,7 @@ import {
   enrichGetContextResult,
   isProxiedDiskMutation,
   snapshotForDiskMutation,
+  applyLocalAfterSnapshot,
   applyLocalAfterProxiedMutation,
 } from "./agent-tools.js";
 import { readNodeFileFromMirror, formatNodeFileContent } from "../domain/read-node-file.js";
@@ -165,6 +166,30 @@ function buildAgentServer(
         });
         // The device's local step outcome replaces central's (which has no
         // mirror and would report local_done:false for every move).
+        if (rewritten !== null) textPart.text = rewritten;
+      }
+      return result;
+    }
+    // Snapshot runs on central (it holds the Drive credentials) and creates
+    // the exported file remote-direct; pull it into this device's mirror so
+    // the agent gets a real local_path (null when the node is not mirrored
+    // here).
+    if (name === "portuni_snapshot") {
+      const result = (await upstream.callTool({ name, arguments: args })) as {
+        content?: Array<{ type: string; text?: string }>;
+        isError?: boolean;
+      };
+      const textPart = result.content?.find((c) => c.type === "text");
+      if (!result.isError && textPart?.text) {
+        const rewritten = await applyLocalAfterSnapshot(
+          opts.client,
+          identity.userId,
+          args,
+          textPart.text,
+        ).catch((e) => {
+          console.error(`[portuni:agent] local pull after ${name} failed:`, e);
+          return null;
+        });
         if (rewritten !== null) textPart.text = rewritten;
       }
       return result;

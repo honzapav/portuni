@@ -14,6 +14,7 @@ import {
   enrichGetContextResult,
   snapshotForDiskMutation,
   applyLocalAfterProxiedMutation,
+  applyLocalAfterSnapshot,
 } from "../apps/server/mcp/agent-tools.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import {
@@ -808,5 +809,71 @@ describe("proxied disk mutations (GH #78)", () => {
     assert.equal(await readFile(join(mirrorRoot, "wip", "new", "a.md"), "utf8"), "A");
     assert.equal(await readFile(join(mirrorRoot, "wip", "new", "b.md"), "utf8"), "B");
     await assert.rejects(() => readFile(absA));
+  });
+});
+
+describe("proxied portuni_snapshot", () => {
+  it("pulls the new file into the device mirror and reports its local_path", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    // Central exported the doc and created the record remote-direct.
+    const fileId = fake.seedRemote("wip/spec.pdf", "pdf-bytes");
+    const central = {
+      file_id: fileId,
+      filename: "spec.pdf",
+      remote_path: posix.join(NODE_ROOT, "wip/spec.pdf"),
+    };
+    const out = await applyLocalAfterSnapshot(
+      fake,
+      "U1",
+      { node_id: NODE_ID, doc_url: "https://docs.google.com/document/d/X/edit" },
+      JSON.stringify(central),
+    );
+    assert.ok(out);
+    const payload = JSON.parse(out!);
+    assert.equal(payload.file_id, fileId);
+    assert.equal(payload.remote_path, central.remote_path);
+    assert.equal(payload.local_path, join(mirrorRoot, "wip", "spec.pdf"));
+    assert.equal(await readFile(payload.local_path, "utf8"), "pdf-bytes");
+    const state = await getFileState(fileId);
+    assert.equal(state?.last_synced_hash, sha(Buffer.from("pdf-bytes")));
+  });
+
+  it("reports local_path null when the node is not mirrored on this device", async () => {
+    const fake = new FakeCentral();
+    const fileId = fake.seedRemote("wip/spec.pdf", "pdf-bytes");
+    const out = await applyLocalAfterSnapshot(
+      fake,
+      "U1",
+      { node_id: NODE_ID },
+      JSON.stringify({ file_id: fileId, filename: "spec.pdf", remote_path: "x" }),
+    );
+    const payload = JSON.parse(out!);
+    assert.equal(payload.local_path, null);
+    assert.equal(payload.file_id, fileId);
+  });
+
+  it("does not clobber a dirty untracked local file at the same path", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "spec.pdf");
+    await writeFile(abs, "local-only");
+    const fileId = fake.seedRemote("wip/spec.pdf", "pdf-bytes");
+    const out = await applyLocalAfterSnapshot(
+      fake,
+      "U1",
+      { node_id: NODE_ID },
+      JSON.stringify({ file_id: fileId, filename: "spec.pdf", remote_path: "x" }),
+    );
+    const payload = JSON.parse(out!);
+    assert.equal(payload.local_path, null);
+    assert.match(payload.local_error, /local changes/);
+    assert.equal(await readFile(abs, "utf8"), "local-only");
+  });
+
+  it("passes non-JSON text through untouched", async () => {
+    const fake = new FakeCentral();
+    const out = await applyLocalAfterSnapshot(fake, "U1", { node_id: NODE_ID }, "not json");
+    assert.equal(out, null);
   });
 });
