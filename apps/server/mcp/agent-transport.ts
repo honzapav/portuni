@@ -183,6 +183,9 @@ function buildAgentServer(
     // alone is NOT sufficient -- the device mirrors a superset of the session
     // scope, so gating on it would let an agent read out-of-scope nodes and
     // bypass the seatbelt boundary.
+    // When the device holds no mirror of the node, the read is proxied
+    // upstream verbatim: central has no mirrors either and serves it
+    // Drive-direct (readNodeFile's remote fallback), under its own guard.
     if (name === "portuni_read_file") {
       const gate = (await upstream.callTool({
         name: "portuni_get_node",
@@ -194,6 +197,7 @@ function buildAgentServer(
         args.node_id as string,
         args.path as string,
       );
+      if (r.kind === "no_mirror") return upstream.callTool({ name, arguments: args });
       return formatNodeFileContent(r, args.path as string);
     }
     if (name === "portuni_get_node") {

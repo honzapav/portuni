@@ -1,4 +1,4 @@
-import type { FileAdapter, FileRef, RemoteConfig, DeviceTokens } from "./types.js";
+import type { FileAdapter, FileRef, RemoteConfig, DeviceTokens, SearchHit } from "./types.js";
 import { parseDriveConfig, parseServiceAccountJson, assertSaDriveConfig, type ServiceAccountKey, type DriveConfig } from "./drive-config.js";
 import { getDriveAccessToken, __setTokenFetchForTests } from "./drive-sa-auth.js";
 import { getUserAccessToken } from "./drive-user-auth.js";
@@ -469,6 +469,83 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
       // Idempotent: ensureFolderPath either resolves an existing folder or
       // creates the missing segments. The pathCache makes repeat calls cheap.
       await ensureFolderPath(path);
+    },
+
+    // Content search via Drive's full-text index. Drive answers with flat
+    // file objects (no paths), so each hit's path is rebuilt by walking its
+    // `parents` chain up to the remote root; a hit whose ancestry never
+    // reaches the root (a loose file elsewhere on the drive, or one under a
+    // folder this account cannot read) is dropped. Folder lookups are memoised
+    // per call: a hundred hits under one node folder cost one files.get per
+    // distinct ancestor, not per hit.
+    async search(query, opts) {
+      const limit = Math.max(1, opts?.limit ?? 20);
+      const q = `fullText contains '${escapeQ(query)}' and trashed = false`;
+      // Ancestor memo: folder id -> { name, parent } (parent null = top of
+      // the tree without reaching driveRoot, i.e. unreachable).
+      const folderMemo = new Map<string, { name: string; parent: string | null } | null>();
+      async function folderInfo(id: string): Promise<{ name: string; parent: string | null } | null> {
+        if (folderMemo.has(id)) return folderMemo.get(id)!;
+        const params = withSAD(new URLSearchParams({ fields: "id,name,parents" }));
+        const res = await driveFetch(`${DRIVE_API}/files/${id}?${params.toString()}`, { headers: await authHeaders() });
+        let info: { name: string; parent: string | null } | null;
+        if (res.status === 404) {
+          info = null;
+        } else if (!res.ok) {
+          throw new Error(`Drive get: ${res.status} ${await res.text()}`);
+        } else {
+          const f = (await res.json()) as DriveFile;
+          info = { name: f.name, parent: f.parents?.[0] ?? null };
+        }
+        folderMemo.set(id, info);
+        return info;
+      }
+      // Path of a hit relative to driveRoot, or null when its ancestry does
+      // not reach driveRoot. Bounded so a cyclic/corrupt parent chain cannot
+      // spin forever.
+      async function pathFor(f: DriveFile): Promise<string | null> {
+        const segments: string[] = [f.name];
+        let cursor = f.parents?.[0] ?? null;
+        for (let depth = 0; depth < 64; depth++) {
+          if (cursor === null) return null;
+          if (cursor === driveRoot) return segments.reverse().join("/");
+          const info = await folderInfo(cursor);
+          if (!info) return null;
+          segments.push(info.name);
+          cursor = info.parent;
+        }
+        return null;
+      }
+      const out: SearchHit[] = [];
+      const seen = new Set<string>();
+      let pageToken: string | undefined;
+      let examined = 0;
+      do {
+        const params = withCorpora(withSAD(new URLSearchParams({
+          q,
+          fields: "nextPageToken,files(id,name,mimeType,modifiedTime,parents)",
+          includeItemsFromAllDrives: "true",
+          pageSize: "100",
+        })));
+        if (pageToken) params.set("pageToken", pageToken);
+        const res = await driveFetch(`${DRIVE_API}/files?${params.toString()}`, { headers: await authHeaders() });
+        if (!res.ok) throw new Error(`Drive search: ${res.status} ${await res.text()}`);
+        const b = (await res.json()) as { files?: DriveFile[]; nextPageToken?: string };
+        for (const f of b.files ?? []) {
+          examined++;
+          if (isFolder(f)) continue;
+          const path = await pathFor(f);
+          if (path === null || seen.has(path)) continue;
+          seen.add(path);
+          out.push({ path, name: f.name, mimeType: f.mimeType, modifiedTime: f.modifiedTime });
+          if (out.length >= limit) return out;
+        }
+        pageToken = b.nextPageToken;
+        // Stop paging once enough raw hits were examined: a query that
+        // matches thousands of files elsewhere on the drive must not turn
+        // into an unbounded crawl looking for ones under our root.
+      } while (pageToken && examined < 500);
+      return out;
     },
   };
 

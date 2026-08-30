@@ -15,6 +15,18 @@ export interface FileRef {
   native_format?: NativeFormat;
 }
 
+// One hit of a content search on a backend. `path` is the object's path
+// relative to the remote root, in exactly the form list() reports (so it
+// joins on files.remote_path). `snippet` is a backend-provided excerpt around
+// the match, when the backend has one (Drive does not).
+export interface SearchHit {
+  path: string;
+  name: string;
+  mimeType: string;
+  modifiedTime?: string;
+  snippet?: string;
+}
+
 export interface FileAdapter {
   put(path: string, content: Buffer, opts?: { mimeType?: string }): Promise<FileRef>;
   get(path: string): Promise<Buffer>;
@@ -33,6 +45,11 @@ export interface FileAdapter {
   // Optional because not every backend has a meaningful concept of empty
   // directories; callers should treat absence as best-effort no-op.
   ensureFolder?(path: string): Promise<void>;
+  // Full-text search over file CONTENTS on the backend (Drive: `fullText
+  // contains`). Optional: only backends with a content index (or cheap
+  // enough to grep, like fs) implement it; callers skip the others. Returns
+  // at most `opts.limit` hits whose path resolves under the remote root.
+  search?(query: string, opts?: { limit?: number }): Promise<SearchHit[]>;
 }
 
 export interface RemoteConfig {
