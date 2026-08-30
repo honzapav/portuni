@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.9.0](https://github.com/honzapav/portuni/compare/v0.8.0...v0.9.0) (2026-08-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **auth:** everyday editing is write, placement is manage, infrastructure is admin
+
+### Features
+
+* **auth:** everyday editing is write, placement is manage, infrastructure is admin ([a269fbe](https://github.com/honzapav/portuni/commit/a269fbeaab434503e830797eb6689347f641913d))
+* **auth:** in-app access requests for request-mode nodes ([bff35e6](https://github.com/honzapav/portuni/commit/bff35e68a4f0fe8b330c1727ba4b7ef38233fd96))
+* **mcp:** Drive-direct portuni_read_file fallback and portuni_search_files ([927d65c](https://github.com/honzapav/portuni/commit/927d65cdffbac8d285c17f0098a39b6cd9baa41f))
+* **web:** download-folder action and local front door in MCP settings ([6645270](https://github.com/honzapav/portuni/commit/6645270a3d5c9b5bb48227944b6a9e18f257edfe))
+* **web:** show the download-folder action on nodes without a local mirror ([b7a3695](https://github.com/honzapav/portuni/commit/b7a369525021a1af950f74b4635897b4027c3dbe))
+
+
+### Bug Fixes
+
+* **desktop:** get_mcp_token hands out the local front-door token in central mode too ([e491600](https://github.com/honzapav/portuni/commit/e491600d52a513abd1b51a37f0d2751a2ad6c4b0))
+* **release:** gate the rollout on promoting the pre-release ([#147](https://github.com/honzapav/portuni/issues/147)) ([f3514cd](https://github.com/honzapav/portuni/commit/f3514cdbe82c334b0fdc10325ea790cb9377e7d9))
+* **sync:** make portuni_snapshot work without a local mirror ([71539e7](https://github.com/honzapav/portuni/commit/71539e73b1e49bcc9105d82b183725a1d43bbb93))
+* **web:** add macOS download link and fix collapsed space on portuni.com ([bccc302](https://github.com/honzapav/portuni/commit/bccc302ba51c7177c2e6318e5d42f4f20e2b936e))
+* **web:** silence the pre-login sync banner by catching LocalOnlyError by instance ([5540d29](https://github.com/honzapav/portuni/commit/5540d290836737fafa8637a2613fa078439b62d7))
+
 ## [0.8.0](https://github.com/honzapav/portuni/compare/v0.7.0...v0.8.0) (2026-08-29)
 
 
