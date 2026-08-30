@@ -1144,6 +1144,7 @@ function DetailPaneBody({
               nodeId={node.id}
               canManage={canManage}
               onMutate={onMutate}
+              graph={graph}
             />
           </div>
         )}
