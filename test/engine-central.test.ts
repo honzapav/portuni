@@ -631,6 +631,57 @@ describe("computeSyncPendingCentral", () => {
     assert.equal(r.nodes[0].node_name, "Stan GWS");
     assert.equal(r.nodes[0].untracked, 1);
   });
+
+  it("a node whose only pending files are deleted_local is absent, total 0", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "a.md");
+    await writeFile(abs, "v1");
+    await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+    await rm(abs);
+    await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: abs });
+
+    const r = await computeSyncPendingCentral(c, "U1");
+
+    assert.equal(r.nodes.find((n) => n.node_id === NODE_ID), undefined);
+    assert.equal(r.total, 0);
+  });
+
+  it("matches the local engine's total rule: push counts, deleted_local does not", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const gone = join(mirrorRoot, "wip", "gone.md");
+    await writeFile(gone, "v1");
+    await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+    await rm(gone);
+    await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: gone });
+    await writeFile(join(mirrorRoot, "outputs", "new.md"), "local only");
+    await registerLocalFileCentral(c, {
+      userId: "U1",
+      nodeId: NODE_ID,
+      localPath: join(mirrorRoot, "outputs", "new.md"),
+    });
+
+    const r = await computeSyncPendingCentral(c, "U1");
+
+    const node = r.nodes.find((n) => n.node_id === NODE_ID);
+    assert.ok(node);
+    assert.equal(node.deleted_local, 1);
+    assert.equal(node.total, node.push);
+    assert.ok(node.push >= 1);
+  });
+
+  it("skips a mirror whose root directory was removed from disk", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    await writeFile(join(mirrorRoot, "wip", "draft.md"), "x");
+    await rm(mirrorRoot, { recursive: true, force: true });
+
+    const r = await computeSyncPendingCentral(c, "U1");
+
+    assert.equal(r.nodes.find((n) => n.node_id === NODE_ID), undefined);
+    assert.equal(r.total, 0);
+  });
 });
 
 describe("createMirrorForNodeCentral", () => {

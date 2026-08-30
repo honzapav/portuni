@@ -206,9 +206,13 @@ export type SyncRunResponse = {
   skipped: SyncRunSkippedFile[];
 };
 
-// Cross-mirror "what is not yet on a remote" aggregate, per node. Only the
-// local-not-on-remote classes count (push/conflict/untracked/remote_missing/deleted);
-// incoming pull candidates are excluded.
+// Cross-mirror "what is not yet on a remote" aggregate, per node. `total`
+// (and node inclusion) counts only classes a sync run actually clears:
+// push + conflict + untracked. remote_missing and deleted_local are carried
+// as informational counts — a sync run neither pushes nor pulls them (they
+// need a human decision via the resolve endpoint), so they are surfaced in
+// the node's file list instead of driving the footer badge / quit guard.
+// Incoming pull candidates are excluded entirely.
 export type SyncPendingNode = {
   node_id: string;
   node_name: string;
