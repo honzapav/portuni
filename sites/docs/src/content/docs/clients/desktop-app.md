@@ -10,7 +10,7 @@ description: Portuni.app — the Tauri-built macOS desktop client with an embedd
 A native macOS window (1600×1000 by default, opens maximized) with:
 
 - **Graph view** — Cytoscape-rendered interactive node graph using the `fcose` force-directed layout. Pan, zoom, click a node to focus.
-- **Detail pane** — the right column shows the focused node's full detail: owner, responsibilities, data sources, tools, events timeline, files. Same payload `portuni_get_node` returns over MCP, rendered as a panel rather than JSON. The Files tab remembers which folders you collapsed per node, on this device.
+- **Detail pane** — the right column shows the focused node's full detail: owner, responsibilities, data sources, tools, events timeline, files. Same payload `portuni_get_node` returns over MCP, rendered as a panel rather than JSON. The Files tab remembers which folders you collapsed per node, on this device. If the node has no local mirror on this device yet, the header shows a "Vytvořit pracovní složku" button that creates it directly — no need to open a terminal first.
 - **Workspace view** — a node browser with type / status filters, sidebar navigation, and a status footer.
 - **Multi-session terminal tabs** — built-in `xterm`-based terminals attached to the focused node's local mirror via PTY. Run `claude`, `codex`, or any shell command in-context without leaving the app. Scroll the scrollback with the wheel/trackpad or Shift+PageUp/PageDown, and jump to the bottom with Cmd+↓.
 - **Actors page** — browse and manage actors and assignments.

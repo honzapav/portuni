@@ -10,6 +10,12 @@ totally different layouts without stepping on each other.
 
 ## What's inside a mirror
 
+A mirror is usually created implicitly the first time an agent terminal is
+launched for a node. In the desktop app, the node detail header also offers
+a direct "Vytvořit pracovní složku" button when the node has no mirror on
+this device yet, so you can create the folder without opening a terminal
+first.
+
 When you call `portuni_mirror`, Portuni creates a folder structure for you:
 
 ```
