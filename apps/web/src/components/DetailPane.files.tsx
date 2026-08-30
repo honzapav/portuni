@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  Download,
   ExternalLink,
   FileText,
   Folder,
@@ -28,7 +29,12 @@ import type {
 } from "../types";
 import { buildAgentCommand } from "../lib/prompt";
 import { agentDisplayName } from "../lib/settings";
-import { createNodeMirror, fetchNodeFileUrl } from "../api";
+import {
+  createNodeMirror,
+  fetchNodeFileUrl,
+  LocalOnlyError,
+  runNodeSync,
+} from "../api";
 import type { ResolveAction } from "../api";
 import { isTauri, openInFinder } from "../lib/backend-url";
 import { getCachedDriveStatus } from "../lib/sync-drive";
@@ -857,77 +863,182 @@ export function SyncBar({
           </span>
         )}
       </div>
-      {result && (
-        <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px] text-[var(--color-text-dim)]">
-          {result.pushed.length > 0 && (
-            <div>Push: {result.pushed.length} souborů</div>
-          )}
-          {result.pulled.length > 0 && (
-            <div>Pull: {result.pulled.length} souborů</div>
-          )}
-          {result.adopted.length > 0 && (
-            <div>Zaregistrováno: {result.adopted.length} souborů</div>
-          )}
-          {result.conflicts.length > 0 && (
-            <div style={{ color: "var(--color-danger)" }}>
-              Konflikty (přeskočeno): {result.conflicts.length}
-            </div>
-          )}
-          {(result.deleted_local?.length ?? 0) > 0 && (
-            <div>
-              Smazáno lokálně (neobnovuje se):{" "}
-              {result.deleted_local.map((f) => f.filename).join(", ")}
-            </div>
-          )}
-          {(result.deleted_remote?.length ?? 0) > 0 && (
-            <div>
-              Uklizeno po smazání jinde:{" "}
-              {result.deleted_remote.map((f) => f.filename).join(", ")}
-            </div>
-          )}
-          {(result.adopted_remote?.length ?? 0) > 0 && (
-            <div>
-              Nové z remote: {result.adopted_remote.map((f) => f.filename).join(", ")}
-            </div>
-          )}
-          {(result.deleted_on_remote?.length ?? 0) > 0 && (
-            <div>
-              Smazáno na remote: {result.deleted_on_remote.map((f) => f.filename).join(", ")}
-            </div>
-          )}
-          {(result.sweep_errors?.length ?? 0) > 0 && (
-            <div style={{ color: "var(--color-danger)" }}>
-              Kontrola remote selhala:{" "}
-              {result.sweep_errors.map((e) => e.remote_path).join(", ")}
-            </div>
-          )}
-          {(result.repaired?.length ?? 0) > 0 && (
-            <div>Opraveno: {result.repaired.map((f) => f.filename).join(", ")}</div>
-          )}
-          {(result.pending_repairs?.length ?? 0) > 0 && (
-            <div style={{ color: "var(--color-danger)" }}>
-              Nedokončené operace: {result.pending_repairs.length} (poslední chyba:{" "}
-              {result.pending_repairs[0].last_error})
-            </div>
-          )}
-          {result.errors.length > 0 && (
-            <div style={{ color: "var(--color-danger)" }}>
-              Chyby: {result.errors.length} (
-              {result.errors.map((e) => e.filename).join(", ")})
-            </div>
-          )}
-          {result.pushed.length === 0 &&
-            result.pulled.length === 0 &&
-            result.adopted.length === 0 &&
-            result.conflicts.length === 0 &&
-            (result.deleted_local?.length ?? 0) === 0 &&
-            (result.deleted_remote?.length ?? 0) === 0 &&
-            result.errors.length === 0 && <div>Nic k synchronizaci.</div>}
-        </div>
-      )}
+      {result && <SyncRunSummary result={result} />}
       {error && (
         <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px]">
           <span style={{ color: "var(--color-danger)" }}>Chyba: {error}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Outcome of one sync run, shared by SyncBar and DownloadMirrorButton.
+function SyncRunSummary({ result }: { result: SyncRunResponse }) {
+  return (
+    <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px] text-[var(--color-text-dim)]">
+      {result.pushed.length > 0 && (
+        <div>Push: {result.pushed.length} souborů</div>
+      )}
+      {result.pulled.length > 0 && (
+        <div>Pull: {result.pulled.length} souborů</div>
+      )}
+      {result.adopted.length > 0 && (
+        <div>Zaregistrováno: {result.adopted.length} souborů</div>
+      )}
+      {result.conflicts.length > 0 && (
+        <div style={{ color: "var(--color-danger)" }}>
+          Konflikty (přeskočeno): {result.conflicts.length}
+        </div>
+      )}
+      {(result.deleted_local?.length ?? 0) > 0 && (
+        <div>
+          Smazáno lokálně (neobnovuje se):{" "}
+          {result.deleted_local.map((f) => f.filename).join(", ")}
+        </div>
+      )}
+      {(result.deleted_remote?.length ?? 0) > 0 && (
+        <div>
+          Uklizeno po smazání jinde:{" "}
+          {result.deleted_remote.map((f) => f.filename).join(", ")}
+        </div>
+      )}
+      {(result.adopted_remote?.length ?? 0) > 0 && (
+        <div>
+          Nové z remote: {result.adopted_remote.map((f) => f.filename).join(", ")}
+        </div>
+      )}
+      {(result.deleted_on_remote?.length ?? 0) > 0 && (
+        <div>
+          Smazáno na remote: {result.deleted_on_remote.map((f) => f.filename).join(", ")}
+        </div>
+      )}
+      {(result.sweep_errors?.length ?? 0) > 0 && (
+        <div style={{ color: "var(--color-danger)" }}>
+          Kontrola remote selhala:{" "}
+          {result.sweep_errors.map((e) => e.remote_path).join(", ")}
+        </div>
+      )}
+      {(result.repaired?.length ?? 0) > 0 && (
+        <div>Opraveno: {result.repaired.map((f) => f.filename).join(", ")}</div>
+      )}
+      {(result.pending_repairs?.length ?? 0) > 0 && (
+        <div style={{ color: "var(--color-danger)" }}>
+          Nedokončené operace: {result.pending_repairs.length} (poslední chyba:{" "}
+          {result.pending_repairs[0].last_error})
+        </div>
+      )}
+      {result.errors.length > 0 && (
+        <div style={{ color: "var(--color-danger)" }}>
+          Chyby: {result.errors.length} (
+          {result.errors.map((e) => e.filename).join(", ")})
+        </div>
+      )}
+      {result.pushed.length === 0 &&
+        result.pulled.length === 0 &&
+        result.adopted.length === 0 &&
+        result.conflicts.length === 0 &&
+        (result.deleted_local?.length ?? 0) === 0 &&
+        (result.deleted_remote?.length ?? 0) === 0 &&
+        result.errors.length === 0 && <div>Nic k synchronizaci.</div>}
+    </div>
+  );
+}
+
+// "Stáhnout složku": materializes the node's device mirror and pulls its
+// files in one click, for a node that has no local mirror yet. Until now
+// the mirror only appeared as a side effect of launching a terminal.
+//   1. POST /nodes/:id/mirror (createNodeMirror) -- idempotent.
+//   2. POST /nodes/:id/sync (runNodeSync) -- the same call the
+//      "Synchronizovat" button makes.
+// Both routes are served by the local sidecar in either data mode: in
+// central mode the desktop proxy routes them to the local sync agent
+// (is_local_only_path), whose run is composed of read/write central
+// endpoints, so a write-scope teammate never hits the owner-only
+// POST /nodes/:id/sync on the central server. A 501 local_only
+// (LocalOnlyError) means the agent is not running -- sign in first.
+// `onDone` fires after the mirror exists (even if the sync step failed) so
+// the parent can refetch node.local_mirror and the sync status.
+type DownloadState =
+  | { kind: "idle" }
+  | { kind: "pending"; step: "mirror" | "sync" }
+  | { kind: "done"; result: SyncRunResponse }
+  | { kind: "error"; message: string };
+
+export function DownloadMirrorButton({
+  nodeId,
+  onDone,
+}: {
+  nodeId: string;
+  onDone?: () => void | Promise<void>;
+}) {
+  const [state, setState] = useState<DownloadState>({ kind: "idle" });
+  // Ignore responses that land after the user switched to another node.
+  const nodeRef = useRef(nodeId);
+  useEffect(() => {
+    nodeRef.current = nodeId;
+    setState({ kind: "idle" });
+  }, [nodeId]);
+
+  const run = async () => {
+    if (state.kind === "pending") return;
+    setState({ kind: "pending", step: "mirror" });
+    let mirrorCreated = false;
+    try {
+      await createNodeMirror(nodeId);
+      mirrorCreated = true;
+      if (nodeRef.current !== nodeId) return;
+      setState({ kind: "pending", step: "sync" });
+      const result = await runNodeSync(nodeId);
+      if (nodeRef.current !== nodeId) return;
+      setState({ kind: "done", result });
+    } catch (e) {
+      if (nodeRef.current !== nodeId) return;
+      const message =
+        e instanceof LocalOnlyError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : String(e);
+      setState({ kind: "error", message });
+    } finally {
+      if (mirrorCreated && onDone) {
+        try {
+          await onDone();
+        } catch {
+          /* refresh is best-effort; the 5s status poll catches up */
+        }
+      }
+    }
+  };
+
+  const pending = state.kind === "pending";
+  const label = !pending
+    ? "Stáhnout složku"
+    : state.step === "mirror"
+      ? "Vytvářím složku…"
+      : "Stahuji soubory…";
+
+  return (
+    <div className="mb-3">
+      <button
+        type="button"
+        onClick={() => void run()}
+        disabled={pending}
+        title="Vytvoří pracovní složku na tomto zařízení a stáhne do ní soubory uzlu."
+        className="inline-flex items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[12.5px] text-[var(--color-text)] transition-colors hover:border-[var(--color-border-strong)] disabled:cursor-default disabled:opacity-60"
+      >
+        {pending ? (
+          <Loader2 size={12} className="animate-spin" />
+        ) : (
+          <Download size={12} />
+        )}
+        {label}
+      </button>
+      {state.kind === "done" && <SyncRunSummary result={state.result} />}
+      {state.kind === "error" && (
+        <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px]">
+          <span style={{ color: "var(--color-danger)" }}>Chyba: {state.message}</span>
         </div>
       )}
     </div>
