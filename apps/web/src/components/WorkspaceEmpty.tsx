@@ -29,7 +29,13 @@ export default function WorkspaceEmpty({ graph, onPick }: Props) {
             foldForSearch(n.description ?? "").includes(q),
         )
         .slice(0, 30)
-    : all.slice(-15).reverse();
+    : all
+        .filter((n) => n.status === "active")
+        .sort(
+          (a, b) =>
+            (b.updated_at ?? b.created_at).localeCompare(a.updated_at ?? a.created_at),
+        )
+        .slice(0, 15);
 
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-4 p-8">

@@ -42,6 +42,11 @@ export type GraphNode = {
   // box, so there's nothing to store for them.
   pos_x: number | null;
   pos_y: number | null;
+  // Used by the empty-workspace node picker to rank "recently touched"
+  // nodes without a query -- newest updated_at (falling back to
+  // created_at) first. Not shown in the UI otherwise.
+  created_at: string;
+  updated_at: string;
   // True when this node (visible to the caller) is currently under a
   // node_access ACL -- its own rows, or an inherited ancestor's. Absent
   // (not false) for an unrestricted node, mirroring the DetailEdge

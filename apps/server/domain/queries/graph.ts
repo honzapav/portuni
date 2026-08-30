@@ -13,6 +13,7 @@ export async function loadGraph(db: Client): Promise<GraphPayload> {
   const nodesRes = await db.execute({
     sql: `SELECT n.id, n.type, n.name, n.description, n.status,
                  n.lifecycle_state, n.visibility, n.pos_x, n.pos_y,
+                 n.created_at, n.updated_at,
                  a.id   AS owner_id,
                  a.name AS owner_name
           FROM nodes n
@@ -40,6 +41,8 @@ export async function loadGraph(db: Client): Promise<GraphPayload> {
           : null,
       pos_x: row.pos_x as number | null,
       pos_y: row.pos_y as number | null,
+      created_at: row.created_at as string,
+      updated_at: row.updated_at as string,
     })),
     edges: edgesRes.rows.map((row) => ({
       id: row.id as string,
