@@ -50,15 +50,19 @@ non-active status. Everything else maps to `active`.
 ## Node visibility
 
 ```
-team (default), private
+team (default), private, group
 ```
 
-Note: visibility is currently a UI/metadata hint, NOT an access
-control list. Phase 1 has no per-user identity; the graph and detail
-queries do not filter on this column. Treat `private` as "I do not
-want this in shared exports", not as a security guarantee. Real ACL
-enforcement is gated on multi-user auth. `group` is planned but not
-yet implemented.
+Enforced server-side on every read (graph, list, get, context, files,
+scope expansion): `team` is visible to every authenticated user,
+`private` only to its creator and admins, `group` only to the users and
+Google Groups listed in the node's access list (managed in the desktop
+app's sharing section; `group` cannot be set directly). Restriction is
+inherited along `belongs_to`; the nearest restricted ancestor decides,
+a node's own list overrides it. A node the caller cannot see answers
+`not_found`. `access_mode = request` shows such a node as a locked chip
+(name and type only) and lets the user ask for access in the desktop
+app; `private` hides it entirely.
 
 ## Event types
 

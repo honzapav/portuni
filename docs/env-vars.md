@@ -50,7 +50,7 @@ rest are optional tunables with code defaults. Grep check:
 | `PORTUNI_WORKSPACE_ID` | unset | Desktop sidecar only; the workspace's unique ID as set in `config.json`. Unset in standalone mode. Determines which token env var name the scope materializer generates for per-mirror configs (e.g., `PORTUNI_MCP_TOKEN_<ID>` when set, plain `PORTUNI_MCP_TOKEN` when unset). |
 | `PORTUNI_MCP_TOKEN_<ID>` | unset | Per-workspace MCP token (sensitive), injected into spawned terminal sessions. `<ID>` matches the workspace ID (from `PORTUNI_WORKSPACE_ID`). Each enabled workspace gets its own token env var so mirrors can reference the right one via scope materialization. |
 | `PORTUNI_REMOTE_<NAME>__SERVICE_ACCOUNT_JSON` | unset | Per-remote Google Drive Service Account key (sensitive), read by the `varlock` token store (`token-store-varlock.ts`). `<NAME>` is the remote name upper-cased with `-` → `_`. **Required on the VPS for central-mode file content over the server** (the Drive-direct read/write in `file-content-remote.ts` resolves the adapter via this credential). Sibling fields: `__ACCESS_TOKEN`, `__REFRESH_TOKEN`, `__EXPIRES_AT`. |
-| `PORTUNI_AGENT_MODE` | unset | `=1` boots the desktop sidecar as the central-mode **sync agent** (teammate mirrors): no Turso, no graph db, no MCP; serves only mirror/sync/scope/sandbox routes backed by the central server (`desktop.ts` → `api/agent-router.ts`, engine in `domain/sync/central/`). Set by the Tauri host in central data_mode. |
+| `PORTUNI_AGENT_MODE` | unset | `=1` boots the desktop sidecar as the central-mode **sync agent** (teammate mirrors): no Turso, no graph db; serves the mirror/sync/scope/sandbox routes backed by the central server and the local MCP front door (device-local tools run here, graph tools are proxied to central) (`desktop.ts` → `api/agent-router.ts`, engine in `domain/sync/central/`). Set by the Tauri host in central data_mode. |
 | `PORTUNI_CENTRAL_URL` | unset | Agent mode: base URL of the central server (e.g. `https://api.portuni.com`). Required with `PORTUNI_AGENT_MODE=1`. |
 | `PORTUNI_CENTRAL_TOKEN` | unset | Agent mode: the user's device token (sensitive) used as Bearer for every graph-plane/byte call to the central server. Required with `PORTUNI_AGENT_MODE=1`. |
 | `PORTUNI_SYNC_RUN_CONCURRENCY` | `5` | Agent mode: worker-pool width for push/pull/adopt inside a sync run (`engine-central.ts`). |
@@ -98,9 +98,9 @@ the `node_access` ACL — see
 
 | Group env var | Portuni scope | Capabilities |
 |---|---|---|
-| `PORTUNI_GROUPS_ADMIN` | admin | Everything: read, write, manage, POPP sync, summary refresh, user management |
-| `PORTUNI_GROUPS_MANAGE` | manage | Read + write + connect/disconnect/update/move nodes |
-| `PORTUNI_GROUPS_WRITE` | write | Read + log events, resolve, supersede, store files |
+| `PORTUNI_GROUPS_ADMIN` | admin | Everything: deletes, user management, remotes, routing policy, Drive connect; sees every node |
+| `PORTUNI_GROUPS_MANAGE` | manage | write + move nodes between organizations, node sharing (access lists, access requests), graph positions |
+| `PORTUNI_GROUPS_WRITE` | write | Create and edit nodes, edges, actors, responsibilities, data sources and tools; log events, resolve, supersede, files (store, pull, move, snapshot) |
 | (any authenticated user) | read | Get context, search, list nodes, get node, create nodes |
 
 Highest matching group wins. Admin-scoped users bypass all node-level group checks.

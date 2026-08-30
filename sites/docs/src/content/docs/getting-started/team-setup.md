@@ -50,12 +50,12 @@ The full variable inventory, including tunables not listed here, lives in [`docs
 
 | Scope | Who | Capabilities |
 |-------|-----|--------------|
-| admin | `PORTUNI_GROUPS_ADMIN` members | Everything, including user management; bypasses node-level visibility checks |
-| manage | `PORTUNI_GROUPS_MANAGE` members | Read + write + connect/update/move nodes |
-| write | `PORTUNI_GROUPS_WRITE` members | Read + log events, resolve, supersede, store files |
-| read | any authenticated user from an allowed domain | Get context, list nodes, get node, create nodes |
+| admin | `PORTUNI_GROUPS_ADMIN` members | Everything: deletes, user management, remotes, routing policy, Drive connect; sees every node regardless of visibility |
+| manage | `PORTUNI_GROUPS_MANAGE` members | write + placing nodes in the network (move between organizations), node sharing (access lists, approving access requests), graph positions |
+| write | `PORTUNI_GROUPS_WRITE` members | Everyday work: create and edit nodes, edges, actors, responsibilities, data sources and tools; log and resolve events; files (store, pull, move, snapshot) |
+| read | any authenticated user from an allowed domain | Read only: context, nodes, files, events. Cannot create or edit anything |
 
-Highest matching group wins. On top of these global scopes, individual nodes can be restricted with `group` visibility — a node a user can't see simply answers "not found."
+Each variable takes a comma-separated list, so several groups can grant the same scope (e.g. `PORTUNI_GROUPS_WRITE=portuni-team@yourdomain,tempo-crew@yourdomain`). Highest matching group wins. On top of these global scopes, individual nodes can be restricted with `group` visibility — a node a user can't see simply answers "not found." A restricted node in **request** mode instead shows up as a locked chip; the user can ask for access from there, and managers approve or deny the request in the node's sharing section or in Settings → Žádosti o přístup.
 
 One operational note: removing someone from a group takes effect within about an hour (group-membership cache, session JWT lifetime, and MCP session TTL each add delay). For immediate revocation, also delete the user's device tokens.
 
@@ -76,6 +76,10 @@ That's it. The graph you see — and everything your AI agents can do — is fil
 Mirror folders work in central mode too: the local sidecar runs as a **sync agent** that keeps your mirror folders and file status current, brokering every read and write through the central server with your device token. Folders materialize per node — open a node and hit **Otevřít terminál v Portuni** (or run a sync) and the app creates the local mirror for you. The app walks you through this right after your first sign-in.
 
 Advanced: the same settings can still be written by hand into the app's `config.json` (`~/Library/Application Support/ooo.workflow.portuni/config.json`, keys `server_url`, `google_client_id`, `google_client_secret`, `data_mode: "central"`) — useful when the server does not serve `/auth/desktop-config`.
+
+## Other MCP clients
+
+Teammates' agents normally connect through the desktop app (per-mirror configs point at the local front door). A client without the desktop app — Claude Desktop, a remote agent — talks to `https://<server>/mcp` directly with a device token; see [Claude Desktop](/clients/claude-desktop/).
 
 ## See also
 

@@ -3,7 +3,7 @@
 // discovery), so they must run on the device that owns the mirror -- the
 // central server has no local file plane (see mirror-create.ts's
 // DEVICE_LOCAL_HINT and its WORKSPACE_ROOT_UNSET error). Everything else is
-// proxied to central unchanged (agent-transport.ts, a later task).
+// proxied to central unchanged (agent-transport.ts).
 //
 // Constraint: nothing in this module may call getDb() -- the agent has no
 // graph DB, only a CentralClient (network) and the local per-device

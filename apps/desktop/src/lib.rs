@@ -166,7 +166,8 @@ fn regenerate_mcp_token(app: AppHandle) -> Result<String, String> {
 // Resolve (name, url, claude_token, token_env) for one workspace's global
 // MCP entry. Local mode: loopback URL from the stable config port and the
 // literal persisted token (Claude embeds it; Codex/Vibe use env
-// indirection). Central mode: {server_url}/mcp and env-reference for all.
+// indirection). Central mode: the same loopback front door (never the
+// central URL) and env-reference for all.
 fn global_entry_parts(
     app: &AppHandle,
     ws_id: &str,
@@ -215,9 +216,10 @@ pub(crate) fn enabled_workspaces(
 // .mcp.json. Returns the absolute path of the written file for the UI
 // to surface back to the user. Installs one entry per enabled workspace.
 //
-// In central data_mode: writes {server_url}/mcp as the URL and uses the
-// PORTUNI_MCP_TOKEN_<WS> env-reference pattern (same as mirror configs) so
-// the token is never hardcoded in the file.
+// In central data_mode: still writes the local front door URL (the agent
+// sidecar proxies graph tools to central) and uses the PORTUNI_MCP_TOKEN_<WS>
+// env-reference pattern (same as mirror configs) so the token is never
+// hardcoded in the file.
 #[tauri::command]
 fn install_claude_global(app: AppHandle) -> Result<String, String> {
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
@@ -1331,7 +1333,8 @@ pub(crate) fn spawn_sidecar_ws(
 
     // In central data_mode the webview talks to the remote server for the
     // graph, and the LOCAL sidecar runs as a sync agent (teammate mirrors:
-    // watcher + mirror/sync routes, no graph db, no MCP). The agent needs a
+    // watcher + mirror/sync routes + the MCP front door, no graph db). The
+    // agent needs a
     // device token, which needs a login — before login we only signal
     // readiness with the sentinel port (0) so the login gate can render;
     // google_login re-invokes spawn_sidecar_ws after a successful login.
@@ -1352,9 +1355,10 @@ pub(crate) fn spawn_sidecar_ws(
                     ("PORTUNI_AGENT_MODE".to_string(), "1".to_string()),
                     ("PORTUNI_CENTRAL_URL".to_string(), url.clone()),
                     ("PORTUNI_CENTRAL_TOKEN".to_string(), token),
-                    // Per-mirror .mcp.json URLs materialize from PORTUNI_URL,
-                    // so agents launched inside mirrors connect to the central
-                    // MCP (the agent sidecar serves none).
+                    // PORTUNI_URL is the central base URL for the agent's
+                    // REST client; per-mirror .mcp.json URLs still point at
+                    // this sidecar's front door (resolvePortuniMcpUrl checks
+                    // PORTUNI_AGENT_MODE first).
                     ("PORTUNI_URL".to_string(), url),
                 ]);
             }
