@@ -30,3 +30,4 @@ apps/desktop/sidecar-deps/
 .sandcastle/logs/
 .sandcastle/worktrees/
 .sandcastle/node_modules/
+.sandcastle/prompt.generated.md
