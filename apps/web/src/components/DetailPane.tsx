@@ -77,6 +77,7 @@ import {
   deleteFile,
   resolveFileSync,
   fetchMe,
+  LocalOnlyError,
 } from "../api";
 import type { ResolveAction } from "../api";
 // Sub-modules: file-tree + sync UI and event card live in sibling files;
@@ -421,7 +422,7 @@ function DetailPaneBody({
       // Central mode before login: the sync agent is not up yet and the
       // proxy answers 501 local_only. Not an error worth a banner — badges
       // simply stay absent until the agent is running.
-      if (String(e).includes("local_only")) {
+      if (e instanceof LocalOnlyError) {
         setSyncLoaded(true);
         return;
       }
