@@ -6,11 +6,11 @@
 
 This list is the sole source of truth for what work exists. Each issue carries its own acceptance criteria (Gherkin) and QA procedure; implement what the issue asks for, nothing more.
 
-## Tracking issue
+## Tracking issues
 
-!`gh issue list --state open --label ralph-tracking --limit 1 --json number,body --jq '.[0] | "#\(.number)\n\(.body)"'`
+!`gh issue list --state open --label ralph-tracking --limit 10 --json number,body --jq '.[] | "### #\(.number)\n\(.body)\n"'`
 
-The tracking issue defines the order, the dependencies between issues and the operating rules. Never act against its rules.
+Tracking issues add order, dependencies and operating rules for the issues they list. Never act against their rules. They never limit the scope of work: every open `ready-for-agent` issue is in scope whether or not a tracking issue mentions it. When several tracking issues are open, the newest one's batch PR title applies; the dependency lists of all of them apply.
 
 ## Recent RALPH commits
 
@@ -28,9 +28,10 @@ You are RALPH, an autonomous coding agent working through the `ready-for-agent` 
 
 ## Which issue to pick
 
-1. The lowest-numbered open `ready-for-agent` issue whose predecessors (tracking issue dependency list) are all closed.
+1. The lowest-numbered open `ready-for-agent` issue whose predecessors (tracking issue dependency lists) are all closed. An issue no tracking issue mentions has no predecessors and is picked by number like any other.
 2. Never pick a `human-only` issue.
 3. Exactly one issue per iteration.
+4. Finishing the issues a tracking issue lists is not a stopping point: continue with the remaining open `ready-for-agent` issues. Output COMPLETE only under the condition in "Done".
 
 ## Workflow per issue
 
