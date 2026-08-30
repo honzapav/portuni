@@ -57,17 +57,22 @@ export async function loadNodeDetail(
   // inside classifyNodeVisibility -- no per-edge queries for them, and never
   // get the flag since they see the peer plainly.
   //
-  // A locked chip is non-clickable in the UI (DetailPane renders it as
-  // static text, not a button), so it has no legitimate use for the peer's
-  // ULID or the edge's own id -- blank both so a caller who can only see the
-  // name/type cannot use the response to probe or act on the hidden node.
+  // A locked chip is non-navigable (DetailPane renders it as static text
+  // plus a "request access" button), so it has no legitimate use for the
+  // edge's own id -- blank it, the edge cannot be edited or removed through
+  // the chip. The peer's ULID IS kept: the chip needs it to POST
+  // /nodes/:id/access/request, a request-mode node is discoverable by name
+  // by design, and every other endpoint still 404s that id for a
+  // non-member, so keeping it enables the request flow without widening
+  // what the caller can read. (The MCP projection in mcp/tools/context.ts
+  // still blanks both -- agents have no request flow.)
   const peerIds = [...new Set(rawEdges.map((e) => e.peer_id))];
   const classification = await classifyNodeVisibility(db, identity, peerIds);
   const edges = rawEdges
     .filter((e) => classification.get(e.peer_id) !== "hidden")
     .map((e) =>
       classification.get(e.peer_id) === "request"
-        ? { ...e, id: "", peer_id: "", peer_restricted: true as const }
+        ? { ...e, id: "", peer_restricted: true as const }
         : e,
     );
 

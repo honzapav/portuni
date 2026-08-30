@@ -20,6 +20,8 @@ export type {
   FileContentResponse,
   NodeAccessEntry,
   NodeAccessResponse,
+  AccessRequest,
+  AccessRequestStatus,
   DirectoryGroup,
   AccountUser,
   UserAdmin,

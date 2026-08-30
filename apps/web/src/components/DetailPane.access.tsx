@@ -11,16 +11,20 @@ import { Copy, Lock, Plus, Search, User, Users, X } from "lucide-react";
 import type {
   NodeAccessEntry,
   NodeAccessEntryInput,
+  NodeAccessResponse,
+  AccessRequest,
   AccountUser,
   DirectoryGroup,
 } from "../types";
 import {
   fetchAccountUsers,
   fetchNodeAccess,
+  fetchNodeAccessRequests,
   putNodeAccess,
   searchGroups,
   GoogleModeOnlyError,
 } from "../api";
+import { AccessRequestList } from "./AccessRequests";
 
 // Local shape used for both the informational (read-only) entries coming
 // back from GET and the in-progress draft being edited. display_name is
@@ -144,6 +148,39 @@ export function AccessSection({
     [],
   );
 
+  // Pending access requests on this node (manager-only fetch; GET
+  // /nodes/:id/access/requests is manage-gated, so it is skipped entirely
+  // for a view-only caller instead of surfacing a 403).
+  const [pendingRequests, setPendingRequests] = useState<AccessRequest[]>([]);
+
+  // Applies a fresh access view from GET/PUT to the persisted-state slots.
+  // Deliberately does NOT touch the local editing flags (overriding,
+  // editingGroup, confirm) -- callers reset those themselves where a
+  // reset is wanted (node change, successful save).
+  const applyView = useCallback((res: NodeAccessResponse) => {
+    setRestricted(res.restricted);
+    setInherited(res.inherited);
+    setSourceName(res.source_node_name);
+    setMode(res.mode);
+    setVisibility(res.visibility);
+    const eff = res.entries.map(entryToDraft);
+    setEntries(eff);
+    setDraft(res.inherited ? [] : eff);
+    setDraftMode(res.inherited ? "private" : (res.mode ?? "private"));
+  }, []);
+
+  const loadRequests = useCallback(async () => {
+    if (!canManage) {
+      setPendingRequests([]);
+      return;
+    }
+    try {
+      setPendingRequests(await fetchNodeAccessRequests(nodeId));
+    } catch {
+      /* the sharing view is still usable without the queue */
+    }
+  }, [nodeId, canManage]);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -157,15 +194,7 @@ export function AccessSection({
     fetchNodeAccess(nodeId)
       .then((res) => {
         if (cancelled) return;
-        setRestricted(res.restricted);
-        setInherited(res.inherited);
-        setSourceName(res.source_node_name);
-        setMode(res.mode);
-        setVisibility(res.visibility);
-        const eff = res.entries.map(entryToDraft);
-        setEntries(eff);
-        setDraft(res.inherited ? [] : eff);
-        setDraftMode(res.inherited ? "private" : (res.mode ?? "private"));
+        applyView(res);
       })
       .catch(() => {
         if (!cancelled) setLoadError("Nepodařilo se načíst sdílení");
@@ -176,7 +205,25 @@ export function AccessSection({
     return () => {
       cancelled = true;
     };
-  }, [nodeId]);
+  }, [nodeId, applyView]);
+
+  useEffect(() => {
+    void loadRequests();
+  }, [loadRequests]);
+
+  // After an approve the grant lives on the (possibly ancestor) source
+  // node, so the whole access view is refetched rather than patched
+  // locally; a deny only shrinks the queue.
+  const onRequestResolved = async (_request: AccessRequest, decision: "approve" | "deny") => {
+    await loadRequests();
+    if (decision !== "approve") return;
+    try {
+      applyView(await fetchNodeAccess(nodeId));
+      await onMutate();
+    } catch {
+      /* stale view until the next node change; the grant itself landed */
+    }
+  };
 
   // `nextVisibility` is the authoritative arg of the unified sharing
   // control: "team"/"private" force entries empty server-side, "group"
@@ -198,15 +245,7 @@ export function AccessSection({
         nextMode,
         nextVisibility,
       );
-      setRestricted(res.restricted);
-      setInherited(res.inherited);
-      setSourceName(res.source_node_name);
-      setMode(res.mode);
-      setVisibility(res.visibility);
-      const eff = res.entries.map(entryToDraft);
-      setEntries(eff);
-      setDraft(res.inherited ? [] : eff);
-      setDraftMode(res.inherited ? "private" : (res.mode ?? "private"));
+      applyView(res);
       setOverriding(false);
       setAddingOpen(false);
       setEditingGroup(false);
@@ -468,6 +507,18 @@ export function AccessSection({
               Zrušit
             </button>
           </div>
+        </div>
+      )}
+
+      {canManage && pendingRequests.length > 0 && (
+        <div className="space-y-1.5 border-t border-[var(--color-border)] pt-3">
+          <p className="text-[12.5px] font-medium text-[var(--color-text-muted)]">
+            Žádosti o přístup ({pendingRequests.length})
+          </p>
+          <AccessRequestList
+            requests={pendingRequests}
+            onResolved={(request, decision) => void onRequestResolved(request, decision)}
+          />
         </div>
       )}
 

@@ -161,6 +161,15 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (/^\/nodes\/[^/]+\/move$/.test(pathname) && m === "POST") return "manage";
   if (/^\/nodes\/[^/]+\/access$/.test(pathname) && m === "GET") return "read";
   if (/^\/nodes\/[^/]+\/access$/.test(pathname) && m === "PUT") return "manage";
+  // Asking for access is the one thing a non-member is meant to do with a
+  // request-mode node (read); reviewing the queue is sharing (manage). The
+  // handlers additionally scope every manager read/write to nodes the
+  // caller can see.
+  if (/^\/nodes\/[^/]+\/access\/request$/.test(pathname) && m === "POST") return "read";
+  if (/^\/nodes\/[^/]+\/access\/requests$/.test(pathname) && m === "GET") return "manage";
+  if (pathname === "/access/requests" && m === "GET") return "manage";
+  if (pathname === "/access/requests/count" && m === "GET") return "manage";
+  if (/^\/access\/requests\/[^/]+\/(approve|deny)$/.test(pathname) && m === "POST") return "manage";
   if (/^\/nodes\/[^/]+\/sync-status$/.test(pathname) && m === "GET") return "read";
   if (/^\/nodes\/[^/]+\/folder-url$/.test(pathname) && m === "GET") return "read";
   if (/^\/nodes\/[^/]+\/file-url$/.test(pathname) && m === "GET") return "read";

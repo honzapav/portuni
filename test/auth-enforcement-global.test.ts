@@ -114,9 +114,18 @@ describe("minScopeForRoute", () => {
       ["GET", "/auth/groups"],
       ["GET", "/auth/users"],
       ["POST", "/positions"],
+      ["GET", "/nodes/01ABC/access/requests"],
+      ["GET", "/access/requests"],
+      ["GET", "/access/requests/count"],
+      ["POST", "/access/requests/01ABC/approve"],
+      ["POST", "/access/requests/01ABC/deny"],
     ] as const) {
       assert.equal(minScopeForRoute(method, path), "manage", `${method} ${path}`);
     }
+  });
+
+  it("maps POST /nodes/:id/access/request -> read", () => {
+    assert.equal(minScopeForRoute("POST", "/nodes/01ABC/access/request"), "read");
   });
 
   it("maps DELETE /nodes/:id -> admin", () => {

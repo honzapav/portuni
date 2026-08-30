@@ -44,6 +44,9 @@ import {
   INDEX_DEVICE_TOKENS_USER,
   DDL_NODE_ACCESS,
   INDEX_NODE_ACCESS_NODE,
+  DDL_ACCESS_REQUESTS,
+  INDEX_ACCESS_REQUESTS_PENDING,
+  INDEX_ACCESS_REQUESTS_STATUS,
 } from "./schema-triggers.js";
 
 interface Migration {
@@ -1167,7 +1170,28 @@ const MIGRATIONS: Migration[] = [
       );
     },
   },
+
+  // Migration 024: access_requests table (in-app "request access" flow for
+  // access_mode='request' nodes). Fresh installs already get it via DDL;
+  // existing installs need it added explicitly. Same DDL constants as the
+  // fresh path so the two can never drift.
+  {
+    id: "024_access_requests",
+    isApplied: async (db) => {
+      const r = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='access_requests'",
+      );
+      return r.rows.length > 0;
+    },
+    up: runMigration024,
+  },
 ];
+
+export async function runMigration024(db: Client): Promise<void> {
+  await db.execute(DDL_ACCESS_REQUESTS);
+  await db.execute(INDEX_ACCESS_REQUESTS_PENDING);
+  await db.execute(INDEX_ACCESS_REQUESTS_STATUS);
+}
 
 export async function runMigrations(db: Client): Promise<void> {
   // Ensure the migrations table exists (DDL already has it for fresh

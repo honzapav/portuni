@@ -452,20 +452,21 @@ describe("Task 12: peer_restricted edges in REST node detail", () => {
     assert.equal(privateEdge, undefined, "private-mode restricted child must be dropped entirely (wave-1 regression)");
   });
 
-  // Finding 2 (wave-2 final review): locked edges must be opaque -- no id
-  // that would let a caller who can't see the peer probe or act on it.
-  test("org member: locked RequestChild edge has both id and peer_id blanked; ULID does not appear in the response at all", async () => {
+  // Locked edges withhold the edge id (nothing to edit or remove through
+  // the chip) but carry the peer's ULID: the chip needs it to POST
+  // /nodes/:id/access/request. Direct reads of that id still 404 below.
+  test("org member: locked RequestChild edge has id blanked but carries peer_id for the request flow", async () => {
     const result = await getNode(orgMember, orgId);
     assert.equal(result.statusCode, 200, `expected 200, got ${result.statusCode}; body: ${result.body}`);
     const parsed = JSON.parse(result.body) as { edges: EdgeWithFlag[] };
 
     const requestEdge = parsed.edges.find((e) => e.peer_name === "RequestChild");
     assert.ok(requestEdge, "request-mode restricted child must still appear as a locked edge");
-    assert.equal(requestEdge!.peer_id, "", "locked edge must not carry the peer's ULID");
+    assert.equal(requestEdge!.peer_id, requestChildId, "locked edge must carry the peer's ULID");
     assert.equal(requestEdge!.id, "", "locked edge must not carry its own edge id");
     assert.ok(
-      !result.body.includes(requestChildId),
-      "the restricted node's ULID must not appear anywhere in the serialized detail response",
+      !result.body.includes(privateChildId),
+      "the private-mode node's ULID must not appear anywhere in the serialized detail response",
     );
   });
 

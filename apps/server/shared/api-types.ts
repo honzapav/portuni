@@ -66,13 +66,16 @@ export type GraphPayload = {
 
 export type DetailEdge = {
   // "" (not the real ULID) when peer_restricted is true -- the locked chip
-  // is non-clickable and has no legitimate use for the edge id, and keeping
-  // it would let a caller who can't see the peer use its ULID to probe it.
+  // is non-navigable and has no legitimate use for the edge id (it cannot
+  // be edited or removed), so it is withheld.
   id: string;
   relation: EdgeRelation | string;
   direction: "outgoing" | "incoming";
-  // "" (not the real ULID) when peer_restricted is true, same rationale as
-  // `id` above.
+  // The peer's real ULID even when peer_restricted is true: the locked chip
+  // needs it to POST /nodes/:id/access/request. A request-mode node is
+  // discoverable by name by design, and every other endpoint still 404s
+  // the id for a non-member, so exposing it here enables the request flow
+  // without widening what the caller can read.
   peer_id: string;
   peer_name: string;
   peer_type: NodeType | string;
@@ -323,6 +326,28 @@ export type NodeAccessResponse = {
   // Distinct from `restricted`, which reflects the effective (possibly
   // inherited) ACL and cannot distinguish team from private.
   visibility: "team" | "private" | "group";
+};
+
+// Access requests (POST /nodes/:id/access/request, GET /access/requests,
+// GET /nodes/:id/access/requests, POST /access/requests/:id/approve|deny).
+// One row per request; resolved rows are kept as history. Node + requester
+// display data are joined server-side so the UI needs no extra fetches.
+export type AccessRequestStatus = "pending" | "approved" | "denied";
+
+export type AccessRequest = {
+  id: string;
+  node_id: string;
+  node_name: string;
+  node_type: NodeType | string;
+  user_id: string;
+  user_name: string;
+  user_email: string;
+  user_avatar_url: string | null;
+  message: string | null;
+  status: AccessRequestStatus;
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
 };
 
 // GET /auth/groups -- Google Workspace domain group directory, used by the

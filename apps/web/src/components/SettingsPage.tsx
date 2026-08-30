@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Check } from "lucide-react";
 import {
   AGENT_PRESETS,
@@ -9,11 +9,12 @@ import {
 import McpServerSection from "./McpServerSection";
 import SettingsActorsPanel from "./SettingsPage.actors";
 import SettingsUsersPanel from "./SettingsPage.users";
+import SettingsAccessRequestsPanel from "./AccessRequests";
 import AccountSection from "./AccountSection";
 import WorkspacesSection from "./WorkspacesSection";
 import SyncSection from "./SyncSection";
 import UpdateSection from "./UpdateSection";
-import { fetchMe } from "../api";
+import { fetchAccessRequestCount, fetchMe } from "../api";
 import type { AppUpdate } from "../lib/updater";
 
 type Props = {
@@ -24,7 +25,14 @@ type Props = {
   appUpdate: AppUpdate;
 };
 
-type SubTab = "general" | "actors" | "account" | "workspaces" | "sync" | "users";
+type SubTab =
+  | "general"
+  | "actors"
+  | "account"
+  | "workspaces"
+  | "sync"
+  | "users"
+  | "access-requests";
 
 export default function SettingsPage({
   agentCommand,
@@ -41,6 +49,7 @@ export default function SettingsPage({
     if (t === "workspaces") return "workspaces";
     if (t === "sync") return "sync";
     if (t === "users") return "users";
+    if (t === "access-requests") return "access-requests";
     return "general";
   });
   useEffect(() => {
@@ -50,31 +59,50 @@ export default function SettingsPage({
     window.history.replaceState(null, "", url.toString());
   }, [tab]);
 
-  // Uzivatele tab is admin-only. fetchMe() resolves the caller's
-  // global_scope; adminState starts "unknown" so a direct ?settingsTab=users
-  // link isn't bounced before the check resolves -- the tab button/panel
-  // just stay hidden until we know. Once resolved, a confirmed non-admin on
-  // "users" is bounced back to "general".
-  const [adminState, setAdminState] = useState<"unknown" | "yes" | "no">(
+  // Uzivatele tab is admin-only, Zadosti o pristup is manage+. fetchMe()
+  // resolves the caller's global_scope; scopeState starts "unknown" so a
+  // direct ?settingsTab=users link isn't bounced before the check resolves
+  // -- the tab button/panel just stay hidden until we know. Once resolved,
+  // a caller below the tab's tier is bounced back to "general".
+  const [scopeState, setScopeState] = useState<"unknown" | "read" | "write" | "manage" | "admin">(
     "unknown",
   );
   useEffect(() => {
     let cancelled = false;
     fetchMe()
       .then((me) => {
-        if (!cancelled) setAdminState(me.global_scope === "admin" ? "yes" : "no");
+        if (cancelled) return;
+        const s = me.global_scope;
+        setScopeState(s === "admin" || s === "manage" || s === "write" ? s : "read");
       })
       .catch(() => {
-        if (!cancelled) setAdminState("no");
+        if (!cancelled) setScopeState("read");
       });
     return () => {
       cancelled = true;
     };
   }, []);
-  const isAdmin = adminState === "yes";
+  const isAdmin = scopeState === "admin";
+  const canManage = scopeState === "admin" || scopeState === "manage";
+  const scopeKnown = scopeState !== "unknown";
   useEffect(() => {
-    if (tab === "users" && adminState === "no") setTab("general");
-  }, [tab, adminState]);
+    if (tab === "users" && scopeKnown && !isAdmin) setTab("general");
+    if (tab === "access-requests" && scopeKnown && !canManage) setTab("general");
+  }, [tab, scopeKnown, isAdmin, canManage]);
+
+  // Pending-request badge on the tab label. One cheap count on mount for
+  // managers, refreshed after every approve/deny from the panel itself.
+  const [pendingCount, setPendingCount] = useState(0);
+  const refreshPendingCount = useCallback(() => {
+    fetchAccessRequestCount()
+      .then(setPendingCount)
+      .catch(() => {
+        /* badge stays at its last value */
+      });
+  }, []);
+  useEffect(() => {
+    if (canManage) refreshPendingCount();
+  }, [canManage, refreshPendingCount]);
 
   const isGeneralTab = tab === "general";
 
@@ -199,6 +227,23 @@ export default function SettingsPage({
             >
               Synchronizace
             </button>
+            {canManage && (
+              <button
+                onClick={() => setTab("access-requests")}
+                className={`flex items-center gap-1.5 rounded px-3 py-1 text-[13px] transition-colors ${
+                  tab === "access-requests"
+                    ? "bg-[var(--color-bg)] text-[var(--color-text)]"
+                    : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+                }`}
+              >
+                Žádosti o přístup
+                {pendingCount > 0 && (
+                  <span className="rounded-full bg-[var(--color-accent)] px-1.5 py-px font-mono text-[10.5px] font-semibold leading-tight text-[var(--color-bg)]">
+                    {pendingCount}
+                  </span>
+                )}
+              </button>
+            )}
             {isAdmin && (
               <button
                 onClick={() => setTab("users")}
@@ -224,7 +269,11 @@ export default function SettingsPage({
 
         {tab === "users" && isAdmin && <SettingsUsersPanel />}
 
-        {tab === "users" && adminState === "unknown" && (
+        {tab === "access-requests" && canManage && (
+          <SettingsAccessRequestsPanel onChanged={refreshPendingCount} />
+        )}
+
+        {(tab === "users" || tab === "access-requests") && !scopeKnown && (
           <div className="text-[13px] text-[var(--color-text-dim)]">
             Načítám…
           </div>

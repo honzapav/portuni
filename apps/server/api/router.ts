@@ -82,6 +82,13 @@ import {
 import { handleCreateEdge, handleDeleteEdge } from "./edges.js";
 import { handleGetNodeAccess, handleListGroups, handlePutNodeAccess } from "./access.js";
 import {
+  handleCountAccessRequests,
+  handleListAccessRequests,
+  handleListNodeAccessRequests,
+  handleRequestNodeAccess,
+  handleResolveAccessRequest,
+} from "./access-requests.js";
+import {
   handleArchiveEvent,
   handleCreateEvent,
   handleUpdateEvent,
@@ -112,6 +119,7 @@ const SUB_ROUTERS: SubRouter[] = [
   routeNodes,
   routeEdges,
   routeEvents,
+  routeAccessRequests,
 ];
 
 // Returns true when the route was handled (response written or in flight).
@@ -526,6 +534,16 @@ async function routeNodes(
     await handleMoveNode(req, res, identity, decodeURIComponent(moveMatch[1]));
     return true;
   }
+  const accessRequestMatch = pathname.match(/^\/nodes\/([^/]+)\/access\/request$/);
+  if (accessRequestMatch && method === "POST") {
+    await handleRequestNodeAccess(req, res, identity, decodeURIComponent(accessRequestMatch[1]));
+    return true;
+  }
+  const accessRequestsMatch = pathname.match(/^\/nodes\/([^/]+)\/access\/requests$/);
+  if (accessRequestsMatch && method === "GET") {
+    await handleListNodeAccessRequests(req, res, identity, decodeURIComponent(accessRequestsMatch[1]));
+    return true;
+  }
   const accessMatch = pathname.match(/^\/nodes\/([^/]+)\/access$/);
   if (accessMatch && method === "GET") {
     await handleGetNodeAccess(req, res, identity, decodeURIComponent(accessMatch[1]));
@@ -580,6 +598,39 @@ async function routeEdges(
       res,
       identity,
       decodeURIComponent(pathname.slice("/edges/".length)),
+    );
+    return true;
+  }
+  return false;
+}
+
+// --- Access requests (manager queue) ---
+// /access/requests/count MUST match before the /access/requests/:id/...
+// pattern, or "count" would be read as a request id.
+async function routeAccessRequests(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  method: string,
+  identity: RequestIdentity,
+): Promise<boolean> {
+  const { pathname } = url;
+  if (pathname === "/access/requests/count" && method === "GET") {
+    await handleCountAccessRequests(req, res, identity);
+    return true;
+  }
+  if (pathname === "/access/requests" && method === "GET") {
+    await handleListAccessRequests(req, res, identity, url);
+    return true;
+  }
+  const resolveMatch = pathname.match(/^\/access\/requests\/([^/]+)\/(approve|deny)$/);
+  if (resolveMatch && method === "POST") {
+    await handleResolveAccessRequest(
+      req,
+      res,
+      identity,
+      decodeURIComponent(resolveMatch[1]),
+      resolveMatch[2] as "approve" | "deny",
     );
     return true;
   }
