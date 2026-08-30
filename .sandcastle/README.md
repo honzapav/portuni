@@ -51,14 +51,15 @@ Watch: `ssh -t honzas-macbook-pro 'tmux -L sandcastle-portuni attach -t sandcast
 (detach Ctrl-b d).
 Stop: `ssh honzas-macbook-pro 'tmux -L sandcastle-portuni kill-session -t sandcastle-portuni'`.
 
-The loop runs on its own tmux socket (`-L sandcastle-portuni`), not on the
-default server and not on a socket shared with another project's loop. A
-session on an already-running server inherits that server's global
-environment from when it started, so the tokens `start-loop.sh` exports would
-never reach the supervisor; on a shared socket the loop would run with the
-other project's `GH_TOKEN` and its pushes would fail with 403. The launcher
-verifies that the server's tokens equal the Keychain values and refuses to
-start otherwise (`tmux -L sandcastle-portuni kill-server`, then rerun).
+The loop process reads the tokens from the Keychain itself, inside the tmux
+command; `start-loop.sh` only unlocks the keychain and checks the entries
+exist. A session on an already-running tmux server inherits that server's
+global environment from when it started, not the launcher's shell, so
+tokens exported by the launcher would never reach the supervisor (or, on a
+socket shared with another project's loop, would be that project's tokens
+and every push would fail with 403). Reading inside the command makes the
+loop independent of which server hosts it. The socket is still per project
+(`-L sandcastle-portuni`) so attach/kill never touch another loop.
 
 Deploy harness changes: merge to `main`, then `ssh honzas-macbook-pro 'cd ~/Dev/projekty/portuni && git pull --ff-only'`
 (the image needs a rebuild only when the Dockerfile changes).

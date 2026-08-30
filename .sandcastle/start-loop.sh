@@ -4,14 +4,14 @@
 # Stop:   tmux -L sandcastle-portuni kill-session -t sandcastle-portuni
 set -euo pipefail
 
-# Own tmux socket per project, not the user's default server and not a socket
-# shared with another project's loop. A session created on an already-running
-# server inherits that server's global environment (captured when the server
-# started), not this shell's: only `update-environment` keys (DISPLAY,
-# SSH_AUTH_SOCK, ...) are copied from the client. On a shared socket the
-# second loop started would run with the first project's GH_TOKEN and push
-# with the wrong PAT. A server started by this script takes its global
-# environment from this process, so the session sees the tokens read below.
+# The tokens are read from the Keychain INSIDE the tmux command (see LOOP_CMD
+# below), never exported from this shell. A session created on an
+# already-running tmux server inherits that server's global environment
+# (captured when the server started), not this shell's, so anything exported
+# here would be dropped or, on a socket shared with another project's loop,
+# replaced by that project's tokens. Reading inside the command makes the
+# loop independent of which server hosts the session. The socket is still
+# per project so attach/kill never touch another loop.
 TMUX_SOCKET=sandcastle-portuni
 SESSION=sandcastle-portuni
 
@@ -33,8 +33,10 @@ done
 
 # Secrets live in the macOS Keychain, never on disk. The committed
 # .sandcastle/.env lists the variable names with empty values; sandcastle
-# fills each listed key from this process's environment. A non-empty value in
-# .env would be a plaintext secret, so refuse it.
+# fills each listed key from the loop process's environment. A non-empty
+# value in .env would be a plaintext secret, so refuse it. The reads below
+# only verify the entries exist and the keychain is unlocked; the values are
+# read again inside the tmux command and never leave this shell.
 if grep -qE "^[A-Z_]+=.+" .sandcastle/.env; then
   echo ".sandcastle/.env must not carry values; put secrets in the Keychain (see README)." >&2
   exit 1
@@ -62,7 +64,7 @@ if [[ -z "$GH_TOKEN" ]]; then
   echo "  security add-generic-password -U -s sandcastle.portuni.github-pat -a \"\$USER\" -w" >&2
   exit 1
 fi
-export CLAUDE_CODE_OAUTH_TOKEN GH_TOKEN
+unset CLAUDE_CODE_OAUTH_TOKEN GH_TOKEN
 
 # The agent branches off HEAD of this clone, so HEAD must be exactly
 # origin/main: on main, clean, fast-forwarded. A stale clone is pulled
@@ -111,24 +113,28 @@ if tmux -L "$TMUX_SOCKET" has-session -t "$SESSION" 2>/dev/null; then
 fi
 
 mkdir -p .sandcastle/logs
-tmux -L "$TMUX_SOCKET" new-session -d -s "$SESSION" \
-  'caffeinate -is ./.sandcastle/node_modules/.bin/tsx .sandcastle/main.mts 2>&1 | tee -a .sandcastle/logs/loop.log'
 
-# Fail loudly instead of letting the agent run without credentials: without
-# them every run dies on `gh auth setup-git`. Values stay unprinted.
-# The check reads the server's global environment (-g), which is what child
-# processes inherit; `show-environment -t <session>` does not list variables
-# that only arrived with the server's environment. The value must equal the
-# one read from the Keychain above: a server that predates this script (left
-# over, or shared with another loop) carries stale or foreign tokens.
-for var in CLAUDE_CODE_OAUTH_TOKEN GH_TOKEN; do
-  if [[ "$(tmux -L "$TMUX_SOCKET" show-environment -g "$var" 2>/dev/null)" != "$var=${!var}" ]]; then
-    tmux -L "$TMUX_SOCKET" kill-session -t "$SESSION" 2>/dev/null || true
-    echo "$var in the tmux server (socket $TMUX_SOCKET) is missing or differs from the Keychain value; the loop would push with the wrong token." >&2
-    echo "  tmux -L $TMUX_SOCKET kill-server   # then rerun" >&2
-    exit 1
-  fi
-done
+# The loop process reads its own tokens: the Keychain is unlocked above, and
+# the tmux server runs as the same user. PATH (node from nvm, Homebrew,
+# Docker) is passed explicitly for the same reason the tokens are: the
+# server's environment is not this shell's. Without credentials every run
+# would die on `gh auth setup-git`, so an unreadable entry ends the session
+# at once instead of starting the supervisor.
+LOOP_CMD="export PATH='$PATH'
+export CLAUDE_CODE_OAUTH_TOKEN=\"\$(security find-generic-password -s sandcastle.claude-code.oauth-token -w)\"
+export GH_TOKEN=\"\$(security find-generic-password -s sandcastle.portuni.github-pat -w)\"
+if [ -z \"\$CLAUDE_CODE_OAUTH_TOKEN\" ] || [ -z \"\$GH_TOKEN\" ]; then
+  echo 'Keychain read failed inside the tmux session; unlock the login keychain and rerun start-loop.sh' | tee -a .sandcastle/logs/loop.log >&2
+  exit 1
+fi
+caffeinate -is ./.sandcastle/node_modules/.bin/tsx .sandcastle/main.mts 2>&1 | tee -a .sandcastle/logs/loop.log"
+tmux -L "$TMUX_SOCKET" new-session -d -s "$SESSION" -c "$PWD" "$LOOP_CMD"
+
+sleep 2
+if ! tmux -L "$TMUX_SOCKET" has-session -t "$SESSION" 2>/dev/null; then
+  echo "Loop exited right after start: the tokens could not be read inside tmux (see .sandcastle/logs/loop.log)." >&2
+  exit 1
+fi
 
 echo "Loop running in tmux session $SESSION (socket $TMUX_SOCKET). Log: .sandcastle/logs/loop.log"
 echo "Watch: tmux -L $TMUX_SOCKET attach -t $SESSION"
