@@ -35,9 +35,36 @@ describe("TOOL_MIN_SCOPE map", () => {
     assert.equal(TOOL_MIN_SCOPE.portuni_get_node, "read");
     assert.equal(TOOL_MIN_SCOPE.portuni_read_file, "read");
     assert.equal(TOOL_MIN_SCOPE.portuni_log, "write");
-    assert.equal(TOOL_MIN_SCOPE.portuni_create_node, "read");
-    assert.equal(TOOL_MIN_SCOPE.portuni_update_node, "manage");
+    assert.equal(TOOL_MIN_SCOPE.portuni_create_node, "write");
+    assert.equal(TOOL_MIN_SCOPE.portuni_update_node, "write");
+    assert.equal(TOOL_MIN_SCOPE.portuni_move_node, "manage");
     assert.equal(TOOL_MIN_SCOPE.portuni_delete_node, "admin");
+  });
+
+  // Everyday editing is write; a read-only account (in the domain but in no
+  // group) must not be able to create or edit anything.
+  it("editing tools are write, placement is manage, infrastructure is admin", () => {
+    for (const tool of [
+      "portuni_create_node",
+      "portuni_update_node",
+      "portuni_connect",
+      "portuni_disconnect",
+      "portuni_create_actor",
+      "portuni_update_actor",
+      "portuni_create_responsibility",
+      "portuni_update_responsibility",
+      "portuni_assign_responsibility",
+      "portuni_unassign_responsibility",
+      "portuni_add_data_source",
+      "portuni_remove_data_source",
+      "portuni_add_tool",
+      "portuni_remove_tool",
+    ]) {
+      assert.equal(TOOL_MIN_SCOPE[tool], "write", tool);
+    }
+    assert.equal(TOOL_MIN_SCOPE.portuni_move_node, "manage");
+    assert.equal(TOOL_MIN_SCOPE.portuni_setup_remote, "admin");
+    assert.equal(TOOL_MIN_SCOPE.portuni_set_routing_policy, "admin");
   });
 
   it("portuni_resolve is write (event state mutation)", () => {
@@ -54,8 +81,41 @@ describe("minScopeForRoute", () => {
     assert.equal(minScopeForRoute("POST", "/events"), "write");
   });
 
-  it("maps POST /nodes -> read (any authenticated user may create nodes)", () => {
-    assert.equal(minScopeForRoute("POST", "/nodes"), "read");
+  it("maps POST /nodes -> write (a read-only account cannot create nodes)", () => {
+    assert.equal(minScopeForRoute("POST", "/nodes"), "write");
+  });
+
+  it("maps everyday editing routes -> write", () => {
+    for (const [method, path] of [
+      ["PATCH", "/nodes/01ABC"],
+      ["POST", "/edges"],
+      ["DELETE", "/edges/01ABC"],
+      ["POST", "/actors"],
+      ["PATCH", "/actors/01ABC"],
+      ["POST", "/responsibilities"],
+      ["PATCH", "/responsibilities/01ABC"],
+      ["POST", "/responsibilities/01ABC/assignments"],
+      ["DELETE", "/responsibilities/01ABC/assignments/01DEF"],
+      ["POST", "/data-sources"],
+      ["PATCH", "/data-sources/01ABC"],
+      ["POST", "/tools"],
+      ["PATCH", "/tools/01ABC"],
+      ["GET", "/users"],
+    ] as const) {
+      assert.equal(minScopeForRoute(method, path), "write", `${method} ${path}`);
+    }
+  });
+
+  it("maps placement and sharing routes -> manage", () => {
+    for (const [method, path] of [
+      ["POST", "/nodes/01ABC/move"],
+      ["PUT", "/nodes/01ABC/access"],
+      ["GET", "/auth/groups"],
+      ["GET", "/auth/users"],
+      ["POST", "/positions"],
+    ] as const) {
+      assert.equal(minScopeForRoute(method, path), "manage", `${method} ${path}`);
+    }
   });
 
   it("maps DELETE /nodes/:id -> admin", () => {
@@ -66,15 +126,15 @@ describe("minScopeForRoute", () => {
     assert.equal(minScopeForRoute("GET", "/me"), "read");
   });
 
-  // Task 14 point 9: GET /users only backs the manage-gated actor
-  // owner-picker (see the comment in min-scopes.ts) -- raised from "read"
+  // Task 14 point 9: GET /users only backs the write-gated actor
+  // owner-picker (see the comment in min-scopes.ts) -- same tier as /actors
   // so the full workspace user directory isn't exposed more broadly than
   // the one flow that can act on it.
-  it("maps GET /users -> manage", () => {
-    assert.equal(minScopeForRoute("GET", "/users"), "manage");
+  it("maps GET /users -> write", () => {
+    assert.equal(minScopeForRoute("GET", "/users"), "write");
   });
 
-  it("maps all /sync/drive/* routes -> manage (not fail-closed admin)", () => {
+  it("maps all /sync/drive/* routes -> admin (infrastructure)", () => {
     for (const [method, path] of [
       ["POST", "/sync/drive/connect"],
       ["GET", "/sync/drive/targets"],
@@ -83,7 +143,7 @@ describe("minScopeForRoute", () => {
       ["POST", "/sync/drive/test"],
       ["POST", "/sync/drive/disconnect"],
     ] as const) {
-      assert.equal(minScopeForRoute(method, path), "manage", `${method} ${path}`);
+      assert.equal(minScopeForRoute(method, path), "admin", `${method} ${path}`);
     }
   });
 
@@ -115,8 +175,8 @@ describe("minScopeForRoute", () => {
     assert.equal(minScopeForRoute("DELETE", "/actors/01XYZ"), "admin");
   });
 
-  it("maps PATCH /nodes/:id -> manage", () => {
-    assert.equal(minScopeForRoute("PATCH", "/nodes/01ABC"), "manage");
+  it("maps POST /nodes/:id/move -> manage", () => {
+    assert.equal(minScopeForRoute("POST", "/nodes/01ABC/move"), "manage");
   });
 
   // The remote sweep is a STEP of the teammate (central-mode) sync run, not
@@ -130,16 +190,16 @@ describe("minScopeForRoute", () => {
 });
 
 describe("scopeAtLeast drives allow/deny", () => {
-  it("write < manage (portuni_update_node) -> false", () => {
-    assert.equal(scopeAtLeast("write", TOOL_MIN_SCOPE.portuni_update_node), false);
+  it("write < manage (portuni_move_node) -> false", () => {
+    assert.equal(scopeAtLeast("write", TOOL_MIN_SCOPE.portuni_move_node), false);
   });
 
-  it("manage >= manage (portuni_update_node) -> true", () => {
-    assert.equal(scopeAtLeast("manage", TOOL_MIN_SCOPE.portuni_update_node), true);
+  it("write >= write (portuni_update_node) -> true", () => {
+    assert.equal(scopeAtLeast("write", TOOL_MIN_SCOPE.portuni_update_node), true);
   });
 
-  it("read >= read (portuni_create_node) -> true", () => {
-    assert.equal(scopeAtLeast("read", TOOL_MIN_SCOPE.portuni_create_node), true);
+  it("read < write (portuni_create_node) -> false", () => {
+    assert.equal(scopeAtLeast("read", TOOL_MIN_SCOPE.portuni_create_node), false);
   });
 
   it("read < write (portuni_log) -> false", () => {
@@ -152,15 +212,23 @@ describe("scopeAtLeast drives allow/deny", () => {
 });
 
 describe("gateRoute (REST gate unit test)", () => {
-  it("read identity denied PATCH /nodes/:id (requires manage)", () => {
+  it("read identity denied PATCH /nodes/:id (requires write)", () => {
     const r = gateRoute({ globalScope: "read" }, "PATCH", "/nodes/01ABC");
     assert.equal(r.allowed, false);
-    assert.equal(r.required, "manage");
+    assert.equal(r.required, "write");
   });
 
-  it("read identity allowed POST /nodes", () => {
+  it("read identity denied POST /nodes, write identity allowed", () => {
     const r = gateRoute({ globalScope: "read" }, "POST", "/nodes");
-    assert.equal(r.allowed, true);
+    assert.equal(r.allowed, false);
+    assert.equal(r.required, "write");
+    assert.equal(gateRoute({ globalScope: "write" }, "POST", "/nodes").allowed, true);
+  });
+
+  it("write identity denied POST /nodes/:id/move (requires manage)", () => {
+    const r = gateRoute({ globalScope: "write" }, "POST", "/nodes/01ABC/move");
+    assert.equal(r.allowed, false);
+    assert.equal(r.required, "manage");
   });
 
   it("write identity denied DELETE /nodes/:id (requires admin)", () => {
@@ -253,7 +321,7 @@ after(async () => {
 });
 
 describe("MCP gate with read-scope identity", () => {
-  it("portuni_update_node (manage) is forbidden for read identity", async () => {
+  it("portuni_update_node (write) is forbidden for read identity", async () => {
     const result = await readClient.callTool({
       name: "portuni_update_node",
       arguments: { node_id: orgId, name: "Forbidden" },
@@ -262,16 +330,19 @@ describe("MCP gate with read-scope identity", () => {
     const text = (result.content as Array<{ type: string; text: string }>)[0].text;
     const parsed = JSON.parse(text) as { error: string; required_scope: string };
     assert.equal(parsed.error, "forbidden");
-    assert.equal(parsed.required_scope, "manage");
+    assert.equal(parsed.required_scope, "write");
   });
 
-  it("portuni_create_node (read) is allowed for read identity", async () => {
+  it("portuni_create_node (write) is forbidden for read identity", async () => {
     const result = await readClient.callTool({
       name: "portuni_create_node",
-      arguments: { type: "project", name: "Allowed", organization_id: orgId },
+      arguments: { type: "project", name: "Forbidden", organization_id: orgId },
     });
-    const text = (result.content as Array<{ type: string; text: string }>)[0]?.text;
-    assert.notEqual(result.isError, true, text);
+    assert.equal(result.isError, true);
+    const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+    const parsed = JSON.parse(text) as { error: string; required_scope: string };
+    assert.equal(parsed.error, "forbidden");
+    assert.equal(parsed.required_scope, "write");
   });
 
   it("portuni_list_nodes (read) is allowed for read identity", async () => {
