@@ -112,6 +112,29 @@ function startStubCentral(): Promise<StubCentral> {
         async () => ({ content: [{ type: "text" as const, text: "central-marker" }] }),
       );
       mcp.tool(
+        "portuni_read_file",
+        { node_id: z.string(), path: z.string() },
+        async (a) => ({
+          content: [{ type: "text" as const, text: `central-file:${a.node_id}:${a.path}` }],
+        }),
+      );
+      mcp.tool(
+        "portuni_snapshot",
+        { node_id: z.string(), doc_url: z.string() },
+        async (a) => ({
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                file_id: "F1",
+                filename: "snap.pdf",
+                remote_path: `workflow/projects/${a.node_id}/wip/snap.pdf`,
+              }),
+            },
+          ],
+        }),
+      );
+      mcp.tool(
         "portuni_mirror",
         { node_id: z.string(), targets: z.array(z.string()).optional() },
         async () => ({
@@ -212,6 +235,30 @@ describe("agent MCP front door", () => {
       arguments: { node_id: "01TESTNODE0000000000000000", targets: ["local"] },
     });
     assert.doesNotMatch(JSON.stringify(r.content), /CENTRAL SHOULD NOT SERVE THIS/);
+  });
+
+  it("portuni_read_file proxies upstream when the device holds no mirror of the node", async () => {
+    // No mirror registered for this node on the device: central has the
+    // Drive-direct fallback, so the read goes upstream verbatim (after the
+    // get_node gate, which the stub answers for any node).
+    const r = (await localClient.callTool({
+      name: "portuni_read_file",
+      arguments: { node_id: "01NOMIRROR000000000000000", path: "wip/n.md" },
+    })) as { content: Array<{ text: string }>; isError?: boolean };
+    assert.notEqual(r.isError, true, r.content[0]?.text);
+    assert.equal(r.content[0].text, "central-file:01NOMIRROR000000000000000:wip/n.md");
+  });
+
+  it("portuni_snapshot proxies to central and reports local_path null without a device mirror", async () => {
+    const r = (await localClient.callTool({
+      name: "portuni_snapshot",
+      arguments: { node_id: "N1", doc_url: "https://docs.google.com/document/d/X/edit" },
+    })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+    assert.ok(!r.isError);
+    const payload = JSON.parse(r.content[0].text);
+    assert.equal(payload.file_id, "F1");
+    assert.equal(payload.remote_path, "workflow/projects/N1/wip/snap.pdf");
+    assert.equal(payload.local_path, null);
   });
 
   it("tools/list mirrors the central tool list", async () => {

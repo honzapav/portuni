@@ -1,5 +1,6 @@
 // In-memory stand-in for the Google Drive v3 REST surface the Drive adapter
-// uses: files.list (q=), files.create (JSON folder + multipart upload),
+// uses: files.list (q= by name / parent / mimeType, and `fullText contains`
+// grepped over stored bytes), files.create (JSON folder + multipart upload),
 // files.get (metadata + alt=media), files.update (rename / addParents /
 // removeParents / trashed). Enforces the shared-drive rule that an item has
 // exactly one parent (403 teamDrivesParentLimit), and lets a test simulate
@@ -99,6 +100,8 @@ export class FakeDrive {
     const name = /name = '((?:[^'\\]|\\.)*)'/.exec(q)?.[1]?.replace(/\\'/g, "'") ?? null;
     const parent = /'([^']+)' in parents/.exec(q)?.[1] ?? null;
     const mime = /mimeType = '([^']+)'/.exec(q)?.[1] ?? null;
+    const fullText =
+      /fullText contains '((?:[^'\\]|\\.)*)'/.exec(q)?.[1]?.replace(/\\'/g, "'").toLowerCase() ?? null;
     if (name !== null) {
       const remaining = this.lag.get(name) ?? 0;
       if (remaining > 0) {
@@ -110,7 +113,9 @@ export class FakeDrive {
       (f) =>
         (name === null || f.name === name) &&
         (parent === null || f.parents.includes(parent)) &&
-        (mime === null || f.mimeType === mime),
+        (mime === null || f.mimeType === mime) &&
+        (fullText === null ||
+          (f.mimeType !== FOLDER && f.content.toString("utf8").toLowerCase().includes(fullText))),
     );
     if (orderBy === "createdTime") hits = hits.slice().sort((a, b) => a.createdTime.localeCompare(b.createdTime));
     return this.json({ files: hits.map((f) => this.meta(f)) });

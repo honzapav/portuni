@@ -18,4 +18,4 @@ export function scopeAtLeast(actual: GlobalScope, required: GlobalScope): boolea
 
 // Minimum scope of POST /nodes -- keep in sync with
 // apps/server/auth/min-scopes.ts (`minScopeForRoute`).
-export const CREATE_NODE_SCOPE: GlobalScope = "read";
+export const CREATE_NODE_SCOPE: GlobalScope = "write";

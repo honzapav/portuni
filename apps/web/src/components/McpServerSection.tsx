@@ -1,5 +1,9 @@
 // MCP server section on the Settings page. Surfaces:
-// - server status (URL, port, has-auth flag) read from /mcp/info
+// - server status (URL, port, has-auth flag) read from /mcp/info in local
+//   mode; in central mode the local front door URL built from the active
+//   workspace's mcp_port (apiFetch goes to the central server there, whose
+//   /mcp/info would show the central URL -- not what the installed configs
+//   point at, see workspace::global_front_door_url in apps/desktop)
 // - the bearer token from Keychain (on demand, hidden by default)
 // - one-click install into ~/.claude.json and ~/.codex/config.toml
 // - token rotation
@@ -12,6 +16,7 @@ import { useEffect, useState } from "react";
 import { Copy, Eye, EyeOff, RefreshCw } from "lucide-react";
 import { apiFetch, isTauri } from "../lib/backend-url";
 import { useDataMode } from "../lib/central";
+import { listWorkspaces } from "../lib/workspaces";
 
 type McpInfo = {
   url: string;
@@ -43,9 +48,34 @@ export default function McpServerSection() {
   const [envHint, setEnvHint] = useState<{ agent: string; path: string } | null>(null);
 
   useEffect(() => {
+    // Wait for the data mode: the source of the URL differs per mode.
+    if (!dataMode) return;
     let cancelled = false;
     void (async () => {
       try {
+        if (dataMode.mode === "central") {
+          // Local front door of the sync agent: what install_claude_global
+          // and the per-mirror configs write. The sidecar is always
+          // bearer-gated in the desktop shell (PORTUNI_AUTH_TOKEN).
+          const ws = (await listWorkspaces()).find((w) => w.active);
+          if (cancelled) return;
+          if (!ws || ws.mcp_port === null) {
+            setStatus({
+              kind: "error",
+              reason: "aktivní workspace nemá přiřazený MCP port",
+            });
+            return;
+          }
+          setStatus({
+            kind: "ok",
+            info: {
+              url: `http://127.0.0.1:${ws.mcp_port}/mcp`,
+              port: ws.mcp_port,
+              has_auth_token: true,
+            },
+          });
+          return;
+        }
         const res = await apiFetch("/mcp/info");
         if (!res.ok) {
           if (!cancelled)
@@ -65,7 +95,7 @@ export default function McpServerSection() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [dataMode]);
 
   function flash(kind: "ok" | "err", text: string) {
     setMessage({ kind, text });
@@ -271,8 +301,11 @@ export default function McpServerSection() {
 
           {dataMode?.mode === "central" && (
             <div className="text-[12px] text-[var(--color-text-dim)]">
-              Token je device token pro centrální server — spravuje se
-              (revokace, nové zařízení) v sekci Účet.
+              Lokální front door: nástroje grafu se proxují na{" "}
+              <span className="font-mono">{dataMode.server_url ?? "centrální server"}</span>,
+              nástroje pro soubory a složky běží na tomto zařízení. Token
+              patří lokálnímu front dooru; device token pro centrální server
+              se spravuje v sekci Účet.
             </div>
           )}
 

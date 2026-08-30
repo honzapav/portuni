@@ -475,10 +475,19 @@ export async function createFileRemote(
     filename: string;
     section?: Section;
     subpath?: string | null;
+    // Text body (utf8). Mutually exclusive with `bytes`.
     content?: string;
+    // Raw body for binary exports (snapshot PDF/DOCX). Mutually exclusive
+    // with `content`.
+    bytes?: Buffer;
+    // Overrides the extension-derived MIME type (null = unknown).
+    mimeType?: string | null;
   },
 ): Promise<CreateFileRemoteResult> {
   assertSafeFilename(a.filename);
+  if (a.content !== undefined && a.bytes !== undefined) {
+    throw new Error("createFileRemote: pass either content or bytes, not both");
+  }
   const section: Section = a.section ?? "wip";
   if (!SECTIONS.includes(section)) {
     throw new FileContentError(`invalid section: ${section}`, "INVALID_PATH");
@@ -517,8 +526,8 @@ export async function createFileRemote(
     throw new FileContentError(`file already exists: ${a.filename}`, "EXISTS");
   }
 
-  const mt = mimeFor(a.filename);
-  const bytes = Buffer.from(a.content ?? "", "utf8");
+  const mt = a.mimeType !== undefined ? a.mimeType : mimeFor(a.filename);
+  const bytes = a.bytes ?? Buffer.from(a.content ?? "", "utf8");
   const ref = await adapter.put(remotePath, bytes, mt ? { mimeType: mt } : undefined);
   const canonicalHash = ref.hash ? ref.hash.toLowerCase() : sha256Buffer(bytes);
 

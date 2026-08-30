@@ -9,6 +9,7 @@ Portuni is a plain HTTP server that speaks MCP – which means any AI client tha
 - [Codex CLI](/clients/codex-cli/) – OpenAI's terminal agent
 - [Gemini CLI](/clients/gemini-cli/) – Google's terminal agent
 - [Mistral Vibe](/clients/mistral-vibe/) – Mistral's terminal agent
+- [Claude Desktop](/clients/claude-desktop/) – the chat app, connected to a central server with a device token
 
 If you're using something else that speaks MCP, the same ideas apply – you just have to hunt down the equivalent settings yourself.
 
@@ -41,4 +42,4 @@ For the full reasoning behind all this, head to [Concepts → Filesystem Permiss
 
 All pages in this section assume a Portuni server is already running. With the desktop app, each enabled workspace runs its own sidecar on a loopback port allocated from `47011` up – Settings → MCP Server shows the exact URL and token, and its one-click install buttons wire up Claude Code, Codex, and Vibe for you. A standalone CLI server listens on `http://localhost:4011/mcp` by default. If neither is running, pop over to [Getting Started → Setup](/getting-started/setup/) first – it's a few minutes of work and you can come back.
 
-One variant to know about: in a **central-mode** workspace there is no local MCP endpoint to point at – the desktop app registers the organization's central server URL instead, authenticated with a device token rather than a local sidecar token. Everything else on these pages applies unchanged; only the URL and credential differ. See [Data Modes](/concepts/data-modes/).
+One variant to know about: in a **central-mode** workspace the local sidecar runs as a sync agent and still serves the MCP endpoint (the *front door*): device-local tools such as `portuni_mirror`, `portuni_store` and `portuni_pull` run on your machine, every graph tool is proxied to the organization's central server with your device token. The URL and token the desktop app installs are therefore the same loopback ones as in local mode. A client with no desktop app at all connects to the central server's `/mcp` directly — see [Claude Desktop](/clients/claude-desktop/) and [Data Modes](/concepts/data-modes/).

@@ -18,6 +18,7 @@ export const TOOL_MIN_SCOPE: Record<string, GlobalScope> = {
   portuni_list_events: "read",
   portuni_list_files: "read",
   portuni_read_file: "read",
+  portuni_search_files: "read",
   portuni_list_actors: "read",
   portuni_list_responsibilities: "read",
   portuni_list_data_sources: "read",
@@ -27,12 +28,28 @@ export const TOOL_MIN_SCOPE: Record<string, GlobalScope> = {
   portuni_session_init: "read",
   portuni_session_log: "read",
   portuni_expand_scope: "read",
-  // Any authenticated user may create nodes (editing them stays manage).
-  portuni_create_node: "read",
   // portuni_resolve closes/finalises an event — it mutates state, so write.
   portuni_resolve: "write",
 
   // --- write ---
+  // Everyday editing is "write": creating nodes and editing their
+  // content, links, actors, responsibilities, data sources and tools.
+  // "manage" is reserved for placing nodes in the network (move) and for
+  // sharing; infrastructure (remotes, routing, Drive) is admin-only.
+  portuni_create_node: "write",
+  portuni_update_node: "write",
+  portuni_connect: "write",
+  portuni_disconnect: "write",
+  portuni_create_actor: "write",
+  portuni_update_actor: "write",
+  portuni_create_responsibility: "write",
+  portuni_update_responsibility: "write",
+  portuni_assign_responsibility: "write",
+  portuni_unassign_responsibility: "write",
+  portuni_add_data_source: "write",
+  portuni_remove_data_source: "write",
+  portuni_add_tool: "write",
+  portuni_remove_tool: "write",
   portuni_log: "write",
   portuni_store: "write",
   portuni_supersede: "write",
@@ -44,24 +61,13 @@ export const TOOL_MIN_SCOPE: Record<string, GlobalScope> = {
   portuni_rename_folder: "write",
 
   // --- manage ---
-  portuni_update_node: "manage",
   portuni_move_node: "manage",
-  portuni_connect: "manage",
-  portuni_disconnect: "manage",
-  portuni_create_actor: "manage",
-  portuni_update_actor: "manage",
-  portuni_create_responsibility: "manage",
-  portuni_update_responsibility: "manage",
-  portuni_assign_responsibility: "manage",
-  portuni_unassign_responsibility: "manage",
-  portuni_add_data_source: "manage",
-  portuni_remove_data_source: "manage",
-  portuni_add_tool: "manage",
-  portuni_remove_tool: "manage",
-  portuni_set_routing_policy: "manage",
-  portuni_setup_remote: "manage",
 
   // --- admin ---
+  // Remotes and routing decide where every file of an organization lands;
+  // a wrong rule silently sends a whole org's files to another Drive.
+  portuni_set_routing_policy: "admin",
+  portuni_setup_remote: "admin",
   portuni_delete_node: "admin",
   portuni_delete_actor: "admin",
   portuni_delete_responsibility: "admin",
@@ -92,21 +98,22 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // GET /users backs the OwnerPicker dropdown (apps/server/api/users.ts).
   // Its only frontend call site is ActorModal's user_id picker
   // (apps/web/src/components/ActorsPage.tsx), and that assignment can only
-  // ever be persisted via POST/PATCH /actors, both already manage-gated --
-  // a read-scope user opening the picker could browse the full workspace
+  // ever be persisted via POST/PATCH /actors, both write-gated -- a
+  // read-scope user opening the picker could browse the full workspace
   // user directory (email/name/avatar for everyone) but could never save
-  // anything with it. Raised from "read" so that directory listing isn't
-  // handed out more broadly than the one flow that can use it.
-  if (pathname === "/users" && m === "GET") return "manage";
+  // anything with it. Kept at the same tier as the actor routes so the
+  // directory listing isn't handed out more broadly than the one flow
+  // that can use it.
+  if (pathname === "/users" && m === "GET") return "write";
   if (pathname === "/sync/pending" && m === "GET") return "read";
 
   // --- Google Drive connect (Settings -> Synchronizace) ---
   // Configuring, inspecting, or tearing down the Drive remote is the REST
   // equivalent of portuni_setup_remote / portuni_set_routing_policy (both
-  // "manage"). Kept at "manage" for the whole surface — including the GET
+  // "admin"). Kept at "admin" for the whole surface — including the GET
   // status/targets and POST test — since all six only exist to drive that
   // one configuration flow, and there is no read-only consumer of them.
-  if (pathname.startsWith("/sync/drive/")) return "manage";
+  if (pathname.startsWith("/sync/drive/")) return "admin";
 
   // --- Device tokens ---
   if (pathname === "/device-tokens" && m === "GET") return "read";
@@ -145,47 +152,57 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (/^\/nodes\/[^/]+\/mirror$/.test(pathname) && m === "POST") return "manage";
 
   // --- Nodes ---
-  // Creating a node is open to any authenticated user; editing stays manage.
-  if (pathname === "/nodes" && m === "POST") return "read";
+  // Creating and editing nodes is everyday work (write); placing them in
+  // the network (move) and sharing them is manage.
+  if (pathname === "/nodes" && m === "POST") return "write";
   if (/^\/nodes\/[^/]+$/.test(pathname) && m === "GET") return "read";
-  if (/^\/nodes\/[^/]+$/.test(pathname) && m === "PATCH") return "manage";
+  if (/^\/nodes\/[^/]+$/.test(pathname) && m === "PATCH") return "write";
   if (/^\/nodes\/[^/]+$/.test(pathname) && m === "DELETE") return "admin";
   if (/^\/nodes\/[^/]+\/move$/.test(pathname) && m === "POST") return "manage";
   if (/^\/nodes\/[^/]+\/access$/.test(pathname) && m === "GET") return "read";
   if (/^\/nodes\/[^/]+\/access$/.test(pathname) && m === "PUT") return "manage";
+  // Asking for access is the one thing a non-member is meant to do with a
+  // request-mode node (read); reviewing the queue is sharing (manage). The
+  // handlers additionally scope every manager read/write to nodes the
+  // caller can see.
+  if (/^\/nodes\/[^/]+\/access\/request$/.test(pathname) && m === "POST") return "read";
+  if (/^\/nodes\/[^/]+\/access\/requests$/.test(pathname) && m === "GET") return "manage";
+  if (pathname === "/access/requests" && m === "GET") return "manage";
+  if (pathname === "/access/requests/count" && m === "GET") return "manage";
+  if (/^\/access\/requests\/[^/]+\/(approve|deny)$/.test(pathname) && m === "POST") return "manage";
   if (/^\/nodes\/[^/]+\/sync-status$/.test(pathname) && m === "GET") return "read";
   if (/^\/nodes\/[^/]+\/folder-url$/.test(pathname) && m === "GET") return "read";
   if (/^\/nodes\/[^/]+\/file-url$/.test(pathname) && m === "GET") return "read";
   if (pathname === "/positions" && m === "POST") return "manage";
 
   // --- Edges ---
-  if (pathname === "/edges" && m === "POST") return "manage";
-  if (pathname.startsWith("/edges/") && m === "DELETE") return "manage";
+  if (pathname === "/edges" && m === "POST") return "write";
+  if (pathname.startsWith("/edges/") && m === "DELETE") return "write";
 
   // --- Actors ---
   if (pathname === "/actors" && m === "GET") return "read";
-  if (pathname === "/actors" && m === "POST") return "manage";
-  if (pathname.startsWith("/actors/") && m === "PATCH") return "manage";
+  if (pathname === "/actors" && m === "POST") return "write";
+  if (pathname.startsWith("/actors/") && m === "PATCH") return "write";
   if (pathname.startsWith("/actors/") && m === "DELETE") return "admin";
 
   // --- Responsibilities & assignments ---
   if (pathname === "/responsibilities" && m === "GET") return "read";
-  if (pathname === "/responsibilities" && m === "POST") return "manage";
-  if (/^\/responsibilities\/[^/]+\/assignments$/.test(pathname) && m === "POST") return "manage";
-  if (/^\/responsibilities\/[^/]+\/assignments\/[^/]+$/.test(pathname) && m === "DELETE") return "manage";
-  if (pathname.startsWith("/responsibilities/") && m === "PATCH") return "manage";
+  if (pathname === "/responsibilities" && m === "POST") return "write";
+  if (/^\/responsibilities\/[^/]+\/assignments$/.test(pathname) && m === "POST") return "write";
+  if (/^\/responsibilities\/[^/]+\/assignments\/[^/]+$/.test(pathname) && m === "DELETE") return "write";
+  if (pathname.startsWith("/responsibilities/") && m === "PATCH") return "write";
   if (pathname.startsWith("/responsibilities/") && m === "DELETE") return "admin";
 
   // --- Data sources ---
   if (pathname === "/data-sources" && m === "GET") return "read";
-  if (pathname === "/data-sources" && m === "POST") return "manage";
-  if (pathname.startsWith("/data-sources/") && m === "PATCH") return "manage";
+  if (pathname === "/data-sources" && m === "POST") return "write";
+  if (pathname.startsWith("/data-sources/") && m === "PATCH") return "write";
   if (pathname.startsWith("/data-sources/") && m === "DELETE") return "admin";
 
   // --- Tools (entity attribute) ---
   if (pathname === "/tools" && m === "GET") return "read";
-  if (pathname === "/tools" && m === "POST") return "manage";
-  if (pathname.startsWith("/tools/") && m === "PATCH") return "manage";
+  if (pathname === "/tools" && m === "POST") return "write";
+  if (pathname.startsWith("/tools/") && m === "PATCH") return "write";
   if (pathname.startsWith("/tools/") && m === "DELETE") return "admin";
 
   // --- Fail-closed: unknown future routes require admin ---

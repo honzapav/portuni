@@ -145,7 +145,13 @@ expose on disk — an ad-hoc node reached by deeper graph traversal (beyond
 the home node and its depth-1 neighbours, whose folders you read natively
 via the `local_path` returned by `portuni_get_context` / `portuni_get_node`).
 The server reads the live file from the node's local mirror and returns it,
-so there is no stale copy and no `.portuni-scope` staging.
+so there is no stale copy and no `.portuni-scope` staging. When the serving
+machine holds **no mirror** of the node — the central server, or a remote
+client (Claude Desktop against `https://…/mcp` with a device token) with no
+local workspace — the file is read straight from the node's routed remote
+(Google Drive), the same path `GET /nodes/:id/file` takes. In agent mode
+the sidecar reads its own mirror first and proxies the call to central when
+it has none.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -156,8 +162,36 @@ Returns the file content as UTF-8 text, or `[binary file, N bytes, base64]`
 followed by base64 for non-text files. Scope-gated exactly like
 `portuni_get_node`: reading a node not yet in scope returns
 `scope_expansion_required` (call `portuni_expand_scope` first). Errors when
-the node has no mirror on this device (`portuni_pull` it first), the file
-does not exist, or the file exceeds the 1 MB inline limit.
+the file does not exist, the file exceeds the 1 MB inline limit, the file is
+a native Google format (Doc/Sheet/Slides — no byte content), or the node has
+neither a mirror on this device nor a routed remote.
+
+## portuni_search_files
+
+Search file **contents** across Portuni-tracked files. The search runs on
+the configured remote(s) — Google Drive's `fullText contains` (which indexes
+Docs, PDFs and text files; whole words and phrases, not substrings or regex)
+or a text grep on an `fs` remote — and each hit is joined back onto the
+`files` registry, so a loose Drive object Portuni never registered is never
+returned. Results are limited to nodes the caller can see (group
+visibility), and outside `permissive` scope mode to the session scope set.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | yes | Words or a phrase to find in file contents |
+| `node_id` | string | no | Restrict to one node (must be in scope) |
+| `limit` | number | no | Max hits (default 20, max 50) |
+
+Scope gating mirrors `portuni_list_files`: with `node_id` the node must be
+in session scope; without it the call is a global query — mode-gated
+(strict refuses, balanced refuses on first call, permissive auto-allows +
+audits) and restricted to the scope set unless the mode is `permissive`.
+
+Returns: Array of hits, each with `file_id`, `node_id`, `node_name`,
+`node_type`, `filename`, `path` (the node-relative path, e.g.
+`wip/notes.md`), `mime_type`, and when the remote provides them
+`modified_at` and `snippet` (Drive returns no snippet). Open a hit with
+`portuni_read_file(node_id, path)`.
 
 ## portuni_status
 

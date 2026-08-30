@@ -77,6 +77,7 @@ import {
   deleteFile,
   resolveFileSync,
   fetchMe,
+  LocalOnlyError,
 } from "../api";
 import type { ResolveAction } from "../api";
 // Sub-modules: file-tree + sync UI and event card live in sibling files;
@@ -87,9 +88,11 @@ import {
   FileTree,
   NewFileForm,
   SyncBar,
+  DownloadMirrorButton,
   TerminalSplitButton,
 } from "./DetailPane.files";
 import { AccessSection } from "./DetailPane.access";
+import { RequestAccessControl } from "./AccessRequests";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
 // node shows the last-known badges instantly while the background
@@ -421,7 +424,7 @@ function DetailPaneBody({
       // Central mode before login: the sync agent is not up yet and the
       // proxy answers 501 local_only. Not an error worth a banner — badges
       // simply stay absent until the agent is running.
-      if (String(e).includes("local_only")) {
+      if (e instanceof LocalOnlyError) {
         setSyncLoaded(true);
         return;
       }
@@ -979,7 +982,14 @@ function DetailPaneBody({
                 hint shows even on a node with no files yet. */}
             <DriveNotConfiguredBanner />
             <div className="mb-3 flex items-center justify-between">
-                  {(node.files.length > 0 || untracked.length > 0) ? (
+                  {!node.local_mirror ? (
+                    <DownloadMirrorButton
+                      nodeId={node.id}
+                      onDone={async () => {
+                        await Promise.all([onMutate(), loadSyncStatus()]);
+                      }}
+                    />
+                  ) : (node.files.length > 0 || untracked.length > 0) ? (
                     <SyncBar
                       running={syncRunning}
                       result={syncRunResult}
@@ -1260,8 +1270,9 @@ function ConnectionLink({
   // belongs_to has its own invariants and a dedicated UX (OrganizationPicker
   // for the org case, plus DB triggers for the rest). Keep this row read-only
   // for relation changes to avoid trigger-error surprises. A locked
-  // (peer_restricted) edge has id/peer_id blanked by the server, so there is
-  // no real id to edit or delete against -- treat it as read-only too.
+  // (peer_restricted) edge has its edge id blanked by the server, so there
+  // is no real id to edit or delete against -- treat it as read-only too
+  // (peer_id is kept for the request-access button only).
   const editable = edge.relation !== "belongs_to" && !edge.peer_restricted;
 
   if (editing) {
@@ -1318,18 +1329,21 @@ function ConnectionLink({
   return (
     <div className="group flex items-center gap-1 rounded px-2 py-1.5 transition-colors hover:bg-[var(--color-surface)]">
       {edge.peer_restricted ? (
-        <span
-          title="Přístup na vyžádání"
-          className="flex flex-1 cursor-not-allowed items-center gap-2 text-left opacity-60"
-        >
-          <Lock size={11} className="shrink-0 text-[var(--color-text-dim)]" />
-          <span className="flex-1 truncate text-[13.5px] text-[var(--color-text-dim)]">
-            {edge.peer_name}
+        <>
+          <span
+            title="Přístup na vyžádání"
+            className="flex min-w-0 flex-1 cursor-not-allowed items-center gap-2 text-left opacity-60"
+          >
+            <Lock size={11} className="shrink-0 text-[var(--color-text-dim)]" />
+            <span className="flex-1 truncate text-[13.5px] text-[var(--color-text-dim)]">
+              {edge.peer_name}
+            </span>
+            <span className="font-mono text-[14px] text-[var(--color-text-dim)]">
+              {edge.peer_type}
+            </span>
           </span>
-          <span className="font-mono text-[14px] text-[var(--color-text-dim)]">
-            {edge.peer_type}
-          </span>
-        </span>
+          {edge.peer_id && <RequestAccessControl nodeId={edge.peer_id} />}
+        </>
       ) : (
         <button
           onClick={() => onSelect(edge.peer_id)}

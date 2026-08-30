@@ -5,7 +5,10 @@ import { writeFile, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getDb } from "../../infra/db.js";
-import { storeFile } from "../../domain/sync/engine.js";
+import { storeFile, mimeFor } from "../../domain/sync/engine.js";
+import { createFileRemote } from "../../domain/sync/file-content-remote.js";
+import { getMirrorPath } from "../../domain/sync/mirror-registry.js";
+import { EXPORT_MIME } from "../../domain/sync/native-format.js";
 import type { SessionCtx } from "../server.js";
 
 export interface SnapshotArgs {
@@ -57,12 +60,31 @@ export function __resetSnapshotExporterForTests(): void {
   exporter = defaultExport;
 }
 
+// The export needs only the routed remote's credentials, so it runs the same
+// way with or without a mirror. Storing the result branches: with a mirror the
+// file goes through storeFile (mirror copy + upload + record); without one
+// (central server serving a teammate) it is created remote-direct via
+// createFileRemote (upload + record). A teammate's device pulls the new file
+// into its own mirror in the agent front door's post-proxy hook.
 export async function snapshotService(db: Client, a: SnapshotArgs): Promise<SnapshotResult> {
   const format = a.format ?? "pdf";
   const buf = await exporter(db, a.nodeId, a.docUrl, format);
   const fn =
     a.filename ??
     `snapshot-${Date.now()}.${format === "markdown" ? "md" : format === "docx" ? "docx" : "pdf"}`;
+  const mirrorRoot = await getMirrorPath(a.userId, a.nodeId);
+  if (!mirrorRoot) {
+    const r = await createFileRemote(db, {
+      userId: a.userId,
+      nodeId: a.nodeId,
+      filename: fn,
+      section: "wip",
+      subpath: a.subpath ?? null,
+      bytes: buf,
+      mimeType: mimeFor(fn) ?? EXPORT_MIME[format],
+    });
+    return { file_id: r.id, filename: fn, remote_path: r.remote_path };
+  }
   const dir = await mkdtemp(join(tmpdir(), "portuni-snapshot-"));
   const tmp = join(dir, fn);
   await writeFile(tmp, buf);
@@ -82,7 +104,7 @@ export async function snapshotService(db: Client, a: SnapshotArgs): Promise<Snap
 export function registerSyncSnapshotTools(server: McpServer, ctx: SessionCtx): void {
   server.tool(
     "portuni_snapshot",
-    "Export a Google Docs/Sheets/Slides URL to PDF/Markdown/DOCX and store it as a tracked file on the node. Use when the user wants a point-in-time copy of a native Google doc tracked on a node — e.g. archiving a spec snapshot before continuing edits. Uses the Drive file ID extracted from the URL (/d/<id>).",
+    "Export a Google Docs/Sheets/Slides URL to PDF/Markdown/DOCX and store it as a tracked file on the node. Use when the user wants a point-in-time copy of a native Google doc tracked on a node — e.g. archiving a spec snapshot before continuing edits. Uses the Drive file ID extracted from the URL (/d/<id>). Works with or without a local mirror: with one the file lands in the mirror and is pushed; without one it is created directly on the remote (a teammate's device pulls it into its mirror).",
     {
       node_id: z.string(),
       doc_url: z.string().describe("URL of a Google Doc/Sheet/Slide (must contain /d/<id>/)"),

@@ -129,17 +129,18 @@ from central) is read at its real mirror, and ad-hoc nodes via
 [`scope-disk-projection.md`](./scope-disk-projection.md)). The dynamic scope
 *set* is still tracked upstream on the central session, not on the device.
 
-Follow-up gap, not yet built:
-- `portuni_move_file`, `portuni_rename_folder`, `portuni_delete_file`,
-  `portuni_snapshot` have no agent-mode handler — they proxy to central,
-  and central **executes them**: it mutates the registry/remote and reports
-  `local_done: false` (verified for `portuni_move_file`: status ok,
-  `remote_done: true`, `local_done: false`). The teammate's local mirror
-  file is left in place, stale — until a later sync happens to reconcile
-  it, or forever. This is a known correctness gap (silent local/remote
-  divergence, not a clean error); the follow-up is either local
-  interception like store/pull, or a central-side guard that refuses these
-  calls for agent sessions.
+Proxied tools with a device-side step (`apps/server/mcp/agent-tools.ts`):
+- `portuni_move_file`, `portuni_rename_folder`, `portuni_delete_file` run
+  their record/remote step on central; the front door snapshots the affected
+  record before the proxy and applies the local rm/rename + `file_state`
+  cleanup after a confirmed result, rewriting `local_done` /
+  `new_local_path` with this device's outcome.
+- `portuni_snapshot` exports on central (it holds the Drive credentials) and,
+  because central has no mirror, creates the file remote-direct
+  (`createFileRemote`). The front door then pulls the new file into the
+  device mirror and adds `local_path` to the payload (`null` when the node is
+  not mirrored here; `local_error` when the pull was refused, e.g. a dirty
+  untracked file at that path).
 
 ## An important subtlety: local-mode editing is mirror-local, central is Drive-direct
 

@@ -3,7 +3,7 @@
 // discovery), so they must run on the device that owns the mirror -- the
 // central server has no local file plane (see mirror-create.ts's
 // DEVICE_LOCAL_HINT and its WORKSPACE_ROOT_UNSET error). Everything else is
-// proxied to central unchanged (agent-transport.ts, a later task).
+// proxied to central unchanged (agent-transport.ts).
 //
 // Constraint: nothing in this module may call getDb() -- the agent has no
 // graph DB, only a CentralClient (network) and the local per-device
@@ -690,4 +690,51 @@ export async function applyLocalAfterProxiedMutation(
     client.invalidateSyncInfo(snapshot.nodeId);
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Proxied snapshot
+// ---------------------------------------------------------------------------
+//
+// portuni_snapshot proxies to central, which exports the doc and creates the
+// file remote-direct (it has no device mirrors). The new file therefore is
+// not on this device's disk yet; if the node is mirrored here, pull it in so
+// the agent can read it at a real path, and report that path. Without a
+// mirror the payload passes through with local_path: null. Best-effort:
+// the record + remote object already exist on central, so a failed pull
+// leaves a plain `pull` candidate for the next sync run.
+export async function applyLocalAfterSnapshot(
+  client: CentralClient,
+  userId: string,
+  args: Record<string, unknown>,
+  resultText: string,
+): Promise<string | null> {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(resultText) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const fileId = parsed.file_id;
+  const nodeId = args.node_id;
+  if (typeof fileId !== "string" || typeof nodeId !== "string") return null;
+  // Central just inserted the record; drop the sync-info micro-cache entry
+  // so the lookup below sees it.
+  client.invalidateSyncInfo(nodeId);
+  const mirrorRoot = await getMirrorPath(userId, nodeId);
+  if (!mirrorRoot) return JSON.stringify({ ...parsed, local_path: null });
+  const found = await findEntryByFileId(client, userId, fileId);
+  if (!found) return JSON.stringify({ ...parsed, local_path: null });
+  try {
+    const pulled = await pullFileCentral(client, {
+      userId,
+      nodeId: found.nodeId,
+      entry: found.entry,
+    });
+    return JSON.stringify({ ...parsed, local_path: pulled.local_path });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error(`[portuni:agent] pull after portuni_snapshot failed:`, e);
+    return JSON.stringify({ ...parsed, local_path: null, local_error: message });
+  }
 }

@@ -139,6 +139,7 @@ tools:
 | `portuni_pull` | With `file_id`, download the remote version into the mirror. With `node_id`, preview each file's status without modifying anything. |
 | `portuni_status` | Scan tracked files + (optional) discover new local / new remote files. |
 | `portuni_list_files` | List files across every node with derived `local_path`. |
+| `portuni_search_files` | Search file contents on the remote(s) (Drive `fullText`); hits open with `portuni_read_file`. |
 
 Every file has one of two statuses:
 

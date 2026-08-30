@@ -462,8 +462,10 @@ export async function buildContextPayload(
 
     // A locked (peer_restricted) edge is opaque by design -- name + type
     // only, no ids -- so a caller who can't otherwise see the peer can't use
-    // the payload to probe or act on it. Blank both id and peer_id, mirroring
-    // the REST detail projection in domain/queries/node-detail.ts.
+    // the payload to probe or act on it. Blank both id and peer_id. The REST
+    // detail projection (domain/queries/node-detail.ts) keeps peer_id since
+    // the web chip needs it for POST /nodes/:id/access/request; agents have
+    // no request flow, so the MCP payload stays fully opaque.
     const projectEdges = (edges: ContextEdge[]): ContextEdge[] =>
       edges
         .filter((e) => e.peer_id === nodeId || classification.get(e.peer_id) !== "hidden")

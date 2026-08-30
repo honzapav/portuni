@@ -1,6 +1,6 @@
 import { Operator } from "opendal";
 import { createHash } from "node:crypto";
-import type { FileAdapter, FileRef, RemoteConfig, DeviceTokens } from "./types.js";
+import type { FileAdapter, FileRef, RemoteConfig, DeviceTokens, SearchHit } from "./types.js";
 import { CapabilityError } from "./types.js";
 
 function asString(v: unknown, name: string): string {
@@ -41,6 +41,9 @@ function buildOperator(remote: AdapterRemote, _tokens: DeviceTokens): Operator {
 function isNotFound(e: unknown): boolean {
   return e instanceof Error && /^NotFound\b/.test(e.message);
 }
+
+const SEARCH_MAX_BYTES = 5_000_000;
+const SNIPPET_MAX_CHARS = 200;
 
 function sha256Buffer(buf: Buffer): string {
   return createHash("sha256").update(buf).digest("hex");
@@ -88,7 +91,7 @@ export function createOpenDALAdapter(
     }
   }
 
-  return {
+  const adapter: FileAdapter = {
     async put(path, content, _opts) {
       await op.write(path, content);
       return {
@@ -159,5 +162,45 @@ export function createOpenDALAdapter(
       const dirPath = path.endsWith("/") ? path : `${path}/`;
       await op.createDir(dirPath);
     },
+    // Content search by grepping every text file under the root. There is
+    // no index behind an fs/memory remote, so this is a linear scan -- fine
+    // for the small local and test remotes these backends serve. Binary
+    // files (NUL byte) and files over SEARCH_MAX_BYTES are skipped; the
+    // match is case-insensitive and the snippet is the first matching line.
+    async search(query, opts) {
+      const limit = Math.max(1, opts?.limit ?? 20);
+      const needle = query.toLowerCase();
+      if (needle.length === 0) return [];
+      const out: SearchHit[] = [];
+      const refs = await adapter.list("");
+      for (const ref of refs) {
+        if (ref.size > SEARCH_MAX_BYTES) continue;
+        let buf: Buffer;
+        try {
+          const raw = await op.read(ref.path);
+          buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+        } catch {
+          continue;
+        }
+        if (buf.includes(0)) continue;
+        const text = buf.toString("utf8");
+        const at = text.toLowerCase().indexOf(needle);
+        if (at < 0) continue;
+        const lineStart = text.lastIndexOf("\n", at) + 1;
+        const lineEndRaw = text.indexOf("\n", at);
+        const lineEnd = lineEndRaw < 0 ? text.length : lineEndRaw;
+        const snippet = text.slice(lineStart, Math.min(lineEnd, lineStart + SNIPPET_MAX_CHARS)).trim();
+        out.push({
+          path: ref.path,
+          name: ref.path.split("/").pop() ?? ref.path,
+          mimeType: "application/octet-stream",
+          modifiedTime: ref.modified_at.getTime() > 0 ? ref.modified_at.toISOString() : undefined,
+          snippet,
+        });
+        if (out.length >= limit) break;
+      }
+      return out;
+    },
   };
+  return adapter;
 }

@@ -85,7 +85,7 @@ Export a Google Docs/Sheets/Slides URL to PDF / Markdown / DOCX and store it as 
 | `filename` | string | no | Override the default filename (`snapshot-<timestamp>.<ext>`) |
 | `subpath` | string \| null | no | Optional subfolder within the node's section |
 
-Returns: `{ file_id, filename, remote_path }` — the exported buffer is stored via the same flow as `portuni_store`.
+Returns: `{ file_id, filename, remote_path }`. With a local mirror the exported buffer is stored via the same flow as `portuni_store`; without one (central server, teammate session) it is created directly on the remote and registered. In agent mode the device then pulls the file into its mirror and adds `local_path` (`null` when the node is not mirrored on that device).
 
 ## Deliberate sync run
 

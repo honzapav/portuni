@@ -173,7 +173,7 @@ Hard floors override mode. A node with `meta.scope_sensitive: true`, or a `visib
 | `portuni_session_log()` | Returns the current scope set, mode, expansion history. |
 | `portuni_get_node` | Out-of-scope target returns `{"error":"scope_expansion_required",...}`. Name lookups are filtered to in-scope candidates first, so name probing cannot leak metadata. |
 | `portuni_get_context` | Start node must be in scope. Depth ≤ 1 is the natural read; depth ≥ 2 is treated as breadth expansion and refused in strict/balanced. |
-| `portuni_list_nodes` / `portuni_list_events` / `portuni_list_files` | Default to session scope. Global form (`scope: "global"` on `list_nodes`, no `node_id` on the others) is mode-gated: strict refuses, balanced refuses on first call, permissive auto-allows + audits. |
+| `portuni_list_nodes` / `portuni_list_events` / `portuni_list_files` / `portuni_search_files` | Default to session scope. Global form (`scope: "global"` on `list_nodes`, no `node_id` on the others) is mode-gated: strict refuses, balanced refuses on first call, permissive auto-allows + audits. |
 
 ### REST surface (out of scope)
 

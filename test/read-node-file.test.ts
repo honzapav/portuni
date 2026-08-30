@@ -85,3 +85,80 @@ describe("formatNodeFileContent", () => {
     assert.match(out.content[0].text, /not mirrored/);
   });
 });
+
+// Mirror-less fallback: a server holding no mirror of the node (central,
+// a remote client's session) reads the bytes from the routed remote.
+describe("readNodeFileFromRemote / readNodeFile", () => {
+  it("reads text from the routed remote when the node has no mirror", async () => {
+    const { makeSharedDb } = await import("./helpers/shared-db.js");
+    const { getAdapter, resetAdapterCacheForTests } = await import(
+      "../apps/server/domain/sync/adapter-cache.js"
+    );
+    const { readNodeFile, readNodeFileFromRemote } = await import(
+      "../apps/server/domain/read-node-file.js"
+    );
+    resetAdapterCacheForTests();
+    const shared = await makeSharedDb();
+    try {
+      const adapter = await getAdapter(shared.db, "test-fs");
+      await adapter.put("workflow/projects/stan-gws/wip/remote.md", Buffer.from("from the remote\n"));
+      await adapter.put("workflow/projects/stan-gws/wip/bin.dat", Buffer.from([7, 0, 9]));
+
+      const text = await readNodeFile(shared.db, USER, shared.nodeId, "wip/remote.md");
+      assert.equal(text.kind, "text");
+      assert.equal((text as { text: string }).text, "from the remote\n");
+
+      const bin = await readNodeFileFromRemote(shared.db, shared.nodeId, "wip/bin.dat");
+      assert.equal(bin.kind, "binary");
+      assert.equal((bin as { base64: string }).base64, Buffer.from([7, 0, 9]).toString("base64"));
+
+      const missing = await readNodeFileFromRemote(shared.db, shared.nodeId, "wip/nope.md");
+      assert.equal(missing.kind, "not_found");
+
+      const traversal = await readNodeFileFromRemote(shared.db, shared.nodeId, "../secret.txt");
+      assert.equal(traversal.kind, "not_found");
+    } finally {
+      resetAdapterCacheForTests();
+      await rm(shared.remoteRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("no_remote when no remote is routed for the node", async () => {
+    const { makeSharedDb } = await import("./helpers/shared-db.js");
+    const { replaceRules } = await import("../apps/server/domain/sync/routing.js");
+    const { resetAdapterCacheForTests } = await import("../apps/server/domain/sync/adapter-cache.js");
+    const { readNodeFileFromRemote, formatNodeFileContent } = await import(
+      "../apps/server/domain/read-node-file.js"
+    );
+    resetAdapterCacheForTests();
+    const shared = await makeSharedDb();
+    try {
+      await replaceRules(shared.db, []);
+      const r = await readNodeFileFromRemote(shared.db, shared.nodeId, "wip/x.md");
+      assert.equal(r.kind, "no_remote");
+      const out = formatNodeFileContent(r, "wip/x.md");
+      assert.equal(out.isError, true);
+      assert.match(out.content[0].text, /no routed remote/);
+    } finally {
+      resetAdapterCacheForTests();
+      await rm(shared.remoteRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers the local mirror when one exists", async () => {
+    const { makeSharedDb } = await import("./helpers/shared-db.js");
+    const { resetAdapterCacheForTests } = await import("../apps/server/domain/sync/adapter-cache.js");
+    const { readNodeFile } = await import("../apps/server/domain/read-node-file.js");
+    resetAdapterCacheForTests();
+    const shared = await makeSharedDb();
+    try {
+      await writeFile(join(mirror, "wip", "local.md"), "from disk\n");
+      const r = await readNodeFile(shared.db, USER, NODE, "wip/local.md");
+      assert.equal(r.kind, "text");
+      assert.equal((r as { text: string }).text, "from disk\n");
+    } finally {
+      resetAdapterCacheForTests();
+      await rm(shared.remoteRoot, { recursive: true, force: true });
+    }
+  });
+});

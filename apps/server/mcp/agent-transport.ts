@@ -54,6 +54,7 @@ import {
   enrichGetContextResult,
   isProxiedDiskMutation,
   snapshotForDiskMutation,
+  applyLocalAfterSnapshot,
   applyLocalAfterProxiedMutation,
 } from "./agent-tools.js";
 import { readNodeFileFromMirror, formatNodeFileContent } from "../domain/read-node-file.js";
@@ -169,6 +170,30 @@ function buildAgentServer(
       }
       return result;
     }
+    // Snapshot runs on central (it holds the Drive credentials) and creates
+    // the exported file remote-direct; pull it into this device's mirror so
+    // the agent gets a real local_path (null when the node is not mirrored
+    // here).
+    if (name === "portuni_snapshot") {
+      const result = (await upstream.callTool({ name, arguments: args })) as {
+        content?: Array<{ type: string; text?: string }>;
+        isError?: boolean;
+      };
+      const textPart = result.content?.find((c) => c.type === "text");
+      if (!result.isError && textPart?.text) {
+        const rewritten = await applyLocalAfterSnapshot(
+          opts.client,
+          identity.userId,
+          args,
+          textPart.text,
+        ).catch((e) => {
+          console.error(`[portuni:agent] local pull after ${name} failed:`, e);
+          return null;
+        });
+        if (rewritten !== null) textPart.text = rewritten;
+      }
+      return result;
+    }
     // Graph reads proxy to central verbatim, but central has no device state,
     // so portuni_get_node comes back with local_mirror:null. Overlay the
     // device mirror here so an agent in central mode sees the same
@@ -183,6 +208,9 @@ function buildAgentServer(
     // alone is NOT sufficient -- the device mirrors a superset of the session
     // scope, so gating on it would let an agent read out-of-scope nodes and
     // bypass the seatbelt boundary.
+    // When the device holds no mirror of the node, the read is proxied
+    // upstream verbatim: central has no mirrors either and serves it
+    // Drive-direct (readNodeFile's remote fallback), under its own guard.
     if (name === "portuni_read_file") {
       const gate = (await upstream.callTool({
         name: "portuni_get_node",
@@ -194,6 +222,7 @@ function buildAgentServer(
         args.node_id as string,
         args.path as string,
       );
+      if (r.kind === "no_mirror") return upstream.callTool({ name, arguments: args });
       return formatNodeFileContent(r, args.path as string);
     }
     if (name === "portuni_get_node") {

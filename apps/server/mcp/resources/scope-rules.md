@@ -98,10 +98,11 @@ Refusals are audited under `scope_hard_floor_refusal`.
   start is allowed; depth ≥ 2 is treated as breadth expansion and
   refused in strict/balanced. Use depth=1 then expand explicitly,
   or run under `PORTUNI_SCOPE_MODE=permissive`.
-- `portuni_list_nodes` / `portuni_list_events` / `portuni_list_files`:
-  default to session-scope filtering. Pass `scope: "global"` (or
-  omit `node_id` on list_events/list_files) only when the user
-  asked for a broad listing; that path is mode-gated and audited.
+- `portuni_list_nodes` / `portuni_list_events` / `portuni_list_files` /
+  `portuni_search_files`: default to session-scope filtering. Pass
+  `scope: "global"` (or omit `node_id` on list_events/list_files/
+  search_files) only when the user asked for a broad listing or
+  search; that path is mode-gated and audited.
 
 ## Inspection
 

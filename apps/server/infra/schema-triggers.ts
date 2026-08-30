@@ -60,6 +60,28 @@ export const DDL_NODE_ACCESS = `CREATE TABLE IF NOT EXISTS node_access (
 
 export const INDEX_NODE_ACCESS_NODE = `CREATE INDEX IF NOT EXISTS idx_node_access_node ON node_access(node_id)`;
 
+// Migration 024: in-app access requests for `access_mode='request'` nodes
+// (spec: "Rezim omezeni" in 2026-07-04-node-sharing-design.md -- the
+// request flow the locked chip was designed to lead to). One pending
+// request per (node, user) at a time; resolved rows are kept as history.
+// Approval writes a kind='user' node_access grant on the authoritative
+// (possibly ancestor) node, see apps/server/api/access-requests.ts.
+export const DDL_ACCESS_REQUESTS = `CREATE TABLE IF NOT EXISTS access_requests (
+    id TEXT PRIMARY KEY CHECK(length(id) = 26),
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    message TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','denied')),
+    created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    resolved_at DATETIME,
+    resolved_by TEXT
+  )`;
+
+export const INDEX_ACCESS_REQUESTS_PENDING = `CREATE UNIQUE INDEX IF NOT EXISTS idx_access_requests_pending
+  ON access_requests(node_id, user_id) WHERE status = 'pending'`;
+
+export const INDEX_ACCESS_REQUESTS_STATUS = `CREATE INDEX IF NOT EXISTS idx_access_requests_status ON access_requests(status)`;
+
 // Ground-truth DDL for fresh installs. Includes all CHECK constraints.
 // Existing installs get constraints via migrations.
 export const DDL = [
@@ -73,6 +95,9 @@ export const DDL = [
   INDEX_DEVICE_TOKENS_USER,
   DDL_NODE_ACCESS,
   INDEX_NODE_ACCESS_NODE,
+  DDL_ACCESS_REQUESTS,
+  INDEX_ACCESS_REQUESTS_PENDING,
+  INDEX_ACCESS_REQUESTS_STATUS,
   `CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY CHECK(length(id) = 26),
     type TEXT NOT NULL CHECK(type IN (${NODE_TYPES_SQL})),

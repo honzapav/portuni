@@ -19,7 +19,8 @@ import { guardListScope } from "../list-scope-gate.js";
 import { filterVisibleNodeIds } from "../../auth/node-access.js";
 import { readableMirrorRoot } from "../scope-reconciler.js";
 import { guardNodeRead } from "../scope.js";
-import { readNodeFileFromMirror, formatNodeFileContent } from "../../domain/read-node-file.js";
+import { readNodeFile, formatNodeFileContent } from "../../domain/read-node-file.js";
+import { searchFiles } from "../../domain/search-files.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
@@ -27,7 +28,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_read_file",
-    "Read a file's content from an in-scope node that is NOT your home node or one of its direct neighbours. Those nodes' folders are directly readable on disk (use the native Read/Grep tools on the local_path from portuni_get_context/get_node); this tool is for nodes reached by deeper graph traversal, whose files the sandbox does not expose on disk. Returns UTF-8 text, or base64 for binary. `path` is the file's path within the node (e.g. \"wip/notes.md\"). Reading a node not yet in scope triggers a scope-expansion prompt, same as portuni_get_node.",
+    "Read a file's content from an in-scope node that is NOT your home node or one of its direct neighbours. Those nodes' folders are directly readable on disk (use the native Read/Grep tools on the local_path from portuni_get_context/get_node); this tool is for nodes reached by deeper graph traversal, whose files the sandbox does not expose on disk -- and for sessions with no local workspace at all (a remote client): when the node has no mirror on the serving machine, the file is read straight from its routed remote (Google Drive). Returns UTF-8 text, or base64 for binary. `path` is the file's path within the node (e.g. \"wip/notes.md\"). Reading a node not yet in scope triggers a scope-expansion prompt, same as portuni_get_node.",
     {
       node_id: z.string().describe("Node the file belongs to"),
       path: z.string().describe("File path within the node, e.g. 'wip/notes.md'"),
@@ -53,8 +54,71 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
-      const r = await readNodeFileFromMirror(ctx.identity.userId, args.node_id, args.path);
+      const r = await readNodeFile(db, ctx.identity.userId, args.node_id, args.path);
       return formatNodeFileContent(r, args.path);
+    },
+  );
+
+  server.tool(
+    "portuni_search_files",
+    "Search file CONTENTS across Portuni-tracked files, using the configured remote(s)' own full-text search (Google Drive `fullText contains`; text grep on fs remotes). Only files registered with Portuni are returned, and results are limited to nodes the caller can see. With node_id the search is restricted to that node (which must be in scope); without node_id it is a global query -- mode-gated like portuni_list_files and, outside permissive mode, restricted to the session scope set. Each hit carries node_id + path: open it with portuni_read_file(node_id, path). Drive matches whole words/phrases in indexed content (docs, PDFs, text); it is not a substring or regex search.",
+    {
+      query: z.string().min(1).describe("Words or a phrase to find in file contents"),
+      node_id: z.string().optional().describe("Restrict to one node"),
+      limit: z.number().int().min(1).max(50).optional().describe("Max hits (default 20, max 50)"),
+    },
+    async (args) => {
+      const db = getDb();
+      const limit = args.limit ?? 20;
+
+      const gate = await guardListScope(
+        db,
+        scope,
+        args.node_id,
+        "portuni_search_files",
+        "search_files",
+        { query: args.query },
+        ctx.identity.userId,
+        ctx.identity,
+      );
+      if (gate.kind === "error") return gate.response;
+
+      // Without a node filter and outside permissive mode, restrict to the
+      // in-memory scope set so unrelated nodes are never surfaced (same rule
+      // as portuni_list_files).
+      let nodeIds: string[] | null = null;
+      if (args.node_id === undefined && scope.mode !== "permissive") {
+        nodeIds = scope.list();
+        if (nodeIds.length === 0) {
+          return { content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }] };
+        }
+      }
+
+      // Over-fetch so group-visibility filtering below still leaves `limit`
+      // rows in the common case.
+      const records = await searchFiles(db, {
+        query: args.query,
+        limit: Math.min(limit * 2, 100),
+        nodeId: args.node_id,
+        nodeIds,
+      });
+      const distinctNodeIds = [...new Set(records.map((r) => r.node_id))];
+      const visible = await filterVisibleNodeIds(db, ctx.identity, distinctNodeIds);
+      const hits = records
+        .filter((r) => visible.has(r.node_id))
+        .slice(0, limit)
+        .map((r) => ({
+          file_id: r.file_id,
+          node_id: r.node_id,
+          node_name: r.node_name,
+          node_type: r.node_type,
+          filename: r.filename,
+          path: r.path,
+          mime_type: r.mime_type,
+          ...(r.modified_at !== undefined ? { modified_at: r.modified_at } : {}),
+          ...(r.snippet !== undefined ? { snippet: r.snippet } : {}),
+        }));
+      return { content: [{ type: "text" as const, text: JSON.stringify(hits, null, 2) }] };
     },
   );
 

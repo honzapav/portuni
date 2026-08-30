@@ -12,6 +12,8 @@ import type {
   FileContentResponse,
   NodeAccessResponse,
   NodeAccessEntryInput,
+  AccessRequest,
+  AccessRequestStatus,
   DirectoryGroup,
   AccountUser,
   UserAdmin,
@@ -625,6 +627,94 @@ export function putNodeAccess(
     `/nodes/${encodeURIComponent(id)}/access`,
     { entries, mode, visibility },
   );
+}
+
+// -- Access requests ------------------------------------------------------
+
+// Thrown by requestNodeAccess on 409 already_pending: the caller already
+// has an open request on this node. Carries the existing request id.
+export class AccessRequestPendingError extends Error {
+  readonly requestId: string | null;
+  constructor(requestId: string | null) {
+    super("Žádost už čeká na vyřízení.");
+    this.name = "AccessRequestPendingError";
+    this.requestId = requestId;
+  }
+}
+
+// Thrown by requestNodeAccess on 409 already_visible: the caller can
+// already see the node (access was granted in the meantime).
+export class AccessAlreadyVisibleError extends Error {
+  constructor() {
+    super("Přístup už máš.");
+    this.name = "AccessAlreadyVisibleError";
+  }
+}
+
+// POST /nodes/:id/access/request (read scope). Only a node the caller sees
+// as a locked chip (access_mode='request') accepts this; a hidden one 404s.
+export async function requestNodeAccess(
+  nodeId: string,
+  message?: string,
+): Promise<{ id: string; status: "pending" }> {
+  const body: { message?: string } = {};
+  if (message && message.trim().length > 0) body.message = message.trim();
+  const res = await apiFetch(`/nodes/${encodeURIComponent(nodeId)}/access/request`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 409) {
+    let j: { error?: string; id?: string } = {};
+    try {
+      j = (await res.clone().json()) as { error?: string; id?: string };
+    } catch {
+      /* body not JSON -- fall through to the generic error below */
+    }
+    if (j.error === "already_pending") throw new AccessRequestPendingError(j.id ?? null);
+    if (j.error === "already_visible") throw new AccessAlreadyVisibleError();
+  }
+  await throwForStatus(res, "access-request");
+  return res.json();
+}
+
+// GET /access/requests?status=... (manage scope) -- the caller's queue,
+// already filtered server-side to nodes they can see.
+export async function fetchAccessRequests(
+  status: AccessRequestStatus = "pending",
+): Promise<AccessRequest[]> {
+  const res = await apiFetch(`/access/requests?status=${encodeURIComponent(status)}`);
+  await throwForStatus(res, "access-requests");
+  const body = (await res.json()) as { requests: AccessRequest[] };
+  return body.requests;
+}
+
+// GET /access/requests/count (manage scope) -- pending count for the
+// Settings tab badge. A 403 (read/write scope) degrades to 0 so callers
+// don't need to know the caller's scope up front.
+export async function fetchAccessRequestCount(): Promise<number> {
+  const res = await apiFetch("/access/requests/count");
+  if (res.status === 403) return 0;
+  await throwForStatus(res, "access-requests-count");
+  const body = (await res.json()) as { pending: number };
+  return body.pending;
+}
+
+// GET /nodes/:id/access/requests (manage scope) -- pending requests on one
+// node, for the sharing section.
+export async function fetchNodeAccessRequests(nodeId: string): Promise<AccessRequest[]> {
+  const res = await apiFetch(`/nodes/${encodeURIComponent(nodeId)}/access/requests`);
+  await throwForStatus(res, "node-access-requests");
+  const body = (await res.json()) as { requests: AccessRequest[] };
+  return body.requests;
+}
+
+export function approveAccessRequest(id: string): Promise<AccessRequest> {
+  return jsonRequest<AccessRequest>("POST", `/access/requests/${encodeURIComponent(id)}/approve`);
+}
+
+export function denyAccessRequest(id: string): Promise<AccessRequest> {
+  return jsonRequest<AccessRequest>("POST", `/access/requests/${encodeURIComponent(id)}/deny`);
 }
 
 // Thrown by searchGroups when the backend is running in env auth mode,

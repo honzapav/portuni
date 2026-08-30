@@ -285,6 +285,41 @@ describe("createFileRemote (B3)", () => {
     assert.equal(onRemote.toString("utf8"), "x");
   });
 
+  it("writes raw bytes verbatim and honours the MIME override", async () => {
+    const raw = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0x0a]);
+    const f = await createFileRemote(shared.db, {
+      userId: "U1",
+      nodeId: shared.nodeId,
+      filename: "export.bin",
+      bytes: raw,
+      mimeType: "application/pdf",
+    });
+    assert.equal(f.mime_type, "application/pdf");
+    const adapter = await getAdapter(shared.db, "test-fs");
+    const onRemote = await adapter.get(await remotePathFor("wip/export.bin"));
+    assert.deepEqual([...onRemote], [...raw]);
+    const row = await shared.db.execute({
+      sql: "SELECT mime_type, current_remote_hash FROM files WHERE id = ?",
+      args: [f.id],
+    });
+    assert.equal(row.rows[0].mime_type, "application/pdf");
+    assert.equal(row.rows[0].current_remote_hash, sha256Buffer(raw));
+  });
+
+  it("rejects content and bytes together", async () => {
+    await assert.rejects(
+      () =>
+        createFileRemote(shared.db, {
+          userId: "U1",
+          nodeId: shared.nodeId,
+          filename: "x.md",
+          content: "a",
+          bytes: Buffer.from("b"),
+        }),
+      /either content or bytes/,
+    );
+  });
+
   it("throws EXISTS when the remote object already exists", async () => {
     await seedRemote("wip/a.md", "old");
     await assert.rejects(
