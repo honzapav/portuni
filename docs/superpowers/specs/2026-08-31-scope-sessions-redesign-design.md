@@ -257,10 +257,20 @@ Phases are ordered so each ships alone; later phases build on earlier ones.
 - **Phase 4 — Přehled + health**: the overview tab, `health` migration and
   UI. (Health + attention query can be pulled earlier if desired — it only
   needs the migration, not the session work.)
+- **Phase 5 — docs audit**: after the behavior phases land, sweep the whole
+  docs site (`sites/docs`) against the new model: rewrite
+  `concepts/scope-enforcement.md` around session types, update
+  `reference/scope.md` / `context.md` / `files.md` response shapes, purge
+  every strict/balanced/permissive mention, update `clients/*` (the
+  connector page's scope paragraph, `claude-desktop.md`'s session-init
+  instructions), and verify `portuni://scope-rules` matches what ships.
+  `npm --prefix sites/docs run build` + a grep for the removed vocabulary
+  are the exit check.
 
 Each phase gets its own issue batch for the sandcastle loop; the batch PR
 per phase follows the release conventions (docs site changes ride in the
-same branch as behavior changes).
+same branch as behavior changes — phase 5 is the final audit on top of
+that, not a substitute for it).
 
 ## Testing
 
