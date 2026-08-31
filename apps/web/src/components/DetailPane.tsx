@@ -49,7 +49,6 @@ import {
 import { safeHref } from "../lib/safe-url";
 import { groupEventsByDate } from "../lib/events";
 import { isTauri, openExternal, openInFinder } from "../lib/backend-url";
-import { agentDisplayName } from "../lib/settings";
 import type { Actor } from "../api";
 import {
   updateNode,
@@ -71,6 +70,7 @@ import {
   removeTool,
   fetchNodeSyncStatus,
   runNodeSync,
+  createNodeMirror,
   fetchNodeFolderUrl,
   createFile,
   renameFile,
@@ -320,6 +320,11 @@ function DetailPaneBody({
   // create mirror) before the view switches, so guard the button with a
   // visible pending state -- otherwise the click looks like a no-op.
   const [launchingTerminal, setLaunchingTerminal] = useState(false);
+  // Header/Files-tab "create the local mirror" action -- shared pending +
+  // error state so both entry points (header button, and the Files tab
+  // banner from the follow-up issue) render the same feedback.
+  const [creatingMirror, setCreatingMirror] = useState(false);
+  const [mirrorError, setMirrorError] = useState<string | null>(null);
 
   // Reset edit drafts whenever we switch to a different node.
   const lastIdRef = useRef(node.id);
@@ -346,6 +351,8 @@ function DetailPaneBody({
       setUntracked([]);
       setCreatingFile(false);
       setFileOpError(null);
+      setCreatingMirror(false);
+      setMirrorError(null);
     }
   }, [node.id, node.name]);
 
@@ -394,6 +401,42 @@ function DetailPaneBody({
     } finally {
       if (lastIdRef.current === requestNodeId) {
         setSyncRunning(false);
+      }
+    }
+  };
+
+  // Create the local mirror for this node without launching a terminal.
+  // Shared by the header button (this issue) and the Files tab banner
+  // (follow-up issue): both just call this and read creatingMirror/
+  // mirrorError back. Mirrors handleRunSync's refresh so the Files tab
+  // SyncBar shows pull candidates immediately, without running an actual
+  // sync (the user still triggers that explicitly).
+  const createMirrorAndRefresh = async () => {
+    if (creatingMirror) return;
+    setCreatingMirror(true);
+    setMirrorError(null);
+    const requestNodeId = node.id;
+    try {
+      await createNodeMirror(requestNodeId);
+      if (lastIdRef.current !== requestNodeId) return;
+      await onMutate();
+      try {
+        const fresh = await fetchNodeSyncStatus(requestNodeId);
+        if (lastIdRef.current !== requestNodeId) return;
+        const m = new Map<string, SyncStatusFile>();
+        for (const f of fresh.files) m.set(f.file_id, f);
+        SYNC_STATUS_CACHE.set(requestNodeId, m);
+        setSyncStatus(m);
+        setSyncLoaded(true);
+      } catch {
+        /* keep stale badges */
+      }
+    } catch (e) {
+      if (lastIdRef.current !== requestNodeId) return;
+      setMirrorError(e instanceof LocalOnlyError ? e.message : String(e));
+    } finally {
+      if (lastIdRef.current === requestNodeId) {
+        setCreatingMirror(false);
       }
     }
   };
@@ -736,7 +779,11 @@ function DetailPaneBody({
                   )}
                 </>
               ) : (
-                <MirrorPlaceholder agentCommand={agentCommand} />
+                <CreateMirrorButton
+                  pending={creatingMirror}
+                  error={mirrorError}
+                  onCreate={() => void createMirrorAndRefresh()}
+                />
               )}
             </>
           )}
@@ -1097,6 +1144,7 @@ function DetailPaneBody({
               nodeId={node.id}
               canManage={canManage}
               onMutate={onMutate}
+              graph={graph}
             />
           </div>
         )}
@@ -3462,17 +3510,40 @@ function FolderLink({ nodeId }: { nodeId: string }) {
   );
 }
 
-// Muted placeholder shown in the header when the node has no mirror on
-// this device. Fills the same horizontal slot as PathCopy so the layout
-// doesn't shift the moment a mirror is created.
-function MirrorPlaceholder({ agentCommand }: { agentCommand: string }) {
+// Header action that creates the local mirror for this node without
+// launching a terminal. Fills the same horizontal slot as PathCopy so the
+// layout doesn't shift the moment the mirror is created.
+function CreateMirrorButton({
+  pending,
+  error,
+  onCreate,
+}: {
+  pending: boolean;
+  error: string | null;
+  onCreate: () => void;
+}) {
   return (
-    <span className="flex min-w-0 flex-1 items-center gap-1.5 font-mono text-[10px] italic text-[var(--color-text-dim)]">
-      <Folder size={10} className="shrink-0" />
-      <span className="truncate">
-        Pracovní složka zatím neexistuje — bude vytvořena při spuštění{" "}
-        {agentDisplayName(agentCommand)}.
-      </span>
+    <span className="flex min-w-0 flex-1 items-center gap-1.5 font-mono text-[10px] text-[var(--color-text-dim)]">
+      <button
+        type="button"
+        onClick={onCreate}
+        disabled={pending}
+        className="flex min-w-0 items-center gap-1.5 truncate transition-colors hover:text-[var(--color-text-muted)] disabled:cursor-default disabled:opacity-60"
+      >
+        <Folder size={10} className="shrink-0" />
+        <span className="truncate">
+          {pending ? "Vytvářím…" : "Vytvořit pracovní složku"}
+        </span>
+      </button>
+      {error && (
+        <span
+          className="truncate"
+          style={{ color: "var(--color-danger)" }}
+          title={error}
+        >
+          {error}
+        </span>
+      )}
     </span>
   );
 }

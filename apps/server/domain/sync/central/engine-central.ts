@@ -1108,6 +1108,13 @@ export async function computeSyncPendingCentral(
   const scanOne = async (m: (typeof mirrors)[number]): Promise<SyncPendingNode | null> => {
     const si = infoById.get(m.node_id);
     if (!si) return null; // node gone or not visible -- skip
+    const dirExists = await fsStat(m.local_path)
+      .then((s) => s.isDirectory())
+      .catch(() => false);
+    // A mirror whose root directory was removed from disk is not local work
+    // in progress -- its files would only ever read as deleted_local, which
+    // must not count towards "unsynced" (see below).
+    if (!dirExists) return null;
     const scan = await statusScanCentral(client, {
       userId,
       nodeId: m.node_id,
@@ -1123,7 +1130,10 @@ export async function computeSyncPendingCentral(
     const untracked = scan.new_local.length + scan.deleted_remote.length;
     const remote_missing = scan.remote_missing.length;
     const deleted_local = scan.deleted_local.length;
-    const total = push + conflict + untracked + remote_missing + deleted_local;
+    // remote_missing and deleted_local are informational only -- a sync run
+    // neither pushes nor pulls them, so they must not count towards total
+    // (see the local engine's computeSyncPending for the same rule).
+    const total = push + conflict + untracked;
     if (total === 0) return null;
     return {
       node_id: m.node_id,

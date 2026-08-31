@@ -7,7 +7,7 @@
 // DetailPane.tsx self-fetches sync status for the Files tab.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Copy, Lock, Plus, Search, User, Users, X } from "lucide-react";
+import { Lock, Pencil, Plus, Search, User, Users, X } from "lucide-react";
 import type {
   NodeAccessEntry,
   NodeAccessEntryInput,
@@ -15,6 +15,7 @@ import type {
   AccessRequest,
   AccountUser,
   DirectoryGroup,
+  GraphPayload,
 } from "../types";
 import {
   fetchAccountUsers,
@@ -64,9 +65,27 @@ function entryKey(d: DraftEntry): string {
 
 type AccessMode = "private" | "request";
 
-function modeLabel(m: AccessMode | null): string {
-  return m === "request" ? "Na vyžádání" : "Soukromé";
+// Lowercase phrasing used inline in the "Skupina · ..." inherited summary
+// and as the basis for the capitalized read-only "Režim: ..." label.
+function modeWordLower(m: AccessMode | null): string {
+  return m === "request" ? "na vyžádání" : "skryté pro ostatní";
 }
+
+function modeLabel(m: AccessMode | null): string {
+  const w = modeWordLower(m);
+  return w.charAt(0).toUpperCase() + w.slice(1);
+}
+
+// Genitive form of each node type, for "Přebírá sdílení z <typu> <jméno>".
+// Kept local to this file: no other component needs to phrase a type this
+// way, and the node type enum is small/stable.
+const TYPE_GENITIVE: Record<string, string> = {
+  organization: "organizace",
+  project: "projektu",
+  process: "procesu",
+  area: "oblasti",
+  principle: "principu",
+};
 
 // The unified sharing selector's three modes -- one dimension stored in
 // `nodes.visibility` (spec: docs/archive/specs/2026-07-05-unified-sharing-tab-design.md).
@@ -78,15 +97,21 @@ export function AccessSection({
   nodeId,
   canManage,
   onMutate,
+  graph,
 }: {
   nodeId: string;
   canManage: boolean;
   onMutate: () => Promise<void>;
+  // Used only to look up the type of the inherited-from node (for "Přebírá
+  // sdílení z organizace X" phrasing) without a second network round trip --
+  // the graph is already loaded for the rest of the app.
+  graph: GraphPayload | null;
 }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [restricted, setRestricted] = useState(false);
   const [inherited, setInherited] = useState(false);
+  const [sourceNodeId, setSourceNodeId] = useState<string | null>(null);
   const [sourceName, setSourceName] = useState<string | null>(null);
   // The node's OWN visibility mode, as last fetched/saved -- drives the
   // top-level Tým/Soukromé/Skupina selector together with `restricted`
@@ -106,7 +131,7 @@ export function AccessSection({
   // inline two-step pattern instead.
   const [confirm, setConfirm] = useState<{
     target: VisibilityMode;
-    kind: "switch" | "last-entry";
+    kind: "switch" | "last-entry" | "clear-override";
   } | null>(null);
   // Restriction mode of the authoritative node (self when !inherited, the
   // ancestor's when inherited). Null when unrestricted.
@@ -126,6 +151,10 @@ export function AccessSection({
   // affects which panel renders (informational vs. editable) -- the dirty
   // check below always compares against the raw persisted `inherited`.
   const [overriding, setOverriding] = useState(false);
+  // Inline validation for the peek-and-save override card (see `isPeek`
+  // below) -- saving with zero recipients must be refused client-side, not
+  // surfaced as the server's 400 for an empty "group" body.
+  const [overrideSaveError, setOverrideSaveError] = useState<string | null>(null);
   const [addingOpen, setAddingOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -160,6 +189,7 @@ export function AccessSection({
   const applyView = useCallback((res: NodeAccessResponse) => {
     setRestricted(res.restricted);
     setInherited(res.inherited);
+    setSourceNodeId(res.source_node_id);
     setSourceName(res.source_node_name);
     setMode(res.mode);
     setVisibility(res.visibility);
@@ -188,6 +218,7 @@ export function AccessSection({
     setAddingOpen(false);
     setSaveError(null);
     setOverriding(false);
+    setOverrideSaveError(null);
     setEditingGroup(false);
     setConfirm(null);
     setJustSaved(false);
@@ -247,6 +278,7 @@ export function AccessSection({
       );
       applyView(res);
       setOverriding(false);
+      setOverrideSaveError(null);
       setAddingOpen(false);
       setEditingGroup(false);
       setConfirm(null);
@@ -261,37 +293,50 @@ export function AccessSection({
   };
 
   // Seeds the draft with the ancestor's entries + mode so a manager can
-  // narrow an inherited ACL without re-adding every principal by hand.
-  // Deliberately NOT persisted on click: saving an identical copy would
-  // already detach the node from the ancestor's future ACL changes, so the
-  // copy becomes a real override only with the first actual edit (which
-  // autosaves it).
+  // build a node-level override without re-adding every principal by hand.
+  // Deliberately NOT persisted on click (isPeek below keeps every further
+  // edit local too): the override becomes real only when the manager hits
+  // "Uložit" in the card, so "Zrušit" can discard it with no request sent.
   const startOverride = () => {
     setDraft(entries.map((e) => ({ ...e })));
     setDraftMode(mode ?? "private");
     setOverriding(true);
+    setOverrideSaveError(null);
   };
 
-  // Autosave: every committed edit persists immediately, matching the rest
-  // of the detail pane (lifecycle, owner, organization all save on change).
-  // The only local-only moments are an empty "Skupina" draft (the server
-  // rightly 400s an empty group) and an untouched "Upravit kopii" seed.
+  // True while building a not-yet-persisted override on top of an inherited
+  // ACL: every edit stays local until "Uložit" (see `saveOverride`), unlike
+  // the rest of the pane's autosave-on-every-edit discipline (which still
+  // applies once the node has its own persisted list, or is being freshly
+  // switched to "Skupina" from an unrestricted state).
+  const isPeek = overriding && inherited;
+
   const addEntry = (entry: DraftEntry) => {
     setAddingOpen(false);
     if (draft.some((d) => entryKey(d) === entryKey(entry))) return;
-    void persist([...draft, entry], draftMode, "group");
+    const next = [...draft, entry];
+    if (isPeek) {
+      setDraft(next);
+      setOverrideSaveError(null);
+      return;
+    }
+    void persist(next, draftMode, "group");
   };
 
   const removeEntry = (index: number) => {
     const next = draft.filter((_, i) => i !== index);
+    if (isPeek) {
+      setDraft(next);
+      return;
+    }
     if (next.length > 0) {
       void persist(next, draftMode, "group");
       return;
     }
     // Removing the last recipient: with own persisted grants this is a
     // destructive switch to "Soukromé" -- same two-step confirm as the
-    // selector. With nothing persisted yet (peek/copy) it only clears the
-    // local seed.
+    // selector. With nothing persisted yet (a fresh, never-restricted node)
+    // it only clears the local seed.
     if (restricted && !inherited) {
       setConfirm({ target: "private", kind: "last-entry" });
       return;
@@ -300,11 +345,36 @@ export function AccessSection({
   };
 
   const changeDraftMode = (m: AccessMode) => {
-    if (draft.length === 0) {
+    if (isPeek || draft.length === 0) {
       setDraftMode(m);
       return;
     }
     void persist(draft, m, "group");
+  };
+
+  // Explicit save for the peek-and-save override card -- refused locally
+  // when empty so the server's "group visibility requires at least one
+  // access entry" 400 is never reached from the UI.
+  const saveOverride = () => {
+    if (draft.length === 0) {
+      setOverrideSaveError("Přidej alespoň jednoho příjemce.");
+      return;
+    }
+    setOverrideSaveError(null);
+    void persist(draft, draftMode, "group");
+  };
+
+  const cancelOverride = () => {
+    setOverriding(false);
+    setOverrideSaveError(null);
+  };
+
+  // Drops this node's own ACL so it starts inheriting from its nearest
+  // restricted ancestor again (or becomes fully unrestricted, if none is
+  // restricted) -- visibility "team" with no entries, same derivation the
+  // top-level selector already uses when switching away from "Skupina".
+  const clearOverride = () => {
+    setConfirm({ target: "team", kind: "clear-override" });
   };
 
   if (loading) {
@@ -326,13 +396,6 @@ export function AccessSection({
   // informational "Dědí z" view, even though the node's persisted state is
   // still inherited until the draft is saved.
   const effectiveInherited = inherited && !overriding;
-
-  // Read-only informational chips: this node's own explicit list (when a
-  // non-manager views it), or the ancestor's inherited list (shown to
-  // everyone, manager or not -- managers get an additional editable draft
-  // row below to build their own override).
-  const showReadOnlyChips =
-    restricted && (effectiveInherited || !canManage) && entries.length > 0;
 
   // The selector's displayed value: a node effectively governed by a group
   // ACL -- whether the rows are its own or inherited from an ancestor --
@@ -380,11 +443,15 @@ export function AccessSection({
         disabledOptions={
           effectiveInherited
             ? {
-                team: "Node dědí omezení z nadřazeného uzlu – nelze ho zpřístupnit všem, jen zúžit nebo upravit kopii.",
+                team: "Node dědí omezení z nadřazeného uzlu – nelze ho zpřístupnit všem, jen nastavit vlastní sdílení.",
               }
             : undefined
         }
       />
+      <p className="text-[11.5px] text-[var(--color-text-dim)]">
+        Všichni = celý tým · Soukromé = jen autor a správci · Skupina =
+        vybraní lidé a skupiny
+      </p>
 
       {displayedMode === "team" && (
         <p className="text-[14px] text-[var(--color-text-muted)]">
@@ -400,82 +467,56 @@ export function AccessSection({
 
       {displayedMode === "group" && (
       <div className="space-y-2.5">
-      {effectiveInherited && (
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="text-[13px] text-[var(--color-text-dim)]">
-            Dědí z{" "}
-            <span className="font-medium text-[var(--color-text-muted)]">
-              {sourceName ?? "nadřazeného uzlu"}
-            </span>
-            {" — "}
-            <span className="font-medium text-[var(--color-text-muted)]">
-              {modeLabel(mode)}
-            </span>
-          </p>
-          {canManage && (
-            <button
-              type="button"
-              onClick={startOverride}
-              className="inline-flex items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-0.5 text-[12px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
-            >
-              <Copy size={10} />
-              Upravit kopii
-            </button>
-          )}
-        </div>
-      )}
-
-      {restricted && !inherited && !canManage && (
-        <p className="text-[13px] text-[var(--color-text-dim)]">
-          Režim:{" "}
-          <span className="font-medium text-[var(--color-text-muted)]">
-            {modeLabel(mode)}
-          </span>
-        </p>
-      )}
-
-      {showReadOnlyChips && (
-        <div className="flex flex-wrap gap-1.5">
-          {entries.map((e) => (
-            <Chip key={entryKey(e)} entry={e} />
-          ))}
-        </div>
-      )}
-
-      {canManage && (
+      {effectiveInherited ? (
+        <InheritedSummary
+          sourceName={sourceName}
+          sourceType={
+            sourceNodeId
+              ? graph?.nodes.find((n) => n.id === sourceNodeId)?.type
+              : undefined
+          }
+          mode={mode}
+          entries={entries}
+          canManage={canManage}
+          onStartOverride={startOverride}
+        />
+      ) : (
         <>
-          {overriding && inherited && (
-            <p className="text-[12px] text-[var(--color-text-dim)]">
-              Upravuješ kopii zděděného sdílení – uloží se s první změnou.
+          {restricted && !canManage && (
+            <p className="text-[13px] text-[var(--color-text-dim)]">
+              Režim:{" "}
+              <span className="font-medium text-[var(--color-text-muted)]">
+                {modeLabel(mode)}
+              </span>
             </p>
           )}
-          <ModeToggle value={draftMode} onChange={changeDraftMode} disabled={saving} />
-          <div className="flex flex-wrap items-center gap-1.5">
-            {draft.map((e, i) => (
-              <Chip key={entryKey(e)} entry={e} onRemove={() => removeEntry(i)} />
-            ))}
-            {addingOpen ? (
-              <EntryPicker
-                existing={draft.map((d) => d.principal)}
-                onPick={addEntry}
-                onClose={() => setAddingOpen(false)}
-              />
-            ) : (
-              <button
-                type="button"
-                onClick={() => setAddingOpen(true)}
-                className="inline-flex items-center gap-1 rounded-full border border-dashed border-[var(--color-border)] px-2 py-0.5 text-[12px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
-              >
-                <Plus size={10} />
-                Přidat skupinu nebo uživatele…
-              </button>
-            )}
-          </div>
-          {draft.length === 0 && (
-            <p className="text-[12px] text-[var(--color-text-dim)]">
-              Zatím neuloženo – sdílení pro skupinu se uloží s prvním
-              příjemcem. Bez příjemců node uvidí jen správci.
-            </p>
+
+          {!canManage && entries.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {entries.map((e) => (
+                <Chip key={entryKey(e)} entry={e} />
+              ))}
+            </div>
+          )}
+
+          {canManage && (
+            <OwnAccessCard
+              isPeek={isPeek}
+              showClearButton={restricted && !inherited && !isPeek}
+              draft={draft}
+              draftMode={draftMode}
+              addingOpen={addingOpen}
+              saving={saving}
+              overrideSaveError={overrideSaveError}
+              onChangeMode={changeDraftMode}
+              onAddOpen={() => setAddingOpen(true)}
+              onAddClose={() => setAddingOpen(false)}
+              onPick={addEntry}
+              onRemove={removeEntry}
+              onSave={saveOverride}
+              onCancel={cancelOverride}
+              onClearOverride={clearOverride}
+            />
           )}
         </>
       )}
@@ -487,7 +528,9 @@ export function AccessSection({
           <p className="text-[12.5px] text-[var(--color-text-muted)]">
             {confirm.kind === "last-entry"
               ? "Odebráním posledního příjemce se sdílení zruší a node bude Soukromý."
-              : `Přepnutím odebereš ${entries.length} sdílení.`}
+              : confirm.kind === "clear-override"
+                ? "Vlastní sdílení tohoto uzlu bude zrušeno a node začne znovu přebírat sdílení z nadřazeného uzlu (nebo bude nezúžené, pokud žádný nadřazený uzel sdílení neomezuje)."
+                : `Přepnutím odebereš ${entries.length} sdílení.`}
           </p>
           <div className="flex gap-2">
             <button
@@ -532,6 +575,173 @@ export function AccessSection({
         <p className="text-[12px]" style={{ color: "var(--color-danger)" }}>
           {saveError}
         </p>
+      )}
+    </div>
+  );
+}
+
+// Purely informational view of an inherited group ACL -- no draft form, no
+// mode toggle, one action. Shown to every viewer; the "Nastavit vlastní
+// sdílení" action is manager-only (see AccessSection's `canManage` gate).
+function InheritedSummary({
+  sourceName,
+  sourceType,
+  mode,
+  entries,
+  canManage,
+  onStartOverride,
+}: {
+  sourceName: string | null;
+  sourceType: string | undefined;
+  mode: AccessMode | null;
+  entries: DraftEntry[];
+  canManage: boolean;
+  onStartOverride: () => void;
+}) {
+  const sourceLabel = sourceName ?? "nadřazeného uzlu";
+  const typeGenitive = sourceType ? TYPE_GENITIVE[sourceType] : undefined;
+  const heading = typeGenitive
+    ? `Přebírá sdílení z ${typeGenitive} ${sourceLabel}`
+    : `Přebírá sdílení z ${sourceLabel}`;
+  return (
+    <div className="space-y-2">
+      <p className="text-[13px] font-medium text-[var(--color-text)]">{heading}</p>
+      <p className="text-[12.5px] text-[var(--color-text-dim)]">
+        Skupina · {modeWordLower(mode)}
+      </p>
+      {entries.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {entries.map((e) => (
+            <Chip key={entryKey(e)} entry={e} />
+          ))}
+        </div>
+      )}
+      {canManage && (
+        <button
+          type="button"
+          onClick={onStartOverride}
+          className="inline-flex items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-0.5 text-[12px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+        >
+          <Pencil size={10} />
+          Nastavit vlastní sdílení pro tento uzel
+        </button>
+      )}
+    </div>
+  );
+}
+
+// This node's own group ACL, editable by a manager -- either a
+// not-yet-persisted override being built on top of an inherited ACL
+// (`isPeek`, explicit Uložit/Zrušit) or the node's already-persisted own
+// list / a fresh "Skupina" being switched on from scratch (autosave on
+// every edit, matching the rest of the detail pane).
+function OwnAccessCard({
+  isPeek,
+  showClearButton,
+  draft,
+  draftMode,
+  addingOpen,
+  saving,
+  overrideSaveError,
+  onChangeMode,
+  onAddOpen,
+  onAddClose,
+  onPick,
+  onRemove,
+  onSave,
+  onCancel,
+  onClearOverride,
+}: {
+  isPeek: boolean;
+  showClearButton: boolean;
+  draft: DraftEntry[];
+  draftMode: AccessMode;
+  addingOpen: boolean;
+  saving: boolean;
+  overrideSaveError: string | null;
+  onChangeMode: (mode: AccessMode) => void;
+  onAddOpen: () => void;
+  onAddClose: () => void;
+  onPick: (entry: DraftEntry) => void;
+  onRemove: (index: number) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  onClearOverride: () => void;
+}) {
+  return (
+    <div className="space-y-2.5 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5">
+      <p className="text-[13px] font-medium text-[var(--color-text)]">
+        Vlastní sdílení tohoto uzlu
+      </p>
+      {isPeek && (
+        <p className="text-[12px] text-[var(--color-text-dim)]">
+          Nahradí sdílení přebírané z organizace. Platí jen pro tento uzel a
+          uzly pod ním.
+        </p>
+      )}
+      <ModeToggle value={draftMode} onChange={onChangeMode} disabled={saving} />
+      <div className="flex flex-wrap items-center gap-1.5">
+        {draft.map((e, i) => (
+          <Chip key={entryKey(e)} entry={e} onRemove={() => onRemove(i)} />
+        ))}
+        {addingOpen ? (
+          <EntryPicker
+            existing={draft.map((d) => d.principal)}
+            onPick={onPick}
+            onClose={onAddClose}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={onAddOpen}
+            className="inline-flex items-center gap-1 rounded-full border border-dashed border-[var(--color-border)] px-2 py-0.5 text-[12px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
+          >
+            <Plus size={10} />
+            Přidat skupinu nebo uživatele…
+          </button>
+        )}
+      </div>
+      {!isPeek && draft.length === 0 && (
+        <p className="text-[12px] text-[var(--color-text-dim)]">
+          Zatím neuloženo – sdílení pro skupinu se uloží s prvním příjemcem.
+          Bez příjemců node uvidí jen správci.
+        </p>
+      )}
+      {overrideSaveError && (
+        <p className="text-[12px]" style={{ color: "var(--color-danger)" }}>
+          {overrideSaveError}
+        </p>
+      )}
+      {isPeek ? (
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={saving}
+            className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/20 px-3 py-1.5 text-[13px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/30 disabled:opacity-50"
+          >
+            {saving ? "…" : "Uložit"}
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={saving}
+            className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
+          >
+            Zrušit
+          </button>
+        </div>
+      ) : (
+        showClearButton && (
+          <button
+            type="button"
+            onClick={onClearOverride}
+            disabled={saving}
+            className="text-[12px] text-[var(--color-text-dim)] underline decoration-dotted transition-colors hover:text-[var(--color-text)] disabled:opacity-50"
+          >
+            Zrušit vlastní sdílení a přebírat z organizace
+          </button>
+        )
       )}
     </div>
   );
@@ -590,10 +800,11 @@ function VisibilitySelector({
   );
 }
 
-// Segmented control for the draft's restriction mode -- "Soukromé" (default,
-// non-member sees nothing) vs. "Na vyžádání" (non-member sees a locked chip
-// on visible neighbours, spec §"Zamčené položky v Propojení"). Only shown to
-// managers editing this node's own ACL (see canManage block above).
+// Segmented control for the draft's restriction mode -- "Skryté pro ostatní"
+// (default, non-member sees nothing) vs. "Na vyžádání" (non-member sees a
+// locked chip on visible neighbours, spec §"Zamčené položky v Propojení").
+// Only shown to managers editing this node's own ACL (see canManage block
+// above).
 function ModeToggle({
   value,
   onChange,
@@ -604,31 +815,38 @@ function ModeToggle({
   disabled?: boolean;
 }) {
   const options: { value: AccessMode; label: string }[] = [
-    { value: "private", label: "Soukromé" },
-    { value: "request", label: "Na vyžádání" },
+    { value: "private", label: "Skryté pro ostatní" },
+    { value: "request", label: "Na vyžádání (ostatní vidí název a mohou požádat)" },
   ];
   return (
-    <div className="inline-flex overflow-hidden rounded-md border border-[var(--color-border)]">
-      {options.map((opt, i) => {
-        const active = value === opt.value;
-        return (
-          <button
-            key={opt.value}
-            type="button"
-            onClick={() => onChange(opt.value)}
-            disabled={disabled}
-            className={`px-2.5 py-1 text-[12px] transition-colors disabled:opacity-50 ${
-              i > 0 ? "border-l border-[var(--color-border)]" : ""
-            } ${
-              active
-                ? "bg-[var(--color-accent-dim)]/20 font-medium text-[var(--color-accent)]"
-                : "bg-[var(--color-surface)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-            }`}
-          >
-            {opt.label}
-          </button>
-        );
-      })}
+    <div className="space-y-1">
+      <div className="inline-flex overflow-hidden rounded-md border border-[var(--color-border)]">
+        {options.map((opt, i) => {
+          const active = value === opt.value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => onChange(opt.value)}
+              disabled={disabled}
+              className={`px-2.5 py-1 text-[12px] transition-colors disabled:opacity-50 ${
+                i > 0 ? "border-l border-[var(--color-border)]" : ""
+              } ${
+                active
+                  ? "bg-[var(--color-accent-dim)]/20 font-medium text-[var(--color-accent)]"
+                  : "bg-[var(--color-surface)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+              }`}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-[var(--color-text-dim)]">
+        {value === "request"
+          ? "Ostatní vidí, že node existuje, a mohou požádat o přístup."
+          : "Node je pro ostatní úplně neviditelný."}
+      </p>
     </div>
   );
 }

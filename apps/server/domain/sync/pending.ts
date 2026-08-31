@@ -1,6 +1,7 @@
 // Cross-mirror aggregate of local work that is not yet on a remote. Powers
 // the global "unsynced overview" and the quit guard. Best-effort: a mirror
 // that fails to scan is skipped, never aborts the whole aggregate.
+import { stat } from "node:fs/promises";
 import type { Client } from "@libsql/client";
 import { listUserMirrors } from "./mirror-registry.js";
 import { statusScan } from "./engine.js";
@@ -36,6 +37,13 @@ export async function computeSyncPending(
       args: [m.node_id],
     });
     if (row.rows.length === 0) return null; // mirror for a deleted node — skip before scanning
+    const dirExists = await stat(m.local_path)
+      .then((s) => s.isDirectory())
+      .catch(() => false);
+    // A mirror whose root directory was removed from disk is not local work
+    // in progress — its files would only ever read as deleted_local, which
+    // must not count towards "unsynced" (see below).
+    if (!dirExists) return null;
     const scan = await statusScan(db, {
       userId: identity.userId,
       nodeId: m.node_id,
@@ -54,7 +62,11 @@ export async function computeSyncPending(
     const untracked = scan.new_local.length + scan.deleted_remote.length;
     const remote_missing = scan.remote_missing.length;
     const deleted_local = scan.deleted_local.length;
-    const total = push + conflict + untracked + remote_missing + deleted_local;
+    // remote_missing and deleted_local are surfaced per-node (SyncBar/file
+    // list) but do not count towards "unsynced": a sync run neither pushes
+    // nor pulls them, so they'd never clear and would make the footer badge
+    // / quit guard warn about work that isn't actually pending.
+    const total = push + conflict + untracked;
     if (total === 0) return null;
     return {
       node_id: m.node_id,

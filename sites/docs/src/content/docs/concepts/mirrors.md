@@ -10,6 +10,12 @@ totally different layouts without stepping on each other.
 
 ## What's inside a mirror
 
+A mirror is usually created implicitly the first time an agent terminal is
+launched for a node. In the desktop app, the node detail header also offers
+a direct "Vytvořit pracovní složku" button when the node has no mirror on
+this device yet, so you can create the folder without opening a terminal
+first.
+
 When you call `portuni_mirror`, Portuni creates a folder structure for you:
 
 ```
@@ -127,6 +133,12 @@ locally, still on the remote). The file row in the app shows the choice —
 a deleted local copy — backed by `POST /nodes/:id/files/:fileId/resolve`.
 Restoring refuses (with a clear error) to overwrite a local change that
 was never pushed.
+
+The footer's unsynced badge, the unsynced overview and the quit guard only
+count work a sync run will actually push or adopt (plus conflicts) —
+`deleted_local` and `remote_missing` files are surfaced in the node's own
+file list instead, since a sync run does not touch them until you resolve
+them.
 
 **Moving bytes to the remote stays intentional.** Uploads happen the same way
 you'd make a git commit — on purpose, with meaning, via `portuni_store` or
