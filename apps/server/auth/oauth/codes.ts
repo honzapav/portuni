@@ -108,10 +108,28 @@ export async function redeemAuthorizationCode(
     return { ok: false, reason: "invalid_grant" };
   }
 
-  await db.execute({
-    sql: "UPDATE oauth_codes SET used_at = datetime('now') WHERE id = ?",
+  // Conditional stamp: closes the TOCTOU window between the SELECT above
+  // and this UPDATE. If a concurrent redemption of the same code already
+  // stamped used_at, rowsAffected is 0 -- treat it the same as the
+  // already-used branch above (replay, revoke any attached grant).
+  const stamp = await db.execute({
+    sql: "UPDATE oauth_codes SET used_at = datetime('now') WHERE id = ? AND used_at IS NULL",
     args: [row.id],
   });
+  if (stamp.rowsAffected === 0) {
+    const race = await db.execute({
+      sql: "SELECT grant_id FROM oauth_codes WHERE id = ?",
+      args: [row.id],
+    });
+    const grantId = race.rows[0]?.grant_id;
+    if (grantId != null) {
+      await db.execute({
+        sql: "UPDATE oauth_grants SET revoked_at = datetime('now') WHERE id = ?",
+        args: [grantId],
+      });
+    }
+    return { ok: false, reason: "invalid_grant" };
+  }
 
   return {
     ok: true,

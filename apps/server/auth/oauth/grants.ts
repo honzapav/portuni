@@ -160,14 +160,22 @@ export async function rotateRefreshToken(
   const newRefreshToken = `por_${randomBytes(32).toString("base64url")}`;
   const accessExpiresAt = sqliteDatetime(Date.now() + ACCESS_TTL_MS);
 
-  await db.execute({
+  // Conditional on the pre-rotation hash we just read: closes the TOCTOU
+  // window between the SELECT above and this UPDATE. If a concurrent
+  // rotation of the same refresh token already moved it into
+  // prev_refresh_token_hash, rowsAffected is 0 and this request must not
+  // clobber the other one's freshly minted tokens.
+  const rotated = await db.execute({
     sql: `UPDATE oauth_grants SET
       access_token_hash = ?, access_expires_at = ?,
       prev_refresh_token_hash = refresh_token_hash, refresh_token_hash = ?,
       rotated_at = datetime('now')
-      WHERE id = ?`,
-    args: [hashToken(accessToken), accessExpiresAt, hashToken(newRefreshToken), row.id],
+      WHERE id = ? AND refresh_token_hash = ?`,
+    args: [hashToken(accessToken), accessExpiresAt, hashToken(newRefreshToken), row.id, hash],
   });
+  if (rotated.rowsAffected === 0) {
+    return { ok: false, reason: "invalid_grant" };
+  }
 
   return {
     ok: true,

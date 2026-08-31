@@ -134,6 +134,26 @@ test("expired refresh token fails absolute, regardless of activity", async () =>
   assert.equal(result.ok, false);
 });
 
+test("concurrent rotation of the same refresh token: exactly one succeeds (TOCTOU)", async () => {
+  const { db } = await makeSharedDb();
+  const minted = await mintGrant(db, INPUT);
+
+  const [a, b] = await Promise.all([
+    rotateRefreshToken(db, minted.refreshToken),
+    rotateRefreshToken(db, minted.refreshToken),
+  ]);
+  const results = [a, b];
+  const succeeded = results.filter((r) => r.ok);
+  const failed = results.filter((r) => !r.ok);
+  assert.equal(succeeded.length, 1, "exactly one concurrent rotation must win");
+  assert.equal(failed.length, 1);
+
+  // The winner's freshly minted tokens must still work -- a lost race must
+  // not clobber them with the loser's hashes.
+  const winner = succeeded[0] as { ok: true; grant: { accessToken: string } };
+  assert.ok(await verifyAccessToken(db, winner.grant.accessToken));
+});
+
 test("unknown refresh token fails without touching any grant", async () => {
   const { db } = await makeSharedDb();
   await mintGrant(db, INPUT);

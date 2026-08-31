@@ -92,6 +92,19 @@ test("non-2xx fetch is rejected", async () => {
   assert.equal(result.ok, false);
 });
 
+test("a redirect response is rejected, not followed (SSRF hardening)", async () => {
+  __setCimdFetchForTests(((_input: unknown, init?: RequestInit) => {
+    assert.equal(init?.redirect, "error");
+    // A real fetch with redirect: "error" throws a TypeError when the
+    // server answers with a redirect; simulate that here.
+    return Promise.reject(new TypeError("Failed to fetch: redirect not allowed"));
+  }) as typeof fetch);
+  const result = await fetchClientMetadata(CLIENT_URL);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.reason, "failed to fetch the client metadata document");
+});
+
 test("second fetch within the cache TTL does not hit the network again", async () => {
   let calls = 0;
   __setCimdFetchForTests(

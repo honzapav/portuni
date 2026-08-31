@@ -228,7 +228,10 @@ async function handleConsent(req: IncomingMessage, res: ServerResponse, ctx: Ide
 
   const { request, identity } = flow;
   if (decision !== "allow") {
-    redirectTo(res, `${request.redirectUri}?error=access_denied&state=${encodeURIComponent(request.state)}`);
+    const denyUrl = new URL(request.redirectUri);
+    denyUrl.searchParams.set("error", "access_denied");
+    denyUrl.searchParams.set("state", request.state);
+    redirectTo(res, denyUrl.toString());
     return;
   }
 
@@ -248,10 +251,10 @@ async function handleConsent(req: IncomingMessage, res: ServerResponse, ctx: Ide
     client_name: clientName,
   });
 
-  redirectTo(
-    res,
-    `${request.redirectUri}?code=${encodeURIComponent(minted.code)}&state=${encodeURIComponent(request.state)}`,
-  );
+  const allowUrl = new URL(request.redirectUri);
+  allowUrl.searchParams.set("code", minted.code);
+  allowUrl.searchParams.set("state", request.state);
+  redirectTo(res, allowUrl.toString());
 }
 
 async function handleToken(req: IncomingMessage, res: ServerResponse, ctx: IdentityContext): Promise<void> {

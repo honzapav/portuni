@@ -369,6 +369,65 @@ describe("full authorize -> consent -> token flow", () => {
   });
 });
 
+describe("consent redirect preserves an existing query string (loopback)", () => {
+  it("keeps foo=bar when composing code+state onto a loopback redirect_uri", async () => {
+    const LOOPBACK_CLIENT_ID = "https://claude.ai/.well-known/oauth-client-metadata/loopback-test.json";
+    const REGISTERED_LOOPBACK_REDIRECT = "http://127.0.0.1:1234/callback?foo=bar";
+    const ACTUAL_LOOPBACK_REDIRECT = "http://127.0.0.1:59087/callback?foo=bar";
+
+    __setCimdFetchForTests(((input: unknown) => {
+      const url = String(input);
+      if (url === LOOPBACK_CLIENT_ID) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              client_id: LOOPBACK_CLIENT_ID,
+              client_name: "Loopback Test Client",
+              redirect_uris: [REGISTERED_LOOPBACK_REDIRECT],
+            }),
+            { status: 200 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    }) as typeof fetch);
+
+    const { challenge } = pkcePair();
+    const authorizeUrl = new URL(`${base}/oauth/authorize`);
+    authorizeUrl.searchParams.set("client_id", LOOPBACK_CLIENT_ID);
+    authorizeUrl.searchParams.set("redirect_uri", ACTUAL_LOOPBACK_REDIRECT);
+    authorizeUrl.searchParams.set("code_challenge", challenge);
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+    authorizeUrl.searchParams.set("state", "loopback-state-1");
+    authorizeUrl.searchParams.set("resource", "https://api.portuni.test/mcp");
+
+    const authorizeRes = await fetch(authorizeUrl, { redirect: "manual" });
+    assert.equal(authorizeRes.status, 302);
+    const googleUrl = new URL(authorizeRes.headers.get("location")!);
+    const flowState = googleUrl.searchParams.get("state")!;
+
+    const callbackUrl = new URL(`${base}/oauth/google/callback`);
+    callbackUrl.searchParams.set("state", flowState);
+    callbackUrl.searchParams.set("code", "google-code-ok");
+    const html = await (await fetch(callbackUrl)).text();
+    const continuationToken = extractHidden(html, "token");
+
+    const consentRes = await fetch(`${base}/oauth/consent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: continuationToken, decision: "allow" }),
+      redirect: "manual",
+    });
+    assert.equal(consentRes.status, 302);
+    const location = consentRes.headers.get("location")!;
+    assert.equal((location.match(/\?/g) ?? []).length, 1, "exactly one query string");
+    const redirect = new URL(location);
+    assert.equal(redirect.searchParams.get("foo"), "bar");
+    assert.ok(redirect.searchParams.get("code"));
+    assert.equal(redirect.searchParams.get("state"), "loopback-state-1");
+  });
+});
+
 describe("disabled configuration -> 404", () => {
   it("404s in env auth mode", async () => {
     setIdentityContextForTesting({

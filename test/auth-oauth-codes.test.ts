@@ -79,3 +79,18 @@ test("second redemption without an attached grant still fails, without crashing"
   const replay = await redeemAuthorizationCode(db, minted.code);
   assert.equal(replay.ok, false);
 });
+
+test("concurrent redemption of the same code: exactly one succeeds (TOCTOU)", async () => {
+  const { db } = await makeSharedDb();
+  const minted = await mintAuthorizationCode(db, CODE_INPUT);
+
+  const [a, b] = await Promise.all([
+    redeemAuthorizationCode(db, minted.code),
+    redeemAuthorizationCode(db, minted.code),
+  ]);
+  const results = [a, b];
+  const succeeded = results.filter((r) => r.ok);
+  const failed = results.filter((r) => !r.ok);
+  assert.equal(succeeded.length, 1, "exactly one concurrent redemption must win");
+  assert.equal(failed.length, 1);
+});

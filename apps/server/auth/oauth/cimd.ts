@@ -56,6 +56,9 @@ export async function fetchClientMetadata(clientId: string): Promise<CimdResult>
     res = await cimdFetch(url, {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       headers: { accept: "application/json" },
+      // A CIMD document has no legitimate reason to redirect; following one
+      // could bounce the request to an internal host (SSRF).
+      redirect: "error",
     });
   } catch {
     return { ok: false, reason: "failed to fetch the client metadata document" };
