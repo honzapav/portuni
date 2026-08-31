@@ -10,6 +10,7 @@ import {
 } from "node:http";
 import { createMcpTransport, type McpTransport } from "../mcp/transport.js";
 import { routeApiRequest } from "../api/router.js";
+import { routeOAuthRequest } from "../api/oauth.js";
 import {
   AUTH_ENABLED,
   applyGates,
@@ -97,6 +98,21 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
         return;
       }
     }
+
+    // OAuth connector routes (discovery, authorize, callback, consent,
+    // token) are public by design -- the client has no bearer token yet,
+    // these routes are how it gets one -- so they are dispatched before
+    // applyGates rather than exempted path-by-path within it. Each route
+    // 404s on its own when the server isn't configured for the connector
+    // flow (see routeOAuthRequest / isOAuthEnabled).
+    let preGateUrl: URL | null = null;
+    try {
+      const hostHeader = (req.headers.host ?? "").toLowerCase();
+      preGateUrl = new URL(req.url ?? "/", `http://${hostHeader || "localhost"}`);
+    } catch {
+      preGateUrl = null;
+    }
+    if (preGateUrl && (await routeOAuthRequest(req, res, preGateUrl))) return;
 
     const gate = await applyGates(req, res);
     if (gate === "handled") return;
