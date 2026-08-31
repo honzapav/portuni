@@ -18,6 +18,7 @@ import {
   mintDeviceToken,
   revokeDeviceToken,
 } from "../auth/device-tokens.js";
+import { listGrantsForUser, revokeGrant } from "../auth/oauth/grants.js";
 import { logAudit } from "../infra/audit.js";
 
 const LoginBody = z.object({ id_token: z.string().min(1) });
@@ -138,6 +139,43 @@ export async function handleRevokeDeviceToken(
     respondJson(res, 200, { revoked: true });
   } catch (err) {
     respondError(res, "DELETE /device-tokens/:id", err);
+  }
+}
+
+// GET /auth/oauth-grants: connected chat-client connectors (Settings ->
+// "Připojené aplikace"), owner-scoped -- same shape/scope tier as device
+// tokens, minus the plaintext-token concern since a grant's tokens never
+// round-trip through this list.
+export async function handleListOAuthGrants(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+): Promise<void> {
+  try {
+    respondJson(res, 200, await listGrantsForUser(getDb(), identity.userId));
+  } catch (err) {
+    respondError(res, "GET /auth/oauth-grants", err);
+  }
+}
+
+// DELETE /auth/oauth-grants/:id (owner only): revokes access and refresh
+// immediately -- the connector must re-consent to reconnect.
+export async function handleRevokeOAuthGrant(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  grantId: string,
+): Promise<void> {
+  try {
+    const ok = await revokeGrant(getDb(), identity.userId, grantId);
+    if (!ok) {
+      respondJson(res, 404, { error: "Grant not found" });
+      return;
+    }
+    await logAudit(identity.userId, "revoke_oauth_grant", "oauth_grant", grantId, {});
+    respondJson(res, 200, { revoked: true });
+  } catch (err) {
+    respondError(res, "DELETE /auth/oauth-grants/:id", err);
   }
 }
 

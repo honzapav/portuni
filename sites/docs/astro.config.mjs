@@ -29,6 +29,7 @@ export default defineConfig({
 						{ label: 'Gemini CLI', slug: 'clients/gemini-cli' },
 						{ label: 'Mistral Vibe', slug: 'clients/mistral-vibe' },
 						{ label: 'Claude Desktop', slug: 'clients/claude-desktop' },
+						{ label: 'Custom Connector (OAuth)', slug: 'clients/connector' },
 					],
 				},
 				{

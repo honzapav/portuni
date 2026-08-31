@@ -120,6 +120,10 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname === "/device-tokens" && m === "POST") return "write";
   if (pathname.startsWith("/device-tokens/") && m === "DELETE") return "write";
 
+  // --- OAuth connector grants (Settings -> "Připojené aplikace") ---
+  if (pathname === "/auth/oauth-grants" && m === "GET") return "read";
+  if (pathname.startsWith("/auth/oauth-grants/") && m === "DELETE") return "write";
+
   // --- Events (POST = log event = write; PATCH = update = write; DELETE = archive = write) ---
   if (pathname === "/events" && m === "POST") return "write";
   if (pathname.startsWith("/events/") && m === "PATCH") return "write";

@@ -10,6 +10,7 @@ Portuni is a plain HTTP server that speaks MCP – which means any AI client tha
 - [Gemini CLI](/clients/gemini-cli/) – Google's terminal agent
 - [Mistral Vibe](/clients/mistral-vibe/) – Mistral's terminal agent
 - [Claude Desktop](/clients/claude-desktop/) – the chat app, connected to a central server with a device token
+- [Custom Connector (OAuth)](/clients/connector/) – claude.ai, Claude Desktop, Claude mobile, and Claude Code, connected to a central server with one URL and a Google login instead of a device token
 
 If you're using something else that speaks MCP, the same ideas apply – you just have to hunt down the equivalent settings yourself.
 

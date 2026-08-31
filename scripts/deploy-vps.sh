@@ -3,7 +3,12 @@
 # Builds locally, rsyncs dist + manifests, installs prod deps on the
 # server, restarts the systemd unit, smoke-checks /health.
 # Prereqs: ssh root@VPS works; /opt/portuni + portuni.service provisioned
-# (see docs/superpowers/plans/2026-06-10-vps-deployment.md, Task 4).
+# (see docs/superpowers/plans/2026-06-10-vps-deployment.md, Task 4). The
+# `systemctl restart` below re-reads /opt/portuni/portuni.env (systemd
+# EnvironmentFile), so any var added there -- including the OAuth connector
+# trio PORTUNI_PUBLIC_URL / PORTUNI_OAUTH_GOOGLE_CLIENT_ID /
+# PORTUNI_OAUTH_GOOGLE_CLIENT_SECRET, see docs/env-vars.md -- takes effect
+# on the next deploy without any change to this script.
 set -euo pipefail
 
 VPS_HOST="${PORTUNI_VPS_HOST:-root@64.226.121.79}"
