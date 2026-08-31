@@ -332,3 +332,121 @@ test("createGoogleAdapter throws when neither PORTUNI_ALLOWED_DOMAINS nor PORTUN
     /PORTUNI_ALLOWED_DOMAINS is required/,
   );
 });
+
+// interactiveLogin: the OAuth connector's upstream login step
+// (docs/superpowers/specs/2026-08-31-oauth-connectors-design.md, "Adapter
+// interface"). Exercised against a fake exchangeCode/redirectUrl upstream --
+// never a real Google endpoint.
+
+test("interactiveLogin is absent without a fake upstream configured", () => {
+  const { adapter } = makeAdapter();
+  assert.equal(adapter.interactiveLogin, undefined);
+});
+
+function makeInteractiveAdapter(
+  overrides: Partial<{
+    payload: typeof basePayload | null;
+    allowedDomain: string;
+  }> = {},
+) {
+  let exchangeCalls = 0;
+  const adapter = new GoogleAdapter({
+    verifyIdToken: async () => basePayload,
+    listGroups: async () => [],
+    listAllGroups: async () => [],
+    allowedDomains: [overrides.allowedDomain ?? "workflow.ooo"],
+    roleConfig: { admin: [], manage: [], write: [] },
+    interactiveLogin: {
+      redirectUrl: (state) => `https://accounts.google.com/fake-auth?state=${state}`,
+      exchangeCode: async (code) => {
+        exchangeCalls += 1;
+        if (code !== "good-code") return null;
+        return overrides.payload === undefined ? basePayload : overrides.payload;
+      },
+    },
+  });
+  return { adapter, exchangeCalls: () => exchangeCalls };
+}
+
+test("interactiveLogin.redirectUrl delegates to the injected upstream, carrying the state through", () => {
+  const { adapter } = makeInteractiveAdapter();
+  assert.equal(
+    adapter.interactiveLogin!.redirectUrl("csrf-state"),
+    "https://accounts.google.com/fake-auth?state=csrf-state",
+  );
+});
+
+test("interactiveLogin.handleCallback exchanges the code and returns identity + avatar", async () => {
+  const { adapter, exchangeCalls } = makeInteractiveAdapter();
+  const result = await adapter.interactiveLogin!.handleCallback(
+    new URLSearchParams({ code: "good-code" }),
+  );
+  assert.equal(exchangeCalls(), 1);
+  assert.equal(result.identity.email, "a@workflow.ooo");
+  assert.equal(result.avatarUrl, "https://p/x.png");
+});
+
+test("interactiveLogin.handleCallback rejects a missing code", async () => {
+  const { adapter } = makeInteractiveAdapter();
+  await assert.rejects(
+    adapter.interactiveLogin!.handleCallback(new URLSearchParams()),
+    /Missing Google authorization code/,
+  );
+});
+
+test("interactiveLogin.handleCallback surfaces an upstream error param without exchanging a code", async () => {
+  const { adapter, exchangeCalls } = makeInteractiveAdapter();
+  await assert.rejects(
+    adapter.interactiveLogin!.handleCallback(new URLSearchParams({ error: "access_denied" })),
+    /Google OAuth error: access_denied/,
+  );
+  assert.equal(exchangeCalls(), 0);
+});
+
+test("interactiveLogin.handleCallback rejects when the exchange yields no payload", async () => {
+  const { adapter } = makeInteractiveAdapter();
+  await assert.rejects(
+    adapter.interactiveLogin!.handleCallback(new URLSearchParams({ code: "bad-code" })),
+    /Invalid Google ID token/,
+  );
+});
+
+test("interactiveLogin.handleCallback enforces the same allowed-domain gate as verify()", async () => {
+  const { adapter } = makeInteractiveAdapter({
+    payload: { ...basePayload, email: "x@evil.com", hd: "evil.com" },
+  });
+  await assert.rejects(
+    adapter.interactiveLogin!.handleCallback(new URLSearchParams({ code: "good-code" })),
+    /domain/i,
+  );
+});
+
+test("interactiveLogin.handleCallback enforces email_verified like verify()", async () => {
+  const { adapter } = makeInteractiveAdapter({
+    payload: { ...basePayload, email_verified: false },
+  });
+  await assert.rejects(
+    adapter.interactiveLogin!.handleCallback(new URLSearchParams({ code: "good-code" })),
+  );
+});
+
+test("createGoogleAdapter wires interactiveLogin only when client id, secret and public URL are all set", () => {
+  const withoutOauthVars = createGoogleAdapter({
+    PORTUNI_GOOGLE_CLIENT_IDS: "client-1",
+    PORTUNI_ALLOWED_DOMAINS: "workflow.ooo",
+    PORTUNI_GOOGLE_SA_KEY_JSON: JSON.stringify({ client_email: "sa@x", private_key: "k" }),
+    PORTUNI_GOOGLE_IMPERSONATE: "admin@workflow.ooo",
+  } as NodeJS.ProcessEnv);
+  assert.equal(withoutOauthVars.interactiveLogin, undefined);
+
+  const withOauthVars = createGoogleAdapter({
+    PORTUNI_GOOGLE_CLIENT_IDS: "client-1",
+    PORTUNI_ALLOWED_DOMAINS: "workflow.ooo",
+    PORTUNI_GOOGLE_SA_KEY_JSON: JSON.stringify({ client_email: "sa@x", private_key: "k" }),
+    PORTUNI_GOOGLE_IMPERSONATE: "admin@workflow.ooo",
+    PORTUNI_OAUTH_GOOGLE_CLIENT_ID: "oauth-client",
+    PORTUNI_OAUTH_GOOGLE_CLIENT_SECRET: "oauth-secret",
+    PORTUNI_PUBLIC_URL: "https://api.portuni.com",
+  } as NodeJS.ProcessEnv);
+  assert.notEqual(withOauthVars.interactiveLogin, undefined);
+});
