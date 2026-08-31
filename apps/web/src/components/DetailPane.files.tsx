@@ -10,7 +10,6 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
-  Download,
   ExternalLink,
   FileText,
   Folder,
@@ -29,12 +28,7 @@ import type {
 } from "../types";
 import { buildAgentCommand } from "../lib/prompt";
 import { agentDisplayName, loadCollapsedFolders, saveCollapsedFolders } from "../lib/settings";
-import {
-  createNodeMirror,
-  fetchNodeFileUrl,
-  LocalOnlyError,
-  runNodeSync,
-} from "../api";
+import { createNodeMirror, fetchNodeFileUrl } from "../api";
 import type { ResolveAction } from "../api";
 import { isTauri, openInFinder } from "../lib/backend-url";
 import { getCachedDriveStatus } from "../lib/sync-drive";
@@ -949,100 +943,42 @@ function SyncRunSummary({ result }: { result: SyncRunResponse }) {
   );
 }
 
-// "Stáhnout složku": materializes the node's device mirror and pulls its
-// files in one click, for a node that has no local mirror yet. Until now
-// the mirror only appeared as a side effect of launching a terminal.
-//   1. POST /nodes/:id/mirror (createNodeMirror) -- idempotent.
-//   2. POST /nodes/:id/sync (runNodeSync) -- the same call the
-//      "Synchronizovat" button makes.
-// Both routes are served by the local sidecar in either data mode: in
-// central mode the desktop proxy routes them to the local sync agent
-// (is_local_only_path), whose run is composed of read/write central
-// endpoints, so a write-scope teammate never hits the owner-only
-// POST /nodes/:id/sync on the central server. A 501 local_only
-// (LocalOnlyError) means the agent is not running -- sign in first.
-// `onDone` fires after the mirror exists (even if the sync step failed) so
-// the parent can refetch node.local_mirror and the sync status.
-type DownloadState =
-  | { kind: "idle" }
-  | { kind: "pending"; step: "mirror" | "sync" }
-  | { kind: "done"; result: SyncRunResponse }
-  | { kind: "error"; message: string };
-
-export function DownloadMirrorButton({
-  nodeId,
-  onDone,
+// Shown in the Files tab when the node has no local mirror on this device:
+// there is nowhere to pull into, so SyncBar stays hidden and this offers the
+// same createMirrorAndRefresh flow as the header's CreateMirrorButton
+// (DetailPane.tsx) — create only, no implicit sync. Once the mirror exists
+// SyncBar takes over and the user triggers the actual pull explicitly.
+export function NoMirrorBanner({
+  pending,
+  error,
+  onCreate,
 }: {
-  nodeId: string;
-  onDone?: () => void | Promise<void>;
+  pending: boolean;
+  error: string | null;
+  onCreate: () => void;
 }) {
-  const [state, setState] = useState<DownloadState>({ kind: "idle" });
-  // Ignore responses that land after the user switched to another node.
-  const nodeRef = useRef(nodeId);
-  useEffect(() => {
-    nodeRef.current = nodeId;
-    setState({ kind: "idle" });
-  }, [nodeId]);
-
-  const run = async () => {
-    if (state.kind === "pending") return;
-    setState({ kind: "pending", step: "mirror" });
-    let mirrorCreated = false;
-    try {
-      await createNodeMirror(nodeId);
-      mirrorCreated = true;
-      if (nodeRef.current !== nodeId) return;
-      setState({ kind: "pending", step: "sync" });
-      const result = await runNodeSync(nodeId);
-      if (nodeRef.current !== nodeId) return;
-      setState({ kind: "done", result });
-    } catch (e) {
-      if (nodeRef.current !== nodeId) return;
-      const message =
-        e instanceof LocalOnlyError
-          ? e.message
-          : e instanceof Error
-            ? e.message
-            : String(e);
-      setState({ kind: "error", message });
-    } finally {
-      if (mirrorCreated && onDone) {
-        try {
-          await onDone();
-        } catch {
-          /* refresh is best-effort; the 5s status poll catches up */
-        }
-      }
-    }
-  };
-
-  const pending = state.kind === "pending";
-  const label = !pending
-    ? "Stáhnout složku"
-    : state.step === "mirror"
-      ? "Vytvářím složku…"
-      : "Stahuji soubory…";
-
   return (
-    <div className="mb-3">
+    <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px]">
+      <div className="mb-1.5 text-[var(--color-text-dim)]">
+        Tento uzel nemá na tomto počítači pracovní složku – soubory jsou
+        zatím jen na vzdáleném úložišti.
+      </div>
       <button
         type="button"
-        onClick={() => void run()}
+        onClick={onCreate}
         disabled={pending}
-        title="Vytvoří pracovní složku na tomto zařízení a stáhne do ní soubory uzlu."
         className="inline-flex items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[12.5px] text-[var(--color-text)] transition-colors hover:border-[var(--color-border-strong)] disabled:cursor-default disabled:opacity-60"
       >
         {pending ? (
           <Loader2 size={12} className="animate-spin" />
         ) : (
-          <Download size={12} />
+          <Folder size={12} />
         )}
-        {label}
+        {pending ? "Vytvářím…" : "Vytvořit pracovní složku"}
       </button>
-      {state.kind === "done" && <SyncRunSummary result={state.result} />}
-      {state.kind === "error" && (
-        <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px]">
-          <span style={{ color: "var(--color-danger)" }}>Chyba: {state.message}</span>
+      {error && (
+        <div className="mt-1.5" style={{ color: "var(--color-danger)" }}>
+          Chyba: {error}
         </div>
       )}
     </div>

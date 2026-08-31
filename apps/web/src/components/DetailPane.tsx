@@ -88,7 +88,7 @@ import {
   FileTree,
   NewFileForm,
   SyncBar,
-  DownloadMirrorButton,
+  NoMirrorBanner,
   TerminalSplitButton,
 } from "./DetailPane.files";
 import { AccessSection } from "./DetailPane.access";
@@ -1028,15 +1028,15 @@ function DetailPaneBody({
             {/* Rendered here (not inside SyncBar) so the "connect Drive"
                 hint shows even on a node with no files yet. */}
             <DriveNotConfiguredBanner />
+            {node.type !== "organization" && !node.local_mirror && (
+              <NoMirrorBanner
+                pending={creatingMirror}
+                error={mirrorError}
+                onCreate={() => void createMirrorAndRefresh()}
+              />
+            )}
             <div className="mb-3 flex items-center justify-between">
-                  {!node.local_mirror ? (
-                    <DownloadMirrorButton
-                      nodeId={node.id}
-                      onDone={async () => {
-                        await Promise.all([onMutate(), loadSyncStatus()]);
-                      }}
-                    />
-                  ) : (node.files.length > 0 || untracked.length > 0) ? (
+                  {node.local_mirror && (node.files.length > 0 || untracked.length > 0) ? (
                     <SyncBar
                       running={syncRunning}
                       result={syncRunResult}

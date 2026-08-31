@@ -14,7 +14,11 @@ A mirror is usually created implicitly the first time an agent terminal is
 launched for a node. In the desktop app, the node detail header also offers
 a direct "Vytvořit pracovní složku" button when the node has no mirror on
 this device yet, so you can create the folder without opening a terminal
-first.
+first. The Files tab offers the same action: a node with remote files but
+no mirror on this device shows a banner instead of the sync button ("Tento
+uzel nemá na tomto počítači pracovní složku..."); creating the folder from
+there reveals "Synchronizovat" so you can pull the existing files in
+explicitly.
 
 When you call `portuni_mirror`, Portuni creates a folder structure for you:
 
