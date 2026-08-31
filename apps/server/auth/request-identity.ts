@@ -6,6 +6,8 @@ import type { Client } from "@libsql/client";
 import type { IdentityAdapter } from "./adapter.js";
 import type { GlobalScope } from "./roles.js";
 import { verifyDeviceToken } from "./device-tokens.js";
+import { verifyAccessToken } from "./oauth/grants.js";
+import { canonicalIssuer } from "./oauth/enabled.js";
 import { verifySessionToken } from "./session-token.js";
 
 export interface RequestIdentity {
@@ -15,7 +17,7 @@ export interface RequestIdentity {
   globalScope: GlobalScope;
   groups: string[];
   groupIds: string[];
-  via: "env" | "session_jwt" | "device_token";
+  via: "env" | "session_jwt" | "device_token" | "oauth_grant";
 }
 
 export interface IdentityContext {
@@ -70,6 +72,29 @@ export async function resolveRequestIdentity(
       groups: access.groups,
       groupIds: access.groupIds,
       via: "device_token",
+    };
+  }
+
+  if (value.startsWith("poa_")) {
+    const hit = await verifyAccessToken(ctx.db, value);
+    if (!hit) return null;
+    const issuer = canonicalIssuer();
+    if (!issuer || hit.resource !== `${issuer}/mcp`) return null;
+    const user = await ctx.db.execute({
+      sql: "SELECT email, name FROM users WHERE id = ?",
+      args: [hit.userId],
+    });
+    if (user.rows.length === 0) return null;
+    const email = String(user.rows[0].email);
+    const access = await ctx.adapter.resolveAccess(email);
+    return {
+      userId: hit.userId,
+      email,
+      name: String(user.rows[0].name),
+      globalScope: access.globalScope,
+      groups: access.groups,
+      groupIds: access.groupIds,
+      via: "oauth_grant",
     };
   }
 

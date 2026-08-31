@@ -30,6 +30,7 @@ import type { IdentityAdapter, Identity } from "../apps/server/auth/adapter.js";
 import { __setCimdFetchForTests, __clearCimdCacheForTests } from "../apps/server/auth/oauth/cimd.js";
 
 const base = "http://127.0.0.1:14940";
+const ISSUER = "https://api.portuni.test";
 const JWT_SECRET = "test-oauth-routes-secret-at-least-32-chars!!";
 const CLIENT_ID = "https://claude.ai/.well-known/oauth-client-metadata/portuni.json";
 const REDIRECT_URI = "https://claude.ai/api/mcp/auth_callback";
@@ -423,6 +424,34 @@ describe("disabled configuration -> 404", () => {
         soloUserId: "01SOLO0000000000000000000",
       });
     }
+  });
+});
+
+describe("/mcp 401 responses (issue #173)", () => {
+  it("carries resource_metadata when the OAuth connector is enabled", async () => {
+    const res = await fetch(`${base}/mcp`, { method: "GET" });
+    assert.equal(res.status, 401);
+    assert.equal(
+      res.headers.get("www-authenticate"),
+      `Bearer realm="portuni", resource_metadata="${ISSUER}/.well-known/oauth-protected-resource"`,
+    );
+  });
+
+  it("omits resource_metadata when the OAuth connector is not configured", async () => {
+    delete process.env.PORTUNI_PUBLIC_URL;
+    try {
+      const res = await fetch(`${base}/mcp`, { method: "GET" });
+      assert.equal(res.status, 401);
+      assert.equal(res.headers.get("www-authenticate"), 'Bearer realm="portuni"');
+    } finally {
+      process.env.PORTUNI_PUBLIC_URL = ISSUER;
+    }
+  });
+
+  it("does not add resource_metadata to non-/mcp 401 responses even when the connector is enabled", async () => {
+    const res = await fetch(`${base}/nodes`, { method: "GET" });
+    assert.equal(res.status, 401);
+    assert.equal(res.headers.get("www-authenticate"), 'Bearer realm="portuni"');
   });
 });
 

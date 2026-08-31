@@ -21,19 +21,12 @@ import { fetchClientMetadata, redirectUriAllowed } from "../auth/oauth/cimd.js";
 import { signFlowState, verifyFlowState, type AuthorizeRequest } from "../auth/oauth/flow.js";
 import { mintAuthorizationCode, redeemAuthorizationCode, attachGrantToCode } from "../auth/oauth/codes.js";
 import { mintGrant, rotateRefreshToken } from "../auth/oauth/grants.js";
+import { canonicalIssuer, isOAuthEnabled } from "../auth/oauth/enabled.js";
 import { upsertUserFromIdentity } from "../auth/users.js";
 import { logAudit } from "../infra/audit.js";
 import { renderConsentPage, renderOAuthErrorPage } from "../auth/oauth/consent-page.js";
 
 const ACCESS_TOKEN_TTL_SECONDS = 60 * 60; // matches grants.ts ACCESS_TTL_MS
-
-function canonicalIssuer(): string {
-  return (process.env.PORTUNI_PUBLIC_URL ?? "").trim().replace(/\/+$/, "");
-}
-
-function isOAuthEnabled(ctx: IdentityContext): boolean {
-  return ctx.mode === "google" && ctx.adapter.interactiveLogin != null && canonicalIssuer().length > 0;
-}
 
 function respondNotFound(res: ServerResponse): void {
   res.writeHead(404, { "Content-Type": "application/json" });
