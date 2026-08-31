@@ -3,6 +3,8 @@ title: Claude Desktop
 description: Connect Claude Desktop to a central Portuni server with a device token and search your team's files from chat.
 ---
 
+If your server runs in `google` auth mode with `PORTUNI_PUBLIC_URL` set, use the [Custom Connector (OAuth)](/clients/connector/) path instead — one URL, a Google login, no token to copy. This page's `mcp-remote` bridge is the fallback: it's what you need for a solo/legacy (`env` auth mode) server, or any client that hasn't added connector support.
+
 Claude Desktop speaks MCP, but it cannot attach a bearer header to a remote server itself. The bridge is [`mcp-remote`](https://github.com/geelen/mcp-remote), which runs as a local stdio server and forwards every call to `https://<server>/mcp` with your device token.
 
 ## What you need

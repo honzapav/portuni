@@ -34,6 +34,28 @@ use tauri_plugin_shell::ShellExt;
 // — the onCloseRequested guard already ran in JS on that path.
 static EXIT_APPROVED: AtomicBool = AtomicBool::new(false);
 
+// If the webview never answers `app-exit-requested` (e.g. its React tree
+// crashed on render before the approve_exit listener in App.tsx's effect
+// ever mounted — see #176), the gate above would block Cmd+Q / Quit
+// forever. schedule_exit_fallback arms a grace-period timer alongside
+// every emit; if still unanswered when it fires, it force-approves and
+// exits itself instead of waiting on a webview that can no longer answer.
+const EXIT_FALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn schedule_exit_fallback(app: &AppHandle) {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        std::thread::sleep(EXIT_FALLBACK_TIMEOUT);
+        if !EXIT_APPROVED.load(Ordering::SeqCst) {
+            warn!(
+                "webview did not answer app-exit-requested within {EXIT_FALLBACK_TIMEOUT:?} — forcing exit"
+            );
+            EXIT_APPROVED.store(true, Ordering::SeqCst);
+            app_handle.exit(0);
+        }
+    });
+}
+
 // Per-workspace running sidecar children, keyed by workspace id. Concurrent
 // workspaces each get their own sidecar process on their own port.
 struct SidecarState(Mutex<HashMap<String, CommandChild>>);
@@ -2037,6 +2059,7 @@ pub fn run() {
                     && app.emit("app-exit-requested", ()).is_ok()
                 {
                     info!("quit requested (menu/Cmd+Q) — delegated to webview guards");
+                    schedule_exit_fallback(app);
                 } else {
                     app.exit(0);
                 }
@@ -2073,6 +2096,7 @@ pub fn run() {
                 info!("exit requested (code={code:?}, approved={approved}, window={has_window})");
                 if !approved && has_window && app.emit("app-exit-requested", ()).is_ok() {
                     api.prevent_exit();
+                    schedule_exit_fallback(app);
                     return;
                 }
             }

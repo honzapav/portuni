@@ -33,7 +33,9 @@ export default function WorkspaceEmpty({ graph, onPick }: Props) {
         .filter((n) => n.status === "active")
         .sort(
           (a, b) =>
-            (b.updated_at ?? b.created_at).localeCompare(a.updated_at ?? a.created_at),
+            (b.updated_at ?? b.created_at ?? "").localeCompare(
+              a.updated_at ?? a.created_at ?? "",
+            ),
         )
         .slice(0, 15);
 

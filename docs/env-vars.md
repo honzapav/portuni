@@ -82,6 +82,9 @@ required when google mode is active (except the optional group mappings).
 | `PORTUNI_GOOGLE_CLIENT_IDS` | — | No | Comma-separated accepted Google OAuth client IDs (Google Cloud Console) |
 | `PORTUNI_DESKTOP_GOOGLE_CLIENT_ID` | — | No | Google desktop OAuth client id served by public `GET /auth/desktop-config` (onboarding wizard). Must also be listed in `PORTUNI_GOOGLE_CLIENT_IDS` |
 | `PORTUNI_DESKTOP_GOOGLE_CLIENT_SECRET` | — | No | Secret of that desktop OAuth client — non-confidential per Google's installed-app model; served alongside the id |
+| `PORTUNI_PUBLIC_URL` | — | No | Canonical public base URL (e.g. `https://api.portuni.com`), no trailing slash. Issuer and MCP-resource base for the OAuth connector façade (`/oauth/*`, `/.well-known/oauth-*`); those routes 404 without it. See `docs/superpowers/specs/2026-08-31-oauth-connectors-design.md` |
+| `PORTUNI_OAUTH_GOOGLE_CLIENT_ID` | — | No | Web-application Google OAuth client (distinct from `PORTUNI_DESKTOP_GOOGLE_CLIENT_ID`) used for the server-side authorization-code exchange behind the connector's consent screen |
+| `PORTUNI_OAUTH_GOOGLE_CLIENT_SECRET` | — | Yes | Secret of that web-application OAuth client; confidential, server-side only, never sent to the browser |
 | `PORTUNI_ALLOWED_DOMAINS` | — | No | Comma-separated Workspace domains users must belong to (e.g. `workflow.ooo,tempo.ooo`); trimmed and lowercased. Singular `PORTUNI_ALLOWED_DOMAIN` still works as a fallback for a single domain when the plural var is unset |
 | `PORTUNI_GOOGLE_SA_KEY_JSON` | — | Yes | Service-account key JSON with domain-wide delegation scoped to `admin.directory.group.readonly`. Full JSON as a single line |
 | `PORTUNI_GOOGLE_IMPERSONATE` | — | No | Admin user the service account impersonates to read group memberships (e.g. `admin@workflow.ooo`) |

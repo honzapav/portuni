@@ -17,6 +17,7 @@ import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { startHttpServer, type HttpServerHandle } from "../apps/server/http/server.js";
+import { mintGrant } from "../apps/server/auth/oauth/grants.js";
 
 const base = "http://127.0.0.1:14920";
 
@@ -79,6 +80,42 @@ describe("device token lifecycle over REST", () => {
     assert.equal(del.status, 200);
     const list2 = await (await fetch(`${base}/device-tokens`)).json() as Array<{ revoked_at: string | null }>;
     assert.ok(list2[0].revoked_at);
+  });
+});
+
+describe("OAuth connector grants over REST", () => {
+  it("list, revoke cycle works and is owner-scoped", async () => {
+    const minted = await mintGrant(db, {
+      userId: "01SOLO0000000000000000000",
+      clientId: "https://claude.ai/.well-known/client-metadata.json",
+      clientName: "Claude",
+      resource: "https://api.portuni.com/mcp",
+      scope: "portuni offline_access",
+    });
+
+    const list = await fetch(`${base}/auth/oauth-grants`);
+    assert.equal(list.status, 200);
+    const rows = await list.json() as Array<{
+      id: string;
+      client_name: string;
+      access_token?: string;
+    }>;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].client_name, "Claude");
+    assert.equal(rows[0].access_token, undefined, "plaintext token never returned");
+
+    const notOwned = await fetch(`${base}/auth/oauth-grants/does-not-exist`, {
+      method: "DELETE",
+    });
+    assert.equal(notOwned.status, 404);
+
+    const del = await fetch(`${base}/auth/oauth-grants/${minted.grantId}`, {
+      method: "DELETE",
+    });
+    assert.equal(del.status, 200);
+
+    const list2 = await (await fetch(`${base}/auth/oauth-grants`)).json() as unknown[];
+    assert.equal(list2.length, 0, "revoked grants are excluded from the list");
   });
 });
 

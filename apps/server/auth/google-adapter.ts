@@ -2,6 +2,9 @@
 // verify(): OIDC ID-token verification + allowed-domain gate.
 // resolveAccess(): Admin SDK Directory API groups.list(userKey=email)
 // through a DWD service account, mapped to a global role; cached 15 min.
+// interactiveLogin: confidential-client authorization-code flow for the
+// OAuth connector's upstream login step
+// (docs/superpowers/specs/2026-08-31-oauth-connectors-design.md).
 
 import { OAuth2Client, JWT } from "google-auth-library";
 import type { AccessResolution, Identity, IdentityAdapter } from "./adapter.js";
@@ -30,6 +33,19 @@ export interface GoogleAdapterDeps {
   allowedDomains: string[];
   roleConfig: GroupRoleConfig;
   now?: () => number;
+  // Confidential-client authorization-code flow for the OAuth connector's
+  // upstream login step (spec "Adapter interface"). Absent when
+  // PORTUNI_OAUTH_GOOGLE_CLIENT_ID/SECRET/PORTUNI_PUBLIC_URL aren't
+  // configured -- the adapter then has no `interactiveLogin` capability and
+  // the /oauth/* routes 404.
+  interactiveLogin?: {
+    redirectUrl: (state: string) => string;
+    // Exchanges the authorization code server-side (client secret never
+    // leaves the server) and returns the verified ID-token payload. Google
+    // tokens themselves are discarded by the caller -- only the identity
+    // claims survive.
+    exchangeCode: (code: string) => Promise<GoogleIdTokenPayload | null>;
+  };
 }
 
 export class GoogleAdapter implements IdentityAdapter {
@@ -44,9 +60,26 @@ export class GoogleAdapter implements IdentityAdapter {
 
   private readonly allowedDomains: string[];
 
+  readonly interactiveLogin?: IdentityAdapter["interactiveLogin"];
+
   constructor(private readonly deps: GoogleAdapterDeps) {
     this.now = deps.now ?? (() => Date.now());
     this.allowedDomains = deps.allowedDomains.map((d) => d.trim().toLowerCase());
+    if (deps.interactiveLogin) {
+      const { redirectUrl, exchangeCode } = deps.interactiveLogin;
+      this.interactiveLogin = {
+        redirectUrl,
+        handleCallback: async (params) => {
+          const error = params.get("error");
+          if (error) throw new Error(`Google OAuth error: ${error}`);
+          const code = params.get("code");
+          if (!code) throw new Error("Missing Google authorization code");
+          const payload = await exchangeCode(code);
+          const identity = this.assertAllowedIdentity(payload);
+          return { identity, avatarUrl: payload?.picture ?? null };
+        },
+      };
+    }
   }
 
   private assertAllowedIdentity(payload: GoogleIdTokenPayload | null): Identity {
@@ -143,6 +176,9 @@ export function parseAllowedDomains(env: NodeJS.ProcessEnv = process.env): strin
 //   PORTUNI_GOOGLE_SA_KEY_JSON  service-account key JSON (DWD-enabled)
 //   PORTUNI_GOOGLE_IMPERSONATE  admin user the SA impersonates
 //   PORTUNI_GROUPS_ADMIN/MANAGE/WRITE  group-email lists (roles.ts)
+//   PORTUNI_OAUTH_GOOGLE_CLIENT_ID/SECRET + PORTUNI_PUBLIC_URL  optional,
+//   enable the interactiveLogin capability (OAuth connector upstream
+//   login); omitted -> no capability -> /oauth/* routes 404
 export function createGoogleAdapter(env: NodeJS.ProcessEnv = process.env): GoogleAdapter {
   const clientIds = (env.PORTUNI_GOOGLE_CLIENT_IDS ?? "")
     .split(",")
@@ -171,6 +207,18 @@ export function createGoogleAdapter(env: NodeJS.ProcessEnv = process.env): Googl
     scopes: ["https://www.googleapis.com/auth/admin.directory.group.readonly"],
     subject: impersonate,
   });
+
+  const oauthClientId = env.PORTUNI_OAUTH_GOOGLE_CLIENT_ID ?? "";
+  const oauthClientSecret = env.PORTUNI_OAUTH_GOOGLE_CLIENT_SECRET ?? "";
+  const publicUrl = env.PORTUNI_PUBLIC_URL ?? "";
+  const interactiveLogin =
+    oauthClientId && oauthClientSecret && publicUrl
+      ? buildInteractiveLogin({
+          clientId: oauthClientId,
+          clientSecret: oauthClientSecret,
+          redirectUri: `${publicUrl.replace(/\/+$/, "")}/oauth/google/callback`,
+        })
+      : undefined;
 
   return new GoogleAdapter({
     verifyIdToken: async (idToken) => {
@@ -222,5 +270,50 @@ export function createGoogleAdapter(env: NodeJS.ProcessEnv = process.env): Googl
     },
     allowedDomains,
     roleConfig: groupRoleConfigFromEnv(env),
+    interactiveLogin,
   });
+}
+
+const GOOGLE_LOGIN_SCOPES = ["openid", "email", "profile"];
+
+// Confidential-client authorization-code flow: browser hop to Google
+// (generateAuthUrl) and the server-side code exchange (getToken), scoped
+// to identity claims only -- access_type stays "online" (default) because
+// no Google refresh token is requested or stored (spec "Decisions").
+function buildInteractiveLogin(config: {
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
+}): NonNullable<GoogleAdapterDeps["interactiveLogin"]> {
+  const client = new OAuth2Client({
+    clientId: config.clientId,
+    clientSecret: config.clientSecret,
+    redirectUri: config.redirectUri,
+  });
+  return {
+    redirectUrl: (state) =>
+      client.generateAuthUrl({
+        scope: GOOGLE_LOGIN_SCOPES,
+        prompt: "select_account",
+        state,
+      }),
+    exchangeCode: async (code) => {
+      const { tokens } = await client.getToken(code);
+      if (!tokens.id_token) return null;
+      const ticket = await client.verifyIdToken({
+        idToken: tokens.id_token,
+        audience: config.clientId,
+      });
+      const p = ticket.getPayload();
+      if (!p) return null;
+      return {
+        sub: p.sub,
+        email: p.email ?? "",
+        email_verified: p.email_verified ?? false,
+        name: p.name,
+        picture: p.picture,
+        hd: p.hd,
+      };
+    },
+  };
 }

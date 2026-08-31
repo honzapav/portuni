@@ -10,6 +10,7 @@ import { getDb } from "../infra/db.js";
 import { SOLO_USER } from "../infra/schema.js";
 import { EnvAdapter } from "../auth/env-adapter.js";
 import { createGoogleAdapter } from "../auth/google-adapter.js";
+import { canonicalIssuer, isOAuthEnabled } from "../auth/oauth/enabled.js";
 import {
   resolveRequestIdentity,
   type IdentityContext,
@@ -268,10 +269,20 @@ function bearer(req: IncomingMessage): string {
   return header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
 }
 
-function respondUnauthorized(res: ServerResponse): void {
+// The resource_metadata pointer (RFC 9728) is only meaningful on the
+// protected resource itself (/mcp) and only once the OAuth connector
+// routes are actually reachable -- otherwise it would point clients at
+// discovery endpoints that 404. Claude requires the pointer on a 401; it
+// does not honor it on a 200, so it is not added anywhere else.
+function respondUnauthorized(res: ServerResponse, ctx: IdentityContext, pathname: string): void {
+  const isMcp = pathname === "/mcp" || pathname === "/mcp/";
+  const wwwAuthenticate =
+    isMcp && isOAuthEnabled(ctx)
+      ? `Bearer realm="portuni", resource_metadata="${canonicalIssuer()}/.well-known/oauth-protected-resource"`
+      : 'Bearer realm="portuni"';
   res.writeHead(401, {
     "Content-Type": "application/json",
-    "WWW-Authenticate": 'Bearer realm="portuni"',
+    "WWW-Authenticate": wwwAuthenticate,
   });
   res.end(JSON.stringify({ error: "Unauthorized" }));
 }
@@ -339,7 +350,7 @@ export async function applyGates(
     if (AUTH_ENABLED && !AUTH_PUBLIC_PATHS.has(url.pathname)) {
       const presented = bearer(req);
       if (presented === "" || !timingSafeStringEqual(presented, AUTH_TOKEN)) {
-        respondUnauthorized(res);
+        respondUnauthorized(res, ctx, url.pathname);
         return "handled";
       }
     }
@@ -348,7 +359,7 @@ export async function applyGates(
       req.headers.authorization as string | undefined,
     );
     if (!identity) {
-      respondUnauthorized(res);
+      respondUnauthorized(res, ctx, url.pathname);
       return "handled";
     }
     return identity;
@@ -373,7 +384,7 @@ export async function applyGates(
     req.headers.authorization as string | undefined,
   );
   if (!identity) {
-    respondUnauthorized(res);
+    respondUnauthorized(res, ctx, url.pathname);
     return "handled";
   }
   return identity;

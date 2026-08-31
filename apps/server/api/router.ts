@@ -16,6 +16,8 @@ import {
   handleMintDeviceToken,
   handleListDeviceTokens,
   handleRevokeDeviceToken,
+  handleListOAuthGrants,
+  handleRevokeOAuthGrant,
   handleListAccountUsers,
   handleListUsersAdmin,
   handleInviteUser,
@@ -188,6 +190,15 @@ export async function routeApiRequest(
   const dtMatch = url.pathname.match(/^\/device-tokens\/([^/]+)$/);
   if (dtMatch && req.method === "DELETE") {
     await handleRevokeDeviceToken(req, res, identity, dtMatch[1]);
+    return true;
+  }
+  if (url.pathname === "/auth/oauth-grants" && req.method === "GET") {
+    await handleListOAuthGrants(req, res, identity);
+    return true;
+  }
+  const grantMatch = url.pathname.match(/^\/auth\/oauth-grants\/([^/]+)$/);
+  if (grantMatch && req.method === "DELETE") {
+    await handleRevokeOAuthGrant(req, res, identity, grantMatch[1]);
     return true;
   }
 

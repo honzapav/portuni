@@ -29,4 +29,15 @@ export interface IdentityAdapter {
   listDomainGroups?: (
     query: string,
   ) => Promise<Array<{ id: string; email: string; name: string }>>;
+  // Interactive (browser redirect) login, the upstream half of the OAuth
+  // connector flow (docs/superpowers/specs/2026-08-31-oauth-connectors-design.md).
+  // Only implemented by GoogleAdapter -- adapters without it make the
+  // /oauth/* routes 404 (env mode is loopback-only, no upstream IdP to
+  // redirect to).
+  interactiveLogin?: {
+    redirectUrl(state: string): string;
+    handleCallback(
+      params: URLSearchParams,
+    ): Promise<{ identity: Identity; avatarUrl: string | null }>;
+  };
 }

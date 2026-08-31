@@ -19,6 +19,7 @@ import {
   type UserInfo,
   type DeviceToken,
   type NewDeviceToken,
+  type OAuthGrant,
 } from "../lib/central";
 
 type SectionState =
@@ -186,6 +187,7 @@ export default function AccountSection() {
             busy={busy}
             onLogout={() => void handleLogout()}
           />
+          <ConnectedAppsTable />
           <DeviceTokensTable />
         </div>
       )}
@@ -267,6 +269,129 @@ function UserCard({
       >
         {busy ? "…" : "Odhlásit"}
       </button>
+    </div>
+  );
+}
+
+// --- Connected apps (OAuth connectors) ----------------------------------------
+
+type GrantsState =
+  | { kind: "loading" }
+  | { kind: "error"; reason: string }
+  | { kind: "ok"; grants: OAuthGrant[] };
+
+function ConnectedAppsTable() {
+  const [state, setState] = useState<GrantsState>({ kind: "loading" });
+  const [revoking, setRevoking] = useState<Set<string>>(() => new Set());
+
+  const loadGrants = useCallback(async () => {
+    setState({ kind: "loading" });
+    try {
+      const grants = await centralFetch<OAuthGrant[]>("GET", "/auth/oauth-grants");
+      setState({ kind: "ok", grants });
+    } catch (e) {
+      setState({ kind: "error", reason: e instanceof Error ? e.message : String(e) });
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadGrants();
+  }, [loadGrants]);
+
+  async function handleRevoke(id: string) {
+    setRevoking((prev) => new Set([...prev, id]));
+    try {
+      await centralFetch("DELETE", `/auth/oauth-grants/${encodeURIComponent(id)}`);
+      void loadGrants();
+    } catch (e) {
+      setState({ kind: "error", reason: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setRevoking((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
+
+  return (
+    <div>
+      <div className="mb-3 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
+        Připojené aplikace
+      </div>
+
+      {state.kind === "loading" && (
+        <div className="text-[13px] text-[var(--color-text-dim)]">
+          Načítám připojené aplikace…
+        </div>
+      )}
+
+      {state.kind === "error" && (
+        <ErrorBox
+          message={state.reason}
+          onDismiss={() => void loadGrants()}
+          dismissLabel="Zkusit znovu"
+        />
+      )}
+
+      {state.kind === "ok" && state.grants.length === 0 && (
+        <div className="rounded-md border border-[var(--color-border)] px-3 py-3 text-[13px] text-[var(--color-text-dim)]">
+          Zatím žádné připojené aplikace. Přidej Portuni jako konektor v claude.ai
+          nebo v Claude Code a přihlas se přes Google.
+        </div>
+      )}
+
+      {state.kind === "ok" && state.grants.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-[12.5px]">
+            <thead>
+              <tr className="border-b border-[var(--color-border)] text-left text-[11px] uppercase tracking-wider text-[var(--color-text-dim)]">
+                <th className="pb-2 pr-4 font-semibold">Aplikace</th>
+                <th className="pb-2 pr-4 font-semibold">Připojeno</th>
+                <th className="pb-2 pr-4 font-semibold">Naposledy použito</th>
+                <th className="pb-2 font-semibold"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {state.grants.map((g) => (
+                <tr key={g.id} className="border-b border-[var(--color-border)] last:border-b-0">
+                  <td className="py-2 pr-4 font-medium text-[var(--color-text)]">
+                    {g.client_name}
+                  </td>
+                  <td className="py-2 pr-4 text-[var(--color-text-muted)]">
+                    {fmtDate(g.created_at)}
+                  </td>
+                  <td className="py-2 pr-4 text-[var(--color-text-muted)]">
+                    {g.last_used_at ? fmtDate(g.last_used_at) : "—"}
+                  </td>
+                  <td className="py-2">
+                    <button
+                      type="button"
+                      disabled={revoking.has(g.id)}
+                      onClick={() => {
+                        if (
+                          window.confirm
+                            ? window.confirm(
+                                `Odpojit aplikaci „${g.client_name}"? Bude se muset znovu přihlásit.`,
+                              )
+                            : true
+                        ) {
+                          void handleRevoke(g.id);
+                        }
+                      }}
+                      title="Odpojit aplikaci"
+                      className="flex items-center gap-1 rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-dim)] transition-colors hover:border-red-900/50 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Trash2 size={11} />
+                      {revoking.has(g.id) ? "…" : "Odpojit"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

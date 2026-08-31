@@ -109,6 +109,15 @@ export type NewDeviceToken = {
   expires_at: string | null;
 };
 
+// Connected chat-client connector from GET /auth/oauth-grants.
+export type OAuthGrant = {
+  id: string;
+  client_id: string;
+  client_name: string;
+  created_at: string;
+  last_used_at: string | null;
+};
+
 // --- auth commands -----------------------------------------------------------
 
 export async function authStatus(): Promise<AuthStatus> {
