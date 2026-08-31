@@ -45,8 +45,13 @@ export type GraphNode = {
   // Used by the empty-workspace node picker to rank "recently touched"
   // nodes without a query -- newest updated_at (falling back to
   // created_at) first. Not shown in the UI otherwise.
-  created_at: string;
-  updated_at: string;
+  //
+  // Optional, not just possibly-empty: a central server older than the
+  // local app (teammate mirrors, independent deploys) can omit both
+  // fields entirely from the graph payload. Any unconditional use is a
+  // bug -- see #176.
+  created_at?: string;
+  updated_at?: string;
   // True when this node (visible to the caller) is currently under a
   // node_access ACL -- its own rows, or an inherited ancestor's. Absent
   // (not false) for an unrestricted node, mirroring the DetailEdge
