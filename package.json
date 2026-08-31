@@ -25,19 +25,19 @@
   },
   "dependencies": {
     "@libsql/client": "^0.17.4",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "google-auth-library": "^10.9.0",
-    "jose": "^6.2.3",
-    "opendal": "^0.49.4",
+    "jose": "^6.2.10",
+    "opendal": "^0.49.7",
     "ulid": "^3.0.2",
-    "varlock": "^1.9.0",
+    "varlock": "^1.17.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.1",
-    "@types/node": "^26.0.1",
-    "simple-git-hooks": "^2.13.1",
-    "tsx": "^4.21.0",
+    "@biomejs/biome": "^2.5.11",
+    "@types/node": "^26.4.0",
+    "simple-git-hooks": "^2.14.0",
+    "tsx": "^4.23.12",
     "typescript": "^6.0.3"
   }
 }
