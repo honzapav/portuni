@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/honzapav/portuni/compare/v0.10.0...v0.11.0) (2026-08-31)
+
+
+### Features
+
+* **auth:** oauth connectors for chat clients ([25ebf43](https://github.com/honzapav/portuni/commit/25ebf4354a62a3cb2aa03dd445e766f3b7129e0e))
+
 ## [0.10.0](https://github.com/honzapav/portuni/compare/v0.9.0...v0.10.0) (2026-08-31)
 
 
