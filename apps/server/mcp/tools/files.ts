@@ -16,12 +16,29 @@ import { buildNodeRoot, deriveLocalPath } from "../../domain/sync/remote-path.js
 import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardListScope } from "../list-scope-gate.js";
-import { filterVisibleNodeIds } from "../../auth/node-access.js";
+import { filterVisibleNodeIds, nodeVisibleTo } from "../../auth/node-access.js";
 import { readableMirrorRoot } from "../scope-reconciler.js";
 import { guardNodeRead } from "../scope.js";
 import { readNodeFile, formatNodeFileContent } from "../../domain/read-node-file.js";
 import { searchFiles } from "../../domain/search-files.js";
 import type { SessionCtx } from "../server.js";
+import type { Client } from "@libsql/client";
+
+// Resolves a file's owning node so callers can run the same visibility
+// guard as node-targeted tools. Returns null when the file row is missing
+// (callers fall through to the domain function's own not-found error).
+async function fileNodeId(db: Client, fileId: string): Promise<string | null> {
+  const row = await db.execute({
+    sql: "SELECT node_id FROM files WHERE id = ?",
+    args: [fileId],
+  });
+  return row.rows.length > 0 ? (row.rows[0].node_id as string) : null;
+}
+
+const NODE_NOT_FOUND = {
+  content: [{ type: "text" as const, text: "Error: node not found" }],
+  isError: true,
+};
 
 export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
   const { scope } = ctx;
@@ -140,6 +157,9 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
     },
     async (args) => {
       const db = getDb();
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
+        return NODE_NOT_FOUND;
+      }
       const result = await storeFile(db, {
         userId: ctx.identity.userId,
         nodeId: args.node_id,
@@ -175,10 +195,17 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
       }
       const db = getDb();
       if (args.file_id) {
+        const nodeId = await fileNodeId(db, args.file_id);
+        if (nodeId && !(await nodeVisibleTo(db, ctx.identity, nodeId))) {
+          return NODE_NOT_FOUND;
+        }
         const r = await pullFile(db, { userId: ctx.identity.userId, fileId: args.file_id, force: args.force });
         return {
           content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }],
         };
+      }
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id!))) {
+        return NODE_NOT_FOUND;
       }
       const p = await previewNode(db, { userId: ctx.identity.userId, nodeId: args.node_id! });
       return {
@@ -336,6 +363,13 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
     },
     async (args) => {
       const db = getDb();
+      const sourceNodeId = await fileNodeId(db, args.file_id);
+      if (sourceNodeId && !(await nodeVisibleTo(db, ctx.identity, sourceNodeId))) {
+        return NODE_NOT_FOUND;
+      }
+      if (args.new_node_id && !(await nodeVisibleTo(db, ctx.identity, args.new_node_id))) {
+        return NODE_NOT_FOUND;
+      }
       const r = await moveFile(db, {
         userId: ctx.identity.userId,
         fileId: args.file_id,
@@ -359,6 +393,9 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
     },
     async (args) => {
       const db = getDb();
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
+        return NODE_NOT_FOUND;
+      }
       const r = await renameFolder(db, {
         userId: ctx.identity.userId,
         nodeId: args.node_id,
@@ -380,6 +417,9 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
     },
     async (args) => {
       const db = getDb();
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
+        return NODE_NOT_FOUND;
+      }
       const r = await adoptFiles(db, {
         userId: ctx.identity.userId,
         nodeId: args.node_id,
@@ -400,6 +440,10 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
     },
     async (args) => {
       const db = getDb();
+      const nodeId = await fileNodeId(db, args.file_id);
+      if (nodeId && !(await nodeVisibleTo(db, ctx.identity, nodeId))) {
+        return NODE_NOT_FOUND;
+      }
       const r = await deleteFile(db, {
         userId: ctx.identity.userId,
         fileId: args.file_id,

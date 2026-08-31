@@ -41,6 +41,20 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
     async (args) => {
       const db = getDb();
 
+      // organization_id is an FK from the request -- when present, verify
+      // the caller can see that org, otherwise this is an IDOR: creating a
+      // node under an organization the user has no access to. Same rule as
+      // the REST path (handleCreateNode).
+      if (
+        args.organization_id &&
+        !(await nodeVisibleTo(db, ctx.identity, args.organization_id))
+      ) {
+        return {
+          content: [{ type: "text" as const, text: "Error: node not found" }],
+          isError: true,
+        };
+      }
+
       // Surface duplicate name+type as a non-blocking warning -- the LLM
       // sees it and can ask the user before continuing.
       const dupeNameCheck = await db.execute({
