@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.10.0](https://github.com/honzapav/portuni/compare/v0.9.0...v0.10.0) (2026-08-31)
+
+
+### Features
+
+* **web:** create the local mirror from the node detail ([728dab2](https://github.com/honzapav/portuni/commit/728dab2a23d1f66336beb0366c9f4cbcf2f720a2))
+* **web:** mirror from the node header, folder state, terminal scrolling, recent-nodes picker ([d3866ff](https://github.com/honzapav/portuni/commit/d3866ff12aadcd532a1a660a875560b9efbdf4fb))
+
+
+### Bug Fixes
+
+* **sandcastle:** per-project tmux socket, verify server tokens match the Keychain ([5aa55d4](https://github.com/honzapav/portuni/commit/5aa55d4908f9ba6a83b0291f110bda1840b74940))
+* **sandcastle:** per-project tmux socket, verify server tokens match the Keychain ([f11792d](https://github.com/honzapav/portuni/commit/f11792d99e31a5bb1be69c48142464c5c20693a2))
+* **sandcastle:** read the tokens from the Keychain inside the tmux command ([62f5f05](https://github.com/honzapav/portuni/commit/62f5f054d69bd687541683af213e883714de134d))
+* **sandcastle:** read the tokens from the Keychain inside the tmux command ([92d4612](https://github.com/honzapav/portuni/commit/92d46120bad4e87ddf0e793467b99813ccc4cceb))
+* **sandcastle:** tracking issues order the backlog, never bound it ([088c355](https://github.com/honzapav/portuni/commit/088c35564282315fc317989c504853af4d01f218))
+* **sandcastle:** tracking issues order the backlog, never bound it ([781b9fb](https://github.com/honzapav/portuni/commit/781b9fbb0060c25fec6755fd77fd6bd9940a3454))
+
 ## [0.9.0](https://github.com/honzapav/portuni/compare/v0.8.0...v0.9.0) (2026-08-30)
 
 
