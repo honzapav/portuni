@@ -47,6 +47,12 @@ import {
   DDL_ACCESS_REQUESTS,
   INDEX_ACCESS_REQUESTS_PENDING,
   INDEX_ACCESS_REQUESTS_STATUS,
+  DDL_OAUTH_GRANTS,
+  INDEX_OAUTH_GRANTS_USER,
+  INDEX_OAUTH_GRANTS_ACCESS_HASH,
+  INDEX_OAUTH_GRANTS_REFRESH_HASH,
+  DDL_OAUTH_CODES,
+  INDEX_OAUTH_CODES_HASH,
 } from "./schema-triggers.js";
 
 interface Migration {
@@ -1185,12 +1191,41 @@ const MIGRATIONS: Migration[] = [
     },
     up: runMigration024,
   },
+
+  // Migration 025: oauth_grants + oauth_codes for the OAuth 2.1 connector
+  // facade (docs/superpowers/specs/2026-08-31-oauth-connectors-design.md).
+  // Fresh installs already get both tables via DDL; existing installs need
+  // them added explicitly. Same DDL constants as the fresh path so the two
+  // can never drift.
+  {
+    id: "025_oauth_grants_and_codes",
+    isApplied: async (db) => {
+      const r = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='oauth_grants'",
+      );
+      if (r.rows.length === 0) return false;
+      const r2 = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='oauth_codes'",
+      );
+      return r2.rows.length > 0;
+    },
+    up: runMigration025,
+  },
 ];
 
 export async function runMigration024(db: Client): Promise<void> {
   await db.execute(DDL_ACCESS_REQUESTS);
   await db.execute(INDEX_ACCESS_REQUESTS_PENDING);
   await db.execute(INDEX_ACCESS_REQUESTS_STATUS);
+}
+
+export async function runMigration025(db: Client): Promise<void> {
+  await db.execute(DDL_OAUTH_GRANTS);
+  await db.execute(INDEX_OAUTH_GRANTS_USER);
+  await db.execute(INDEX_OAUTH_GRANTS_ACCESS_HASH);
+  await db.execute(INDEX_OAUTH_GRANTS_REFRESH_HASH);
+  await db.execute(DDL_OAUTH_CODES);
+  await db.execute(INDEX_OAUTH_CODES_HASH);
 }
 
 export async function runMigrations(db: Client): Promise<void> {

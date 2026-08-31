@@ -82,6 +82,51 @@ export const INDEX_ACCESS_REQUESTS_PENDING = `CREATE UNIQUE INDEX IF NOT EXISTS 
 
 export const INDEX_ACCESS_REQUESTS_STATUS = `CREATE INDEX IF NOT EXISTS idx_access_requests_status ON access_requests(status)`;
 
+// Migration 025: oauth_grants + oauth_codes for the OAuth 2.1 connector
+// facade (spec: docs/superpowers/specs/2026-08-31-oauth-connectors-design.md
+// "Data model"). Opaque, sha256-hashed tokens -- same shape as
+// device_tokens, plus refresh rotation (prev_refresh_token_hash) and
+// single-use authorization codes (grant_id links a redeemed code to the
+// grant it minted, for replay detection). Declared before DDL so it can be
+// referenced in the array below.
+export const DDL_OAUTH_GRANTS = `CREATE TABLE IF NOT EXISTS oauth_grants (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    client_id TEXT NOT NULL,
+    client_name TEXT NOT NULL,
+    access_token_hash TEXT NOT NULL,
+    access_expires_at DATETIME NOT NULL,
+    refresh_token_hash TEXT NOT NULL,
+    prev_refresh_token_hash TEXT,
+    refresh_expires_at DATETIME NOT NULL,
+    resource TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    rotated_at DATETIME,
+    revoked_at DATETIME,
+    last_used_at DATETIME
+  )`;
+
+export const INDEX_OAUTH_GRANTS_USER = `CREATE INDEX IF NOT EXISTS idx_oauth_grants_user ON oauth_grants(user_id)`;
+export const INDEX_OAUTH_GRANTS_ACCESS_HASH = `CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_grants_access_hash ON oauth_grants(access_token_hash)`;
+export const INDEX_OAUTH_GRANTS_REFRESH_HASH = `CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_grants_refresh_hash ON oauth_grants(refresh_token_hash)`;
+
+export const DDL_OAUTH_CODES = `CREATE TABLE IF NOT EXISTS oauth_codes (
+    id TEXT PRIMARY KEY,
+    code_hash TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    client_id TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    expires_at DATETIME NOT NULL,
+    used_at DATETIME,
+    grant_id TEXT REFERENCES oauth_grants(id)
+  )`;
+
+export const INDEX_OAUTH_CODES_HASH = `CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_codes_hash ON oauth_codes(code_hash)`;
+
 // Ground-truth DDL for fresh installs. Includes all CHECK constraints.
 // Existing installs get constraints via migrations.
 export const DDL = [
@@ -98,6 +143,12 @@ export const DDL = [
   DDL_ACCESS_REQUESTS,
   INDEX_ACCESS_REQUESTS_PENDING,
   INDEX_ACCESS_REQUESTS_STATUS,
+  DDL_OAUTH_GRANTS,
+  INDEX_OAUTH_GRANTS_USER,
+  INDEX_OAUTH_GRANTS_ACCESS_HASH,
+  INDEX_OAUTH_GRANTS_REFRESH_HASH,
+  DDL_OAUTH_CODES,
+  INDEX_OAUTH_CODES_HASH,
   `CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY CHECK(length(id) = 26),
     type TEXT NOT NULL CHECK(type IN (${NODE_TYPES_SQL})),
