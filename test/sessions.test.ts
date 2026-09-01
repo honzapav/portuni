@@ -15,6 +15,7 @@ import {
   getSessionWriteCount,
   renameSession,
   computeDefaultSessionName,
+  loadResumableSession,
 } from "../apps/server/domain/sessions.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
 
@@ -191,6 +192,46 @@ describe("transitionSessionState: the state machine", () => {
   it("throws for an unknown session id", async () => {
     const { db } = await makeSharedDb();
     await assert.rejects(transitionSessionState(db, "U1", "nope", "closed"), /not found/);
+  });
+});
+
+describe("loadResumableSession: resume authorization gate (#204)", () => {
+  it("returns the row when owned by the caller, anchored to the node, and suspended", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await transitionSessionState(db, "U1", row.id, "suspended");
+
+    const resumable = await loadResumableSession(db, "U1", nodeId, row.id);
+    assert.ok(resumable);
+    assert.equal(resumable?.id, row.id);
+  });
+
+  it("refuses when owned by a different user", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await transitionSessionState(db, "U1", row.id, "suspended");
+
+    assert.equal(await loadResumableSession(db, "U2", nodeId, row.id), null);
+  });
+
+  it("refuses when the requested node does not match the session's anchor", async () => {
+    const { db, nodeId, orgId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await transitionSessionState(db, "U1", row.id, "suspended");
+
+    assert.equal(await loadResumableSession(db, "U1", orgId, row.id), null);
+  });
+
+  it("refuses when the session is not suspended (e.g. still running)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+
+    assert.equal(await loadResumableSession(db, "U1", nodeId, row.id), null);
+  });
+
+  it("refuses for an unknown session id", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    assert.equal(await loadResumableSession(db, "U1", nodeId, "nope"), null);
   });
 });
 

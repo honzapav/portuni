@@ -154,6 +154,7 @@ export async function handleGetSessionResumeInfo(
   res: ServerResponse,
   identity: RequestIdentity,
   sessionId: string,
+  url: URL,
 ): Promise<void> {
   try {
     const existing = await loadOwnSession(identity, sessionId);
@@ -162,11 +163,18 @@ export async function handleGetSessionResumeInfo(
       return;
     }
     const mirrorRoot = existing.node_id ? await getMirrorPath(identity.userId, existing.node_id) : null;
-    const info = await getResumeInfo(existing, mirrorRoot);
+    // config_dir (#204): the profiles registry lives in the desktop app's
+    // config.json (Rust), unreachable from this server process -- the
+    // caller resolves the session's profile_id to a CLAUDE_CONFIG_DIR (when
+    // one applies) and passes it through so checkConversationResumable
+    // checks the right transcript location instead of always the default.
+    const configDir = url.searchParams.get("config_dir") || null;
+    const info = await getResumeInfo(existing, mirrorRoot, undefined, configDir);
     const payload: SessionResumeInfo = {
       session_id: existing.id,
       handoff_path: info.handoffPath,
       handoff_changed: info.handoffChanged,
+      handoff_checkable: info.handoffCheckable,
       conversation_resumable: info.conversationResumable,
     };
     respondJson(res, 200, payload);

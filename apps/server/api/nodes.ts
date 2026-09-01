@@ -36,6 +36,7 @@ import {
 import {
   buildSeatbeltProfile,
   resolveSandboxScopeForNode,
+  ResumeSessionUnauthorizedError,
 } from "../domain/sandbox-profile.js";
 import type { SyncStatusResponse, SyncRunResponse, UntrackedFile } from "../shared/api-types.js";
 import { computeSyncPending } from "../domain/sync/pending.js";
@@ -922,6 +923,10 @@ export async function handleNodeSandboxProfile(
       projection_root: scope.projectionRoot ?? null,
     });
   } catch (err) {
+    if (err instanceof ResumeSessionUnauthorizedError) {
+      respondJson(res, 403, { error: err.message, code: "RESUME_UNAUTHORIZED" });
+      return;
+    }
     respondError(res, `${req.method} /nodes/${nodeId}/sandbox-profile`, err);
   }
 }

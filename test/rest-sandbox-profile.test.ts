@@ -17,11 +17,12 @@ import { tmpdir } from "node:os";
 import { createClient } from "@libsql/client";
 import { ulid } from "ulid";
 import { ensureSchemaOn, SOLO_USER } from "../apps/server/infra/schema.js";
-import { setDbForTesting } from "../apps/server/infra/db.js";
+import { getDb, setDbForTesting } from "../apps/server/infra/db.js";
 import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { startHttpServer, type HttpServerHandle } from "../apps/server/http/server.js";
+import { createSession } from "../apps/server/domain/sessions.js";
 
 const BASE = "http://127.0.0.1:14913";
 
@@ -117,6 +118,34 @@ describe("GET /nodes/:id/sandbox-profile", () => {
   it("404 for an unknown node", async () => {
     const res = await fetch(`${BASE}/nodes/${ulid()}/sandbox-profile`);
     assert.equal(res.status, 404);
+  });
+
+  it("403s a resume_session_id that is running (not suspended) rather than silently ignoring it (#204)", async () => {
+    const session = await createSession(getDb(), SOLO_USER, {
+      node_id: projId,
+      session_type: "interactive_task",
+    });
+    const res = await fetch(
+      `${BASE}/nodes/${projId}/sandbox-profile?resume_session_id=${session.id}`,
+    );
+    assert.equal(res.status, 403);
+    const body = (await res.json()) as { code?: string };
+    assert.equal(body.code, "RESUME_UNAUTHORIZED");
+  });
+
+  it("403s a resume_session_id owned by a different user (#204)", async () => {
+    await getDb().execute({
+      sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+      args: ["someone-else", "else@x.com", "Someone Else"],
+    });
+    const session = await createSession(getDb(), "someone-else", {
+      node_id: projId,
+      session_type: "interactive_task",
+    });
+    const res = await fetch(
+      `${BASE}/nodes/${projId}/sandbox-profile?resume_session_id=${session.id}`,
+    );
+    assert.equal(res.status, 403);
   });
 });
 

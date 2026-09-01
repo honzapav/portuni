@@ -15,6 +15,7 @@ import { classifyWrite, resolvePortuniRoot } from "../domain/write-scope.js";
 import {
   buildSeatbeltProfile,
   resolveSandboxScopeForCwd,
+  ResumeSessionUnauthorizedError,
 } from "../domain/sandbox-profile.js";
 import { respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 import { nodeVisibleTo } from "../auth/node-access.js";
@@ -95,6 +96,10 @@ export async function handleSandboxProfileByCwd(
       projection_root: r.scope.projectionRoot ?? null,
     });
   } catch (err) {
+    if (err instanceof ResumeSessionUnauthorizedError) {
+      respondJson(res, 403, { error: err.message, code: "RESUME_UNAUTHORIZED" });
+      return;
+    }
     respondError(res, `${req.method} ${url.pathname}`, err);
   }
 }

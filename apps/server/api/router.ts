@@ -684,7 +684,7 @@ async function routeSessions(
   }
   const resumeInfoMatch = pathname.match(/^\/sessions\/([^/]+)\/resume-info$/);
   if (resumeInfoMatch && method === "GET") {
-    await handleGetSessionResumeInfo(req, res, identity, decodeURIComponent(resumeInfoMatch[1]));
+    await handleGetSessionResumeInfo(req, res, identity, decodeURIComponent(resumeInfoMatch[1]), url);
     return true;
   }
   const sessionMatch = pathname.match(/^\/sessions\/([^/]+)$/);

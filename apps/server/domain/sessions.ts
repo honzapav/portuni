@@ -127,6 +127,30 @@ export async function getSession(db: Client, id: string): Promise<SessionRow | n
   return loadSession(db, id);
 }
 
+// Authorization gate for resume (#204: "resume_session_id has no ownership/
+// anchor check"). A caller-supplied resume_session_id must never be trusted
+// on its own: it must belong to the caller, be anchored to the node the
+// caller is actually resuming into, and be in the one state resume is valid
+// from. Shared by both the disk-plane resume (api/nodes.ts,
+// api/write-scope.ts sandbox-profile endpoints, via
+// domain/sandbox-profile.ts) and the graph-plane resume
+// (mcp/session-persistence.ts) so a bypass in one cannot happen without
+// bypassing the other. Mirrors api/sessions.ts's loadOwnSession plus the
+// anchor/state checks resume specifically needs.
+export async function loadResumableSession(
+  db: Client,
+  userId: string,
+  nodeId: string,
+  sessionId: string,
+): Promise<SessionRow | null> {
+  const row = await loadSession(db, sessionId);
+  if (!row) return null;
+  if (row.user_id !== userId) return null;
+  if (row.node_id !== nodeId) return null;
+  if (row.state !== "suspended") return null;
+  return row;
+}
+
 export async function listSessions(
   db: Client,
   filters: ListSessionsInput = {},

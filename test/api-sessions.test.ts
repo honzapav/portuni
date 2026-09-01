@@ -197,6 +197,22 @@ describe("session REST endpoints", () => {
     const body = JSON.parse(res.body) as SessionResumeInfo;
     assert.equal(body.session_id, session.id);
     assert.equal(body.conversation_resumable, false);
+    // #204: no local mirror means handoff_changed cannot be evaluated at
+    // all -- must not be reported as a false-positive "changed".
+    assert.equal(body.handoff_checkable, false);
+    assert.equal(body.handoff_changed, false);
+  });
+
+  test("GET /sessions/:id/resume-info accepts a config_dir override without erroring", async () => {
+    const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
+    const res = await call(
+      makeIdentity(SOLO),
+      "GET",
+      `/sessions/${session.id}/resume-info?config_dir=${encodeURIComponent("/tmp/some-profile-config")}`,
+    );
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body) as SessionResumeInfo;
+    assert.equal(body.conversation_resumable, false);
   });
 
   test("GET /sessions/:id/resume-info 404s for a session owned by someone else", async () => {

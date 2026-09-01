@@ -24,8 +24,24 @@ import { join } from "node:path";
 import type { Client } from "@libsql/client";
 import { getMirrorPath, listUserMirrors } from "./sync/mirror-registry.js";
 import { nodeNeighbourIds } from "./queries/neighbours.js";
-import { getSessionScope } from "./sessions.js";
+import { getSessionScope, loadResumableSession } from "./sessions.js";
 import { findContainingMirror, normalize, resolvePortuniRoot } from "./write-scope.js";
+
+// Thrown by resolveSandboxScopeForNode (and, transitively,
+// resolveSandboxScopeForCwd) when a caller supplies a resumeSessionId that
+// does not resolve to a session it owns, anchored to the requested node, in
+// the suspended state (#204: "resume_session_id has no ownership/anchor
+// check -- sandbox scope bypass"). Callers must refuse the request (403),
+// never silently fall back to the non-resumed profile -- a silent
+// degradation would look like a successful, authorized resume.
+export class ResumeSessionUnauthorizedError extends Error {
+  constructor(sessionId: string) {
+    super(
+      `resume_session_id ${sessionId} is not a suspended session owned by this user and anchored to this node`,
+    );
+    this.name = "ResumeSessionUnauthorizedError";
+  }
+}
 
 // Seatbelt string literal: double-quoted, backslash and quote escaped.
 function sbQuote(path: string): string {
@@ -143,6 +159,8 @@ export async function resolveSandboxScopeForNode(
     : [];
 
   if (db && resumeSessionId) {
+    const resumable = await loadResumableSession(db, userId, nodeId, resumeSessionId);
+    if (!resumable) throw new ResumeSessionUnauthorizedError(resumeSessionId);
     const accumulated = await getSessionScope(db, resumeSessionId);
     const resumedMirrors = await resolveNeighbourReadMirrors(
       userId,

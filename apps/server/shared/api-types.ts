@@ -399,6 +399,10 @@ export type SessionResumeInfo = {
   session_id: string;
   handoff_path: string | null;
   handoff_changed: boolean;
+  // False when this device has no local mirror for the session's node, so
+  // handoff_changed could not be evaluated (as opposed to evaluated and
+  // found unchanged) -- see domain/session-handoff.ts's ResumeInfo.
+  handoff_checkable: boolean;
   conversation_resumable: boolean;
 };
 

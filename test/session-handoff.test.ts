@@ -8,6 +8,8 @@ import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
+import { createClient } from "@libsql/client";
+import { ulid } from "ulid";
 import {
   writeHandoffAndSuspend,
   handoffRelativePath,
@@ -24,6 +26,7 @@ import {
 } from "../apps/server/domain/sessions.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
 
 function sha256(content: string): string {
@@ -123,6 +126,47 @@ describe("writeHandoffAndSuspend", () => {
     assert.equal(second.session.state, "suspended");
     const onDisk = await readFile(join(mirrorRoot, second.handoffPath), "utf8");
     assert.equal(onDisk, "iteration 2");
+  });
+
+  it("suspend atomicity (#204): still transitions to suspended when the upload fails (no remote routing)", async () => {
+    // A DB with no remote/routing configured at all -- storeFile's
+    // resolveRemote throws "No remote routing configured" before it does
+    // anything else. The local write and the state transition must not
+    // depend on that upload succeeding.
+    const db = createClient({ url: ":memory:" });
+    await ensureSchemaOn(db);
+    await db.execute({
+      sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+      args: ["U1", "a@b", "A"],
+    });
+    const noRouteNodeId = ulid();
+    await db.execute({
+      sql: "INSERT INTO nodes (id,type,name,sync_key,created_by) VALUES (?,?,?,?,?)",
+      args: [noRouteNodeId, "project", "No Route", "no-route", "U1"],
+    });
+    const noRouteMirror = await mkdtemp(join(tmpdir(), "portuni-noroute-mirror-"));
+    try {
+      const session = await createSession(db, "U1", {
+        node_id: noRouteNodeId,
+        session_type: "headless",
+      });
+
+      const result = await writeHandoffAndSuspend(
+        db,
+        "U1",
+        { id: session.id, nodeId: noRouteNodeId, mirrorRoot: noRouteMirror },
+        "handoff content with no remote to push to",
+      );
+
+      assert.equal(result.session.state, "suspended");
+      const fetched = await getSession(db, session.id);
+      assert.equal(fetched?.state, "suspended");
+      assert.equal(fetched?.handoff_hash, result.handoffHash);
+      const onDisk = await readFile(join(noRouteMirror, result.handoffPath), "utf8");
+      assert.equal(onDisk, "handoff content with no remote to push to");
+    } finally {
+      await rm(noRouteMirror, { recursive: true, force: true });
+    }
   });
 });
 
@@ -269,6 +313,38 @@ describe("getResumeInfo: hash-change surfacing", () => {
     assert.equal(info.currentHandoffHash, null);
     assert.equal(info.conversationResumable, false);
   });
+
+  it("#204: a missing mirror is 'unknown', not 'changed' -- handoffCheckable false and handoffChanged false", async () => {
+    const session = await createSession(shared.db, "U1", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    const { session: suspended } = await writeHandoffAndSuspend(
+      shared.db,
+      "U1",
+      { id: session.id, nodeId: shared.nodeId, mirrorRoot },
+      "some content",
+    );
+    const info = await getResumeInfo(suspended, null);
+    assert.equal(info.handoffCheckable, false);
+    assert.equal(info.handoffChanged, false);
+  });
+
+  it("#204: handoffCheckable is true when a mirror exists, whether or not the handoff changed", async () => {
+    const session = await createSession(shared.db, "U1", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    const { session: suspended } = await writeHandoffAndSuspend(
+      shared.db,
+      "U1",
+      { id: session.id, nodeId: shared.nodeId, mirrorRoot },
+      "unedited",
+    );
+    const info = await getResumeInfo(suspended, mirrorRoot);
+    assert.equal(info.handoffCheckable, true);
+    assert.equal(info.handoffChanged, false);
+  });
 });
 
 describe("checkConversationResumable: expired-conversation degradation to handoff path", () => {
@@ -304,6 +380,33 @@ describe("checkConversationResumable: expired-conversation degradation to handof
       assert.equal(resumable, true);
     } finally {
       await rm(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("#204: a configDir override (profile CLAUDE_CONFIG_DIR) replaces the default <homeDir>/.claude location", async () => {
+    const fakeHome = await mkdtemp(join(tmpdir(), "portuni-fakehome-"));
+    const profileConfigDir = await mkdtemp(join(tmpdir(), "portuni-profile-config-"));
+    try {
+      const cwd = "/Users/test/mirrors/some-project";
+      // Nothing under the default location -- only under the profile's dir.
+      const profileProjectDir = join(profileConfigDir, "projects", claudeProjectSlug(cwd));
+      await mkdir(profileProjectDir, { recursive: true });
+      await writeFile(join(profileProjectDir, "conv-profiled.jsonl"), "{}\n", "utf8");
+
+      const withoutConfigDir = await checkConversationResumable("claude", "conv-profiled", cwd, fakeHome);
+      assert.equal(withoutConfigDir, false, "not found at the default location");
+
+      const withConfigDir = await checkConversationResumable(
+        "claude",
+        "conv-profiled",
+        cwd,
+        fakeHome,
+        profileConfigDir,
+      );
+      assert.equal(withConfigDir, true, "found once the profile's config dir is checked");
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true });
+      await rm(profileConfigDir, { recursive: true, force: true });
     }
   });
 

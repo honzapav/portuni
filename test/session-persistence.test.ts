@@ -5,12 +5,24 @@
 // doesn't exist at the call site -- the same shape a real caller (a test
 // hitting the MCP tools, or a future consumer reading these rows) would see.
 
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { ulid } from "ulid";
 import { SessionScope } from "../apps/server/mcp/scope.js";
-import { bindSessionPersistence } from "../apps/server/mcp/session-persistence.js";
-import { getSession, getSessionScope } from "../apps/server/domain/sessions.js";
+import { bindSessionPersistence, resumeSessionPersistence } from "../apps/server/mcp/session-persistence.js";
+import {
+  createSession,
+  getSession,
+  getSessionScope,
+  transitionSessionState,
+  upsertSessionScopeRead,
+  setSessionScopeWritable,
+} from "../apps/server/domain/sessions.js";
+import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
 
 async function waitUntil(cond: () => boolean | Promise<boolean>, timeoutMs = 2000): Promise<void> {
@@ -150,5 +162,150 @@ describe("bindSessionPersistence: SessionScope as a cache over session_scope", (
     const row = await getSession(shared.db, scope.sessionId!);
     assert.equal(row?.session_type, "env");
     assert.equal(row?.node_id, null);
+  });
+});
+
+describe("resumeSessionPersistence: graph-plane reattach on resume (#204)", () => {
+  let workspace: string;
+  let originalRoot: string | undefined;
+
+  beforeEach(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-resume-persist-"));
+    originalRoot = process.env.PORTUNI_WORKSPACE_ROOT;
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+  });
+
+  afterEach(async () => {
+    resetLocalDbForTests();
+    if (originalRoot === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
+    else process.env.PORTUNI_WORKSPACE_ROOT = originalRoot;
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  it("attaches to the existing session, rehydrates read/write scope, and transitions suspended -> running", async () => {
+    const shared = await makeSharedDb();
+    const other = await neighbourNode(shared, "Neighbour");
+    await registerMirror("U1", shared.nodeId, join(workspace, "home"));
+    await registerMirror("U1", other, join(workspace, "other"));
+
+    const suspended = await createSession(shared.db, "U1", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    await upsertSessionScopeRead(shared.db, suspended.id, shared.nodeId, "seed", "seed");
+    await upsertSessionScopeRead(shared.db, suspended.id, other, "disconnected", "expand");
+    await setSessionScopeWritable(shared.db, suspended.id, other);
+    await transitionSessionState(shared.db, "U1", suspended.id, "suspended");
+
+    const scope = new SessionScope("interactive_task");
+    const resumedId = await resumeSessionPersistence(
+      shared.db,
+      scope,
+      { userId: "U1" },
+      suspended.id,
+      shared.nodeId,
+    );
+
+    assert.equal(resumedId, suspended.id);
+    assert.equal(scope.sessionId, suspended.id);
+    assert.equal(scope.homeNodeId, shared.nodeId);
+    assert.ok(scope.has(shared.nodeId));
+    assert.ok(scope.has(other));
+    assert.ok(scope.canWrite(other));
+    assert.ok(scope.isSeed(other), "a node with a local mirror on this device is treated as seed");
+
+    const row = await getSession(shared.db, suspended.id);
+    assert.equal(row?.state, "running");
+  });
+
+  it("marks a node with no local mirror on this device as in-scope but not seed", async () => {
+    const shared = await makeSharedDb();
+    const noMirrorNode = await neighbourNode(shared, "NoMirror");
+    await registerMirror("U1", shared.nodeId, join(workspace, "home"));
+
+    const suspended = await createSession(shared.db, "U1", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    await upsertSessionScopeRead(shared.db, suspended.id, noMirrorNode, "disconnected", "expand");
+    await transitionSessionState(shared.db, "U1", suspended.id, "suspended");
+
+    const scope = new SessionScope("interactive_task");
+    await resumeSessionPersistence(shared.db, scope, { userId: "U1" }, suspended.id, shared.nodeId);
+
+    assert.ok(scope.has(noMirrorNode));
+    assert.ok(!scope.isSeed(noMirrorNode));
+  });
+
+  it("returns null and leaves the session row untouched when the resume id is unauthorized", async () => {
+    const shared = await makeSharedDb();
+    await shared.db.execute({
+      sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+      args: ["someone-else", "else@x.com", "Someone Else"],
+    });
+    const suspended = await createSession(shared.db, "someone-else", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    await transitionSessionState(shared.db, "someone-else", suspended.id, "suspended");
+
+    const scope = new SessionScope("interactive_task");
+    const resumedId = await resumeSessionPersistence(
+      shared.db,
+      scope,
+      { userId: "U1" },
+      suspended.id,
+      shared.nodeId,
+    );
+
+    assert.equal(resumedId, null);
+    assert.equal(scope.sessionId, null);
+    assert.equal(scope.homeNodeId, null);
+    const row = await getSession(shared.db, suspended.id);
+    assert.equal(row?.state, "suspended");
+  });
+
+  it("returns null when homeNodeId is absent (resume requires an explicit anchor)", async () => {
+    const shared = await makeSharedDb();
+    const suspended = await createSession(shared.db, "U1", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    await transitionSessionState(shared.db, "U1", suspended.id, "suspended");
+
+    const scope = new SessionScope("interactive_task");
+    const resumedId = await resumeSessionPersistence(shared.db, scope, { userId: "U1" }, suspended.id, null);
+
+    assert.equal(resumedId, null);
+  });
+
+  it("mirrors further scope changes after resume into session_scope, same as a fresh session", async () => {
+    const shared = await makeSharedDb();
+    const other = await neighbourNode(shared, "Later");
+    await registerMirror("U1", shared.nodeId, join(workspace, "home"));
+
+    const suspended = await createSession(shared.db, "U1", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    await upsertSessionScopeRead(shared.db, suspended.id, shared.nodeId, "seed", "seed");
+    await transitionSessionState(shared.db, "U1", suspended.id, "suspended");
+
+    const scope = new SessionScope("interactive_task");
+    await resumeSessionPersistence(shared.db, scope, { userId: "U1" }, suspended.id, shared.nodeId);
+
+    scope.add(other);
+    scope.recordExpansion({
+      at: new Date().toISOString(),
+      node_ids: [other],
+      reason: "edge-reachable from the current scope set",
+      triggered_by: "traversal",
+      addedVia: "edge",
+    });
+
+    await waitUntil(async () => (await getSessionScope(shared.db, suspended.id)).some((r) => r.node_id === other));
+    const rows = await getSessionScope(shared.db, suspended.id);
+    assert.ok(rows.some((r) => r.node_id === other && r.added_via === "edge"));
   });
 });

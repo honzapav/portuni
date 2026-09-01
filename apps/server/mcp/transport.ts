@@ -8,7 +8,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createMcpServer } from "./server.js";
 import { parseBody, RequestBodyTooLargeError } from "../http/middleware.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
-import { autoSeedFromHome, parseHomeNodeIdFromUrl } from "./auto-seed.js";
+import { autoSeedFromHome, parseHomeNodeIdFromUrl, parseResumeSessionIdFromUrl } from "./auto-seed.js";
+import { resumeSessionPersistence } from "./session-persistence.js";
 import { disposeSessionProjection } from "./disk-projection.js";
 import { logAudit } from "../infra/audit.js";
 import { getDb } from "../infra/db.js";
@@ -111,6 +112,11 @@ export function createMcpTransport(): McpTransport {
       // on its presence.
       const homeNodeId = parseHomeNodeIdFromUrl(req.url);
 
+      // Resume (#204): the app respawns a terminal for a suspended session
+      // with ?resume_session_id= on the MCP URL, same param name the
+      // disk-plane sandbox-profile endpoints use for restart consolidation.
+      const resumeSessionId = parseResumeSessionIdFromUrl(req.url);
+
       // X-Portuni-Profile: the spawn profile id (phase 3), sent only by
       // Claude Code connections whose per-mirror .mcp.json carries the
       // ${PORTUNI_PROFILE_ID:-} header expansion (buildClaudeMcpJson) --
@@ -134,9 +140,41 @@ export function createMcpTransport(): McpTransport {
         return;
       }
 
-      const { server, scope } = createMcpServer(identity, homeNodeId, profileId);
+      const { server, scope } = createMcpServer(identity, homeNodeId, profileId, resumeSessionId);
+
+      // Resume (#204): must be authorized and rehydrated before any tool
+      // call is served, so it is awaited here -- before auto-seed and
+      // before the connection is allowed to proceed -- rather than left to
+      // createMcpServer's fire-and-forget bindSessionPersistence path.
+      // A resumeSessionId that fails authorization (not owned by this user,
+      // anchored to a different node, or not suspended -- see
+      // domain/sessions.ts's loadResumableSession) is refused outright: a
+      // silent fallback to a fresh session would look like a successful
+      // resume to the agent while actually starting from empty scope.
+      if (resumeSessionId) {
+        const resumed = await resumeSessionPersistence(
+          getDb(),
+          scope,
+          identity,
+          resumeSessionId,
+          homeNodeId,
+        );
+        if (!resumed) {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              error: "resume_session_unauthorized",
+              reason:
+                "resume_session_id is not a suspended session owned by this user and anchored to this node",
+            }),
+          );
+          return;
+        }
+      }
 
       // Auto-seed scope from `?home_node_id=...` on the connection URL.
+      // A successful resume above already set scope.homeNodeId, so this is
+      // a no-op in that case (autoSeedFromHome's own guard).
       // This is what `portuni_mirror` writes into per-mirror configs so
       // every harness gets scope set up without needing to call
       // portuni_session_init explicitly.

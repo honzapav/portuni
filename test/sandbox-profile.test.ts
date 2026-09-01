@@ -16,8 +16,13 @@ import {
   resolveProjectionRootForNode,
   resolveSandboxScopeForCwd,
   resolveSandboxScopeForNode,
+  ResumeSessionUnauthorizedError,
 } from "../apps/server/domain/sandbox-profile.js";
-import { createSession, upsertSessionScopeRead } from "../apps/server/domain/sessions.js";
+import {
+  createSession,
+  transitionSessionState,
+  upsertSessionScopeRead,
+} from "../apps/server/domain/sessions.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
@@ -196,6 +201,8 @@ describe("resolveSandboxScopeForNode", () => {
       session_type: "interactive_task",
     });
     await upsertSessionScopeRead(db, session.id, adhocId, "disconnected", "test");
+    // Resume authorization (#204) requires the session to be suspended.
+    await transitionSessionState(db, SOLO_USER, session.id, "suspended");
 
     const fresh = await resolveSandboxScopeForNode(db, SOLO_USER, nodeId);
     assert.ok(fresh);
@@ -204,6 +211,65 @@ describe("resolveSandboxScopeForNode", () => {
     const resumed = await resolveSandboxScopeForNode(db, SOLO_USER, nodeId, session.id);
     assert.ok(resumed);
     assert.ok(resumed.readMirrors.some((m) => m.endsWith(join("elsewhere", "adhoc"))));
+  });
+
+  it("resume authorization (#204): refuses a resumeSessionId owned by a different user", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const homeDir = join(workspace, "org", "projects", "p1");
+    await mkdir(homeDir, { recursive: true });
+    await registerMirror(SOLO_USER, nodeId, homeDir);
+    await db.execute({
+      sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+      args: ["someone-else", "else@x.com", "Someone Else"],
+    });
+
+    const session = await createSession(db, "someone-else", {
+      node_id: nodeId,
+      session_type: "interactive_task",
+    });
+    await transitionSessionState(db, "someone-else", session.id, "suspended");
+
+    await assert.rejects(
+      resolveSandboxScopeForNode(db, SOLO_USER, nodeId, session.id),
+      ResumeSessionUnauthorizedError,
+    );
+  });
+
+  it("resume authorization (#204): refuses a resumeSessionId anchored to a different node", async () => {
+    const { db, nodeId, orgId } = await makeSharedDb();
+    const homeDir = join(workspace, "org", "projects", "p1");
+    const orgDir = join(workspace, "org");
+    await mkdir(homeDir, { recursive: true });
+    await registerMirror(SOLO_USER, nodeId, homeDir);
+    await registerMirror(SOLO_USER, orgId, orgDir);
+
+    const session = await createSession(db, SOLO_USER, {
+      node_id: orgId,
+      session_type: "interactive_task",
+    });
+    await transitionSessionState(db, SOLO_USER, session.id, "suspended");
+
+    await assert.rejects(
+      resolveSandboxScopeForNode(db, SOLO_USER, nodeId, session.id),
+      ResumeSessionUnauthorizedError,
+    );
+  });
+
+  it("resume authorization (#204): refuses a resumeSessionId that is not suspended", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const homeDir = join(workspace, "org", "projects", "p1");
+    await mkdir(homeDir, { recursive: true });
+    await registerMirror(SOLO_USER, nodeId, homeDir);
+
+    const session = await createSession(db, SOLO_USER, {
+      node_id: nodeId,
+      session_type: "interactive_task",
+    });
+    // Still running -- never suspended.
+    await assert.rejects(
+      resolveSandboxScopeForNode(db, SOLO_USER, nodeId, session.id),
+      ResumeSessionUnauthorizedError,
+    );
   });
 
   it("resolves by cwd: deepest containing mirror wins", async () => {

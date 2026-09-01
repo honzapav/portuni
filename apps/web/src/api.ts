@@ -167,8 +167,16 @@ export function transitionPersistentSessionState(
   return jsonRequest<SessionSummary>("POST", `/sessions/${encodeURIComponent(id)}/state`, { state });
 }
 
-export function fetchPersistentSessionResumeInfo(id: string): Promise<SessionResumeInfo> {
-  return jsonRequest<SessionResumeInfo>("GET", `/sessions/${encodeURIComponent(id)}/resume-info`);
+// configDir: the resumed session's profile CLAUDE_CONFIG_DIR, when the
+// caller can resolve one from the desktop profiles registry (#204) --
+// lets the server check conversation-resumability at the right transcript
+// location instead of always the default (~/.claude).
+export function fetchPersistentSessionResumeInfo(
+  id: string,
+  configDir?: string | null,
+): Promise<SessionResumeInfo> {
+  const qs = configDir ? `?config_dir=${encodeURIComponent(configDir)}` : "";
+  return jsonRequest<SessionResumeInfo>("GET", `/sessions/${encodeURIComponent(id)}/resume-info${qs}`);
 }
 
 // GET /overview -- Přehled tab (#196). One aggregate, permission-filtered

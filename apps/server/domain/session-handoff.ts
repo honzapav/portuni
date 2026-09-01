@@ -43,6 +43,20 @@ export interface WriteHandoffResult {
 // dependent on which remote happens to be configured. Hashing the content
 // ourselves keeps "stored" and "current" (getResumeInfo, reading the file
 // straight off disk) always comparable.
+// Suspend atomicity (#204: "Suspend is not atomic"): the state transition is
+// tied to the LOCAL write succeeding, not to the upload. A session's
+// suspended-ness is defined by "the agent wrote a handoff and the server
+// recorded its hash" (spec, "Lifecycle": "agent writes a handoff ... state ->
+// suspended") -- the routed remote may not exist yet (no routing configured)
+// or be briefly unreachable, and that must not leave the session stuck
+// 'running' with an orphaned local handoff nobody can resume from. The
+// upload is therefore best-effort: a failure is logged, never thrown. The
+// file already exists on disk and (if the mirror watcher is running) is
+// picked up and tracked the same way as any other file per the deterministic
+// file-state model (root CLAUDE.md, "File state is deterministic" gotcha);
+// a later deliberate sync run or portuni_store still pushes it once routing
+// exists. `PendingOp` (domain/sync/pending-ops.ts) only models move/delete
+// today, not a first store -- extending it is out of scope here.
 export async function writeHandoffAndSuspend(
   db: Client,
   actorUserId: string,
@@ -55,14 +69,6 @@ export async function writeHandoffAndSuspend(
   await mkdir(dirname(absPath), { recursive: true });
   await writeFile(absPath, content, "utf8");
 
-  await storeFile(db, {
-    userId: actorUserId,
-    nodeId: session.nodeId,
-    localPath: absPath,
-    subpath: "sessions",
-    status: "wip",
-  });
-
   const handoffHash = sha256Buffer(Buffer.from(content, "utf8"));
   const row = await suspendSession(db, actorUserId, session.id, {
     handoffPath: relPath,
@@ -70,6 +76,22 @@ export async function writeHandoffAndSuspend(
     agentSessionId,
     handoffTitle: extractHandoffTitle(content),
   });
+
+  try {
+    await storeFile(db, {
+      userId: actorUserId,
+      nodeId: session.nodeId,
+      localPath: absPath,
+      subpath: "sessions",
+      status: "wip",
+    });
+  } catch (err) {
+    console.error(
+      `[portuni:session-handoff] storeFile failed for ${absPath}; the session is suspended and the handoff is written locally, but not yet uploaded:`,
+      err,
+    );
+  }
+
   return { session: row, handoffPath: relPath, handoffHash };
 }
 
@@ -111,20 +133,27 @@ export function claudeProjectSlug(cwd: string): string {
 // user's machine), also resolve false rather than throwing: whether the
 // conversation is genuinely gone or merely unreachable from here, the
 // correct outcome is identical -- degrade to handoff-resume.
+//
+// configDir is the profile's CLAUDE_CONFIG_DIR (#204, "conversationResumable
+// ignores profile_id"): when the session was spawned under a profile setting
+// that env var, Claude Code stores its transcripts directly under it instead
+// of under `<homeDir>/.claude` -- checking the default location always
+// reports false for such a session. The profiles registry itself lives in
+// the desktop app's config.json (Rust, apps/desktop/src/workspace.rs), not
+// reachable from this server process, so the caller (api/sessions.ts, via an
+// optional `config_dir` query param) is responsible for resolving the
+// session's profile_id to a config dir and passing it through -- null (the
+// default) means "resolve the default location", not "no profile exists".
 export async function checkConversationResumable(
   cli: string | null,
   agentSessionId: string | null,
   cwd: string | null,
   homeDir: string = homedir(),
+  configDir: string | null = null,
 ): Promise<boolean> {
   if (cli !== "claude" || !agentSessionId || !cwd) return false;
-  const jsonlPath = join(
-    homeDir,
-    ".claude",
-    "projects",
-    claudeProjectSlug(cwd),
-    `${agentSessionId}.jsonl`,
-  );
+  const base = configDir ?? join(homeDir, ".claude");
+  const jsonlPath = join(base, "projects", claudeProjectSlug(cwd), `${agentSessionId}.jsonl`);
   try {
     await access(jsonlPath, fsConstants.F_OK);
     return true;
@@ -138,12 +167,23 @@ export interface ResumeInfo {
   handoffPath: string | null;
   storedHandoffHash: string | null;
   currentHandoffHash: string | null;
-  // True when the on-disk handoff no longer matches what was stored at
-  // suspend time (edited, or now missing/unreadable) -- spec: "a differing
-  // hash is surfaced ('handoff edited since suspend') and the edited
-  // version is used". This function only surfaces the fact; using the
-  // edited content is the caller's job (it already has the file).
+  // True only when this device HAS a local mirror for the session's node AND
+  // the on-disk handoff no longer matches what was stored at suspend time
+  // (edited, or now missing/unreadable) -- spec: "a differing hash is
+  // surfaced ('handoff edited since suspend') and the edited version is
+  // used". This function only surfaces the fact; using the edited content is
+  // the caller's job (it already has the file). False both when nothing
+  // changed AND when there is no local mirror to check from -- see
+  // handoffCheckable to tell those two apart. A remote edit that has not yet
+  // synced down to THIS mirror is invisible either way: detection reads only
+  // the local mirror (#204).
   handoffChanged: boolean;
+  // False when this device has no local mirror for the session's node, so
+  // handoffChanged could not be evaluated at all -- as opposed to being
+  // evaluated and found unchanged. Lets callers distinguish "confirmed
+  // unchanged" from "cannot tell from this device" instead of the previous
+  // behavior, which reported a missing mirror as changed (a false positive).
+  handoffCheckable: boolean;
   conversationResumable: boolean;
 }
 
@@ -154,7 +194,9 @@ export async function getResumeInfo(
   session: SessionRow,
   mirrorRoot: string | null,
   homeDir: string = homedir(),
+  configDir: string | null = null,
 ): Promise<ResumeInfo> {
+  const handoffCheckable = mirrorRoot !== null;
   let currentHandoffHash: string | null = null;
   if (session.handoff_path && mirrorRoot) {
     try {
@@ -164,13 +206,15 @@ export async function getResumeInfo(
       currentHandoffHash = null;
     }
   }
-  const handoffChanged = session.handoff_hash !== null && currentHandoffHash !== session.handoff_hash;
+  const handoffChanged =
+    handoffCheckable && session.handoff_hash !== null && currentHandoffHash !== session.handoff_hash;
 
   const conversationResumable = await checkConversationResumable(
     session.cli,
     session.agent_session_id,
     mirrorRoot,
     homeDir,
+    configDir,
   );
 
   return {
@@ -179,6 +223,7 @@ export async function getResumeInfo(
     storedHandoffHash: session.handoff_hash,
     currentHandoffHash,
     handoffChanged,
+    handoffCheckable,
     conversationResumable,
   };
 }

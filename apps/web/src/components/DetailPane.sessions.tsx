@@ -17,6 +17,7 @@ import {
   renamePersistentSession,
   transitionPersistentSessionState,
 } from "../api";
+import { listProfiles } from "../lib/profiles";
 
 // Exported for reuse by OverviewView's workspace-wide session rows (#196).
 export const STATE_LABEL: Record<SessionState, string> = {
@@ -165,9 +166,11 @@ function SessionRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.name);
   const [saving, setSaving] = useState(false);
-  const [resumeInfo, setResumeInfo] = useState<
-    { conversation_resumable: boolean; handoff_changed: boolean } | null
-  >(null);
+  const [resumeInfo, setResumeInfo] = useState<{
+    conversation_resumable: boolean;
+    handoff_changed: boolean;
+    handoff_checkable: boolean;
+  } | null>(null);
 
   // Resumability is only meaningful (and only worth the round trip) for a
   // suspended session -- fetched lazily per row rather than batched with
@@ -175,7 +178,21 @@ function SessionRow({
   useEffect(() => {
     if (session.state !== "suspended") return;
     let cancelled = false;
-    void fetchPersistentSessionResumeInfo(session.id)
+    void (async () => {
+      // The profile's CLAUDE_CONFIG_DIR (#204) lets the server check
+      // conversation-resumability at the right transcript location; no-op
+      // outside Tauri or when the session used no profile.
+      let configDir: string | null = null;
+      if (session.profile_id) {
+        try {
+          const { profiles } = await listProfiles();
+          configDir = profiles.find((p) => p.id === session.profile_id)?.env.CLAUDE_CONFIG_DIR ?? null;
+        } catch {
+          /* profiles registry is optional context -- fall back to the default location */
+        }
+      }
+      return fetchPersistentSessionResumeInfo(session.id, configDir);
+    })()
       .then((info) => {
         if (!cancelled) setResumeInfo(info);
       })
@@ -185,7 +202,7 @@ function SessionRow({
     return () => {
       cancelled = true;
     };
-  }, [session.id, session.state]);
+  }, [session.id, session.state, session.profile_id]);
 
   const save = async () => {
     const trimmed = draft.trim();
@@ -271,6 +288,7 @@ function SessionRow({
               ? "lze pokračovat v konverzaci"
               : "spustí se z handoffu"}
             {resumeInfo.handoff_changed ? " (handoff upraven od pozastavení)" : ""}
+            {!resumeInfo.handoff_checkable ? " (nelze ověřit handoff na tomto zařízení)" : ""}
           </span>
         )}
       </div>
