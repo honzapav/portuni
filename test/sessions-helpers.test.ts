@@ -40,6 +40,17 @@ describe("sessions helpers", () => {
     assert.equal(s.sandboxProfile, "(version 1)\n(allow default)\n");
   });
 
+  it("createSession defaults spawnRequestedAt to the creation time when not given", () => {
+    const s = createSession(baseNode, 1_000_000);
+    assert.equal(s.spawnRequestedAt, 1_000_000);
+  });
+
+  it("createSession keeps an explicit spawnRequestedAt from before mirror/profile setup", () => {
+    const s = createSession({ ...baseNode, spawnRequestedAt: 999_000 }, 1_000_000);
+    assert.equal(s.spawnRequestedAt, 999_000);
+    assert.equal(s.createdAt, 1_000_000);
+  });
+
   it("removeSession returns a new array without the matching id", () => {
     const a = createSession(baseNode, 1);
     const b = createSession(baseNode, 2);

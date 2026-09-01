@@ -68,7 +68,8 @@ The generated files:
 
   Portuni writes this file only when it is missing or already carries the Portuni marker comment; a hand-edited Codex config is preserved.
 - **`.vibe/config.toml`** – project-scoped MCP server for Mistral Vibe: an `[[mcp_servers]]` entry named `portuni` (transport `streamable-http`, `url = <PORTUNI_URL>?home_node_id=<id>`) plus a `[mcp_servers.auth]` block using `api_key_env = "PORTUNI_MCP_TOKEN"`. Vibe merges this over `~/.vibe/config.toml` (union-merge by `name`), so it adds only the Portuni server. Vibe loads project config **only in trusted folders**, so launch it with `vibe --trust` (the desktop preset does). Marker-guarded like Codex. See [Mistral Vibe](/clients/mistral-vibe/).
-- **`PORTUNI_SCOPE.md`, `.cursor/rules`** – plain-text rules so the agent has the same picture even if the harness config is missing.
+- **`.cursor/rules`** – plain-text write-scope rules so the agent has the same picture even if the harness config is missing.
+- **`PORTUNI_SCOPE.md`** – the same write-scope rules, plus an orientation section (node context, responsibilities, recent events, and a handoff pointer for a suspended session) when that data is available. No automatic first prompt is sent to a spawned terminal anymore (spec: "Spawn UX") — the agent reads this file on its own instead of being told its contents upfront.
 - **`CLAUDE.md` / `AGENTS.md`** – refreshed only if they already exist, between BEGIN/END `portuni-scope` markers. User content outside the markers is preserved.
 
 When the registry changes (mirror added, removed, or renamed), every affected mirror's config is regenerated. Result of every regen:

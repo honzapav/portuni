@@ -59,7 +59,7 @@ The middle column of the workspace view holds full xterm.js terminals wired to a
 
 **Spawn semantics.** A new tab calls `pty_spawn(sessionId, cwd, command, cols, rows)` in the Rust backend. The `cwd` defaults to the focused node's local mirror folder — so the moment you open a terminal in a project node, you're already `cd`'d into the right workspace. `command` is taken from the agent-command preset (see Settings below); pass an empty command for a plain shell.
 
-**Agent prompt builder.** From a node's detail pane (`Pencil` icon → "Copy launch command") the app builds an agent-ready prompt: it tells the agent to call `portuni_get_node` first to refresh state, then attaches a snapshot of the node (description, status, edges, recent events, files) as orientation context. The launch command is your preset template (`claude {prompt}`, `codex {prompt}`, etc.) with `{prompt}` substituted. You can paste this into any of your tabs or have the app spawn a tab pre-loaded with it.
+**No automatic first prompt.** A spawned terminal starts empty and ready — the app does not send an orientation message to the agent. Everything an orientation round used to fetch (context summary, responsibilities, recent events, a handoff pointer for resumed work) is written into `PORTUNI_SCOPE.md` in the mirror instead, so the agent reads it on its own the moment it starts. Your first message to the agent is your actual task. "Copy launch command" on a node's detail pane copies exactly your agent-command preset (see Settings below), `cd`'d into that node's mirror.
 
 **Activity indicator.** Each tab tracks `lastOutputAt`; the activity dot stays lit for a few seconds after every byte the PTY emits. Useful when you have several long-running agents in background tabs.
 
@@ -87,7 +87,7 @@ Every mutating action calls back through `onMutate` which refetches the graph an
 Sections worth highlighting:
 
 - **Theme** — light / dark; the choice persists in `localStorage` and is reapplied on launch.
-- **Agent command preset** — pick which CLI agent your "Copy launch command" / new-terminal default uses. Built-in presets: Claude Code (`claude {prompt}`), Codex CLI (`codex {prompt}`), Gemini CLI (`gemini -p {prompt}`), Cursor Agent (`cursor-agent {prompt}`), OpenCode (`opencode --prompt {prompt}`), Mistral Vibe (`vibe --trust {prompt}`). You can also type a custom template; `{prompt}` is the placeholder for the shell-escaped prompt. (The Vibe preset passes `--trust` so it loads the mirror's project config and auto-seeds scope — see [Mistral Vibe](/clients/mistral-vibe/).)
+- **Agent command preset** — pick which CLI agent your "Copy launch command" / new-terminal default uses. Built-in presets: Claude Code (`claude`), Codex CLI (`codex`), Gemini CLI (`gemini`), Cursor Agent (`cursor-agent`), OpenCode (`opencode`), Mistral Vibe (`vibe --trust`). You can also type a custom command — it runs unmodified, `cd`'d into the node's mirror. (The Vibe preset passes `--trust` so it loads the mirror's project config and auto-seeds scope — see [Mistral Vibe](/clients/mistral-vibe/).)
 - **MCP server** — shows the sidecar's URL (typically `http://localhost:4011/mcp`), port, and whether an auth token is set. The bearer token itself lives in macOS Keychain (Tauri-only); reveal it on demand or rotate with one click. The install buttons write the URL + token into `~/.claude.json`, `~/.codex/config.toml`, and `~/.vibe/config.toml` so external clients can talk to the app's sidecar without manual config editing.
 - **Synchronizace** — connect Google Drive so stored files leave the local mirror. See below.
 
@@ -106,7 +106,7 @@ Until a target is connected, stored files sit in the local mirror only — a nod
 1. Open `Portuni.app`. Workspace view.
 2. Pick the node you're working on from the left list (or jump from the graph view).
 3. `+` to spawn a fresh terminal tab. The PTY starts in the node's mirror folder.
-4. Either type a shell command, or use the detail pane's "Copy launch command" to spawn the configured agent with the node's orientation prompt.
+4. Either type a shell command, or use the detail pane's "Copy launch command" to spawn the configured agent — the terminal starts empty, ready for your first message.
 5. Work. The agent uses Portuni MCP tools (`get_node`, `get_context`, `log`, `store`, etc.) via the embedded sidecar — same surface external clients see.
 6. When done, `portuni_status` (or rely on the agent to call it) before ending the session so disk / DB / remote stay consistent — this rule is enforced by the server-level instructions.
 

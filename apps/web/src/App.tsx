@@ -772,7 +772,13 @@ export default function App() {
   }, []);
 
   const openSession = useCallback(
-    (input: { node: NodeDetail; cwd: string; command: string; sandboxProfile: string | null }) => {
+    (input: {
+      node: NodeDetail;
+      cwd: string;
+      command: string;
+      sandboxProfile: string | null;
+      spawnRequestedAt?: number;
+    }) => {
       const session = createSession({
         nodeId: input.node.id,
         nodeName: input.node.name,
@@ -780,6 +786,7 @@ export default function App() {
         cwd: input.cwd,
         command: input.command,
         sandboxProfile: input.sandboxProfile,
+        spawnRequestedAt: input.spawnRequestedAt,
       });
       setSessions((prev) => [...prev, session]);
       // Opening a terminal also opens the node (terminals imply an open node).
@@ -801,6 +808,10 @@ export default function App() {
       // connects to the local MCP front door which proxies to central).
       if (openingSessionNodeIdsRef.current.has(nodeId)) return;
       openingSessionNodeIdsRef.current.add(nodeId);
+      // Spawn-phase instrumentation start (spec: "Spawn UX" -- instrument
+      // spawn phases spawn request -> sidecar calls -> CLI boot -> first
+      // token). TerminalPane measures the rest and prints the breakdown.
+      const spawnRequestedAt = Date.now();
       try {
         let detail: NodeDetail | null = null;
         try {
@@ -836,7 +847,7 @@ export default function App() {
           },
         };
         const command = buildAgentCommand(enriched, agentCommand);
-        openSession({ node: enriched, cwd, command, sandboxProfile });
+        openSession({ node: enriched, cwd, command, sandboxProfile, spawnRequestedAt });
       } finally {
         openingSessionNodeIdsRef.current.delete(nodeId);
       }

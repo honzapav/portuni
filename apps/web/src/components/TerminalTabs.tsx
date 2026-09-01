@@ -69,6 +69,7 @@ function TerminalTabs({
               cwd={s.cwd}
               command={s.command}
               sandboxProfile={s.sandboxProfile}
+              spawnRequestedAt={s.spawnRequestedAt}
               active={visible}
               theme={theme}
               onExit={() => onCloseSession(s.id)}

@@ -206,7 +206,7 @@ symlink to this file.
   (`install_codex_global`), `~/.vibe/config.toml` (`install_vibe_global`).
 - **Mistral Vibe needs `--trust`.** Vibe only loads the per-mirror
   `.vibe/config.toml` (and thus auto-seeds) when the folder is trusted, so
-  the desktop "Mistral Vibe" preset launches `vibe --trust {prompt}`
+  the desktop "Mistral Vibe" preset launches `vibe --trust`
   (session-only trust). Without it Vibe falls back to `~/.vibe/config.toml`
   (no `home_node_id`) and starts unscoped. Vibe merges project over user
   config (union-merge of `mcp_servers` by `name`), so the per-mirror file is
@@ -285,6 +285,22 @@ symlink to this file.
   successor of that name — `disk-projection.ts` is a clean rename, not a
   continuation). Model: `docs/architecture/scope-disk-projection.md`; plan:
   `docs/superpowers/plans/2026-07-06-scope-real-paths.md`.
+
+- **No automatic first prompt on spawn.** A terminal opened from a node
+  detail (`buildAgentCommand`, `apps/web/src/lib/prompt.ts`) starts empty
+  and ready — the app never sends an orientation message. What that prompt
+  used to fetch (node context, responsibilities, recent events, a handoff
+  pointer for a suspended session) is written into `PORTUNI_SCOPE.md`
+  instead (`domain/write-scope.ts` `buildOrientationHint`,
+  `domain/scope-materialize.ts` `orientationForNode`) — appended there only,
+  never into `.cursor/rules` or the `CLAUDE.md`/`AGENTS.md` marker blocks,
+  which stay on the terser write-scope hint. Central-mode mirrors get the
+  write-scope hint but no orientation section: `CentralClient` has no
+  endpoint for it yet, a deliberate scope cut, not a bug. Agent-command
+  presets carry no `{prompt}` placeholder anymore (`apps/web/src/lib/
+  settings.ts`); `TerminalPane.tsx` times spawn phases (provisioning ->
+  `pty_spawn` -> CLI boot to first byte) and prints/logs a one-line
+  breakdown on first output.
 
 ## Security rules (from the auth refactor post-mortem)
 

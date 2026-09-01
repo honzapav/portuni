@@ -230,6 +230,9 @@ async function agentMain(client: CentralClient): Promise<void> {
     try {
       const r = await materializeAllRegisteredMirrors({
         dataSourcesFor: (nodeId) => client.dataSources(nodeId).catch(() => []),
+        // No local db in agent mode, and CentralClient has no orientation
+        // endpoint yet -- PORTUNI_SCOPE.md falls back to the soft hint only.
+        orientationFor: () => Promise.resolve(null),
       });
       if (r.errors.length > 0) {
         console.error(

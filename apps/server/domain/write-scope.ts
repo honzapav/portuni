@@ -542,3 +542,69 @@ export function buildSoftHint(args: {
   );
   return lines.join("\n");
 }
+
+// Orientation data for PORTUNI_SCOPE.md (spec: "Spawn UX" -- fatten
+// provisioning so the automatic first prompt is unnecessary). This is what
+// the old orientation prompt used to fetch and hand the agent as its first
+// message; now the agent reads it off disk on its own, on demand.
+export interface OrientationSummary {
+  node: {
+    name: string;
+    type: string;
+    description: string | null;
+    status: string;
+    goal: string | null;
+    lifecycle_state: string | null;
+  };
+  responsibilities: Array<{
+    title: string;
+    description: string | null;
+    assignees: string[];
+  }>;
+  events: Array<{ type: string; content: string; created_at: string }>;
+  // Most recent suspended session on this node with a handoff note, if any.
+  handoff: { sessionName: string; handoffPath: string; suspendedAt: string } | null;
+}
+
+// Appended to PORTUNI_SCOPE.md only -- .cursor/rules, CLAUDE.md and
+// AGENTS.md stay on the leaner buildSoftHint content, since they are meant
+// as terse per-harness rules rather than a full orientation doc.
+export function buildOrientationHint(o: OrientationSummary): string {
+  const lines: string[] = ["## Node context", ""];
+  const lifecycle = o.node.lifecycle_state ? `, lifecycle: ${o.node.lifecycle_state}` : "";
+  lines.push(`**${o.node.name}** (${o.node.type}) — status: ${o.node.status}${lifecycle}`);
+  if (o.node.goal) lines.push(`Goal: ${o.node.goal}`);
+  if (o.node.description) {
+    lines.push("");
+    lines.push(o.node.description);
+  }
+  lines.push("");
+
+  if (o.responsibilities.length > 0) {
+    lines.push("## Responsibilities", "");
+    for (const r of o.responsibilities) {
+      const who = r.assignees.length > 0 ? ` — ${r.assignees.join(", ")}` : "";
+      lines.push(`- ${r.title}${who}`);
+    }
+    lines.push("");
+  }
+
+  if (o.events.length > 0) {
+    lines.push("## Recent events", "");
+    for (const e of o.events) {
+      const date = e.created_at.slice(0, 10);
+      lines.push(`- \`[${e.type}]\` ${date} — ${e.content}`);
+    }
+    lines.push("");
+  }
+
+  if (o.handoff) {
+    lines.push("## Handoff", "");
+    lines.push(
+      `A previous session ("${o.handoff.sessionName}", suspended ${o.handoff.suspendedAt.slice(0, 10)}) left a handoff note at \`${o.handoff.handoffPath}\`. Read it before starting if you are picking up that work.`,
+    );
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}

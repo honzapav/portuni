@@ -36,6 +36,12 @@ type Props = {
   // Null spawns unsandboxed (legacy sessions only — new launches always
   // carry a profile).
   sandboxProfile: string | null;
+  // Wall-clock ms (Date.now()) when the user's spawn action began, before
+  // mirror creation / sandbox profile fetch. Used only to print a one-line
+  // spawn-phase timing breakdown once the first byte comes back from the
+  // CLI (spec: "Spawn UX" -- instrument spawn phases so future tuning is
+  // measured, not guessed).
+  spawnRequestedAt: number;
   // True when the pane is the active tab. False for background panes
   // that are mounted but display:none — those skip resize-IPC since
   // their measurements would be wrong anyway.
@@ -100,6 +106,7 @@ export default function TerminalPane({
   cwd,
   command,
   sandboxProfile,
+  spawnRequestedAt,
   active,
   theme,
   onExit,
@@ -110,6 +117,14 @@ export default function TerminalPane({
   const termRef = useRef<Terminal | null>(null);
   const onExitRef = useRef(onExit);
   const onOutputRef = useRef(onOutput);
+  // Spawn-phase timing: filled in right around the pty_spawn invoke call,
+  // read once by the pty-data listener on the first byte back from the CLI.
+  const spawnTimingRef = useRef<{
+    requestedAt: number;
+    invokedAt: number;
+    spawnedAt: number;
+    printed: boolean;
+  } | null>(null);
   useEffect(() => {
     onExitRef.current = onExit;
   }, [onExit]);
@@ -222,6 +237,26 @@ export default function TerminalPane({
 
       unlistenData = await listen<PtyDataPayload>("pty-data", (e) => {
         if (e.payload.session_id === id) {
+          // First byte back from the CLI closes out the spawn-phase timing
+          // (request -> ready, pty_spawn round trip, CLI boot) -- printed
+          // once as a diagnostic line, same style as the pty-exit line
+          // below. Never blocks/reorders the actual output write.
+          const timing = spawnTimingRef.current;
+          if (timing && !timing.printed) {
+            timing.printed = true;
+            const firstOutputAt = Date.now();
+            const provisioning = timing.invokedAt - timing.requestedAt;
+            const ptySpawn = timing.spawnedAt - timing.invokedAt;
+            const boot = firstOutputAt - timing.spawnedAt;
+            const total = firstOutputAt - timing.requestedAt;
+            const line = `[spawn: provisioning ${provisioning}ms · pty_spawn ${ptySpawn}ms · boot ${boot}ms · total ${total}ms]`;
+            console.log(`[portuni] session ${id} ${line}`);
+            try {
+              term.writeln(`\x1b[90m${line}\x1b[0m`);
+            } catch {
+              // diagnostic only -- never let it break the real output write below
+            }
+          }
           // Defensive: a malformed escape sequence from a full-screen TUI
           // agent can make xterm (or the WebGL renderer) throw. This
           // listener is async, so an uncaught throw here escapes to
@@ -249,6 +284,7 @@ export default function TerminalPane({
       });
 
       if (cancelled) return;
+      const invokedAt = Date.now();
       try {
         await invoke("pty_spawn", {
           args: {
@@ -264,6 +300,12 @@ export default function TerminalPane({
         term.writeln(`\x1b[31mFailed to spawn pty: ${String(err)}\x1b[0m`);
         return;
       }
+      spawnTimingRef.current = {
+        requestedAt: spawnRequestedAt,
+        invokedAt,
+        spawnedAt: Date.now(),
+        printed: false,
+      };
 
       // Manual Meta/Option handling. macOptionIsMeta is off (CZ-keyboard
       // friendliness — see the constructor option above), so we re-inject

@@ -21,12 +21,20 @@ export type TerminalSessionInput = {
   // disk scope. Null only for sessions created before the profile fetch
   // existed; new sessions always carry one (launch is fail-closed).
   sandboxProfile: string | null;
+  // Wall-clock ms (Date.now()) when the spawn flow began -- before mirror
+  // creation / sandbox profile fetch, i.e. the moment the user asked for a
+  // terminal. Optional: defaults to session-creation time when the caller
+  // doesn't track an earlier start (e.g. tests). TerminalPane uses it to
+  // print a one-line spawn-phase timing breakdown once the terminal is
+  // ready (spec: "Spawn UX" -- instrument spawn phases).
+  spawnRequestedAt?: number;
 };
 
 export type TerminalSession = TerminalSessionInput & {
   id: string;
   createdAt: number;
   lastOutputAt: number;
+  spawnRequestedAt: number;
   // Set by the Rust foreground-poll thread via the `pty-foreground` event.
   // True when a subprocess owns the PTY foreground (agent computing),
   // false when the shell is at its prompt (idle). Absent when no signal
@@ -55,6 +63,7 @@ export function createSession(
     id: `term_${input.nodeId}_${now}_${rand}`,
     createdAt: now,
     lastOutputAt: now,
+    spawnRequestedAt: input.spawnRequestedAt ?? now,
   };
 }
 
