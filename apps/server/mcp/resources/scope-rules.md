@@ -29,12 +29,12 @@ set starts empty. Every read then requires explicit expansion.
 
 ## Scope modes
 
-Configured via `PORTUNI_SCOPE_MODE`. Default is `balanced`.
+Configured via `PORTUNI_SCOPE_MODE`. Default is `strict`.
 
-- **strict**: every out-of-scope read returns
+- **strict** (default): every out-of-scope read returns
   `scope_expansion_required`. Global queries are always refused
   (must scope explicitly).
-- **balanced** (default): out-of-scope reads return
+- **balanced**: out-of-scope reads return
   `scope_expansion_required`. Global queries elicit on the first
   call, then run once acknowledged.
 - **permissive**: out-of-scope reads are allowed; the access is

@@ -9,6 +9,7 @@ import { storeFile, mimeFor } from "../../domain/sync/engine.js";
 import { createFileRemote } from "../../domain/sync/file-content-remote.js";
 import { getMirrorPath } from "../../domain/sync/mirror-registry.js";
 import { EXPORT_MIME } from "../../domain/sync/native-format.js";
+import { nodeVisibleTo } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
 export interface SnapshotArgs {
@@ -114,6 +115,12 @@ export function registerSyncSnapshotTools(server: McpServer, ctx: SessionCtx): v
     },
     async (args) => {
       const db = getDb();
+      if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
+        return {
+          content: [{ type: "text" as const, text: "Error: node not found" }],
+          isError: true,
+        };
+      }
       const r = await snapshotService(db, {
         userId: ctx.identity.userId,
         nodeId: args.node_id,
