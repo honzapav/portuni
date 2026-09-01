@@ -94,6 +94,7 @@ export async function handleSandboxProfileByCwd(
       portuni_root: r.scope.portuniRoot,
       home_mirror: r.scope.homeMirror,
       projection_root: r.scope.projectionRoot ?? null,
+      session_id: r.scope.sessionId ?? null,
     });
   } catch (err) {
     if (err instanceof ResumeSessionUnauthorizedError) {

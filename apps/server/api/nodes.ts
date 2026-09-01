@@ -951,6 +951,7 @@ export async function handleNodeSandboxProfile(
       portuni_root: scope.portuniRoot,
       home_mirror: scope.homeMirror,
       projection_root: scope.projectionRoot ?? null,
+      session_id: scope.sessionId ?? null,
     });
   } catch (err) {
     if (err instanceof ResumeSessionUnauthorizedError) {

@@ -149,6 +149,14 @@ pub struct SpawnArgs {
     /// spawns unsandboxed (older frontends, nodes without mirrors).
     #[serde(default)]
     pub sandbox_profile: Option<String>,
+    /// Session id the sandbox profile's projection grant is narrowed to
+    /// (from the same GET /nodes/:id/sandbox-profile response as
+    /// sandbox_profile, #208 follow-up). Exported as
+    /// PORTUNI_SPAWN_SESSION_ID so a Claude Code connection reuses it as
+    /// the MCP session's own id. Absent/empty for older frontends or a
+    /// profile response minted before this field existed.
+    #[serde(default)]
+    pub spawn_session_id: Option<String>,
     /// Id of a CLI spawn profile (config.json `profiles`, phase 3 spawn UX).
     /// When set and known, its env vars are merged into the shell and its
     /// `command` override (if any) replaces `command` above. Absent/unknown
@@ -320,6 +328,23 @@ pub fn pty_spawn(
     // copies the parent env by default, which is what we want here so
     // the user's shell rc files have what they expect.
     cmd.env("TERM", "xterm-256color");
+    // Spawn session id (#208 follow-up: "kernel-level isolation between
+    // concurrent sessions on the same node"): the Seatbelt profile's own
+    // projection grant is already narrowed to this id (it comes from the
+    // same GET /nodes/:id/sandbox-profile response as sandbox_profile
+    // above), so exporting it lets a Claude Code connection thread it
+    // through (write-scope.ts's X-Portuni-Spawn-Id header) and reuse it as
+    // the MCP session's own id instead of minting an unrelated one.
+    // Exported whenever present, regardless of whether sandbox_profile
+    // itself was applied (non-macOS spawns still benefit from the session
+    // id lining up with the disk projection directory).
+    if let Some(sid) = args
+        .spawn_session_id
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        cmd.env("PORTUNI_SPAWN_SESSION_ID", sid);
+    }
     // Inject one token env var per enabled workspace, so per-mirror configs
     // (which reference ${PORTUNI_MCP_TOKEN_<ID>:-}) resolve the right
     // credential regardless of which workspace the terminal's cwd belongs

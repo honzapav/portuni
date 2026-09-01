@@ -44,6 +44,20 @@ describe("createSession / getSession / listSessions", () => {
     assert.equal(await getSession(db, "nope"), null);
   });
 
+  it("uses a caller-supplied preassignedId instead of minting one (#208 follow-up)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const preassigned = "N000000000000000PREASSIGN1";
+    assert.equal(preassigned.length, 26);
+    const row = await createSession(
+      db,
+      "U1",
+      { node_id: nodeId, session_type: "interactive_task" },
+      preassigned,
+    );
+    assert.equal(row.id, preassigned);
+    assert.ok(await getSession(db, preassigned));
+  });
+
   it("listSessions filters by node_id, user_id, and state", async () => {
     const { db, nodeId } = await makeSharedDb();
     await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });

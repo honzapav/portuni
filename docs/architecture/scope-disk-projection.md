@@ -65,27 +65,49 @@ Hardlinking falls back to a real copy on `EXDEV` (a mirror on another
 filesystem than the projection root) instead of silently producing an empty
 directory (`session-projection.ts`'s `linkOrCopy`).
 
-**Known limitation (#208).** Because the Seatbelt allow is keyed by node, not
-by session (the profile is frozen before the connecting session's id
-exists — see above), every session anchored to the same home node shares
-kernel-level read access to every other session's ad-hoc projections under
-that node, including one-off elicited reads. Closing this fully needs the
-spawning side to mint the session id *before* the sandbox profile is built
-and thread it through to the MCP connection (a header-relay mechanism like
-`X-Portuni-Profile`'s, Claude-only today) so the grant can be scoped to
-`<projectionRoot>/<sessionId>/` instead of the whole `<projectionRoot>/` —
-deferred as a follow-up, cross-cutting (Rust spawn + frontend + MCP
-transport) change. What ships now: `onclose` cleanup only ran on a graceful
-session end, so a crashed process (or the whole desktop app) left its
-hardlinks behind forever, readable by the next session with no scope event
-recorded for the read. `sweepStaleSessionProjections`
-(`session-projection.ts`), run once at boot from both entry points
-(`boot/session-projection-sweep.ts`), now removes any
+**Per-session narrowing (#208 follow-up).** The Seatbelt allow for the
+projection parent is scoped to `<projectionRoot>/<sessionId>/`, not the whole
+`<projectionRoot>/` — two sessions spawned against the same home node no
+longer share a kernel-level read grant into each other's ad-hoc projections.
+This needs the session id to exist *before* the sandbox profile is built,
+which is normally impossible (the profile is frozen at spawn, before the MCP
+connection — and its session row — exist). `resolveSandboxScopeForNode`
+(`apps/server/domain/sandbox-profile.ts`) resolves this by mint-then-relay: a
+fresh spawn mints a `ulid()` there and returns it as `session_id` on the `GET
+/nodes/:id/sandbox-profile` response; a resumed spawn reuses its
+already-validated `resumeSessionId` instead (no new id needed — it is already
+known and already governs the widened `readMirrors`). The minted id is
+threaded out to `pty_spawn` as `spawn_session_id` (`apps/desktop/src/pty.rs`),
+which exports it as `PORTUNI_SPAWN_SESSION_ID`; the per-mirror `.mcp.json`
+expands it into a `X-Portuni-Spawn-Id` header the same way
+`X-Portuni-Profile` carries the spawn profile id (`buildClaudeMcpJson`,
+`write-scope.ts` — Claude-only for now, same rationale as the profile
+header). `mcp/transport.ts` reads that header and passes it through
+`createMcpServer` to `bindSessionPersistence`, which hands it to
+`domain/sessions.ts`'s `createSession` as a pre-assigned id instead of
+minting a second, unrelated one — so the MCP session's own id matches what
+the kernel already granted. Central mode (`db` absent in
+`resolveSandboxScopeForNode`) always mints fresh rather than trusting a
+caller-supplied `resumeSessionId`, which is unvalidated there. A non-Claude
+CLI, or a plain shell outside the app, degrades to the pre-#208-follow-up
+behavior (the wide per-node grant, `buildSeatbeltProfile` falls back to it
+when `sessionId` is absent) — not a regression, since that was the only
+behavior before this change.
+
+**Remaining gap.** `onclose` cleanup only runs on a graceful session end, so
+a crashed process (or the whole desktop app) leaves its hardlinks behind.
+`sweepStaleSessionProjections` (`session-projection.ts`), run once at boot
+from both entry points (`boot/session-projection-sweep.ts`), removes any
 `<projectionRoot>/<sessionId>/` directory whose session is not `running` in
 the durable `sessions` table (closed/suspended/archived, or an id that no
-longer exists) — closing the "stays readable forever after a crash" half of
-the gap even though session-to-session sharing while both are genuinely
-running is not yet closed.
+longer exists) between restarts. The actual kernel enforcement of the
+narrowed grant (that `sandbox-exec` really refuses a second session's read
+into the first session's `<sessionId>/` subdirectory) is macOS-only,
+verifiable only with a live `sandbox-exec` run — the plumbing above is
+covered by tests (`test/sandbox-profile.test.ts`,
+`test/session-persistence.test.ts`, `test/sessions.test.ts`,
+`test/rest-sandbox-profile.test.ts`, `test/agent-router.test.ts`,
+`test/write-scope.test.ts`), but the live macOS verification itself is not.
 
 ## Restart consolidation
 

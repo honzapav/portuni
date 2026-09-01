@@ -800,6 +800,7 @@ export default function App() {
       sandboxProfile: string | null;
       spawnRequestedAt?: number;
       profileId?: string | null;
+      spawnSessionId?: string | null;
     }) => {
       const session = createSession({
         nodeId: input.node.id,
@@ -810,6 +811,7 @@ export default function App() {
         sandboxProfile: input.sandboxProfile,
         spawnRequestedAt: input.spawnRequestedAt,
         profileId: input.profileId,
+        spawnSessionId: input.spawnSessionId,
       });
       setSessions((prev) => [...prev, session]);
       // Opening a terminal also opens the node (terminals imply an open node).
@@ -856,8 +858,11 @@ export default function App() {
         // not open at all. Running an agent without the kernel boundary
         // must be a deliberate act, never a silent fallback.
         let sandboxProfile: string;
+        let spawnSessionId: string | null;
         try {
-          sandboxProfile = (await fetchSandboxProfile(nodeId)).profile;
+          const profileResponse = await fetchSandboxProfile(nodeId);
+          sandboxProfile = profileResponse.profile;
+          spawnSessionId = profileResponse.session_id;
         } catch (err) {
           showSessionError(`Nelze načíst sandbox profil uzlu: ${String(err)}`);
           return;
@@ -870,7 +875,15 @@ export default function App() {
           },
         };
         const command = buildAgentCommand(enriched, agentCommand);
-        openSession({ node: enriched, cwd, command, sandboxProfile, spawnRequestedAt, profileId });
+        openSession({
+          node: enriched,
+          cwd,
+          command,
+          sandboxProfile,
+          spawnRequestedAt,
+          profileId,
+          spawnSessionId,
+        });
       } finally {
         openingSessionNodeIdsRef.current.delete(nodeId);
       }

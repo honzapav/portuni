@@ -125,6 +125,15 @@ export function createMcpTransport(): McpTransport {
       const profileId =
         (Array.isArray(profileIdHeader) ? profileIdHeader[0] : profileIdHeader)?.trim() || null;
 
+      // X-Portuni-Spawn-Id (#208 follow-up): the id the Seatbelt profile's
+      // projection grant was already narrowed to at spawn time, sent the
+      // same way X-Portuni-Profile is -- see bindSessionPersistence. Only
+      // meaningful for a fresh (non-resume) connection; a resume already
+      // reuses its own known id via resumeSessionPersistence below.
+      const spawnIdHeader = req.headers["x-portuni-spawn-id"];
+      const spawnSessionId =
+        (Array.isArray(spawnIdHeader) ? spawnIdHeader[0] : spawnIdHeader)?.trim() || null;
+
       // Headless connections without a task anchor are refused at seed
       // time — a headless session has no elicitation channel, so it must
       // arrive with its home node already known (see the session-type
@@ -140,7 +149,13 @@ export function createMcpTransport(): McpTransport {
         return;
       }
 
-      const { server, scope } = createMcpServer(identity, homeNodeId, profileId, resumeSessionId);
+      const { server, scope } = createMcpServer(
+        identity,
+        homeNodeId,
+        profileId,
+        resumeSessionId,
+        spawnSessionId,
+      );
 
       // Resume (#204): must be authorized and rehydrated before any tool
       // call is served, so it is awaited here -- before auto-seed and

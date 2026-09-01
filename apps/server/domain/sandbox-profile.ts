@@ -21,6 +21,7 @@
 
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
+import { ulid } from "ulid";
 import type { Client } from "@libsql/client";
 import { getMirrorPath, listUserMirrors } from "./sync/mirror-registry.js";
 import { nodeNeighbourIds } from "./queries/neighbours.js";
@@ -67,6 +68,19 @@ export interface SandboxScope {
   // creates later. Optional so hand-built SandboxScope literals (existing
   // tests, callers with no session concept) keep working without it.
   projectionRoot?: string;
+  // The MCP session id this profile's projection grant is narrowed to, when
+  // known (#208 follow-up: "kernel-level isolation between concurrent
+  // sessions on the same node"). A resumed spawn reuses the already-
+  // validated resumeSessionId; a fresh spawn mints one here, before the MCP
+  // session itself exists, so it can be threaded out to the caller (REST
+  // response -> pty_spawn env -> Claude's .mcp.json header ->
+  // mcp/transport.ts) and handed back in as that session's pre-assigned id
+  // (domain/sessions.ts createSession). Central mode (db absent) always
+  // mints fresh rather than trusting a caller-supplied resumeSessionId,
+  // which is unvalidated there. Optional for the same hand-built-literal
+  // reason as projectionRoot; absent, buildSeatbeltProfile falls back to
+  // the wide (unnarrowed) projection grant.
+  sessionId?: string;
 }
 
 // Render the Seatbelt profile. Paths must already be realpath-resolved.
@@ -99,7 +113,14 @@ export function buildSeatbeltProfile(scope: SandboxScope): string {
     lines.push(`(allow file-read* (subpath ${sbQuote(normalize(m))}))`);
   }
   if (scope.projectionRoot) {
-    lines.push(`(allow file-read* (subpath ${sbQuote(normalize(scope.projectionRoot))}))`);
+    // Narrow to this session's own subdirectory when known -- two sessions
+    // spawned against the same node no longer share a kernel-level read
+    // grant into each other's ad-hoc projections. Falls back to the wide
+    // per-node grant when sessionId is absent (hand-built scopes, tests).
+    const projectionAllow = scope.sessionId
+      ? join(scope.projectionRoot, scope.sessionId)
+      : scope.projectionRoot;
+    lines.push(`(allow file-read* (subpath ${sbQuote(normalize(projectionAllow))}))`);
   }
   lines.push(`(allow file-read* file-write* (subpath ${sbQuote(home)}))`);
   return lines.join("\n") + "\n";
@@ -158,6 +179,13 @@ export async function resolveSandboxScopeForNode(
     ? await resolveNeighbourReadMirrors(userId, await nodeNeighbourIds(db, nodeId), homeReal)
     : [];
 
+  // Session id this profile's projection grant narrows to (#208 follow-up).
+  // A resumed spawn reuses its already-validated resumeSessionId; anything
+  // else -- fresh spawn, or db absent (central mode, where a caller-supplied
+  // resumeSessionId is unvalidated and must not be trusted for this) --
+  // mints a fresh one.
+  let sessionId = ulid();
+
   if (db && resumeSessionId) {
     const resumable = await loadResumableSession(db, userId, nodeId, resumeSessionId);
     if (!resumable) throw new ResumeSessionUnauthorizedError(resumeSessionId);
@@ -168,6 +196,7 @@ export async function resolveSandboxScopeForNode(
       homeReal,
     );
     readMirrors = [...new Set([...readMirrors, ...resumedMirrors])];
+    sessionId = resumeSessionId;
   }
 
   return {
@@ -175,6 +204,7 @@ export async function resolveSandboxScopeForNode(
     homeMirror: homeReal,
     readMirrors,
     projectionRoot: join(portuniRootReal, ".portuni-sessions", nodeId),
+    sessionId,
   };
 }
 

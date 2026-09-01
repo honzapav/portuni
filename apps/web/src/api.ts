@@ -233,6 +233,10 @@ export type SandboxProfileResponse = {
   portuni_root: string;
   home_mirror: string;
   projection_root: string | null;
+  // Session id the profile's projection grant is already narrowed to
+  // (#208 follow-up). Threaded through pty_spawn -> Claude's .mcp.json
+  // X-Portuni-Spawn-Id header so the MCP session reuses this exact id.
+  session_id: string | null;
 };
 
 export function fetchSandboxProfile(id: string): Promise<SandboxProfileResponse> {

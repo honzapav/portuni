@@ -127,20 +127,37 @@ function wireOngoingSync(db: Client, scope: SessionScope, sessionId: string): vo
 // the raw query value sidesteps the race; omitting the parameter (existing
 // test harnesses that set `scope.homeNodeId` by hand before calling this)
 // falls back to the property for compatibility.
+// spawnSessionId is the X-Portuni-Spawn-Id header (transport.ts): the id the
+// Seatbelt profile's projection grant was already narrowed to at spawn time
+// (domain/sandbox-profile.ts), sent only by Claude Code connections whose
+// per-mirror .mcp.json carries the ${PORTUNI_SPAWN_SESSION_ID:-} header
+// expansion -- absent/empty for every other CLI, a plain shell outside a
+// mirror, or a resumed connection (resumeSessionPersistence reuses the
+// already-known resumeSessionId instead and never calls this function).
+// Passing it through to createSession makes the session row's own id match
+// what the kernel already granted, so the disk projector's per-session
+// subdirectory (<projectionRoot>/<sessionId>/) lines up with the narrowed
+// Seatbelt allow instead of a second, unrelated id.
 export function bindSessionPersistence(
   db: Client,
   scope: SessionScope,
   identity: Pick<RequestIdentity, "userId">,
   profileId: string | null = null,
   homeNodeId?: string | null,
+  spawnSessionId?: string | null,
 ): void {
   safe(
     (async () => {
-      const row = await createSession(db, identity.userId, {
-        node_id: homeNodeId !== undefined ? homeNodeId : scope.homeNodeId,
-        session_type: scope.sessionType,
-        profile_id: profileId,
-      });
+      const row = await createSession(
+        db,
+        identity.userId,
+        {
+          node_id: homeNodeId !== undefined ? homeNodeId : scope.homeNodeId,
+          session_type: scope.sessionType,
+          profile_id: profileId,
+        },
+        spawnSessionId,
+      );
       scope.sessionId = row.id;
 
       // Catch-up: auto-seed can race ahead of this async INSERT, so persist

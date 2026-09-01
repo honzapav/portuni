@@ -300,9 +300,17 @@ export function buildClaudeMcpJson(args: {
         // scope: Codex/Vibe/Gemini resume pointers, per-CLI capability"),
         // Codex/Vibe's config formats have no equivalent runtime expansion
         // for a second header.
+        // X-Portuni-Spawn-Id (#208 follow-up): pty_spawn exports
+        // PORTUNI_SPAWN_SESSION_ID when the sandbox profile it fetched
+        // before spawning carried a session_id, so the MCP session this
+        // connection creates reuses that id instead of minting an unrelated
+        // one -- the disk projector's per-session subdirectory then lines
+        // up with the Seatbelt grant already narrowed to it. Same
+        // Claude-only, degrades-to-empty-header pattern as X-Portuni-Profile.
         headers: {
           Authorization: `Bearer \${${tokenVar}:-}`,
           "X-Portuni-Profile": `\${PORTUNI_PROFILE_ID:-}`,
+          "X-Portuni-Spawn-Id": `\${PORTUNI_SPAWN_SESSION_ID:-}`,
         },
       },
     },

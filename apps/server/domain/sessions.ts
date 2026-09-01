@@ -51,13 +51,26 @@ export function computeDefaultSessionName(nodeName: string | null, createdAtIso:
   return `${nodeName ?? "Chat"} · ${createdAtIso.slice(0, 10)}`;
 }
 
+// preassignedId (#208 follow-up, "kernel-level isolation between concurrent
+// sessions on the same node"): when the caller already minted this session's
+// id before the row existed -- the Seatbelt profile is frozen at spawn time,
+// before an MCP connection is even attempted, and its projection grant is
+// narrowed to that id (domain/sandbox-profile.ts) -- pass it here so the
+// domain id matches what the kernel already granted, instead of minting a
+// second, unrelated id. Not part of CreateSessionInput's zod schema: that
+// type also shapes any future MCP-exposed session-creation input, and a
+// self-declared id there would violate "derived by the server, never
+// self-declared". Only bindSessionPersistence (mcp/session-persistence.ts)
+// supplies it, sourced from a header the server itself put in the per-mirror
+// .mcp.json, never from raw client input.
 export async function createSession(
   db: Client,
   userId: string,
   input: CreateSessionInput,
+  preassignedId?: string | null,
 ): Promise<SessionRow> {
   const parsed = CreateSessionInput.parse(input);
-  const id = ulid();
+  const id = preassignedId ?? ulid();
   const now = new Date().toISOString();
 
   let nodeName: string | null = null;

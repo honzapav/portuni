@@ -87,8 +87,10 @@ describe("GET /nodes/:id/sandbox-profile", () => {
       portuni_root: string;
       home_mirror: string;
       projection_root: string | null;
+      session_id: string | null;
     };
     assert.ok(body.home_mirror.endsWith(join("acme", "projects", "proj")));
+    assert.ok(body.session_id, "session_id is returned (#208 follow-up)");
     assert.ok(body.profile.startsWith("(version 1)"));
     assert.ok(body.profile.includes(`(allow file-read* file-write* (subpath "${body.home_mirror}"))`));
     assert.ok(body.profile.includes(`(deny file-read* file-write* (subpath "${body.portuni_root}"))`));
@@ -106,6 +108,14 @@ describe("GET /nodes/:id/sandbox-profile", () => {
       "grants the projection root",
     );
     assert.ok(body.projection_root?.includes(".portuni-sessions"));
+    // The projection grant is narrowed to this session's own subdirectory
+    // (#208 follow-up), not the whole per-node projection parent.
+    assert.ok(
+      readLines.some((l) =>
+        l.includes(join(body.projection_root as string, body.session_id as string)),
+      ),
+      "narrows the projection grant to <projectionRoot>/<session_id>",
+    );
   });
 
   it("409 NO_MIRROR when the node has no local mirror", async () => {

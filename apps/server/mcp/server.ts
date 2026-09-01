@@ -149,17 +149,20 @@ function registerSetupDriveRemotePrompt(server: McpServer): void {
 // forget bindSessionPersistence path cannot guarantee. This function only
 // skips its own bindSessionPersistence call in that case so the two paths
 // never race to create/attach the same connection's session row twice.
+// `spawnSessionId` is the X-Portuni-Spawn-Id header (transport.ts) -- see
+// bindSessionPersistence for what it threads through and why.
 export function createMcpServer(
   identity: RequestIdentity,
   homeNodeId: string | null = null,
   profileId: string | null = null,
   resumeSessionId: string | null = null,
+  spawnSessionId: string | null = null,
 ): { server: McpServer; scope: SessionScope } {
   const scope = new SessionScope(deriveSessionType(identity, homeNodeId));
   const projector = createDiskProjector({ userId: identity.userId, scope });
   scope.onAdd((nodeId) => projector.schedule(nodeId));
   if (!resumeSessionId) {
-    bindSessionPersistence(getDb(), scope, identity, profileId, homeNodeId);
+    bindSessionPersistence(getDb(), scope, identity, profileId, homeNodeId, spawnSessionId);
   }
   const server = new McpServer(
     { name: "portuni", version: "0.1.0" },

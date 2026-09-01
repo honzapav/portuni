@@ -273,10 +273,24 @@ symlink to this file.
   `readMirrors` / `resolveNeighbourReadMirrors`). It also grants read-only on
   a per-node **projection parent**, `<portuniRoot>/.portuni-sessions/
   <homeNodeId>/` (`SandboxScope.projectionRoot` /
-  `resolveProjectionRootForNode`) — keyed by node because the profile is
-  frozen before the MCP session's id exists, but a `subpath` allow on the
-  parent covers whatever `<sessionId>/` subdirectory that session creates
-  later. **Ad-hoc nodes** (deeper than depth-1, added mid-session by
+  `resolveProjectionRootForNode`), narrowed further to
+  `<projectionRoot>/<sessionId>/` when the session id is already known
+  (`SandboxScope.sessionId`, #208 follow-up) — a fresh spawn mints one in
+  `resolveSandboxScopeForNode` (central mode, `db` absent, always mints
+  fresh rather than trusting an unvalidated caller-supplied
+  `resumeSessionId`) and returns it as `session_id` on the sandbox-profile
+  REST response; a resume reuses its already-validated `resumeSessionId`.
+  Threaded to the spawned shell as `PORTUNI_SPAWN_SESSION_ID`
+  (`pty_spawn`'s `spawn_session_id`), then to the MCP connection via a
+  `X-Portuni-Spawn-Id` header (`buildClaudeMcpJson`, Claude-only like
+  `X-Portuni-Profile`) that `mcp/transport.ts` hands to
+  `domain/sessions.ts`'s `createSession` as a pre-assigned id, so the
+  session row's own id matches what the kernel already granted. Without a
+  known session id (older frontend, non-Claude CLI, plain shell outside the
+  app) `buildSeatbeltProfile` falls back to the wide, node-keyed grant — a
+  `subpath` allow on the parent covers whatever `<sessionId>/` subdirectory
+  that session creates later, same as before this change. **Ad-hoc nodes**
+  (deeper than depth-1, added mid-session by
   `expand_scope` or an auto-allowed edge traversal) get hardlinked there —
   `<projectionRoot>/<sessionId>/<nodeId>/`, no data duplication, always
   current — by the disk projector (`mcp/disk-projection.ts` `DiskProjector`,
@@ -295,16 +309,15 @@ symlink to this file.
   is inert here (`NO_DB`). The old `.portuni-scope/`
   copy staging and its `ScopeReconciler` sweeper are fully retired (no
   successor of that name — `disk-projection.ts` is a clean rename, not a
-  continuation). Node-keyed (not session-keyed) means concurrent sessions on
-  the same home node share kernel-level read access to each other's ad-hoc
-  projections — a known limitation (#208), not yet fixed (needs the session
-  id minted before spawn and threaded through, a larger cross-cutting
-  change). What is fixed: `sweepStaleSessionProjections`
-  (`session-projection.ts`), run once at boot from both entry points
-  (`boot/session-projection-sweep.ts`), removes any `<sessionId>/`
-  subdirectory whose session is not `running` in the durable `sessions`
-  table — a crashed process's leftover hardlinks no longer stay readable
-  forever with no scope event recorded. Model:
+  continuation). Remaining gap: `onclose` cleanup only runs on a graceful
+  session end, so a crashed process leaves its hardlinks behind until the
+  next boot; `sweepStaleSessionProjections` (`session-projection.ts`), run
+  once at boot from both entry points (`boot/session-projection-sweep.ts`),
+  removes any `<sessionId>/` subdirectory whose session is not `running` in
+  the durable `sessions` table. The kernel actually refusing a second
+  session's read into the first's narrowed `<sessionId>/` grant is macOS-only
+  verification territory (a live `sandbox-exec` run) — the plumbing above is
+  covered by tests, that live check is not. Model:
   `docs/architecture/scope-disk-projection.md`; plan:
   `docs/superpowers/plans/2026-07-06-scope-real-paths.md`.
 

@@ -94,6 +94,27 @@ describe("bindSessionPersistence: SessionScope as a cache over session_scope", (
     assert.equal(sessionRow!.profile_id, "work");
   });
 
+  it("reuses a pre-assigned spawnSessionId (#208 follow-up) instead of minting a new one", async () => {
+    const shared = await makeSharedDb();
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = shared.nodeId;
+    const preassigned = ulid();
+
+    bindSessionPersistence(shared.db, scope, { userId: "U1" }, null, undefined, preassigned);
+    scope.addSeed(shared.nodeId);
+    scope.recordExpansion({
+      at: new Date().toISOString(),
+      node_ids: [shared.nodeId],
+      reason: "session_init seed (home + depth-1)",
+      triggered_by: "init",
+    });
+
+    await waitUntil(() => scope.sessionId !== null);
+    assert.equal(scope.sessionId, preassigned);
+    const sessionRow = await getSession(shared.db, preassigned);
+    assert.ok(sessionRow, "the row must exist under the caller-supplied id");
+  });
+
   it("mirrors a later expansion (onAdd) into a new session_scope row, matching scope.list()", async () => {
     const shared = await makeSharedDb();
     const other = await neighbourNode(shared, "Neighbour");

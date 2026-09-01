@@ -98,6 +98,38 @@ describe("buildSeatbeltProfile (real-path model)", () => {
     });
     assert.doesNotMatch(withoutProjection, /\.portuni-sessions/);
   });
+
+  it("narrows the projection allow to <projectionRoot>/<sessionId> when sessionId is set (#208 follow-up)", () => {
+    const p = buildSeatbeltProfile({
+      portuniRoot: "/root",
+      homeMirror: "/root/a",
+      readMirrors: [],
+      projectionRoot: "/root/.portuni-sessions/HOME",
+      sessionId: "SESSION123",
+    });
+    assert.match(
+      p,
+      /\(allow file-read\* \(subpath "\/root\/\.portuni-sessions\/HOME\/SESSION123"\)\)/,
+    );
+    // The wide, unnarrowed grant must not also appear.
+    assert.doesNotMatch(
+      p,
+      /\(allow file-read\* \(subpath "\/root\/\.portuni-sessions\/HOME"\)\)/,
+    );
+  });
+
+  it("falls back to the wide projectionRoot grant when sessionId is absent", () => {
+    const p = buildSeatbeltProfile({
+      portuniRoot: "/root",
+      homeMirror: "/root/a",
+      readMirrors: [],
+      projectionRoot: "/root/.portuni-sessions/HOME",
+    });
+    assert.match(
+      p,
+      /\(allow file-read\* \(subpath "\/root\/\.portuni-sessions\/HOME"\)\)/,
+    );
+  });
 });
 
 describe("resolveSandboxScopeForNode", () => {
@@ -285,6 +317,36 @@ describe("resolveSandboxScopeForNode", () => {
     assert.ok(r, "cwd inside a mirror must resolve");
     assert.equal(r.nodeId, nodeId, "nested mirror must beat its ancestor");
     assert.ok(r.scope.homeMirror.endsWith(join("projects", "p1")));
+  });
+
+  it("mints a fresh sessionId for a non-resumed spawn, distinct each call (#208 follow-up)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const homeDir = join(workspace, "org", "projects", "p1");
+    await mkdir(homeDir, { recursive: true });
+    await registerMirror(SOLO_USER, nodeId, homeDir);
+
+    const a = await resolveSandboxScopeForNode(db, SOLO_USER, nodeId);
+    const b = await resolveSandboxScopeForNode(db, SOLO_USER, nodeId);
+
+    assert.ok(a?.sessionId);
+    assert.ok(b?.sessionId);
+    assert.notEqual(a.sessionId, b.sessionId, "each fresh spawn must mint its own id");
+  });
+
+  it("reuses the already-validated resumeSessionId as sessionId on resume", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const homeDir = join(workspace, "org", "projects", "p1");
+    await mkdir(homeDir, { recursive: true });
+    await registerMirror(SOLO_USER, nodeId, homeDir);
+
+    const session = await createSession(db, SOLO_USER, {
+      node_id: nodeId,
+      session_type: "interactive_task",
+    });
+    await transitionSessionState(db, SOLO_USER, session.id, "suspended");
+
+    const resumed = await resolveSandboxScopeForNode(db, SOLO_USER, nodeId, session.id);
+    assert.equal(resumed?.sessionId, session.id);
   });
 
   it("resolves by cwd: returns null outside every mirror", async () => {

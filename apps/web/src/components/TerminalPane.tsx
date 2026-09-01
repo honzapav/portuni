@@ -41,6 +41,12 @@ type Props = {
   // profile's env vars into the shell and applies its command override
   // when present. Null spawns exactly as before profiles existed.
   spawnProfileId: string | null;
+  // Session id the sandbox profile's projection grant is already narrowed
+  // to (#208 follow-up). Passed straight through to pty_spawn, which
+  // exports it as PORTUNI_SPAWN_SESSION_ID so a Claude Code connection
+  // reuses it as the MCP session's own id. Null for legacy sessions or a
+  // profile response that omitted it.
+  spawnSessionId: string | null;
   // Wall-clock ms (Date.now()) when the user's spawn action began, before
   // mirror creation / sandbox profile fetch. Used only to print a one-line
   // spawn-phase timing breakdown once the first byte comes back from the
@@ -112,6 +118,7 @@ export default function TerminalPane({
   command,
   sandboxProfile,
   spawnProfileId,
+  spawnSessionId,
   spawnRequestedAt,
   active,
   theme,
@@ -313,6 +320,7 @@ export default function TerminalPane({
             rows: term.rows,
             sandbox_profile: sandboxProfile,
             profile_id: spawnProfileId,
+            spawn_session_id: spawnSessionId,
           },
         });
       } catch (err) {

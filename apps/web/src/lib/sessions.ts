@@ -34,6 +34,12 @@ export type TerminalSessionInput = {
   // session record stores it. Null/absent spawns with inherited env, same
   // as before profiles existed.
   profileId?: string | null;
+  // Session id GET /nodes/:id/sandbox-profile already narrowed the
+  // Seatbelt projection grant to (#208 follow-up). Threaded to pty_spawn so
+  // the MCP connection (X-Portuni-Spawn-Id header) reuses this exact id
+  // instead of minting an unrelated one. Null/absent for sessions created
+  // before this field existed, or when the profile response omitted it.
+  spawnSessionId?: string | null;
 };
 
 export type TerminalSession = TerminalSessionInput & {
