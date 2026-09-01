@@ -301,6 +301,33 @@ symlink to this file.
   settings.ts`); `TerminalPane.tsx` times spawn phases (provisioning ->
   `pty_spawn` -> CLI boot to first byte) and prints/logs a one-line
   breakdown on first output.
+- **CLI spawn profiles are a desktop `config.json` registry, opt-in and
+  invisible until populated.** Settings → Profily (`ProfilesSection.tsx`,
+  `lib/profiles.ts`) manages `profiles`/`default_profile_by_org` on
+  `WorkspacesFile` (`apps/desktop/src/workspace.rs` `ProfileConfig`) via
+  the `list_profiles`/`create_profile`/`update_profile`/`delete_profile`/
+  `set_default_profile_for_org` Tauri commands — non-secret, so it lives
+  alongside the workspace registry rather than Keychain. Portuni never
+  detects or parses the user's own profile mechanism (shell aliases, rc
+  files); a profile is just env vars (typically `CLAUDE_CONFIG_DIR=…`) and
+  an optional command override, merged into the shell by `pty_spawn`
+  (`apps/desktop/src/pty.rs`) when the caller passes a `profile_id`. With
+  zero profiles registered the feature is invisible everywhere; the
+  per-spawn picker (`TerminalSplitButton` in `DetailPane.files.tsx`) only
+  renders once >=2 exist, defaulting to the node's organization's
+  configured profile (derived from `belongs_to` in `node.edges`) — with
+  exactly one profile and no org default set, spawns still carry no
+  profile. `pty_spawn` also exports `PORTUNI_PROFILE_ID` into the shell
+  whenever a profile id was requested (even one since deleted from the
+  registry, so the session record still reflects intent); the per-mirror
+  `.mcp.json`'s `X-Portuni-Profile` header (`buildClaudeMcpJson`,
+  `write-scope.ts`) expands it at Claude Code's config-load time the same
+  way the bearer token is — Claude only for now (Codex/Vibe's config
+  formats have no equivalent runtime expansion for a second header).
+  `transport.ts` reads that header and threads it through
+  `createMcpServer`/`bindSessionPersistence` into the session row's
+  `profile_id` column (`domain/sessions.ts`, columns pre-provisioned since
+  #189).
 
 ## Security rules (from the auth refactor post-mortem)
 

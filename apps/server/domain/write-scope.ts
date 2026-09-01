@@ -290,7 +290,20 @@ export function buildClaudeMcpJson(args: {
         // Claude Code expands ${VAR:-default} at config load; the :- form
         // degrades to an empty header instead of a config load failure
         // when the variable is unset (e.g. a shell outside the app).
-        headers: { Authorization: `Bearer \${${tokenVar}:-}` },
+        //
+        // X-Portuni-Profile carries the spawn profile id (phase 3, spawn
+        // UX): pty_spawn exports PORTUNI_PROFILE_ID into the shell only
+        // when the terminal was launched under a profile, so this degrades
+        // to an empty header (parsed as "no profile") otherwise. This is
+        // the same env-expansion trick as the bearer token, applied to a
+        // non-secret value -- Claude first (spec: "Explicitly out of
+        // scope: Codex/Vibe/Gemini resume pointers, per-CLI capability"),
+        // Codex/Vibe's config formats have no equivalent runtime expansion
+        // for a second header.
+        headers: {
+          Authorization: `Bearer \${${tokenVar}:-}`,
+          "X-Portuni-Profile": `\${PORTUNI_PROFILE_ID:-}`,
+        },
       },
     },
   };

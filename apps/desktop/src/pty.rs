@@ -149,6 +149,12 @@ pub struct SpawnArgs {
     /// spawns unsandboxed (older frontends, nodes without mirrors).
     #[serde(default)]
     pub sandbox_profile: Option<String>,
+    /// Id of a CLI spawn profile (config.json `profiles`, phase 3 spawn UX).
+    /// When set and known, its env vars are merged into the shell and its
+    /// `command` override (if any) replaces `command` above. Absent/unknown
+    /// spawns exactly as before -- profiles are additive, never required.
+    #[serde(default)]
+    pub profile_id: Option<String>,
 }
 
 /// Compute the (program, argv) pair for the PTY child. Pure so the
@@ -317,6 +323,30 @@ pub fn pty_spawn(
         }
     }
 
+    // Spawn profile (phase 3, spawn UX): merge its env vars into the shell
+    // and, when it carries a command override, use that instead of the
+    // caller's derived agent command. Also exports PORTUNI_PROFILE_ID so a
+    // Claude Code connection can thread it through to the session record
+    // (see write-scope.ts's X-Portuni-Profile header) -- exported whenever
+    // a profile id was requested, even if the registry lookup below finds
+    // nothing (a profile since deleted from config.json), so the session
+    // record still reflects the user's intent.
+    let mut command_override: Option<String> = None;
+    if let Some(pid) = args.profile_id.as_deref().filter(|p| !p.trim().is_empty()) {
+        cmd.env("PORTUNI_PROFILE_ID", pid);
+        if let Ok(data_dir) = app.path().app_data_dir() {
+            if let Ok(crate::workspace::LoadedConfig::V2(file)) = crate::workspace::load(&data_dir) {
+                if let Some(profile) = file.profiles.get(pid) {
+                    for (k, v) in &profile.env {
+                        cmd.env(k, v);
+                    }
+                    command_override = profile.command.clone();
+                }
+            }
+        }
+    }
+    let effective_command = command_override.unwrap_or_else(|| args.command.clone());
+
     let child = pair
         .slave
         .spawn_command(cmd)
@@ -359,12 +389,12 @@ pub fn pty_spawn(
     // makes bash print PS2 continuation prompts (`cmdand quote>`) for
     // every embedded newline in the agent prompt, which looks broken
     // even though it eventually executes correctly.
-    if !args.command.trim().is_empty() {
+    if !effective_command.trim().is_empty() {
         let tempfile = std::env::temp_dir().join(format!(
             "portuni-precmd-{}.sh",
             session_id.replace('/', "_"),
         ));
-        let script = format!("#!/bin/bash\n{}\n", args.command.trim());
+        let script = format!("#!/bin/bash\n{}\n", effective_command.trim());
         if let Err(e) = std::fs::write(&tempfile, script) {
             warn!("pty pre-command tempfile write failed: {e}");
         } else {

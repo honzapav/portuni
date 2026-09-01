@@ -12,6 +12,7 @@ import SettingsUsersPanel from "./SettingsPage.users";
 import SettingsAccessRequestsPanel from "./AccessRequests";
 import AccountSection from "./AccountSection";
 import WorkspacesSection from "./WorkspacesSection";
+import ProfilesSection from "./ProfilesSection";
 import SyncSection from "./SyncSection";
 import UpdateSection from "./UpdateSection";
 import { fetchAccessRequestCount, fetchMe } from "../api";
@@ -30,6 +31,7 @@ type SubTab =
   | "actors"
   | "account"
   | "workspaces"
+  | "profiles"
   | "sync"
   | "users"
   | "access-requests";
@@ -47,6 +49,7 @@ export default function SettingsPage({
     if (t === "actors") return "actors";
     if (t === "account") return "account";
     if (t === "workspaces") return "workspaces";
+    if (t === "profiles") return "profiles";
     if (t === "sync") return "sync";
     if (t === "users") return "users";
     if (t === "access-requests") return "access-requests";
@@ -192,6 +195,16 @@ export default function SettingsPage({
               Workspaces
             </button>
             <button
+              onClick={() => setTab("profiles")}
+              className={`rounded px-3 py-1 text-[13px] transition-colors ${
+                tab === "profiles"
+                  ? "bg-[var(--color-bg)] text-[var(--color-text)]"
+                  : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+              }`}
+            >
+              Profily
+            </button>
+            <button
               onClick={() => setTab("sync")}
               className={`rounded px-3 py-1 text-[13px] transition-colors ${
                 tab === "sync"
@@ -238,6 +251,8 @@ export default function SettingsPage({
         {tab === "account" && <AccountSection />}
 
         {tab === "workspaces" && <WorkspacesSection />}
+
+        {tab === "profiles" && <ProfilesSection />}
 
         {tab === "sync" && <SyncSection />}
 

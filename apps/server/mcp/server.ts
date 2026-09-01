@@ -138,14 +138,18 @@ function registerSetupDriveRemotePrompt(server: McpServer): void {
 // deriveSessionType so a headless-flagged device token without it can be
 // refused at seed time by the caller (transport.ts) before a server/scope
 // pair is even built for it.
+//
+// `profileId` is the X-Portuni-Profile header (transport.ts), phase 3's
+// spawn profile id -- see bindSessionPersistence.
 export function createMcpServer(
   identity: RequestIdentity,
   homeNodeId: string | null = null,
+  profileId: string | null = null,
 ): { server: McpServer; scope: SessionScope } {
   const scope = new SessionScope(deriveSessionType(identity, homeNodeId));
   const projector = createDiskProjector({ userId: identity.userId, scope });
   scope.onAdd((nodeId) => projector.schedule(nodeId));
-  bindSessionPersistence(getDb(), scope, identity);
+  bindSessionPersistence(getDb(), scope, identity, profileId);
   const server = new McpServer(
     { name: "portuni", version: "0.1.0" },
     { instructions: INSTRUCTIONS },

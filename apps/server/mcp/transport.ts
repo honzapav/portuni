@@ -111,6 +111,14 @@ export function createMcpTransport(): McpTransport {
       // on its presence.
       const homeNodeId = parseHomeNodeIdFromUrl(req.url);
 
+      // X-Portuni-Profile: the spawn profile id (phase 3), sent only by
+      // Claude Code connections whose per-mirror .mcp.json carries the
+      // ${PORTUNI_PROFILE_ID:-} header expansion (buildClaudeMcpJson) --
+      // absent/empty for every other CLI or a plain, profile-less spawn.
+      const profileIdHeader = req.headers["x-portuni-profile"];
+      const profileId =
+        (Array.isArray(profileIdHeader) ? profileIdHeader[0] : profileIdHeader)?.trim() || null;
+
       // Headless connections without a task anchor are refused at seed
       // time — a headless session has no elicitation channel, so it must
       // arrive with its home node already known (see the session-type
@@ -126,7 +134,7 @@ export function createMcpTransport(): McpTransport {
         return;
       }
 
-      const { server, scope } = createMcpServer(identity, homeNodeId);
+      const { server, scope } = createMcpServer(identity, homeNodeId, profileId);
 
       // Auto-seed scope from `?home_node_id=...` on the connection URL.
       // This is what `portuni_mirror` writes into per-mirror configs so

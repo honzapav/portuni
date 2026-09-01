@@ -28,6 +28,12 @@ export type TerminalSessionInput = {
   // print a one-line spawn-phase timing breakdown once the terminal is
   // ready (spec: "Spawn UX" -- instrument spawn phases).
   spawnRequestedAt?: number;
+  // CLI spawn profile id (phase 3, spawn UX) chosen for this session, if
+  // any -- threaded to pty_spawn so its env vars / command override apply,
+  // and to the MCP connection (X-Portuni-Profile header) so the durable
+  // session record stores it. Null/absent spawns with inherited env, same
+  // as before profiles existed.
+  profileId?: string | null;
 };
 
 export type TerminalSession = TerminalSessionInput & {

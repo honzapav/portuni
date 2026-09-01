@@ -63,6 +63,25 @@ describe("bindSessionPersistence: SessionScope as a cache over session_scope", (
     assert.equal(rows[0].added_via, "seed");
   });
 
+  it("stores the profile id (phase 3, spawn UX) when the caller passes one", async () => {
+    const shared = await makeSharedDb();
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = shared.nodeId;
+
+    bindSessionPersistence(shared.db, scope, { userId: "U1" }, "work");
+    scope.addSeed(shared.nodeId);
+    scope.recordExpansion({
+      at: new Date().toISOString(),
+      node_ids: [shared.nodeId],
+      reason: "session_init seed (home + depth-1)",
+      triggered_by: "init",
+    });
+
+    await waitUntil(() => scope.sessionId !== null);
+    const sessionRow = await getSession(shared.db, scope.sessionId!);
+    assert.equal(sessionRow!.profile_id, "work");
+  });
+
   it("mirrors a later expansion (onAdd) into a new session_scope row, matching scope.list()", async () => {
     const shared = await makeSharedDb();
     const other = await neighbourNode(shared, "Neighbour");

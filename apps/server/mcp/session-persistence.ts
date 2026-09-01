@@ -81,16 +81,22 @@ function syncWritable(db: Client, sessionId: string, scope: SessionScope, nodeId
 // scope.onAdd/onWritable so every future scope change mirrors into
 // session_scope. Call once, right after constructing the SessionScope for a
 // new connection (createMcpServer).
+//
+// profileId comes from the X-Portuni-Profile header (Claude only for now,
+// see buildClaudeMcpJson) -- null for every other CLI/connection, which is
+// indistinguishable from "no profile used" and treated the same way.
 export function bindSessionPersistence(
   db: Client,
   scope: SessionScope,
   identity: Pick<RequestIdentity, "userId">,
+  profileId: string | null = null,
 ): void {
   safe(
     (async () => {
       const row = await createSession(db, identity.userId, {
         node_id: scope.homeNodeId,
         session_type: scope.sessionType,
+        profile_id: profileId,
       });
       scope.sessionId = row.id;
 

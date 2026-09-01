@@ -36,6 +36,11 @@ type Props = {
   // Null spawns unsandboxed (legacy sessions only — new launches always
   // carry a profile).
   sandboxProfile: string | null;
+  // CLI spawn profile id (phase 3, spawn UX), if the user picked one at
+  // spawn time. Passed straight through to pty_spawn, which merges the
+  // profile's env vars into the shell and applies its command override
+  // when present. Null spawns exactly as before profiles existed.
+  spawnProfileId: string | null;
   // Wall-clock ms (Date.now()) when the user's spawn action began, before
   // mirror creation / sandbox profile fetch. Used only to print a one-line
   // spawn-phase timing breakdown once the first byte comes back from the
@@ -106,6 +111,7 @@ export default function TerminalPane({
   cwd,
   command,
   sandboxProfile,
+  spawnProfileId,
   spawnRequestedAt,
   active,
   theme,
@@ -294,6 +300,7 @@ export default function TerminalPane({
             cols: term.cols,
             rows: term.rows,
             sandbox_profile: sandboxProfile,
+            profile_id: spawnProfileId,
           },
         });
       } catch (err) {

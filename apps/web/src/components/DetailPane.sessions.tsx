@@ -53,7 +53,11 @@ function fmtDateTime(value: string): string {
 
 type Props = {
   nodeId: string;
-  onOpenTerminal: (nodeId: string) => void | Promise<void>;
+  // No nodeId param: the caller (DetailPane's openEmbeddedTerminal) already
+  // closes over this section's node -- see the profile-picker prop on
+  // TerminalSplitButton for why this signature dropped it (a positional
+  // nodeId would otherwise be misread as a profile id).
+  onOpenTerminal: () => void | Promise<void>;
   onOpenFile?: (nodeId: string, relPath: string) => void;
 };
 
@@ -130,7 +134,7 @@ export function SessionsSection({ nodeId, onOpenTerminal, onOpenFile }: Props) {
               session={s}
               onRenamed={updateOne}
               onClose={() => void handleClose(s.id)}
-              onOpenTerminal={() => void onOpenTerminal(nodeId)}
+              onOpenTerminal={() => void onOpenTerminal()}
               onOpenHandoff={
                 onOpenFile && s.handoff_path
                   ? () => onOpenFile(nodeId, s.handoff_path!)

@@ -136,7 +136,7 @@ type Props = {
   onMutate: () => Promise<void>;
   agentCommand: string;
   terminalLaunch: string;
-  onOpenTerminal: (nodeId: string) => void | Promise<void>;
+  onOpenTerminal: (nodeId: string, profileId?: string | null) => void | Promise<void>;
   // True when this pane is rendered inside another column (e.g. the
   // workspace's right-side detail). Drops the slide-in animation, the
   // 40vw / min-w-440 sizing, and the left border so the parent's layout
@@ -273,7 +273,7 @@ function DetailPaneBody({
   onMutate: () => Promise<void>;
   agentCommand: string;
   terminalLaunch: string;
-  onOpenTerminal: (nodeId: string) => void | Promise<void>;
+  onOpenTerminal: (nodeId: string, profileId?: string | null) => void | Promise<void>;
   embedded?: boolean;
   onCollapse?: () => void;
   onOpenFile?: (nodeId: string, relPath: string) => void;
@@ -357,11 +357,11 @@ function DetailPaneBody({
     }
   }, [node.id, node.name]);
 
-  const openEmbeddedTerminal = async () => {
+  const openEmbeddedTerminal = async (profileId?: string | null) => {
     if (launchingTerminal) return;
     setLaunchingTerminal(true);
     try {
-      await onOpenTerminal(node.id);
+      await onOpenTerminal(node.id, profileId);
     } finally {
       setLaunchingTerminal(false);
     }

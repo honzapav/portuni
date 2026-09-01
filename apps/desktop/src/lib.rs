@@ -1859,6 +1859,152 @@ fn delete_workspace(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
+// --- CLI profiles registry (phase 3, spawn UX) -----------------------------
+//
+// Non-secret, so it lives in config.json like the workspace registry rather
+// than Keychain. Zero registered profiles keeps the whole feature invisible
+// on the web side; these commands are only ever called from the Settings
+// "Profily" section and the per-spawn picker.
+
+#[derive(Serialize)]
+struct ProfileInfo {
+    id: String,
+    label: String,
+    env: std::collections::BTreeMap<String, String>,
+    command: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ProfilesData {
+    profiles: Vec<ProfileInfo>,
+    default_by_org: std::collections::BTreeMap<String, String>,
+}
+
+#[tauri::command]
+fn list_profiles(app: AppHandle) -> Result<ProfilesData, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        _ => {
+            return Ok(ProfilesData {
+                profiles: vec![],
+                default_by_org: std::collections::BTreeMap::new(),
+            })
+        }
+    };
+    Ok(ProfilesData {
+        profiles: file
+            .profiles
+            .into_iter()
+            .map(|(id, cfg)| ProfileInfo { id, label: cfg.label, env: cfg.env, command: cfg.command })
+            .collect(),
+        default_by_org: file.default_profile_by_org,
+    })
+}
+
+#[derive(Deserialize)]
+struct CreateProfileArgs {
+    id: String,
+    label: String,
+    env: std::collections::BTreeMap<String, String>,
+    command: Option<String>,
+}
+
+#[tauri::command]
+fn create_profile(app: AppHandle, args: CreateProfileArgs) -> Result<(), String> {
+    if !workspace::is_valid_profile_id(&args.id) {
+        return Err("invalid profile id (use lowercase letters, digits, dashes)".to_string());
+    }
+    if args.label.trim().is_empty() {
+        return Err("profile label is required".to_string());
+    }
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        _ => return Err("config not migrated to workspaces yet".to_string()),
+    };
+    if file.profiles.contains_key(&args.id) {
+        return Err(format!("profile '{}' already exists", args.id));
+    }
+    file.profiles.insert(
+        args.id,
+        workspace::ProfileConfig {
+            label: args.label,
+            env: args.env,
+            command: args.command.filter(|s| !s.trim().is_empty()),
+        },
+    );
+    workspace::save(&data_dir, &file)
+}
+
+#[derive(Deserialize)]
+struct UpdateProfileArgs {
+    id: String,
+    label: String,
+    env: std::collections::BTreeMap<String, String>,
+    command: Option<String>,
+}
+
+#[tauri::command]
+fn update_profile(app: AppHandle, args: UpdateProfileArgs) -> Result<(), String> {
+    if args.label.trim().is_empty() {
+        return Err("profile label is required".to_string());
+    }
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        _ => return Err("config not migrated to workspaces yet".to_string()),
+    };
+    let cfg = file
+        .profiles
+        .get_mut(&args.id)
+        .ok_or_else(|| format!("unknown profile '{}'", args.id))?;
+    cfg.label = args.label;
+    cfg.env = args.env;
+    cfg.command = args.command.filter(|s| !s.trim().is_empty());
+    workspace::save(&data_dir, &file)
+}
+
+#[tauri::command]
+fn delete_profile(app: AppHandle, id: String) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        _ => return Err("config not migrated to workspaces yet".to_string()),
+    };
+    if !file.profiles.contains_key(&id) {
+        return Err(format!("unknown profile '{id}'"));
+    }
+    file.profiles.remove(&id);
+    file.default_profile_by_org.retain(|_, p| p != &id);
+    workspace::save(&data_dir, &file)
+}
+
+#[tauri::command]
+fn set_default_profile_for_org(
+    app: AppHandle,
+    org_id: String,
+    profile_id: Option<String>,
+) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        _ => return Err("config not migrated to workspaces yet".to_string()),
+    };
+    match profile_id {
+        Some(pid) => {
+            if !file.profiles.contains_key(&pid) {
+                return Err(format!("unknown profile '{pid}'"));
+            }
+            file.default_profile_by_org.insert(org_id, pid);
+        }
+        None => {
+            file.default_profile_by_org.remove(&org_id);
+        }
+    }
+    workspace::save(&data_dir, &file)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // State maps start empty and are filled per workspace by .setup()'s
@@ -2001,6 +2147,11 @@ pub fn run() {
             set_active_workspace,
             set_workspace_enabled,
             delete_workspace,
+            list_profiles,
+            create_profile,
+            update_profile,
+            delete_profile,
+            set_default_profile_for_org,
             updater::check_update,
             updater::install_update,
             updater::restart_app,

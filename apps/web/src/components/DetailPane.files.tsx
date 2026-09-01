@@ -33,6 +33,7 @@ import type { ResolveAction } from "../api";
 import { isTauri, openInFinder } from "../lib/backend-url";
 import { getCachedDriveStatus } from "../lib/sync-drive";
 import { listWorkspaces } from "../lib/workspaces";
+import { listProfiles, type ProfileInfo } from "../lib/profiles";
 
 // ---------------------------------------------------------------------------
 // File tree (Files tab)
@@ -1071,12 +1072,44 @@ export function TerminalSplitButton({
   node: NodeDetail;
   agentCommand: string;
   terminalLaunch: string;
-  onEmbeddedOpen: () => void | Promise<void>;
+  onEmbeddedOpen: (profileId?: string | null) => void | Promise<void>;
   embeddedPending: boolean;
 }) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [externalState, setExternalState] = useState<LaunchState>({ kind: "idle" });
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // CLI spawn profiles (phase 3, spawn UX): self-fetched, same convention as
+  // AccessSection/SessionsSection. Zero registered profiles keeps this
+  // whole block invisible; the picker itself only renders with >=2, per
+  // spec -- with exactly one, the org default (if set) still applies
+  // silently, there just isn't a UI to override it per spawn.
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  const orgId = node.edges.find(
+    (e) => e.relation === "belongs_to" && e.direction === "outgoing" && e.peer_type === "organization",
+  )?.peer_id;
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      listProfiles()
+        .then((data) => {
+          if (cancelled) return;
+          setProfiles(data.profiles);
+          const def = orgId ? (data.default_by_org[orgId] ?? null) : null;
+          setSelectedProfileId(def && data.profiles.some((p) => p.id === def) ? def : null);
+        })
+        .catch(() => {
+          // No profiles registered (or outside Tauri) -- the picker stays hidden.
+        });
+    };
+    load();
+    window.addEventListener("portuni:profiles-changed", load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("portuni:profiles-changed", load);
+    };
+  }, [orgId]);
 
   // Close dropdown when user clicks outside the split button.
   useEffect(() => {
@@ -1184,9 +1217,13 @@ export function TerminalSplitButton({
         {/* Primary action: open embedded terminal inside Portuni */}
         <button
           type="button"
-          onClick={() => void onEmbeddedOpen()}
+          onClick={() => void onEmbeddedOpen(selectedProfileId)}
           disabled={primaryDisabled}
-          title={`Otevře terminál v Práci a spustí v něm ${agentName}. Pracovní složka bude vytvořena, pokud ještě neexistuje.`}
+          title={`Otevře terminál v Práci a spustí v něm ${agentName}. Pracovní složka bude vytvořena, pokud ještě neexistuje.${
+            selectedProfileId
+              ? ` Profil: ${profiles.find((p) => p.id === selectedProfileId)?.label ?? selectedProfileId}.`
+              : ""
+          }`}
           className="flex flex-1 items-center justify-center gap-2 rounded-l-md border border-r-0 border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)] disabled:cursor-default disabled:opacity-60 disabled:hover:border-[var(--color-accent-dim)] disabled:hover:bg-[var(--color-accent-dim)]/15"
         >
           {embeddedPending ? (
@@ -1213,6 +1250,25 @@ export function TerminalSplitButton({
       {/* Dropdown: positioned above the button bar */}
       {dropdownOpen && (
         <div className="absolute bottom-full left-0 mb-1 min-w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
+          {profiles.length >= 2 && (
+            <div className="border-b border-[var(--color-border)] px-3 py-2">
+              <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+                Profil pro spuštění
+              </div>
+              <select
+                value={selectedProfileId ?? ""}
+                onChange={(e) => setSelectedProfileId(e.target.value || null)}
+                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)]"
+              >
+                <option value="">(bez profilu)</option>
+                {profiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <button
             type="button"
             onClick={() => void handleExternalLaunch()}

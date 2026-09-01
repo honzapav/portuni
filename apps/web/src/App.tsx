@@ -778,6 +778,7 @@ export default function App() {
       command: string;
       sandboxProfile: string | null;
       spawnRequestedAt?: number;
+      profileId?: string | null;
     }) => {
       const session = createSession({
         nodeId: input.node.id,
@@ -787,6 +788,7 @@ export default function App() {
         command: input.command,
         sandboxProfile: input.sandboxProfile,
         spawnRequestedAt: input.spawnRequestedAt,
+        profileId: input.profileId,
       });
       setSessions((prev) => [...prev, session]);
       // Opening a terminal also opens the node (terminals imply an open node).
@@ -801,7 +803,7 @@ export default function App() {
   );
 
   const openSessionForNodeId = useCallback(
-    async (nodeId: string) => {
+    async (nodeId: string, profileId?: string | null) => {
       // Terminals work in central (agent) mode too: createNodeMirror,
       // fetchSandboxProfile and pty_spawn all have central-mode paths (the
       // sidecar serves the mirror + sandbox profile locally, and the terminal
@@ -847,7 +849,7 @@ export default function App() {
           },
         };
         const command = buildAgentCommand(enriched, agentCommand);
-        openSession({ node: enriched, cwd, command, sandboxProfile, spawnRequestedAt });
+        openSession({ node: enriched, cwd, command, sandboxProfile, spawnRequestedAt, profileId });
       } finally {
         openingSessionNodeIdsRef.current.delete(nodeId);
       }
