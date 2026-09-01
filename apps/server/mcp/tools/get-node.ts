@@ -7,6 +7,7 @@ import { getLocalMirror } from "../../domain/sync/local-db.js";
 import { deriveLocalPath, buildNodeRoot } from "../../domain/sync/remote-path.js";
 import { guardNodeRead, scopeExpansionError } from "../scope.js";
 import { readableMirrorRoot } from "../disk-projection.js";
+import { filterVisibleNodeIds } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
@@ -50,8 +51,21 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
       // Name-based lookup: filter ambiguity to in-scope candidates BEFORE
       // surfacing match metadata. Unscoped name probing should not return
       // type/id pairs for nodes the agent isn't allowed to see.
+      // interactive_chat has no scope set to filter by (read = permissions),
+      // so it filters to visible candidates instead -- the same substitution
+      // guardNodeRead below makes for the single-node read gate.
       if (args.name && result.rows.length > 1) {
-        const inScopeRows = result.rows.filter((r) => scope.has(r.id as string));
+        let inScopeRows: typeof result.rows;
+        if (scope.sessionType === "interactive_chat") {
+          const visibleIds = await filterVisibleNodeIds(
+            db,
+            ctx.identity,
+            result.rows.map((r) => r.id as string),
+          );
+          inScopeRows = result.rows.filter((r) => visibleIds.has(r.id as string));
+        } else {
+          inScopeRows = result.rows.filter((r) => scope.has(r.id as string));
+        }
         if (inScopeRows.length === 0) {
           return {
             content: [

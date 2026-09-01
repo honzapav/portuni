@@ -160,6 +160,30 @@ describe("guardNodeRead", () => {
     assert.equal(expansions[0].addedVia, "edge");
   });
 
+  it("interactive_chat: allows a disconnected, never-in-scope node directly (permission-only, no expansion)", async () => {
+    const db = await freshDb();
+    await db.execute({
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N1", "project", "P", null, "U1", "team", null],
+    });
+    const scope = new SessionScope("interactive_chat");
+    const r = await guardNodeRead(db, scope, "N1", "U1");
+    assert.equal(r.kind, "allow");
+    assert.equal(scope.has("N1"), false, "chat reads do not populate the scope set");
+    assert.equal(scope.expansions().length, 0, "no expansion is recorded for a plain chat read");
+  });
+
+  it("interactive_chat: still elicits on a hard floor (scope_sensitive)", async () => {
+    const db = await freshDb();
+    await db.execute({
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N1", "project", "P", null, "U1", "team", JSON.stringify({ scope_sensitive: true })],
+    });
+    const scope = new SessionScope("interactive_chat");
+    const r = await guardNodeRead(db, scope, "N1", "U1");
+    assert.equal(r.kind, "elicit");
+  });
+
   it("refuses (not elicits) a headless session hitting a hard floor", async () => {
     const db = await freshDb();
     await db.execute({

@@ -310,6 +310,15 @@ export function decideRead(
     };
   }
 
+  // interactive_chat has no anchor and no scope-expansion dance: past the
+  // hard-floor gate above, read scope IS whatever the permission layer
+  // (visibility/group ACLs, enforced by the caller before this decision)
+  // allows -- visible means readable, full stop. See the session-type table
+  // in docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md.
+  if (scope.sessionType === "interactive_chat") {
+    return { kind: "allow" };
+  }
+
   // Edge-reachable: a node adjacent to something already in scope is a
   // natural traversal, not a jump -- auto-approve without a round trip.
   if (reachable) {
@@ -488,7 +497,12 @@ export async function guardNodeRead(
   }
 
   const alreadyInScope = scope.has(nodeId);
-  const reachable = alreadyInScope || (await isEdgeReachable(db, scope, nodeId));
+  // interactive_chat never consults reachability (see decideRead) -- skip
+  // the extra neighbour query.
+  const reachable =
+    scope.sessionType === "interactive_chat"
+      ? false
+      : alreadyInScope || (await isEdgeReachable(db, scope, nodeId));
 
   const decision = decideRead(
     scope,

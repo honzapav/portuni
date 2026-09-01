@@ -16,7 +16,7 @@ Manually initialise the read-scope set for this MCP session. Use only when auto-
 | `home_node_id` | string | no | Node ID (ULID) whose local mirror contains the cwd. Provide this OR `home_node_name`; omit both when no home node applies |
 | `home_node_name` | string | no | Case-insensitive node name as an alternative to `home_node_id` |
 
-Returns: `{ home_node_id, home_node_name?, home_node_type?, session_type, scope_size, seeded }` — or `{ home_node_id: null, session_type, scope_size, note }` when called with no home node (every subsequent read will require explicit expansion). `session_type` is derived server-side from the connection's auth path (`interactive_task`, `interactive_chat`, `headless`, or `env`) — it is never something this tool sets or accepts.
+Returns: `{ home_node_id, home_node_name?, home_node_type?, session_type, scope_size, seeded }` — or `{ home_node_id: null, session_type, scope_size, note }` when called with no home node (every subsequent read will require explicit expansion — except for `interactive_chat`, whose reads are permission-only regardless of the scope set; see [Scope Enforcement](/concepts/scope-enforcement/)). `session_type` is derived server-side from the connection's auth path (`interactive_task`, `interactive_chat`, `headless`, or `env`) — it is never something this tool sets or accepts.
 
 ## portuni_expand_scope
 

@@ -156,7 +156,9 @@ describe("decideRead – hard floors", () => {
 
 describe("decideRead – edge-reachable expansion", () => {
   it("auto-allows a reachable target and tags it addedVia: edge", () => {
-    for (const sessionType of ["interactive_task", "interactive_chat", "headless", "env"] as const) {
+    // interactive_chat is excluded: it never consults reachability (see the
+    // permission-only branch below), so it never gets addedVia: "edge".
+    for (const sessionType of ["interactive_task", "headless", "env"] as const) {
       const scope = new SessionScope(sessionType);
       const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1", true);
       assert.equal(d.kind, "allow", `session_type=${sessionType}`);
@@ -165,9 +167,26 @@ describe("decideRead – edge-reachable expansion", () => {
   });
 });
 
+describe("decideRead – interactive_chat is permission-only", () => {
+  it("allows a non-hard-floor read with no edge-reachability, seed, or expansion involved", () => {
+    const scope = new SessionScope("interactive_chat");
+    const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1", false);
+    assert.equal(d.kind, "allow");
+    assert.equal(d.addedVia, undefined);
+  });
+
+  it("still elicits on a hard floor (scope_sensitive)", () => {
+    const scope = new SessionScope("interactive_chat");
+    const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: true }, "U1", false);
+    assert.equal(d.kind, "elicit");
+  });
+});
+
 describe("decideRead – disconnected jump elicits", () => {
   it("elicits regardless of session type when not reachable via an edge", () => {
-    for (const sessionType of ["interactive_task", "interactive_chat", "headless", "env"] as const) {
+    // interactive_chat is excluded: it never reaches the disconnected-jump
+    // branch, see "decideRead – interactive_chat is permission-only" above.
+    for (const sessionType of ["interactive_task", "headless", "env"] as const) {
       const scope = new SessionScope(sessionType);
       const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1", false);
       assert.equal(d.kind, "elicit", `session_type=${sessionType}`);

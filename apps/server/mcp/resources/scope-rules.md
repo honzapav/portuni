@@ -49,8 +49,13 @@ agent:
   (desktop-spawned terminal, mirror `.mcp.json`). Anchor = the task
   node.
 - **`interactive_chat`**: a connector session (claude.ai, Claude
-  Desktop chat, Claude Code added as a connector). No anchor; the
-  read scope starts at whatever permissions allow.
+  Desktop chat, Claude Code added as a connector). No anchor, no
+  in-memory scope set, no edge-reachability or expand_scope dance:
+  read is permission-only — any node visible to the user (past the
+  same hard-floor gate below) is readable directly. Listing tools
+  without a `node_id` filter (`portuni_list_events`,
+  `portuni_list_files`) likewise see every row on a visible node
+  instead of an empty result.
 - **`headless`**: a device token minted with the `headless` flag (an
   admin-granted credential for unattended/RALPH-style sessions). A
   task anchor is required -- a headless connection without

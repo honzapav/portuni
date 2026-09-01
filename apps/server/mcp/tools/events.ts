@@ -252,7 +252,7 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_list_events",
-    "List events from the knowledge graph, optionally filtered by node, type, status, or time range. Returns up to 100 events by default (newest first); pass `limit` to override. With node_id the node must be in session scope; without node_id results are restricted to the current session scope set (empty scope means an empty result) — see portuni://scope-rules.",
+    "List events from the knowledge graph, optionally filtered by node, type, status, or time range. Returns up to 100 events by default (newest first); pass `limit` to override. With node_id the node must be in session scope; without node_id results are restricted to the current session scope set (empty scope means an empty result), except for connector (interactive_chat) sessions, which have no scope set and see every event on nodes visible to them — see portuni://scope-rules.",
     {
       node_id: z.string().optional().describe("Filter by node ID"),
       type: z.enum(EVENT_TYPES).optional().describe("Filter by event type"),
@@ -279,6 +279,10 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
       if (args.node_id !== undefined) {
         conditions.push("e.node_id = ?");
         values.push(args.node_id);
+      } else if (scope.sessionType === "interactive_chat") {
+        // interactive_chat has no in-memory scope set to restrict to (read
+        // scope = permissions): fall through with no node filter, and rely
+        // on the group-visibility filter below, same as global list_nodes.
       } else {
         // No node filter: restrict to the in-memory scope set so unrelated
         // nodes aren't surfaced as a side channel through cross-cutting

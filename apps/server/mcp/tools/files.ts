@@ -197,7 +197,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_list_files",
-    "List files across nodes, optionally filtered by node and/or status. Each file includes a derived local_path built from the current mirror + remote_path + sync_key (null when the node has no mirror on this device). With node_id the node must be in session scope; without node_id results are restricted to the current session scope set (empty scope means an empty result) — see portuni://scope-rules.",
+    "List files across nodes, optionally filtered by node and/or status. Each file includes a derived local_path built from the current mirror + remote_path + sync_key (null when the node has no mirror on this device). With node_id the node must be in session scope; without node_id results are restricted to the current session scope set (empty scope means an empty result), except for connector (interactive_chat) sessions, which have no scope set and see every file on nodes visible to them — see portuni://scope-rules.",
     {
       node_id: z.string().optional(),
       status: z.enum(FILE_STATUSES).optional(),
@@ -221,6 +221,10 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
       if (args.node_id !== undefined) {
         conds.push("f.node_id = ?");
         params.push(args.node_id);
+      } else if (scope.sessionType === "interactive_chat") {
+        // interactive_chat has no in-memory scope set to restrict to (read
+        // scope = permissions): fall through with no node filter, and rely
+        // on the group-visibility filter below, same as global list_nodes.
       } else {
         // No node filter: restrict to the in-memory scope set so unrelated
         // nodes aren't surfaced.

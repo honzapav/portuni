@@ -123,7 +123,7 @@ The server derives a `session_type` for every MCP session from the **authenticat
 | Type | How recognized | Anchor / initial scope | Elicitation |
 |------|-----------------|-------------------------|-------------|
 | `interactive_task` | Connection carries `?home_node_id` (desktop-spawned terminal, mirror `.mcp.json`) | Task node + its depth-1 neighbours | Dialog (or structured refusal fallback) |
-| `interactive_chat` | OAuth-grant connection (claude.ai, Claude Desktop chat, Claude Code added as a connector) | No anchor – scope starts empty, bounded only by permissions | Dialog for hard floors and writes only |
+| `interactive_chat` | OAuth-grant connection (claude.ai, Claude Desktop chat, Claude Code added as a connector) | No anchor, no scope set – read is permission-only: any node visible to the user is readable directly, no edge-reachability or expansion round trip | Dialog for hard floors and writes only |
 | `headless` | Device token minted with the `headless` flag (admin-granted credential) | Task node, **required** – a connection without `home_node_id` is refused outright | None – always a hard structured refusal, no dialog, no deferred bypass |
 | `env` | Solo/loopback auth (the standalone server's default) | Same as `interactive_task` | Historical unscoped behavior; writes are unconditionally allowed, reads still nominally scope-gated |
 
@@ -138,7 +138,9 @@ At session start, if the MCP URL carries `?home_node_id=<id>` (which `portuni_mi
 
 The seed runs as part of session initialization, before the agent's first tool call, and is logged as an audit entry with `triggered_by: "init"`.
 
-Without a `home_node_id` query param (an `interactive_chat` connector session, a legacy mirror config, or an ad-hoc client), the scope set starts empty. The agent must call `portuni_session_init` or `portuni_expand_scope` to populate it – edge-reachable expansion has nothing to be reachable from until then.
+Without a `home_node_id` query param – a legacy mirror config or an ad-hoc client, still classified `interactive_task` – the scope set starts empty. The agent must call `portuni_session_init` or `portuni_expand_scope` to populate it – edge-reachable expansion has nothing to be reachable from until then.
+
+`interactive_chat` connector sessions are a different case: their read gate never consults a scope set, seeded or not (see the session types table above) – every visible node is readable directly. Neither `portuni_session_init` nor `portuni_expand_scope` is needed to read in that session type.
 
 ### Three ways to expand
 

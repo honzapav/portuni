@@ -3,8 +3,11 @@
 // per-tool callback shape (content + isError) is encoded once here so the
 // listing tools don't each re-implement it. Without node_id there is nothing
 // to gate here -- each caller restricts to its own in-memory scope set
-// directly (search and global list_nodes skip this module entirely: they are
-// permission-only, see docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md
+// directly, except interactive_chat (no in-memory scope set; read scope is
+// permission-only, so those callers skip the restriction and rely on their
+// own group-visibility filter -- search and global list_nodes skip this
+// module entirely for the same reason, see
+// docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md
 // "Search is discovery, not ingestion").
 
 import type { Client } from "@libsql/client";
