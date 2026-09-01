@@ -39,6 +39,7 @@ import type {
   GraphPayload,
   SyncStatusFile,
   SyncRunResponse,
+  WatcherErrorEntry,
   UntrackedFile,
 } from "../types";
 import {
@@ -92,6 +93,7 @@ import {
   SyncBar,
   NoMirrorBanner,
   TerminalSplitButton,
+  WatcherErrorBanner,
 } from "./DetailPane.files";
 import { AccessSection } from "./DetailPane.access";
 import { SessionsSection } from "./DetailPane.sessions";
@@ -104,6 +106,8 @@ import { RequestAccessControl } from "./AccessRequests";
 // already DB-only, but caching here also avoids the network round-trip
 // for repeat visits during a single session.
 const SYNC_STATUS_CACHE = new Map<string, Map<string, SyncStatusFile>>();
+// Same caching rationale, for sync-status's watcher_errors field (#202).
+const SYNC_WATCHER_ERRORS_CACHE = new Map<string, WatcherErrorEntry[]>();
 
 type DetailTab = "overview" | "events" | "files" | "connections" | "sessions" | "sharing";
 // Survives the DetailPane unmount that happens when the editor takes over
@@ -314,6 +318,11 @@ function DetailPaneBody({
     null,
   );
   const [untracked, setUntracked] = useState<UntrackedFile[]>([]);
+  // Recent mirror-watcher failures for this node (#202) -- rides along on
+  // the same sync-status fetch, no separate poll.
+  const [watcherErrors, setWatcherErrors] = useState<WatcherErrorEntry[]>(
+    () => SYNC_WATCHER_ERRORS_CACHE.get(node.id) ?? [],
+  );
   // Inline new-file form + shared error line for file create/rename/delete.
   // window.prompt/confirm/alert are silent no-ops in the Tauri macOS
   // webview (commit d229d84), so all file operations use inline UI.
@@ -346,6 +355,7 @@ function DetailPaneBody({
       setSyncStatus(cached ?? new Map());
       setSyncLoaded(cached !== undefined);
       setSyncError(null);
+      setWatcherErrors(SYNC_WATCHER_ERRORS_CACHE.get(node.id) ?? []);
       setSyncRunning(false);
       setSyncRunResult(null);
       // Untracked files belong to the previous node until the new node's
@@ -394,6 +404,8 @@ function DetailPaneBody({
         SYNC_STATUS_CACHE.set(requestNodeId, m);
         setSyncStatus(m);
         setSyncLoaded(true);
+        SYNC_WATCHER_ERRORS_CACHE.set(requestNodeId, fresh.watcher_errors ?? []);
+        setWatcherErrors(fresh.watcher_errors ?? []);
       } catch {
         /* keep stale badges */
       }
@@ -431,6 +443,8 @@ function DetailPaneBody({
         SYNC_STATUS_CACHE.set(requestNodeId, m);
         setSyncStatus(m);
         setSyncLoaded(true);
+        SYNC_WATCHER_ERRORS_CACHE.set(requestNodeId, fresh.watcher_errors ?? []);
+        setWatcherErrors(fresh.watcher_errors ?? []);
       } catch {
         /* keep stale badges */
       }
@@ -465,6 +479,8 @@ function DetailPaneBody({
       setUntracked(res.untracked ?? []);
       setSyncLoaded(true);
       setSyncError(null);
+      SYNC_WATCHER_ERRORS_CACHE.set(requestNodeId, res.watcher_errors ?? []);
+      setWatcherErrors(res.watcher_errors ?? []);
     } catch (e) {
       if (lastIdRef.current !== requestNodeId) return;
       // Central mode before login: the sync agent is not up yet and the
@@ -1046,6 +1062,7 @@ function DetailPaneBody({
             {/* Rendered here (not inside SyncBar) so the "connect Drive"
                 hint shows even on a node with no files yet. */}
             <DriveNotConfiguredBanner />
+            <WatcherErrorBanner errors={watcherErrors} />
             {node.type !== "organization" && !node.local_mirror && (
               <NoMirrorBanner
                 pending={creatingMirror}

@@ -25,6 +25,7 @@ import type {
   SyncRunResponse,
   SyncStatusFile,
   UntrackedFile,
+  WatcherErrorEntry,
 } from "../types";
 import { buildAgentCommand } from "../lib/prompt";
 import { agentDisplayName, loadCollapsedFolders, saveCollapsedFolders } from "../lib/settings";
@@ -769,6 +770,28 @@ export function DriveNotConfiguredBanner() {
         Nastavení → Synchronizace
       </a>
       .
+    </div>
+  );
+}
+
+// Recent mirror-watcher failures for this node (#202). Rendered alongside
+// DriveNotConfiguredBanner/NoMirrorBanner so it shows even on a node with
+// zero tracked files -- that is exactly the state a registration failure
+// (e.g. the #201 "no remote configured" bug) used to look like from the UI.
+export function WatcherErrorBanner({ errors }: { errors: WatcherErrorEntry[] }) {
+  if (errors.length === 0) return null;
+  return (
+    <div className="mb-3 rounded border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
+      <div className="mb-1 font-medium">
+        Sledování souborů hlásí {errors.length === 1 ? "chybu" : "chyby"} u tohoto uzlu:
+      </div>
+      <ul className="flex flex-col gap-0.5">
+        {errors.map((e) => (
+          <li key={e.path} className="min-w-0 truncate font-mono text-[11.5px]">
+            {e.path}: {e.message}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

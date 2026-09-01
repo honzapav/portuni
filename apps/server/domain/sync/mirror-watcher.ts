@@ -18,6 +18,7 @@ import { registerLocalFile } from "./engine.js";
 import { onMirrorRegistryChange } from "./mirror-registry.js";
 import { reconcilePath, type ReconcileResult } from "./reconcile.js";
 import { relinkProjectedFile } from "../session-projection.js";
+import { recordWatcherError, clearWatcherError } from "./watcher-error-buffer.js";
 
 export interface WatchHandle {
   close(): void;
@@ -141,8 +142,11 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
         relinkProjectedFile(nodeId, absPath).catch(onError);
         reconcileChain = reconcileChain.then(() =>
           reconcile({ userId: deps.userId, nodeId, absPath }).then(
-            () => undefined,
-            onError,
+            () => clearWatcherError(nodeId, absPath),
+            (e) => {
+              recordWatcherError(nodeId, absPath, e);
+              onError(e);
+            },
           ),
         );
       }, debounceMs),
@@ -152,7 +156,10 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
   // Register anything already on disk but untracked, so files created while
   // the watcher was down (or before its watch attached) do not stay
   // invisible. Local-only (no remote calls); upload still waits for a
-  // deliberate sync.
+  // deliberate sync. Each file is registered independently (#202): one
+  // unreadable/misbehaving file must not abort backfill for the rest of the
+  // mirror, and its failure is recorded with its own path instead of only
+  // the outer per-mirror catch in reconcileMirrors seeing it.
   async function dbBackfillMirror(m: LocalMirrorRow): Promise<void> {
     if (!db) return; // agent mode: the caller runs its own central backfill
     const untracked = await listUntrackedLocal(db, {
@@ -160,11 +167,17 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
       nodeId: m.node_id,
     });
     for (const u of untracked) {
-      await registerLocalFile(db, {
-        userId: deps.userId,
-        nodeId: u.node_id,
-        localPath: u.local_path,
-      });
+      try {
+        await registerLocalFile(db, {
+          userId: deps.userId,
+          nodeId: u.node_id,
+          localPath: u.local_path,
+        });
+        clearWatcherError(u.node_id, u.local_path);
+      } catch (e) {
+        recordWatcherError(u.node_id, u.local_path, e);
+        onError(e);
+      }
     }
   }
 

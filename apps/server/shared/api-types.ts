@@ -173,9 +173,35 @@ export type SyncStatusFile = {
   remote_path: string | null;
 };
 
+// A recent mirror-watcher failure to register/reconcile a file (#202): the
+// watcher used to only log these, so a misconfiguration (e.g. a local-only
+// workspace before #201, an unreadable file, a moved-away mirror) read as
+// "files are not there" with nothing to diagnose it from short of opening
+// the sidecar log. One entry per (node_id, path) -- a repeated failure for
+// the same path refreshes `at` rather than growing the buffer; a later
+// successful reconcile of that path clears it.
+export type WatcherErrorEntry = {
+  node_id: string;
+  path: string;
+  message: string;
+  at: string;
+};
+
 export type SyncStatusResponse = {
   files: SyncStatusFile[];
   untracked: UntrackedFile[];
+  // Present (possibly empty) only when this node has ever had a watcher
+  // error tracked; omitted entirely for a node with none, so existing
+  // callers that don't care about it see no shape change.
+  watcher_errors?: WatcherErrorEntry[];
+};
+
+// GET /sync/health -- workspace-wide, every currently-tracked watcher error
+// across all nodes on this device (#202). Used by the Settings ->
+// Synchronizace banner; the per-node view is the `watcher_errors` field on
+// SyncStatusResponse above.
+export type SyncHealthResponse = {
+  errors: WatcherErrorEntry[];
 };
 
 // Result of triggering a node-wide sync. The endpoint runs storeFile for

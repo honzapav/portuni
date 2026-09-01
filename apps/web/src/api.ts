@@ -8,6 +8,7 @@ import type {
   SyncStatusResponse,
   SyncRunResponse,
   SyncPendingResponse,
+  SyncHealthResponse,
   DetailFile,
   FileContentResponse,
   NodeAccessResponse,
@@ -108,6 +109,15 @@ export async function fetchNodeSyncStatus(
 export async function fetchSyncPending(): Promise<SyncPendingResponse> {
   const res = await apiFetch(`/sync/pending`);
   await throwForStatus(res, "sync-pending");
+  return res.json();
+}
+
+// Workspace-wide mirror-watcher error diagnostics (#202) -- backs the
+// Nastavení -> Synchronizace banner. Per-node view is the watcher_errors
+// field on fetchNodeSyncStatus's response.
+export async function fetchSyncHealth(): Promise<SyncHealthResponse> {
+  const res = await apiFetch(`/sync/health`);
+  await throwForStatus(res, "sync-health");
   return res.json();
 }
 

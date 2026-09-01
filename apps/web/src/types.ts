@@ -16,6 +16,8 @@ export type {
   SyncStatusResponse,
   SyncRunResponse,
   SyncPendingResponse,
+  WatcherErrorEntry,
+  SyncHealthResponse,
   UntrackedFile,
   FileContentResponse,
   NodeAccessEntry,

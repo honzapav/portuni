@@ -23,6 +23,7 @@ import {
 } from "../lib/sync-drive";
 import { openExternal } from "../lib/backend-url";
 import { useDataMode } from "../lib/central";
+import { useSyncHealth } from "../lib/use-sync-health";
 
 const TEAM_SETUP_DOCS_URL = "https://docs.portuni.com/getting-started/team-setup/";
 
@@ -42,6 +43,10 @@ export default function SyncSection() {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Watcher errors are independent of Drive-connection state (#202) -- the
+  // agent-mode sidecar runs a mirror watcher for teammate mirrors too, so
+  // this is fetched unconditionally, including in central mode.
+  const { health: syncHealth } = useSyncHealth();
 
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -114,6 +119,29 @@ export default function SyncSection() {
       <p className="mb-4 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
         Propojení s Google Drive pro zálohování a sdílení souborů uzlů.
       </p>
+
+      {syncHealth.errors.length > 0 && (
+        <div className="mb-4 rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
+          <div className="mb-1 font-medium">
+            Sledování souborů hlásí {syncHealth.errors.length}{" "}
+            {syncHealth.errors.length === 1 ? "chybu" : "chyb"} u{" "}
+            {new Set(syncHealth.errors.map((e) => e.node_id)).size}{" "}
+            {new Set(syncHealth.errors.map((e) => e.node_id)).size === 1 ? "uzlu" : "uzlů"}.
+          </div>
+          <ul className="flex flex-col gap-0.5">
+            {syncHealth.errors.slice(0, 5).map((e) => (
+              <li key={`${e.node_id}:${e.path}`} className="min-w-0 truncate font-mono text-[11.5px]">
+                {e.path}: {e.message}
+              </li>
+            ))}
+          </ul>
+          {syncHealth.errors.length > 5 && (
+            <div className="mt-1 text-[11px] text-red-400">
+              … a dalších {syncHealth.errors.length - 5}.
+            </div>
+          )}
+        </div>
+      )}
 
       {error && (
         <div className="mb-4 flex items-start justify-between gap-3 rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">

@@ -558,9 +558,11 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
 
     // Exact top-level paths. /sync/pending aggregates the DEVICE's mirrors
     // (footer unsynced indicator + quit guard); the central server has none
-    // and would answer an empty aggregate. /sync/drive/* is NOT here: Drive
+    // and would answer an empty aggregate. /sync/health is the same shape
+    // for the mirror-watcher error buffer (#202) -- also device-local, also
+    // empty on the central server. /sync/drive/* is NOT here: Drive
     // remote config lives on the central server in central mode.
-    if p == "/scope" || p == "/sandbox-profile" || p == "/sync/pending" {
+    if p == "/scope" || p == "/sandbox-profile" || p == "/sync/pending" || p == "/sync/health" {
         return true;
     }
 
@@ -2402,6 +2404,14 @@ mod local_only_path_tests {
         // guard) is device-local state: the central server has no mirrors
         // and answers an empty aggregate, so this must hit the local agent.
         assert!(is_local_only_path("/sync/pending"));
+    }
+
+    #[test]
+    fn sync_health_is_local_only() {
+        // The mirror-watcher error buffer (#202) is in-process state on this
+        // device's sidecar; the central server never runs a watcher against
+        // this device's mirrors and would answer an empty/wrong result.
+        assert!(is_local_only_path("/sync/health"));
     }
 
     #[test]

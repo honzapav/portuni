@@ -40,6 +40,7 @@ import {
 } from "../domain/sandbox-profile.js";
 import type { SyncStatusResponse, SyncRunResponse, UntrackedFile } from "../shared/api-types.js";
 import { computeSyncPending } from "../domain/sync/pending.js";
+import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
 import { parseBody, parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 import { nodeVisibleTo, filterVisibleNodeIds } from "../auth/node-access.js";
 import { guardRestNodeWrite } from "./write-gate.js";
@@ -376,7 +377,14 @@ export async function handleSyncStatus(
       local_path: u.local_path,
       mime_type: mimeFor(u.filename),
     }));
-    const payload: SyncStatusResponse = { files: tagged, untracked };
+    // #202: only present when this node has ever had a watcher error
+    // tracked, so a node with none sees no shape change.
+    const watcherErrors = getWatcherErrors(nodeId);
+    const payload: SyncStatusResponse = {
+      files: tagged,
+      untracked,
+      ...(watcherErrors.length > 0 ? { watcher_errors: watcherErrors } : {}),
+    };
     respondJson(res, 200, payload);
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sync-status`, err);
@@ -393,6 +401,28 @@ export async function handleSyncPending(
     respondJson(res, 200, result);
   } catch (err) {
     respondError(res, `${req.method} /sync/pending`, err);
+  }
+}
+
+// GET /sync/health -- workspace-wide watcher-error diagnostics (#202): every
+// currently-tracked mirror-watcher failure on this device, group-visibility
+// filtered the same way computeSyncPending is. Backs the Nastavení ->
+// Synchronizace banner; the per-node view is sync-status's watcher_errors
+// field above.
+export async function handleSyncHealth(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const errors = getWatcherErrors();
+    const visibleIds = await filterVisibleNodeIds(db, identity, [
+      ...new Set(errors.map((e) => e.node_id)),
+    ]);
+    respondJson(res, 200, { errors: errors.filter((e) => visibleIds.has(e.node_id)) });
+  } catch (err) {
+    respondError(res, `${req.method} /sync/health`, err);
   }
 }
 

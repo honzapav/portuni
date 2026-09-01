@@ -111,6 +111,7 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // that can use it.
   if (pathname === "/users" && m === "GET") return "write";
   if (pathname === "/sync/pending" && m === "GET") return "read";
+  if (pathname === "/sync/health" && m === "GET") return "read";
 
   // --- Google Drive connect (Settings -> Synchronizace) ---
   // Configuring, inspecting, or tearing down the Drive remote is the REST
