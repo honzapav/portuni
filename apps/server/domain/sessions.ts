@@ -225,3 +225,49 @@ export async function getSessionScope(db: Client, sessionId: string): Promise<Se
   });
   return res.rows.map((r) => SessionScopeRow.parse(r));
 }
+
+// --- Suspend (phase 2, "Lifecycle" / "Handoff") ---
+
+export interface SuspendSessionInput {
+  handoffPath: string;
+  handoffHash: string;
+  agentSessionId?: string | null;
+}
+
+// Unlike transitionSessionState (which treats a same-state call as a no-op),
+// suspend always writes the handoff columns -- a session can be suspended
+// more than once with an updated handoff (e.g. RALPH re-suspending between
+// loop iterations, spec: "Handoff" -- "written by the agent at suspend (and
+// by the RALPH loop between iterations -- same mechanism)"). Only refuses
+// from a terminal state (closed/archived): those have no live terminal left
+// to have produced a fresh handoff from.
+export async function suspendSession(
+  db: Client,
+  actorUserId: string,
+  sessionId: string,
+  input: SuspendSessionInput,
+): Promise<SessionRow> {
+  const existing = await loadSession(db, sessionId);
+  if (!existing) throw new Error(`suspendSession: ${sessionId} not found`);
+  if (existing.state !== "running" && existing.state !== "suspended") {
+    throw new Error(`suspendSession: cannot suspend a session in state '${existing.state}'`);
+  }
+
+  const now = new Date().toISOString();
+  await db.execute({
+    sql: `UPDATE sessions
+             SET state = 'suspended', handoff_path = ?, handoff_hash = ?,
+                 agent_session_id = COALESCE(?, agent_session_id), last_active_at = ?
+           WHERE id = ?`,
+    args: [input.handoffPath, input.handoffHash, input.agentSessionId ?? null, now, sessionId],
+  });
+
+  await writeAudit(db, actorUserId, "session_suspend", "session", sessionId, {
+    handoff_path: input.handoffPath,
+    handoff_hash: input.handoffHash,
+  });
+
+  const row = await loadSession(db, sessionId);
+  if (!row) throw new Error(`suspendSession: row ${sessionId} disappeared after UPDATE`);
+  return row;
+}

@@ -9,6 +9,8 @@ import {
   violatesHardFloor,
 } from "../scope.js";
 import { nodeVisibleTo } from "../../auth/node-access.js";
+import { getMirrorPath } from "../../domain/sync/mirror-registry.js";
+import { writeHandoffAndSuspend } from "../../domain/session-handoff.js";
 import type { SessionCtx } from "../server.js";
 
 // portuni_session_init is the manual fallback for seeding the scope set.
@@ -296,12 +298,83 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
           {
             type: "text" as const,
             text: JSON.stringify({
+              session_id: scope.sessionId,
               home_node_id: scope.homeNodeId,
               session_type: scope.sessionType,
               created_at: scope.createdAt,
               scope_size: scope.size(),
               scope: scope.list(),
               expansions: scope.expansions(),
+            }),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "portuni_session_suspend",
+    "Suspend this session: writes the given handoff content to wip/sessions/<session-id>-handoff.md (a normal synced path, visible to the team), stores its hash and this session's agent-conversation id, and marks the session 'suspended' so it can be resumed later (respawned in the same mirror, continuing the conversation if it still exists or starting fresh from the handoff). Requires a home node -- interactive_chat sessions have no anchor to write into. Call this before the terminal closes: at the end of a task, or (for RALPH-style loops) between iterations. Can be called again on an already-suspended session to update the handoff with newer content.",
+    {
+      content: z.string().describe("Handoff markdown: what was done, what's next, anything the next session needs to pick up."),
+      agent_session_id: z.string().optional().describe("The underlying CLI's own conversation id (e.g. Claude Code's session UUID), so a later resume can offer to continue the same conversation. Omit if unknown."),
+    },
+    async (args) => {
+      if (!scope.sessionId) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                error: "session_not_ready",
+                hint: "The session record has not finished initializing yet -- retry in a moment.",
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      if (!scope.homeNodeId) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Error: no home node -- this session has nothing to suspend a handoff into (interactive_chat has no anchor).",
+            },
+          ],
+          isError: true,
+        };
+      }
+      const mirrorRoot = await getMirrorPath(ctx.identity.userId, scope.homeNodeId);
+      if (!mirrorRoot) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Error: no local mirror for the home node -- nothing to write the handoff into.",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const result = await writeHandoffAndSuspend(
+        getDb(),
+        ctx.identity.userId,
+        { id: scope.sessionId, nodeId: scope.homeNodeId, mirrorRoot },
+        args.content,
+        args.agent_session_id ?? null,
+      );
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              session_id: result.session.id,
+              state: result.session.state,
+              handoff_path: result.handoffPath,
+              handoff_hash: result.handoffHash,
             }),
           },
         ],

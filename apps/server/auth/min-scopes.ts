@@ -28,6 +28,7 @@ export const TOOL_MIN_SCOPE: Record<string, GlobalScope> = {
   portuni_session_init: "read",
   portuni_session_log: "read",
   portuni_expand_scope: "read",
+  portuni_session_suspend: "write",
   // portuni_resolve closes/finalises an event — it mutates state, so write.
   portuni_resolve: "write",
 
