@@ -49,7 +49,7 @@ function classifyNode(scope: SessionScope, nodeId: string): { addedVia: AddedVia
 // synchronous call stack (which includes that recordExpansion call, since
 // nothing awaits between the two) drains -- classification is then always
 // current. Only this listener's own timing is deferred; SessionScope's
-// firing mechanism itself (used synchronously by the reconciler too) is
+// firing mechanism itself (used synchronously by the disk projector too) is
 // untouched.
 function syncRead(db: Client, sessionId: string, scope: SessionScope, nodeId: string): void {
   queueMicrotask(() => {

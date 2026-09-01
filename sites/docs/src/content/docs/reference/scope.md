@@ -29,7 +29,7 @@ Add one or more nodes to the current session's read-scope set. Required when a r
 | `triggered_by` | enum | no | `user` (default) for prompt-named or chat-confirmed expansions; `agent` for the agent's own initiative (rare — most agent-initiated reaches go through elicitation) |
 | `confirmed_hard_floor` | boolean | no | Default `false`. Set to `true` only when the user has explicitly confirmed reaching a hard-floor node (`visibility=private` owned by another user, or `meta.scope_sensitive=true`). Without this flag, hard-floor nodes are refused even when `reason` claims user confirmation |
 
-Returns: `{ added, unknown, refused_hard_floor, scope_size, hint? }` — `unknown` lists requested IDs that don't exist in the graph; `refused_hard_floor` lists nodes that need `confirmed_hard_floor=true`; `hint` appears when there's a clear next step. Expanded (ad-hoc) nodes are not placed on disk — read their files with [`portuni_read_file`](/reference/files/), not a native path.
+Returns: `{ added, added_via, writable, unknown, refused_hard_floor, scope_size, projected, hint? }` — `unknown` lists requested IDs that don't exist in the graph; `refused_hard_floor` lists nodes that need `confirmed_hard_floor=true`; `projected` maps each accepted node ID with a local mirror on this device to its session-local hardlink projection directory (readable natively); an accepted node with no local mirror on this device has no entry in `projected` — read it with [`portuni_read_file`](/reference/files/) instead; `hint` appears when there's a clear next step.
 
 Every expansion is audited and surfaced in `portuni_session_log`. See [Scope Enforcement](/concepts/scope-enforcement/).
 

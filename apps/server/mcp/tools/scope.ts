@@ -259,10 +259,18 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
         });
       }
 
-      // Fire the reconciler for the one-time legacy .portuni-scope sweep
-      // (staging is retired). Ad-hoc expanded nodes are not exposed on disk;
-      // the agent reads their files via portuni_read_file.
-      await Promise.all(accepted.map((id) => ctx.reconciler.reconcileNode(id)));
+      // Project accepted nodes into this session's hardlink projection
+      // directory (domain/session-projection.ts) when they have a local
+      // mirror on this device -- the Seatbelt sandbox already grants read
+      // access to that directory (domain/sandbox-profile.ts), so the agent
+      // can read them directly, not only via portuni_read_file.
+      const projected: Record<string, string> = {};
+      await Promise.all(
+        accepted.map(async (id) => {
+          const r = await ctx.projector.projectNode(id);
+          if (r) projected[id] = r.dir;
+        }),
+      );
 
       const overridableRefusals = refused_hard_floor.some((r) => !r.permanent);
       return {
@@ -276,10 +284,11 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
               unknown: rejected_unknown,
               refused_hard_floor,
               scope_size: scope.size(),
+              projected,
               hint: overridableRefusals
                 ? "Re-call portuni_expand_scope with confirmed_hard_floor=true only after the user explicitly authorises the hard-floor node."
                 : accepted.length > 0
-                  ? "Expanded nodes are not on disk here; read their files with portuni_read_file (node_id + path)."
+                  ? "Nodes listed in 'projected' are readable at that directory; nodes with no local mirror on this device have no entry there — read them with portuni_read_file (node_id + path)."
                   : undefined,
             }),
           },

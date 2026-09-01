@@ -90,10 +90,13 @@ Returns: Full node object including:
 
 File `local_path`s are the node's **real** mirror for the home node and
 its depth-1 neighbours (the seatbelt grants read on those real paths). For
-an ad-hoc in-scope node (deeper than depth-1), file `local_path`s are
-`null` — not exposed on disk; read the content with
-[`portuni_read_file`](/reference/files/). `local_mirror` is always the
-node's real mirror registration path (metadata, not a read path).
+an ad-hoc in-scope node (deeper than depth-1) with a local mirror on this
+device, file `local_path`s point at that node's hardlink projection
+directory instead (created on first touch, cleaned up at session end). A
+node with no local mirror on this device has `local_path: null` either
+way — read the content with [`portuni_read_file`](/reference/files/).
+`local_mirror` is always the node's real mirror registration path (metadata,
+not a read path).
 
 ## portuni_delete_node
 

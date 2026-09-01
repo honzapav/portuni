@@ -21,7 +21,7 @@ import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { guardWrite, type WriteContext } from "../apps/server/domain/write-gate.js";
 import { SessionScope } from "../apps/server/mcp/scope.js";
-import { createScopeReconciler } from "../apps/server/mcp/scope-reconciler.js";
+import { createDiskProjector } from "../apps/server/mcp/disk-projection.js";
 import { createElicitor } from "../apps/server/mcp/elicit.js";
 import { registerNodeTools } from "../apps/server/mcp/tools/nodes.js";
 import { registerGetNodeTool } from "../apps/server/mcp/tools/get-node.js";
@@ -94,8 +94,8 @@ function payloadOf(result: ToolResult): Record<string, unknown> {
 }
 
 async function connect(scope: SessionScope, ident: RequestIdentity): Promise<McpClient> {
-  const reconciler = createScopeReconciler({ userId: ident.userId, scope });
-  const ctx: SessionCtx = { scope, identity: ident, reconciler };
+  const projector = createDiskProjector({ userId: ident.userId, scope });
+  const ctx: SessionCtx = { scope, identity: ident, projector };
   const server = new McpServer({ name: "write-gate-test", version: "0.0.1" }, {});
   registerNodeTools(server, ctx);
   registerScopeTools(server, ctx);
@@ -114,9 +114,9 @@ async function connectWithElicitation(
   ident: RequestIdentity,
   dialogAnswer: "accept" | "decline" | undefined,
 ): Promise<McpClient> {
-  const reconciler = createScopeReconciler({ userId: ident.userId, scope });
+  const projector = createDiskProjector({ userId: ident.userId, scope });
   const server = new McpServer({ name: "write-gate-elicit-test", version: "0.0.1" }, {});
-  const ctx: SessionCtx = { scope, identity: ident, reconciler, elicit: createElicitor(server) };
+  const ctx: SessionCtx = { scope, identity: ident, projector, elicit: createElicitor(server) };
   registerNodeTools(server, ctx);
   registerGetNodeTool(server, ctx);
   registerScopeTools(server, ctx);

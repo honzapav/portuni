@@ -9,6 +9,7 @@ import { createMcpServer } from "./server.js";
 import { parseBody, RequestBodyTooLargeError } from "../http/middleware.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { autoSeedFromHome, parseHomeNodeIdFromUrl } from "./auto-seed.js";
+import { disposeSessionProjection } from "./disk-projection.js";
 import { logAudit } from "../infra/audit.js";
 import { getDb } from "../infra/db.js";
 
@@ -97,6 +98,11 @@ export function createMcpTransport(): McpTransport {
         if (transport.sessionId) {
           sessions.delete(transport.sessionId);
         }
+        // Disk contract: the agent never manages its projection directory
+        // (spec: "Disk contract") -- clean it up here, at session end.
+        // `scope` is assigned by createMcpServer below; this closure only
+        // runs after that call returns.
+        disposeSessionProjection(scope, identity.userId);
       };
 
       // Parsed here (before createMcpServer) because session_type

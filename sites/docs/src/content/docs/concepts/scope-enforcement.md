@@ -139,12 +139,13 @@ Every expansion is logged to the audit trail with the reason (the user's quoted 
 
 ### Disk projection – how read scope reaches the filesystem
 
-The session scope set is the single source of truth for disk reads too, projected onto **real** mirror paths — no copies. The scope splits into two tiers:
+The session scope set is the single source of truth for disk reads too. The scope splits into three tiers:
 
 - **Seed set — home + depth-1 neighbours** (stable, known at spawn). The Seatbelt profile grants read on each neighbour's **real** mirror. Read tools (`portuni_get_node`, `portuni_get_context`, `portuni_list_files`) return those real paths as `local_path`; read the files natively with your own tools. Because the seed set does not shrink during a session (scope only grows), a spawn-time grant never drifts for it.
-- **Ad-hoc set — deeper than depth-1** (added mid-session by `portuni_expand_scope`). The Seatbelt profile is fixed at spawn and cannot be widened, so these nodes are **not** placed on disk. Read their content with [`portuni_read_file`](/reference/files/) (`node_id` + path) — the server reads the live file and returns it. Native `grep`/`glob` over ad-hoc file content is the deliberate trade for tight, hook-free dynamic scope; graph *structure* traversal is unaffected.
+- **Ad-hoc set — deeper than depth-1** (added mid-session by `portuni_expand_scope` or an auto-allowed edge traversal). The Seatbelt profile is fixed at spawn and cannot be widened with a new real path, but it does grant read on a per-node **projection directory** up front. The first time a read tool touches an ad-hoc node that has a local mirror on this device, the server hardlinks that mirror into the session's own subdirectory there — no data duplication, content always current — and `local_path` (and `portuni_expand_scope`'s `projected` field) points at it. The hardlinks stay live for the rest of the session (a file change in the source mirror is reflected automatically) and are cleaned up when the session ends. On resume, a client can pass the suspended session's id (`?resume_session_id=<id>`) when fetching a fresh sandbox profile, so every node that session ever read gets its real mirror granted again up front — a re-expansion from before the restart does not need re-projecting.
+- **No local mirror on this device.** Whatever the tier, a node with no local mirror has no disk path either way. Read its content with [`portuni_read_file`](/reference/files/) (`node_id` + path) — the server reads the live file (or falls back to the routed remote) and returns it. This is the one channel that always works regardless of mirror presence.
 
-The old `.portuni-scope/` copy staging is retired: copies went stale, edits to a copy were never written back, and out-of-scope copies lingered. Real paths dissolve all three. The canonical model is `docs/architecture/scope-disk-projection.md` in the repository.
+The old `.portuni-scope/` copy staging is retired: copies went stale, edits to a copy were never written back, and out-of-scope copies lingered. The hardlink projection above replaced it. The canonical model is `docs/architecture/scope-disk-projection.md` in the repository.
 
 ## Why this is its own page (and not a permission system)
 

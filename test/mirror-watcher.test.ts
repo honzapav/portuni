@@ -7,7 +7,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -20,6 +20,11 @@ import {
 } from "../apps/server/domain/sync/mirror-watcher.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
+import {
+  registerProjectedNode,
+  nodeProjectionDir,
+  clearProjectionRegistryForTests,
+} from "../apps/server/domain/session-projection.js";
 
 describe("ownerNodeForPath", () => {
   it("returns the innermost (longest-prefix) mirror containing the path", () => {
@@ -71,6 +76,43 @@ describe("createMirrorWatcher dispatch", () => {
 
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0], { nodeId: "N1", absPath: "/m/wip/a.md" });
+  });
+
+  it("re-links an active session projection when a watched file changes (#191)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "portuni-watch-proj-"));
+    const mirror = join(root, "mirror");
+    await mkdir(join(mirror, "wip"), { recursive: true });
+    clearProjectionRegistryForTests();
+    const target = nodeProjectionDir(join(root, ".portuni-sessions", "HOME"), "SESS", "N1");
+    registerProjectedNode("N1", { sessionId: "SESS", mirrorPath: mirror, targetDir: target });
+
+    let emit: ((p: string) => void) | null = null;
+    const watcher = createMirrorWatcher({
+      db: {} as unknown as Client,
+      userId: "U1",
+      listMirrors: async () => [
+        { user_id: "U1", node_id: "N1", local_path: mirror, registered_at: "" },
+      ],
+      reconcile: async () => ({ action: "noop" }),
+      backfill: false,
+      watchFactory: (_root, onPath) => {
+        emit = onPath;
+        return { close() { /* no-op */ } };
+      },
+      debounceMs: 10,
+    });
+    await watcher.start();
+    assert.ok(emit);
+
+    const src = join(mirror, "wip", "a.md");
+    await writeFile(src, "hello\n");
+    emit!(src);
+    await delay(60);
+    watcher.stop();
+
+    assert.equal(await readFile(join(target, "wip", "a.md"), "utf8"), "hello\n");
+    clearProjectionRegistryForTests();
+    await rm(root, { recursive: true, force: true });
   });
 
   it("ignores events outside any mirror", async () => {

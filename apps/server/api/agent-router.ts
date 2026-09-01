@@ -200,6 +200,7 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
           profile: buildSeatbeltProfile(r.scope),
           portuni_root: r.scope.portuniRoot,
           home_mirror: r.scope.homeMirror,
+          projection_root: r.scope.projectionRoot ?? null,
         });
       } catch (err) {
         respondError(res, "GET /sandbox-profile", err);
@@ -482,6 +483,7 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
           profile: buildSeatbeltProfile(scope),
           portuni_root: scope.portuniRoot,
           home_mirror: scope.homeMirror,
+          projection_root: scope.projectionRoot ?? null,
         });
       } catch (err) {
         respondError(res, `GET /nodes/${nodeId}/sandbox-profile`, err);

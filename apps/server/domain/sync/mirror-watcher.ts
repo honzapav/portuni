@@ -17,6 +17,7 @@ import { listUntrackedLocal } from "./discover-local.js";
 import { registerLocalFile } from "./engine.js";
 import { onMirrorRegistryChange } from "./mirror-registry.js";
 import { reconcilePath, type ReconcileResult } from "./reconcile.js";
+import { relinkProjectedFile } from "../session-projection.js";
 
 export interface WatchHandle {
   close(): void;
@@ -133,6 +134,11 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
         if (stopped) return;
         const nodeId = ownerNodeForPath(mirrors, absPath);
         if (!nodeId) return;
+        // Best-effort, independent of the reconcile chain: re-link this
+        // node's hardlink projections (if any session has one active) so
+        // an edit/create/delete in the mirror is reflected there without
+        // waiting on file-state reconciliation.
+        relinkProjectedFile(nodeId, absPath).catch(onError);
         reconcileChain = reconcileChain.then(() =>
           reconcile({ userId: deps.userId, nodeId, absPath }).then(
             () => undefined,

@@ -45,7 +45,7 @@ Array — `[root, ...connected]`. The root (depth 0) and connected nodes share t
 
 Local mirror paths are read from `{PORTUNI_WORKSPACE_ROOT}/.portuni/sync.db` (per-device registry). Stale rows (mirror registered for a node that has been purged from the shared graph) are skipped and cleaned up lazily.
 
-`local_path` is the node's **real** mirror for the home node and its depth-1 neighbours (the seatbelt grants read on those real paths). For an ad-hoc in-scope node (deeper than depth-1), `local_path` is `null` — it is not exposed on disk; read its files with [`portuni_read_file`](/reference/files/). See [disk read scope](/concepts/scope-enforcement/).
+`local_path` is the node's **real** mirror for the home node and its depth-1 neighbours (the seatbelt grants read on those real paths). For an ad-hoc in-scope node (deeper than depth-1) that has a local mirror on this device, `local_path` is that node's hardlink projection directory (created on first touch, cleaned up at session end) — still readable natively, just not the real mirror path. A node with no local mirror on this device has `local_path: null` either way; read its files with [`portuni_read_file`](/reference/files/). See [disk read scope](/concepts/scope-enforcement/).
 
 Edges to a peer the caller can only reach via a request-mode ACL come back with `peer_restricted: true` and blanked `id` / `peer_id` — name and type only, so the edge is visible but cannot be used to probe or act on the peer. Edges to fully hidden peers are dropped.
 

@@ -6,7 +6,7 @@ import { buildContextPayload } from "./context.js";
 import { getLocalMirror } from "../../domain/sync/local-db.js";
 import { deriveLocalPath, buildNodeRoot } from "../../domain/sync/remote-path.js";
 import { guardNodeRead, scopeExpansionError } from "../scope.js";
-import { readableMirrorRoot } from "../scope-reconciler.js";
+import { readableMirrorRoot } from "../disk-projection.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
@@ -121,20 +121,24 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
         : null;
 
       // Single-source disk projection: for a non-home in-scope node the agent
-      // can only read the staged copy, so derive file paths from there and
-      // ensure the copy is fresh first. local_mirror keeps pointing at the real
-      // mirror (it is metadata about registration, not a read path).
+      // can only read this session's hardlink projection, so derive file
+      // paths from there and ensure it is fresh first. local_mirror keeps
+      // pointing at the real mirror (it is metadata about registration, not
+      // a read path).
       const homeMirror = scope.homeNodeId
         ? (await getLocalMirror(ctx.identity.userId, scope.homeNodeId))?.local_path ?? null
         : null;
+      let projectionDir: string | null = null;
       if (row.id !== scope.homeNodeId && scope.has(row.id)) {
-        await ctx.reconciler.reconcileNode(row.id);
+        const r = await ctx.projector.projectNode(row.id);
+        projectionDir = r?.dir ?? null;
       }
       const effectiveMirrorRoot = readableMirrorRoot({
         scope,
         nodeId: row.id,
         homeMirror,
         realMirror: mirrorPath,
+        projectionDir,
       });
 
       // 4. Resolve the org_sync_key once for the per-file derivation below.

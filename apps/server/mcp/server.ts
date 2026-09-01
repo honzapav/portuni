@@ -20,7 +20,7 @@ import { registerEventTools } from "./tools/events.js";
 import { registerActorTools } from "./tools/actors.js";
 import { registerResponsibilityTools } from "./tools/responsibilities.js";
 import { registerEntityAttributeTools } from "./tools/entity-attributes.js";
-import { createScopeReconciler, type ScopeReconciler } from "./scope-reconciler.js";
+import { createDiskProjector, type DiskProjector } from "./disk-projection.js";
 import { createElicitor, type Elicitor } from "./elicit.js";
 import { bindSessionPersistence } from "./session-persistence.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
@@ -41,7 +41,7 @@ For semantics, contracts, and enums fetch resources: portuni://architecture, por
 export interface SessionCtx {
   scope: SessionScope;
   identity: RequestIdentity;
-  reconciler: ScopeReconciler;
+  projector: DiskProjector;
   // Optional: absent in most test harnesses that build a SessionCtx by hand,
   // which is equivalent to every confirm() call resolving "unsupported"
   // (the pre-elicitation honor-system fallback). createMcpServer always
@@ -143,14 +143,14 @@ export function createMcpServer(
   homeNodeId: string | null = null,
 ): { server: McpServer; scope: SessionScope } {
   const scope = new SessionScope(deriveSessionType(identity, homeNodeId));
-  const reconciler = createScopeReconciler({ userId: identity.userId, scope });
-  scope.onAdd((nodeId) => reconciler.schedule(nodeId));
+  const projector = createDiskProjector({ userId: identity.userId, scope });
+  scope.onAdd((nodeId) => projector.schedule(nodeId));
   bindSessionPersistence(getDb(), scope, identity);
   const server = new McpServer(
     { name: "portuni", version: "0.1.0" },
     { instructions: INSTRUCTIONS },
   );
-  const ctx: SessionCtx = { scope, identity, reconciler, elicit: createElicitor(server) };
+  const ctx: SessionCtx = { scope, identity, projector, elicit: createElicitor(server) };
   gateToolsByScope(server, identity);
   registerResources(server);
   registerScopeTools(server, ctx);

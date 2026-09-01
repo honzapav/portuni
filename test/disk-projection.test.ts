@@ -1,0 +1,248 @@
+// Scope -> disk projection (#191). readableMirrorRoot maps a node to the
+// disk path the agent may read: the real mirror for home/seed nodes, the
+// session's hardlink projection directory for ad-hoc ones (once created),
+// null otherwise. DiskProjector creates that hardlink projection on demand.
+
+import { describe, it, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, rm, mkdir, writeFile, readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { SessionScope } from "../apps/server/mcp/scope.js";
+import { readableMirrorRoot, createDiskProjector } from "../apps/server/mcp/disk-projection.js";
+import { clearProjectionRegistryForTests } from "../apps/server/domain/session-projection.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+
+let dir: string;
+let home: string;
+let neighbor: string;
+let originalPortuniRoot: string | undefined;
+let originalWorkspaceRoot: string | undefined;
+
+function fakeResolver(map: Record<string, string>) {
+  return async (_userId: string, nodeId: string) => map[nodeId] ?? null;
+}
+
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), "portuni-diskproj-"));
+  home = join(dir, "home");
+  neighbor = join(dir, "neighbor");
+  await mkdir(join(home, "wip"), { recursive: true });
+  await mkdir(join(neighbor, "wip"), { recursive: true });
+  originalPortuniRoot = process.env.PORTUNI_ROOT;
+  originalWorkspaceRoot = process.env.PORTUNI_WORKSPACE_ROOT;
+  process.env.PORTUNI_ROOT = dir;
+  process.env.PORTUNI_WORKSPACE_ROOT = dir;
+  resetLocalDbForTests();
+  clearProjectionRegistryForTests();
+});
+
+afterEach(async () => {
+  if (originalPortuniRoot === undefined) delete process.env.PORTUNI_ROOT;
+  else process.env.PORTUNI_ROOT = originalPortuniRoot;
+  if (originalWorkspaceRoot === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
+  else process.env.PORTUNI_WORKSPACE_ROOT = originalWorkspaceRoot;
+  resetLocalDbForTests();
+  clearProjectionRegistryForTests();
+  await rm(dir, { recursive: true, force: true });
+});
+
+describe("readableMirrorRoot", () => {
+  it("returns the real mirror for the home node", () => {
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    const p = readableMirrorRoot({ scope, nodeId: "HOME", homeMirror: "/h", realMirror: "/h" });
+    assert.equal(p, "/h");
+  });
+
+  it("returns the real mirror for a seed-set (depth-1) node", () => {
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    scope.addSeed("NEIGHBOR");
+    const p = readableMirrorRoot({
+      scope,
+      nodeId: "NEIGHBOR",
+      homeMirror: "/h",
+      realMirror: "/real/neighbor",
+    });
+    assert.equal(p, "/real/neighbor");
+  });
+
+  it("returns the projection dir for a non-seed in-scope (ad-hoc) node when one is given", () => {
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    scope.add("ADHOC"); // in scope but not seeded
+    const p = readableMirrorRoot({
+      scope,
+      nodeId: "ADHOC",
+      homeMirror: "/h",
+      realMirror: "/real/adhoc",
+      projectionDir: "/proj/sess/ADHOC",
+    });
+    assert.equal(p, "/proj/sess/ADHOC");
+  });
+
+  it("returns null for an ad-hoc in-scope node with no projection yet", () => {
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    scope.add("ADHOC");
+    const p = readableMirrorRoot({
+      scope,
+      nodeId: "ADHOC",
+      homeMirror: "/h",
+      realMirror: "/real/adhoc",
+    });
+    assert.equal(p, null);
+  });
+
+  it("returns null for an out-of-scope node", () => {
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    const p = readableMirrorRoot({
+      scope,
+      nodeId: "OUTSIDE",
+      homeMirror: "/h",
+      realMirror: "/real/outside",
+    });
+    assert.equal(p, null);
+  });
+});
+
+describe("createDiskProjector", () => {
+  it("returns null for the home node", async () => {
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    scope.sessionId = "SESS";
+    const projector = createDiskProjector({
+      userId: "u",
+      scope,
+      resolveMirror: fakeResolver({ HOME: home }),
+    });
+    assert.equal(await projector.projectNode("HOME"), null);
+  });
+
+  it("returns null for a seed node", async () => {
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    scope.sessionId = "SESS";
+    scope.addSeed("NEIGHBOR");
+    const projector = createDiskProjector({
+      userId: "u",
+      scope,
+      resolveMirror: fakeResolver({ NEIGHBOR: neighbor }),
+    });
+    assert.equal(await projector.projectNode("NEIGHBOR"), null);
+  });
+
+  it("returns null for a node outside scope", async () => {
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    scope.sessionId = "SESS";
+    const projector = createDiskProjector({
+      userId: "u",
+      scope,
+      resolveMirror: fakeResolver({ NEIGHBOR: neighbor }),
+    });
+    assert.equal(await projector.projectNode("NEIGHBOR"), null);
+  });
+
+  it("returns null when the session has no persisted id yet", async () => {
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    scope.add("ADHOC");
+    const projector = createDiskProjector({
+      userId: "u",
+      scope,
+      resolveMirror: fakeResolver({ ADHOC: neighbor }),
+    });
+    assert.equal(await projector.projectNode("ADHOC"), null);
+  });
+
+  it("returns null when the ad-hoc node has no local mirror on this device", async () => {
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    scope.sessionId = "SESS";
+    scope.add("ADHOC");
+    const projector = createDiskProjector({
+      userId: "u",
+      scope,
+      resolveMirror: fakeResolver({}), // ADHOC has no mirror
+    });
+    assert.equal(await projector.projectNode("ADHOC"), null);
+  });
+
+  it("hardlinks the ad-hoc node's mirror files into the session projection dir", async () => {
+    await writeFile(join(neighbor, "wip", "method.md"), "hello\n");
+    await mkdir(join(neighbor, "outputs"), { recursive: true });
+    await writeFile(join(neighbor, "outputs", "report.md"), "world\n");
+    // dotfile must be skipped, same ignore policy as the sync engine
+    await mkdir(join(neighbor, "wip", ".obsidian"), { recursive: true });
+    await writeFile(join(neighbor, "wip", ".obsidian", "workspace.json"), "{}");
+
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    scope.sessionId = "SESS";
+    scope.add("ADHOC");
+    const projector = createDiskProjector({
+      userId: "u",
+      scope,
+      resolveMirror: fakeResolver({ HOME: home, ADHOC: neighbor }),
+    });
+
+    const result = await projector.projectNode("ADHOC");
+    assert.ok(result);
+    assert.equal(result.files, 2);
+    assert.equal(result.dir, join(dir, ".portuni-sessions", "HOME", "SESS", "ADHOC"));
+
+    const linked = await readFile(join(result.dir, "wip", "method.md"), "utf8");
+    assert.equal(linked, "hello\n");
+    const linkedOut = await readFile(join(result.dir, "outputs", "report.md"), "utf8");
+    assert.equal(linkedOut, "world\n");
+
+    // Genuine hardlink: same inode as the source.
+    const srcStat = await stat(join(neighbor, "wip", "method.md"));
+    const dstStat = await stat(join(result.dir, "wip", "method.md"));
+    assert.equal(srcStat.ino, dstStat.ino);
+
+    await assert.rejects(() => stat(join(result.dir, "wip", ".obsidian", "workspace.json")));
+  });
+
+  it("is idempotent: re-projecting an already-linked node is a no-op, not an error", async () => {
+    await writeFile(join(neighbor, "wip", "method.md"), "hello\n");
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    scope.sessionId = "SESS";
+    scope.add("ADHOC");
+    const projector = createDiskProjector({
+      userId: "u",
+      scope,
+      resolveMirror: fakeResolver({ ADHOC: neighbor }),
+    });
+
+    const first = await projector.projectNode("ADHOC");
+    const second = await projector.projectNode("ADHOC");
+    assert.equal(first?.files, 1);
+    assert.equal(second?.files, 1);
+  });
+
+  it("dedups concurrent calls for the same node", async () => {
+    await writeFile(join(neighbor, "wip", "method.md"), "hello\n");
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    scope.sessionId = "SESS";
+    scope.add("ADHOC");
+    let calls = 0;
+    const projector = createDiskProjector({
+      userId: "u",
+      scope,
+      resolveMirror: async (_u, id) => {
+        calls++;
+        return id === "ADHOC" ? neighbor : null;
+      },
+    });
+
+    const [a, b] = await Promise.all([projector.projectNode("ADHOC"), projector.projectNode("ADHOC")]);
+    assert.deepEqual(a, b);
+    assert.equal(calls, 1);
+  });
+});

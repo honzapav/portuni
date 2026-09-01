@@ -85,18 +85,26 @@ describe("GET /nodes/:id/sandbox-profile", () => {
       profile: string;
       portuni_root: string;
       home_mirror: string;
+      projection_root: string | null;
     };
     assert.ok(body.home_mirror.endsWith(join("acme", "projects", "proj")));
     assert.ok(body.profile.startsWith("(version 1)"));
     assert.ok(body.profile.includes(`(allow file-read* file-write* (subpath "${body.home_mirror}"))`));
     assert.ok(body.profile.includes(`(deny file-read* file-write* (subpath "${body.portuni_root}"))`));
     // The org (depth-1 neighbour, which has a mirror) is granted read-only on
-    // its REAL path -- exactly one standalone read-allow, and it's the org dir.
-    const neighborReadLines = body.profile.split("\n").filter(
+    // its REAL path, and the per-node projection parent is granted read-only
+    // too (#191) -- exactly two standalone read-allows.
+    const readLines = body.profile.split("\n").filter(
       (l) => l.startsWith("(allow file-read* (subpath"),
     );
-    assert.equal(neighborReadLines.length, 1);
-    assert.ok(neighborReadLines[0].includes(`${sep}acme"`), "grants the org real mirror");
+    assert.equal(readLines.length, 2);
+    assert.ok(readLines.some((l) => l.includes(`${sep}acme"`)), "grants the org real mirror");
+    assert.ok(body.projection_root, "projection_root is returned");
+    assert.ok(
+      readLines.some((l) => l.includes(body.projection_root as string)),
+      "grants the projection root",
+    );
+    assert.ok(body.projection_root?.includes(".portuni-sessions"));
   });
 
   it("409 NO_MIRROR when the node has no local mirror", async () => {

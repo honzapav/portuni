@@ -1,9 +1,9 @@
 // Tests for the Seatbelt sandbox profile generator (universal disk-scope
-// layer). The profile uses the home-only single-source model: the kernel
-// grants read+write in the home mirror, and denies the rest of
-// PORTUNI_ROOT. Neighbor nodes are made readable via staged copies under
-// <home>/.portuni-scope/<id>/ (inside the home subpath, already covered
-// by the home rw rule). See apps/server/mcp/scope-reconciler.ts.
+// layer). The kernel grants read+write in the home mirror and read-only on
+// each depth-1 neighbour's REAL mirror; a per-node projection parent is also
+// granted read-only for ad-hoc (deeper) nodes hardlinked in mid-session
+// (domain/session-projection.ts, mcp/disk-projection.ts). See
+// docs/architecture/scope-disk-projection.md.
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -13,9 +13,11 @@ import { tmpdir } from "node:os";
 import { ulid } from "ulid";
 import {
   buildSeatbeltProfile,
+  resolveProjectionRootForNode,
   resolveSandboxScopeForCwd,
   resolveSandboxScopeForNode,
 } from "../apps/server/domain/sandbox-profile.js";
+import { createSession, upsertSessionScopeRead } from "../apps/server/domain/sessions.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
@@ -67,6 +69,30 @@ describe("buildSeatbeltProfile (real-path model)", () => {
     });
     assert.ok(p.includes('"/ws/we\\"ird\\\\dir"'));
   });
+
+  it("re-allows read-only on projectionRoot when set, omits the line when absent", () => {
+    const withProjection = buildSeatbeltProfile({
+      portuniRoot: "/root",
+      homeMirror: "/root/a",
+      readMirrors: [],
+      projectionRoot: "/root/.portuni-sessions/HOME",
+    });
+    assert.match(
+      withProjection,
+      /\(allow file-read\* \(subpath "\/root\/\.portuni-sessions\/HOME"\)\)/,
+    );
+    assert.doesNotMatch(
+      withProjection,
+      /\(allow file-read\* file-write\* \(subpath "\/root\/\.portuni-sessions\/HOME"\)\)/,
+    );
+
+    const withoutProjection = buildSeatbeltProfile({
+      portuniRoot: "/root",
+      homeMirror: "/root/a",
+      readMirrors: [],
+    });
+    assert.doesNotMatch(withoutProjection, /\.portuni-sessions/);
+  });
 });
 
 describe("resolveSandboxScopeForNode", () => {
@@ -106,6 +132,18 @@ describe("resolveSandboxScopeForNode", () => {
     assert.equal(scope, null);
   });
 
+  it("computes projectionRoot as <portuniRoot>/.portuni-sessions/<nodeId>", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const homeDir = join(workspace, "org", "projects", "p1");
+    await mkdir(homeDir, { recursive: true });
+    await registerMirror(SOLO_USER, nodeId, homeDir);
+
+    const scope = await resolveSandboxScopeForNode(db, SOLO_USER, nodeId);
+
+    assert.ok(scope);
+    assert.equal(scope.projectionRoot, join(scope.portuniRoot, ".portuni-sessions", nodeId));
+  });
+
   it("grants read on depth-1 neighbour mirrors, not the home", async () => {
     const { db, nodeId, orgId } = await makeSharedDb(); // project belongs_to org
     const orgDir = join(workspace, "org");
@@ -135,6 +173,39 @@ describe("resolveSandboxScopeForNode", () => {
     assert.equal(scope.readMirrors.length, 0);
   });
 
+  it("restart consolidation: resumeSessionId widens readMirrors with the session's accumulated read set (#191)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const homeDir = join(workspace, "org", "projects", "p1");
+    await mkdir(homeDir, { recursive: true });
+    await registerMirror(SOLO_USER, nodeId, homeDir);
+
+    // A node with no graph edge to nodeId -- not a depth-1 neighbour -- but
+    // this session read it once via an ad-hoc expansion and it has a local
+    // mirror on this device.
+    const adhocId = "N000000000000000000ADHOC01";
+    await db.execute({
+      sql: "INSERT INTO nodes (id,type,name,sync_key,created_by) VALUES (?,?,?,?,?)",
+      args: [adhocId, "process", "Ad-hoc process", "adhoc-proc", SOLO_USER],
+    });
+    const adhocDir = join(workspace, "elsewhere", "adhoc");
+    await mkdir(adhocDir, { recursive: true });
+    await registerMirror(SOLO_USER, adhocId, adhocDir);
+
+    const session = await createSession(db, SOLO_USER, {
+      node_id: nodeId,
+      session_type: "interactive_task",
+    });
+    await upsertSessionScopeRead(db, session.id, adhocId, "disconnected", "test");
+
+    const fresh = await resolveSandboxScopeForNode(db, SOLO_USER, nodeId);
+    assert.ok(fresh);
+    assert.ok(!fresh.readMirrors.some((m) => m.endsWith(join("elsewhere", "adhoc"))));
+
+    const resumed = await resolveSandboxScopeForNode(db, SOLO_USER, nodeId, session.id);
+    assert.ok(resumed);
+    assert.ok(resumed.readMirrors.some((m) => m.endsWith(join("elsewhere", "adhoc"))));
+  });
+
   it("resolves by cwd: deepest containing mirror wins", async () => {
     const { db, nodeId, orgId } = await makeSharedDb();
     const orgDir = join(workspace, "org");
@@ -157,6 +228,45 @@ describe("resolveSandboxScopeForNode", () => {
     await registerMirror(SOLO_USER, nodeId, homeDir);
 
     const r = await resolveSandboxScopeForCwd(db, SOLO_USER, join(workspace, "elsewhere"));
+    assert.equal(r, null);
+  });
+});
+
+describe("resolveProjectionRootForNode", () => {
+  let workspace: string;
+  let originalRoot: string | undefined;
+
+  beforeEach(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-sbx-proj-"));
+    originalRoot = process.env.PORTUNI_WORKSPACE_ROOT;
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+  });
+
+  afterEach(async () => {
+    resetLocalDbForTests();
+    if (originalRoot === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
+    else process.env.PORTUNI_WORKSPACE_ROOT = originalRoot;
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  it("returns the same projectionRoot as resolveSandboxScopeForNode, without needing a db or the node's own mirror", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const homeDir = join(workspace, "org", "projects", "p1");
+    await mkdir(homeDir, { recursive: true });
+    await registerMirror(SOLO_USER, nodeId, homeDir);
+
+    const full = await resolveSandboxScopeForNode(db, SOLO_USER, nodeId);
+    const light = await resolveProjectionRootForNode(SOLO_USER, nodeId);
+
+    assert.ok(full);
+    assert.ok(light);
+    assert.equal(light.portuniRoot, full.portuniRoot);
+    assert.equal(light.projectionRoot, full.projectionRoot);
+  });
+
+  it("returns null when no PORTUNI_ROOT is resolvable (no mirrors, no env override)", async () => {
+    const r = await resolveProjectionRootForNode(SOLO_USER, ulid());
     assert.equal(r, null);
   });
 });

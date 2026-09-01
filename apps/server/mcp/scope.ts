@@ -98,8 +98,9 @@ export class SessionScope {
   private readonly history: ExpansionRecord[] = [];
   // Nodes granted their REAL mirror on disk at terminal spawn (home + depth-1,
   // the stable seed set). The seatbelt read-allows exactly this set, so read
-  // tools return their real path and the reconciler must NOT stage them.
-  // Non-seed in-scope nodes (ad-hoc expansion) still stage into .portuni-scope.
+  // tools return their real path and the disk projector must NOT hardlink
+  // them. Non-seed in-scope nodes (ad-hoc expansion) get hardlinked into the
+  // session's projection directory instead (mcp/disk-projection.ts).
   private readonly seed = new Set<string>();
   // Write set: a placeholder for the write gate that lands in a later
   // phase (domain-layer enforcement, session_scope.writable). Populated
@@ -162,8 +163,8 @@ export class SessionScope {
   }
 
   // Add a node AND mark it part of the spawn seed set (real-path granted).
-  // Marks before add() so onAdd listeners (the reconciler) already see
-  // isSeed()===true and skip staging it.
+  // Marks before add() so onAdd listeners (the disk projector) already see
+  // isSeed()===true and skip projecting it.
   addSeed(nodeId: string): boolean {
     this.seed.add(nodeId);
     return this.add(nodeId);
@@ -240,7 +241,8 @@ export async function seedScopeFromHome(
   }
 
   // Seed set = home + depth-1: the seatbelt grants these real paths, so mark
-  // them so read tools return the real mirror and the reconciler skips them.
+  // them so read tools return the real mirror and the disk projector skips
+  // them.
   for (const id of neighborIds) {
     scope.addSeed(id);
   }

@@ -21,7 +21,7 @@ import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { upsertRemote, addRule } from "../apps/server/domain/sync/routing.js";
 import { createMcpServer, type SessionCtx } from "../apps/server/mcp/server.js";
 import { SessionScope } from "../apps/server/mcp/scope.js";
-import { createScopeReconciler } from "../apps/server/mcp/scope-reconciler.js";
+import { createDiskProjector } from "../apps/server/mcp/disk-projection.js";
 import { registerFileTools } from "../apps/server/mcp/tools/files.js";
 import {
   __setSnapshotExporterForTests,
@@ -44,8 +44,8 @@ async function connectRawFileTools(identity: RequestIdentity): Promise<McpClient
   // not a valid SessionType and only worked here by accident (test files
   // are outside tsconfig's typecheck).
   const scope = new SessionScope("env");
-  const reconciler = createScopeReconciler({ userId: identity.userId, scope });
-  const ctx: SessionCtx = { scope, identity, reconciler };
+  const projector = createDiskProjector({ userId: identity.userId, scope });
+  const ctx: SessionCtx = { scope, identity, projector };
   const server = new McpServer({ name: "raw-files-test", version: "0.0.1" }, {});
   registerFileTools(server, ctx);
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();

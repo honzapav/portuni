@@ -881,7 +881,12 @@ export async function handleNodeSandboxProfile(
       respondJson(res, 404, { error: `node ${nodeId} not found` });
       return;
     }
-    const scope = await resolveSandboxScopeForNode(db, identity.userId, nodeId);
+    // Restart consolidation (#191): a resumed session passes the suspended
+    // session's id so its accumulated read set gets real-mirror grants too,
+    // not just the depth-1 seed set. Absent for a fresh spawn.
+    const resumeSessionId =
+      new URL(req.url ?? "", "http://internal").searchParams.get("resume_session_id") ?? undefined;
+    const scope = await resolveSandboxScopeForNode(db, identity.userId, nodeId, resumeSessionId);
     if (!scope) {
       respondJson(res, 409, {
         error: `node ${nodeId} has no local mirror on this device`,
@@ -893,6 +898,7 @@ export async function handleNodeSandboxProfile(
       profile: buildSeatbeltProfile(scope),
       portuni_root: scope.portuniRoot,
       home_mirror: scope.homeMirror,
+      projection_root: scope.projectionRoot ?? null,
     });
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sandbox-profile`, err);

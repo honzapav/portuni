@@ -141,18 +141,22 @@ Returns: Array of files, each with: `id`, `node_id`, `node_name`,
 
 ## portuni_read_file
 
-Read a file's content from an in-scope node that the seatbelt does **not**
-expose on disk — an ad-hoc node reached by deeper graph traversal (beyond
-the home node and its depth-1 neighbours, whose folders you read natively
-via the `local_path` returned by `portuni_get_context` / `portuni_get_node`).
-The server reads the live file from the node's local mirror and returns it,
-so there is no stale copy and no `.portuni-scope` staging. When the serving
-machine holds **no mirror** of the node — the central server, or a remote
-client (Claude Desktop against `https://…/mcp` with a device token) with no
-local workspace — the file is read straight from the node's routed remote
-(Google Drive), the same path `GET /nodes/:id/file` takes. In agent mode
-the sidecar reads its own mirror first and proxies the call to central when
-it has none.
+Read a file's content from an in-scope node the seatbelt does not expose on
+its **real** mirror path — an ad-hoc node reached by deeper graph traversal
+(beyond the home node and its depth-1 neighbours, whose folders you read
+natively via the `local_path` returned by `portuni_get_context` /
+`portuni_get_node`). Such a node, if it has a local mirror on this device,
+is also readable natively at its hardlink projection directory (same
+`local_path` field, created on first touch — see [disk read
+scope](/concepts/scope-enforcement/)); `portuni_read_file` is the channel
+that works regardless, since it has no dependency on a local mirror at all.
+The server reads the live file from the node's local mirror when one
+exists — no stale copy — and otherwise, when the serving machine holds
+**no mirror** of the node (the central server, or a remote client such as
+Claude Desktop against `https://…/mcp` with a device token, with no local
+workspace), reads straight from the node's routed remote (Google Drive),
+the same path `GET /nodes/:id/file` takes. In agent mode the sidecar reads
+its own mirror first and proxies the call to central when it has none.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

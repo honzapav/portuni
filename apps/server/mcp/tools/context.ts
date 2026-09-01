@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { getDb } from "../../infra/db.js";
 import { listUserMirrors, unregisterMirror, getMirrorPath } from "../../domain/sync/mirror-registry.js";
-import { readableMirrorRoot } from "../scope-reconciler.js";
+import { readableMirrorRoot } from "../disk-projection.js";
 import type { Client, InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardNodeRead } from "../scope.js";
@@ -579,22 +579,28 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
           });
         }
 
-        // Rewrite local_path for non-home in-scope nodes to the staged copy
-        // that the Seatbelt sandbox actually allows reading. Await staging
-        // first so the copy is complete before the agent acts on the path:
-        // a node discovered for the FIRST time in this call has its onAdd
-        // staging still in flight, so a follow-up Read could hit a mid-copy
-        // dir. The reconciler's in-flight dedup means this joins the copy
-        // onAdd already started (no double work). Scoped to the nodes this
-        // get_context call surfaces — not the whole session scope.
+        // Rewrite local_path for non-home in-scope nodes to the disk path
+        // the Seatbelt sandbox actually allows reading: the real mirror for
+        // seed nodes, this session's hardlink projection for ad-hoc ones.
+        // Await projection first so the links are complete before the agent
+        // acts on the path: a node discovered for the FIRST time in this
+        // call has its onAdd projection still in flight, so a follow-up
+        // Read could hit a partially-linked dir. The projector's in-flight
+        // dedup means this joins the projection onAdd already started (no
+        // double work). Scoped to the nodes this get_context call surfaces
+        // — not the whole session scope.
         const allPayloadNodes: Array<{ id: string; local_path: string | null }> = [
           payload.root,
           ...payload.connected,
         ];
+        const projectionByNode = new Map<string, string | null>();
         await Promise.all(
           allPayloadNodes
             .filter((n) => n.id !== scope.homeNodeId && scope.has(n.id))
-            .map((n) => ctx.reconciler.reconcileNode(n.id)),
+            .map(async (n) => {
+              const r = await ctx.projector.projectNode(n.id);
+              projectionByNode.set(n.id, r?.dir ?? null);
+            }),
         );
         const homeMirror = scope.homeNodeId
           ? await getMirrorPath(ctx.identity.userId, scope.homeNodeId)
@@ -605,6 +611,7 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
             nodeId: n.id,
             homeMirror,
             realMirror: n.local_path,
+            projectionDir: projectionByNode.get(n.id) ?? null,
           });
         }
 

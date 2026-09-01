@@ -17,7 +17,7 @@ import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardListScope } from "../list-scope-gate.js";
 import { filterVisibleNodeIds, nodeVisibleTo } from "../../auth/node-access.js";
-import { readableMirrorRoot } from "../scope-reconciler.js";
+import { readableMirrorRoot } from "../disk-projection.js";
 import { guardNodeRead } from "../scope.js";
 import { guardNodeWrite } from "../write-gate.js";
 import { readNodeFile, formatNodeFileContent } from "../../domain/read-node-file.js";
@@ -261,7 +261,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
 
       // One mirror lookup per visible node, not per file row (it hits the
       // local sync.db each time). For in-scope non-home nodes, we resolve to
-      // the staged copy (<home>/.portuni-scope/<id>/) so paths match what the
+      // this session's hardlink projection directory so paths match what the
       // Seatbelt sandbox actually allows the agent to read.
       const mirrorByNode = new Map<string, string | null>();
       const homeMirror = scope.homeNodeId
@@ -271,12 +271,14 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         const nodeId = row.node_id as string;
         if (!mirrorByNode.has(nodeId)) {
           const real = await getMirrorPath(ctx.identity.userId, nodeId);
+          let projectionDir: string | null = null;
           if (nodeId !== scope.homeNodeId && scope.has(nodeId)) {
-            await ctx.reconciler.reconcileNode(nodeId);
+            const r = await ctx.projector.projectNode(nodeId);
+            projectionDir = r?.dir ?? null;
           }
           mirrorByNode.set(
             nodeId,
-            readableMirrorRoot({ scope, nodeId, homeMirror, realMirror: real }),
+            readableMirrorRoot({ scope, nodeId, homeMirror, realMirror: real, projectionDir }),
           );
         }
       }

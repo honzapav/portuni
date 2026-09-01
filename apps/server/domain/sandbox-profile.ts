@@ -20,9 +20,11 @@
 // docs/archive/sandbox-spike-2026-06-10.md.
 
 import { realpath } from "node:fs/promises";
+import { join } from "node:path";
 import type { Client } from "@libsql/client";
 import { getMirrorPath, listUserMirrors } from "./sync/mirror-registry.js";
 import { nodeNeighbourIds } from "./queries/neighbours.js";
+import { getSessionScope } from "./sessions.js";
 import { findContainingMirror, normalize, resolvePortuniRoot } from "./write-scope.js";
 
 // Seatbelt string literal: double-quoted, backslash and quote escaped.
@@ -38,6 +40,17 @@ export interface SandboxScope {
   // because Seatbelt matches realpaths (a symlink resolves to the denied
   // root). Empty falls back to the home-only profile.
   readMirrors: string[];
+  // Read-only parent directory for this node's session projection
+  // directories (domain/session-projection.ts, spec: "Disk contract",
+  // #191): <portuniRoot>/.portuni-sessions/<homeNodeId>/. Ad-hoc (non-seed)
+  // nodes a session expands into mid-run are hardlinked under
+  // <projectionRoot>/<sessionId>/<nodeId>/ once the MCP session exists --
+  // keyed by node (not session) here because this profile is built and
+  // frozen into Seatbelt BEFORE that session's id is minted, but a subpath
+  // allow on the parent already covers whatever subdirectory the session
+  // creates later. Optional so hand-built SandboxScope literals (existing
+  // tests, callers with no session concept) keep working without it.
+  projectionRoot?: string;
 }
 
 // Render the Seatbelt profile. Paths must already be realpath-resolved.
@@ -69,6 +82,9 @@ export function buildSeatbeltProfile(scope: SandboxScope): string {
   for (const m of scope.readMirrors) {
     lines.push(`(allow file-read* (subpath ${sbQuote(normalize(m))}))`);
   }
+  if (scope.projectionRoot) {
+    lines.push(`(allow file-read* (subpath ${sbQuote(normalize(scope.projectionRoot))}))`);
+  }
   lines.push(`(allow file-read* file-write* (subpath ${sbQuote(home)}))`);
   return lines.join("\n") + "\n";
 }
@@ -93,10 +109,22 @@ async function resolveReal(path: string): Promise<string> {
 // local mirror is simply omitted (no grant). When db is absent (central-mode
 // agent-router passes NO_DB) neighbors can't be resolved here -- readMirrors
 // stays empty and central mode fills it in Phase 3.
+//
+// resumeSessionId is restart consolidation (spec: "Disk contract" -- "on
+// resume the sandbox profile is computed from the session's accumulated
+// read set"): when set, every node that suspended session ever read
+// (domain/sessions.ts session_scope) and that still has a local mirror on
+// this device is ALSO granted its real mirror here, on top of the depth-1
+// seed set -- not just what the session originally spawned with. A
+// re-expansion the agent already did once does not need re-projecting
+// after a restart; the projection directory (domain/session-projection.ts)
+// only has to cover whatever this widened readMirrors set cannot (nodes
+// with no local mirror on this device).
 export async function resolveSandboxScopeForNode(
   db: Client,
   userId: string,
   nodeId: string,
+  resumeSessionId?: string,
 ): Promise<SandboxScope | null> {
   const home = await getMirrorPath(userId, nodeId);
   if (!home) return null;
@@ -109,14 +137,48 @@ export async function resolveSandboxScopeForNode(
   if (!portuniRoot) return null;
 
   const homeReal = await resolveReal(home);
-  const readMirrors = db
+  const portuniRootReal = await resolveReal(portuniRoot);
+  let readMirrors = db
     ? await resolveNeighbourReadMirrors(userId, await nodeNeighbourIds(db, nodeId), homeReal)
     : [];
 
+  if (db && resumeSessionId) {
+    const accumulated = await getSessionScope(db, resumeSessionId);
+    const resumedMirrors = await resolveNeighbourReadMirrors(
+      userId,
+      accumulated.map((r) => r.node_id),
+      homeReal,
+    );
+    readMirrors = [...new Set([...readMirrors, ...resumedMirrors])];
+  }
+
   return {
-    portuniRoot: await resolveReal(portuniRoot),
+    portuniRoot: portuniRootReal,
     homeMirror: homeReal,
     readMirrors,
+    projectionRoot: join(portuniRootReal, ".portuni-sessions", nodeId),
+  };
+}
+
+// Lightweight variant of resolveSandboxScopeForNode's projectionRoot
+// computation, for callers that only need the projection paths (the MCP
+// disk-projector) and neither a db nor the node's own mirror/neighbours.
+// Returns null under the same condition resolveSandboxScopeForNode would
+// (no PORTUNI_ROOT resolvable from env + known mirrors).
+export async function resolveProjectionRootForNode(
+  userId: string,
+  homeNodeId: string,
+): Promise<{ portuniRoot: string; projectionRoot: string } | null> {
+  const allMirrors = await listUserMirrors(userId);
+  const portuniRoot = resolvePortuniRoot({
+    envValue: process.env.PORTUNI_ROOT ?? null,
+    knownMirrors: allMirrors.map((m) => m.local_path),
+  });
+  if (!portuniRoot) return null;
+  const portuniRootReal = await resolveReal(portuniRoot);
+  return {
+    portuniRoot: portuniRootReal,
+    projectionRoot: join(portuniRootReal, ".portuni-sessions", homeNodeId),
   };
 }
 
@@ -149,6 +211,7 @@ export async function resolveSandboxScopeForCwd(
   db: Client,
   userId: string,
   cwd: string,
+  resumeSessionId?: string,
 ): Promise<{ nodeId: string; scope: SandboxScope } | null> {
   const mirrors = await listUserMirrors(userId);
   // Match against the paths as registered (normalized, NOT realpath'd):
@@ -162,7 +225,7 @@ export async function resolveSandboxScopeForCwd(
   if (!containing) return null;
   const row = mirrors.find((m) => normalize(m.local_path) === containing);
   if (!row) return null;
-  const scope = await resolveSandboxScopeForNode(db, userId, row.node_id);
+  const scope = await resolveSandboxScopeForNode(db, userId, row.node_id, resumeSessionId);
   if (!scope) return null;
   return { nodeId: row.node_id, scope };
 }
