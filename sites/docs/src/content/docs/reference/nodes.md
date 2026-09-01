@@ -18,6 +18,7 @@ Create a new node in the knowledge graph. For every non-organization type, the c
 | `visibility` | enum | no | `team` (default), `private`, `group` |
 | `goal` | string | no | Optional textual goal / purpose of the node |
 | `lifecycle_state` | string | no | Optional primary lifecycle state — type-specific. See [Lifecycle States](/concepts/lifecycle-states/) for the per-type closed set |
+| `health` | enum | no | Optional project health: `on_track` (default), `at_risk`, `off_track`. Only meaningful for `type='project'` — orthogonal to `lifecycle_state`, setting it on any other type is rejected |
 
 Enforcement:
 
@@ -42,6 +43,7 @@ Update an existing node. Only provided fields are changed. Pass `null` for nulla
 | `goal` | string \| null | no | New goal text. Pass `null` to clear |
 | `lifecycle_state` | string \| null | no | New lifecycle state — type-specific. See [Lifecycle States](/concepts/lifecycle-states/). Pass `null` to clear |
 | `owner_id` | string \| null | no | New owner (`actors.id`). Must reference an actor of `type=person` with `user_id` set (non-placeholder) in the same organization. Pass `null` to clear |
+| `health` | enum | no | New project health: `on_track`, `at_risk`, `off_track`. Only meaningful for `type='project'` — setting it on any other type is rejected. Cannot be cleared (it always has a value, default `on_track`) |
 
 Returns: `{ id, updated: [field names] }`
 
@@ -80,6 +82,7 @@ At least one of `node_id` or `name` must be provided. Name-based lookups are fil
 Returns: Full node object including:
 - Core fields: `id`, `type`, `name`, `description`, `meta`, `status`, `visibility`, `created_by`, `created_at`, `updated_at`
 - `goal`, `lifecycle_state` — primary lifecycle fields
+- `health` — project health (`on_track`, `at_risk`, `off_track`); meaningful for `type='project'` only
 - `owner` — `{ id, name }` of the owning actor, or `null`
 - `responsibilities` — array, each with `id`, `title`, `description`, `sort_order`, and an `assignees` array
 - `data_sources`, `tools` — array of `{ id, name, description, external_link }` rows

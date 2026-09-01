@@ -61,6 +61,7 @@ export type ContextRootNode = {
   description: string | null;
   goal: string | null;
   lifecycle_state: string | null;
+  health: string;
   status: string;
   owner: ContextOwner | null;
   responsibilities: ContextResponsibility[];
@@ -78,6 +79,7 @@ export type ContextConnectedNode = {
   name: string;
   description: string | null;
   lifecycle_state: string | null;
+  health: string;
   status: string;
   owner_name: string | null;
   responsibilities_count: number;
@@ -212,7 +214,7 @@ export async function buildContextPayload(
   //    added by migration 006; fall back to nulls if not present (shouldn't
   //    happen in production, but keeps us robust against older test schemas).
   const rootRes = await db.execute({
-    sql: `SELECT id, type, name, description, status, owner_id, goal, lifecycle_state
+    sql: `SELECT id, type, name, description, status, owner_id, goal, lifecycle_state, health
             FROM nodes WHERE id = ?`,
     args: [nodeId],
   });
@@ -235,7 +237,7 @@ export async function buildContextPayload(
           )
           SELECT gw.node_id, MIN(gw.d) AS d,
                  n.type, n.name, n.description, n.status,
-                 n.owner_id, n.lifecycle_state
+                 n.owner_id, n.lifecycle_state, n.health
           FROM graph_walk gw
           JOIN nodes n ON n.id = gw.node_id
           GROUP BY gw.node_id
@@ -345,6 +347,7 @@ export async function buildContextPayload(
     description: (rootRow.description as string | null) ?? null,
     goal: (rootRow.goal as string | null) ?? null,
     lifecycle_state: (rootRow.lifecycle_state as string | null) ?? null,
+    health: rootRow.health as string,
     status: rootRow.status as string,
     owner,
     responsibilities,
@@ -425,6 +428,7 @@ export async function buildContextPayload(
       name: row.name as string,
       description: (row.description as string | null) ?? null,
       lifecycle_state: (row.lifecycle_state as string | null) ?? null,
+      health: row.health as string,
       status: row.status as string,
       owner_name: ownerId ? (ownerNameById.get(ownerId) ?? null) : null,
       responsibilities_count: respCountByNode.get(id) ?? 0,

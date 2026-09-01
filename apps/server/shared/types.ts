@@ -25,6 +25,7 @@ export const NodeRow = z.object({
   pos_y: z.union([z.number(), z.null()]),
   owner_id: z.union([z.string(), z.null()]),
   lifecycle_state: z.union([z.string(), z.null()]),
+  health: z.string(),
   goal: z.union([z.string(), z.null()]),
   sync_key: z.string(),
   created_by: z.string(),

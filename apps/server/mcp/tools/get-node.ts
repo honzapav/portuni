@@ -205,6 +205,7 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
         visibility: row.visibility,
         goal: root.goal,
         lifecycle_state: root.lifecycle_state,
+        health: root.health,
         owner: root.owner,
         responsibilities: root.responsibilities,
         data_sources: root.data_sources,

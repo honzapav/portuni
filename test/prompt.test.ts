@@ -23,6 +23,7 @@ function makeNode(overrides: Partial<NodeDetail> = {}): NodeDetail {
     tools: [],
     goal: null,
     lifecycle_state: null,
+    health: "on_track",
     ...overrides,
   } as NodeDetail;
 }

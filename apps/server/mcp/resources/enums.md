@@ -47,6 +47,18 @@ Mapping to coarse status:
 `done`, `archived`, `retired`, `cancelled`, `inactive` map to a
 non-active status. Everything else maps to `active`.
 
+## Project health
+
+Orthogonal to `lifecycle_state` -- a project can be `in_progress`
+*and* at risk. Meaningful for `project` nodes only; other node types
+carry the default value but it is not shown for them (process and
+area already have their own attention states inside their
+`lifecycle_state` set: `at_risk`/`broken`, `needs_attention`).
+
+```
+on_track (default), at_risk, off_track
+```
+
 ## Node visibility
 
 ```

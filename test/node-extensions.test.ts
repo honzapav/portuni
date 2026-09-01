@@ -15,18 +15,21 @@ import { updateNodeInternal } from "../apps/server/domain/nodes.js";
 async function freshEnv() {
   const db = createClient({ url: ":memory:" });
   await db.execute(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE, name TEXT, created_at DATETIME DEFAULT (datetime('now')))`);
-  await db.execute(`CREATE TABLE nodes (id TEXT PRIMARY KEY CHECK(length(id)=26), type TEXT NOT NULL, name TEXT NOT NULL, description TEXT, summary TEXT, summary_updated_at DATETIME, meta TEXT, status TEXT NOT NULL DEFAULT 'active', visibility TEXT NOT NULL DEFAULT 'team', pos_x REAL, pos_y REAL, sync_key TEXT, created_by TEXT NOT NULL, created_at DATETIME DEFAULT (datetime('now')), updated_at DATETIME DEFAULT (datetime('now')))`);
+  await db.execute(`CREATE TABLE nodes (id TEXT PRIMARY KEY CHECK(length(id)=26), type TEXT NOT NULL, name TEXT NOT NULL, description TEXT, summary TEXT, summary_updated_at DATETIME, meta TEXT, status TEXT NOT NULL DEFAULT 'active', visibility TEXT NOT NULL DEFAULT 'team', pos_x REAL, pos_y REAL, health TEXT NOT NULL DEFAULT 'on_track' CHECK(health IN ('on_track','at_risk','off_track')), sync_key TEXT, created_by TEXT NOT NULL, created_at DATETIME DEFAULT (datetime('now')), updated_at DATETIME DEFAULT (datetime('now')))`);
   await db.execute(`CREATE TABLE edges (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, target_id TEXT NOT NULL, relation TEXT NOT NULL, meta TEXT, created_by TEXT NOT NULL, created_at DATETIME DEFAULT (datetime('now')))`);
   await db.execute(`CREATE TABLE audit_log (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, action TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, detail TEXT, timestamp DATETIME DEFAULT (datetime('now')))`);
   await db.execute(`CREATE TABLE node_access (node_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('group','user')), principal TEXT NOT NULL, display_email TEXT, added_by TEXT NOT NULL, added_at DATETIME NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (node_id, kind, principal))`);
   await db.execute(`INSERT INTO users (id, email, name) VALUES ('U1','t@t','T')`);
   const orgId = ulid();
   const projectId = ulid();
+  const areaId = ulid();
   await db.execute({ sql: `INSERT INTO nodes (id, type, name, created_by) VALUES (?, 'organization', 'W', 'U1')`, args: [orgId] });
   await db.execute({ sql: `INSERT INTO nodes (id, type, name, created_by) VALUES (?, 'project', 'P', 'U1')`, args: [projectId] });
+  await db.execute({ sql: `INSERT INTO nodes (id, type, name, created_by) VALUES (?, 'area', 'A', 'U1')`, args: [areaId] });
   await db.execute({ sql: `INSERT INTO edges (id, source_id, target_id, relation, created_by) VALUES (?, ?, ?, 'belongs_to', 'U1')`, args: [ulid(), projectId, orgId] });
+  await db.execute({ sql: `INSERT INTO edges (id, source_id, target_id, relation, created_by) VALUES (?, ?, ?, 'belongs_to', 'U1')`, args: [ulid(), areaId, orgId] });
   await runMigration006(db);
-  return { db, orgId, projectId };
+  return { db, orgId, projectId, areaId };
 }
 
 describe("updateNodeInternal: goal, lifecycle_state, owner_id", () => {
@@ -51,6 +54,21 @@ describe("updateNodeInternal: goal, lifecycle_state, owner_id", () => {
     await assert.rejects(
       updateNodeInternal(db, "U1", { node_id: projectId, lifecycle_state: "operating" }),
       /invalid lifecycle/i,
+    );
+  });
+
+  it("sets health on a project", async () => {
+    const { db, projectId } = await freshEnv();
+    await updateNodeInternal(db, "U1", { node_id: projectId, health: "at_risk" });
+    const n = await db.execute({ sql: "SELECT health FROM nodes WHERE id = ?", args: [projectId] });
+    assert.equal(n.rows[0].health, "at_risk");
+  });
+
+  it("rejects setting health on a non-project node type", async () => {
+    const { db, areaId } = await freshEnv();
+    await assert.rejects(
+      updateNodeInternal(db, "U1", { node_id: areaId, health: "at_risk" }),
+      /health is only meaningful for type 'project'/,
     );
   });
 
@@ -198,6 +216,45 @@ describe("createNodeInternal with goal and lifecycle_state", () => {
     const n = await db.execute({ sql: "SELECT goal, lifecycle_state FROM nodes WHERE id = ?", args: [id] });
     assert.equal(n.rows[0].goal, null);
     assert.equal(n.rows[0].lifecycle_state, null);
+  });
+
+  it("accepts health at create time on a project", async () => {
+    const { db, orgId } = await freshEnv();
+    const { createNodeInternal } = await import("../apps/server/domain/nodes.js");
+    const id = await createNodeInternal(db, "U1", {
+      type: "project",
+      name: "Nový projekt",
+      organization_id: orgId,
+      health: "off_track",
+    });
+    const n = await db.execute({ sql: "SELECT health FROM nodes WHERE id = ?", args: [id] });
+    assert.equal(n.rows[0].health, "off_track");
+  });
+
+  it("rejects setting health at create time on a non-project type", async () => {
+    const { db, orgId } = await freshEnv();
+    const { createNodeInternal } = await import("../apps/server/domain/nodes.js");
+    await assert.rejects(
+      createNodeInternal(db, "U1", {
+        type: "area",
+        name: "X",
+        organization_id: orgId,
+        health: "at_risk",
+      }),
+      /health is only meaningful for type 'project'/,
+    );
+  });
+
+  it("defaults health to on_track when not provided", async () => {
+    const { db, orgId } = await freshEnv();
+    const { createNodeInternal } = await import("../apps/server/domain/nodes.js");
+    const id = await createNodeInternal(db, "U1", {
+      type: "project",
+      name: "X",
+      organization_id: orgId,
+    });
+    const n = await db.execute({ sql: "SELECT health FROM nodes WHERE id = ?", args: [id] });
+    assert.equal(n.rows[0].health, "on_track");
   });
 
   // Task 14 point 6: same guard at create time -- a node cannot be born

@@ -1279,6 +1279,24 @@ const MIGRATIONS: Migration[] = [
     },
     up: runMigration028,
   },
+
+  // Migration 029: nodes.health (phase 4 of docs/superpowers/specs/
+  // 2026-08-31-scope-sessions-redesign-design.md, "Project health").
+  // Meaningful for project nodes only, orthogonal to lifecycle_state.
+  // Same shape as migration 020's access_mode: constant DEFAULT + CHECK on
+  // ADD COLUMN, no nullable-then-backfill dance needed.
+  {
+    id: "029_nodes_health",
+    up: async (db) => {
+      const info = await db.execute("PRAGMA table_info(nodes)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      if (!cols.has("health")) {
+        await db.execute(
+          "ALTER TABLE nodes ADD COLUMN health TEXT NOT NULL DEFAULT 'on_track' CHECK(health IN ('on_track','at_risk','off_track'))",
+        );
+      }
+    },
+  },
 ];
 
 export async function runMigration024(db: Client): Promise<void> {

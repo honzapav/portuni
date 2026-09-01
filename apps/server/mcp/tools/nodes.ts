@@ -9,6 +9,7 @@ import {
   NODE_STATUSES,
   NODE_VISIBILITIES,
 } from "../../infra/schema.js";
+import { HEALTH_STATES } from "../../shared/popp.js";
 import { getMirrorPath } from "../../domain/sync/mirror-registry.js";
 import { NodeRow, NodeSummaryRow } from "../../shared/types.js";
 import type { InValue } from "@libsql/client";
@@ -40,6 +41,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
       visibility: z.enum(NODE_VISIBILITIES).optional().describe("Visibility (default: team)"),
       goal: z.string().optional().describe("Optional textual goal / purpose of the node."),
       lifecycle_state: z.string().optional().describe("Optional primary lifecycle state — type-specific. See portuni://enums for the per-type closed set. status is derived from this."),
+      health: z.enum(HEALTH_STATES).optional().describe("Optional project health (default: on_track). Only meaningful for type='project' — orthogonal to lifecycle_state."),
     },
     async (args) => {
       const db = getDb();
@@ -119,6 +121,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
       goal: z.string().nullable().optional().describe("New goal text. Pass null to clear."),
       lifecycle_state: z.string().nullable().optional().describe("New lifecycle state — type-specific. See portuni://enums for the per-type closed set. Pass null to clear."),
       owner_id: z.string().nullable().optional().describe("New owner (actors.id). Any existing actor works — person, placeholder, or automation. Pass null to clear."),
+      health: z.enum(HEALTH_STATES).optional().describe("New project health. Only meaningful for type='project' — orthogonal to lifecycle_state."),
     },
     async (args) => {
       const db = getDb();
@@ -153,6 +156,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
         args.goal,
         args.lifecycle_state,
         args.owner_id,
+        args.health,
       ].some((v) => v !== undefined);
       if (!provided) {
         return {

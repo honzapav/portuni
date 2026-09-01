@@ -9,6 +9,7 @@ import {
   NODE_TYPES,
   NODE_VISIBILITIES,
 } from "../infra/schema.js";
+import { HEALTH_STATES } from "../shared/popp.js";
 import { buildNodeRoot, deriveLocalPath } from "../domain/sync/remote-path.js";
 import { resolveRemote } from "../domain/sync/routing.js";
 import { getAdapter } from "../domain/sync/adapter-cache.js";
@@ -87,6 +88,7 @@ export async function handlePatchNode(
           lifecycle_state?: string | null;
           owner_id?: string | null;
           visibility?: string;
+          health?: string;
         }
       | undefined;
     if (!body) {
@@ -101,6 +103,7 @@ export async function handlePatchNode(
       lifecycle_state?: string | null;
       owner_id?: string | null;
       visibility?: (typeof NODE_VISIBILITIES)[number];
+      health?: (typeof HEALTH_STATES)[number];
     } = { node_id: nodeId };
     if (typeof body.name === "string" && body.name.trim().length > 0) {
       update.name = body.name.trim();
@@ -127,13 +130,23 @@ export async function handlePatchNode(
       }
       update.visibility = body.visibility as (typeof NODE_VISIBILITIES)[number];
     }
+    if (body.health !== undefined) {
+      if (!(HEALTH_STATES as readonly string[]).includes(body.health)) {
+        respondJson(res, 400, {
+          error: `invalid health '${body.health}'. Valid: ${HEALTH_STATES.join(", ")}`,
+        });
+        return;
+      }
+      update.health = body.health as (typeof HEALTH_STATES)[number];
+    }
     const hasUpdate =
       update.name !== undefined ||
       update.description !== undefined ||
       update.goal !== undefined ||
       update.lifecycle_state !== undefined ||
       update.owner_id !== undefined ||
-      update.visibility !== undefined;
+      update.visibility !== undefined ||
+      update.health !== undefined;
     if (!hasUpdate) {
       respondJson(res, 400, { error: "no fields to update" });
       return;
@@ -210,6 +223,7 @@ const CreateNodeBody = z
     organization_id: z.string().optional(),
     goal: z.string().nullable().optional(),
     lifecycle_state: z.string().nullable().optional(),
+    health: z.enum(HEALTH_STATES).optional(),
   })
   .refine(
     (b) => b.type === "organization" || typeof b.organization_id === "string",
@@ -244,6 +258,7 @@ export async function handleCreateNode(
       organization_id: body.organization_id,
       goal: body.goal ?? undefined,
       lifecycle_state: body.lifecycle_state ?? undefined,
+      health: body.health ?? undefined,
     });
     const node = await loadNodeDetail(getDb(), identity.userId, id, identity);
     respondJson(res, 201, node);

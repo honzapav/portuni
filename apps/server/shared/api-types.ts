@@ -26,6 +26,10 @@ export type GraphNode = {
   description: string | null;
   status: string;
   lifecycle_state: string | null;
+  // "on_track" | "at_risk" | "off_track" -- see HEALTH_STATES in popp.ts.
+  // Meaningful for type='project' only; other types always carry the
+  // default 'on_track' and it is not shown for them.
+  health: string;
   // "team" | "private" | "group" -- see NODE_VISIBILITIES in popp.ts. The
   // graph uses this to draw a dashed border on nodes restricted to a
   // group ACL, so sharing state is visible at a glance without opening
@@ -450,4 +454,7 @@ export type NodeDetail = {
   tools: DetailTool[];
   goal: string | null;
   lifecycle_state: string | null;
+  // "on_track" | "at_risk" | "off_track" -- see HEALTH_STATES in popp.ts.
+  // Meaningful for type='project' only.
+  health: string;
 };

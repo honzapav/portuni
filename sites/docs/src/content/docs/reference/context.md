@@ -18,8 +18,8 @@ For single-node detail without traversal — including `files` and `local_mirror
 
 | Depth | Events | Node detail |
 |-------|--------|-------------|
-| 0 (root) | Full (up to 50 active) | Full enrichment — `owner`, `responsibilities`, `data_sources`, `tools`, `goal`, `lifecycle_state`, plus core fields |
-| 1 | Recent (up to 5 active, type+content+created_at only) | Lightweight — `lifecycle_state`, `owner_name`, `responsibilities_count`, core fields |
+| 0 (root) | Full (up to 50 active) | Full enrichment — `owner`, `responsibilities`, `data_sources`, `tools`, `goal`, `lifecycle_state`, `health`, plus core fields |
+| 1 | Recent (up to 5 active, type+content+created_at only) | Lightweight — `lifecycle_state`, `health`, `owner_name`, `responsibilities_count`, core fields |
 | 2+ | None | Lightweight (same shape as depth 1, no events) |
 
 ### Response
@@ -28,7 +28,7 @@ Array — `[root, ...connected]`. The root (depth 0) and connected nodes share t
 
 **Root node (depth 0):**
 - `id`, `type`, `name`, `description`, `status`, `depth: 0`
-- `goal`, `lifecycle_state`
+- `goal`, `lifecycle_state`, `health` (project health, meaningful for `type='project'` only — see [Lifecycle States](/concepts/lifecycle-states/#project-health))
 - `owner` — `{ id, name }` of the owning actor, or `null`
 - `responsibilities` — array, each with `id`, `title`, `description`, `sort_order`, `assignees`
 - `data_sources`, `tools` — array of `{ id, name, description, external_link }` rows
@@ -38,7 +38,7 @@ Array — `[root, ...connected]`. The root (depth 0) and connected nodes share t
 
 **Connected nodes (depth >= 1):**
 - `id`, `type`, `name`, `description`, `status`, `depth`
-- `lifecycle_state`, `owner_name`, `responsibilities_count`
+- `lifecycle_state`, `health`, `owner_name`, `responsibilities_count`
 - `edges` — same shape as root
 - `events` — depth 1 only: up to 5 recent events with `type`, `content`, `created_at`. Depth >= 2: empty
 - `local_path` — local mirror path on the current device, or `null`

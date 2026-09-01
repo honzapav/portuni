@@ -40,7 +40,7 @@ const RESOURCES: readonly ResourceDef[] = [
     file: "enums.md",
     title: "Portuni enums",
     description:
-      "Closed sets: node types, edge relations, statuses, lifecycle states, visibility, event types/statuses, file statuses.",
+      "Closed sets: node types, edge relations, statuses, lifecycle states, project health, visibility, event types/statuses, file statuses.",
   },
 ];
 

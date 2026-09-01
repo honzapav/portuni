@@ -281,6 +281,7 @@ export function updateNode(
     lifecycle_state?: string | null;
     owner_id?: string | null;
     visibility?: string;
+    health?: string;
   },
 ): Promise<NodeDetail> {
   return jsonRequest<NodeDetail>(

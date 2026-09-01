@@ -45,6 +45,8 @@ import {
   RELATION_TYPES,
   LIFECYCLE_COLORS,
   LIFECYCLE_STATES_BY_TYPE,
+  HEALTH_COLORS,
+  HEALTH_STATES,
 } from "../types";
 import { safeHref } from "../lib/safe-url";
 import { groupEventsByDate } from "../lib/events";
@@ -744,6 +746,14 @@ function DetailPaneBody({
             onMutate={onMutate}
             onError={setErrorMsg}
           />
+          {node.type === "project" && (
+            <HealthDropdown
+              nodeId={node.id}
+              value={node.health}
+              onMutate={onMutate}
+              onError={setErrorMsg}
+            />
+          )}
           <StatusDot status={node.status} />
         </div>
         {editing ? (
@@ -1813,6 +1823,86 @@ function LifecycleDropdown({
               <span
                 className={`lifecycle-badge lifecycle-${LIFECYCLE_COLORS[s] ?? "gray"}`}
               >
+                {s}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Clickable health badge for project nodes -- same interaction pattern as
+// LifecycleDropdown, but a flat 3-value enum with no per-type set and no
+// "unset" option (health always has a value; default is on_track).
+function HealthDropdown({
+  nodeId,
+  value,
+  onMutate,
+  onError,
+}: {
+  nodeId: string;
+  value: string;
+  onMutate: () => Promise<void>;
+  onError: (msg: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const pick = async (next: string) => {
+    setOpen(false);
+    if (next === value) return;
+    setSaving(true);
+    onError(null);
+    try {
+      await updateNode(nodeId, { health: next });
+      await onMutate();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div ref={containerRef} className="relative inline-flex">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        disabled={saving}
+        title="Změnit zdraví projektu"
+        className={`lifecycle-badge lifecycle-${HEALTH_COLORS[value] ?? "gray"} cursor-pointer transition-opacity hover:opacity-80 disabled:opacity-50`}
+      >
+        {value}
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-1 min-w-[160px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
+          {HEALTH_STATES.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => pick(s)}
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
+                value === s ? "bg-[var(--color-surface-2)]" : ""
+              }`}
+            >
+              <span className={`lifecycle-badge lifecycle-${HEALTH_COLORS[s] ?? "gray"}`}>
                 {s}
               </span>
             </button>

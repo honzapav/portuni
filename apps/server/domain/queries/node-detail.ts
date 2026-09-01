@@ -244,5 +244,6 @@ export async function loadNodeDetail(
     tools,
     goal: row.goal ?? null,
     lifecycle_state: row.lifecycle_state ?? null,
+    health: row.health,
   };
 }

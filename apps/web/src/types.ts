@@ -75,4 +75,13 @@ export {
   EVENT_TYPES,
   LIFECYCLE_STATES_BY_TYPE,
   NODE_VISIBILITIES,
+  HEALTH_STATES,
 } from "../../server/shared/popp";
+
+// Project health -> UI color bucket. Every value maps to a color (no "gray
+// unset" case -- health always has a value, default 'on_track').
+export const HEALTH_COLORS: Record<string, "green" | "yellow" | "red"> = {
+  on_track: "green",
+  at_risk: "yellow",
+  off_track: "red",
+};
