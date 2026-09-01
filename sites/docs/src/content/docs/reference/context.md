@@ -51,7 +51,7 @@ Edges to a peer the caller can only reach via a request-mode ACL come back with 
 
 ### Scope
 
-The starting node must already be in session scope. Nodes revealed by traversal are added to the scope set automatically and recorded in the expansion log (visible via [`portuni_session_log`](/reference/scope/#portuni_session_log)). Depth >= 2 traversal is mode-gated: `strict` and `balanced` refuse without explicit confirmation; `permissive` auto-allows and audits. See [Scope Enforcement](/concepts/scope-enforcement/).
+The starting node must already be in session scope. Nodes revealed by traversal are added to the scope set automatically and recorded in the expansion log (visible via [`portuni_session_log`](/reference/scope/#portuni_session_log)). Depth >= 2 traversal is always treated as breadth expansion and refused (`scope_expansion_required`) regardless of session type — call with depth <= 1, then expand explicitly with [`portuni_expand_scope`](/reference/scope/#portuni_expand_scope). See [Scope Enforcement](/concepts/scope-enforcement/).
 
 Uses a recursive CTE for efficient single-query traversal.
 

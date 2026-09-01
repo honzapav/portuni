@@ -36,7 +36,7 @@ Claude Code opens the same browser-based login + consent flow on a loopback redi
 
 ## What works from here
 
-Same as any client with no local mirror — see the "What works from here" and "Scope" sections on the [Claude Desktop](/clients/claude-desktop/) page; they apply identically to a connector session.
+Same as any client with no local mirror — see the "What works from here" and "Scope" sections on the [Claude Desktop](/clients/claude-desktop/) page. Observable scope behavior (empty read scope at start, edge-reachable auto-expansion, disconnected jumps and hard floors needing confirmation, discovery search never gated) is identical. One difference under the hood: an OAuth connector session is the `interactive_chat` [session type](/concepts/scope-enforcement/#session-types) rather than `interactive_task` — irrelevant here since both start with no home node, but it means the write-scope set stays empty for the whole session (every write elicits) rather than potentially widening around a task anchor.
 
 ## Revoking access
 
