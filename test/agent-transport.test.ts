@@ -177,6 +177,19 @@ function startStubCentral(): Promise<StubCentral> {
           content: [{ type: "text" as const, text: "CENTRAL SHOULD NOT SERVE THIS" }],
         }),
       );
+      // Exists only to drive the capability-filtering test below: reports
+      // what capabilities central actually saw from the agent-transport's
+      // upstream Client at initialize, so the test can assert the front
+      // door only forwards what it can relay (#206).
+      mcp.tool(
+        "portuni_test_capabilities",
+        {},
+        async () => ({
+          content: [
+            { type: "text" as const, text: JSON.stringify(mcp.server.getClientCapabilities() ?? {}) },
+          ],
+        }),
+      );
       const t = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id) => sessions.set(id, t),
@@ -475,6 +488,85 @@ describe("agent MCP front door: write gate on LOCAL_TOOLS", () => {
       assert.equal(payload.error, "write_expansion_required");
     } finally {
       await closeClient(client);
+    }
+  });
+
+  // #206: writableNodes used to be rebuilt empty on every tool call, so an
+  // accepted write dialog was forgotten immediately and the user was
+  // re-prompted on every write to the same node. It must now be remembered
+  // for the life of the local session.
+  it("an accepted write grant is remembered: a second write to the same node does not re-prompt", async () => {
+    const server = createServer((req, res) => {
+      void agentTransport.handle(req, res, taskIdentity);
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    const client = new Client(
+      { name: "write-persist-test", version: "0.0.0" },
+      { capabilities: { elicitation: {} } },
+    );
+    let elicitCalls = 0;
+    client.setRequestHandler(ElicitRequestSchema, async () => {
+      elicitCalls++;
+      return { action: "accept", content: { confirm: true } };
+    });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${base}/mcp?home_node_id=${HOME}`)),
+    );
+    try {
+      const call = () =>
+        client.callTool({
+          name: "portuni_mirror",
+          arguments: { node_id: OTHER, targets: ["local"] },
+        }) as Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+
+      const r1 = await call();
+      assert.equal(elicitCalls, 1, "first write to a non-home node must elicit once");
+      assert.doesNotMatch(r1.content[0].text, /write_expansion_required|write_refused/);
+
+      const r2 = await call();
+      assert.equal(elicitCalls, 1, "second write to the SAME node must not re-prompt");
+      assert.doesNotMatch(r2.content[0].text, /write_expansion_required|write_refused/);
+    } finally {
+      await client.close().catch(() => undefined);
+      await new Promise<void>((res) => server.close(() => res()));
+    }
+  });
+});
+
+// #206: the front door forwarded the whole downstream capabilities object
+// upstream, even though only elicitation has a reverse handler -- a
+// central-initiated sampling/roots request would get "method not found"
+// instead of never being offered. Only elicitation should be advertised.
+describe("agent MCP front door: capability filtering", () => {
+  it("advertises only elicitation upstream, even when the real client declares more", async () => {
+    const server = createServer((req, res) => {
+      void agentTransport.handle(req, res, taskIdentity);
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    const client = new Client(
+      { name: "capability-filter-test", version: "0.0.0" },
+      { capabilities: { elicitation: {}, sampling: {}, roots: { listChanged: true } } },
+    );
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
+    try {
+      const r = (await client.callTool({
+        name: "portuni_test_capabilities",
+        arguments: {},
+      })) as { content: Array<{ text: string }> };
+      const seen = JSON.parse(r.content[0].text);
+      // The SDK normalizes an empty elicitation capability to { form: {} }
+      // (backwards-compat default) when the server reads it back via
+      // getClientCapabilities() -- the point under test is that sampling and
+      // roots, which this front door has no reverse handler for, did not
+      // survive the trip.
+      assert.deepEqual(seen, { elicitation: { form: {} } });
+    } finally {
+      await client.close().catch(() => undefined);
+      await new Promise<void>((res) => server.close(() => res()));
     }
   });
 });

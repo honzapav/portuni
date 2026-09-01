@@ -229,20 +229,31 @@ describe("write gate wired into portuni_update_node", () => {
 });
 
 describe("portuni_expand_scope writable flag", () => {
-  it("grants write access, letting a subsequent mutation on a previously-refused node succeed", async () => {
+  // #206: writable expansion is no longer an honor-system grant -- it goes
+  // through the same real elicitation dialog as a mid-mutation "elicit"
+  // classification. connectWithElicitation(..., "accept") is the
+  // capability-present client that accepts the dialog.
+  it("grants write access via a real elicitation dialog, letting a subsequent mutation on a previously-refused node succeed", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = homeId;
     scope.addSeed(homeId);
     scope.add(otherId);
-    const client = await connect(scope, identity({ via: "device_token" }));
 
-    const refused = (await client.callTool({
+    // First, a capability-absent connection: portuni_update_node on otherId
+    // has no honor-system fallback and no dialog to answer, so it is
+    // refused outright. Same `scope` object throughout -- only the MCP
+    // client/capabilities differ between these two connections.
+    const plainClient = await connect(scope, identity({ via: "device_token" }));
+    const refused = (await plainClient.callTool({
       name: "portuni_update_node",
       arguments: { node_id: otherId, name: "Still Refused" },
     })) as ToolResult;
     assert.equal(refused.isError, true);
 
-    const expand = (await client.callTool({
+    // Now an elicitation-capable connection that accepts the dialog:
+    // portuni_expand_scope(writable: true) grants write access for real.
+    const elicitingClient = await connectWithElicitation(scope, identity({ via: "device_token" }), "accept");
+    const expand = (await elicitingClient.callTool({
       name: "portuni_expand_scope",
       arguments: { node_ids: [otherId], reason: "user-confirmed-in-chat", writable: true },
     })) as ToolResult;
@@ -251,11 +262,59 @@ describe("portuni_expand_scope writable flag", () => {
     assert.deepEqual(expandPayload.writable, [otherId]);
     assert.equal(scope.canWrite(otherId), true);
 
-    const granted = (await client.callTool({
+    const granted = (await elicitingClient.callTool({
       name: "portuni_update_node",
       arguments: { node_id: otherId, name: "Now Writable" },
     })) as ToolResult;
     assert.equal(granted.isError, undefined);
+  });
+
+  it("refuses the write grant, without self-granting, when the dialog is declined", async () => {
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = homeId;
+    scope.addSeed(homeId);
+    scope.add(otherId);
+    const client = await connectWithElicitation(scope, identity({ via: "device_token" }), "decline");
+
+    const expand = (await client.callTool({
+      name: "portuni_expand_scope",
+      arguments: { node_ids: [otherId], reason: "user-confirmed-in-chat", writable: true },
+    })) as ToolResult;
+    assert.equal(expand.isError, undefined);
+    const expandPayload = payloadOf(expand) as {
+      writable: string[];
+      refused_write: Array<{ node_id: string }>;
+    };
+    assert.deepEqual(expandPayload.writable, []);
+    assert.equal(expandPayload.refused_write.length, 1);
+    assert.equal(scope.canWrite(otherId), false);
+  });
+
+  it("refuses the write grant outright when the client has no elicitation capability -- no honor-system fallback for writes", async () => {
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = homeId;
+    scope.addSeed(homeId);
+    scope.add(otherId);
+    const client = await connect(scope, identity({ via: "device_token" }));
+
+    const expand = (await client.callTool({
+      name: "portuni_expand_scope",
+      arguments: { node_ids: [otherId], reason: "user-confirmed-in-chat", writable: true },
+    })) as ToolResult;
+    assert.equal(expand.isError, undefined);
+    const expandPayload = payloadOf(expand) as {
+      writable: string[];
+      refused_write: Array<{ node_id: string }>;
+    };
+    assert.deepEqual(expandPayload.writable, []);
+    assert.equal(expandPayload.refused_write.length, 1);
+    assert.equal(scope.canWrite(otherId), false);
+
+    const stillRefused = (await client.callTool({
+      name: "portuni_update_node",
+      arguments: { node_id: otherId, name: "Still Refused" },
+    })) as ToolResult;
+    assert.equal(stillRefused.isError, true);
   });
 
   it("is rejected outright for headless sessions -- write-set expansion is impossible mid-run", async () => {

@@ -154,7 +154,7 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
         .optional()
         .default(false)
         .describe(
-          "When true, also grant write access to the accepted node(s), backed by the same user confirmation as reason. Rejected outright for headless sessions — write-set expansion is not available mid-run for headless.",
+          "When true, also grant write access to the accepted node(s). Each node goes through a real MCP elicitation confirmation dialog with the user — reason alone is never enough. On a client without the elicitation capability the write grant is refused outright (no honor-system fallback for writes). Rejected outright for headless sessions — write-set expansion is not available mid-run for headless.",
         ),
     },
     async (args) => {
@@ -191,6 +191,7 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
       const addedVia: Record<string, "edge" | "disconnected"> = {};
       const rejected_unknown: string[] = [];
       const refused_hard_floor: { node_id: string; reason: string; permanent: boolean }[] = [];
+      const refused_write: { node_id: string; reason: string }[] = [];
 
       for (const id of args.node_ids) {
         if (!knownIds.has(id)) {
@@ -229,6 +230,28 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
         const reachable = scope.has(id) || (await isEdgeReachable(db, scope, id));
         addedVia[id] = reachable ? "edge" : "disconnected";
         if (args.writable) {
+          // Write-set expansion happens ONLY via elicitation (spec: "Write
+          // scope"). The declared `reason` string is not a substitute for a
+          // real confirmation -- self-granting write from an honest-sounding
+          // reason is exactly the honor-system hole this closes. A client
+          // without the elicitation capability cannot fall back to the
+          // pre-elicitation convention here the way reads do: it is refused
+          // outright.
+          const outcome = ctx.elicit
+            ? await ctx.elicit.confirm(
+                `Grant write access to node ${id}? Reason: ${args.reason}`,
+              )
+            : "unsupported";
+          if (outcome !== "accept") {
+            refused_write.push({
+              node_id: id,
+              reason:
+                outcome === "unsupported"
+                  ? "This client does not support MCP elicitation dialogs; write-scope expansion has no honor-system fallback."
+                  : "The user declined the write-access confirmation dialog.",
+            });
+            continue;
+          }
           scope.addWritable(id);
         } else {
           scope.add(id);
@@ -258,6 +281,12 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
           reason: args.reason,
         });
       }
+      if (refused_write.length > 0) {
+        await logAudit(ctx.identity.userId, "scope_write_expansion_refused", "scope", refused_write.map((r) => r.node_id).join(","), {
+          refused: refused_write,
+          reason: args.reason,
+        });
+      }
 
       // Project accepted nodes into this session's hardlink projection
       // directory (domain/session-projection.ts) when they have a local
@@ -283,13 +312,16 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
               writable: args.writable ? accepted : [],
               unknown: rejected_unknown,
               refused_hard_floor,
+              refused_write,
               scope_size: scope.size(),
               projected,
               hint: overridableRefusals
                 ? "Re-call portuni_expand_scope with confirmed_hard_floor=true only after the user explicitly authorises the hard-floor node."
-                : accepted.length > 0
-                  ? "Nodes listed in 'projected' are readable at that directory; nodes with no local mirror on this device have no entry there — read them with portuni_read_file (node_id + path)."
-                  : undefined,
+                : refused_write.length > 0
+                  ? "Write-access grants require the user to accept a real elicitation dialog; see refused_write for why each node was not granted."
+                  : accepted.length > 0
+                    ? "Nodes listed in 'projected' are readable at that directory; nodes with no local mirror on this device have no entry there — read them with portuni_read_file (node_id + path)."
+                    : undefined,
             }),
           },
         ],

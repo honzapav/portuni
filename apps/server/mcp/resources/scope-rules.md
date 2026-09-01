@@ -193,9 +193,16 @@ A mutating tool call outside the write set returns one of:
 For interactive types (`interactive_task`, `interactive_chat`, which
 includes "chat writes"): a client that declared the `elicitation`
 capability gets a real dialog first (see "Protocol elicitation" above)
--- accepting grants write access immediately. Otherwise: ask the user
-to confirm the write, then call `portuni_expand_scope(node_ids,
-reason, writable: true)` to grant it, and retry.
+-- accepting grants write access immediately, whether the dialog was
+triggered on the spot by the mutating call or proactively via
+`portuni_expand_scope(node_ids, reason, writable: true)`. Either way
+write-set expansion happens *only* through that dialog: the `reason`
+text is never sufficient by itself. A client that has not declared the
+`elicitation` capability cannot grant write access at all -- there is
+no honor-system fallback for writes the way there is for reads;
+`portuni_expand_scope(..., writable: true)` refuses outright
+(`refused_write` in its response) instead of silently trusting the
+call.
 
 ```json
 { "error": "write_refused", "node_id": "...", "hint": "..." }

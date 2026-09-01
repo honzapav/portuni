@@ -10,7 +10,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { createElicitor } from "../apps/server/mcp/elicit.js";
+import {
+  createElicitor,
+  ELICIT_TIMEOUT_MS,
+  AGENT_RELAY_ELICIT_TIMEOUT_MS,
+} from "../apps/server/mcp/elicit.js";
 
 async function connect(
   clientCapabilities: Record<string, unknown>,
@@ -76,5 +80,18 @@ describe("createElicitor: capability-present dialog path", () => {
     const outcome = await elicitor.confirm("Allow this?");
     assert.equal(outcome, "unsupported");
     await client.close();
+  });
+});
+
+describe("elicitation timeouts (#206)", () => {
+  it("uses generous, explicit timeouts (SDK default is 60s) with the outer hop longer than the inner one", () => {
+    // The agent-mode front door nests two hops: central's own wait (using
+    // ELICIT_TIMEOUT_MS, the general default) wraps the front door's relay
+    // down to the real client (AGENT_RELAY_ELICIT_TIMEOUT_MS). If the inner
+    // timeout were not comfortably shorter, an eventual real answer could
+    // arrive after the outer caller already gave up and discarded it.
+    assert.ok(ELICIT_TIMEOUT_MS > 60_000);
+    assert.ok(AGENT_RELAY_ELICIT_TIMEOUT_MS > 60_000);
+    assert.ok(AGENT_RELAY_ELICIT_TIMEOUT_MS < ELICIT_TIMEOUT_MS);
   });
 });

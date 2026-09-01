@@ -63,7 +63,7 @@ import {
 } from "./agent-tools.js";
 import { readNodeFileFromMirror, formatNodeFileContent } from "../domain/read-node-file.js";
 import { guardWrite, writeGuardError, type WriteContext } from "../domain/write-gate.js";
-import { createElicitorFromServer } from "./elicit.js";
+import { createElicitorFromServer, AGENT_RELAY_ELICIT_TIMEOUT_MS } from "./elicit.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 
 const MAX_SESSIONS = Number(process.env.PORTUNI_MAX_SESSIONS ?? 100);
@@ -114,6 +114,17 @@ function extractDownstreamCapabilities(body: unknown): ClientCapabilities | unde
   return undefined;
 }
 
+// Advertise upstream only the capabilities this front door can actually
+// relay in the reverse direction. Today that is elicitation alone (the
+// setRequestHandler(ElicitRequestSchema, ...) reverse path in
+// buildAgentServer below); forwarding the whole downstream capabilities
+// object made central believe e.g. sampling/createMessage or roots/list were
+// available here too, and a central-initiated request for either would fail
+// with "method not found" instead of never being offered.
+function relayableCapabilities(caps: ClientCapabilities | undefined): ClientCapabilities {
+  return caps?.elicitation ? { elicitation: caps.elicitation } : {};
+}
+
 async function openUpstream(
   opts: AgentTransportOpts,
   homeNodeId: string | null,
@@ -129,7 +140,7 @@ async function openUpstream(
   );
   const client = new Client(
     { name: "portuni-agent-upstream", version: "0.1.0" },
-    { capabilities: downstreamCapabilities ?? {} },
+    { capabilities: relayableCapabilities(downstreamCapabilities) },
   );
   await client.connect(transport);
   return client;
@@ -189,9 +200,23 @@ function buildAgentServer(
   // openUpstream() just advertised upstream (see extractDownstreamCapabilities).
   if (downstreamCapabilities?.elicitation) {
     upstream.setRequestHandler(ElicitRequestSchema, async (request) =>
-      server.elicitInput(request.params),
+      server.elicitInput(request.params, { timeout: AGENT_RELAY_ELICIT_TIMEOUT_MS }),
     );
   }
+
+  // Write context for the LOCAL_TOOLS gate below. Built once per session
+  // (this function runs once per local MCP session -- see
+  // createAgentMcpTransport) rather than once per tool call, so writableNodes
+  // accumulates accepted elicitation grants across the session's lifetime:
+  // an accepted write dialog for a node is remembered, and a later write to
+  // the same node is allowed without re-prompting. No SessionScope exists at
+  // this layer (the local sidecar has no graph DB / expansion history, so
+  // there is no session_scope row to persist into either) -- this in-memory
+  // set, scoped to the local session's own lifetime (same TTL/GC as the rest
+  // of AgentSessionEntry), is the front door's equivalent.
+  const sessionType = deriveAgentSessionType(identity);
+  const writableNodes = new Set<string>();
+  const writeCtx: WriteContext = { sessionType, homeNodeId, writableNodes };
 
   server.setRequestHandler(ListToolsRequestSchema, async () => upstream.listTools());
 
@@ -202,32 +227,25 @@ function buildAgentServer(
       // LOCAL_TOOLS never reach apps/server/mcp/tools/*.ts (they dispatch
       // straight to CentralClient/REST from here), so the domain-layer write
       // gate every other mutating tool goes through has to be applied here
-      // instead -- otherwise it is bypassed. No SessionScope exists at this
-      // layer (the local sidecar has no graph DB / expansion history), so
-      // writableNodes is empty: writes are home-node-only for interactive/
-      // headless sessions, exactly like a session with no explicit write-set
-      // expansions yet.
+      // instead -- otherwise it is bypassed.
       const writeTargets = await localToolWriteTargets(opts.client, identity.userId, name, args);
-      if (writeTargets.length > 0) {
-        const sessionType = deriveAgentSessionType(identity);
-        const writeCtx: WriteContext = { sessionType, homeNodeId, writableNodes: new Set() };
-        for (const nodeId of writeTargets) {
-          const outcome = guardWrite(writeCtx, nodeId);
-          if (outcome.kind === "allow") continue;
-          // Same fallback rule as guardNodeWrite (mcp/write-gate.ts): try a
-          // real dialog for "elicit" (never headless, guardWrite only
-          // refuses that outright), otherwise fall back to the structured
-          // refusal.
-          if (outcome.kind === "elicit" && (await elicitor.confirm(outcome.message)) === "accept") {
-            continue;
-          }
-          return {
-            content: [
-              { type: "text", text: JSON.stringify(writeGuardError(nodeId, outcome.kind, outcome.message)) },
-            ],
-            isError: true,
-          };
+      for (const nodeId of writeTargets) {
+        const outcome = guardWrite(writeCtx, nodeId);
+        if (outcome.kind === "allow") continue;
+        // Same fallback rule as guardNodeWrite (mcp/write-gate.ts): try a
+        // real dialog for "elicit" (never headless, guardWrite only
+        // refuses that outright), otherwise fall back to the structured
+        // refusal.
+        if (outcome.kind === "elicit" && (await elicitor.confirm(outcome.message)) === "accept") {
+          writableNodes.add(nodeId);
+          continue;
         }
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(writeGuardError(nodeId, outcome.kind, outcome.message)) },
+          ],
+          isError: true,
+        };
       }
       try {
         return await callLocalTool(opts.client, identity.userId, name, args);

@@ -29,6 +29,7 @@ import { createDiskProjector } from "../apps/server/mcp/disk-projection.js";
 import { registerNodeTools } from "../apps/server/mcp/tools/nodes.js";
 import { registerScopeTools } from "../apps/server/mcp/tools/scope.js";
 import type { SessionCtx } from "../apps/server/mcp/server.js";
+import type { Elicitor } from "../apps/server/mcp/elicit.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 
 const SOLO = "01SOLO0000000000000000000";
@@ -55,12 +56,17 @@ function payloadOf(result: ToolResult): Record<string, unknown> {
   return JSON.parse(result.content[0].text) as Record<string, unknown>;
 }
 
+function fakeElicitor(outcome: "accept" | "decline"): Elicitor {
+  return { confirm: async () => outcome };
+}
+
 async function connect(
   scope: SessionScope,
   ident: RequestIdentity,
+  elicit?: Elicitor,
 ): Promise<{ client: McpClient; scope: SessionScope }> {
   const projector = createDiskProjector({ userId: ident.userId, scope });
-  const ctx: SessionCtx = { scope, identity: ident, projector };
+  const ctx: SessionCtx = { scope, identity: ident, projector, elicit };
   const server = new McpServer({ name: "scope-expansion-test", version: "0.0.1" }, {});
   registerNodeTools(server, ctx);
   registerScopeTools(server, ctx);
@@ -199,5 +205,89 @@ describe("portuni_expand_scope: server-classified reachability", () => {
     assert.equal(payload.refused_hard_floor[0].node_id, sensitiveId);
     assert.equal(payload.refused_hard_floor[0].permanent, true);
     assert.equal(scope.has(sensitiveId), false);
+  });
+});
+
+describe("portuni_expand_scope: writable expansion requires elicitation (#206)", () => {
+  it("grants write access when the elicitation dialog is accepted", async () => {
+    const targetId = ulid();
+    await db.execute({
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+      args: [targetId, "process", "Target", "target-accept", SOLO],
+    });
+
+    const scope = new SessionScope("interactive_task");
+    const { client } = await connect(scope, identity(), fakeElicitor("accept"));
+
+    const result = (await client.callTool({
+      name: "portuni_expand_scope",
+      arguments: {
+        node_ids: [targetId],
+        reason: "user-confirmed-in-chat",
+        writable: true,
+      },
+    })) as ToolResult;
+    const payload = payloadOf(result) as { added: string[]; writable: string[] };
+    assert.deepEqual(payload.added, [targetId]);
+    assert.deepEqual(payload.writable, [targetId]);
+    assert.equal(scope.canWrite(targetId), true);
+  });
+
+  it("refuses the write grant (without self-granting) when the dialog is declined", async () => {
+    const targetId = ulid();
+    await db.execute({
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+      args: [targetId, "process", "Target", "target-decline", SOLO],
+    });
+
+    const scope = new SessionScope("interactive_task");
+    const { client } = await connect(scope, identity(), fakeElicitor("decline"));
+
+    const result = (await client.callTool({
+      name: "portuni_expand_scope",
+      arguments: {
+        node_ids: [targetId],
+        reason: "user-confirmed-in-chat",
+        writable: true,
+      },
+    })) as ToolResult;
+    const payload = payloadOf(result) as {
+      added: string[];
+      refused_write: Array<{ node_id: string }>;
+    };
+    assert.deepEqual(payload.added, []);
+    assert.equal(payload.refused_write.length, 1);
+    assert.equal(payload.refused_write[0].node_id, targetId);
+    assert.equal(scope.canWrite(targetId), false);
+    assert.equal(scope.has(targetId), false);
+  });
+
+  it("refuses the write grant outright when the client has no elicitation capability (no honor-system fallback)", async () => {
+    const targetId = ulid();
+    await db.execute({
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+      args: [targetId, "process", "Target", "target-unsupported", SOLO],
+    });
+
+    const scope = new SessionScope("interactive_task");
+    // No elicitor passed at all -- equivalent to a client that never
+    // declared the elicitation capability.
+    const { client } = await connect(scope, identity());
+
+    const result = (await client.callTool({
+      name: "portuni_expand_scope",
+      arguments: {
+        node_ids: [targetId],
+        reason: "user-requested: give me write access",
+        writable: true,
+      },
+    })) as ToolResult;
+    const payload = payloadOf(result) as {
+      added: string[];
+      refused_write: Array<{ node_id: string }>;
+    };
+    assert.deepEqual(payload.added, []);
+    assert.equal(payload.refused_write.length, 1);
+    assert.equal(scope.canWrite(targetId), false);
   });
 });
