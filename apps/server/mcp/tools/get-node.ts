@@ -90,7 +90,7 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
 
       // Scope gate via central helper. Passing identity enables group-
       // visibility check: non-members get not_found, never an elicit.
-      const guard = await guardNodeRead(db, scope, row.id, ctx.identity.userId, ctx.identity);
+      const guard = await guardNodeRead(db, scope, row.id, ctx.identity.userId, ctx.identity, ctx.elicit);
       if (guard.kind === "not_found") {
         return {
           content: [{ type: "text" as const, text: "Node not found" }],

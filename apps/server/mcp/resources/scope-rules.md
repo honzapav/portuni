@@ -96,6 +96,27 @@ This is a **hard, non-negotiable refusal** — a headless session hitting
 a hard floor. There is no `portuni_expand_scope` round trip that will
 succeed; do not retry.
 
+## Protocol elicitation
+
+Clients that declare the `elicitation` capability at `initialize` (MCP
+SDK >= 1.29's `elicitInput`) get a real yes/no dialog instead of the
+`portuni_expand_scope` round trip above: the same "elicit" read
+classifications (disconnected jumps, hard floors for non-headless
+sessions) and write classifications (see "Write scope" below) try the
+dialog first. Accepting performs the expansion immediately server-side
+(audited `added_via: "elicited"` for reads); declining or cancelling
+falls back to the same structured-refusal response documented above,
+so an agent talking to any client -- old or new -- sees a consistent
+contract either way. `headless` sessions never see a dialog, by
+session-type design, regardless of what the connected client declared.
+
+Agent-mode sessions (the desktop app's central-mode sidecar,
+`apps/server/mcp/agent-transport.ts`) proxy this transparently: the
+sidecar advertises the real terminal client's declared capabilities
+upstream to central, and relays a server-initiated elicitation request
+from central back down to that same real client, so the dialog appears
+in the terminal exactly as it would for a direct central session.
+
 ## Expansion semantics
 
 `portuni_expand_scope(node_ids, reason, triggered_by, confirmed_hard_floor?)`:
@@ -164,10 +185,12 @@ A mutating tool call outside the write set returns one of:
 { "error": "write_expansion_required", "node_id": "...", "hint": "..." }
 ```
 
-For interactive types (`interactive_task`, `interactive_chat`): ask
-the user to confirm the write, then call
-`portuni_expand_scope(node_ids, reason, writable: true)` to grant it,
-and retry.
+For interactive types (`interactive_task`, `interactive_chat`, which
+includes "chat writes"): a client that declared the `elicitation`
+capability gets a real dialog first (see "Protocol elicitation" above)
+-- accepting grants write access immediately. Otherwise: ask the user
+to confirm the write, then call `portuni_expand_scope(node_ids,
+reason, writable: true)` to grant it, and retry.
 
 ```json
 { "error": "write_refused", "node_id": "...", "hint": "..." }

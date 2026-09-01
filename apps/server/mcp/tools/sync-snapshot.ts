@@ -123,7 +123,7 @@ export function registerSyncSnapshotTools(server: McpServer, ctx: SessionCtx): v
           isError: true,
         };
       }
-      const snapshotWriteGuard = guardNodeWrite(scope, args.node_id);
+      const snapshotWriteGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
       if (snapshotWriteGuard.kind === "error") return snapshotWriteGuard.response;
       const r = await snapshotService(db, {
         userId: ctx.identity.userId,

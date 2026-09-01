@@ -21,6 +21,7 @@ import { registerActorTools } from "./tools/actors.js";
 import { registerResponsibilityTools } from "./tools/responsibilities.js";
 import { registerEntityAttributeTools } from "./tools/entity-attributes.js";
 import { createScopeReconciler, type ScopeReconciler } from "./scope-reconciler.js";
+import { createElicitor, type Elicitor } from "./elicit.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { TOOL_MIN_SCOPE } from "../auth/min-scopes.js";
 import { scopeAtLeast } from "../auth/roles.js";
@@ -39,6 +40,11 @@ export interface SessionCtx {
   scope: SessionScope;
   identity: RequestIdentity;
   reconciler: ScopeReconciler;
+  // Optional: absent in most test harnesses that build a SessionCtx by hand,
+  // which is equivalent to every confirm() call resolving "unsupported"
+  // (the pre-elicitation honor-system fallback). createMcpServer always
+  // provides a real one.
+  elicit?: Elicitor;
 }
 
 // Default identity used when createMcpServer() is called without arguments
@@ -137,11 +143,11 @@ export function createMcpServer(
   const scope = new SessionScope(deriveSessionType(identity, homeNodeId));
   const reconciler = createScopeReconciler({ userId: identity.userId, scope });
   scope.onAdd((nodeId) => reconciler.schedule(nodeId));
-  const ctx: SessionCtx = { scope, identity, reconciler };
   const server = new McpServer(
     { name: "portuni", version: "0.1.0" },
     { instructions: INSTRUCTIONS },
   );
+  const ctx: SessionCtx = { scope, identity, reconciler, elicit: createElicitor(server) };
   gateToolsByScope(server, identity);
   registerResources(server);
   registerScopeTools(server, ctx);

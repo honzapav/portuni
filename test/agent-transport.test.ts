@@ -21,6 +21,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createAgentMcpTransport } from "../apps/server/mcp/agent-transport.js";
 import type { CentralClient } from "../apps/server/domain/sync/central/client.js";
 import type { NodeSyncInfo } from "../apps/server/domain/sync/sync-remote-api.js";
@@ -135,6 +136,27 @@ function startStubCentral(): Promise<StubCentral> {
         "portuni_get_node",
         { node_id: z.string() },
         async () => ({ content: [{ type: "text" as const, text: "central-marker" }] }),
+      );
+      // Exists only to drive the front-door elicitation round-trip test
+      // below: calls elicitInput on the stub's own low-level Server exactly
+      // the way a graph-plane tool's "elicit" classification would, so the
+      // request travels stub-central -> agent-transport's upstream Client ->
+      // (reverse handler) -> the real downstream Server -> the actual local
+      // test client, and the answer flows back the same way.
+      mcp.tool(
+        "portuni_test_elicit",
+        { message: z.string() },
+        async (a) => {
+          const result = await mcp.server.elicitInput({
+            message: a.message,
+            requestedSchema: {
+              type: "object",
+              properties: { confirm: { type: "boolean", title: "Confirm" } },
+              required: ["confirm"],
+            },
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+        },
       );
       mcp.tool(
         "portuni_read_file",
@@ -454,6 +476,70 @@ describe("agent MCP front door: write gate on LOCAL_TOOLS", () => {
       assert.equal(payload.error, "write_expansion_required");
     } finally {
       await closeClient(client);
+    }
+  });
+});
+
+// The front-door round trip (#188): a server-initiated elicitation request
+// from central has to travel central -> agent-transport's upstream Client
+// (a server-initiated request arriving on what is, from this process's
+// point of view, a Client) -> the reverse handler registered in
+// buildAgentServer -> the real downstream Server's own elicitInput -> the
+// actual connected local client -> and the answer has to flow all the way
+// back to unblock central's original call. Exercised via
+// portuni_test_elicit on the stub central (added above).
+describe("agent MCP front door: elicitation round trip", () => {
+  async function connectElicitationCapable(
+    dialogAnswer: "accept" | "decline",
+  ): Promise<{ client: Client; server: Server }> {
+    const server = createServer((req, res) => {
+      void agentTransport.handle(req, res, taskIdentity);
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    const client = new Client(
+      { name: "elicit-round-trip-test", version: "0.0.0" },
+      { capabilities: { elicitation: {} } },
+    );
+    client.setRequestHandler(ElicitRequestSchema, async () => ({
+      action: dialogAnswer,
+      content: dialogAnswer === "accept" ? { confirm: true } : undefined,
+    }));
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
+    return { client, server };
+  }
+
+  it("relays an elicitInput call from central all the way down to the real client and back: accept", async () => {
+    const { client, server } = await connectElicitationCapable("accept");
+    try {
+      const r = (await client.callTool({
+        name: "portuni_test_elicit",
+        arguments: { message: "Confirm the round trip?" },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.equal(r.isError, undefined, JSON.stringify(r));
+      const result = JSON.parse(r.content[0].text);
+      assert.equal(result.action, "accept");
+      assert.equal(result.content.confirm, true);
+    } finally {
+      await client.close().catch(() => undefined);
+      await new Promise<void>((res) => server.close(() => res()));
+    }
+  });
+
+  it("relays a decline answer back to central too", async () => {
+    const { client, server } = await connectElicitationCapable("decline");
+    try {
+      const r = (await client.callTool({
+        name: "portuni_test_elicit",
+        arguments: { message: "Confirm the round trip?" },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.equal(r.isError, undefined, JSON.stringify(r));
+      const result = JSON.parse(r.content[0].text);
+      assert.equal(result.action, "decline");
+    } finally {
+      await client.close().catch(() => undefined);
+      await new Promise<void>((res) => server.close(() => res()));
     }
   });
 });

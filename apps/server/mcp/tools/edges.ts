@@ -54,7 +54,7 @@ export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
       // source node's own edge list. The target only needs the visibility
       // check above (you can point an edge at something you can see without
       // that thing itself being in your write set).
-      const connectWriteGuard = guardNodeWrite(scope, args.source_id);
+      const connectWriteGuard = await guardNodeWrite(scope, args.source_id, ctx.elicit);
       if (connectWriteGuard.kind === "error") return connectWriteGuard.response;
 
       if (args.relation === "belongs_to" && targetType === "organization" && sourceType !== "organization") {
@@ -172,7 +172,7 @@ export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
-      const disconnectWriteGuard = guardNodeWrite(scope, args.source_id);
+      const disconnectWriteGuard = await guardNodeWrite(scope, args.source_id, ctx.elicit);
       if (disconnectWriteGuard.kind === "error") return disconnectWriteGuard.response;
 
       const removingBelongsToOrg =
@@ -271,7 +271,7 @@ export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
-      const moveWriteGuard = guardNodeWrite(scope, args.node_id);
+      const moveWriteGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
       if (moveWriteGuard.kind === "error") return moveWriteGuard.response;
       try {
         const result = await moveNodeToOrganization(

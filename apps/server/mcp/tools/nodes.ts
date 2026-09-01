@@ -140,7 +140,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
-      const writeGuard = guardNodeWrite(scope, args.node_id);
+      const writeGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
       if (writeGuard.kind === "error") return writeGuard.response;
       NodeRow.parse(current.rows[0]);
 
@@ -267,7 +267,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
-      const deleteWriteGuard = guardNodeWrite(scope, args.node_id);
+      const deleteWriteGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
       if (deleteWriteGuard.kind === "error") return deleteWriteGuard.response;
       const node = existing.rows[0];
       const nodeType = node.type as string;

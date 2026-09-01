@@ -46,7 +46,7 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
-      const logWriteGuard = guardNodeWrite(scope, args.node_id);
+      const logWriteGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
       if (logWriteGuard.kind === "error") return logWriteGuard.response;
 
       // B5: Validate refs -- warn (not error) if any referenced event is missing.
@@ -154,7 +154,7 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
-      const resolveWriteGuard = guardNodeWrite(scope, row.node_id);
+      const resolveWriteGuard = await guardNodeWrite(scope, row.node_id, ctx.elicit);
       if (resolveWriteGuard.kind === "error") return resolveWriteGuard.response;
       if (row.status !== "active") {
         return {
@@ -219,7 +219,7 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
-      const supersedeWriteGuard = guardNodeWrite(scope, oldRow.node_id);
+      const supersedeWriteGuard = await guardNodeWrite(scope, oldRow.node_id, ctx.elicit);
       if (supersedeWriteGuard.kind === "error") return supersedeWriteGuard.response;
 
       let result: Awaited<ReturnType<typeof supersedeEventInternal>>;
@@ -269,6 +269,7 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
         args.node_id,
         ctx.identity.userId,
         ctx.identity,
+        ctx.elicit,
       );
       if (gate.kind === "error") return gate.response;
 

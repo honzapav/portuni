@@ -62,7 +62,7 @@ export function registerResponsibilityTools(server: McpServer, ctx: SessionCtx):
             isError: true,
           };
         }
-        const writeGuard = guardNodeWrite(scope, args.node_id);
+        const writeGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
         if (writeGuard.kind === "error") return writeGuard.response;
         const row = await createResponsibility(db, ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
@@ -101,7 +101,7 @@ export function registerResponsibilityTools(server: McpServer, ctx: SessionCtx):
             isError: true,
           };
         }
-        const writeGuard = guardNodeWrite(scope, nodeId);
+        const writeGuard = await guardNodeWrite(scope, nodeId, ctx.elicit);
         if (writeGuard.kind === "error") return writeGuard.response;
         const row = await updateResponsibility(db, ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
@@ -137,7 +137,7 @@ export function registerResponsibilityTools(server: McpServer, ctx: SessionCtx):
             isError: true,
           };
         }
-        const writeGuard = guardNodeWrite(scope, nodeId);
+        const writeGuard = await guardNodeWrite(scope, nodeId, ctx.elicit);
         if (writeGuard.kind === "error") return writeGuard.response;
         await deleteResponsibility(db, ctx.identity.userId, args.responsibility_id);
         return {
@@ -196,7 +196,7 @@ export function registerResponsibilityTools(server: McpServer, ctx: SessionCtx):
             isError: true,
           };
         }
-        const writeGuard = guardNodeWrite(scope, nodeId);
+        const writeGuard = await guardNodeWrite(scope, nodeId, ctx.elicit);
         if (writeGuard.kind === "error") return writeGuard.response;
         await assignResponsibility(db, ctx.identity.userId, args);
         return {
@@ -244,7 +244,7 @@ export function registerResponsibilityTools(server: McpServer, ctx: SessionCtx):
             isError: true,
           };
         }
-        const writeGuard = guardNodeWrite(scope, nodeId);
+        const writeGuard = await guardNodeWrite(scope, nodeId, ctx.elicit);
         if (writeGuard.kind === "error") return writeGuard.response;
         await unassignResponsibility(db, ctx.identity.userId, args);
         return {

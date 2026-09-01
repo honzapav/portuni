@@ -515,7 +515,7 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
 
       // Scope gate on the start node. Passing identity enables group-
       // visibility check: non-members get not_found, never an elicit.
-      const guard = await guardNodeRead(db, scope, args.node_id, ctx.identity.userId, ctx.identity);
+      const guard = await guardNodeRead(db, scope, args.node_id, ctx.identity.userId, ctx.identity, ctx.elicit);
       if (guard.kind === "not_found") {
         return {
           content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],

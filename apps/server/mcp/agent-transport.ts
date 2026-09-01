@@ -41,6 +41,8 @@ import {
   CallToolRequestSchema,
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
+  ElicitRequestSchema,
+  type ClientCapabilities,
 } from "@modelcontextprotocol/sdk/types.js";
 import { parseBody, RequestBodyTooLargeError } from "../http/middleware.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
@@ -61,6 +63,7 @@ import {
 } from "./agent-tools.js";
 import { readNodeFileFromMirror, formatNodeFileContent } from "../domain/read-node-file.js";
 import { guardWrite, writeGuardError, type WriteContext } from "../domain/write-gate.js";
+import { createElicitorFromServer } from "./elicit.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 
 const MAX_SESSIONS = Number(process.env.PORTUNI_MAX_SESSIONS ?? 100);
@@ -90,9 +93,31 @@ function upstreamUrl(centralUrl: string, homeNodeId: string | null): URL {
   return url;
 }
 
+// The first request on a brand-new session is always `initialize` (the SDK
+// rejects anything else -- see the 400 path in handle() below), and its
+// params carry the real downstream client's declared capabilities. Peeking
+// at the already-parsed body here -- before opening the upstream connection
+// -- is what lets that upstream connection advertise the SAME capabilities
+// (elicitation in particular) instead of the historical `capabilities: {}`,
+// so central knows it can send the agent-mode session an elicitation
+// request at all.
+function extractDownstreamCapabilities(body: unknown): ClientCapabilities | undefined {
+  const msg = Array.isArray(body) ? body[0] : body;
+  if (
+    msg !== null &&
+    typeof msg === "object" &&
+    (msg as { method?: unknown }).method === "initialize"
+  ) {
+    const params = (msg as { params?: { capabilities?: ClientCapabilities } }).params;
+    return params?.capabilities;
+  }
+  return undefined;
+}
+
 async function openUpstream(
   opts: AgentTransportOpts,
   homeNodeId: string | null,
+  downstreamCapabilities: ClientCapabilities | undefined,
 ): Promise<Client> {
   const transport = new StreamableHTTPClientTransport(
     upstreamUrl(opts.centralUrl, homeNodeId),
@@ -104,7 +129,7 @@ async function openUpstream(
   );
   const client = new Client(
     { name: "portuni-agent-upstream", version: "0.1.0" },
-    { capabilities: {} },
+    { capabilities: downstreamCapabilities ?? {} },
   );
   await client.connect(transport);
   return client;
@@ -120,11 +145,32 @@ function buildAgentServer(
   upstream: Client,
   identity: RequestIdentity,
   homeNodeId: string | null,
+  downstreamCapabilities: ClientCapabilities | undefined,
 ): Server {
   const server = new Server(
     { name: "portuni-agent", version: "0.1.0" },
     { capabilities: { tools: {}, resources: {} }, instructions: INSTRUCTIONS },
   );
+  const elicitor = createElicitorFromServer(server);
+
+  // Reverse path for server-initiated elicitation: central (reached via
+  // `upstream`, a Client from this process's point of view) sends an
+  // `elicitation/create` request when a graph-plane tool call hits an
+  // "elicit" classification. Without this handler the upstream Client has
+  // no way to answer it, even though openUpstream() now advertises the real
+  // downstream client's capabilities (so central believes it can ask).
+  // Forwarding to server.elicitInput() relays the dialog one hop further
+  // down to the actual connected client (the real CLI), and its answer
+  // flows back up through this same chain to unblock central's call.
+  // Only registered when the real client actually declared elicitation --
+  // the Client class asserts its own registered capabilities include it
+  // before allowing this handler at all, matching the capabilities
+  // openUpstream() just advertised upstream (see extractDownstreamCapabilities).
+  if (downstreamCapabilities?.elicitation) {
+    upstream.setRequestHandler(ElicitRequestSchema, async (request) =>
+      server.elicitInput(request.params),
+    );
+  }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => upstream.listTools());
 
@@ -142,21 +188,24 @@ function buildAgentServer(
       // expansions yet.
       const writeTargets = await localToolWriteTargets(opts.client, identity.userId, name, args);
       if (writeTargets.length > 0) {
-        const writeCtx: WriteContext = {
-          sessionType: deriveSessionType(identity, homeNodeId),
-          homeNodeId,
-          writableNodes: new Set(),
-        };
+        const sessionType = deriveSessionType(identity, homeNodeId);
+        const writeCtx: WriteContext = { sessionType, homeNodeId, writableNodes: new Set() };
         for (const nodeId of writeTargets) {
           const outcome = guardWrite(writeCtx, nodeId);
-          if (outcome.kind !== "allow") {
-            return {
-              content: [
-                { type: "text", text: JSON.stringify(writeGuardError(nodeId, outcome.kind, outcome.message)) },
-              ],
-              isError: true,
-            };
+          if (outcome.kind === "allow") continue;
+          // Same fallback rule as guardNodeWrite (mcp/write-gate.ts): try a
+          // real dialog for "elicit" (never headless, guardWrite only
+          // refuses that outright), otherwise fall back to the structured
+          // refusal.
+          if (outcome.kind === "elicit" && (await elicitor.confirm(outcome.message)) === "accept") {
+            continue;
           }
+          return {
+            content: [
+              { type: "text", text: JSON.stringify(writeGuardError(nodeId, outcome.kind, outcome.message)) },
+            ],
+            isError: true,
+          };
         }
       }
       try {
@@ -362,8 +411,9 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
       // upstream is a 503 with the underlying reason (same contract as the
       // auto-seed 503 in transport.ts) rather than an empty-scope session.
       const homeNodeId = parseHomeNodeIdFromUrl(req.url);
+      const downstreamCapabilities = extractDownstreamCapabilities(body);
       try {
-        upstream = await openUpstream(opts, homeNodeId);
+        upstream = await openUpstream(opts, homeNodeId, downstreamCapabilities);
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         console.error("Agent MCP upstream connect failed:", err);
@@ -400,7 +450,7 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
         up.close().catch(() => undefined);
       };
 
-      const server = buildAgentServer(opts, up, identity, homeNodeId);
+      const server = buildAgentServer(opts, up, identity, homeNodeId, downstreamCapabilities);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
 

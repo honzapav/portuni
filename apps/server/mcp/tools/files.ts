@@ -54,7 +54,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
     },
     async (args) => {
       const db = getDb();
-      const guard = await guardNodeRead(db, scope, args.node_id, ctx.identity.userId, ctx.identity);
+      const guard = await guardNodeRead(db, scope, args.node_id, ctx.identity.userId, ctx.identity, ctx.elicit);
       if (guard.kind === "not_found") {
         return { content: [{ type: "text" as const, text: "Node not found" }], isError: true };
       }
@@ -135,7 +135,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
       if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
         return NODE_NOT_FOUND;
       }
-      const storeWriteGuard = guardNodeWrite(scope, args.node_id);
+      const storeWriteGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
       if (storeWriteGuard.kind === "error") return storeWriteGuard.response;
       const result = await storeFile(db, {
         userId: ctx.identity.userId,
@@ -177,7 +177,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
           if (!(await nodeVisibleTo(db, ctx.identity, nodeId))) {
             return NODE_NOT_FOUND;
           }
-          const pullWriteGuard = guardNodeWrite(scope, nodeId);
+          const pullWriteGuard = await guardNodeWrite(scope, nodeId, ctx.elicit);
           if (pullWriteGuard.kind === "error") return pullWriteGuard.response;
         }
         const r = await pullFile(db, { userId: ctx.identity.userId, fileId: args.file_id, force: args.force });
@@ -212,6 +212,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         args.node_id,
         ctx.identity.userId,
         ctx.identity,
+        ctx.elicit,
       );
       if (gate.kind === "error") return gate.response;
 
@@ -344,14 +345,14 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         if (!(await nodeVisibleTo(db, ctx.identity, sourceNodeId))) {
           return NODE_NOT_FOUND;
         }
-        const sourceWriteGuard = guardNodeWrite(scope, sourceNodeId);
+        const sourceWriteGuard = await guardNodeWrite(scope, sourceNodeId, ctx.elicit);
         if (sourceWriteGuard.kind === "error") return sourceWriteGuard.response;
       }
       if (args.new_node_id) {
         if (!(await nodeVisibleTo(db, ctx.identity, args.new_node_id))) {
           return NODE_NOT_FOUND;
         }
-        const destWriteGuard = guardNodeWrite(scope, args.new_node_id);
+        const destWriteGuard = await guardNodeWrite(scope, args.new_node_id, ctx.elicit);
         if (destWriteGuard.kind === "error") return destWriteGuard.response;
       }
       const r = await moveFile(db, {
@@ -380,7 +381,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
       if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
         return NODE_NOT_FOUND;
       }
-      const renameWriteGuard = guardNodeWrite(scope, args.node_id);
+      const renameWriteGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
       if (renameWriteGuard.kind === "error") return renameWriteGuard.response;
       const r = await renameFolder(db, {
         userId: ctx.identity.userId,
@@ -406,7 +407,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
       if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
         return NODE_NOT_FOUND;
       }
-      const adoptWriteGuard = guardNodeWrite(scope, args.node_id);
+      const adoptWriteGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
       if (adoptWriteGuard.kind === "error") return adoptWriteGuard.response;
       const r = await adoptFiles(db, {
         userId: ctx.identity.userId,
@@ -433,7 +434,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         if (!(await nodeVisibleTo(db, ctx.identity, nodeId))) {
           return NODE_NOT_FOUND;
         }
-        const deleteWriteGuard = guardNodeWrite(scope, nodeId);
+        const deleteWriteGuard = await guardNodeWrite(scope, nodeId, ctx.elicit);
         if (deleteWriteGuard.kind === "error") return deleteWriteGuard.response;
       }
       const r = await deleteFile(db, {

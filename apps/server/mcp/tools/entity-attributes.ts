@@ -64,7 +64,7 @@ export function registerEntityAttributeTools(server: McpServer, ctx: SessionCtx)
             isError: true,
           };
         }
-        const writeGuard = guardNodeWrite(scope, args.node_id);
+        const writeGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
         if (writeGuard.kind === "error") return writeGuard.response;
         const row = await addDataSource(db, ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
@@ -92,7 +92,7 @@ export function registerEntityAttributeTools(server: McpServer, ctx: SessionCtx)
           if (!guard.allowed) {
             return { content: [{ type: "text" as const, text: guard.error }], isError: true };
           }
-          const writeGuard = guardNodeWrite(scope, nodeId);
+          const writeGuard = await guardNodeWrite(scope, nodeId, ctx.elicit);
           if (writeGuard.kind === "error") return writeGuard.response;
         }
         await removeDataSource(db, ctx.identity.userId, args.data_source_id);
@@ -153,7 +153,7 @@ export function registerEntityAttributeTools(server: McpServer, ctx: SessionCtx)
             isError: true,
           };
         }
-        const writeGuard = guardNodeWrite(scope, args.node_id);
+        const writeGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
         if (writeGuard.kind === "error") return writeGuard.response;
         const row = await addTool(db, ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
@@ -181,7 +181,7 @@ export function registerEntityAttributeTools(server: McpServer, ctx: SessionCtx)
           if (!guard.allowed) {
             return { content: [{ type: "text" as const, text: guard.error }], isError: true };
           }
-          const writeGuard = guardNodeWrite(scope, nodeId);
+          const writeGuard = await guardNodeWrite(scope, nodeId, ctx.elicit);
           if (writeGuard.kind === "error") return writeGuard.response;
         }
         await removeTool(db, ctx.identity.userId, args.tool_id);

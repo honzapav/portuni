@@ -11,6 +11,7 @@ import { nodeVisibleTo, filterVisibleNodeIds, type GroupIdentityView } from "../
 import { nodeNeighbourIds } from "../domain/queries/neighbours.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { writeAudit } from "../infra/audit.js";
+import type { Elicitor } from "./elicit.js";
 
 // Session type: derived by the server from the authentication path, never
 // self-declared by the client/agent. See
@@ -60,7 +61,10 @@ export type ExpansionTrigger = "user" | "agent" | "traversal" | "init";
 //                 declared reason (interactive: elicitation; headless: the
 //                 expand_scope reason argument, always present).
 //   created     - the node was created by this session.
-export type AddedVia = "seed" | "edge" | "disconnected" | "created";
+//   elicited    - a hard-floor or disconnected-jump read the user confirmed
+//                 via a real MCP protocol elicitation dialog (see elicit.ts),
+//                 not the honor-system portuni_expand_scope round trip.
+export type AddedVia = "seed" | "edge" | "disconnected" | "created" | "elicited";
 
 export interface ExpansionRecord {
   at: string;
@@ -428,12 +432,19 @@ export type ReadGuardOutcome =
 // identity is optional for backwards compatibility with callers that only
 // need the classic scope gate. When provided, a group-visibility check
 // runs FIRST (before scope): non-members see not_found, never an elicit.
+//
+// elicitor is optional too (absent in most test harnesses -- see
+// SessionCtx.elicit): when provided and the session is not headless (which
+// has no elicitation channel by design, regardless of what the connected
+// client declares), an "elicit" classification tries a real protocol
+// dialog before falling back to the structured-refusal convention.
 export async function guardNodeRead(
   db: Client,
   scope: SessionScope,
   nodeId: string,
   sessionUserId: string,
   identity?: GroupIdentityView,
+  elicitor?: Elicitor,
 ): Promise<ReadGuardOutcome> {
   const meta = await loadNodeScopeMeta(db, nodeId);
   if (!meta.exists) return { kind: "not_found" };
@@ -467,6 +478,26 @@ export async function guardNodeRead(
     };
   }
   if (decision.kind === "elicit") {
+    if (scope.sessionType !== "headless" && elicitor !== undefined) {
+      const outcome = await elicitor.confirm(
+        decision.message ?? `Allow this session to read node ${nodeId}?`,
+      );
+      if (outcome === "accept") {
+        scope.add(nodeId);
+        scope.recordExpansion({
+          at: new Date().toISOString(),
+          node_ids: [nodeId],
+          reason: "elicited (protocol dialog confirmed by user)",
+          triggered_by: "user",
+          addedVia: "elicited",
+        });
+        await writeAudit(db, sessionUserId, "scope_auto_expand", "scope", nodeId, {
+          added_via: "elicited",
+          session_type: scope.sessionType,
+        });
+        return { kind: "allow" };
+      }
+    }
     return {
       kind: "elicit",
       error: scopeExpansionError(nodeId, decision.message ?? "expand scope first"),

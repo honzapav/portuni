@@ -10,6 +10,7 @@
 import type { Client } from "@libsql/client";
 import { guardNodeRead, type SessionScope } from "./scope.js";
 import type { GroupIdentityView } from "../auth/node-access.js";
+import type { Elicitor } from "./elicit.js";
 
 type ToolErrorResponse = {
   content: Array<{ type: "text"; text: string }>;
@@ -26,12 +27,13 @@ export async function guardListScope(
   nodeId: string | undefined,
   userId: string,
   identity?: GroupIdentityView,
+  elicitor?: Elicitor,
 ): Promise<ListScopeGateResult> {
   if (nodeId === undefined) {
     return { kind: "ok" };
   }
 
-  const guard = await guardNodeRead(db, scope, nodeId, userId, identity);
+  const guard = await guardNodeRead(db, scope, nodeId, userId, identity, elicitor);
   if (guard.kind === "not_found") {
     return {
       kind: "error",

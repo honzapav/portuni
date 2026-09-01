@@ -33,7 +33,7 @@ export function registerMirrorTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
-      const mirrorWriteGuard = guardNodeWrite(scope, args.node_id);
+      const mirrorWriteGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
       if (mirrorWriteGuard.kind === "error") return mirrorWriteGuard.response;
       try {
         const result = await createMirrorForNode(db, ctx.identity.userId, {
