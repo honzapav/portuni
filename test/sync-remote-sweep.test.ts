@@ -107,6 +107,39 @@ describe("remoteSweep", () => {
     assert.equal(row.rows.length, 1);
   });
 
+  // #201: a file registered before this node had any routed remote (or one
+  // that a later routing change left un-backfilled) has remote_name NULL.
+  // The sweep must not crash on it and must leave it alone -- there is
+  // nothing on any remote to compare it against yet.
+  it("tolerates a NULL-remote row: does not crash, does not touch it", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const { replaceRules, addRule } = await import("../apps/server/domain/sync/routing.js");
+    await replaceRules(db, []);
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    await mkdir(join(mirrorRoot, "wip"), { recursive: true });
+    const localPath = join(mirrorRoot, "wip", "unrouted.md");
+    await writeFile(localPath, "no remote yet");
+    const reg = await registerLocalFile(db, { userId: "U1", nodeId, localPath });
+    assert.equal(reg.remote_name, null);
+
+    // Routing resolves again, but nobody has explicitly synced this file --
+    // its row is still remote_name NULL.
+    await addRule(db, { priority: 10, node_type: null, org_slug: null, remote_name: "test-fs" });
+
+    const out = await remoteSweep(db, { userId: "U1", nodeId });
+    assert.equal(out.errors.length, 0);
+    assert.equal(out.deleted_on_remote.length, 0);
+    assert.ok(!out.adopted.some((a) => a.file_id === reg.file_id));
+
+    const row = await db.execute({
+      sql: "SELECT id, remote_name FROM files WHERE id = ?",
+      args: [reg.file_id],
+    });
+    assert.equal(row.rows.length, 1, "row survives the sweep");
+    assert.equal(row.rows[0].remote_name, null, "sweep does not itself backfill remote_name");
+  });
+
   it("adopts a file that appeared on the remote under a tracked section", async () => {
     const { db, nodeId, remoteRoot, orgSyncKey, nodeSyncKey } = await makeSharedDb();
     const mirrorRoot = join(workspace, "mirror");

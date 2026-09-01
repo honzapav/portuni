@@ -1316,6 +1316,51 @@ const MIGRATIONS: Migration[] = [
     },
     up: runMigration030,
   },
+
+  // Migration 031: idx_files_unique_remote drops remote_name from its key
+  // (#201). registerLocalFile/registerFileRecordRemote no longer require a
+  // resolvable remote -- a local-only workspace registers with remote_name
+  // NULL -- but the old (node_id, remote_name, remote_path) index treats
+  // every NULL remote_name as distinct (standard SQL NULL semantics), so it
+  // could never dedupe re-registrations of the same file, and a later
+  // storeFile resolving the remote would insert a second row instead of
+  // backfilling the first. remote_path alone already identifies "the same
+  // file" (derived purely from node identity, never from the remote), so
+  // (node_id, remote_path) is both sufficient and NULL-safe.
+  {
+    id: "031_files_unique_remote_drop_remote_name",
+    isApplied: async (db) => {
+      const r = await db.execute({
+        sql: "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_files_unique_remote'",
+        args: [],
+      });
+      const sql = String(r.rows[0]?.sql ?? "");
+      return sql.length > 0 && !sql.includes("remote_name");
+    },
+    up: async (db) => {
+      // Dedupe on the NEW key first: two rows that previously differed only
+      // by remote_name (e.g. a stale NULL-remote row alongside a since-
+      // resolved one for the same path -- possible pre-fix, if a race ever
+      // slipped past the old index) would now collide. Prefer keeping
+      // whichever row has a resolved remote_name (more complete data) over
+      // a NULL one, then the most recently updated.
+      await db.execute(`
+        DELETE FROM files WHERE remote_path IS NOT NULL AND id NOT IN (
+          SELECT id FROM (
+            SELECT id, ROW_NUMBER() OVER (
+              PARTITION BY node_id, remote_path
+              ORDER BY (remote_name IS NULL) ASC, updated_at DESC, id DESC
+            ) AS rn
+            FROM files WHERE remote_path IS NOT NULL
+          ) WHERE rn = 1
+        )`);
+      await db.execute("DROP INDEX IF EXISTS idx_files_unique_remote");
+      await db.execute(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_files_unique_remote
+           ON files(node_id, remote_path) WHERE remote_path IS NOT NULL`,
+      );
+    },
+  },
 ];
 
 export async function runMigration024(db: Client): Promise<void> {

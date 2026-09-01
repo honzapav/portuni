@@ -237,6 +237,11 @@ Returns: classified buckets (`clean`, `push_candidates`, `pull_candidates`,
   gone, and adopts a file newly present anywhere under `wip/`,
   `outputs/`, or `resources/` at any depth (a dot-prefixed filename or subfolder is
   skipped).
+- **A remote is not required for tracking.** In a local-only workspace (no
+  remote configured at all), a new file still registers and reads as
+  `push_candidates` — registration never depends on routing resolving.
+  Once a remote is connected, `portuni_store` (or any other deliberate
+  write) resolves it and backfills the record's `remote_name`.
 :::
 
 ## portuni_list_remotes / portuni_setup_remote / portuni_set_routing_policy

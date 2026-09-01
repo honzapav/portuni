@@ -154,7 +154,19 @@ symlink to this file.
   is current without anyone calling `portuni_store`/`portuni_status`.
   Registration is local-only (`registerLocalFile`, no upload); a file then
   reads as `push` until a deliberate "Synchronizovat"/`portuni_store` pushes
-  it to the remote. The watcher runs in the desktop sidecar by default
+  it to the remote. **Registration never requires a remote.** A local-only
+  workspace (no remote/routing configured at all) still tracks every file —
+  `registerLocalFile` and its central-mode/REST equivalents
+  (`registerFileRecordRemote(s)`) leave `remote_name` NULL instead of
+  throwing when routing does not resolve; `remote_path` is still always
+  computed (it is derived purely from the node's own identity, never from
+  the remote). `idx_files_unique_remote` is keyed on `(node_id, remote_path)`
+  alone (migration 031) so a later `storeFile`/write on the same path
+  backfills `remote_name` onto the existing row instead of creating a
+  duplicate. `storeFile` (and any other deliberate push/write) still
+  requires a resolved remote and throws `ROUTING_GUIDANCE` otherwise — that
+  guidance belongs at the moment of a deliberate sync, not at registration.
+  The watcher runs in the desktop sidecar by default
   (`PORTUNI_WATCH_MIRRORS`, on the standalone server it is opt-in `=1`); for
   backend dev against the tmux server, set `PORTUNI_WATCH_MIRRORS=1` if you
   want the same behavior. A deliberate sync run additionally sweeps the

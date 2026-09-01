@@ -300,12 +300,19 @@ export const DDL = [
     updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_files_node ON files(node_id)`,
-  // One files row per remote object. Concurrent writers (sidecar + tmux
-  // server + agents) do SELECT-then-INSERT; without this index a lost race
-  // registers the same remote file twice and a later delete of either row
-  // trashes the remote while stranding the other.
+  // One files row per remote_path (migration 031 dropped remote_name from
+  // the key, #201). Concurrent writers (sidecar + tmux server + agents) do
+  // SELECT-then-INSERT; without this index a lost race registers the same
+  // object twice and a later delete of either row trashes the remote while
+  // stranding the other. remote_name is deliberately NOT part of the key:
+  // remote_path is derived purely from the node's own identity (section,
+  // subpath, filename), never from which remote is routed, so it alone
+  // already identifies "the same file" -- a row registered before any
+  // remote was configured (remote_name NULL) and the same file registered
+  // again after routing resolves must collide on this index so the upsert
+  // backfills remote_name onto the existing row instead of duplicating it.
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_files_unique_remote
-     ON files(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL`,
+     ON files(node_id, remote_path) WHERE remote_path IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,
     node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
