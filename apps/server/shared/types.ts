@@ -150,6 +150,8 @@ export const SessionRow = z.object({
   state: z.enum(SESSION_STATES),
   handoff_path: z.union([z.string(), z.null()]),
   handoff_hash: z.union([z.string(), z.null()]),
+  name: z.string(),
+  name_is_custom: z.number(),
   created_at: z.string(),
   last_active_at: z.string(),
   closed_at: z.union([z.string(), z.null()]),

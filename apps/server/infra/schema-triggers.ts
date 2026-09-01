@@ -136,6 +136,8 @@ export const INDEX_OAUTH_CODES_HASH = `CREATE UNIQUE INDEX IF NOT EXISTS idx_oau
 // apps/server/domain/sessions.ts. node_id is nullable: interactive_chat
 // sessions have no anchor. state's terminal value is 'archived' -- a view
 // filter (domain/sessions.ts's autoArchiveClosedSessions), never a delete.
+// name/name_is_custom added by migration 028 -- see there for the
+// default-name / handoff-enrichment / rename model.
 export const DDL_SESSIONS = `CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY CHECK(length(id) = 26),
     node_id TEXT REFERENCES nodes(id) ON DELETE CASCADE,
@@ -147,6 +149,8 @@ export const DDL_SESSIONS = `CREATE TABLE IF NOT EXISTS sessions (
     state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived')),
     handoff_path TEXT,
     handoff_hash TEXT,
+    name TEXT NOT NULL DEFAULT '',
+    name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
     created_at DATETIME NOT NULL DEFAULT (datetime('now')),
     last_active_at DATETIME NOT NULL DEFAULT (datetime('now')),
     closed_at DATETIME

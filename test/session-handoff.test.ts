@@ -14,8 +14,14 @@ import {
   getResumeInfo,
   checkConversationResumable,
   claudeProjectSlug,
+  extractHandoffTitle,
 } from "../apps/server/domain/session-handoff.js";
-import { createSession, getSession, transitionSessionState } from "../apps/server/domain/sessions.js";
+import {
+  createSession,
+  getSession,
+  renameSession,
+  transitionSessionState,
+} from "../apps/server/domain/sessions.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
@@ -117,6 +123,78 @@ describe("writeHandoffAndSuspend", () => {
     assert.equal(second.session.state, "suspended");
     const onDisk = await readFile(join(mirrorRoot, second.handoffPath), "utf8");
     assert.equal(onDisk, "iteration 2");
+  });
+});
+
+describe("extractHandoffTitle", () => {
+  it("returns the first H1 heading, trimmed", () => {
+    assert.equal(extractHandoffTitle("# Fixed the sync bug\n\nDetails..."), "Fixed the sync bug");
+    assert.equal(extractHandoffTitle("#   Padded title  \n\nbody"), "Padded title");
+  });
+
+  it("finds an H1 that isn't the first line", () => {
+    assert.equal(extractHandoffTitle("Some preamble\n\n# The real title\n\nbody"), "The real title");
+  });
+
+  it("returns null when there is no H1 heading", () => {
+    assert.equal(extractHandoffTitle("Just plain text, no heading."), null);
+    assert.equal(extractHandoffTitle("## Only an H2\n\nbody"), null);
+    assert.equal(extractHandoffTitle(""), null);
+  });
+
+  it("caps an absurdly long heading", () => {
+    const long = "x".repeat(500);
+    const title = extractHandoffTitle(`# ${long}`);
+    assert.equal(title?.length, 200);
+  });
+});
+
+describe("writeHandoffAndSuspend: name enrichment from the handoff title", () => {
+  it("enriches the default name with the handoff's H1 title", async () => {
+    const session = await createSession(shared.db, "U1", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    assert.equal(session.name_is_custom, 0);
+
+    const { session: suspended } = await writeHandoffAndSuspend(
+      shared.db,
+      "U1",
+      { id: session.id, nodeId: shared.nodeId, mirrorRoot },
+      "# Migrated the sync engine\n\nDetails...",
+    );
+    assert.equal(suspended.name, "Migrated the sync engine");
+  });
+
+  it("leaves the name alone when the handoff has no H1 title", async () => {
+    const session = await createSession(shared.db, "U1", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    const { session: suspended } = await writeHandoffAndSuspend(
+      shared.db,
+      "U1",
+      { id: session.id, nodeId: shared.nodeId, mirrorRoot },
+      "no heading here",
+    );
+    assert.equal(suspended.name, session.name);
+  });
+
+  it("never overwrites a name the user has explicitly renamed", async () => {
+    const session = await createSession(shared.db, "U1", {
+      node_id: shared.nodeId,
+      session_type: "interactive_task",
+    });
+    const renamed = await renameSession(shared.db, "U1", session.id, "My custom title");
+    assert.equal(renamed.name_is_custom, 1);
+
+    const { session: suspended } = await writeHandoffAndSuspend(
+      shared.db,
+      "U1",
+      { id: session.id, nodeId: shared.nodeId, mirrorRoot },
+      "# Would-be enriched title\n\nbody",
+    );
+    assert.equal(suspended.name, "My custom title");
   });
 });
 

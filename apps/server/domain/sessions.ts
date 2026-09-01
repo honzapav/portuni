@@ -40,6 +40,17 @@ async function loadSession(db: Client, id: string): Promise<SessionRow | null> {
   return SessionRow.parse(res.rows[0]);
 }
 
+// Default session name -- spec ("Naming & UI"): "Default name `node · date`".
+// `node` is the anchor's name, or 'Chat' for the anchor-less
+// interactive_chat type. `createdAtIso` is truncated to its date part
+// (matches migration 028's SQL backfill exactly, so old and new rows are
+// indistinguishable). Exported so session-handoff.ts's suspend-time
+// enrichment can compare a session's current name against this to decide
+// whether the user has since renamed it (see name_is_custom).
+export function computeDefaultSessionName(nodeName: string | null, createdAtIso: string): string {
+  return `${nodeName ?? "Chat"} · ${createdAtIso.slice(0, 10)}`;
+}
+
 export async function createSession(
   db: Client,
   userId: string,
@@ -49,9 +60,16 @@ export async function createSession(
   const id = ulid();
   const now = new Date().toISOString();
 
+  let nodeName: string | null = null;
+  if (parsed.node_id !== null) {
+    const nodeRow = await db.execute({ sql: "SELECT name FROM nodes WHERE id = ?", args: [parsed.node_id] });
+    nodeName = nodeRow.rows.length > 0 ? String(nodeRow.rows[0].name) : null;
+  }
+  const name = computeDefaultSessionName(nodeName, now);
+
   await db.execute({
-    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, cli, profile_id, agent_session_id, state, created_at, last_active_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)`,
+    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, cli, profile_id, agent_session_id, state, name, created_at, last_active_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
     args: [
       id,
       parsed.node_id,
@@ -60,6 +78,7 @@ export async function createSession(
       parsed.cli ?? null,
       parsed.profile_id ?? null,
       parsed.agent_session_id ?? null,
+      name,
       now,
       now,
     ],
@@ -72,6 +91,35 @@ export async function createSession(
 
   const row = await loadSession(db, id);
   if (!row) throw new Error(`createSession: inserted row ${id} not found`);
+  return row;
+}
+
+// Rename a session -- spec: "always renamable". Marks name_is_custom so a
+// later suspend (session-handoff.ts's title enrichment) never overwrites a
+// deliberate human choice.
+export async function renameSession(
+  db: Client,
+  actorUserId: string,
+  sessionId: string,
+  name: string,
+): Promise<SessionRow> {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) throw new Error("renameSession: name must not be empty");
+  const existing = await loadSession(db, sessionId);
+  if (!existing) throw new Error(`renameSession: ${sessionId} not found`);
+
+  await db.execute({
+    sql: "UPDATE sessions SET name = ?, name_is_custom = 1 WHERE id = ?",
+    args: [trimmed, sessionId],
+  });
+
+  await writeAudit(db, actorUserId, "session_rename", "session", sessionId, {
+    from: existing.name,
+    to: trimmed,
+  });
+
+  const row = await loadSession(db, sessionId);
+  if (!row) throw new Error(`renameSession: row ${sessionId} disappeared after UPDATE`);
   return row;
 }
 
@@ -226,12 +274,31 @@ export async function getSessionScope(db: Client, sessionId: string): Promise<Se
   return res.rows.map((r) => SessionScopeRow.parse(r));
 }
 
+// "Write count" for the node-detail sessions row (spec, "Naming & UI": "Row
+// shows state, last activity, CLI + profile, write count") -- the size of
+// the session's write set (session_scope rows with writable=1), not a count
+// of write operations: no per-write audit trail keyed by session exists yet,
+// while the write set itself is already tracked here and is a reasonable,
+// honest proxy ("how much can/did this session write to").
+export async function getSessionWriteCount(db: Client, sessionId: string): Promise<number> {
+  const res = await db.execute({
+    sql: "SELECT COUNT(*) AS c FROM session_scope WHERE session_id = ? AND writable = 1",
+    args: [sessionId],
+  });
+  return Number(res.rows[0].c);
+}
+
 // --- Suspend (phase 2, "Lifecycle" / "Handoff") ---
 
 export interface SuspendSessionInput {
   handoffPath: string;
   handoffHash: string;
   agentSessionId?: string | null;
+  // Title extracted from the handoff content (session-handoff.ts's
+  // extractHandoffTitle). Spec: "enriched from the handoff title at
+  // suspend" -- applied only when the session hasn't been manually renamed
+  // (name_is_custom = 0); a custom name is never overwritten.
+  handoffTitle?: string | null;
 }
 
 // Unlike transitionSessionState (which treats a same-state call as a no-op),
@@ -254,12 +321,16 @@ export async function suspendSession(
   }
 
   const now = new Date().toISOString();
+  const enrichedName =
+    !existing.name_is_custom && input.handoffTitle && input.handoffTitle.trim().length > 0
+      ? input.handoffTitle.trim()
+      : existing.name;
   await db.execute({
     sql: `UPDATE sessions
              SET state = 'suspended', handoff_path = ?, handoff_hash = ?,
-                 agent_session_id = COALESCE(?, agent_session_id), last_active_at = ?
+                 agent_session_id = COALESCE(?, agent_session_id), last_active_at = ?, name = ?
            WHERE id = ?`,
-    args: [input.handoffPath, input.handoffHash, input.agentSessionId ?? null, now, sessionId],
+    args: [input.handoffPath, input.handoffHash, input.agentSessionId ?? null, now, enrichedName, sessionId],
   });
 
   await writeAudit(db, actorUserId, "session_suspend", "session", sessionId, {

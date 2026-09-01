@@ -25,6 +25,9 @@ export type {
   DirectoryGroup,
   AccountUser,
   UserAdmin,
+  SessionState,
+  SessionSummary,
+  SessionResumeInfo,
 } from "../../server/shared/api-types";
 
 // Request-only shape for PUT /nodes/:id/access -- not a server response, so

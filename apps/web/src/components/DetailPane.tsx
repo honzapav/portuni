@@ -92,6 +92,7 @@ import {
   TerminalSplitButton,
 } from "./DetailPane.files";
 import { AccessSection } from "./DetailPane.access";
+import { SessionsSection } from "./DetailPane.sessions";
 import { RequestAccessControl } from "./AccessRequests";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
@@ -102,7 +103,7 @@ import { RequestAccessControl } from "./AccessRequests";
 // for repeat visits during a single session.
 const SYNC_STATUS_CACHE = new Map<string, Map<string, SyncStatusFile>>();
 
-type DetailTab = "overview" | "events" | "files" | "connections" | "sharing";
+type DetailTab = "overview" | "events" | "files" | "connections" | "sessions" | "sharing";
 // Survives the DetailPane unmount that happens when the editor takes over
 // the right slot (Option C). Without this, closing a file remounts the
 // pane and resets the tab to "overview" -- the bug in ukol 9.
@@ -817,6 +818,13 @@ function DetailPaneBody({
           label="Propojení"
           count={node.edges.length}
         />
+        {node.type !== "organization" && (
+          <TabButton
+            active={tab === "sessions"}
+            onClick={() => setTab("sessions")}
+            label="Relace"
+          />
+        )}
         <TabButton
           active={tab === "sharing"}
           onClick={() => setTab("sharing")}
@@ -1136,6 +1144,14 @@ function DetailPaneBody({
               </div>
             )}
           </div>
+        )}
+
+        {tab === "sessions" && (
+          <SessionsSection
+            nodeId={node.id}
+            onOpenTerminal={openEmbeddedTerminal}
+            onOpenFile={onOpenFile}
+          />
         )}
 
         {tab === "sharing" && (

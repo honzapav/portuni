@@ -12,6 +12,9 @@ import {
   upsertSessionScopeRead,
   setSessionScopeWritable,
   getSessionScope,
+  getSessionWriteCount,
+  renameSession,
+  computeDefaultSessionName,
 } from "../apps/server/domain/sessions.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
 
@@ -63,6 +66,66 @@ describe("createSession / getSession / listSessions", () => {
 
     const all = await listSessions(db);
     assert.ok(all.length >= 3);
+  });
+});
+
+describe("computeDefaultSessionName", () => {
+  it("formats '<node name> · <date>' from an ISO timestamp", () => {
+    assert.equal(computeDefaultSessionName("Stan GWS", "2026-05-01T10:00:00.000Z"), "Stan GWS · 2026-05-01");
+  });
+
+  it("falls back to 'Chat' when there is no anchor node", () => {
+    assert.equal(computeDefaultSessionName(null, "2026-05-01T10:00:00.000Z"), "Chat · 2026-05-01");
+  });
+});
+
+describe("createSession: default name", () => {
+  it("names a new session '<node name> · <today>'", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    assert.equal(row.name, computeDefaultSessionName("Stan GWS", row.created_at));
+    assert.equal(row.name_is_custom, 0);
+  });
+
+  it("names an anchor-less interactive_chat session 'Chat · <today>'", async () => {
+    const { db } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: null, session_type: "interactive_chat" });
+    assert.equal(row.name, computeDefaultSessionName(null, row.created_at));
+  });
+});
+
+describe("renameSession", () => {
+  it("renames a session and marks name_is_custom", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    const renamed = await renameSession(db, "U1", row.id, "  My renamed session  ");
+    assert.equal(renamed.name, "My renamed session");
+    assert.equal(renamed.name_is_custom, 1);
+  });
+
+  it("rejects an empty (or whitespace-only) name", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await assert.rejects(renameSession(db, "U1", row.id, "   "), /must not be empty/);
+  });
+
+  it("throws for an unknown session id", async () => {
+    const { db } = await makeSharedDb();
+    await assert.rejects(renameSession(db, "U1", "nope", "x"), /not found/);
+  });
+});
+
+describe("getSessionWriteCount", () => {
+  it("counts only writable session_scope rows", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const session = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    assert.equal(await getSessionWriteCount(db, session.id), 0);
+
+    await upsertSessionScopeRead(db, session.id, nodeId, "seed", null);
+    assert.equal(await getSessionWriteCount(db, session.id), 0, "readable but not yet writable");
+
+    await setSessionScopeWritable(db, session.id, nodeId);
+    assert.equal(await getSessionWriteCount(db, session.id), 1);
   });
 });
 

@@ -364,6 +364,40 @@ export type AccessRequest = {
   resolved_by: string | null;
 };
 
+// GET /nodes/:id/sessions -- node-detail sessions list (#192, "Naming &
+// UI"). One row per persistent session (apps/server/domain/sessions.ts),
+// enriched with what the row needs to render without a second round trip.
+export type SessionState = "running" | "suspended" | "closed" | "archived";
+
+export type SessionSummary = {
+  id: string;
+  node_id: string | null;
+  user_id: string;
+  session_type: "interactive_task" | "interactive_chat" | "headless" | "env";
+  cli: string | null;
+  profile_id: string | null;
+  state: SessionState;
+  name: string;
+  name_is_custom: boolean;
+  handoff_path: string | null;
+  write_count: number;
+  created_at: string;
+  last_active_at: string;
+  closed_at: string | null;
+};
+
+// GET /sessions/:id/resume-info -- drives the suspended row's "Nahodit:
+// pokračování vs předání" choice (spec, "Lifecycle"/"Resume"): whether the
+// underlying CLI conversation still exists (conversation-resume) versus
+// falling back to the handoff (handoff-resume), and whether the handoff on
+// disk has been edited since it was written at suspend.
+export type SessionResumeInfo = {
+  session_id: string;
+  handoff_path: string | null;
+  handoff_changed: boolean;
+  conversation_resumable: boolean;
+};
+
 // GET /auth/groups -- Google Workspace domain group directory, used by the
 // sharing picker. 501 { error: "google_mode_only" } in env auth mode.
 export type DirectoryGroup = {

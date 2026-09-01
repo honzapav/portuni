@@ -78,6 +78,7 @@ The detail pane on the right is editable in both Graph and Workspace views:
 - **Edges** — outgoing and incoming, with a `→` / `←` indicator. Click an edge target to navigate to it (updates `?node=`).
 - **Files** — list of tracked files with `remote_path` and the derived `local_path` for this device. Open in Finder, copy path, or delete (confirm-first).
 - **Events** — recent timeline; resolve / supersede inline.
+- **Relace (Sessions)** — persistent sessions anchored to this node (`GET /nodes/:id/sessions`), newest-active first: state (running/suspended/closed/archived, archived hidden behind a "Zobrazit archivované" filter), last activity, CLI + profile, and write count (size of the session's write scope). Name defaults to `<node> · <date>` and is enriched from the handoff's title at suspend, but is always renamable inline. A suspended row shows whether the underlying CLI conversation is still resumable or will fall back to the handoff, and links to the handoff file when one exists.
 
 Every mutating action calls back through `onMutate` which refetches the graph and the node detail, so the rest of the UI stays consistent.
 

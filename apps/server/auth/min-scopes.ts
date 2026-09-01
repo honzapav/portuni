@@ -210,6 +210,15 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname.startsWith("/tools/") && m === "PATCH") return "write";
   if (pathname.startsWith("/tools/") && m === "DELETE") return "admin";
 
+  // --- Sessions (#192) --- List follows the anchor node's own read gate
+  // (handleListNodeSessions additionally filters by nodeVisibleTo); the
+  // single-session mutating/resume-info routes are further scoped to the
+  // caller's own sessions inside the handler (apps/server/api/sessions.ts).
+  if (/^\/nodes\/[^/]+\/sessions$/.test(pathname) && m === "GET") return "read";
+  if (/^\/sessions\/[^/]+$/.test(pathname) && m === "PATCH") return "write";
+  if (/^\/sessions\/[^/]+\/state$/.test(pathname) && m === "POST") return "write";
+  if (/^\/sessions\/[^/]+\/resume-info$/.test(pathname) && m === "GET") return "read";
+
   // --- Fail-closed: unknown future routes require admin ---
   return "admin";
 }

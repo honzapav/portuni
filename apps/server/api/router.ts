@@ -96,6 +96,12 @@ import {
   handleUpdateEvent,
 } from "./events.js";
 import { routeSyncDrive } from "./sync-drive.js";
+import {
+  handleGetSessionResumeInfo,
+  handleListNodeSessions,
+  handleRenameSession,
+  handleTransitionSessionState,
+} from "./sessions.js";
 
 // A sub-router takes the request and returns true if it handled the route
 // (response written or in flight), false to fall through to the next group.
@@ -122,6 +128,7 @@ const SUB_ROUTERS: SubRouter[] = [
   routeEdges,
   routeEvents,
   routeAccessRequests,
+  routeSessions,
 ];
 
 // Returns true when the route was handled (response written or in flight).
@@ -550,6 +557,11 @@ async function routeNodes(
     await handleRequestNodeAccess(req, res, identity, decodeURIComponent(accessRequestMatch[1]));
     return true;
   }
+  const nodeSessionsMatch = pathname.match(/^\/nodes\/([^/]+)\/sessions$/);
+  if (nodeSessionsMatch && method === "GET") {
+    await handleListNodeSessions(req, res, identity, decodeURIComponent(nodeSessionsMatch[1]), url);
+    return true;
+  }
   const accessRequestsMatch = pathname.match(/^\/nodes\/([^/]+)\/access\/requests$/);
   if (accessRequestsMatch && method === "GET") {
     await handleListNodeAccessRequests(req, res, identity, decodeURIComponent(accessRequestsMatch[1]));
@@ -643,6 +655,36 @@ async function routeAccessRequests(
       decodeURIComponent(resolveMatch[1]),
       resolveMatch[2] as "approve" | "deny",
     );
+    return true;
+  }
+  return false;
+}
+
+// --- Sessions (node-detail sessions list, rename, state transitions).
+// /sessions/:id/state and /sessions/:id/resume-info MUST match before the
+// bare /sessions/:id PATCH handler for the same reason as /responsibilities'
+// assignments precedence -- they're longer paths under the same prefix. ---
+async function routeSessions(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  method: string,
+  identity: RequestIdentity,
+): Promise<boolean> {
+  const { pathname } = url;
+  const stateMatch = pathname.match(/^\/sessions\/([^/]+)\/state$/);
+  if (stateMatch && method === "POST") {
+    await handleTransitionSessionState(req, res, identity, decodeURIComponent(stateMatch[1]));
+    return true;
+  }
+  const resumeInfoMatch = pathname.match(/^\/sessions\/([^/]+)\/resume-info$/);
+  if (resumeInfoMatch && method === "GET") {
+    await handleGetSessionResumeInfo(req, res, identity, decodeURIComponent(resumeInfoMatch[1]));
+    return true;
+  }
+  const sessionMatch = pathname.match(/^\/sessions\/([^/]+)$/);
+  if (sessionMatch && method === "PATCH") {
+    await handleRenameSession(req, res, identity, decodeURIComponent(sessionMatch[1]));
     return true;
   }
   return false;

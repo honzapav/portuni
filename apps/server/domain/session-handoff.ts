@@ -68,8 +68,24 @@ export async function writeHandoffAndSuspend(
     handoffPath: relPath,
     handoffHash,
     agentSessionId,
+    handoffTitle: extractHandoffTitle(content),
   });
   return { session: row, handoffPath: relPath, handoffHash };
+}
+
+// Spec: "Default name `node · date`, enriched from the handoff's title at
+// suspend". Handoffs are free-form markdown; the only convention assumed is
+// a leading H1 (`# ...`) as the title, matching how the agent is prompted to
+// write one. No H1 -> null -> suspendSession leaves the existing name alone.
+// Capped so a runaway heading can't blow out the sessions list's row height.
+const MAX_HANDOFF_TITLE_LENGTH = 200;
+
+export function extractHandoffTitle(content: string): string | null {
+  const match = content.match(/^#\s+(.+)$/m);
+  if (!match) return null;
+  const title = match[1].trim();
+  if (title.length === 0) return null;
+  return title.slice(0, MAX_HANDOFF_TITLE_LENGTH);
 }
 
 // Claude Code's local conversation-transcript layout: one directory per

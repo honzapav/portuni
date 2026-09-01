@@ -17,6 +17,9 @@ import type {
   DirectoryGroup,
   AccountUser,
   UserAdmin,
+  SessionState,
+  SessionSummary,
+  SessionResumeInfo,
 } from "./types";
 import { apiFetch } from "./lib/backend-url";
 
@@ -133,6 +136,38 @@ export async function fetchNodeFileUrl(
   );
   await throwForStatus(res, "file-url");
   return res.json();
+}
+
+// Node-detail *persistent* sessions list (#192, apps/server/domain/
+// sessions.ts) -- distinct from lib/sessions.ts's ephemeral TerminalSession
+// (a browser-local PTY tab). Named with the Persistent* prefix throughout
+// this block so a call site pulling in both never has to disambiguate by
+// import path alone. Archived sessions are hidden unless includeArchived --
+// "closed/archived (browse; archived behind a filter)".
+export function fetchNodePersistentSessions(
+  id: string,
+  includeArchived = false,
+): Promise<{ sessions: SessionSummary[] }> {
+  const qs = includeArchived ? "?include_archived=1" : "";
+  return jsonRequest<{ sessions: SessionSummary[] }>(
+    "GET",
+    `/nodes/${encodeURIComponent(id)}/sessions${qs}`,
+  );
+}
+
+export function renamePersistentSession(id: string, name: string): Promise<SessionSummary> {
+  return jsonRequest<SessionSummary>("PATCH", `/sessions/${encodeURIComponent(id)}`, { name });
+}
+
+export function transitionPersistentSessionState(
+  id: string,
+  state: SessionState,
+): Promise<SessionSummary> {
+  return jsonRequest<SessionSummary>("POST", `/sessions/${encodeURIComponent(id)}/state`, { state });
+}
+
+export function fetchPersistentSessionResumeInfo(id: string): Promise<SessionResumeInfo> {
+  return jsonRequest<SessionResumeInfo>("GET", `/sessions/${encodeURIComponent(id)}/resume-info`);
 }
 
 export async function runNodeSync(id: string): Promise<SyncRunResponse> {

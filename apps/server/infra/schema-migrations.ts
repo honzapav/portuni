@@ -1259,6 +1259,26 @@ const MIGRATIONS: Migration[] = [
     },
     up: runMigration027,
   },
+
+  // Migration 028: sessions.name + name_is_custom (phase 2 of docs/superpowers/
+  // specs/2026-08-31-scope-sessions-redesign-design.md, "Naming & UI"). name
+  // is NOT NULL -- every session always has a display name -- so existing
+  // rows need a backfill matching domain/sessions.ts's
+  // computeDefaultSessionName exactly (node name + ' · ' + created_at's date
+  // part; 'Chat' for the anchor-less interactive_chat rows). name_is_custom
+  // tracks whether a human has renamed the session: 0 means suspend-time
+  // handoff-title enrichment (session-handoff.ts) is still allowed to
+  // overwrite name; a REST rename (domain/sessions.ts's renameSession) sets
+  // it to 1 so that enrichment never clobbers a deliberate choice.
+  {
+    id: "028_sessions_name",
+    isApplied: async (db) => {
+      const info = await db.execute("PRAGMA table_info(sessions)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      return cols.has("name") && cols.has("name_is_custom");
+    },
+    up: runMigration028,
+  },
 ];
 
 export async function runMigration024(db: Client): Promise<void> {
@@ -1283,6 +1303,33 @@ export async function runMigration027(db: Client): Promise<void> {
   await db.execute(INDEX_SESSIONS_STATE);
   await db.execute(DDL_SESSION_SCOPE);
   await db.execute(INDEX_SESSION_SCOPE_SESSION);
+}
+
+export async function runMigration028(db: Client): Promise<void> {
+  // Guarded (unlike the other ADD COLUMN steps here) because, unlike a
+  // fresh install where isApplied() already prevents a second call, this
+  // one is also called directly by tests exercising the up() function in
+  // isolation -- ALTER TABLE ADD COLUMN itself has no "IF NOT EXISTS" form.
+  const info = await db.execute("PRAGMA table_info(sessions)");
+  const cols = new Set(info.rows.map((r) => r.name as string));
+  if (cols.has("name") && cols.has("name_is_custom")) return;
+
+  await db.execute(
+    "ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT ''",
+  );
+  await db.execute(
+    "ALTER TABLE sessions ADD COLUMN name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1))",
+  );
+  // Backfill: same format as computeDefaultSessionName (apps/server/domain/
+  // sessions.ts) -- '<node name> · <created_at date>', or 'Chat · <date>'
+  // for the anchor-less interactive_chat rows.
+  await db.execute(
+    "UPDATE sessions SET name = 'Chat · ' || substr(created_at,1,10) WHERE node_id IS NULL",
+  );
+  await db.execute(
+    `UPDATE sessions SET name = (SELECT n.name FROM nodes n WHERE n.id = sessions.node_id) || ' · ' || substr(sessions.created_at,1,10)
+     WHERE node_id IS NOT NULL`,
+  );
 }
 
 export async function runMigrations(db: Client): Promise<void> {
