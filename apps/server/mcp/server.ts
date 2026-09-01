@@ -4,7 +4,7 @@
 // transport layer calls).
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { SessionScope, parseScopeMode } from "./scope.js";
+import { SessionScope, deriveSessionType } from "./scope.js";
 import { registerResources } from "./resources/index.js";
 import { registerScopeTools } from "./tools/scope.js";
 import { registerNodeTools } from "./tools/nodes.js";
@@ -125,10 +125,16 @@ function registerSetupDriveRemotePrompt(server: McpServer): void {
   );
 }
 
+// `homeNodeId` is the ?home_node_id query param off the connection URL, when
+// present (parsed by the transport before this is called). It feeds
+// deriveSessionType so a headless-flagged device token without it can be
+// refused at seed time by the caller (transport.ts) before a server/scope
+// pair is even built for it.
 export function createMcpServer(
   identity: RequestIdentity,
+  homeNodeId: string | null = null,
 ): { server: McpServer; scope: SessionScope } {
-  const scope = new SessionScope(parseScopeMode(process.env.PORTUNI_SCOPE_MODE));
+  const scope = new SessionScope(deriveSessionType(identity, homeNodeId));
   const reconciler = createScopeReconciler({ userId: identity.userId, scope });
   scope.onAdd((nodeId) => reconciler.schedule(nodeId));
   const ctx: SessionCtx = { scope, identity, reconciler };

@@ -1,6 +1,7 @@
-// Regression tests for the post-review scope fixes:
-//   - decideGlobalQuery: strict refuses, balanced first-time refuses,
-//     permissive auto-allows.
+// Regression tests for the scope-decision helpers:
+//   - decideGlobalQuery: always elicits (the strict/balanced/permissive
+//     switch is gone; see docs/superpowers/specs/
+//     2026-08-31-scope-sessions-redesign-design.md).
 //   - violatesHardFloor matches what decideRead's hard-floor branch checks.
 //   - guardNodeRead: returns elicit/allow with audit + auto-add.
 //   - loadNodeScopeMeta: pulls visibility / created_by / scope_sensitive.
@@ -25,20 +26,8 @@ async function freshDb() {
 }
 
 describe("decideGlobalQuery", () => {
-  it("strict always elicits", () => {
-    const s = new SessionScope("strict");
-    s.add("X");
-    assert.equal(decideGlobalQuery(s).kind, "elicit");
-  });
-  it("balanced elicits first time, allows after globalQuerySeen flips", () => {
-    const s = new SessionScope("balanced");
-    assert.equal(decideGlobalQuery(s).kind, "elicit");
-    s.globalQuerySeen = true;
-    assert.equal(decideGlobalQuery(s).kind, "allow");
-  });
-  it("permissive auto-allows", () => {
-    const s = new SessionScope("permissive");
-    assert.equal(decideGlobalQuery(s).kind, "allow");
+  it("always elicits", () => {
+    assert.equal(decideGlobalQuery().kind, "elicit");
   });
 });
 
@@ -116,44 +105,33 @@ describe("loadNodeScopeMeta", () => {
 describe("guardNodeRead", () => {
   it("returns not_found for missing node", async () => {
     const db = await freshDb();
-    const scope = new SessionScope("strict");
-    let audited = 0;
-    const r = await guardNodeRead(db, scope, "MISSING", "U1", async () => {
-      audited++;
-    });
+    const scope = new SessionScope("interactive_task");
+    const r = await guardNodeRead(db, scope, "MISSING", "U1");
     assert.equal(r.kind, "not_found");
-    assert.equal(audited, 0);
   });
 
-  it("auto-adds and audits the new in-scope node on allow", async () => {
+  it("allow for a node already in scope", async () => {
     const db = await freshDb();
     await db.execute({
       sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
       args: ["N1", "project", "P", null, "U1", "team", null],
     });
-    const scope = new SessionScope("permissive");
-    let audited = 0;
-    const r = await guardNodeRead(db, scope, "N1", "U1", async () => {
-      audited++;
-    });
+    const scope = new SessionScope("interactive_task");
+    scope.add("N1"); // already in scope: allow without an elicit round-trip
+    const r = await guardNodeRead(db, scope, "N1", "U1");
     assert.equal(r.kind, "allow");
     assert.equal(scope.has("N1"), true);
-    assert.equal(audited, 1);
   });
 
-  it("elicits in strict mode for out-of-scope node", async () => {
+  it("elicits for an out-of-scope node (every session type is strict now)", async () => {
     const db = await freshDb();
     await db.execute({
       sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
       args: ["N1", "project", "P", null, "U1", "team", null],
     });
-    const scope = new SessionScope("strict");
-    let audited = 0;
-    const r = await guardNodeRead(db, scope, "N1", "U1", async () => {
-      audited++;
-    });
+    const scope = new SessionScope("interactive_task");
+    const r = await guardNodeRead(db, scope, "N1", "U1");
     assert.equal(r.kind, "elicit");
-    assert.equal(audited, 0);
     assert.equal(scope.has("N1"), false);
   });
 });

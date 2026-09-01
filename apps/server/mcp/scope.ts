@@ -9,13 +9,41 @@
 import type { Client } from "@libsql/client";
 import { nodeVisibleTo, filterVisibleNodeIds, type GroupIdentityView } from "../auth/node-access.js";
 import { nodeNeighbourIds } from "../domain/queries/neighbours.js";
+import type { RequestIdentity } from "../auth/request-identity.js";
 
-export type ScopeMode = "strict" | "balanced" | "permissive";
+// Session type: derived by the server from the authentication path, never
+// self-declared by the client/agent. See
+// docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md
+// ("Concepts" -- session types table).
+//
+//   interactive_task  -- connection carries ?home_node_id (desktop-spawned
+//                         terminal, mirror .mcp.json): anchor = task node.
+//   interactive_chat  -- identity.via === "oauth_grant" (connector: claude.ai,
+//                         Claude Desktop chat, Claude Code as connector):
+//                         no anchor, read scope = everything permissions allow.
+//   headless          -- device token minted with the headless flag
+//                         (admin-granted credential): anchor required,
+//                         connection without home_node_id is refused.
+//   env               -- solo/loopback auth (identity.via === "env"). Out of
+//                         scope for this redesign; keeps its current
+//                         behavior. Still gets a session_type value so
+//                         session_init/session_log/audit payloads have one
+//                         field for every session, never a self-declared mode.
+export type SessionType = "interactive_task" | "interactive_chat" | "headless" | "env";
 
-export function parseScopeMode(value: string | undefined | null): ScopeMode {
-  const v = (value ?? "").trim().toLowerCase();
-  if (v === "strict" || v === "balanced" || v === "permissive") return v;
-  return "strict";
+// Pure derivation, no side effects. Order matters: oauth_grant and env are
+// unambiguous from identity.via; headless requires the device-token flag;
+// anything else (plain device_token, session_jwt) defaults to
+// interactive_task, matching the historical fallback where a session without
+// a recognized home node still works with session_init as manual seeding.
+export function deriveSessionType(
+  identity: Pick<RequestIdentity, "via" | "headless">,
+  _homeNodeId: string | null,
+): SessionType {
+  if (identity.via === "env") return "env";
+  if (identity.via === "oauth_grant") return "interactive_chat";
+  if (identity.headless) return "headless";
+  return "interactive_task";
 }
 
 export type ExpansionTrigger = "user" | "agent" | "traversal" | "init";
@@ -42,10 +70,6 @@ export interface ScopeRequestDecision {
 export class SessionScope {
   private readonly nodes = new Set<string>();
   private readonly history: ExpansionRecord[] = [];
-  // Nodes the agent has tried to reach this session, used by `balanced` mode
-  // to allow the second agent-initiated read of a node it has already asked
-  // about. (Only nodes that were *added* via expansion populate this.)
-  private readonly seenAgentExpansion = new Set<string>();
   // Nodes granted their REAL mirror on disk at terminal spawn (home + depth-1,
   // the stable seed set). The seatbelt read-allows exactly this set, so read
   // tools return their real path and the reconciler must NOT stage them.
@@ -54,15 +78,11 @@ export class SessionScope {
   private readonly addListeners: ((nodeId: string) => void)[] = [];
 
   homeNodeId: string | null = null;
-  readonly mode: ScopeMode;
+  readonly sessionType: SessionType;
   readonly createdAt: string;
-  // Tracks whether *any* global query has already been seen this session.
-  // balanced mode uses this to elicit only on the first global query and
-  // pass silently afterwards. strict always elicits; permissive auto-allows.
-  globalQuerySeen = false;
 
-  constructor(mode: ScopeMode) {
-    this.mode = mode;
+  constructor(sessionType: SessionType) {
+    this.sessionType = sessionType;
     this.createdAt = new Date().toISOString();
   }
 
@@ -120,13 +140,6 @@ export class SessionScope {
 
   recordExpansion(record: ExpansionRecord): void {
     this.history.push(record);
-    if (record.triggered_by === "agent") {
-      for (const id of record.node_ids) this.seenAgentExpansion.add(id);
-    }
-  }
-
-  hasSeenAgentExpansion(nodeId: string): boolean {
-    return this.seenAgentExpansion.has(nodeId);
   }
 }
 
@@ -167,9 +180,12 @@ export async function seedScopeFromHome(
   return [homeNodeId, ...neighborIds];
 }
 
-// Decide whether a single-target read should be served. Hard floors and the
-// configured scope mode determine the outcome. Caller is responsible for
-// auditing on `allow` and surfacing the elicitation prompt on `elicit`.
+// Decide whether a single-target read should be served. Hard floors always
+// elicit; anything else out of scope elicits too (the strict/balanced/
+// permissive switch is gone -- strict is the model now; session-type-aware
+// nuance, e.g. headless deferred review, lands in a later phase). Caller is
+// responsible for auditing on `allow` and surfacing the elicitation prompt
+// on `elicit`.
 //
 // `nodeMeta` is a small bag with the bits of the target node that gate the
 // hard floors (visibility + meta.scope_sensitive). Caller looks them up.
@@ -190,7 +206,7 @@ export function decideRead(
   }
 
   // Hard floors: visibility=private created by someone else, or
-  // meta.scope_sensitive=true. These elicit regardless of mode.
+  // meta.scope_sensitive=true. These always elicit.
   if (
     nodeMeta.scopeSensitive ||
     (nodeMeta.visibility === "private" &&
@@ -205,27 +221,12 @@ export function decideRead(
     };
   }
 
-  switch (scope.mode) {
-    case "strict":
-      return {
-        kind: "elicit",
-        message:
-          `Node ${nodeId} is outside the session scope. Ask the user to ` +
-          `confirm, then call portuni_expand_scope with reason 'user-confirmed-in-chat'.`,
-      };
-    case "balanced":
-      if (scope.hasSeenAgentExpansion(nodeId)) {
-        return { kind: "allow" };
-      }
-      return {
-        kind: "elicit",
-        message:
-          `First agent-initiated reach for node ${nodeId} this session. ` +
-          `Ask the user to confirm, then call portuni_expand_scope.`,
-      };
-    case "permissive":
-      return { kind: "allow" };
-  }
+  return {
+    kind: "elicit",
+    message:
+      `Node ${nodeId} is outside the session scope. Ask the user to ` +
+      `confirm, then call portuni_expand_scope with reason 'user-confirmed-in-chat'.`,
+  };
 }
 
 // Build the structured-error JSON returned to MCP clients on out-of-scope
@@ -307,22 +308,20 @@ export type ReadGuardOutcome =
   | { kind: "elicit"; error: ReturnType<typeof scopeExpansionError> }
   | { kind: "not_found" };
 
-// One-shot scope check: load meta, run decideRead, on allow auto-add to
-// scope (idempotent) and audit the implicit pass-through expansion if the
-// node was newly added.
-//
-// auditFn is the audit-writer to use. Pass logAudit so this module stays
-// independent of the audit module's import cycle.
+// One-shot scope check: load meta, run decideRead. decideRead only ever
+// returns "allow" for a node already in the scope set (out-of-scope reads
+// always elicit now that the strict/balanced/permissive switch is gone), so
+// there is nothing left to auto-add or audit here on the allow path -- that
+// pass-through-expansion behavior was specific to balanced/permissive.
 //
 // identity is optional for backwards compatibility with callers that only
-// need the classic scope-mode gate. When provided, a group-visibility check
+// need the classic scope gate. When provided, a group-visibility check
 // runs FIRST (before scope): non-members see not_found, never an elicit.
 export async function guardNodeRead(
   db: Client,
   scope: SessionScope,
   nodeId: string,
   sessionUserId: string,
-  auditFn: (action: string, targetId: string, detail: Record<string, unknown>) => Promise<void>,
   identity?: GroupIdentityView,
 ): Promise<ReadGuardOutcome> {
   const meta = await loadNodeScopeMeta(db, nodeId);
@@ -352,50 +351,26 @@ export async function guardNodeRead(
     };
   }
 
-  if (scope.add(nodeId)) {
-    scope.recordExpansion({
-      at: new Date().toISOString(),
-      node_ids: [nodeId],
-      reason: "auto-allow on read (mode=" + scope.mode + ")",
-      triggered_by: "agent",
-    });
-    await auditFn("expand_scope", nodeId, {
-      node_ids: [nodeId],
-      reason: "auto-allow on read",
-      triggered_by: "agent",
-      mode: scope.mode,
-    });
-  }
   return { kind: "allow" };
 }
 
-// Mode-gated decision for global queries (list_nodes(scope=global),
-// list_events without node_id filter, list_files without node_id filter,
-// search). Strict always refuses; balanced refuses first time, allows after
-// any prior global query in the session; permissive auto-allows + audits.
+// Decision for global queries (list_nodes(scope=global), list_events without
+// node_id filter, list_files without node_id filter, search). Always elicits
+// -- the strict/balanced/permissive switch is gone; permission-only
+// discovery (search as ingestion vs. discovery) is a later phase, see
+// docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md
+// ("Search is discovery, not ingestion").
 export interface GlobalQueryGuard {
   kind: "allow" | "elicit";
   message?: string;
 }
 
-export function decideGlobalQuery(scope: SessionScope): GlobalQueryGuard {
-  switch (scope.mode) {
-    case "strict":
-      return {
-        kind: "elicit",
-        message:
-          "Global listing is gated in strict scope mode. Ask the user to confirm the broad query, then call portuni_expand_scope with reason 'user-confirmed-in-chat' or pass scope='global' under PORTUNI_SCOPE_MODE=permissive.",
-      };
-    case "balanced":
-      if (scope.globalQuerySeen) return { kind: "allow" };
-      return {
-        kind: "elicit",
-        message:
-          "First global listing this session. Ask the user to confirm; subsequent global queries will pass silently.",
-      };
-    case "permissive":
-      return { kind: "allow" };
-  }
+export function decideGlobalQuery(): GlobalQueryGuard {
+  return {
+    kind: "elicit",
+    message:
+      "Global listing requires explicit confirmation. Ask the user to confirm the broad query, then call portuni_expand_scope with reason 'user-confirmed-in-chat'.",
+  };
 }
 
 // Run a hard-floor check independently of any scope membership. Used by

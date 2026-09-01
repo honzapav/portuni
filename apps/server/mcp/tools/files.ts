@@ -52,16 +52,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
     },
     async (args) => {
       const db = getDb();
-      const guard = await guardNodeRead(
-        db,
-        scope,
-        args.node_id,
-        ctx.identity.userId,
-        async (action, targetId, detail) => {
-          await logAudit(ctx.identity.userId, action, "scope", targetId, detail);
-        },
-        ctx.identity,
-      );
+      const guard = await guardNodeRead(db, scope, args.node_id, ctx.identity.userId, ctx.identity);
       if (guard.kind === "not_found") {
         return { content: [{ type: "text" as const, text: "Node not found" }], isError: true };
       }
@@ -78,7 +69,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_search_files",
-    "Search file CONTENTS across Portuni-tracked files, using the configured remote(s)' own full-text search (Google Drive `fullText contains`; text grep on fs remotes). Only files registered with Portuni are returned, and results are limited to nodes the caller can see. With node_id the search is restricted to that node (which must be in scope); without node_id it is a global query -- mode-gated like portuni_list_files and, outside permissive mode, restricted to the session scope set. Each hit carries node_id + path: open it with portuni_read_file(node_id, path). Drive matches whole words/phrases in indexed content (docs, PDFs, text); it is not a substring or regex search.",
+    "Search file CONTENTS across Portuni-tracked files, using the configured remote(s)' own full-text search (Google Drive `fullText contains`; text grep on fs remotes). Only files registered with Portuni are returned, and results are limited to nodes the caller can see. With node_id the search is restricted to that node (which must be in scope); without node_id it is a global query -- gated like portuni_list_files and restricted to the session scope set. Each hit carries node_id + path: open it with portuni_read_file(node_id, path). Drive matches whole words/phrases in indexed content (docs, PDFs, text); it is not a substring or regex search.",
     {
       query: z.string().min(1).describe("Words or a phrase to find in file contents"),
       node_id: z.string().optional().describe("Restrict to one node"),
@@ -100,11 +91,10 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
       );
       if (gate.kind === "error") return gate.response;
 
-      // Without a node filter and outside permissive mode, restrict to the
-      // in-memory scope set so unrelated nodes are never surfaced (same rule
-      // as portuni_list_files).
+      // Without a node filter, restrict to the in-memory scope set so
+      // unrelated nodes are never surfaced (same rule as portuni_list_files).
       let nodeIds: string[] | null = null;
-      if (args.node_id === undefined && scope.mode !== "permissive") {
+      if (args.node_id === undefined) {
         nodeIds = scope.list();
         if (nodeIds.length === 0) {
           return { content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }] };
@@ -243,19 +233,17 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         conds.push("f.node_id = ?");
         params.push(args.node_id);
       } else {
-        // No node filter: when not yet permissive-mode auto-allowed, restrict
-        // to the in-memory scope set so unrelated nodes aren't surfaced.
+        // No node filter: restrict to the in-memory scope set so unrelated
+        // nodes aren't surfaced.
         const inScope = scope.list();
-        if (scope.mode !== "permissive") {
-          if (inScope.length === 0) {
-            return {
-              content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }],
-            };
-          }
-          const placeholders = inScope.map(() => "?").join(",");
-          conds.push(`f.node_id IN (${placeholders})`);
-          params.push(...inScope);
+        if (inScope.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }],
+          };
         }
+        const placeholders = inScope.map(() => "?").join(",");
+        conds.push(`f.node_id IN (${placeholders})`);
+        params.push(...inScope);
       }
       if (args.status !== undefined) {
         conds.push("f.status = ?");

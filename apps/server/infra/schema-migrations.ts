@@ -1211,6 +1211,28 @@ const MIGRATIONS: Migration[] = [
     },
     up: runMigration025,
   },
+
+  // Migration 026: device_tokens.headless -- an admin-granted credential for
+  // unattended/RALPH-style sessions (docs/superpowers/specs/
+  // 2026-08-31-scope-sessions-redesign-design.md, phase 1). Session type
+  // `headless` is derived from this flag; a headless-flagged token connecting
+  // without ?home_node_id is refused at seed time (apps/server/mcp/
+  // transport.ts). Constant DEFAULT 0 + CHECK is accepted directly on ADD
+  // COLUMN (same shape as migration 020's access_mode), so no nullable-then-
+  // backfill dance is needed.
+  {
+    id: "026_device_tokens_headless",
+    isApplied: async (db) => {
+      const info = await db.execute("PRAGMA table_info(device_tokens)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      return cols.has("headless");
+    },
+    up: async (db) => {
+      await db.execute(
+        "ALTER TABLE device_tokens ADD COLUMN headless INTEGER NOT NULL DEFAULT 0 CHECK(headless IN (0,1))",
+      );
+    },
+  },
 ];
 
 export async function runMigration024(db: Client): Promise<void> {

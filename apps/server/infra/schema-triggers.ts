@@ -39,7 +39,8 @@ export const DDL_DEVICE_TOKENS = `CREATE TABLE IF NOT EXISTS device_tokens (
     created_at DATETIME NOT NULL DEFAULT (datetime('now')),
     expires_at DATETIME,
     revoked_at DATETIME,
-    last_used_at DATETIME
+    last_used_at DATETIME,
+    headless INTEGER NOT NULL DEFAULT 0 CHECK(headless IN (0,1))
   )`;
 
 export const INDEX_DEVICE_TOKENS_USER = `CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_id)`;

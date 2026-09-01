@@ -153,7 +153,9 @@ async function connectTool(identity: RequestIdentity, scopeNodeIds: string[]) {
 
 describe("portuni_search_files (MCP)", () => {
   it("never returns a hit from a node the caller cannot see", async () => {
-    process.env.PORTUNI_SCOPE_MODE = "permissive";
+    // Global (no node_id) search always elicits now -- see "strict mode
+    // without node_id is gated as a global query" below -- so permission
+    // filtering is exercised per-node here instead.
     const restricted = await insertProject("Restricted", { accessGroup: "secret@x.com" });
     await seedTracked(shared.nodeId, "wip/open.md", "needle open\n");
     await seedTracked(restricted, "wip/hidden.md", "needle hidden\n");
@@ -166,17 +168,23 @@ describe("portuni_search_files (MCP)", () => {
       groupIds: [],
       via: "env",
     };
-    const { client } = await connectTool(outsider, []);
+    const { client } = await connectTool(outsider, [shared.nodeId, restricted]);
     try {
-      const r = (await client.callTool({
+      const open = (await client.callTool({
         name: "portuni_search_files",
-        arguments: { query: "needle" },
+        arguments: { query: "needle", node_id: shared.nodeId },
       })) as { content: Array<{ text: string }>; isError?: boolean };
-      assert.notEqual(r.isError, true, r.content[0]?.text);
-      const hits = JSON.parse(r.content[0].text) as Array<{ node_id: string; filename: string; path: string }>;
+      assert.notEqual(open.isError, true, open.content[0]?.text);
+      const hits = JSON.parse(open.content[0].text) as Array<{ node_id: string; filename: string; path: string }>;
       assert.deepEqual(hits.map((h) => h.node_id), [shared.nodeId]);
       assert.equal(hits[0].path, "wip/open.md");
-      assert.ok(!r.content[0].text.includes("hidden"), "restricted content leaked");
+
+      const hidden = (await client.callTool({
+        name: "portuni_search_files",
+        arguments: { query: "needle", node_id: restricted },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.equal(hidden.isError, true);
+      assert.ok(!JSON.stringify(hidden.content).includes("hidden"), "restricted content leaked");
     } finally {
       await client.close();
     }

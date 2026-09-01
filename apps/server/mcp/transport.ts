@@ -99,7 +99,28 @@ export function createMcpTransport(): McpTransport {
         }
       };
 
-      const { server, scope } = createMcpServer(identity);
+      // Parsed here (before createMcpServer) because session_type
+      // derivation needs it: a headless-flagged device token is refused
+      // below when it's absent, and interactive_task recognition depends
+      // on its presence.
+      const homeNodeId = parseHomeNodeIdFromUrl(req.url);
+
+      // Headless connections without a task anchor are refused at seed
+      // time — a headless session has no elicitation channel, so it must
+      // arrive with its home node already known (see the session-type
+      // table in docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md).
+      if (identity.headless && !homeNodeId) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: "headless_session_requires_home_node",
+            reason: "Headless device tokens must connect with ?home_node_id on the MCP URL.",
+          }),
+        );
+        return;
+      }
+
+      const { server, scope } = createMcpServer(identity, homeNodeId);
 
       // Auto-seed scope from `?home_node_id=...` on the connection URL.
       // This is what `portuni_mirror` writes into per-mirror configs so
@@ -114,7 +135,6 @@ export function createMcpTransport(): McpTransport {
       // diagnostic dead-end. A 503 with the underlying reason lets the
       // MCP client retry and the user see what's actually wrong.
       // Mirrors the pre-flight DB ping pattern in src/desktop.ts.
-      const homeNodeId = parseHomeNodeIdFromUrl(req.url);
       if (homeNodeId) {
         try {
           await autoSeedFromHome({

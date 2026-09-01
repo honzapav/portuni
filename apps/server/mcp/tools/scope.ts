@@ -55,7 +55,7 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
         // cwd outside any mirror: scope stays empty.
         await logAudit(ctx.identity.userId, "session_init", "scope", "session", {
           home: null,
-          mode: scope.mode,
+          session_type: scope.sessionType,
         });
         return {
           content: [
@@ -63,7 +63,7 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
               type: "text" as const,
               text: JSON.stringify({
                 home_node_id: null,
-                mode: scope.mode,
+                session_type: scope.sessionType,
                 scope_size: scope.size(),
                 note: "No home node — every read requires explicit scope expansion.",
               }),
@@ -97,7 +97,7 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
       await logAudit(ctx.identity.userId, "session_init", "scope", homeId, {
         home: homeId,
         seeded: seedIds,
-        mode: scope.mode,
+        session_type: scope.sessionType,
       });
 
       return {
@@ -108,7 +108,7 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
               home_node_id: homeId,
               home_node_name: exists.rows[0].name,
               home_node_type: exists.rows[0].type,
-              mode: scope.mode,
+              session_type: scope.sessionType,
               scope_size: scope.size(),
               seeded: seedIds,
             }),
@@ -239,7 +239,7 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_session_log",
-    "Return the current read-scope set, scope mode, and ordered expansion history for this MCP session. Use to inspect what the agent has looked at in this session.",
+    "Return the current read-scope set, session type, and ordered expansion history for this MCP session. Use to inspect what the agent has looked at in this session.",
     {},
     async () => {
       return {
@@ -248,7 +248,7 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
             type: "text" as const,
             text: JSON.stringify({
               home_node_id: scope.homeNodeId,
-              mode: scope.mode,
+              session_type: scope.sessionType,
               created_at: scope.createdAt,
               scope_size: scope.size(),
               scope: scope.list(),

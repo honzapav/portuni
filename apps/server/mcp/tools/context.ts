@@ -515,9 +515,7 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
 
       // Scope gate on the start node. Passing identity enables group-
       // visibility check: non-members get not_found, never an elicit.
-      const guard = await guardNodeRead(db, scope, args.node_id, ctx.identity.userId, async (action, targetId, detail) => {
-        await logAudit(ctx.identity.userId, action, "scope", targetId, detail);
-      }, ctx.identity);
+      const guard = await guardNodeRead(db, scope, args.node_id, ctx.identity.userId, ctx.identity);
       if (guard.kind === "not_found") {
         return {
           content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
@@ -535,9 +533,9 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
 
       // Depth gate. depth=0/1 is the natural "this node + its immediate
       // neighbors" read; depth>=2 walks out beyond what session_init seeded
-      // and is treated as breadth expansion. strict/balanced refuse without
-      // explicit confirmation; permissive auto-allows + audits.
-      if (args.depth >= 2 && scope.mode !== "permissive") {
+      // and is treated as breadth expansion, always refused without
+      // explicit confirmation.
+      if (args.depth >= 2) {
         return {
           content: [
             {
@@ -547,7 +545,7 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
                 node_id: args.node_id,
                 hint:
                   `Traversal depth ${args.depth} from ${args.node_id} reaches beyond the session scope's depth-1 horizon. ` +
-                  "Ask the user to confirm the breadth, then either call portuni_get_context with depth=1 (and walk further with explicit portuni_expand_scope), or run under PORTUNI_SCOPE_MODE=permissive.",
+                  "Ask the user to confirm the breadth, then call portuni_get_context with depth=1 (and walk further with explicit portuni_expand_scope).",
               }),
             },
           ],
@@ -559,8 +557,7 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
         const payload = await buildContextPayload(db, args.node_id, args.depth, ctx.identity.userId, ctx.identity);
         // depth=0/1 reads everything within one hop of an in-scope start
         // node, which is consistent with the "home + depth-1" seed rule.
-        // permissive mode also auto-adds depth>=2 results. We never auto-add
-        // beyond what the gate above lets through.
+        // We never auto-add beyond what the gate above lets through.
         const added: string[] = [];
         for (const n of [payload.root, ...payload.connected]) {
           if (scope.add(n.id)) added.push(n.id);
@@ -578,7 +575,7 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
             triggered_by: "traversal",
             start: args.node_id,
             depth: args.depth,
-            mode: scope.mode,
+            session_type: scope.sessionType,
           });
         }
 

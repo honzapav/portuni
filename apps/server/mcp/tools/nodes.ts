@@ -167,7 +167,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_list_nodes",
-    "List nodes from the Portuni knowledge graph, optionally filtered by type and/or status. Default scope='session' returns only nodes already in the session scope set; scope='global' returns the full graph and is mode-gated. Empty session-scope results mean the agent should call portuni_expand_scope or ask the user. See portuni://scope-rules.",
+    "List nodes from the Portuni knowledge graph, optionally filtered by type and/or status. Default scope='session' returns only nodes already in the session scope set; scope='global' returns the full graph and requires explicit confirmation. Empty session-scope results mean the agent should call portuni_expand_scope or ask the user. See portuni://scope-rules.",
     {
       type: z.enum(NODE_TYPES).optional().describe("Filter by node type"),
       status: z.enum(NODE_STATUSES).optional().describe("Filter by status"),
@@ -175,7 +175,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
         .enum(["session", "global"])
         .optional()
         .default("session")
-        .describe("session (default): nodes already in the session scope set. global: full graph; subject to scope mode — see portuni://scope-rules."),
+        .describe("session (default): nodes already in the session scope set. global: full graph; requires explicit confirmation — see portuni://scope-rules."),
     },
     async (args) => {
       const db = getDb();
@@ -194,7 +194,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
 
       const inScope = scope.list();
       if (args.scope === "global") {
-        const guard = decideGlobalQuery(scope);
+        const guard = decideGlobalQuery();
         if (guard.kind === "elicit") {
           return {
             content: [
@@ -210,11 +210,10 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
             isError: true,
           };
         }
-        scope.globalQuerySeen = true;
         await logAudit(ctx.identity.userId, "scope_global_query", "scope", "list_nodes", {
           tool: "portuni_list_nodes",
           filters: { type: args.type ?? null, status: args.status ?? null },
-          mode: scope.mode,
+          session_type: scope.sessionType,
         });
       } else {
         if (inScope.length === 0) {

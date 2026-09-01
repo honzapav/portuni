@@ -279,20 +279,18 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
         conditions.push("e.node_id = ?");
         values.push(args.node_id);
       } else {
-        // No node filter: when not yet permissive-mode auto-allowed, restrict
-        // to the in-memory scope set so unrelated nodes aren't surfaced as
-        // a side channel through cross-cutting filters.
+        // No node filter: restrict to the in-memory scope set so unrelated
+        // nodes aren't surfaced as a side channel through cross-cutting
+        // filters.
         const inScope = scope.list();
-        if (scope.mode !== "permissive") {
-          if (inScope.length === 0) {
-            return {
-              content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }],
-            };
-          }
-          const placeholders = inScope.map(() => "?").join(",");
-          conditions.push(`e.node_id IN (${placeholders})`);
-          values.push(...inScope);
+        if (inScope.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }],
+          };
         }
+        const placeholders = inScope.map(() => "?").join(",");
+        conditions.push(`e.node_id IN (${placeholders})`);
+        values.push(...inScope);
       }
       if (args.type !== undefined) {
         conditions.push("e.type = ?");

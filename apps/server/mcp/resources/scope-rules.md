@@ -27,18 +27,29 @@ expanded only through user confirmation.
 If `cwd` is outside any mirror, the home node is null and the scope
 set starts empty. Every read then requires explicit expansion.
 
-## Scope modes
+## Session type
 
-Configured via `PORTUNI_SCOPE_MODE`. Default is `strict`.
+The server derives a `session_type` for every MCP session from the
+authentication path -- it is never self-declared by the client or
+agent:
 
-- **strict** (default): every out-of-scope read returns
-  `scope_expansion_required`. Global queries are always refused
-  (must scope explicitly).
-- **balanced**: out-of-scope reads return
-  `scope_expansion_required`. Global queries elicit on the first
-  call, then run once acknowledged.
-- **permissive**: out-of-scope reads are allowed; the access is
-  audited but not gated. Use only for one-off broad analysis.
+- **`interactive_task`**: the connection carries `?home_node_id`
+  (desktop-spawned terminal, mirror `.mcp.json`). Anchor = the task
+  node.
+- **`interactive_chat`**: a connector session (claude.ai, Claude
+  Desktop chat, Claude Code added as a connector). No anchor; the
+  read scope starts at whatever permissions allow.
+- **`headless`**: a device token minted with the `headless` flag (an
+  admin-granted credential for unattended/RALPH-style sessions). A
+  task anchor is required -- a headless connection without
+  `?home_node_id` is refused at seed time.
+- **`env`**: solo/loopback auth. Keeps its historical behavior; not
+  part of this model.
+
+Every out-of-scope read currently elicits regardless of session type
+-- there is no self-service bypass. `session_init` and `session_log`
+report the session's type; every scope-related audit entry carries it
+too.
 
 ## Refusal contract
 
@@ -96,17 +107,18 @@ Refusals are audited under `scope_hard_floor_refusal`.
   surface neighbouring metadata.
 - `portuni_get_context(node_id, depth)`: depth ≤ 1 with an in-scope
   start is allowed; depth ≥ 2 is treated as breadth expansion and
-  refused in strict/balanced. Use depth=1 then expand explicitly,
-  or run under `PORTUNI_SCOPE_MODE=permissive`.
+  always refused without explicit confirmation. Use depth=1 then
+  expand explicitly.
 - `portuni_list_nodes` / `portuni_list_events` / `portuni_list_files` /
   `portuni_search_files`: default to session-scope filtering. Pass
   `scope: "global"` (or omit `node_id` on list_events/list_files/
   search_files) only when the user asked for a broad listing or
-  search; that path is mode-gated and audited.
+  search; that path always requires explicit confirmation and is
+  audited.
 
 ## Inspection
 
-`portuni_session_log()` returns the current scope set, scope mode,
+`portuni_session_log()` returns the current scope set, session type,
 and ordered expansion history -- useful for the user
 ("what did the agent look at?") and for retrospective review of an
 autonomous run.

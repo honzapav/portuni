@@ -32,7 +32,7 @@ const RESOURCES: readonly ResourceDef[] = [
     file: "scope-rules.md",
     title: "Portuni read scope",
     description:
-      "Session scope set, refusal contract, expand_scope semantics, scope modes, hard-floor rules.",
+      "Session scope set, refusal contract, expand_scope semantics, session types, hard-floor rules.",
   },
   {
     name: "enums",

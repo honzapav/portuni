@@ -29,16 +29,7 @@ export async function guardListScope(
   identity?: GroupIdentityView,
 ): Promise<ListScopeGateResult> {
   if (nodeId !== undefined) {
-    const guard = await guardNodeRead(
-      db,
-      scope,
-      nodeId,
-      userId,
-      async (action, targetId, detail) => {
-        await logAudit(userId, action, "scope", targetId, detail);
-      },
-      identity,
-    );
+    const guard = await guardNodeRead(db, scope, nodeId, userId, identity);
     if (guard.kind === "not_found") {
       return {
         kind: "error",
@@ -60,7 +51,7 @@ export async function guardListScope(
     return { kind: "ok" };
   }
 
-  const g = decideGlobalQuery(scope);
+  const g = decideGlobalQuery();
   if (g.kind === "elicit") {
     return {
       kind: "error",
@@ -79,11 +70,10 @@ export async function guardListScope(
       },
     };
   }
-  scope.globalQuerySeen = true;
   await logAudit(userId, "scope_global_query", "scope", auditTarget, {
     tool: toolName,
     filters,
-    mode: scope.mode,
+    session_type: scope.sessionType,
   });
   return { kind: "ok" };
 }

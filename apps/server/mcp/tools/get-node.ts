@@ -7,7 +7,6 @@ import { getLocalMirror } from "../../domain/sync/local-db.js";
 import { deriveLocalPath, buildNodeRoot } from "../../domain/sync/remote-path.js";
 import { guardNodeRead, scopeExpansionError } from "../scope.js";
 import { readableMirrorRoot } from "../scope-reconciler.js";
-import { logAudit } from "../../infra/audit.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
@@ -91,9 +90,7 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
 
       // Scope gate via central helper. Passing identity enables group-
       // visibility check: non-members get not_found, never an elicit.
-      const guard = await guardNodeRead(db, scope, row.id, ctx.identity.userId, async (action, targetId, detail) => {
-        await logAudit(ctx.identity.userId, action, "scope", targetId, detail);
-      }, ctx.identity);
+      const guard = await guardNodeRead(db, scope, row.id, ctx.identity.userId, ctx.identity);
       if (guard.kind === "not_found") {
         return {
           content: [{ type: "text" as const, text: "Node not found" }],
