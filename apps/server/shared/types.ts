@@ -135,3 +135,36 @@ export type DataSourceRow = z.infer<typeof DataSourceRow>;
 
 export const ToolRow = DataSourceRow; // same columns, aliased for intent
 export type ToolRow = z.infer<typeof ToolRow>;
+
+export const SESSION_STATES = ["running", "suspended", "closed", "archived"] as const;
+export type SessionState = (typeof SESSION_STATES)[number];
+
+export const SessionRow = z.object({
+  id: z.string(),
+  node_id: z.union([z.string(), z.null()]),
+  user_id: z.string(),
+  session_type: z.enum(["interactive_task", "interactive_chat", "headless", "env"]),
+  cli: z.union([z.string(), z.null()]),
+  profile_id: z.union([z.string(), z.null()]),
+  agent_session_id: z.union([z.string(), z.null()]),
+  state: z.enum(SESSION_STATES),
+  handoff_path: z.union([z.string(), z.null()]),
+  handoff_hash: z.union([z.string(), z.null()]),
+  created_at: z.string(),
+  last_active_at: z.string(),
+  closed_at: z.union([z.string(), z.null()]),
+});
+export type SessionRow = z.infer<typeof SessionRow>;
+
+export const SESSION_SCOPE_ADDED_VIA = ["seed", "edge", "disconnected", "created", "elicited"] as const;
+export type SessionScopeAddedVia = (typeof SESSION_SCOPE_ADDED_VIA)[number];
+
+export const SessionScopeRow = z.object({
+  session_id: z.string(),
+  node_id: z.string(),
+  added_via: z.enum(SESSION_SCOPE_ADDED_VIA),
+  reason: z.union([z.string(), z.null()]),
+  writable: z.number(),
+  added_at: z.string(),
+});
+export type SessionScopeRow = z.infer<typeof SessionScopeRow>;

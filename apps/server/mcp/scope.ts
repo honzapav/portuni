@@ -107,8 +107,13 @@ export class SessionScope {
   // are part of its context by definition (spec: "Read scope").
   private readonly writeSet = new Set<string>();
   private readonly addListeners: ((nodeId: string) => void)[] = [];
+  private readonly writableListeners: ((nodeId: string) => void)[] = [];
 
   homeNodeId: string | null = null;
+  // Set once the session_scope cache row exists (bindSessionPersistence,
+  // session-persistence.ts) -- null until then, and for SessionScope
+  // instances built by test harnesses that never persist at all.
+  sessionId: string | null = null;
   readonly sessionType: SessionType;
   readonly createdAt: string;
 
@@ -173,12 +178,26 @@ export class SessionScope {
     this.history.push(record);
   }
 
+  // Subscribe to write grants. Mirrors onAdd (best-effort, swallows
+  // listener errors): the session-scope persistence cache hangs off this
+  // to keep session_scope.writable in sync.
+  onWritable(listener: (nodeId: string) => void): void {
+    this.writableListeners.push(listener);
+  }
+
   // Add a node to BOTH the read and write set -- a node cannot be writable
   // without being readable. Returns true if it was newly writable.
   addWritable(nodeId: string): boolean {
     this.add(nodeId);
     if (this.writeSet.has(nodeId)) return false;
     this.writeSet.add(nodeId);
+    for (const listener of this.writableListeners) {
+      try {
+        listener(nodeId);
+      } catch {
+        /* listeners are best-effort persistence; never fail a graph write */
+      }
+    }
     return true;
   }
 

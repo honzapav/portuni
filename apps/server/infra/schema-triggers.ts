@@ -128,6 +128,50 @@ export const DDL_OAUTH_CODES = `CREATE TABLE IF NOT EXISTS oauth_codes (
 
 export const INDEX_OAUTH_CODES_HASH = `CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_codes_hash ON oauth_codes(code_hash)`;
 
+// Migration 027: persistent sessions + session_scope (phase 2 of
+// docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md,
+// "Persistent sessions" -- data model sketch). SessionScope (mcp/scope.ts)
+// becomes a live cache over these rows via
+// apps/server/mcp/session-persistence.ts; the domain module is
+// apps/server/domain/sessions.ts. node_id is nullable: interactive_chat
+// sessions have no anchor. state's terminal value is 'archived' -- a view
+// filter (domain/sessions.ts's autoArchiveClosedSessions), never a delete.
+export const DDL_SESSIONS = `CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY CHECK(length(id) = 26),
+    node_id TEXT REFERENCES nodes(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    session_type TEXT NOT NULL CHECK(session_type IN ('interactive_task','interactive_chat','headless','env')),
+    cli TEXT,
+    profile_id TEXT,
+    agent_session_id TEXT,
+    state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived')),
+    handoff_path TEXT,
+    handoff_hash TEXT,
+    created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    last_active_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    closed_at DATETIME
+  )`;
+
+export const INDEX_SESSIONS_NODE = `CREATE INDEX IF NOT EXISTS idx_sessions_node ON sessions(node_id)`;
+export const INDEX_SESSIONS_USER = `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`;
+export const INDEX_SESSIONS_STATE = `CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state)`;
+
+// One row per (session, node) currently in the session's read-scope set --
+// membership, not an append-only event log (an expansion that re-adds an
+// already-in-scope node upserts added_via/reason rather than inserting a
+// second row). writable mirrors SessionScope.canWrite(node_id).
+export const DDL_SESSION_SCOPE = `CREATE TABLE IF NOT EXISTS session_scope (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    added_via TEXT NOT NULL CHECK(added_via IN ('seed','edge','disconnected','created','elicited')),
+    reason TEXT,
+    writable INTEGER NOT NULL DEFAULT 0 CHECK(writable IN (0,1)),
+    added_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (session_id, node_id)
+  )`;
+
+export const INDEX_SESSION_SCOPE_SESSION = `CREATE INDEX IF NOT EXISTS idx_session_scope_session ON session_scope(session_id)`;
+
 // Ground-truth DDL for fresh installs. Includes all CHECK constraints.
 // Existing installs get constraints via migrations.
 export const DDL = [
@@ -150,6 +194,12 @@ export const DDL = [
   INDEX_OAUTH_GRANTS_REFRESH_HASH,
   DDL_OAUTH_CODES,
   INDEX_OAUTH_CODES_HASH,
+  DDL_SESSIONS,
+  INDEX_SESSIONS_NODE,
+  INDEX_SESSIONS_USER,
+  INDEX_SESSIONS_STATE,
+  DDL_SESSION_SCOPE,
+  INDEX_SESSION_SCOPE_SESSION,
   `CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY CHECK(length(id) = 26),
     type TEXT NOT NULL CHECK(type IN (${NODE_TYPES_SQL})),

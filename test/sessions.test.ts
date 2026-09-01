@@ -1,0 +1,208 @@
+// Tests for apps/server/domain/sessions.ts: session CRUD, the state
+// machine, auto-archive, and the session_scope read/write cache functions.
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import {
+  createSession,
+  getSession,
+  listSessions,
+  touchSession,
+  transitionSessionState,
+  autoArchiveClosedSessions,
+  upsertSessionScopeRead,
+  setSessionScopeWritable,
+  getSessionScope,
+} from "../apps/server/domain/sessions.js";
+import { makeSharedDb } from "./helpers/shared-db.js";
+
+describe("createSession / getSession / listSessions", () => {
+  it("creates a session row and reads it back", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    assert.equal(row.node_id, nodeId);
+    assert.equal(row.user_id, "U1");
+    assert.equal(row.session_type, "interactive_task");
+    assert.equal(row.state, "running");
+    assert.equal(row.closed_at, null);
+
+    const fetched = await getSession(db, row.id);
+    assert.deepEqual(fetched, row);
+  });
+
+  it("allows a null node_id for interactive_chat (no anchor)", async () => {
+    const { db } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: null, session_type: "interactive_chat" });
+    assert.equal(row.node_id, null);
+  });
+
+  it("getSession returns null for an unknown id", async () => {
+    const { db } = await makeSharedDb();
+    assert.equal(await getSession(db, "nope"), null);
+  });
+
+  it("listSessions filters by node_id, user_id, and state", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await createSession(db, "U1", { node_id: null, session_type: "interactive_chat" });
+    const otherNode = "N0000000000000000000000OTH";
+    await db.execute({
+      sql: "INSERT INTO nodes (id,type,name,sync_key,created_by) VALUES (?,?,?,?,?)",
+      args: [otherNode, "project", "Other", "other", "U1"],
+    });
+    await createSession(db, "U1", { node_id: otherNode, session_type: "headless" });
+
+    const forNode = await listSessions(db, { node_id: nodeId });
+    assert.equal(forNode.length, 1);
+    assert.equal(forNode[0].node_id, nodeId);
+
+    const forUser = await listSessions(db, { user_id: "U1" });
+    assert.equal(forUser.length, 3);
+
+    const headlessOnly = await listSessions(db, { state: "running", user_id: "U1" });
+    assert.equal(headlessOnly.length, 3); // all still running
+
+    const all = await listSessions(db);
+    assert.ok(all.length >= 3);
+  });
+});
+
+describe("touchSession", () => {
+  it("bumps last_active_at", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await new Promise((r) => setTimeout(r, 5));
+    await touchSession(db, row.id);
+    const fetched = await getSession(db, row.id);
+    assert.ok(fetched);
+    assert.ok(new Date(fetched!.last_active_at).getTime() >= new Date(row.last_active_at).getTime());
+  });
+});
+
+describe("transitionSessionState: the state machine", () => {
+  it("running -> suspended -> running -> closed -> archived is a valid path", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+
+    const suspended = await transitionSessionState(db, "U1", row.id, "suspended");
+    assert.equal(suspended.state, "suspended");
+    assert.equal(suspended.closed_at, null);
+
+    const resumed = await transitionSessionState(db, "U1", row.id, "running");
+    assert.equal(resumed.state, "running");
+
+    const closed = await transitionSessionState(db, "U1", row.id, "closed");
+    assert.equal(closed.state, "closed");
+    assert.ok(closed.closed_at);
+
+    const archived = await transitionSessionState(db, "U1", row.id, "archived");
+    assert.equal(archived.state, "archived");
+  });
+
+  it("rejects an invalid transition (running -> archived directly)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
+    await assert.rejects(
+      transitionSessionState(db, "U1", row.id, "archived"),
+      /not a valid transition/,
+    );
+  });
+
+  it("rejects any transition out of archived (terminal)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
+    await transitionSessionState(db, "U1", row.id, "closed");
+    await transitionSessionState(db, "U1", row.id, "archived");
+    await assert.rejects(
+      transitionSessionState(db, "U1", row.id, "running"),
+      /not a valid transition/,
+    );
+  });
+
+  it("is a no-op (not an error) when the target state equals the current state", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
+    const result = await transitionSessionState(db, "U1", row.id, "running");
+    assert.equal(result.state, "running");
+  });
+
+  it("throws for an unknown session id", async () => {
+    const { db } = await makeSharedDb();
+    await assert.rejects(transitionSessionState(db, "U1", "nope", "closed"), /not found/);
+  });
+});
+
+describe("autoArchiveClosedSessions", () => {
+  it("archives closed sessions older than the cutoff, leaves recent ones alone", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const old = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
+    const recent = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
+
+    await transitionSessionState(db, "U1", old.id, "closed");
+    await transitionSessionState(db, "U1", recent.id, "closed");
+    // Backdate `old`'s closed_at well past the cutoff; leave `recent` as-is.
+    await db.execute({
+      sql: "UPDATE sessions SET closed_at = ? WHERE id = ?",
+      args: [new Date(Date.now() - 1000 * 60 * 60 * 24 * 60).toISOString(), old.id],
+    });
+
+    const archivedCount = await autoArchiveClosedSessions(db, 1000 * 60 * 60 * 24 * 30);
+    assert.equal(archivedCount, 1);
+
+    const oldFetched = await getSession(db, old.id);
+    const recentFetched = await getSession(db, recent.id);
+    assert.equal(oldFetched?.state, "archived");
+    assert.equal(recentFetched?.state, "closed");
+  });
+
+  it("never touches running/suspended sessions", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
+    const count = await autoArchiveClosedSessions(db, 0);
+    assert.equal(count, 0);
+    const fetched = await getSession(db, row.id);
+    assert.equal(fetched?.state, "running");
+  });
+});
+
+describe("session_scope: read cache + writable flag", () => {
+  it("upsertSessionScopeRead inserts a row with writable=0, addedVia/reason as given", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const session = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await upsertSessionScopeRead(db, session.id, nodeId, "seed", "session_init seed");
+    const rows = await getSessionScope(db, session.id);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].node_id, nodeId);
+    assert.equal(rows[0].added_via, "seed");
+    assert.equal(rows[0].reason, "session_init seed");
+    assert.equal(rows[0].writable, 0);
+  });
+
+  it("re-adding the same node updates added_via/reason without touching writable", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const session = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await upsertSessionScopeRead(db, session.id, nodeId, "seed", "session_init seed");
+    await setSessionScopeWritable(db, session.id, nodeId);
+    await upsertSessionScopeRead(db, session.id, nodeId, "edge", "edge-reachable");
+
+    const rows = await getSessionScope(db, session.id);
+    assert.equal(rows.length, 1, "still one row, not a duplicate");
+    assert.equal(rows[0].added_via, "edge");
+    assert.equal(rows[0].reason, "edge-reachable");
+    assert.equal(rows[0].writable, 1, "writable survives the re-add");
+  });
+
+  it("setSessionScopeWritable marks an existing row writable", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const session = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await upsertSessionScopeRead(db, session.id, nodeId, "created", "node created by this session");
+    await setSessionScopeWritable(db, session.id, nodeId);
+    const rows = await getSessionScope(db, session.id);
+    assert.equal(rows[0].writable, 1);
+  });
+
+  it("getSessionScope returns an empty array for a session with no scope yet", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const session = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_chat" });
+    assert.deepEqual(await getSessionScope(db, session.id), []);
+  });
+});

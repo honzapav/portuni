@@ -22,9 +22,11 @@ import { registerResponsibilityTools } from "./tools/responsibilities.js";
 import { registerEntityAttributeTools } from "./tools/entity-attributes.js";
 import { createScopeReconciler, type ScopeReconciler } from "./scope-reconciler.js";
 import { createElicitor, type Elicitor } from "./elicit.js";
+import { bindSessionPersistence } from "./session-persistence.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { TOOL_MIN_SCOPE } from "../auth/min-scopes.js";
 import { scopeAtLeast } from "../auth/roles.js";
+import { getDb } from "../infra/db.js";
 
 // Top-level server brief. Kept short -- many MCP clients truncate this
 // field at ~2 KB. Anything load-bearing for an individual tool lives in
@@ -143,6 +145,7 @@ export function createMcpServer(
   const scope = new SessionScope(deriveSessionType(identity, homeNodeId));
   const reconciler = createScopeReconciler({ userId: identity.userId, scope });
   scope.onAdd((nodeId) => reconciler.schedule(nodeId));
+  bindSessionPersistence(getDb(), scope, identity);
   const server = new McpServer(
     { name: "portuni", version: "0.1.0" },
     { instructions: INSTRUCTIONS },

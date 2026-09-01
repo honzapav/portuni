@@ -50,6 +50,7 @@ export {
   runMigration021,
   runMigration022,
   runMigration024,
+  runMigration027,
 } from "./schema-migrations.js";
 
 const SOLO_USER_ID = "01SOLO0000000000000000000";

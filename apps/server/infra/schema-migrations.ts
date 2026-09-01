@@ -53,6 +53,12 @@ import {
   INDEX_OAUTH_GRANTS_REFRESH_HASH,
   DDL_OAUTH_CODES,
   INDEX_OAUTH_CODES_HASH,
+  DDL_SESSIONS,
+  INDEX_SESSIONS_NODE,
+  INDEX_SESSIONS_USER,
+  INDEX_SESSIONS_STATE,
+  DDL_SESSION_SCOPE,
+  INDEX_SESSION_SCOPE_SESSION,
 } from "./schema-triggers.js";
 
 interface Migration {
@@ -1233,6 +1239,26 @@ const MIGRATIONS: Migration[] = [
       );
     },
   },
+
+  // Migration 027: sessions + session_scope (phase 2 of docs/superpowers/
+  // specs/2026-08-31-scope-sessions-redesign-design.md, "Persistent
+  // sessions"). Fresh installs already get both tables via DDL; existing
+  // installs need them added explicitly. Same DDL constants as the fresh
+  // path so the two can never drift.
+  {
+    id: "027_sessions",
+    isApplied: async (db) => {
+      const r = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'",
+      );
+      if (r.rows.length === 0) return false;
+      const r2 = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='session_scope'",
+      );
+      return r2.rows.length > 0;
+    },
+    up: runMigration027,
+  },
 ];
 
 export async function runMigration024(db: Client): Promise<void> {
@@ -1248,6 +1274,15 @@ export async function runMigration025(db: Client): Promise<void> {
   await db.execute(INDEX_OAUTH_GRANTS_REFRESH_HASH);
   await db.execute(DDL_OAUTH_CODES);
   await db.execute(INDEX_OAUTH_CODES_HASH);
+}
+
+export async function runMigration027(db: Client): Promise<void> {
+  await db.execute(DDL_SESSIONS);
+  await db.execute(INDEX_SESSIONS_NODE);
+  await db.execute(INDEX_SESSIONS_USER);
+  await db.execute(INDEX_SESSIONS_STATE);
+  await db.execute(DDL_SESSION_SCOPE);
+  await db.execute(INDEX_SESSION_SCOPE_SESSION);
 }
 
 export async function runMigrations(db: Client): Promise<void> {
