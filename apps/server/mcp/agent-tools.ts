@@ -103,6 +103,36 @@ export async function findEntryByFileId(
   return null;
 }
 
+// Write-target node id(s) for a LOCAL_TOOLS call, for agent-transport.ts's
+// write-gate check. LOCAL_TOOLS never reach apps/server/mcp/tools/*.ts (they
+// dispatch straight to CentralClient/REST from here), so without this the
+// device-local path would route around the domain-layer write gate that
+// every other mutating tool goes through -- see domain/write-gate.ts.
+// portuni_status is read-only (omitted); portuni_pull's node_id mode is a
+// preview, not a write (only the file_id/download mode mutates).
+export async function localToolWriteTargets(
+  client: CentralClient,
+  userId: string,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<string[]> {
+  switch (name) {
+    case "portuni_mirror":
+    case "portuni_store":
+    case "portuni_adopt_files":
+      return typeof args.node_id === "string" ? [args.node_id] : [];
+    case "portuni_pull": {
+      if (typeof args.file_id === "string") {
+        const found = await findEntryByFileId(client, userId, args.file_id);
+        return found ? [found.nodeId] : [];
+      }
+      return [];
+    }
+    default:
+      return [];
+  }
+}
+
 type PreviewStatus = "unchanged" | "updated" | "conflict" | "remote_missing" | "remote_error" | "native";
 
 function toPreviewEntry(e: StatusFileEntry, status: PreviewStatus) {

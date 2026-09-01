@@ -70,6 +70,31 @@ const identity: RequestIdentity = {
   via: "env",
 };
 
+// device_token identities for the write-gate tests below: "env" (above) is
+// exempt from the write gate entirely, so exercising it needs an identity
+// that actually derives a scoped SessionType (see mcp/scope.ts's
+// deriveSessionType and domain/write-gate.ts's guardWrite).
+const headlessIdentity: RequestIdentity = {
+  userId: "01SOLO0000000000000000000",
+  email: "solo@localhost",
+  name: "Solo",
+  globalScope: "admin",
+  groups: [],
+  groupIds: [],
+  via: "device_token",
+  headless: true,
+};
+
+const taskIdentity: RequestIdentity = {
+  userId: "01SOLO0000000000000000000",
+  email: "solo@localhost",
+  name: "Solo",
+  globalScope: "admin",
+  groups: [],
+  groupIds: [],
+  via: "device_token",
+};
+
 interface StubCentral {
   base: string;
   close: () => Promise<void>;
@@ -335,5 +360,100 @@ describe("agent MCP front door", () => {
     );
     await new Promise((r) => setTimeout(r, 150));
     assert.equal(central.openGets(), getsBefore, "upstream GET stream reopened after close");
+  });
+});
+
+// The five LOCAL_TOOLS (portuni_mirror, portuni_status, portuni_store,
+// portuni_pull, portuni_adopt_files) dispatch straight to CentralClient from
+// this transport -- they never reach apps/server/mcp/tools/*.ts, so the
+// domain-layer write gate (guardWrite in domain/write-gate.ts) has to be
+// applied here too, or it is bypassed for exactly this path. See
+// docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md
+// ("Enforcement points").
+describe("agent MCP front door: write gate on LOCAL_TOOLS", () => {
+  const HOME = "01HOMENODE00000000000000A";
+  const OTHER = "01OTHERNODE0000000000000B";
+
+  async function connectAs(reqIdentity: RequestIdentity, homeNodeId: string): Promise<Client> {
+    const server = createServer((req, res) => {
+      void agentTransport.handle(req, res, reqIdentity);
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    const client = new Client({ name: "write-gate-test", version: "0.0.0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${base}/mcp?home_node_id=${homeNodeId}`)),
+    );
+    (client as unknown as { __server: Server }).__server = server;
+    return client;
+  }
+
+  async function closeClient(client: Client): Promise<void> {
+    const server = (client as unknown as { __server: Server }).__server;
+    await client.close().catch(() => undefined);
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+
+  it("headless session: portuni_mirror on the home node is not write-gated (allowed through to the local handler)", async () => {
+    const client = await connectAs(headlessIdentity, HOME);
+    try {
+      const r = (await client.callTool({
+        name: "portuni_mirror",
+        arguments: { node_id: HOME, targets: ["local"] },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      // Blocked by fakeCentral (no such node), NOT by the write gate --
+      // proves the home node passed guardWrite and reached callLocalTool.
+      assert.equal(r.isError, true);
+      assert.doesNotMatch(r.content[0].text, /write_refused|write_expansion_required/);
+    } finally {
+      await closeClient(client);
+    }
+  });
+
+  it("headless session: portuni_mirror on a non-home node is refused outright, never reaching the local handler", async () => {
+    const client = await connectAs(headlessIdentity, HOME);
+    try {
+      const r = (await client.callTool({
+        name: "portuni_mirror",
+        arguments: { node_id: OTHER, targets: ["local"] },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.equal(r.isError, true);
+      const payload = JSON.parse(r.content[0].text);
+      assert.equal(payload.error, "write_refused");
+      assert.equal(payload.node_id, OTHER);
+    } finally {
+      await closeClient(client);
+    }
+  });
+
+  it("headless session: portuni_store on a non-home node is refused outright", async () => {
+    const client = await connectAs(headlessIdentity, HOME);
+    try {
+      const r = (await client.callTool({
+        name: "portuni_store",
+        arguments: { node_id: OTHER, local_path: "/tmp/nope.md" },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.equal(r.isError, true);
+      const payload = JSON.parse(r.content[0].text);
+      assert.equal(payload.error, "write_refused");
+    } finally {
+      await closeClient(client);
+    }
+  });
+
+  it("interactive (non-headless device_token) session: a non-home node elicits rather than being refused outright", async () => {
+    const client = await connectAs(taskIdentity, HOME);
+    try {
+      const r = (await client.callTool({
+        name: "portuni_mirror",
+        arguments: { node_id: OTHER, targets: ["local"] },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.equal(r.isError, true);
+      const payload = JSON.parse(r.content[0].text);
+      assert.equal(payload.error, "write_expansion_required");
+    } finally {
+      await closeClient(client);
+    }
   });
 });

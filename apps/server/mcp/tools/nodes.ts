@@ -19,12 +19,16 @@ import {
   updateNodeInternal,
 } from "../../domain/nodes.js";
 import { filterVisibleNodeIds, nodeVisibleTo } from "../../auth/node-access.js";
+import { guardNodeWrite } from "../write-gate.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
   const { scope } = ctx;
   server.tool(
     "portuni_create_node",
+    // Not write-gated: creation is exempt because there is no existing node
+    // to protect -- the new node is added to the read AND write set below,
+    // as soon as it exists (see the addWritable call after createNodeInternal).
     "Create a new node in the Portuni knowledge graph. Create only when the user explicitly asks — agent-initiative nodes pollute the graph and the user cannot easily distinguish them later. Non-organization nodes must specify organization_id; the node and its belongs_to edge are inserted atomically. Optionally set goal (textual purpose) and lifecycle_state — status is derived. See portuni://architecture for the invariant and portuni://enums for the closed type / lifecycle sets.",
     {
       type: z.enum(NODE_TYPES).describe("Node type. See portuni://enums for the closed set."),
@@ -136,6 +140,8 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
+      const writeGuard = guardNodeWrite(scope, args.node_id);
+      if (writeGuard.kind === "error") return writeGuard.response;
       NodeRow.parse(current.rows[0]);
 
       const provided = [
@@ -261,6 +267,8 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
+      const deleteWriteGuard = guardNodeWrite(scope, args.node_id);
+      if (deleteWriteGuard.kind === "error") return deleteWriteGuard.response;
       const node = existing.rows[0];
       const nodeType = node.type as string;
       const nodeName = node.name as string;

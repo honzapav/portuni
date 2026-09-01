@@ -121,7 +121,7 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_expand_scope",
-    "Add one or more nodes to the current MCP session's read-scope set. Required when a read tool returned {error: scope_expansion_required, ...}: surface the request to the user, get confirmation, then call this. reason: 'user-requested: <quoted prompt fragment>' when the user named the node in the prompt; 'user-confirmed-in-chat' after a chat confirmation. Each accepted node is classified server-side and returned in added_via: 'edge' when it was reachable via a graph edge from the current scope (most calls -- a plain read tool already auto-expands these without needing this tool), 'disconnected' when it was reached only via search/name with no edge path -- the classification is computed by the server, never taken from your reason text. Hard-floor nodes (visibility=private owned by another user, or meta.scope_sensitive=true) need confirmed_hard_floor=true backed by explicit user confirmation; headless sessions cannot override hard floors at all, confirmed_hard_floor is ignored. Every expansion is audited and surfaced in portuni_session_log. See portuni://scope-rules.",
+    "Add one or more nodes to the current MCP session's read-scope set. Required when a read tool returned {error: scope_expansion_required, ...}: surface the request to the user, get confirmation, then call this. reason: 'user-requested: <quoted prompt fragment>' when the user named the node in the prompt; 'user-confirmed-in-chat' after a chat confirmation. Each accepted node is classified server-side and returned in added_via: 'edge' when it was reachable via a graph edge from the current scope (most calls -- a plain read tool already auto-expands these without needing this tool), 'disconnected' when it was reached only via search/name with no edge path -- the classification is computed by the server, never taken from your reason text. Hard-floor nodes (visibility=private owned by another user, or meta.scope_sensitive=true) need confirmed_hard_floor=true backed by explicit user confirmation; headless sessions cannot override hard floors at all, confirmed_hard_floor is ignored. Pass writable: true to also grant WRITE access (not just read) to the accepted nodes — required before a mutating tool call on a node outside the write set (home node + session-created nodes); impossible for headless sessions, whose write set cannot expand mid-run. Every expansion is audited and surfaced in portuni_session_log. See portuni://scope-rules.",
     {
       node_ids: z
         .array(z.string())
@@ -147,9 +147,34 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
         .describe(
           "Set to true only when the user has explicitly confirmed reaching a hard-floor node (visibility=private owned by another user, or meta.scope_sensitive=true) — without this flag, such nodes are refused even when reason claims user confirmation.",
         ),
+      writable: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          "When true, also grant write access to the accepted node(s), backed by the same user confirmation as reason. Rejected outright for headless sessions — write-set expansion is not available mid-run for headless.",
+        ),
     },
     async (args) => {
       const db = getDb();
+      const headless = scope.sessionType === "headless";
+
+      if (args.writable && headless) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                error: "write_expansion_impossible",
+                hint:
+                  "Headless sessions cannot expand their write set mid-run. Writes are limited " +
+                  "to the home node (and nodes created by this session) for the session's lifetime.",
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
 
       // Verify each node exists; classify by hard-floor status and accept
       // / refuse accordingly.
@@ -164,7 +189,6 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
       const addedVia: Record<string, "edge" | "disconnected"> = {};
       const rejected_unknown: string[] = [];
       const refused_hard_floor: { node_id: string; reason: string; permanent: boolean }[] = [];
-      const headless = scope.sessionType === "headless";
 
       for (const id of args.node_ids) {
         if (!knownIds.has(id)) {
@@ -202,7 +226,11 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
         // the agent's `reason` claims.
         const reachable = scope.has(id) || (await isEdgeReachable(db, scope, id));
         addedVia[id] = reachable ? "edge" : "disconnected";
-        scope.add(id);
+        if (args.writable) {
+          scope.addWritable(id);
+        } else {
+          scope.add(id);
+        }
         accepted.push(id);
       }
 
@@ -216,6 +244,7 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
         await logAudit(ctx.identity.userId, "expand_scope", "scope", accepted.join(","), {
           node_ids: accepted,
           added_via: addedVia,
+          writable: args.writable,
           reason: args.reason,
           triggered_by: args.triggered_by,
           confirmed_hard_floor: args.confirmed_hard_floor,
@@ -241,6 +270,7 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
             text: JSON.stringify({
               added: accepted,
               added_via: addedVia,
+              writable: args.writable ? accepted : [],
               unknown: rejected_unknown,
               refused_hard_floor,
               scope_size: scope.size(),

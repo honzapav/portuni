@@ -10,6 +10,7 @@ import { createFileRemote } from "../../domain/sync/file-content-remote.js";
 import { getMirrorPath } from "../../domain/sync/mirror-registry.js";
 import { EXPORT_MIME } from "../../domain/sync/native-format.js";
 import { nodeVisibleTo } from "../../auth/node-access.js";
+import { guardNodeWrite } from "../write-gate.js";
 import type { SessionCtx } from "../server.js";
 
 export interface SnapshotArgs {
@@ -103,6 +104,7 @@ export async function snapshotService(db: Client, a: SnapshotArgs): Promise<Snap
 }
 
 export function registerSyncSnapshotTools(server: McpServer, ctx: SessionCtx): void {
+  const { scope } = ctx;
   server.tool(
     "portuni_snapshot",
     "Export a Google Docs/Sheets/Slides URL to PDF/Markdown/DOCX and store it as a tracked file on the node. Use when the user wants a point-in-time copy of a native Google doc tracked on a node — e.g. archiving a spec snapshot before continuing edits. Uses the Drive file ID extracted from the URL (/d/<id>). Works with or without a local mirror: with one the file lands in the mirror and is pushed; without one it is created directly on the remote (a teammate's device pulls it into its mirror).",
@@ -121,6 +123,8 @@ export function registerSyncSnapshotTools(server: McpServer, ctx: SessionCtx): v
           isError: true,
         };
       }
+      const snapshotWriteGuard = guardNodeWrite(scope, args.node_id);
+      if (snapshotWriteGuard.kind === "error") return snapshotWriteGuard.response;
       const r = await snapshotService(db, {
         userId: ctx.identity.userId,
         nodeId: args.node_id,

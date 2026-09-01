@@ -47,17 +47,20 @@ import type { RequestIdentity } from "../auth/request-identity.js";
 import type { McpTransport } from "./transport.js";
 import { INSTRUCTIONS } from "./server.js";
 import { parseHomeNodeIdFromUrl } from "./auto-seed.js";
+import { deriveSessionType } from "./scope.js";
 import {
   LOCAL_TOOLS,
   callLocalTool,
   enrichGetNodeResult,
   enrichGetContextResult,
   isProxiedDiskMutation,
+  localToolWriteTargets,
   snapshotForDiskMutation,
   applyLocalAfterSnapshot,
   applyLocalAfterProxiedMutation,
 } from "./agent-tools.js";
 import { readNodeFileFromMirror, formatNodeFileContent } from "../domain/read-node-file.js";
+import { guardWrite, writeGuardError, type WriteContext } from "../domain/write-gate.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 
 const MAX_SESSIONS = Number(process.env.PORTUNI_MAX_SESSIONS ?? 100);
@@ -129,6 +132,33 @@ function buildAgentServer(
     const name = request.params.name;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     if (LOCAL_TOOLS.has(name)) {
+      // LOCAL_TOOLS never reach apps/server/mcp/tools/*.ts (they dispatch
+      // straight to CentralClient/REST from here), so the domain-layer write
+      // gate every other mutating tool goes through has to be applied here
+      // instead -- otherwise it is bypassed. No SessionScope exists at this
+      // layer (the local sidecar has no graph DB / expansion history), so
+      // writableNodes is empty: writes are home-node-only for interactive/
+      // headless sessions, exactly like a session with no explicit write-set
+      // expansions yet.
+      const writeTargets = await localToolWriteTargets(opts.client, identity.userId, name, args);
+      if (writeTargets.length > 0) {
+        const writeCtx: WriteContext = {
+          sessionType: deriveSessionType(identity, homeNodeId),
+          homeNodeId,
+          writableNodes: new Set(),
+        };
+        for (const nodeId of writeTargets) {
+          const outcome = guardWrite(writeCtx, nodeId);
+          if (outcome.kind !== "allow") {
+            return {
+              content: [
+                { type: "text", text: JSON.stringify(writeGuardError(nodeId, outcome.kind, outcome.message)) },
+              ],
+              isError: true,
+            };
+          }
+        }
+      }
       try {
         return await callLocalTool(opts.client, identity.userId, name, args);
       } catch (err) {

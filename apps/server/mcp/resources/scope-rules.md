@@ -137,6 +137,52 @@ path for hard-floor material, so these refusals are always
 session returns `{ "error": "scope_refused", ... }` directly, not
 `scope_expansion_required` — there is nothing to retry.
 
+## Write scope
+
+Write scope is narrower than read scope and enforced independently
+(domain-layer `guardWrite`, `apps/server/domain/write-gate.ts`) --
+being able to read a node does not make it writable. Every mutating
+tool (create/update/delete on nodes, edges, events, responsibilities,
+data sources, tools, files, mirrors, snapshot) checks write scope on
+its target node before mutating. Actors (`portuni_create_actor` /
+`update` / `delete`) and sync-remote administration
+(`portuni_setup_remote`, `portuni_set_routing_policy`) are global
+registries, explicitly exempt (permissions still apply).
+
+- `env`: historical unscoped behavior, not part of this model --
+  every write is allowed (subject to the usual permission tier).
+- `interactive_task` / `headless`: the write set is the home node,
+  plus any node created by this session (`portuni_create_node` grants
+  both read and write on the node it creates) or explicitly granted
+  via `portuni_expand_scope(..., writable: true)`.
+- `interactive_chat`: the write set starts and stays empty (no home
+  node) -- every write needs confirmation.
+
+A mutating tool call outside the write set returns one of:
+
+```json
+{ "error": "write_expansion_required", "node_id": "...", "hint": "..." }
+```
+
+For interactive types (`interactive_task`, `interactive_chat`): ask
+the user to confirm the write, then call
+`portuni_expand_scope(node_ids, reason, writable: true)` to grant it,
+and retry.
+
+```json
+{ "error": "write_refused", "node_id": "...", "hint": "..." }
+```
+
+`headless` sessions only: a hard, non-negotiable refusal. Headless
+sessions have no elicitation channel and cannot expand their write set
+mid-run -- `portuni_expand_scope(..., writable: true)` is itself
+rejected outright for them (`write_expansion_impossible`) rather than
+silently ignored. There is no retry.
+
+Node creation (`portuni_create_node`) is not write-gated itself --
+there is no existing node to protect, and the new node becomes
+writable the moment it exists.
+
 ## Search and global listing are discovery, not ingestion
 
 `portuni_search_files` and `portuni_list_nodes(scope: "global")` are

@@ -9,9 +9,11 @@ import { logAudit } from "../../infra/audit.js";
 import { EDGE_RELATIONS } from "../../infra/schema.js";
 import { moveNodeToOrganization } from "../../domain/edges.js";
 import { nodeVisibleTo } from "../../auth/node-access.js";
+import { guardNodeWrite } from "../write-gate.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
+  const { scope } = ctx;
   server.tool(
     "portuni_connect",
     "Create a directed edge between two nodes. Connect only when the user explicitly asks or when creating a node that needs its initial belongs_to edge — speculative connections clutter the graph and mislead later readers. Relations (strictly enforced): related_to (lateral connection), belongs_to (scope; one per non-organization node), applies (concrete work uses a pattern, e.g. project applies process), informed_by (knowledge transfer). To move a node between organizations, call portuni_move_node — it rebinds the existing belongs_to atomically. A disconnect-then-connect across organizations is rejected because it would transiently orphan the node. See portuni://architecture.",
@@ -47,6 +49,13 @@ export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
         };
       }
       const targetType = targetCheck.rows[0].type as string;
+
+      // Write scope is checked on the source: connecting is extending the
+      // source node's own edge list. The target only needs the visibility
+      // check above (you can point an edge at something you can see without
+      // that thing itself being in your write set).
+      const connectWriteGuard = guardNodeWrite(scope, args.source_id);
+      if (connectWriteGuard.kind === "error") return connectWriteGuard.response;
 
       if (args.relation === "belongs_to" && targetType === "organization" && sourceType !== "organization") {
         const existing = await db.execute({
@@ -163,6 +172,8 @@ export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
+      const disconnectWriteGuard = guardNodeWrite(scope, args.source_id);
+      if (disconnectWriteGuard.kind === "error") return disconnectWriteGuard.response;
 
       const removingBelongsToOrg =
         args.relation === undefined || args.relation === "belongs_to";
@@ -260,6 +271,8 @@ export function registerEdgeTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
+      const moveWriteGuard = guardNodeWrite(scope, args.node_id);
+      if (moveWriteGuard.kind === "error") return moveWriteGuard.response;
       try {
         const result = await moveNodeToOrganization(
           db,

@@ -1,4 +1,9 @@
 // MCP tool registrations for actors. Thin wrappers over src/domain/actors.ts.
+//
+// Not write-gated: actors are a global registry (person/placeholder/
+// automation), not node-scoped content -- explicitly scope-exempt for
+// writes per docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md
+// ("Write scope"). Permission tiers (min-scopes.ts) still apply.
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";

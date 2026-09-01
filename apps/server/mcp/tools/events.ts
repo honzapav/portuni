@@ -9,6 +9,7 @@ import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardListScope } from "../list-scope-gate.js";
 import { nodeVisibleTo, filterVisibleNodeIds } from "../../auth/node-access.js";
+import { guardNodeWrite } from "../write-gate.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
@@ -45,6 +46,8 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
+      const logWriteGuard = guardNodeWrite(scope, args.node_id);
+      if (logWriteGuard.kind === "error") return logWriteGuard.response;
 
       // B5: Validate refs -- warn (not error) if any referenced event is missing.
       let refsWarning: string | null = null;
@@ -151,6 +154,8 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
+      const resolveWriteGuard = guardNodeWrite(scope, row.node_id);
+      if (resolveWriteGuard.kind === "error") return resolveWriteGuard.response;
       if (row.status !== "active") {
         return {
           content: [{ type: "text" as const, text: `Error: event ${args.event_id} is not active (status: ${row.status})` }],
@@ -214,6 +219,8 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
+      const supersedeWriteGuard = guardNodeWrite(scope, oldRow.node_id);
+      if (supersedeWriteGuard.kind === "error") return supersedeWriteGuard.response;
 
       let result: Awaited<ReturnType<typeof supersedeEventInternal>>;
       try {

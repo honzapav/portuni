@@ -37,7 +37,13 @@ import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 // tools directly (bypassing gateToolsByScope) so a non-admin identity can
 // reach the handler and prove the nodeVisibleTo guard fires on its own.
 async function connectRawFileTools(identity: RequestIdentity): Promise<McpClient> {
-  const scope = new SessionScope("strict");
+  // "env": historical unscoped behavior -- these tests deliberately bypass
+  // the normal tool-scope gate to isolate the group-visibility check, and
+  // "env" is also exempt from the write gate (write-gate.test.ts covers the
+  // write gate itself). "strict" was a pre-#184 scope-mode literal; it is
+  // not a valid SessionType and only worked here by accident (test files
+  // are outside tsconfig's typecheck).
+  const scope = new SessionScope("env");
   const reconciler = createScopeReconciler({ userId: identity.userId, scope });
   const ctx: SessionCtx = { scope, identity, reconciler };
   const server = new McpServer({ name: "raw-files-test", version: "0.0.1" }, {});

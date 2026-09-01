@@ -14,6 +14,7 @@ import {
   updateResponsibility,
 } from "../../domain/responsibilities.js";
 import { nodeVisibleTo } from "../../auth/node-access.js";
+import { guardNodeWrite } from "../write-gate.js";
 import type { SessionCtx } from "../server.js";
 
 async function guardNodeAccess(
@@ -40,6 +41,7 @@ async function loadResponsibilityNodeId(
 }
 
 export function registerResponsibilityTools(server: McpServer, ctx: SessionCtx): void {
+  const { scope } = ctx;
   server.tool(
     "portuni_create_responsibility",
     "Create a responsibility on a project/process/area node. Responsibilities are concrete duties ('Review kódu', 'Ops on-call') attached to entities; they are not nodes themselves. Optionally pass a list of actor IDs to assign immediately. Create only when the user explicitly asks.",
@@ -60,6 +62,8 @@ export function registerResponsibilityTools(server: McpServer, ctx: SessionCtx):
             isError: true,
           };
         }
+        const writeGuard = guardNodeWrite(scope, args.node_id);
+        if (writeGuard.kind === "error") return writeGuard.response;
         const row = await createResponsibility(db, ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
       } catch (err) {
@@ -97,6 +101,8 @@ export function registerResponsibilityTools(server: McpServer, ctx: SessionCtx):
             isError: true,
           };
         }
+        const writeGuard = guardNodeWrite(scope, nodeId);
+        if (writeGuard.kind === "error") return writeGuard.response;
         const row = await updateResponsibility(db, ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
       } catch (err) {
@@ -131,6 +137,8 @@ export function registerResponsibilityTools(server: McpServer, ctx: SessionCtx):
             isError: true,
           };
         }
+        const writeGuard = guardNodeWrite(scope, nodeId);
+        if (writeGuard.kind === "error") return writeGuard.response;
         await deleteResponsibility(db, ctx.identity.userId, args.responsibility_id);
         return {
           content: [{ type: "text" as const, text: JSON.stringify({ id: args.responsibility_id, action: "deleted" }) }],
@@ -188,6 +196,8 @@ export function registerResponsibilityTools(server: McpServer, ctx: SessionCtx):
             isError: true,
           };
         }
+        const writeGuard = guardNodeWrite(scope, nodeId);
+        if (writeGuard.kind === "error") return writeGuard.response;
         await assignResponsibility(db, ctx.identity.userId, args);
         return {
           content: [
@@ -234,6 +244,8 @@ export function registerResponsibilityTools(server: McpServer, ctx: SessionCtx):
             isError: true,
           };
         }
+        const writeGuard = guardNodeWrite(scope, nodeId);
+        if (writeGuard.kind === "error") return writeGuard.response;
         await unassignResponsibility(db, ctx.identity.userId, args);
         return {
           content: [
