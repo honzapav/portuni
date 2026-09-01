@@ -173,7 +173,8 @@ Hard floors override mode. A node with `meta.scope_sensitive: true`, or a `visib
 | `portuni_session_log()` | Returns the current scope set, mode, expansion history. |
 | `portuni_get_node` | Out-of-scope target returns `{"error":"scope_expansion_required",...}`. Name lookups are filtered to in-scope candidates first, so name probing cannot leak metadata. |
 | `portuni_get_context` | Start node must be in scope. Depth ≤ 1 is the natural read; depth ≥ 2 is treated as breadth expansion and refused in strict/balanced. |
-| `portuni_list_nodes` / `portuni_list_events` / `portuni_list_files` / `portuni_search_files` | Default to session scope. Global form (`scope: "global"` on `list_nodes`, no `node_id` on the others) is mode-gated: strict refuses, balanced refuses on first call, permissive auto-allows + audits. |
+| `portuni_list_nodes` / `portuni_list_events` / `portuni_list_files` | Default to session scope; without `node_id` (`list_events`/`list_files`) or with `scope: "session"` (`list_nodes`, the default) results are restricted to the current scope set. |
+| `portuni_search_files`, `portuni_list_nodes(scope: "global")` | Discovery, not ingestion: permission-only in every session type, no scope gate — every node/hit the caller can see, filtered by visibility. Search hits carry a bounded snippet, not full content; reading a hit in full is the scope event. |
 
 ### REST surface (out of scope)
 
@@ -192,8 +193,7 @@ The HTTP REST endpoints (`/graph`, `/context`, `/nodes/:id/sync-status`, `/users
 | Read tools gated by scope: `get_node`, `get_context`, `list_nodes`, `list_events`, `list_files` | Implemented |
 | `get_node(name)` ambiguity filtered to in-scope candidates | Implemented |
 | `get_context(depth ≥ 2)` treated as breadth expansion | Implemented |
-| Mode-gated global queries (strict refuses, balanced first-time refuses, permissive auto-allow + audit) | Implemented |
-| `PORTUNI_SCOPE_MODE` (strict / balanced / permissive) | Implemented |
+| `portuni_search_files` / `portuni_list_nodes(scope: "global")` as permission-only discovery (no scope gate, bounded snippets) | Implemented |
 | Per-harness write-scope config on `portuni_mirror` | Implemented |
 | Settings overlay strategy (`.claude/settings.local.json`, codex marker-aware) | Implemented |
 | Auto-wire `portuni-guard` as `PreToolUse` hook in generated Claude settings | Implemented |
@@ -201,7 +201,7 @@ The HTTP REST endpoints (`/graph`, `/context`, `/nodes/:id/sync-status`, `/users
 | Codex MCP registration (user-scoped `~/.codex/config.toml`, token via env var) | Implemented |
 | Sibling regen on mirror add | Implemented |
 | `/scope` endpoint + `portuni-guard` PreToolUse hook (fail-closed on missing target) | Implemented |
-| Audit entries: `expand_scope`, `scope_global_query`, `scope_hard_floor_refusal`, `session_init` | Implemented |
+| Audit entries: `expand_scope`, `scope_hard_floor_refusal`, `session_init` | Implemented |
 | Session-close summary | Pending |
 | Other harnesses (Gemini CLI, Cline, Continue, Aider, Windsurf, Roo) | Out of scope until requested |
 | Harness-mode -> scope-mode auto-alignment | Pending (intentionally fragile, may not ship) |

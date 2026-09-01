@@ -1,9 +1,12 @@
 // portuni_search_files: content search over the remotes' own search
 // (Drive fullText / fs grep), joined onto `files` so only tracked files
-// surface, then filtered by session scope and group visibility. Domain
-// tests run against the shared-db fs remote (no mirror anywhere -- the
-// remote-client case); the MCP test proves a hit on a node the caller
-// cannot see is never returned.
+// surface, then filtered by group visibility only -- search is discovery,
+// not ingestion, so it is permission-only and never scope-gated (see
+// docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md,
+// "Search is discovery, not ingestion"). Domain tests run against the
+// shared-db fs remote (no mirror anywhere -- the remote-client case); the
+// MCP tests prove a hit on a node the caller cannot see is never returned,
+// and that scope membership does not gate search at all.
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -26,7 +29,6 @@ import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 let shared: SharedDb;
 let workspace: string;
 let originalRoot: string | undefined;
-let originalMode: string | undefined;
 
 async function remotePathFor(nodeId: string, relPath: string): Promise<string> {
   const info = await resolveNodeInfo(shared.db, nodeId);
@@ -77,7 +79,6 @@ async function insertProject(name: string, opts: { accessGroup?: string } = {}):
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), "portuni-search-files-"));
   originalRoot = process.env.PORTUNI_WORKSPACE_ROOT;
-  originalMode = process.env.PORTUNI_SCOPE_MODE;
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
   resetLocalDbForTests();
   resetAdapterCacheForTests();
@@ -91,8 +92,6 @@ afterEach(async () => {
   resetAdapterCacheForTests();
   if (originalRoot === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
   else process.env.PORTUNI_WORKSPACE_ROOT = originalRoot;
-  if (originalMode === undefined) delete process.env.PORTUNI_SCOPE_MODE;
-  else process.env.PORTUNI_SCOPE_MODE = originalMode;
   await rm(workspace, { recursive: true, force: true });
   await rm(shared.remoteRoot, { recursive: true, force: true });
 });
@@ -152,10 +151,7 @@ async function connectTool(identity: RequestIdentity, scopeNodeIds: string[]) {
 }
 
 describe("portuni_search_files (MCP)", () => {
-  it("never returns a hit from a node the caller cannot see", async () => {
-    // Global (no node_id) search always elicits now -- see "strict mode
-    // without node_id is gated as a global query" below -- so permission
-    // filtering is exercised per-node here instead.
+  it("never returns a hit from a node the caller cannot see, with or without node_id", async () => {
     const restricted = await insertProject("Restricted", { accessGroup: "secret@x.com" });
     await seedTracked(shared.nodeId, "wip/open.md", "needle open\n");
     await seedTracked(restricted, "wip/hidden.md", "needle hidden\n");
@@ -168,7 +164,9 @@ describe("portuni_search_files (MCP)", () => {
       groupIds: [],
       via: "env",
     };
-    const { client } = await connectTool(outsider, [shared.nodeId, restricted]);
+    // Empty session scope on purpose -- search is permission-only, not
+    // scope-gated, so scope membership must not matter here.
+    const { client } = await connectTool(outsider, []);
     try {
       const open = (await client.callTool({
         name: "portuni_search_files",
@@ -183,16 +181,26 @@ describe("portuni_search_files (MCP)", () => {
         name: "portuni_search_files",
         arguments: { query: "needle", node_id: restricted },
       })) as { content: Array<{ text: string }>; isError?: boolean };
-      assert.equal(hidden.isError, true);
+      assert.notEqual(hidden.isError, true, hidden.content[0]?.text);
+      assert.deepEqual(JSON.parse(hidden.content[0].text), []);
       assert.ok(!JSON.stringify(hidden.content).includes("hidden"), "restricted content leaked");
+
+      const global = (await client.callTool({
+        name: "portuni_search_files",
+        arguments: { query: "needle" },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.notEqual(global.isError, true, global.content[0]?.text);
+      const globalHits = JSON.parse(global.content[0].text) as Array<{ node_id: string }>;
+      assert.deepEqual(globalHits.map((h) => h.node_id), [shared.nodeId]);
     } finally {
       await client.close();
     }
   });
 
-  it("strict mode without node_id is gated as a global query; with node_id it reads the node", async () => {
-    process.env.PORTUNI_SCOPE_MODE = "strict";
+  it("without node_id searches every visible node regardless of session scope", async () => {
+    const other = await insertProject("Other");
     await seedTracked(shared.nodeId, "wip/open.md", "needle open\n");
+    await seedTracked(other, "wip/also.md", "needle also\n");
     const admin: RequestIdentity = {
       userId: "U1",
       email: "a@b",
@@ -202,29 +210,22 @@ describe("portuni_search_files (MCP)", () => {
       groupIds: [],
       via: "env",
     };
-    const { client } = await connectTool(admin, [shared.nodeId]);
+    // Scope is seeded with neither node -- a global search still finds both.
+    const { client } = await connectTool(admin, []);
     try {
-      const gated = (await client.callTool({
+      const result = (await client.callTool({
         name: "portuni_search_files",
         arguments: { query: "needle" },
       })) as { content: Array<{ text: string }>; isError?: boolean };
-      assert.equal(gated.isError, true);
-      assert.match(gated.content[0].text, /scope_expansion_required/);
-
-      const scoped = (await client.callTool({
-        name: "portuni_search_files",
-        arguments: { query: "needle", node_id: shared.nodeId },
-      })) as { content: Array<{ text: string }>; isError?: boolean };
-      assert.notEqual(scoped.isError, true, scoped.content[0]?.text);
-      const hits = JSON.parse(scoped.content[0].text) as Array<{ path: string }>;
-      assert.deepEqual(hits.map((h) => h.path), ["wip/open.md"]);
+      assert.notEqual(result.isError, true, result.content[0]?.text);
+      const hits = JSON.parse(result.content[0].text) as Array<{ node_id: string }>;
+      assert.deepEqual(new Set(hits.map((h) => h.node_id)), new Set([shared.nodeId, other]));
     } finally {
       await client.close();
     }
   });
 
   it("portuni_read_file serves a hit Drive-direct when the node has no mirror here", async () => {
-    process.env.PORTUNI_SCOPE_MODE = "permissive";
     await seedTracked(shared.nodeId, "wip/open.md", "needle open\n");
     const admin: RequestIdentity = {
       userId: "U1",

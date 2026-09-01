@@ -18,7 +18,6 @@ import {
   purgeNodeRows,
   updateNodeInternal,
 } from "../../domain/nodes.js";
-import { decideGlobalQuery } from "../scope.js";
 import { filterVisibleNodeIds, nodeVisibleTo } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
@@ -167,7 +166,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_list_nodes",
-    "List nodes from the Portuni knowledge graph, optionally filtered by type and/or status. Default scope='session' returns only nodes already in the session scope set; scope='global' returns the full graph and requires explicit confirmation. Empty session-scope results mean the agent should call portuni_expand_scope or ask the user. See portuni://scope-rules.",
+    "List nodes from the Portuni knowledge graph, optionally filtered by type and/or status. Default scope='session' returns only nodes already in the session scope set. scope='global' is discovery, not ingestion: it is permission-only in every session type (no scope gate) and returns every node the caller can see, filtered by visibility like any other read. Empty session-scope results mean the agent should call portuni_expand_scope or ask the user; a global result is not itself added to scope -- reading a hit's full detail follows the normal expansion rules. See portuni://scope-rules.",
     {
       type: z.enum(NODE_TYPES).optional().describe("Filter by node type"),
       status: z.enum(NODE_STATUSES).optional().describe("Filter by status"),
@@ -175,7 +174,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
         .enum(["session", "global"])
         .optional()
         .default("session")
-        .describe("session (default): nodes already in the session scope set. global: full graph; requires explicit confirmation — see portuni://scope-rules."),
+        .describe("session (default): nodes already in the session scope set. global: every node the caller can see, permission-only — see portuni://scope-rules."),
     },
     async (args) => {
       const db = getDb();
@@ -192,30 +191,8 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
         values.push(args.status);
       }
 
-      const inScope = scope.list();
-      if (args.scope === "global") {
-        const guard = decideGlobalQuery();
-        if (guard.kind === "elicit") {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  error: "scope_expansion_required",
-                  tool: "portuni_list_nodes",
-                  hint: guard.message,
-                }),
-              },
-            ],
-            isError: true,
-          };
-        }
-        await logAudit(ctx.identity.userId, "scope_global_query", "scope", "list_nodes", {
-          tool: "portuni_list_nodes",
-          filters: { type: args.type ?? null, status: args.status ?? null },
-          session_type: scope.sessionType,
-        });
-      } else {
+      if (args.scope !== "global") {
+        const inScope = scope.list();
         if (inScope.length === 0) {
           return { content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }] };
         }

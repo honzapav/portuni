@@ -1,17 +1,17 @@
 // Regression tests for the scope-decision helpers:
-//   - decideGlobalQuery: always elicits (the strict/balanced/permissive
-//     switch is gone; see docs/superpowers/specs/
-//     2026-08-31-scope-sessions-redesign-design.md).
 //   - violatesHardFloor matches what decideRead's hard-floor branch checks.
 //   - guardNodeRead: returns elicit/allow with audit + auto-add.
 //   - loadNodeScopeMeta: pulls visibility / created_by / scope_sensitive.
+// (decideGlobalQuery is gone -- search and global list_nodes are
+// permission-only now, see docs/superpowers/specs/
+// 2026-08-31-scope-sessions-redesign-design.md, "Search is discovery, not
+// ingestion".)
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
 import {
   SessionScope,
-  decideGlobalQuery,
   guardNodeRead,
   loadNodeScopeMeta,
   violatesHardFloor,
@@ -24,12 +24,6 @@ async function freshDb() {
   );
   return db;
 }
-
-describe("decideGlobalQuery", () => {
-  it("always elicits", () => {
-    assert.equal(decideGlobalQuery().kind, "elicit");
-  });
-});
 
 describe("violatesHardFloor", () => {
   it("flags scope_sensitive=true", () => {

@@ -27,6 +27,14 @@ export interface SearchHit {
   snippet?: string;
 }
 
+// Search is discovery, not ingestion: hits carry a short snippet, not the
+// full match, and callers cap how many hits they ask for. One place for both
+// bounds -- see docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md
+// ("Search is discovery, not ingestion").
+export const SEARCH_SNIPPET_MAX_CHARS = 200;
+export const SEARCH_HITS_DEFAULT_LIMIT = 20;
+export const SEARCH_HITS_MAX_LIMIT = 50;
+
 export interface FileAdapter {
   put(path: string, content: Buffer, opts?: { mimeType?: string }): Promise<FileRef>;
   get(path: string): Promise<Buffer>;

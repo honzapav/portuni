@@ -21,6 +21,7 @@ import { readableMirrorRoot } from "../scope-reconciler.js";
 import { guardNodeRead } from "../scope.js";
 import { readNodeFile, formatNodeFileContent } from "../../domain/read-node-file.js";
 import { searchFiles } from "../../domain/search-files.js";
+import { SEARCH_HITS_DEFAULT_LIMIT, SEARCH_HITS_MAX_LIMIT } from "../../domain/sync/types.js";
 import type { SessionCtx } from "../server.js";
 import type { Client } from "@libsql/client";
 
@@ -69,37 +70,21 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_search_files",
-    "Search file CONTENTS across Portuni-tracked files, using the configured remote(s)' own full-text search (Google Drive `fullText contains`; text grep on fs remotes). Only files registered with Portuni are returned, and results are limited to nodes the caller can see. With node_id the search is restricted to that node (which must be in scope); without node_id it is a global query -- gated like portuni_list_files and restricted to the session scope set. Each hit carries node_id + path: open it with portuni_read_file(node_id, path). Drive matches whole words/phrases in indexed content (docs, PDFs, text); it is not a substring or regex search.",
+    "Search file CONTENTS across Portuni-tracked files, using the configured remote(s)' own full-text search (Google Drive `fullText contains`; text grep on fs remotes). Search is discovery, not ingestion: permission-only in every session type, no scope gate -- results are filtered by node visibility, same as any other read, not by session scope. With node_id the search is restricted to that node; without node_id it searches every node the caller can see. Each hit carries node_id + path plus a bounded snippet; open the full file with portuni_read_file(node_id, path) (that read follows the normal scope-expansion rules). Drive matches whole words/phrases in indexed content (docs, PDFs, text); it is not a substring or regex search.",
     {
       query: z.string().min(1).describe("Words or a phrase to find in file contents"),
       node_id: z.string().optional().describe("Restrict to one node"),
-      limit: z.number().int().min(1).max(50).optional().describe("Max hits (default 20, max 50)"),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(SEARCH_HITS_MAX_LIMIT)
+        .optional()
+        .describe(`Max hits (default ${SEARCH_HITS_DEFAULT_LIMIT}, max ${SEARCH_HITS_MAX_LIMIT})`),
     },
     async (args) => {
       const db = getDb();
-      const limit = args.limit ?? 20;
-
-      const gate = await guardListScope(
-        db,
-        scope,
-        args.node_id,
-        "portuni_search_files",
-        "search_files",
-        { query: args.query },
-        ctx.identity.userId,
-        ctx.identity,
-      );
-      if (gate.kind === "error") return gate.response;
-
-      // Without a node filter, restrict to the in-memory scope set so
-      // unrelated nodes are never surfaced (same rule as portuni_list_files).
-      let nodeIds: string[] | null = null;
-      if (args.node_id === undefined) {
-        nodeIds = scope.list();
-        if (nodeIds.length === 0) {
-          return { content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }] };
-        }
-      }
+      const limit = args.limit ?? SEARCH_HITS_DEFAULT_LIMIT;
 
       // Over-fetch so group-visibility filtering below still leaves `limit`
       // rows in the common case.
@@ -107,7 +92,6 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         query: args.query,
         limit: Math.min(limit * 2, 100),
         nodeId: args.node_id,
-        nodeIds,
       });
       const distinctNodeIds = [...new Set(records.map((r) => r.node_id))];
       const visible = await filterVisibleNodeIds(db, ctx.identity, distinctNodeIds);
@@ -206,7 +190,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_list_files",
-    "List files across nodes, optionally filtered by node and/or status. Each file includes a derived local_path built from the current mirror + remote_path + sync_key (null when the node has no mirror on this device). With node_id the node must be in session scope; without node_id the call is a global query — see portuni://scope-rules.",
+    "List files across nodes, optionally filtered by node and/or status. Each file includes a derived local_path built from the current mirror + remote_path + sync_key (null when the node has no mirror on this device). With node_id the node must be in session scope; without node_id results are restricted to the current session scope set (empty scope means an empty result) — see portuni://scope-rules.",
     {
       node_id: z.string().optional(),
       status: z.enum(FILE_STATUSES).optional(),
@@ -219,9 +203,6 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         db,
         scope,
         args.node_id,
-        "portuni_list_files",
-        "list_files",
-        { status: args.status ?? null },
         ctx.identity.userId,
         ctx.identity,
       );

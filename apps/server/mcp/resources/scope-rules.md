@@ -100,6 +100,18 @@ also set on the expand call. That flag MUST be backed by an explicit
 user confirmation in chat; do not pass it on agent initiative.
 Refusals are audited under `scope_hard_floor_refusal`.
 
+## Search and global listing are discovery, not ingestion
+
+`portuni_search_files` and `portuni_list_nodes(scope: "global")` are
+**permission-only in every session type**: no scope gate at all,
+results filtered only by node visibility (same as any other read).
+They exist to let an agent find things it does not yet have in
+scope — a hit is a reference plus a short, length-capped snippet
+(`portuni_search_files`), not the node's full content. Reading a
+hit in full (`portuni_read_file`, `portuni_get_node`, ...) is the
+scope event and follows the normal expansion rules above; a search
+or global-list result is never itself added to scope.
+
 ## Tool defaults
 
 - `portuni_get_node(node_id|name)`: name lookups are filtered to
@@ -109,12 +121,14 @@ Refusals are audited under `scope_hard_floor_refusal`.
   start is allowed; depth ≥ 2 is treated as breadth expansion and
   always refused without explicit confirmation. Use depth=1 then
   expand explicitly.
-- `portuni_list_nodes` / `portuni_list_events` / `portuni_list_files` /
-  `portuni_search_files`: default to session-scope filtering. Pass
-  `scope: "global"` (or omit `node_id` on list_events/list_files/
-  search_files) only when the user asked for a broad listing or
-  search; that path always requires explicit confirmation and is
-  audited.
+- `portuni_list_nodes` (default `scope: "session"`), `portuni_list_events`,
+  `portuni_list_files`: default to session-scope filtering — with
+  `node_id` (list_events/list_files) the node must be in scope;
+  without it, results are restricted to the current scope set (empty
+  scope means an empty result, not a gate). `scope: "global"` on
+  list_nodes is the discovery exception above.
+- `portuni_search_files`: always the discovery exception above,
+  whether or not `node_id` is passed.
 
 ## Inspection
 

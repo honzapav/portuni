@@ -57,10 +57,12 @@ List nodes with optional filtering.
 
 Scope semantics: the default `scope: "session"` returns only nodes
 already in the session scope set — an empty scope set returns an empty
-array (call `portuni_expand_scope` or ask the user). `scope: "global"`
-queries the full graph and is mode-gated: `strict` always returns
-`scope_expansion_required`, `balanced` requires one confirmation per
-session, `permissive` auto-allows and audits.
+array (call `portuni_expand_scope` or ask the user). `scope: "global"` is
+discovery, not ingestion: permission-only in every session type, no scope
+gate — every node the caller can see, filtered by visibility like any
+other read. A global result is not itself added to scope; reading a
+node's full detail follows the normal expansion rules. See
+[scope enforcement](/concepts/scope-enforcement/).
 
 Returns: Array of `{ id, type, name, status, description }`
 

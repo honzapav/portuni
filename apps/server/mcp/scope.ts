@@ -354,25 +354,6 @@ export async function guardNodeRead(
   return { kind: "allow" };
 }
 
-// Decision for global queries (list_nodes(scope=global), list_events without
-// node_id filter, list_files without node_id filter, search). Always elicits
-// -- the strict/balanced/permissive switch is gone; permission-only
-// discovery (search as ingestion vs. discovery) is a later phase, see
-// docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md
-// ("Search is discovery, not ingestion").
-export interface GlobalQueryGuard {
-  kind: "allow" | "elicit";
-  message?: string;
-}
-
-export function decideGlobalQuery(): GlobalQueryGuard {
-  return {
-    kind: "elicit",
-    message:
-      "Global listing requires explicit confirmation. Ask the user to confirm the broad query, then call portuni_expand_scope with reason 'user-confirmed-in-chat'.",
-  };
-}
-
 // Run a hard-floor check independently of any scope membership. Used by
 // portuni_expand_scope so an explicit user-named expansion still cannot
 // silently widen scope to a private-created-by-other or scope_sensitive node

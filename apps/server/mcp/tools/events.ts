@@ -245,7 +245,7 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_list_events",
-    "List events from the knowledge graph, optionally filtered by node, type, status, or time range. Returns up to 100 events by default (newest first); pass `limit` to override. With node_id the node must be in session scope; without node_id the call is a global query — see portuni://scope-rules.",
+    "List events from the knowledge graph, optionally filtered by node, type, status, or time range. Returns up to 100 events by default (newest first); pass `limit` to override. With node_id the node must be in session scope; without node_id results are restricted to the current session scope set (empty scope means an empty result) — see portuni://scope-rules.",
     {
       node_id: z.string().optional().describe("Filter by node ID"),
       type: z.enum(EVENT_TYPES).optional().describe("Filter by event type"),
@@ -260,13 +260,6 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
         db,
         scope,
         args.node_id,
-        "portuni_list_events",
-        "list_events",
-        {
-          type: args.type ?? null,
-          status: args.status ?? null,
-          since: args.since ?? null,
-        },
         ctx.identity.userId,
         ctx.identity,
       );

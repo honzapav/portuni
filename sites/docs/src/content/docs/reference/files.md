@@ -121,11 +121,12 @@ not on disk; read their content with `portuni_read_file` (below). See
 [disk read scope](/concepts/scope-enforcement/).
 
 Scope gating: with `node_id` the node must be in session scope (out of
-scope returns `scope_expansion_required`). Without `node_id` the call is
-a global query — mode-gated, and results are restricted to the session
-scope set (empty scope returns an empty array) unless the mode is
-`permissive`. The same gating applies to the other list tools
-(`portuni_list_events`, ...).
+scope returns `scope_expansion_required`). Without `node_id` results are
+restricted to the current session scope set (empty scope returns an
+empty array) — no confirmation needed, it is not a broad query. The same
+gating applies to `portuni_list_events`. `portuni_search_files` and
+`portuni_list_nodes(scope: "global")` are the exception — see below and
+[scope enforcement](/concepts/scope-enforcement/).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -173,19 +174,18 @@ the configured remote(s) — Google Drive's `fullText contains` (which indexes
 Docs, PDFs and text files; whole words and phrases, not substrings or regex)
 or a text grep on an `fs` remote — and each hit is joined back onto the
 `files` registry, so a loose Drive object Portuni never registered is never
-returned. Results are limited to nodes the caller can see (group
-visibility), and outside `permissive` scope mode to the session scope set.
+returned. Search is discovery, not ingestion: it is **permission-only in
+every session type** — no scope gate, with or without `node_id`. Results
+are limited only to nodes the caller can see (group visibility). Each hit
+carries a short, length-capped snippet, not the full file; read a hit in
+full with `portuni_read_file`, which follows the normal scope-expansion
+rules. See [scope enforcement](/concepts/scope-enforcement/).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `query` | string | yes | Words or a phrase to find in file contents |
-| `node_id` | string | no | Restrict to one node (must be in scope) |
+| `node_id` | string | no | Restrict to one node |
 | `limit` | number | no | Max hits (default 20, max 50) |
-
-Scope gating mirrors `portuni_list_files`: with `node_id` the node must be
-in session scope; without it the call is a global query — mode-gated
-(strict refuses, balanced refuses on first call, permissive auto-allows +
-audits) and restricted to the scope set unless the mode is `permissive`.
 
 Returns: Array of hits, each with `file_id`, `node_id`, `node_name`,
 `node_type`, `filename`, `path` (the node-relative path, e.g.
