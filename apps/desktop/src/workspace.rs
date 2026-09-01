@@ -197,6 +197,17 @@ pub(crate) fn is_valid_profile_id(id: &str) -> bool {
     is_valid_workspace_id(id)
 }
 
+/// A profile's env is a plain `config.json` field (#207): it is read back
+/// to the webview by `list_profiles` and stored in plaintext on disk, so it
+/// violates both "no secret in webview JS" and "no secret in plaintext on
+/// disk" (root CLAUDE.md security rules) the moment a value actually is one.
+/// create_profile/update_profile reject any key shaped like this outright --
+/// secrets belong in the OS keychain, not this registry.
+pub(crate) fn is_secret_shaped_env_key(key: &str) -> bool {
+    let upper = key.to_ascii_uppercase();
+    upper.ends_with("_TOKEN") || upper.ends_with("_KEY") || upper.ends_with("_SECRET") || upper.contains("PASSWORD")
+}
+
 /// Env var per-mirror configs reference for this workspace's MCP token.
 /// Must match resolveTokenEnvVar() in apps/server/domain/write-scope.ts.
 pub(crate) fn token_env_var(id: &str) -> String {
@@ -596,5 +607,22 @@ mod tests {
         // the desktop-config response — https only, loopback excepted for dev.
         assert!(normalize_server_url("http://api.example.com").is_err());
         assert!(normalize_server_url("http://192.168.1.10:4011").is_err());
+    }
+
+    #[test]
+    fn secret_shaped_env_keys_are_flagged_case_insensitively() {
+        assert!(is_secret_shaped_env_key("ANTHROPIC_API_KEY"));
+        assert!(is_secret_shaped_env_key("anthropic_api_key"));
+        assert!(is_secret_shaped_env_key("GH_TOKEN"));
+        assert!(is_secret_shaped_env_key("MY_SECRET"));
+        assert!(is_secret_shaped_env_key("DB_PASSWORD"));
+        assert!(is_secret_shaped_env_key("PASSWORD_HASH"));
+    }
+
+    #[test]
+    fn ordinary_config_keys_are_not_flagged() {
+        assert!(!is_secret_shaped_env_key("CLAUDE_CONFIG_DIR"));
+        assert!(!is_secret_shaped_env_key("PORTUNI_PROFILE_ID"));
+        assert!(!is_secret_shaped_env_key("EDITOR"));
     }
 }

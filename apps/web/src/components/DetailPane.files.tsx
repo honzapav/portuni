@@ -1062,6 +1062,18 @@ type LaunchState =
 //   - Right (chevron): dropdown with "Otevřít v externím terminálu" that
 //     triggers the same external-launch flow as ActionButtons.
 // Renders nothing for organization nodes (no working-folder concept there).
+//
+// selectedProfileId only reaches the embedded launch (onEmbeddedOpen) --
+// handleExternalLaunch's launch_claude_for_node command has no profile_id
+// parameter at all today, so picking a profile and then choosing "Otevřít v
+// externím terminálu" silently spawns without it (#207). Deliberately not
+// fixed here: profile threading is Claude-only for now (the same scope cut
+// as X-Portuni-Profile, write-scope.ts's buildClaudeMcpJson -- Codex/Vibe
+// have no equivalent per-spawn config-expansion mechanism), and the
+// external-launch path doesn't inject even the existing MCP-token/
+// PORTUNI_PROFILE_ID env pty_spawn does, so wiring just the profile through
+// would be an inconsistent half-fix. Extending profile support to Codex/
+// Vibe and to this external-launch path is future work.
 export function TerminalSplitButton({
   node,
   agentCommand,

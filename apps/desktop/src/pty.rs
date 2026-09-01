@@ -183,6 +183,40 @@ fn shell_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Expand a leading `~` (bare, or `~/...`) in a profile env value to
+/// `home`, reusing lib.rs's path-tilde-expansion (same PORTUNI_WORKSPACE_ROOT
+/// rule, just applied to a plain string value here instead of a PathBuf).
+/// portable-pty's CommandBuilder passes env values to the child verbatim (no
+/// shell involved), so `~` is never expanded on its own -- without this,
+/// `CLAUDE_CONFIG_DIR=~/.claude-work` makes Claude Code create a literal `~`
+/// directory inside the mirror cwd instead of switching accounts (#207).
+fn expand_tilde(value: &str, home: Option<&str>) -> String {
+    match home {
+        Some(home) => crate::expand_tilde(std::path::Path::new(home), value)
+            .to_string_lossy()
+            .into_owned(),
+        None => value.to_string(),
+    }
+}
+
+/// Env vars to actually inject from a profile's stored map (#207): `PORTUNI_*`
+/// keys are dropped so a profile can never silently override the
+/// credential/profile-id env pty_spawn already exported before this merge
+/// runs (a profile defining e.g. `PORTUNI_MCP_TOKEN` would otherwise make
+/// every MCP call 401), and each value gets `expand_tilde` applied. Pure and
+/// order-preserving (BTreeMap iterates sorted by key) so it is unit-testable
+/// without a real CommandBuilder/child process.
+fn resolve_profile_env(
+    profile_env: &std::collections::BTreeMap<String, String>,
+    home: Option<&str>,
+) -> Vec<(String, String)> {
+    profile_env
+        .iter()
+        .filter(|(k, _)| !k.starts_with("PORTUNI_"))
+        .map(|(k, v)| (k.clone(), expand_tilde(v, home)))
+        .collect()
+}
+
 fn pick_shell() -> (String, Vec<String>) {
     // Prefer the user's $SHELL so they get their familiar prompt, history,
     // aliases, etc. Fall back to /bin/zsh on macOS (default since 10.15)
@@ -330,14 +364,17 @@ pub fn pty_spawn(
     // (see write-scope.ts's X-Portuni-Profile header) -- exported whenever
     // a profile id was requested, even if the registry lookup below finds
     // nothing (a profile since deleted from config.json), so the session
-    // record still reflects the user's intent.
+    // record still reflects the user's intent. resolve_profile_env drops
+    // PORTUNI_* keys (must not override the token/profile-id env already
+    // set above) and expands a leading `~` in each value (#207).
     let mut command_override: Option<String> = None;
     if let Some(pid) = args.profile_id.as_deref().filter(|p| !p.trim().is_empty()) {
         cmd.env("PORTUNI_PROFILE_ID", pid);
         if let Ok(data_dir) = app.path().app_data_dir() {
             if let Ok(crate::workspace::LoadedConfig::V2(file)) = crate::workspace::load(&data_dir) {
                 if let Some(profile) = file.profiles.get(pid) {
-                    for (k, v) in &profile.env {
+                    let home = std::env::var("HOME").ok();
+                    for (k, v) in resolve_profile_env(&profile.env, home.as_deref()) {
                         cmd.env(k, v);
                     }
                     command_override = profile.command.clone();
@@ -611,5 +648,70 @@ mod spawn_program_tests {
         let (program, argv) = spawn_program("/bin/zsh", &["-l".to_string()], None);
         assert_eq!(program, "/bin/zsh");
         assert_eq!(argv, vec!["-l"]);
+    }
+}
+
+#[cfg(test)]
+mod profile_env_tests {
+    use super::*;
+
+    #[test]
+    fn expand_tilde_expands_leading_slash_form() {
+        assert_eq!(
+            expand_tilde("~/.claude-work", Some("/Users/honza")),
+            "/Users/honza/.claude-work"
+        );
+    }
+
+    #[test]
+    fn expand_tilde_expands_bare_tilde() {
+        assert_eq!(expand_tilde("~", Some("/Users/honza")), "/Users/honza");
+    }
+
+    #[test]
+    fn expand_tilde_leaves_absolute_paths_untouched() {
+        assert_eq!(
+            expand_tilde("/Users/honza/.claude-work", Some("/Users/honza")),
+            "/Users/honza/.claude-work"
+        );
+    }
+
+    #[test]
+    fn expand_tilde_only_expands_a_leading_tilde() {
+        // A tilde elsewhere in the value (not the leading char) is not a
+        // shell home-dir reference and must be left alone.
+        assert_eq!(
+            expand_tilde("foo~/bar", Some("/Users/honza")),
+            "foo~/bar"
+        );
+    }
+
+    #[test]
+    fn expand_tilde_without_a_known_home_is_a_no_op() {
+        assert_eq!(expand_tilde("~/.claude-work", None), "~/.claude-work");
+    }
+
+    #[test]
+    fn resolve_profile_env_drops_portuni_keys_and_expands_tilde() {
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("CLAUDE_CONFIG_DIR".to_string(), "~/.claude-work".to_string());
+        env.insert("PORTUNI_MCP_TOKEN".to_string(), "attacker-supplied".to_string());
+        env.insert("PORTUNI_PROFILE_ID".to_string(), "sneaky".to_string());
+        env.insert("EDITOR".to_string(), "vim".to_string());
+
+        let resolved = resolve_profile_env(&env, Some("/Users/honza"));
+
+        assert_eq!(
+            resolved,
+            vec![
+                ("CLAUDE_CONFIG_DIR".to_string(), "/Users/honza/.claude-work".to_string()),
+                ("EDITOR".to_string(), "vim".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_profile_env_of_an_empty_map_is_empty() {
+        assert!(resolve_profile_env(&std::collections::BTreeMap::new(), Some("/Users/honza")).is_empty());
     }
 }

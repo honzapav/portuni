@@ -17,7 +17,7 @@ import {
   renamePersistentSession,
   transitionPersistentSessionState,
 } from "../api";
-import { listProfiles } from "../lib/profiles";
+import { getProfileConfigDir } from "../lib/profiles";
 
 // Exported for reuse by OverviewView's workspace-wide session rows (#196).
 export const STATE_LABEL: Record<SessionState, string> = {
@@ -181,12 +181,14 @@ function SessionRow({
     void (async () => {
       // The profile's CLAUDE_CONFIG_DIR (#204) lets the server check
       // conversation-resumability at the right transcript location; no-op
-      // outside Tauri or when the session used no profile.
+      // outside Tauri or when the session used no profile. getProfileConfigDir
+      // is a narrow, purpose-built command (#207) -- profile env values in
+      // general never reach the webview, but this one well-known, never-
+      // secret-shaped key is an explicit exception.
       let configDir: string | null = null;
       if (session.profile_id) {
         try {
-          const { profiles } = await listProfiles();
-          configDir = profiles.find((p) => p.id === session.profile_id)?.env.CLAUDE_CONFIG_DIR ?? null;
+          configDir = await getProfileConfigDir(session.profile_id);
         } catch {
           /* profiles registry is optional context -- fall back to the default location */
         }

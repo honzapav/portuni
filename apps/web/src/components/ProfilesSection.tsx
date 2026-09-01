@@ -41,10 +41,12 @@ function parseEnvText(text: string): Record<string, string> {
   return out;
 }
 
-function envToText(env: Record<string, string>): string {
-  return Object.entries(env)
-    .map(([k, v]) => `${k}=${v}`)
-    .join("\n");
+// list_profiles never sends env VALUES back (#207) -- editing an existing
+// profile pre-fills each known key with an empty value instead. Backend
+// (update_profile) treats an empty value for a key that already exists as
+// "leave unchanged"; typing a new value there is what actually changes it.
+function envKeysToText(keys: string[]): string {
+  return keys.map((k) => `${k}=`).join("\n");
 }
 
 const DELETE_CONFIRM_MESSAGE =
@@ -286,14 +288,14 @@ function ProfileRow({
   onDelete: () => void;
 }) {
   const [label, setLabel] = useState(profile.label);
-  const [envText, setEnvText] = useState(envToText(profile.env));
+  const [envText, setEnvText] = useState(envKeysToText(profile.env_keys));
   const [command, setCommand] = useState(profile.command ?? "");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (editing) {
       setLabel(profile.label);
-      setEnvText(envToText(profile.env));
+      setEnvText(envKeysToText(profile.env_keys));
       setCommand(profile.command ?? "");
     }
   }, [editing, profile]);
@@ -339,13 +341,18 @@ function ProfileRow({
             <label className="mb-1 block text-[11.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
               Proměnné prostředí (jedna na řádek, KLÍČ=hodnota)
             </label>
+            <p className="mb-1 text-[11px] leading-snug text-[var(--color-text-dim)]">
+              Hodnoty se z bezpečnostních důvodů nikdy nenačítají zpět — u
+              existujícího klíče zůstane prázdná hodnota beze změny, zadej ji
+              znovu jen pokud ji chceš přepsat.
+            </p>
             <textarea
               value={envText}
               onChange={(e) => setEnvText(e.target.value)}
               disabled={saving}
               rows={3}
               spellCheck={false}
-              placeholder="CLAUDE_CONFIG_DIR=~/.claude-work"
+              placeholder="CLAUDE_CONFIG_DIR=/Users/vy/.claude-work"
               className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 font-mono text-[12.5px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] disabled:opacity-50"
             />
           </div>
@@ -394,10 +401,8 @@ function ProfileRow({
             <span className="font-mono text-[11px] text-[var(--color-text-dim)]">{profile.id}</span>
           </div>
           <div className="mt-0.5 truncate font-mono text-[11.5px] text-[var(--color-text-dim)]">
-            {Object.keys(profile.env).length > 0
-              ? Object.entries(profile.env)
-                  .map(([k, v]) => `${k}=${v}`)
-                  .join("  ")
+            {profile.env_keys.length > 0
+              ? `proměnné: ${profile.env_keys.join(", ")}`
               : profile.command
                 ? "(bez env)"
                 : "(bez env, bez vlastního příkazu)"}
@@ -545,7 +550,7 @@ function CreateProfileForm({
             disabled={busy}
             rows={3}
             spellCheck={false}
-            placeholder="CLAUDE_CONFIG_DIR=~/.claude-work"
+            placeholder="CLAUDE_CONFIG_DIR=/Users/vy/.claude-work"
             className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[12.5px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] disabled:opacity-50"
           />
         </div>

@@ -21,7 +21,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
     id: "claude",
     label: "Claude Code",
     command: "claude",
-    hint: "Launches Claude Code with an empty, ready terminal.",
+    hint: "Spustí Claude Code s prázdným, připraveným terminálem.",
   },
   {
     id: "codex",
@@ -45,7 +45,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
     id: "opencode",
     label: "OpenCode",
     command: "opencode",
-    hint: "OpenCode CLI, interactive TUI.",
+    hint: "OpenCode CLI, interaktivní TUI.",
   },
   {
     id: "vibe",
@@ -56,7 +56,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
     // Session-only: never written to the user's trusted_folders.toml.
     command: "vibe --trust",
     label: "Mistral Vibe",
-    hint: "Mistral Vibe CLI; trusts the mirror so it auto-seeds Portuni scope.",
+    hint: "Mistral Vibe CLI; označí mirror jako důvěryhodný, takže se automaticky nasadí scope Portuni.",
   },
 ];
 

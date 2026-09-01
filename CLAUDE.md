@@ -337,7 +337,25 @@ symlink to this file.
   `transport.ts` reads that header and threads it through
   `createMcpServer`/`bindSessionPersistence` into the session row's
   `profile_id` column (`domain/sessions.ts`, columns pre-provisioned since
-  #189).
+  #189). Profile threading stops at the embedded terminal: `TerminalSplitButton`'s
+  external-launch path (`launch_claude_for_node`) has no `profile_id`
+  parameter at all, so picking a profile and choosing "Otevřít v externím
+  terminálu" spawns without it (#207) — deliberately not extended, since
+  that command doesn't inject even the MCP-token/`PORTUNI_PROFILE_ID` env
+  `pty_spawn` does either. **Env values never reach the webview** (#207):
+  `list_profiles` returns `env_keys` (names only), never the map itself, so
+  editing an existing profile is a partial update (`update_profile` treats
+  an empty submitted value for an already-known key as "leave unchanged" —
+  `ProfilesSection.tsx` pre-fills existing keys with an empty value for
+  exactly this reason). `create_profile`/`update_profile` also reject
+  secret-shaped keys outright (`*_TOKEN`/`*_KEY`/`*_SECRET`/`*PASSWORD*`,
+  `workspace::is_secret_shaped_env_key`) — Keychain is where a secret
+  belongs, not this plaintext registry. `pty_spawn`'s merge
+  (`resolve_profile_env`) drops any `PORTUNI_*` key from a profile's env
+  (it must never be able to override the token/profile-id env already set)
+  and expands a leading `~` in each value to `$HOME` (reusing lib.rs's
+  `expand_tilde`, `pub(crate)` for this) — portable-pty passes values to the
+  child verbatim, no shell involved, so `~` is otherwise left literal.
 
 ## Security rules (from the auth refactor post-mortem)
 
