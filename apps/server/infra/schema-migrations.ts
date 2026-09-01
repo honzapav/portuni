@@ -1297,6 +1297,25 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+
+  // Migration 030: sessions.node_id ON DELETE CASCADE -> SET NULL (#208).
+  // CASCADE deleted the durable session record (and, transitively via its
+  // own FK, session_scope's audit rows for OTHER nodes too, since they hang
+  // off sessions.id) the moment its anchor node was deleted -- contradicting
+  // the spec's "durable core outlives every CLI's transcript retention by
+  // design". SQLite has no ALTER TABLE for an FK's ON DELETE clause, so this
+  // is a table rebuild (same shape as migrations 007/008's actors rebuild).
+  {
+    id: "030_sessions_node_set_null",
+    isApplied: async (db) => {
+      const r = await db.execute({
+        sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'",
+        args: [],
+      });
+      return String(r.rows[0]?.sql ?? "").includes("ON DELETE SET NULL");
+    },
+    up: runMigration030,
+  },
 ];
 
 export async function runMigration024(db: Client): Promise<void> {
@@ -1348,6 +1367,51 @@ export async function runMigration028(db: Client): Promise<void> {
     `UPDATE sessions SET name = (SELECT n.name FROM nodes n WHERE n.id = sessions.node_id) || ' · ' || substr(sessions.created_at,1,10)
      WHERE node_id IS NOT NULL`,
   );
+}
+
+// Table rebuild: sessions.node_id ON DELETE CASCADE -> SET NULL. Same shape
+// as migrations 007/008's actors rebuild (foreign_keys off, new table,
+// copy, drop, rename, recreate indexes). No triggers reference `sessions`.
+export async function runMigration030(db: Client): Promise<void> {
+  await db.execute("PRAGMA foreign_keys = OFF");
+  try {
+    await db.execute("DROP INDEX IF EXISTS idx_sessions_node");
+    await db.execute("DROP INDEX IF EXISTS idx_sessions_user");
+    await db.execute("DROP INDEX IF EXISTS idx_sessions_state");
+
+    await db.execute(`CREATE TABLE sessions_new (
+      id TEXT PRIMARY KEY CHECK(length(id) = 26),
+      node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      session_type TEXT NOT NULL CHECK(session_type IN ('interactive_task','interactive_chat','headless','env')),
+      cli TEXT,
+      profile_id TEXT,
+      agent_session_id TEXT,
+      state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived')),
+      handoff_path TEXT,
+      handoff_hash TEXT,
+      name TEXT NOT NULL DEFAULT '',
+      name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
+      created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+      last_active_at DATETIME NOT NULL DEFAULT (datetime('now')),
+      closed_at DATETIME
+    )`);
+    await db.execute(`INSERT INTO sessions_new (
+      id, node_id, user_id, session_type, cli, profile_id, agent_session_id, state,
+      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at
+    ) SELECT
+      id, node_id, user_id, session_type, cli, profile_id, agent_session_id, state,
+      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at
+    FROM sessions`);
+    await db.execute("DROP TABLE sessions");
+    await db.execute("ALTER TABLE sessions_new RENAME TO sessions");
+
+    await db.execute(INDEX_SESSIONS_NODE);
+    await db.execute(INDEX_SESSIONS_USER);
+    await db.execute(INDEX_SESSIONS_STATE);
+  } finally {
+    await db.execute("PRAGMA foreign_keys = ON");
+  }
 }
 
 export async function runMigrations(db: Client): Promise<void> {

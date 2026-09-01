@@ -96,7 +96,7 @@ describe("migration 027 sessions + session_scope", () => {
     );
   });
 
-  it("session_scope cascades on node delete and on session delete", async () => {
+  it("session_scope cascades on node delete; sessions.node_id is SET NULL, not cascade-deleted (#208)", async () => {
     const { db, nodeId } = await makeSharedDb();
     const sessionId = ulid();
     await db.execute({
@@ -108,11 +108,16 @@ describe("migration 027 sessions + session_scope", () => {
       args: [sessionId, nodeId],
     });
     await db.execute({ sql: "DELETE FROM nodes WHERE id = ?", args: [nodeId] });
+    // session_scope.node_id still cascades: the audit row for a now-deleted
+    // node has nothing left to describe.
     const r1 = await db.execute("SELECT count(*) AS c FROM session_scope");
     assert.equal(Number(r1.rows[0].c), 0);
-    // sessions itself cascades off node_id too.
-    const r2 = await db.execute("SELECT count(*) AS c FROM sessions");
-    assert.equal(Number(r2.rows[0].c), 0);
+    // sessions.node_id is migration 030's SET NULL fix: the durable session
+    // record survives its anchor node's deletion (spec: "durable core
+    // outlives"), with node_id nulled out rather than the row disappearing.
+    const r2 = await db.execute({ sql: "SELECT node_id FROM sessions WHERE id = ?", args: [sessionId] });
+    assert.equal(r2.rows.length, 1);
+    assert.equal(r2.rows[0].node_id, null);
   });
 
   it("sessions.node_id is nullable (interactive_chat has no anchor)", async () => {

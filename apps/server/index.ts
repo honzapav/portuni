@@ -6,6 +6,7 @@ import "varlock/auto-load";
 import { ensureSchema } from "./infra/schema.js";
 import { startHttpServer } from "./http/server.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
+import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
 
 async function main() {
   await ensureSchema();
@@ -15,6 +16,7 @@ async function main() {
   // sync.db. Design: docs/archive/specs/2026-06-28-deterministic-file-state-design.md.
   const watcher = startMirrorWatcher(process.env.PORTUNI_WATCH_MIRRORS === "1");
   if (watcher) process.on("SIGINT", () => watcher.stop());
+  void sweepStaleSessionProjectionsOnBoot();
 }
 
 main().catch((err) => {

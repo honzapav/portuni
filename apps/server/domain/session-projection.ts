@@ -24,8 +24,32 @@
 // consolidation).
 
 import { dirname, join, relative, sep } from "node:path";
-import { link, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { copyFile, link, mkdir, readdir, rm, stat } from "node:fs/promises";
+import type { Client } from "@libsql/client";
 import { loadMirrorIgnore } from "./sync/mirror-ignore.js";
+
+// Hardlink, falling back to a real copy across a filesystem boundary
+// (EXDEV -- a mirror on another volume than the projection root, e.g. a
+// custom mirror path or an external drive). A copy loses the "always
+// current" property (an edit to the source needs a re-copy, which
+// relinkOne below already triggers on every watched change), but it is
+// strictly better than the silent empty-directory failure this used to be.
+// Any other error is logged -- best-effort must not mean invisible.
+export async function linkOrCopy(src: string, dest: string): Promise<boolean> {
+  try {
+    await link(src, dest);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") return true; // already linked from a previous call
+    if (code === "EXDEV") {
+      await copyFile(src, dest);
+      return true;
+    }
+    console.error(`[portuni:session-projection] failed to project ${src} -> ${dest}:`, err);
+    return false;
+  }
+}
 
 // The three synced content roots inside every mirror (see remote-path.ts
 // Section) -- the same scope discover-local.ts and remote-sweep.ts walk.
@@ -79,16 +103,7 @@ async function linkDir(
     } else if (ent.isFile()) {
       const dest = join(targetRoot, relative(mirrorRoot, p));
       await mkdir(dirname(dest), { recursive: true });
-      try {
-        await link(p, dest);
-        count++;
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-          count++; // already linked from a previous projectNode call
-        }
-        // else best-effort: skip a file we can't link rather than fail
-        // the whole projection.
-      }
+      if (await linkOrCopy(p, dest)) count++;
     }
   }
   return count;
@@ -114,6 +129,64 @@ export async function cleanupSessionProjection(
     recursive: true,
     force: true,
   });
+}
+
+// Startup sweep (#208): cleanup at session end (cleanupSessionProjection,
+// called from transport.ts's onclose) is the only sweeper today -- a crashed
+// server process (or the whole desktop app) never runs onclose, so a
+// session's hardlinks stay on disk, still covered by the Seatbelt grant on
+// <portuniRoot>/.portuni-sessions/<homeNodeId>, readable by the NEXT session
+// spawned on that node with no scope event ever recorded for it. Call once
+// at boot: any <homeNodeId>/<sessionId> directory whose session is not
+// 'running' in the durable sessions table (closed/suspended/archived, or a
+// session id that does not exist at all) is stale and removed. A session
+// legitimately still 'running' when the server restarts has no live
+// connection anyway (this process is what held it) -- its projection is
+// kept rather than guessed at, since a resumed connection re-materializes
+// it from the accumulated read set regardless (spec: "Restart consolidates").
+// Best-effort throughout: a single node/session directory that fails to
+// read or remove is logged and skipped, never aborts the whole sweep.
+export async function sweepStaleSessionProjections(
+  db: Client,
+  portuniRoot: string,
+): Promise<{ removed: string[] }> {
+  const base = join(portuniRoot, ".portuni-sessions");
+  const removed: string[] = [];
+  let nodeDirs: string[];
+  try {
+    nodeDirs = await readdir(base);
+  } catch {
+    return { removed }; // no projection root yet -- nothing to sweep
+  }
+
+  for (const nodeId of nodeDirs) {
+    const nodeDir = join(base, nodeId);
+    let sessionIds: string[];
+    try {
+      sessionIds = await readdir(nodeDir);
+    } catch (err) {
+      console.error(`[portuni:session-projection] sweep: failed to read ${nodeDir}:`, err);
+      continue;
+    }
+    for (const sessionId of sessionIds) {
+      try {
+        const running = await db.execute({
+          sql: "SELECT 1 FROM sessions WHERE id = ? AND state = 'running'",
+          args: [sessionId],
+        });
+        if (running.rows.length > 0) continue;
+        const target = join(nodeDir, sessionId);
+        await rm(target, { recursive: true, force: true });
+        removed.push(target);
+      } catch (err) {
+        console.error(
+          `[portuni:session-projection] sweep: failed to remove stale projection for session ${sessionId}:`,
+          err,
+        );
+      }
+    }
+  }
+  return { removed };
 }
 
 // --- Registry -------------------------------------------------------------
@@ -180,7 +253,7 @@ async function relinkOne(entry: ProjectedEntry, absPath: string): Promise<void> 
     if (st.isDirectory()) return; // directories are created lazily via mkdir below
     await mkdir(dirname(dest), { recursive: true });
     await rm(dest, { force: true });
-    await link(absPath, dest);
+    await linkOrCopy(absPath, dest);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       // Source deleted (or an ignore-file read raced a delete) -- drop the

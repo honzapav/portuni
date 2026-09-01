@@ -137,10 +137,14 @@ export const INDEX_OAUTH_CODES_HASH = `CREATE UNIQUE INDEX IF NOT EXISTS idx_oau
 // sessions have no anchor. state's terminal value is 'archived' -- a view
 // filter (domain/sessions.ts's autoArchiveClosedSessions), never a delete.
 // name/name_is_custom added by migration 028 -- see there for the
-// default-name / handoff-enrichment / rename model.
+// default-name / handoff-enrichment / rename model. node_id is ON DELETE
+// SET NULL (migration 030 fixes this on existing DBs): the durable session
+// record and its session_scope audit outlive the anchor node's deletion --
+// CASCADE here would silently destroy the audit trail the spec calls
+// "durable core outlives every CLI's transcript retention by design".
 export const DDL_SESSIONS = `CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY CHECK(length(id) = 26),
-    node_id TEXT REFERENCES nodes(id) ON DELETE CASCADE,
+    node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
     user_id TEXT NOT NULL REFERENCES users(id),
     session_type TEXT NOT NULL CHECK(session_type IN ('interactive_task','interactive_chat','headless','env')),
     cli TEXT,

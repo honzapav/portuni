@@ -3,7 +3,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile, readFile, stat, unlink } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, stat, unlink, access } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -17,7 +17,11 @@ import {
   projectedEntriesForNode,
   relinkProjectedFile,
   clearProjectionRegistryForTests,
+  linkOrCopy,
+  sweepStaleSessionProjections,
 } from "../apps/server/domain/session-projection.js";
+import { createSession, transitionSessionState } from "../apps/server/domain/sessions.js";
+import { makeSharedDb } from "./helpers/shared-db.js";
 
 let dir: string;
 let mirror: string;
@@ -183,5 +187,115 @@ describe("relinkProjectedFile", () => {
 
     assert.equal(await readFile(join(targetA, "wip", "shared.md"), "utf8"), "shared\n");
     assert.equal(await readFile(join(targetB, "wip", "shared.md"), "utf8"), "shared\n");
+  });
+});
+
+// #208: a mirror on another volume than the projection root (e.g. a custom
+// mirror path, or /dev/shm's tmpfs vs the regular filesystem here) used to
+// leave a silent empty projection directory. linkOrCopy must fall back to a
+// real copy on EXDEV instead.
+describe("linkOrCopy: EXDEV fallback", () => {
+  it("succeeds via a plain hardlink on the same filesystem", async () => {
+    const src = join(mirror, "wip", "same-fs.md");
+    await writeFile(src, "same fs\n");
+    const dest = join(dir, "same-fs-dest.md");
+
+    assert.equal(await linkOrCopy(src, dest), true);
+    assert.equal(await readFile(dest, "utf8"), "same fs\n");
+    assert.equal((await stat(src)).ino, (await stat(dest)).ino, "a real hardlink, not a copy");
+  });
+
+  it("falls back to a real copy across a filesystem boundary (EXDEV)", async (t) => {
+    const shmDir = "/dev/shm";
+    try {
+      await access(shmDir);
+    } catch {
+      t.skip("/dev/shm not available in this environment");
+      return;
+    }
+    const shmSubdir = await mkdtemp(join(shmDir, "portuni-sessproj-"));
+    try {
+      const src = join(shmSubdir, "cross-fs.md");
+      await writeFile(src, "cross fs\n");
+      const dest = join(dir, "cross-fs-dest.md");
+
+      // Sanity: this really is a cross-device pair in this environment,
+      // otherwise the test would pass trivially without exercising EXDEV.
+      const srcDev = (await stat(src)).dev;
+      const destParentDev = (await stat(dir)).dev;
+      if (srcDev === destParentDev) {
+        t.skip("/dev/shm and the test tmpdir are on the same filesystem here");
+        return;
+      }
+
+      const result = await linkOrCopy(src, dest);
+      assert.equal(result, true);
+      assert.equal(await readFile(dest, "utf8"), "cross fs\n");
+      assert.notEqual((await stat(src)).ino, (await stat(dest)).ino, "a copy, not a hardlink");
+    } finally {
+      await rm(shmSubdir, { recursive: true, force: true });
+    }
+  });
+
+  it("logs and returns false (never throws) for an error other than EEXIST/EXDEV", async () => {
+    const src = join(mirror, "wip", "other-error.md");
+    await writeFile(src, "x\n");
+    // A destination inside a non-existent parent directory raises ENOENT --
+    // any code other than EEXIST/EXDEV should be swallowed with a log, not
+    // thrown, matching the best-effort contract the rest of this module has.
+    const dest = join(dir, "no-such-parent", "dest.md");
+
+    const result = await linkOrCopy(src, dest);
+    assert.equal(result, false);
+    await assert.rejects(() => stat(dest));
+  });
+
+  it("treats EEXIST as success without re-linking", async () => {
+    const src = join(mirror, "wip", "already.md");
+    await writeFile(src, "first\n");
+    const dest = join(dir, "already-dest.md");
+    await writeFile(dest, "pre-existing, unrelated content\n");
+
+    const result = await linkOrCopy(src, dest);
+    assert.equal(result, true);
+    // Unchanged -- EEXIST means "leave the existing link/file alone", not
+    // "overwrite it".
+    assert.equal(await readFile(dest, "utf8"), "pre-existing, unrelated content\n");
+  });
+});
+
+// #208: no startup reconcile meant a crashed process's leftover hardlink
+// directories stayed readable to the next session on that node forever,
+// with no scope event ever recorded for it.
+describe("sweepStaleSessionProjections", () => {
+  it("removes projection dirs for closed/archived/unknown sessions, keeps running ones", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const running = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    const closed = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await transitionSessionState(db, "U1", closed.id, "closed");
+    const suspended = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await transitionSessionState(db, "U1", suspended.id, "suspended");
+    const unknownSessionId = "01UNKNOWNSESSION000000000";
+
+    const base = join(dir, ".portuni-sessions", nodeId);
+    for (const sessionId of [running.id, closed.id, suspended.id, unknownSessionId]) {
+      const target = join(base, sessionId, "SOME_ADHOC_NODE");
+      await mkdir(target, { recursive: true });
+      await writeFile(join(target, "f.md"), "x\n");
+    }
+
+    const { removed } = await sweepStaleSessionProjections(db, dir);
+
+    assert.equal(removed.length, 3);
+    await assert.doesNotReject(() => stat(join(base, running.id)), "running session's projection survives");
+    await assert.rejects(() => stat(join(base, closed.id)), "closed session's projection is removed");
+    await assert.rejects(() => stat(join(base, suspended.id)), "suspended session's projection is removed");
+    await assert.rejects(() => stat(join(base, unknownSessionId)), "unknown session id's projection is removed");
+  });
+
+  it("is a no-op when no .portuni-sessions directory exists yet", async () => {
+    const { db } = await makeSharedDb();
+    const { removed } = await sweepStaleSessionProjections(db, join(dir, "never-created"));
+    assert.deepEqual(removed, []);
   });
 });

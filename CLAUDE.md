@@ -283,7 +283,17 @@ symlink to this file.
   is inert here (`NO_DB`). The old `.portuni-scope/`
   copy staging and its `ScopeReconciler` sweeper are fully retired (no
   successor of that name — `disk-projection.ts` is a clean rename, not a
-  continuation). Model: `docs/architecture/scope-disk-projection.md`; plan:
+  continuation). Node-keyed (not session-keyed) means concurrent sessions on
+  the same home node share kernel-level read access to each other's ad-hoc
+  projections — a known limitation (#208), not yet fixed (needs the session
+  id minted before spawn and threaded through, a larger cross-cutting
+  change). What is fixed: `sweepStaleSessionProjections`
+  (`session-projection.ts`), run once at boot from both entry points
+  (`boot/session-projection-sweep.ts`), removes any `<sessionId>/`
+  subdirectory whose session is not `running` in the durable `sessions`
+  table — a crashed process's leftover hardlinks no longer stay readable
+  forever with no scope event recorded. Model:
+  `docs/architecture/scope-disk-projection.md`; plan:
   `docs/superpowers/plans/2026-07-06-scope-real-paths.md`.
 
 - **No automatic first prompt on spawn.** A terminal opened from a node

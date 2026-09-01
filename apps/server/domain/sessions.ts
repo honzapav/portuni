@@ -256,10 +256,34 @@ export async function autoArchiveClosedSessions(
 
 // --- session_scope: the persisted cache of a session's read/write scope ---
 
+// Privilege rank for added_via, used by upsertSessionScopeRead's conflict
+// resolution below (#208): a node's classification must never be
+// downgraded on a re-add, or the audit signal for "repeated disconnected
+// jumps to the same node -- a missing edge in the graph" (spec, "Read
+// scope") is lost the moment the node is later reached normally.
+// disconnected/elicited (an agent had to justify or the user had to
+// confirm the reach) outrank edge/created/seed (routine, automatic
+// reaches).
+const ADDED_VIA_RANK: Record<SessionScopeAddedVia, number> = {
+  seed: 0,
+  edge: 1,
+  created: 1,
+  disconnected: 2,
+  elicited: 2,
+};
+
+function rankExpr(column: string): string {
+  const cases = (Object.entries(ADDED_VIA_RANK) as [SessionScopeAddedVia, number][])
+    .map(([via, rank]) => `WHEN '${via}' THEN ${rank}`)
+    .join(" ");
+  return `(CASE ${column} ${cases} ELSE 0 END)`;
+}
+
 // Upsert a node's read-scope membership. Idempotent re-adds (e.g. a node
 // already in scope reached again via a different path) update added_via/
-// reason to the latest classification without touching `writable` -- that
-// dimension is set independently via setSessionScopeWritable, matching
+// reason to the new classification only when it outranks (never downgrades)
+// the existing one -- see ADDED_VIA_RANK. `writable` is untouched here --
+// that dimension is set independently via setSessionScopeWritable, matching
 // SessionScope.add() vs .addWritable() in mcp/scope.ts.
 export async function upsertSessionScopeRead(
   db: Client,
@@ -269,10 +293,13 @@ export async function upsertSessionScopeRead(
   reason: string | null,
 ): Promise<void> {
   const now = new Date().toISOString();
+  const newOutranksExisting = `${rankExpr("excluded.added_via")} > ${rankExpr("session_scope.added_via")}`;
   await db.execute({
     sql: `INSERT INTO session_scope (session_id, node_id, added_via, reason, writable, added_at)
           VALUES (?, ?, ?, ?, 0, ?)
-          ON CONFLICT (session_id, node_id) DO UPDATE SET added_via = excluded.added_via, reason = excluded.reason`,
+          ON CONFLICT (session_id, node_id) DO UPDATE SET
+            added_via = CASE WHEN ${newOutranksExisting} THEN excluded.added_via ELSE session_scope.added_via END,
+            reason = CASE WHEN ${newOutranksExisting} THEN excluded.reason ELSE session_scope.reason END`,
     args: [sessionId, nodeId, addedVia, reason, now],
   });
 }

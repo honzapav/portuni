@@ -496,7 +496,24 @@ describe("agent MCP front door: write gate on LOCAL_TOOLS", () => {
   // re-prompted on every write to the same node. It must now be remembered
   // for the life of the local session.
   it("an accepted write grant is remembered: a second write to the same node does not re-prompt", async () => {
+    // Tracks this local server's own standalone GET/SSE stream the same way
+    // startStubCentral's openGets() does above: a server-initiated request
+    // (the elicitation dialog) can only be delivered once the client's
+    // standalone GET stream is open, and that stream is established
+    // asynchronously just after client.connect() resolves -- calling a tool
+    // that triggers a push before it is up would leave the push with
+    // nowhere to go until the client reconnects, well past this test's
+    // patience. waitFor(() => openGets() >= 1) below is the same guard the
+    // top-level before() hook already uses for the OTHER standalone stream
+    // in this file (the front door's own upstream connection to the stub).
+    let openGets = 0;
     const server = createServer((req, res) => {
+      if (req.method === "GET") {
+        openGets++;
+        res.on("close", () => {
+          openGets--;
+        });
+      }
       void agentTransport.handle(req, res, taskIdentity);
     });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -515,6 +532,9 @@ describe("agent MCP front door: write gate on LOCAL_TOOLS", () => {
       new StreamableHTTPClientTransport(new URL(`${base}/mcp?home_node_id=${HOME}`)),
     );
     try {
+      const streamReady = await waitFor(() => openGets >= 1);
+      assert.ok(streamReady, "client's standalone GET stream never opened");
+
       const call = () =>
         client.callTool({
           name: "portuni_mirror",

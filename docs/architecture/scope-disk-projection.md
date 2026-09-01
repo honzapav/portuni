@@ -61,6 +61,31 @@ projection either way; `portuni_read_file(node_id, path)`
 works (local mirror, or a Drive-direct read when this device has none). Local
 mode gates all of this on the session scope (`guardNodeRead`); central mode
 gates on mirror-presence (a teammate device only mirrors in-scope nodes).
+Hardlinking falls back to a real copy on `EXDEV` (a mirror on another
+filesystem than the projection root) instead of silently producing an empty
+directory (`session-projection.ts`'s `linkOrCopy`).
+
+**Known limitation (#208).** Because the Seatbelt allow is keyed by node, not
+by session (the profile is frozen before the connecting session's id
+exists — see above), every session anchored to the same home node shares
+kernel-level read access to every other session's ad-hoc projections under
+that node, including one-off elicited reads. Closing this fully needs the
+spawning side to mint the session id *before* the sandbox profile is built
+and thread it through to the MCP connection (a header-relay mechanism like
+`X-Portuni-Profile`'s, Claude-only today) so the grant can be scoped to
+`<projectionRoot>/<sessionId>/` instead of the whole `<projectionRoot>/` —
+deferred as a follow-up, cross-cutting (Rust spawn + frontend + MCP
+transport) change. What ships now: `onclose` cleanup only ran on a graceful
+session end, so a crashed process (or the whole desktop app) left its
+hardlinks behind forever, readable by the next session with no scope event
+recorded for the read. `sweepStaleSessionProjections`
+(`session-projection.ts`), run once at boot from both entry points
+(`boot/session-projection-sweep.ts`), now removes any
+`<projectionRoot>/<sessionId>/` directory whose session is not `running` in
+the durable `sessions` table (closed/suspended/archived, or an id that no
+longer exists) — closing the "stays readable forever after a crash" half of
+the gap even though session-to-session sharing while both are genuinely
+running is not yet closed.
 
 ## Restart consolidation
 

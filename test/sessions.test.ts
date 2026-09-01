@@ -309,4 +309,43 @@ describe("session_scope: read cache + writable flag", () => {
     const session = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_chat" });
     assert.deepEqual(await getSessionScope(db, session.id), []);
   });
+
+  // #208: a node reached via a disconnected jump (privileged, requires a
+  // declared reason) must not have that classification erased by a later,
+  // routine edge-reachable re-touch -- the spec's "repeated disconnected
+  // jumps to the same node" signal depends on it staying visible.
+  it("a disconnected-then-edge sequence keeps reporting disconnected (never downgrades)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const session = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
+    await upsertSessionScopeRead(db, session.id, nodeId, "disconnected", "headless jump: investigating an incident");
+    await upsertSessionScopeRead(db, session.id, nodeId, "edge", "edge-reachable");
+
+    const rows = await getSessionScope(db, session.id);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].added_via, "disconnected", "must not be downgraded to edge");
+    assert.equal(rows[0].reason, "headless jump: investigating an incident");
+  });
+
+  it("an edge-then-disconnected sequence upgrades to disconnected", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const session = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
+    await upsertSessionScopeRead(db, session.id, nodeId, "edge", "edge-reachable");
+    await upsertSessionScopeRead(db, session.id, nodeId, "disconnected", "headless jump: investigating an incident");
+
+    const rows = await getSessionScope(db, session.id);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].added_via, "disconnected");
+    assert.equal(rows[0].reason, "headless jump: investigating an incident");
+  });
+
+  it("elicited and disconnected are equally privileged -- a later elicited re-touch still upgrades over seed", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const session = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await upsertSessionScopeRead(db, session.id, nodeId, "seed", "session_init seed");
+    await upsertSessionScopeRead(db, session.id, nodeId, "elicited", "user confirmed via dialog");
+
+    const rows = await getSessionScope(db, session.id);
+    assert.equal(rows[0].added_via, "elicited");
+    assert.equal(rows[0].reason, "user confirmed via dialog");
+  });
 });
