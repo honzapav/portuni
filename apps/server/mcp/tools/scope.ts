@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getDb } from "../../infra/db.js";
 import { logAudit } from "../../infra/audit.js";
 import {
+  isEdgeReachable,
   loadNodeScopeMeta,
   seedScopeFromHome,
   violatesHardFloor,
@@ -120,7 +121,7 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_expand_scope",
-    "Add one or more nodes to the current MCP session's read-scope set. Required when a read tool returned {error: scope_expansion_required, ...}: surface the request to the user, get confirmation, then call this. reason: 'user-requested: <quoted prompt fragment>' when the user named the node in the prompt; 'user-confirmed-in-chat' after a chat confirmation. Hard-floor nodes (visibility=private owned by another user, or meta.scope_sensitive=true) need confirmed_hard_floor=true backed by explicit user confirmation. Every expansion is audited and surfaced in portuni_session_log. See portuni://scope-rules.",
+    "Add one or more nodes to the current MCP session's read-scope set. Required when a read tool returned {error: scope_expansion_required, ...}: surface the request to the user, get confirmation, then call this. reason: 'user-requested: <quoted prompt fragment>' when the user named the node in the prompt; 'user-confirmed-in-chat' after a chat confirmation. Each accepted node is classified server-side and returned in added_via: 'edge' when it was reachable via a graph edge from the current scope (most calls -- a plain read tool already auto-expands these without needing this tool), 'disconnected' when it was reached only via search/name with no edge path -- the classification is computed by the server, never taken from your reason text. Hard-floor nodes (visibility=private owned by another user, or meta.scope_sensitive=true) need confirmed_hard_floor=true backed by explicit user confirmation; headless sessions cannot override hard floors at all, confirmed_hard_floor is ignored. Every expansion is audited and surfaced in portuni_session_log. See portuni://scope-rules.",
     {
       node_ids: z
         .array(z.string())
@@ -160,8 +161,10 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
       const knownIds = new Set(known.rows.map((r) => r.id as string));
 
       const accepted: string[] = [];
+      const addedVia: Record<string, "edge" | "disconnected"> = {};
       const rejected_unknown: string[] = [];
-      const refused_hard_floor: { node_id: string; reason: string }[] = [];
+      const refused_hard_floor: { node_id: string; reason: string; permanent: boolean }[] = [];
+      const headless = scope.sessionType === "headless";
 
       for (const id of args.node_ids) {
         if (!knownIds.has(id)) {
@@ -177,15 +180,28 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
           continue;
         }
         const meta = await loadNodeScopeMeta(db, id);
-        if (violatesHardFloor(meta, ctx.identity.userId) && !args.confirmed_hard_floor) {
-          refused_hard_floor.push({
-            node_id: id,
-            reason: meta.scopeSensitive
-              ? "meta.scope_sensitive=true"
-              : "visibility=private and owner is another user",
-          });
-          continue;
+        if (violatesHardFloor(meta, ctx.identity.userId)) {
+          // Headless has no elicitation channel and no deferred-review path
+          // for hard floors: always refused, confirmed_hard_floor cannot
+          // override it (spec: "Hard floors ... always refused in headless").
+          if (headless || !args.confirmed_hard_floor) {
+            refused_hard_floor.push({
+              node_id: id,
+              reason: meta.scopeSensitive
+                ? "meta.scope_sensitive=true"
+                : "visibility=private and owner is another user",
+              permanent: headless,
+            });
+            continue;
+          }
         }
+        // Classify the expansion the same way guardNodeRead does: reachable
+        // from the current scope set (including nodes just accepted earlier
+        // in this same call) is an "edge" traversal; otherwise it is a
+        // "disconnected" jump -- the server stamps this regardless of what
+        // the agent's `reason` claims.
+        const reachable = scope.has(id) || (await isEdgeReachable(db, scope, id));
+        addedVia[id] = reachable ? "edge" : "disconnected";
         scope.add(id);
         accepted.push(id);
       }
@@ -199,6 +215,7 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
         });
         await logAudit(ctx.identity.userId, "expand_scope", "scope", accepted.join(","), {
           node_ids: accepted,
+          added_via: addedVia,
           reason: args.reason,
           triggered_by: args.triggered_by,
           confirmed_hard_floor: args.confirmed_hard_floor,
@@ -216,16 +233,18 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
       // the agent reads their files via portuni_read_file.
       await Promise.all(accepted.map((id) => ctx.reconciler.reconcileNode(id)));
 
+      const overridableRefusals = refused_hard_floor.some((r) => !r.permanent);
       return {
         content: [
           {
             type: "text" as const,
             text: JSON.stringify({
               added: accepted,
+              added_via: addedVia,
               unknown: rejected_unknown,
               refused_hard_floor,
               scope_size: scope.size(),
-              hint: refused_hard_floor.length > 0
+              hint: overridableRefusals
                 ? "Re-call portuni_expand_scope with confirmed_hard_floor=true only after the user explicitly authorises the hard-floor node."
                 : accepted.length > 0
                   ? "Expanded nodes are not on disk here; read their files with portuni_read_file (node_id + path)."

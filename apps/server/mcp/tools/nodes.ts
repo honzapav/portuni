@@ -75,6 +75,18 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
         };
       }
 
+      // A node created by this session enters its read and write set
+      // automatically -- a task's outputs are part of its context by
+      // definition (spec: "Read scope").
+      scope.addWritable(id);
+      scope.recordExpansion({
+        at: new Date().toISOString(),
+        node_ids: [id],
+        reason: "node created by this session",
+        triggered_by: "agent",
+        addedVia: "created",
+      });
+
       const result = {
         id,
         type: args.type,

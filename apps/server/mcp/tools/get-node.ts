@@ -97,7 +97,7 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
-      if (guard.kind === "elicit") {
+      if (guard.kind === "elicit" || guard.kind === "refused") {
         return {
           content: [{ type: "text" as const, text: JSON.stringify(guard.error) }],
           isError: true,

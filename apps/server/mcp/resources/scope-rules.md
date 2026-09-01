@@ -17,15 +17,27 @@ expanded only through user confirmation.
   connecting
   without that query param, `portuni_session_init(home_node_id)` is
   the manual fallback.
-- **Expand** explicitly. `portuni_expand_scope(node_ids, reason,
-  triggered_by, confirmed_hard_floor?)` adds nodes. Every expansion
-  is audited and surfaced in `portuni_session_log`.
-- **No implicit growth**. Reads do not add to scope. Reading a node
-  does not put its neighbors in scope; the agent must expand
-  intentionally.
+- **Edge-reachable expansion is automatic.** Reading a node that is
+  directly connected by a graph edge to something already in scope
+  auto-expands scope to include it — no `portuni_expand_scope` round
+  trip needed. This is a natural traversal, not a jump: the server
+  computes reachability itself (never taken from the agent), adds the
+  node, and audits it as `added_via: "edge"`.
+- **Disconnected jumps require confirmation.** Reading a node found
+  only via search or name — with no edge path from anything already
+  in scope — is refused; the agent must confirm with the user and call
+  `portuni_expand_scope(node_ids, reason, triggered_by,
+  confirmed_hard_floor?)`. The server independently classifies the
+  expansion `added_via: "disconnected"` regardless of what `reason`
+  claims. Every expansion is audited and surfaced in
+  `portuni_session_log`.
+- **Nodes created by the session** enter its scope automatically
+  (`portuni_create_node`) — a task's own outputs are part of its
+  context by definition.
 
 If `cwd` is outside any mirror, the home node is null and the scope
-set starts empty. Every read then requires explicit expansion.
+set starts empty. Every read then requires explicit expansion (edge-
+reachable expansion has nothing to be reachable from).
 
 ## Session type
 
@@ -46,10 +58,10 @@ agent:
 - **`env`**: solo/loopback auth. Keeps its historical behavior; not
   part of this model.
 
-Every out-of-scope read currently elicits regardless of session type
--- there is no self-service bypass. `session_init` and `session_log`
-report the session's type; every scope-related audit entry carries it
-too.
+An edge-reachable read auto-expands (see above); a disconnected jump
+or a hard floor elicits — there is no self-service bypass for either.
+`session_init` and `session_log` report the session's type; every
+scope-related audit entry carries it too.
 
 ## Refusal contract
 
@@ -70,7 +82,19 @@ The agent MUST:
 4. Retry the original read tool.
 
 Do NOT fabricate confirmation. Do NOT auto-expand on the agent's own
-initiative without going through the elicitation cycle.
+initiative without going through the elicitation cycle. (This does not
+apply to edge-reachable nodes — those auto-expand by design, see
+above.)
+
+A read tool can also return:
+
+```json
+{ "error": "scope_refused", "tool": "...", "hint": "..." }
+```
+
+This is a **hard, non-negotiable refusal** — a headless session hitting
+a hard floor. There is no `portuni_expand_scope` round trip that will
+succeed; do not retry.
 
 ## Expansion semantics
 
@@ -81,7 +105,10 @@ initiative without going through the elicitation cycle.
 - `reason`: required, non-empty. Be honest about the trigger:
   prompt-named (`"user-requested: ..."`), chat-confirmed
   (`"user-confirmed-in-chat"`), or agent-initiated. The reason is
-  audit-visible.
+  audit-visible — but does NOT determine the audit classification:
+  the server independently computes `added_via` (`"edge"` or
+  `"disconnected"`) per node from graph reachability, returned in the
+  response's `added_via` map.
 - `triggered_by`: `"user"` (default) for prompt-named or
   chat-confirmed expansions; `"agent"` for agent-initiative reaches
   (rare; most agent reaches go through elicitation first).
@@ -98,7 +125,17 @@ require a stronger confirmation flag. Hard floor applies when:
 Hard-floor nodes are refused unless `confirmed_hard_floor: true` is
 also set on the expand call. That flag MUST be backed by an explicit
 user confirmation in chat; do not pass it on agent initiative.
-Refusals are audited under `scope_hard_floor_refusal`.
+Refusals are audited under `scope_hard_floor_refusal`, with a
+`permanent` flag per refusal.
+
+**Headless sessions cannot override a hard floor at all.**
+`confirmed_hard_floor` is ignored for `session_type: "headless"` — a
+headless session has no elicitation channel and no deferred-review
+path for hard-floor material, so these refusals are always
+`permanent: true`. A `portuni_get_node` / `portuni_read_file` /
+`portuni_get_context` call that hits a hard floor from a headless
+session returns `{ "error": "scope_refused", ... }` directly, not
+`scope_expansion_required` — there is nothing to retry.
 
 ## Search and global listing are discovery, not ingestion
 

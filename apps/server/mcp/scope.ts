@@ -10,6 +10,7 @@ import type { Client } from "@libsql/client";
 import { nodeVisibleTo, filterVisibleNodeIds, type GroupIdentityView } from "../auth/node-access.js";
 import { nodeNeighbourIds } from "../domain/queries/neighbours.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
+import { writeAudit } from "../infra/audit.js";
 
 // Session type: derived by the server from the authentication path, never
 // self-declared by the client/agent. See
@@ -48,11 +49,25 @@ export function deriveSessionType(
 
 export type ExpansionTrigger = "user" | "agent" | "traversal" | "init";
 
+// Mirrors the `session_scope.added_via` column sketched for the persistent
+// sessions table (phase 2): how a node entered the scope set. Kept here
+// as the in-memory audit tag so the vocabulary is already stable when the
+// table lands.
+//   seed        - home node or depth-1 neighbor, granted at spawn.
+//   edge        - reachable via a graph edge from the current scope set;
+//                 auto-approved, never round-tripped through expand_scope.
+//   disconnected- reached only via search/name, no edge path; requires a
+//                 declared reason (interactive: elicitation; headless: the
+//                 expand_scope reason argument, always present).
+//   created     - the node was created by this session.
+export type AddedVia = "seed" | "edge" | "disconnected" | "created";
+
 export interface ExpansionRecord {
   at: string;
   node_ids: string[];
   reason: string;
   triggered_by: ExpansionTrigger;
+  addedVia?: AddedVia;
 }
 
 export interface ScopeRequestDecision {
@@ -61,8 +76,15 @@ export interface ScopeRequestDecision {
   //   into a user prompt (Claude Code does this via MCP elicitation; Codex via
   //   chat). The reason names the node and tells the agent to call
   //   portuni_expand_scope after the user agrees.
-  kind: "allow" | "elicit";
+  // "refused" – a hard, non-negotiable refusal: no round-trip through
+  //   expand_scope can succeed (headless session hitting a hard floor).
+  kind: "allow" | "elicit" | "refused";
   message?: string;
+  // Set on "allow" when the node was not already in scope and is being
+  // auto-added because it is edge-reachable from the current scope set.
+  // Callers (guardNodeRead) perform the actual add + audit; decideRead
+  // stays a pure function.
+  addedVia?: "edge";
 }
 
 // In-memory state per MCP session. This object is captured by tool handler
@@ -75,6 +97,11 @@ export class SessionScope {
   // tools return their real path and the reconciler must NOT stage them.
   // Non-seed in-scope nodes (ad-hoc expansion) still stage into .portuni-scope.
   private readonly seed = new Set<string>();
+  // Write set: a placeholder for the write gate that lands in a later
+  // phase (domain-layer enforcement, session_scope.writable). Populated
+  // today only for nodes created by this session -- a task's own outputs
+  // are part of its context by definition (spec: "Read scope").
+  private readonly writeSet = new Set<string>();
   private readonly addListeners: ((nodeId: string) => void)[] = [];
 
   homeNodeId: string | null = null;
@@ -141,6 +168,23 @@ export class SessionScope {
   recordExpansion(record: ExpansionRecord): void {
     this.history.push(record);
   }
+
+  // Add a node to BOTH the read and write set -- a node cannot be writable
+  // without being readable. Returns true if it was newly writable.
+  addWritable(nodeId: string): boolean {
+    this.add(nodeId);
+    if (this.writeSet.has(nodeId)) return false;
+    this.writeSet.add(nodeId);
+    return true;
+  }
+
+  canWrite(nodeId: string): boolean {
+    return this.writeSet.has(nodeId);
+  }
+
+  writableNodes(): string[] {
+    return [...this.writeSet];
+  }
 }
 
 // Seed the scope set with the home node + its depth-1 neighbors. Auto-seed
@@ -180,12 +224,24 @@ export async function seedScopeFromHome(
   return [homeNodeId, ...neighborIds];
 }
 
-// Decide whether a single-target read should be served. Hard floors always
-// elicit; anything else out of scope elicits too (the strict/balanced/
-// permissive switch is gone -- strict is the model now; session-type-aware
-// nuance, e.g. headless deferred review, lands in a later phase). Caller is
-// responsible for auditing on `allow` and surfacing the elicitation prompt
-// on `elicit`.
+// Decide whether a single-target read should be served. The server computes
+// the classification itself -- the agent never declares it:
+//
+//   - already in scope                       -> allow
+//   - hard floor (scope_sensitive / private-  -> headless: refused outright
+//     other)                                     interactive/env: elicit
+//   - edge-reachable from the current scope   -> allow, addedVia: "edge"
+//     set (reachable is precomputed by the
+//     caller, see isEdgeReachable)
+//   - otherwise (disconnected jump)           -> elicit (interactive types
+//                                                  confirm via elicitation;
+//                                                  headless proceeds only via
+//                                                  portuni_expand_scope's
+//                                                  mandatory `reason` field)
+//
+// See docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md
+// ("Read scope"). Caller is responsible for auditing on `allow` (when
+// addedVia is set) and surfacing the elicitation prompt on `elicit`.
 //
 // `nodeMeta` is a small bag with the bits of the target node that gate the
 // hard floors (visibility + meta.scope_sensitive). Caller looks them up.
@@ -200,19 +256,27 @@ export function decideRead(
   nodeId: string,
   nodeMeta: NodeScopeMeta,
   sessionUserId: string,
+  reachable: boolean,
 ): ScopeRequestDecision {
   if (scope.has(nodeId)) {
     return { kind: "allow" };
   }
 
   // Hard floors: visibility=private created by someone else, or
-  // meta.scope_sensitive=true. These always elicit.
+  // meta.scope_sensitive=true. Headless has no elicitation channel and no
+  // deferred-review path for hard floors -- refused outright, every time.
   if (
     nodeMeta.scopeSensitive ||
     (nodeMeta.visibility === "private" &&
       nodeMeta.creatorUserId !== null &&
       nodeMeta.creatorUserId !== sessionUserId)
   ) {
+    if (scope.sessionType === "headless") {
+      return {
+        kind: "refused",
+        message: `Node ${nodeId} is scope-sensitive and cannot be reached by a headless session.`,
+      };
+    }
     return {
       kind: "elicit",
       message:
@@ -221,11 +285,23 @@ export function decideRead(
     };
   }
 
+  // Edge-reachable: a node adjacent to something already in scope is a
+  // natural traversal, not a jump -- auto-approve without a round trip.
+  if (reachable) {
+    return { kind: "allow", addedVia: "edge" };
+  }
+
+  // Disconnected jump: found only via search/name, no edge path from the
+  // current scope set. Interactive types confirm via elicitation; headless
+  // proceeds only through portuni_expand_scope, whose `reason` field is
+  // mandatory -- the server stamps the audit `disconnected` regardless of
+  // what the agent claims (see expand_scope's classification).
   return {
     kind: "elicit",
     message:
-      `Node ${nodeId} is outside the session scope. Ask the user to ` +
-      `confirm, then call portuni_expand_scope with reason 'user-confirmed-in-chat'.`,
+      `Node ${nodeId} is outside the session scope and not reachable via a graph edge ` +
+      `from anything already in scope (a disconnected jump). Ask the user to confirm, ` +
+      `then call portuni_expand_scope with reason 'user-confirmed-in-chat'.`,
   };
 }
 
@@ -242,6 +318,23 @@ export function scopeExpansionError(
 } {
   return {
     error: "scope_expansion_required",
+    node_id: nodeId,
+    hint,
+  };
+}
+
+// Build the structured-error JSON for a hard, non-negotiable refusal (no
+// expand_scope round trip can succeed -- headless hitting a hard floor).
+export function scopeRefusedError(
+  nodeId: string,
+  hint: string,
+): {
+  error: string;
+  node_id: string;
+  hint: string;
+} {
+  return {
+    error: "scope_refused",
     node_id: nodeId,
     hint,
   };
@@ -300,19 +393,37 @@ export async function loadNodeScopeMeta(
   };
 }
 
+// Is `nodeId` directly edge-adjacent to some node already in the scope set?
+// Depth-1 only, reusing the same neighbour query seedScopeFromHome uses --
+// the contract is "reachable from the current scope set via a graph edge",
+// not a full multi-hop graph walk. A node two hops away becomes reachable
+// naturally once the one-hop node between them enters scope.
+export async function isEdgeReachable(
+  db: Client,
+  scope: SessionScope,
+  nodeId: string,
+): Promise<boolean> {
+  if (scope.size() === 0) return false;
+  const neighbourIds = await nodeNeighbourIds(db, nodeId);
+  return neighbourIds.some((id) => scope.has(id));
+}
+
 // Result of guardNodeRead. On allow, callers proceed with the read.
-// On elicit, callers return the structured error to MCP.
+// On elicit, callers return the structured error to MCP (a round trip
+// through portuni_expand_scope can still succeed).
+// On refused, callers return the structured error to MCP, but no round trip
+// can succeed (headless hitting a hard floor) -- do not suggest expand_scope.
 // On notFound, callers report the missing node.
 export type ReadGuardOutcome =
   | { kind: "allow" }
   | { kind: "elicit"; error: ReturnType<typeof scopeExpansionError> }
+  | { kind: "refused"; error: ReturnType<typeof scopeRefusedError> }
   | { kind: "not_found" };
 
-// One-shot scope check: load meta, run decideRead. decideRead only ever
-// returns "allow" for a node already in the scope set (out-of-scope reads
-// always elicit now that the strict/balanced/permissive switch is gone), so
-// there is nothing left to auto-add or audit here on the allow path -- that
-// pass-through-expansion behavior was specific to balanced/permissive.
+// One-shot scope check: load meta, compute edge-reachability, run
+// decideRead. On an edge-reachable allow, this is where the actual
+// side effects happen (decideRead stays pure): the node is added to
+// scope, the expansion is recorded, and the auto-expansion is audited.
 //
 // identity is optional for backwards compatibility with callers that only
 // need the classic scope gate. When provided, a group-visibility check
@@ -334,6 +445,9 @@ export async function guardNodeRead(
     if (!visible) return { kind: "not_found" };
   }
 
+  const alreadyInScope = scope.has(nodeId);
+  const reachable = alreadyInScope || (await isEdgeReachable(db, scope, nodeId));
+
   const decision = decideRead(
     scope,
     nodeId,
@@ -343,12 +457,35 @@ export async function guardNodeRead(
       scopeSensitive: meta.scopeSensitive,
     },
     sessionUserId,
+    reachable,
   );
+
+  if (decision.kind === "refused") {
+    return {
+      kind: "refused",
+      error: scopeRefusedError(nodeId, decision.message ?? "refused"),
+    };
+  }
   if (decision.kind === "elicit") {
     return {
       kind: "elicit",
       error: scopeExpansionError(nodeId, decision.message ?? "expand scope first"),
     };
+  }
+
+  if (decision.addedVia === "edge" && !alreadyInScope) {
+    scope.add(nodeId);
+    scope.recordExpansion({
+      at: new Date().toISOString(),
+      node_ids: [nodeId],
+      reason: "edge-reachable from the current scope set",
+      triggered_by: "traversal",
+      addedVia: "edge",
+    });
+    await writeAudit(db, sessionUserId, "scope_auto_expand", "scope", nodeId, {
+      added_via: "edge",
+      session_type: scope.sessionType,
+    });
   }
 
   return { kind: "allow" };

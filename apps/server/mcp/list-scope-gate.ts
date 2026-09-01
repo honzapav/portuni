@@ -41,7 +41,7 @@ export async function guardListScope(
       },
     };
   }
-  if (guard.kind === "elicit") {
+  if (guard.kind === "elicit" || guard.kind === "refused") {
     return {
       kind: "error",
       response: {

@@ -13,6 +13,7 @@ import { createClient } from "@libsql/client";
 import {
   SessionScope,
   guardNodeRead,
+  isEdgeReachable,
   loadNodeScopeMeta,
   violatesHardFloor,
 } from "../apps/server/mcp/scope.js";
@@ -21,6 +22,12 @@ async function freshDb() {
   const db = createClient({ url: ":memory:" });
   await db.execute(
     `CREATE TABLE nodes (id TEXT PRIMARY KEY, type TEXT, name TEXT, owner_id TEXT, created_by TEXT, visibility TEXT NOT NULL DEFAULT 'team', meta TEXT)`,
+  );
+  await db.execute(
+    `CREATE TABLE edges (id TEXT PRIMARY KEY, source_id TEXT, target_id TEXT, relation TEXT)`,
+  );
+  await db.execute(
+    `CREATE TABLE audit_log (id TEXT PRIMARY KEY, user_id TEXT, action TEXT, target_type TEXT, target_id TEXT, detail TEXT, timestamp TEXT)`,
   );
   return db;
 }
@@ -117,7 +124,7 @@ describe("guardNodeRead", () => {
     assert.equal(scope.has("N1"), true);
   });
 
-  it("elicits for an out-of-scope node (every session type is strict now)", async () => {
+  it("elicits for a disconnected out-of-scope node (no edge to anything in scope)", async () => {
     const db = await freshDb();
     await db.execute({
       sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
@@ -127,5 +134,75 @@ describe("guardNodeRead", () => {
     const r = await guardNodeRead(db, scope, "N1", "U1");
     assert.equal(r.kind, "elicit");
     assert.equal(scope.has("N1"), false);
+  });
+
+  it("auto-expands an edge-reachable out-of-scope node without an elicit round-trip", async () => {
+    const db = await freshDb();
+    await db.execute({
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N1", "project", "P", null, "U1", "team", null],
+    });
+    await db.execute({
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N2", "project", "Q", null, "U1", "team", null],
+    });
+    await db.execute({
+      sql: `INSERT INTO edges (id, source_id, target_id, relation) VALUES (?,?,?,?)`,
+      args: ["e1", "N1", "N2", "related_to"],
+    });
+    const scope = new SessionScope("interactive_task");
+    scope.add("N1");
+    const r = await guardNodeRead(db, scope, "N2", "U1");
+    assert.equal(r.kind, "allow");
+    assert.equal(scope.has("N2"), true, "reachable node is added to scope as a side effect");
+    const expansions = scope.expansions();
+    assert.equal(expansions.length, 1);
+    assert.equal(expansions[0].addedVia, "edge");
+  });
+
+  it("refuses (not elicits) a headless session hitting a hard floor", async () => {
+    const db = await freshDb();
+    await db.execute({
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N1", "project", "P", null, "U_OTHER", "private", null],
+    });
+    const scope = new SessionScope("headless");
+    const r = await guardNodeRead(db, scope, "N1", "U_SELF");
+    assert.equal(r.kind, "refused");
+    assert.equal(scope.has("N1"), false);
+  });
+});
+
+describe("isEdgeReachable", () => {
+  it("false when the scope set is empty", async () => {
+    const db = await freshDb();
+    const scope = new SessionScope("interactive_task");
+    assert.equal(await isEdgeReachable(db, scope, "N1"), false);
+  });
+
+  it("true when the target shares an edge with an in-scope node", async () => {
+    const db = await freshDb();
+    await db.execute({
+      sql: `INSERT INTO edges (id, source_id, target_id, relation) VALUES (?,?,?,?)`,
+      args: ["e1", "A", "B", "related_to"],
+    });
+    const scope = new SessionScope("interactive_task");
+    scope.add("A");
+    assert.equal(await isEdgeReachable(db, scope, "B"), true);
+  });
+
+  it("false for a node two hops away with nothing in between in scope", async () => {
+    const db = await freshDb();
+    await db.execute({
+      sql: `INSERT INTO edges (id, source_id, target_id, relation) VALUES (?,?,?,?)`,
+      args: ["e1", "A", "B", "related_to"],
+    });
+    await db.execute({
+      sql: `INSERT INTO edges (id, source_id, target_id, relation) VALUES (?,?,?,?)`,
+      args: ["e2", "B", "C", "related_to"],
+    });
+    const scope = new SessionScope("interactive_task");
+    scope.add("A");
+    assert.equal(await isEdgeReachable(db, scope, "C"), false);
   });
 });
