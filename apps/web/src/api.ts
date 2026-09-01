@@ -20,6 +20,7 @@ import type {
   SessionState,
   SessionSummary,
   SessionResumeInfo,
+  OverviewPayload,
 } from "./types";
 import { apiFetch } from "./lib/backend-url";
 
@@ -168,6 +169,12 @@ export function transitionPersistentSessionState(
 
 export function fetchPersistentSessionResumeInfo(id: string): Promise<SessionResumeInfo> {
   return jsonRequest<SessionResumeInfo>("GET", `/sessions/${encodeURIComponent(id)}/resume-info`);
+}
+
+// GET /overview -- Přehled tab (#196). One aggregate, permission-filtered
+// snapshot; see apps/server/api/overview.ts for the section breakdown.
+export function fetchOverview(): Promise<OverviewPayload> {
+  return jsonRequest<OverviewPayload>("GET", "/overview");
 }
 
 export async function runNodeSync(id: string): Promise<SyncRunResponse> {

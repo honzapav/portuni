@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Search, Sun, Moon, X, Settings, Waypoints, Terminal } from "lucide-react";
+import { Plus, Search, Sun, Moon, X, Settings, Waypoints, Terminal, LayoutDashboard } from "lucide-react";
 import type { GraphPayload, GraphNode } from "../types";
 import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
@@ -13,7 +13,7 @@ import WorkspaceNodeList from "./WorkspaceNodeList";
 // Shown on disabled create-node buttons (global scope below POST /nodes).
 const CREATE_NODE_DENIED_TITLE = "Vytváření uzlů vyžaduje vyšší roli";
 
-export type AppView = "graph" | "workspace" | "settings";
+export type AppView = "overview" | "graph" | "workspace" | "settings";
 
 type Props = {
   graph: GraphPayload;
@@ -169,6 +169,12 @@ function Sidebar({
       <div className="px-4 pt-4">
         <div className="flex rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-0.5">
           <ViewToggleButton
+            label="Přehled"
+            icon={<LayoutDashboard size={12} />}
+            active={view === "overview"}
+            onClick={() => onViewChange("overview")}
+          />
+          <ViewToggleButton
             label="Graf"
             icon={<Waypoints size={12} />}
             active={view === "graph"}
@@ -188,6 +194,13 @@ function Sidebar({
         <div className="flex-1 px-5 py-5 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
           Konfigurace Portuni: příkaz agenta pro spouštění z uzlů a
           parametry MCP serveru pro Claude Code a Codex.
+        </div>
+      )}
+
+      {view === "overview" && (
+        <div className="flex-1 px-5 py-5 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
+          Souhrn celého workspace: běžící relace, nody vyžadující pozornost,
+          poslední aktivita a nově vytvořené nody.
         </div>
       )}
 
@@ -252,7 +265,7 @@ function Sidebar({
         </>
       )}
 
-      {view !== "workspace" && (
+      {(view === "graph" || view === "settings") && (
         <div className="border-t border-[var(--color-border)] px-5 py-3 text-[11px] text-[var(--color-text-dim)]">
           {view === "graph"
             ? "Kliknutím na uzel otevřete detail. Tažením posunete pohled, kolečkem přibližujete."

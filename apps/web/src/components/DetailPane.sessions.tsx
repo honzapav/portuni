@@ -18,21 +18,22 @@ import {
   transitionPersistentSessionState,
 } from "../api";
 
-const STATE_LABEL: Record<SessionState, string> = {
+// Exported for reuse by OverviewView's workspace-wide session rows (#196).
+export const STATE_LABEL: Record<SessionState, string> = {
   running: "Běží",
   suspended: "Pozastaveno",
   closed: "Uzavřeno",
   archived: "Archivováno",
 };
 
-const STATE_COLOR: Record<SessionState, string> = {
+export const STATE_COLOR: Record<SessionState, string> = {
   running: "var(--color-status-active)",
   suspended: "var(--color-node-process)",
   closed: "var(--color-text-dim)",
   archived: "var(--color-text-dim)",
 };
 
-function fmtDateTime(value: string): string {
+export function fmtDateTime(value: string): string {
   // SQLite datetime('now') yields "YYYY-MM-DD HH:MM:SS" in UTC without a
   // zone marker; normalise so Date parses it as UTC, not local time.
   const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)

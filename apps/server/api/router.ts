@@ -24,6 +24,7 @@ import {
 } from "./auth.js";
 import { handleHealth } from "./health.js";
 import { handleGraph } from "./graph.js";
+import { handleGetOverview } from "./overview.js";
 import { handleSandboxProfileByCwd, handleWriteScope } from "./write-scope.js";
 import { handleListUsers } from "./users.js";
 import {
@@ -230,6 +231,10 @@ async function routeSystem(
   }
   if (pathname === "/graph" && method === "GET") {
     await handleGraph(req, res, identity);
+    return true;
+  }
+  if (pathname === "/overview" && method === "GET") {
+    await handleGetOverview(req, res, identity);
     return true;
   }
   if (pathname === "/scope" && method === "GET") {

@@ -28,6 +28,14 @@ export type {
   SessionState,
   SessionSummary,
   SessionResumeInfo,
+  OverviewPayload,
+  OverviewSessionRow,
+  OverviewDisconnectedJump,
+  OverviewAttentionNode,
+  OverviewSyncIssue,
+  OverviewEvent,
+  OverviewSessionWrite,
+  OverviewNewNode,
 } from "../../server/shared/api-types";
 
 // Request-only shape for PUT /nodes/:id/access -- not a server response, so

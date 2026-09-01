@@ -402,6 +402,111 @@ export type SessionResumeInfo = {
   conversation_resumable: boolean;
 };
 
+// GET /overview -- Přehled tab (phase 4, "Přehled (overview tab)" of the
+// scope/sessions redesign spec). One aggregate, permission-filtered
+// endpoint composing four deterministic sections. Every node reference is
+// dropped server-side if the caller cannot see the node
+// (filterVisibleNodeIds, apps/server/api/overview.ts); `access_requests`
+// is additionally empty for callers below "manage" scope, matching
+// GET /access/requests.
+
+// A workspace-wide session row, unlike SessionSummary (node-detail list):
+// enriched with the anchor node's name/type (there is no other node
+// context on this screen) and without write_count (an extra per-row query
+// this dashboard-scale list skips -- write_count remains available via
+// GET /nodes/:id/sessions for the node-detail view).
+export type OverviewSessionRow = {
+  id: string;
+  node_id: string | null;
+  node_name: string | null;
+  node_type: string | null;
+  user_id: string;
+  session_type: "interactive_task" | "interactive_chat" | "headless" | "env";
+  cli: string | null;
+  profile_id: string | null;
+  state: SessionState;
+  name: string;
+  name_is_custom: boolean;
+  handoff_path: string | null;
+  created_at: string;
+  last_active_at: string;
+  closed_at: string | null;
+};
+
+export type OverviewDisconnectedJump = {
+  session_id: string;
+  session_name: string;
+  node_id: string;
+  node_name: string;
+  node_type: string;
+  reason: string | null;
+  added_at: string;
+};
+
+export type OverviewAttentionNode = {
+  id: string;
+  type: string;
+  name: string;
+  lifecycle_state: string | null;
+  // "on_track" | "at_risk" | "off_track" -- see HEALTH_STATES in popp.ts.
+  health: string;
+};
+
+// See loadOverviewSyncIssues (domain/queries/overview.ts) for why this is a
+// pending_file_ops proxy rather than a true sync-conflict record.
+export type OverviewSyncIssue = {
+  id: string;
+  node_id: string;
+  node_name: string;
+  file_id: string;
+  last_error: string;
+  updated_at: string;
+};
+
+export type OverviewEvent = {
+  id: string;
+  node_id: string;
+  node_name: string;
+  node_type: string;
+  type: string;
+  content: string;
+  created_at: string;
+};
+
+export type OverviewSessionWrite = {
+  session_id: string;
+  session_name: string;
+  node_id: string;
+  node_name: string;
+  added_at: string;
+};
+
+export type OverviewNewNode = {
+  id: string;
+  type: string;
+  name: string;
+  created_at: string;
+  created_by_name: string;
+};
+
+export type OverviewPayload = {
+  sessions: {
+    running: OverviewSessionRow[];
+    suspended: OverviewSessionRow[];
+    disconnected_jumps: OverviewDisconnectedJump[];
+  };
+  attention: {
+    nodes: OverviewAttentionNode[];
+    access_requests: AccessRequest[];
+    sync_issues: OverviewSyncIssue[];
+  };
+  activity: {
+    events: OverviewEvent[];
+    session_writes: OverviewSessionWrite[];
+  };
+  new_nodes: OverviewNewNode[];
+};
+
 // GET /auth/groups -- Google Workspace domain group directory, used by the
 // sharing picker. 501 { error: "google_mode_only" } in env auth mode.
 export type DirectoryGroup = {

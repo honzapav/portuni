@@ -5,13 +5,25 @@ description: Daily-driver workflows in Portuni.app — graph navigation, the wor
 
 This guide covers what you actually do in `Portuni.app` once it's installed. For installation and first-run setup, see [Desktop App](/clients/desktop-app/).
 
-The app has three views, switched from the left sidebar:
+The app has four views, switched from the left sidebar:
 
-- **Graph** — the Cytoscape force-directed visualisation. Default landing view.
+- **Overview (Přehled)** — a read-only, workspace-wide dashboard. Default landing view.
+- **Graph** — the Cytoscape force-directed visualisation.
 - **Workspace** — the three-column layout with a node list, terminal tabs, and a detail pane. Where most daily work happens.
 - **Settings** — Turso credentials, theme, agent-command preset, MCP server section, and actors management.
 
 The currently selected node lives in the URL as `?node=<id>`, so deep-linking and copy-pasted URLs work across views.
+
+## Overview (Přehled)
+
+The default landing view: one aggregate, permission-filtered snapshot of the whole workspace (`GET /overview`), composed deterministically — no LLM involved. Four cards:
+
+- **Relace** — every running/suspended persistent session across the workspace (not just this device), plus a headless review queue: nodes a `headless` session reached only via search with no edge path (`session_scope.added_via = 'disconnected'`) — see [Scope Enforcement](/concepts/scope-enforcement/).
+- **Vyžaduje pozornost** — processes in `at_risk`/`broken`, areas in `needs_attention`, projects with `health != on_track` (see [Lifecycle States](/concepts/lifecycle-states/#project-health)), plus pending access requests (visible to `manage` scope and above only) and stuck sync operations (`pending_file_ops` rows with a recorded `last_error` — the closest server-visible signal to a sync issue; true file-conflict state is computed on-device and is not aggregated server-side).
+- **Poslední aktivita** — recent events and recent session writes (nodes added to a session's write scope), interleaved by timestamp.
+- **Nové nody** — recently created nodes, human- and agent-created alike.
+
+Every row is a link: clicking a node reference switches to Graph and selects it; clicking a session reference opens its node in Workspace and focuses that session. Nothing here is fetched automatically on an interval — use "Obnovit" to refresh.
 
 ## Graph view
 

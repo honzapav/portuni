@@ -3,6 +3,7 @@ import Sidebar, { type AppView } from "./components/Sidebar";
 import DetailPane from "./components/DetailPane";
 import SettingsPage from "./components/SettingsPage";
 import WorkspaceView from "./components/WorkspaceView";
+import OverviewView from "./components/OverviewView";
 import EditorFullscreen from "./components/EditorFullscreen";
 import EditorPane from "./components/EditorPane";
 import StatusFooter from "./components/StatusFooter";
@@ -103,7 +104,8 @@ export default function App() {
     const v = p.get("view");
     if (v === "workspace") return "workspace";
     if (v === "settings") return "settings";
-    return "graph";
+    if (v === "graph") return "graph";
+    return "overview";
   });
 
   const [selectedId, setSelectedIdRaw] = useState<string | null>(() => {
@@ -213,13 +215,13 @@ export default function App() {
     window.history.replaceState(null, "", url.toString());
   }, [selectedId]);
 
-  // Sync URL with current view. Default "graph" is omitted from the URL
-  // to keep it clean; ?view=actors / ?view=settings only appear when on
-  // those views. The ?node param coexists and is only meaningful in
-  // graph view.
+  // Sync URL with current view. Default "overview" is omitted from the URL
+  // to keep it clean; ?view=graph / ?view=workspace / ?view=settings only
+  // appear when on those views. The ?node param coexists and is only
+  // meaningful in graph view.
   useEffect(() => {
     const url = new URL(window.location.href);
-    if (view === "graph") {
+    if (view === "overview") {
       url.searchParams.delete("view");
     } else {
       url.searchParams.set("view", view);
@@ -394,6 +396,25 @@ export default function App() {
       openNode(id);
     },
     [openNode],
+  );
+
+  // Přehled tab (#196) navigation: a node reference switches to Graf and
+  // opens its detail pane; a session reference opens the node in Práce and
+  // focuses that session, mirroring workspaceSelectSession above.
+  const overviewSelectNode = useCallback(
+    (id: string) => {
+      setSelectedId(id);
+      setView("graph");
+    },
+    [setSelectedId],
+  );
+
+  const overviewOpenSession = useCallback(
+    (nodeId: string, sessionId: string) => {
+      openNode(nodeId);
+      workspaceSelectSession(nodeId, sessionId);
+    },
+    [openNode, workspaceSelectSession],
   );
 
   // The workspace's left-column rows: open nodes ∪ nodes-with-sessions,
@@ -1003,6 +1024,9 @@ export default function App() {
           <div className="absolute inset-0 flex items-center justify-center text-[14px] text-[var(--color-text-dim)]">
             Načítám graf...
           </div>
+        )}
+        {view === "overview" && (
+          <OverviewView onSelectNode={overviewSelectNode} onOpenSession={overviewOpenSession} />
         )}
         {graph && view === "graph" && (
           <Suspense

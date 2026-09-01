@@ -95,6 +95,10 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname === "/auth/users/invite" && m === "POST") return "admin";
   if (pathname === "/me" && m === "GET") return "read";
   if (pathname === "/graph" && m === "GET") return "read";
+  // Přehled tab (#196): the aggregate is readable at "read", same as
+  // /graph -- the one manage-gated field inside it (pending access
+  // requests) is filtered by the handler itself, not by this route gate.
+  if (pathname === "/overview" && m === "GET") return "read";
   if (pathname === "/scope" && m === "GET") return "read";
   // GET /users backs the OwnerPicker dropdown (apps/server/api/users.ts).
   // Its only frontend call site is ActorModal's user_id picker
