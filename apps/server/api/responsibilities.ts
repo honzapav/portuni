@@ -12,6 +12,7 @@ import {
 } from "../domain/responsibilities.js";
 import { nodeVisibleTo } from "../auth/node-access.js";
 import { parseBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
+import { guardRestNodeWrite } from "./write-gate.js";
 
 export async function handleListResponsibilities(
   req: IncomingMessage,
@@ -52,6 +53,7 @@ export async function handleCreateResponsibility(
       respondJson(res, 404, { error: `node ${nodeId} not found` });
       return;
     }
+    if (!guardRestNodeWrite(res, identity, nodeId)) return;
     const row = await createResponsibility(
       db,
       identity.userId,
@@ -89,6 +91,7 @@ export async function handleUpdateResponsibility(
       respondJson(res, 404, { error: `responsibility ${respId} not found` });
       return;
     }
+    if (!guardRestNodeWrite(res, identity, nodeId)) return;
     const row = await updateResponsibility(db, identity.userId, {
       responsibility_id: respId,
       ...(body as object),
@@ -120,6 +123,7 @@ export async function handleDeleteResponsibility(
       respondJson(res, 404, { error: `responsibility ${respId} not found` });
       return;
     }
+    if (!guardRestNodeWrite(res, identity, nodeId)) return;
     await deleteResponsibility(db, identity.userId, respId);
     respondJson(res, 200, { deleted: respId });
   } catch (err) {
@@ -153,6 +157,7 @@ export async function handleAssignResponsibility(
       respondJson(res, 404, { error: `responsibility ${respId} not found` });
       return;
     }
+    if (!guardRestNodeWrite(res, identity, nodeId)) return;
     await assignResponsibility(db, identity.userId, {
       responsibility_id: respId,
       actor_id: body.actor_id,
@@ -189,6 +194,7 @@ export async function handleUnassignResponsibility(
       respondJson(res, 404, { error: `responsibility ${respId} not found` });
       return;
     }
+    if (!guardRestNodeWrite(res, identity, nodeId)) return;
     await unassignResponsibility(db, identity.userId, {
       responsibility_id: respId,
       actor_id: actorId,

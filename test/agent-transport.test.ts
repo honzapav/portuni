@@ -71,30 +71,19 @@ const identity: RequestIdentity = {
   via: "env",
 };
 
-// device_token identities for the write-gate tests below: "env" (above) is
-// exempt from the write gate entirely, so exercising it needs an identity
-// that actually derives a scoped SessionType (see mcp/scope.ts's
-// deriveSessionType and domain/write-gate.ts's guardWrite).
-const headlessIdentity: RequestIdentity = {
-  userId: "01SOLO0000000000000000000",
-  email: "solo@localhost",
-  name: "Solo",
-  globalScope: "admin",
-  groups: [],
-  groupIds: [],
-  via: "device_token",
-  headless: true,
-};
-
-const taskIdentity: RequestIdentity = {
-  userId: "01SOLO0000000000000000000",
-  email: "solo@localhost",
-  name: "Solo",
-  globalScope: "admin",
-  groups: [],
-  groupIds: [],
-  via: "device_token",
-};
+// Identities for the write-gate tests below. Production identities reaching
+// this front door always have via: "env" -- the sidecar's own local HTTP
+// server defaults to PORTUNI_AUTH_MODE=env for agent mode too, so
+// resolveRequestIdentity never produces a device_token/oauth_grant identity
+// here even for a genuinely spawned terminal. That is exactly the bug
+// deriveAgentSessionType (agent-transport.ts) fixes: it derives
+// interactive_task/headless from identity.headless rather than falling
+// through to "env" (which mcp/scope.ts's deriveSessionType would treat as
+// exempt). headlessIdentity sets the headless flag directly to exercise
+// that branch even though no real auth path sets it on an "env" identity
+// today -- see deriveAgentSessionType's comment.
+const headlessIdentity: RequestIdentity = { ...identity, headless: true };
+const taskIdentity: RequestIdentity = { ...identity };
 
 interface StubCentral {
   base: string;
@@ -250,8 +239,18 @@ before(async () => {
   const addr = agentServer.address() as AddressInfo;
   agentBase = `http://127.0.0.1:${addr.port}`;
 
+  // home_node_id matches the node id the LOCAL_TOOLS tests below target
+  // (portuni_mirror, portuni_store) so those calls clear the write gate and
+  // reach callLocalTool exactly as before deriveAgentSessionType stopped
+  // treating this front door's "env" identity as unscoped/exempt -- the
+  // write-gate-specific behavior (refusal on a NON-home node) is exercised
+  // separately below in "write gate on LOCAL_TOOLS".
   localClient = new Client({ name: "agent-transport-test", version: "0.0.0" });
-  await localClient.connect(new StreamableHTTPClientTransport(new URL(`${agentBase}/mcp`)));
+  await localClient.connect(
+    new StreamableHTTPClientTransport(
+      new URL(`${agentBase}/mcp?home_node_id=01TESTNODE0000000000000000`),
+    ),
+  );
   // Let the shared session's upstream standalone GET stream settle so the
   // leak test below starts from a stable openGets baseline.
   await waitFor(() => central.openGets() >= 1);
@@ -464,7 +463,7 @@ describe("agent MCP front door: write gate on LOCAL_TOOLS", () => {
     }
   });
 
-  it("interactive (non-headless device_token) session: a non-home node elicits rather than being refused outright", async () => {
+  it("interactive (non-headless) session: a non-home node elicits rather than being refused outright", async () => {
     const client = await connectAs(taskIdentity, HOME);
     try {
       const r = (await client.callTool({

@@ -186,6 +186,8 @@ A mutating call outside the write set returns `{"error": "write_expansion_requir
 
 Actors (`portuni_create_actor`/`update`/`delete`) and sync-remote administration (`portuni_setup_remote`, `portuni_set_routing_policy`) are global registries, explicitly exempt from write scope (permissions still apply).
 
+The same domain-layer gate also covers the REST API's graph-plane mutations (nodes, edges, events, responsibilities, data sources, tools, mirror creation) for any caller that isn't the desktop UI (`env`/`session_jwt` identity) — a `device_token` or `oauth_grant` identity hitting these routes directly gets the same `write_refused`/`write_expansion_required` shape. REST has no per-request session or elicitation channel, so an out-of-scope REST write is always refused outright, never deferred. The file-content/sync-plane REST endpoints are unaffected — they are the central-mode sync agent's own channel, gated once already at the MCP tool call that triggered the sync.
+
 ## Why this is its own page (and not a permission system)
 
 Scope is **orthogonal** to permissions. Permissions (visibility, including group-based access via Google Groups) are enforced server-side in `apps/server/auth/` — every tool call and HTTP route passes through identity resolution, global scope gates (TOOL_MIN_SCOPE), and node-level access checks before scope is consulted. Scope decides what an in-progress session is currently focused on — a second, intentionality-shaped filter applied on top of permissions.

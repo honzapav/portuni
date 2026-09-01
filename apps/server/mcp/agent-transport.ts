@@ -49,7 +49,7 @@ import type { RequestIdentity } from "../auth/request-identity.js";
 import type { McpTransport } from "./transport.js";
 import { INSTRUCTIONS } from "./server.js";
 import { parseHomeNodeIdFromUrl } from "./auto-seed.js";
-import { deriveSessionType } from "./scope.js";
+import type { SessionType } from "./scope.js";
 import {
   LOCAL_TOOLS,
   callLocalTool,
@@ -135,6 +135,27 @@ async function openUpstream(
   return client;
 }
 
+// Session type for the LOCAL_TOOLS write gate below. This is deliberately
+// NOT mcp/scope.ts's deriveSessionType(identity, homeNodeId): that function
+// treats identity.via === "env" as the exempt, unscoped solo-desktop-UI
+// case -- but every connection reaching THIS front door is, by construction,
+// a desktop-spawned terminal (this transport serves only /mcp, carries
+// ?home_node_id, and is never reached by the webview's own REST calls), so
+// it is always a real scoped session. It just never has a chance to prove
+// that through identity.via: the sidecar's own local HTTP server defaults
+// to PORTUNI_AUTH_MODE=env for agent mode too, so identity.via is "env"
+// here regardless of what actually spawned the connection. Falling through
+// to deriveSessionType's "env" case would make guardWrite allow every
+// LOCAL_TOOLS write unconditionally -- the gate above would never fire in
+// production. headless/oauth_grant are kept for forward compatibility (a
+// future auth mode that resolves real identities for this front door) but
+// are not reachable today.
+function deriveAgentSessionType(identity: RequestIdentity): SessionType {
+  if (identity.via === "oauth_grant") return "interactive_chat";
+  if (identity.headless) return "headless";
+  return "interactive_task";
+}
+
 // Low-level server wired to proxy tools/list + resources/* upstream and to
 // route tools/call by LOCAL_TOOLS membership. tools/call must convert any
 // uncaught throw from callLocalTool (e.g. "no local mirror" from
@@ -188,7 +209,7 @@ function buildAgentServer(
       // expansions yet.
       const writeTargets = await localToolWriteTargets(opts.client, identity.userId, name, args);
       if (writeTargets.length > 0) {
-        const sessionType = deriveSessionType(identity, homeNodeId);
+        const sessionType = deriveAgentSessionType(identity);
         const writeCtx: WriteContext = { sessionType, homeNodeId, writableNodes: new Set() };
         for (const nodeId of writeTargets) {
           const outcome = guardWrite(writeCtx, nodeId);

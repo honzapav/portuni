@@ -321,6 +321,16 @@ export function decideRead(
   // proceeds only through portuni_expand_scope, whose `reason` field is
   // mandatory -- the server stamps the audit `disconnected` regardless of
   // what the agent claims (see expand_scope's classification).
+  if (scope.sessionType === "headless") {
+    return {
+      kind: "elicit",
+      message:
+        `Node ${nodeId} is outside the session scope and not reachable via a graph edge ` +
+        `from anything already in scope (a disconnected jump). Headless sessions have no ` +
+        `user to ask -- call portuni_expand_scope with a reason describing why this node ` +
+        `is needed; the jump is recorded and surfaced in review.`,
+    };
+  }
   return {
     kind: "elicit",
     message:

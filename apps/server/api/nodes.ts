@@ -41,6 +41,7 @@ import type { SyncStatusResponse, SyncRunResponse, UntrackedFile } from "../shar
 import { computeSyncPending } from "../domain/sync/pending.js";
 import { parseBody, parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 import { nodeVisibleTo, filterVisibleNodeIds } from "../auth/node-access.js";
+import { guardRestNodeWrite } from "./write-gate.js";
 import { z } from "zod";
 
 export async function handleGetNode(
@@ -155,6 +156,7 @@ export async function handlePatchNode(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    if (!guardRestNodeWrite(res, identity, nodeId)) return;
     await updateNodeInternal(getDb(), identity.userId, update);
     const node = await loadNodeDetail(getDb(), identity.userId, nodeId, identity);
     if (!node) {
@@ -198,6 +200,7 @@ export async function handleMoveNode(
       respondJson(res, 404, { error: "organization not found" });
       return;
     }
+    if (!guardRestNodeWrite(res, identity, nodeId)) return;
     const result = await moveNodeToOrganization(
       getDb(),
       identity.userId,
@@ -288,6 +291,7 @@ export async function handleDeleteNode(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    if (!guardRestNodeWrite(res, identity, nodeId)) return;
     await db.execute({
       sql: "UPDATE nodes SET status = 'archived', updated_at = ? WHERE id = ?",
       args: [new Date().toISOString(), nodeId],
@@ -764,6 +768,7 @@ export async function handleResolveFile(
       respondJson(res, 404, { error: "file not found" });
       return;
     }
+    if (!guardRestNodeWrite(res, identity, nodeId)) return;
     if (action === "keep_local") {
       const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
       if (!mirrorRoot) {
@@ -833,6 +838,7 @@ export async function handleCreateNodeMirror(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    if (!guardRestNodeWrite(res, identity, nodeId)) return;
     const result = await createMirrorForNode(db, identity.userId, { nodeId });
     // Best-effort folder URL on the routed remote — not part of the
     // happy-path mirror creation. We don't await any heavy listing here;

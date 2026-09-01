@@ -95,11 +95,24 @@ The write gate is a domain-layer function taking a session context
 
 - MCP tools (all ~25 mutating tools; see Hotfix for the eight that today
   lack even a visibility check).
-- REST routes: agent-originated calls (central client of the agent-mode
-  sidecar) carry a session context and are gated. The desktop UI's own
+- REST routes: the "graph plane" mutations (nodes, edges, events,
+  responsibilities, data sources, tools, mirror creation, file
+  create/rename) are gated (`api/write-gate.ts`). The desktop UI's own
   REST calls are the documented exemption — the UI acts as the human — and
-  are marked as such by their auth path (session JWT / Tauri proxy), not by
-  route.
+  are marked as such by their auth path (`env` / `session_jwt`), not by
+  route. **Not** gated: the file-content/sync-plane REST endpoints (PUT
+  file content, register-file(s), move/delete file records, sync-info,
+  sync-run, remote-sweep) — those double as the central-mode sync agent's
+  own channel (`domain/sync/central/client.ts`, a per-user device token)
+  and its deterministic reconciliation runs with no per-request
+  home-node/session context to check against (it isn't triggered by a
+  single MCP session — the periodic backfill sweep touches every mirror on
+  the device). A write reaching that channel was already gated once,
+  either at the MCP tool call that triggered it or by the mirror watcher
+  acting on the device's own disk state (see root CLAUDE.md's "File state
+  is deterministic" gotcha). Closing that gap for real needs a session
+  context to actually thread through `CentralClient`'s requests, which is
+  more than this hotfix does today.
 - Deterministic consumers (future in-app automation) call the same guarded
   domain functions with a session context — one semantics, no LLM required.
 

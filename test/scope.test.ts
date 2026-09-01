@@ -174,6 +174,21 @@ describe("decideRead – disconnected jump elicits", () => {
       assert.match(d.message ?? "", /disconnected jump/);
     }
   });
+
+  it("headless message points to portuni_expand_scope instead of asking a nonexistent user", () => {
+    const scope = new SessionScope("headless");
+    const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1", false);
+    assert.equal(d.kind, "elicit");
+    assert.doesNotMatch(d.message ?? "", /ask the user/i);
+    assert.match(d.message ?? "", /portuni_expand_scope/);
+  });
+
+  it("interactive message still asks the user to confirm", () => {
+    const scope = new SessionScope("interactive_task");
+    const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1", false);
+    assert.equal(d.kind, "elicit");
+    assert.match(d.message ?? "", /ask the user/i);
+  });
 });
 
 describe("SessionScope.add idempotence", () => {
