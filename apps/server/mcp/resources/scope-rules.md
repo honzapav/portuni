@@ -254,3 +254,21 @@ or global-list result is never itself added to scope.
 and ordered expansion history -- useful for the user
 ("what did the agent look at?") and for retrospective review of an
 autonomous run.
+
+## Suspend / resume
+
+`portuni_session_suspend(content, agent_session_id?)` writes `content`
+to `wip/sessions/<session-id>-handoff.md` -- a normal synced path,
+visible to the team on the routed remote -- stores its hash and the
+underlying CLI's own conversation id, and marks the session
+`suspended`. Call it before the terminal closes: at the end of a task,
+or (for an autonomous loop) between iterations. Requires a home node;
+`interactive_chat` sessions have no anchor to write into and this tool
+errors for them. Callable again on an already-suspended session to
+refresh the handoff -- the stored hash changes, so a resume can tell a
+human edited it since suspend.
+
+A later resume respawns the terminal in the same mirror, recomputes
+the sandbox profile from the session's accumulated read set, and either
+continues the same CLI conversation (when it still exists under the
+resumed profile) or starts fresh from the handoff content.

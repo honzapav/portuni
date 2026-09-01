@@ -18,8 +18,6 @@ export interface SearchFilesArgs {
   limit: number;
   // Restrict to one node.
   nodeId?: string;
-  // Restrict to a node set (session scope). Ignored when nodeId is set.
-  nodeIds?: string[] | null;
 }
 
 export interface SearchFileRecord {
@@ -79,10 +77,6 @@ async function recordsFor(
     if (a.nodeId !== undefined) {
       conds.push("f.node_id = ?");
       params.push(a.nodeId);
-    } else if (a.nodeIds) {
-      if (a.nodeIds.length === 0) return out;
-      conds.push(`f.node_id IN (${a.nodeIds.map(() => "?").join(",")})`);
-      params.push(...a.nodeIds);
     }
     const r = await db.execute({
       sql: `SELECT f.id, f.node_id, f.filename, f.remote_path, f.mime_type, f.status,
@@ -161,7 +155,6 @@ function toRecord(row: FileRow, remoteName: string, hit: SearchHit): SearchFileR
 export async function searchFiles(db: Client, a: SearchFilesArgs): Promise<SearchFileRecord[]> {
   const query = a.query.trim();
   if (query.length === 0) return [];
-  if (a.nodeId === undefined && a.nodeIds && a.nodeIds.length === 0) return [];
   const remotes = await remoteNamesFor(db, a.nodeId);
   const out: SearchFileRecord[] = [];
   for (const remoteName of remotes) {

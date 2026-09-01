@@ -42,6 +42,19 @@ No parameters.
 
 Returns: `{ session_id, home_node_id, session_type, created_at, scope_size, scope, expansions }` — `scope` is the ordered list of in-scope node IDs; `expansions` is the chronological log of every scope mutation with `at`, `node_ids`, `reason`, and `triggered_by`.
 
+## portuni_session_suspend
+
+Suspend this session: writes `content` to `wip/sessions/<session-id>-handoff.md` (a normal synced path, visible to the whole team on the routed remote), stores its hash and this session's agent-conversation id, and marks the session `suspended` so it can be resumed later — respawned in the same mirror, continuing the underlying CLI's own conversation when it still exists (`claude --resume <id>`), or starting fresh from the handoff otherwise. Requires a home node: `interactive_chat` sessions have no anchor to write into, and this tool errors for them.
+
+Call this before the terminal closes — at the end of a task, or (for a RALPH-style autonomous loop) between iterations. Callable again on an already-suspended session to update the handoff with newer content; the stored hash changes, so a later resume can tell a human edited the handoff since suspend.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `content` | string | yes | Handoff markdown: what was done, what's next, anything the next session needs to pick up |
+| `agent_session_id` | string | no | The underlying CLI's own conversation id (e.g. Claude Code's session UUID), so a later resume can offer to continue the same conversation. Omit if unknown |
+
+Returns: `{ session_id, state, handoff_path, handoff_hash }` — `state` is `"suspended"`; `handoff_path` is the synced path the content was written to (`wip/sessions/<session-id>-handoff.md`); `handoff_hash` is stored on the session record so a resume can detect a hand-edited handoff.
+
 ## See also
 
 - [Scope Enforcement](/concepts/scope-enforcement/) — the conceptual model: session types, edge-reachable vs. disconnected-jump expansion, hard-floor rules, protocol elicitation, the write-scope gate, audit trail

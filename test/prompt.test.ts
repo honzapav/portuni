@@ -51,10 +51,19 @@ describe("buildAgentCommand", () => {
     assert.doesNotMatch(cmd, /Snapshot|portuni_get_node/);
   });
 
-  it("strips a leftover {prompt} placeholder from templates saved before this change", () => {
+  it("falls back to the default command for a leftover {prompt} placeholder from an exact preset string", () => {
     const node = makeNode({ local_mirror: null });
     assert.equal(buildAgentCommand(node, "claude {prompt}"), "claude");
-    assert.equal(buildAgentCommand(node, "gemini -p {prompt}"), "gemini -p");
+  });
+
+  it("falls back to the default command rather than leaving a flag dangling in a hand-customized template (#209)", () => {
+    // settings.ts's AGENT_COMMAND_MIGRATIONS only upgrades EXACT known preset
+    // strings; a hand-customized template built around one never matches it.
+    // Blindly stripping just "{prompt}" here would leave "-p" dangling with
+    // "--yolo" as its value -- the regression this guards.
+    const node = makeNode({ local_mirror: null });
+    assert.equal(buildAgentCommand(node, "gemini -p {prompt} --yolo"), "claude");
+    assert.equal(buildAgentCommand(node, "gemini -p {prompt}"), "claude");
   });
 
   it("falls back to the default command when the template is blank", () => {

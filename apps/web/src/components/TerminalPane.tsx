@@ -291,6 +291,18 @@ export default function TerminalPane({
 
       if (cancelled) return;
       const invokedAt = Date.now();
+      // Set before invoking, not after it resolves (#209): the pty-data
+      // listener above is already registered by this point, and the first
+      // byte can arrive (and its listener callback run) before the
+      // continuation after `await invoke(...)` gets to assign the ref --
+      // Tauri's event delivery and the invoke's own promise resolution are
+      // separate channels with no ordering guarantee between them. Filling
+      // in a provisional spawnedAt (= invokedAt) closes that race: a
+      // same-object mutation below updates it to the real value once known,
+      // which the listener sees if it fires after that point, same as
+      // before.
+      const timing = { requestedAt: spawnRequestedAt, invokedAt, spawnedAt: invokedAt, printed: false };
+      spawnTimingRef.current = timing;
       try {
         await invoke("pty_spawn", {
           args: {
@@ -307,12 +319,7 @@ export default function TerminalPane({
         term.writeln(`\x1b[31mFailed to spawn pty: ${String(err)}\x1b[0m`);
         return;
       }
-      spawnTimingRef.current = {
-        requestedAt: spawnRequestedAt,
-        invokedAt,
-        spawnedAt: Date.now(),
-        printed: false,
-      };
+      timing.spawnedAt = Date.now();
 
       // Manual Meta/Option handling. macOptionIsMeta is off (CZ-keyboard
       // friendliness — see the constructor option above), so we re-inject

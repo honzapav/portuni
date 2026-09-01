@@ -119,16 +119,12 @@ describe("searchFiles (domain)", () => {
     assert.deepEqual(hits, []);
   });
 
-  it("nodeId restricts hits to that node; nodeIds restricts to the set", async () => {
+  it("nodeId restricts hits to that node", async () => {
     const other = await insertProject("Other");
     await seedTracked(shared.nodeId, "wip/a.md", "needle in A\n");
     await seedTracked(other, "wip/b.md", "needle in B\n");
     const byNode = await searchFiles(shared.db, { query: "needle", limit: 20, nodeId: other });
     assert.deepEqual(byNode.map((h) => h.node_id), [other]);
-    const bySet = await searchFiles(shared.db, { query: "needle", limit: 20, nodeIds: [shared.nodeId] });
-    assert.deepEqual(bySet.map((h) => h.node_id), [shared.nodeId]);
-    const none = await searchFiles(shared.db, { query: "needle", limit: 20, nodeIds: [] });
-    assert.deepEqual(none, []);
     const all = await searchFiles(shared.db, { query: "needle", limit: 20 });
     assert.equal(all.length, 2);
   });

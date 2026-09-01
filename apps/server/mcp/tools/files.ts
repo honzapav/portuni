@@ -22,7 +22,7 @@ import { guardNodeRead } from "../scope.js";
 import { guardNodeWrite } from "../write-gate.js";
 import { readNodeFile, formatNodeFileContent } from "../../domain/read-node-file.js";
 import { searchFiles } from "../../domain/search-files.js";
-import { SEARCH_HITS_DEFAULT_LIMIT, SEARCH_HITS_MAX_LIMIT } from "../../domain/sync/types.js";
+import { SEARCH_HITS_DEFAULT_LIMIT, SEARCH_HITS_MAX_LIMIT, SEARCH_SNIPPET_MAX_CHARS } from "../../domain/sync/types.js";
 import type { SessionCtx } from "../server.js";
 import type { Client } from "@libsql/client";
 
@@ -108,7 +108,12 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
           path: r.path,
           mime_type: r.mime_type,
           ...(r.modified_at !== undefined ? { modified_at: r.modified_at } : {}),
-          ...(r.snippet !== undefined ? { snippet: r.snippet } : {}),
+          // Cap enforced here, at the tool boundary, rather than trusted to
+          // each remote adapter: search is discovery, not ingestion (spec,
+          // "Search is discovery, not ingestion") -- a producer that forgets
+          // to bound its own snippet (or grows one from a backend-provided
+          // full match) must not turn into an ingestion channel.
+          ...(r.snippet !== undefined ? { snippet: r.snippet.slice(0, SEARCH_SNIPPET_MAX_CHARS) } : {}),
         }));
       return { content: [{ type: "text" as const, text: JSON.stringify(hits, null, 2) }] };
     },

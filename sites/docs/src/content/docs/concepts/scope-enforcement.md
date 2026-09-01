@@ -207,6 +207,7 @@ A user with read access to every node in their org still gets a narrow scope set
 | `portuni_get_context` | Start node must be in scope. Depth ≤ 1 is the natural read; depth ≥ 2 is treated as breadth expansion and always refused – call with depth ≤ 1, then expand explicitly. |
 | `portuni_list_nodes` / `portuni_list_events` / `portuni_list_files` | Default to session scope; without `node_id` (`list_events`/`list_files`) or with `scope: "session"` (`list_nodes`, the default) results are restricted to the current scope set (empty scope means an empty result, not a gate). |
 | `portuni_search_files`, `portuni_list_nodes(scope: "global")` | Discovery, not ingestion: permission-only in every session type, no scope gate — every node/hit the caller can see, filtered by visibility. Search hits carry a bounded snippet, not full content; reading a hit in full is the scope event. |
+| `portuni_session_suspend(content, agent_session_id?)` | Writes the handoff to `wip/sessions/<session-id>-handoff.md` (a normal synced path), stores its hash and the CLI's own conversation id, and marks the session `suspended` so a later resume can continue it. Requires a home node — `interactive_chat` has no anchor to write into. See [Scope reference](/reference/scope/#portuni_session_suspend). |
 
 ### REST surface (out of scope)
 

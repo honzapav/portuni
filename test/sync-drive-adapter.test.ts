@@ -275,6 +275,10 @@ describe("DriveAdapter search (fullText contains)", () => {
     assert.equal(hits[0].name, "notes.md");
     assert.equal(hits[0].mimeType, "application/octet-stream");
     assert.ok(hits[0].modifiedTime);
+    // #209: Drive search used to return no snippet at all -- the agent had
+    // to read every hit in full to judge relevance. The match's line is now
+    // fetched (a bounded alt=media read for a plain file) and extracted.
+    assert.equal(hits[0].snippet, "quarterly budget review");
   });
 
   it("escapes single quotes in the query", async () => {
@@ -313,7 +317,59 @@ describe("DriveAdapter search (fullText contains)", () => {
     );
     const hits = await adapter.search!("needle", { limit: 10 });
     assert.equal(hits.length, 5);
-    const gets = drive.requests.filter((r) => r.method === "GET" && /\/drive\/v3\/files\/[^/?]+/.test(r.url));
+    // Excludes the per-hit alt=media snippet fetch (#209, one per hit,
+    // unrelated to ancestor memoization) so this keeps testing only what it
+    // says: one files.get per distinct ancestor folder, not per hit.
+    const gets = drive.requests.filter(
+      (r) => r.method === "GET" && /\/drive\/v3\/files\/[^/?]+/.test(r.url) && !r.url.includes("alt=media"),
+    );
     assert.equal(gets.length, 2, `expected one files.get per ancestor (wip, workflow), got ${gets.map((g) => g.url).join("\n")}`);
+  });
+
+  it("leaves snippet undefined when the match sits outside the bounded fetch window", async () => {
+    const { FakeDrive } = await import("./helpers/fake-drive.js");
+    const { __setUserTokenFetchForTests, resetUserTokenCacheForTests } = await import(
+      "../apps/server/domain/sync/drive-user-auth.js"
+    );
+    const drive = new FakeDrive();
+    __setDriveFetchForTests(drive.fetch);
+    resetUserTokenCacheForTests();
+    __setUserTokenFetchForTests(async () => ({ access_token: "UAT", expires_in: 3600 }));
+    const org = drive.addFolder("workflow", drive.rootId);
+    const wip = drive.addFolder("wip", org);
+    // Padding well past the adapter's bounded snippet-fetch window, with the
+    // match only appearing after it -- Drive's own full-text index covers
+    // the whole file, the bounded snippet fetch deliberately does not.
+    const padding = "filler ".repeat(20_000);
+    drive.addFile("huge.md", wip, `${padding}needle at the very end\n`);
+    const adapter = createDriveAdapter(
+      { name: "dw", type: "gdrive", config: { shared_drive_id: "ROOT" } },
+      { dw: { mode: "refresh_token", refresh_token: "r", client_id: "c", client_secret: "s" } },
+    );
+    const hits = await adapter.search!("needle", { limit: 10 });
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].snippet, undefined);
+  });
+
+  it("leaves snippet undefined for a Google-native format (no plain-text export in this fake)", async () => {
+    const { FakeDrive } = await import("./helpers/fake-drive.js");
+    const { __setUserTokenFetchForTests, resetUserTokenCacheForTests } = await import(
+      "../apps/server/domain/sync/drive-user-auth.js"
+    );
+    const drive = new FakeDrive();
+    __setDriveFetchForTests(drive.fetch);
+    resetUserTokenCacheForTests();
+    __setUserTokenFetchForTests(async () => ({ access_token: "UAT", expires_in: 3600 }));
+    const org = drive.addFolder("workflow", drive.rootId);
+    const wip = drive.addFolder("wip", org);
+    const docId = drive.addFile("doc.gdoc", wip, "needle inside a google doc\n");
+    drive.files.get(docId)!.mimeType = "application/vnd.google-apps.document";
+    const adapter = createDriveAdapter(
+      { name: "dw", type: "gdrive", config: { shared_drive_id: "ROOT" } },
+      { dw: { mode: "refresh_token", refresh_token: "r", client_id: "c", client_secret: "s" } },
+    );
+    const hits = await adapter.search!("needle", { limit: 10 });
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].snippet, undefined);
   });
 });
