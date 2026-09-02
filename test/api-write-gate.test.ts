@@ -411,3 +411,139 @@ describe("REST write gate: env-mode spawn-id scoping (#210 point 2)", () => {
     assert.ok(r.statusCode < 300, `expected success, got ${r.statusCode}: ${r.body}`);
   });
 });
+
+// #212: the file-plane routes (PUT file, register(-batch), move, delete,
+// sync, remote-sweep) stay ungated for CentralClient's own bare device
+// token (teammate sync, asserted above at "PUT /nodes/:id/file (PUT
+// content) stays ungated for device_token"), but must refuse a HEADLESS
+// device token writing outside its bound session's home node -- headless
+// has no elicitation channel, so it is refused outright, never merely
+// deferred.
+describe("REST write gate: headless device-token file-plane gating (#212)", () => {
+  let db: DbClient;
+  let workspace: string;
+  let homeNodeId: string;
+  let otherNodeId: string;
+  let headlessSessionId: string;
+
+  const headlessIdentity: RequestIdentity = { ...deviceTokenIdentity, headless: true };
+
+  before(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-api-write-gate-headless-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+
+    db = createDbClient({ url: ":memory:" });
+    await ensureSchemaOn(db);
+    setDbForTesting(db);
+
+    homeNodeId = ulid();
+    otherNodeId = ulid();
+    for (const [id, name] of [
+      [homeNodeId, "Home"],
+      [otherNodeId, "Other"],
+    ] as const) {
+      await db.execute({
+        sql: `INSERT INTO nodes (id, type, name, status, visibility, sync_key, created_by)
+              VALUES (?, 'project', ?, 'active', 'team', ?, ?)`,
+        args: [id, name, id, SOLO],
+      });
+    }
+
+    const session = await createSession(db, SOLO, { node_id: homeNodeId, session_type: "headless" });
+    headlessSessionId = session.id;
+  });
+
+  after(async () => {
+    setDbForTesting(null);
+    resetLocalDbForTests();
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  it("PUT /nodes/:id/file: headless device token with no bound-session header is refused", async () => {
+    const r = await call("PUT", `/nodes/${homeNodeId}/file?path=wip/x.md`, headlessIdentity, { content: "hi" });
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("PUT /nodes/:id/file: headless device token naming its own home-node session is not refused", async () => {
+    const r = await call(
+      "PUT",
+      `/nodes/${homeNodeId}/file?path=wip/x.md`,
+      headlessIdentity,
+      { content: "hi" },
+      { "x-portuni-spawn-id": headlessSessionId },
+    );
+    assert.notEqual(r.statusCode, 403, r.body);
+  });
+
+  it("PUT /nodes/:id/file: headless session writing outside its home node is refused", async () => {
+    const r = await call(
+      "PUT",
+      `/nodes/${otherNodeId}/file?path=wip/x.md`,
+      headlessIdentity,
+      { content: "hi" },
+      { "x-portuni-spawn-id": headlessSessionId },
+    );
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("PUT /nodes/:id/file: a plain (non-headless) device token is unaffected", async () => {
+    const r = await call("PUT", `/nodes/${otherNodeId}/file?path=wip/x.md`, deviceTokenIdentity, { content: "hi" });
+    assert.notEqual(r.statusCode, 403, r.body);
+  });
+
+  it("POST /nodes/:id/files/register: headless device token with no bound session is refused", async () => {
+    const r = await call("POST", `/nodes/${homeNodeId}/files/register`, headlessIdentity, { relPath: "wip/x.md" });
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("POST /nodes/:id/files/register-batch: headless device token with no bound session is refused", async () => {
+    const r = await call("POST", `/nodes/${homeNodeId}/files/register-batch`, headlessIdentity, {
+      relPaths: ["wip/x.md"],
+    });
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("POST /nodes/:id/files/:fileId/move: headless device token with no bound session is refused (source)", async () => {
+    const r = await call("POST", `/nodes/${homeNodeId}/files/${ulid()}/move`, headlessIdentity, {
+      new_filename: "renamed.md",
+    });
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("POST /nodes/:id/files/:fileId/move: bound-session move into a foreign new_node_id is refused", async () => {
+    const r = await call(
+      "POST",
+      `/nodes/${homeNodeId}/files/${ulid()}/move`,
+      headlessIdentity,
+      { new_node_id: otherNodeId },
+      { "x-portuni-spawn-id": headlessSessionId },
+    );
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("DELETE /nodes/:id/files/:fileId: headless device token with no bound session is refused", async () => {
+    const r = await call("DELETE", `/nodes/${homeNodeId}/files/${ulid()}`, headlessIdentity);
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("DELETE /nodes/:id/files/:fileId: a plain (non-headless) device token is unaffected", async () => {
+    const r = await call("DELETE", `/nodes/${otherNodeId}/files/${ulid()}`, deviceTokenIdentity);
+    assert.notEqual(r.statusCode, 403, r.body);
+  });
+
+  it("POST /nodes/:id/sync: headless device token with no bound session is refused", async () => {
+    const r = await call("POST", `/nodes/${homeNodeId}/sync`, headlessIdentity);
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("POST /nodes/:id/sync/remote-sweep: headless device token with no bound session is refused", async () => {
+    const r = await call("POST", `/nodes/${homeNodeId}/sync/remote-sweep`, headlessIdentity);
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("POST /nodes/:id/sync: a plain (non-headless) device token is unaffected", async () => {
+    const r = await call("POST", `/nodes/${otherNodeId}/sync`, deviceTokenIdentity);
+    assert.notEqual(r.statusCode, 403, r.body);
+  });
+});

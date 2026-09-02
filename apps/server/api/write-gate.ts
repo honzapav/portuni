@@ -31,6 +31,15 @@
 // watcher's session-less reconcile loop has no session id to forward at
 // all). Left as-is; see the comment on issue #210 for the full reasoning.
 //
+// #212: those same file-plane routes are gated for ONE identity shape --
+// a headless device token (RequestIdentity.headless, admin-minted for
+// unattended/RALPH-style sessions, never self-declared) -- via the
+// dedicated guardHeadlessFileWrite below, not guardRestNodeWrite directly.
+// A headless credential is not CentralClient's teammate-sync identity (that
+// stays a plain, non-headless device token), so narrowing it to its bound
+// session's home node here closes the hole without touching the exemption
+// above.
+//
 // Trust boundary for the "env" exemption below: env auth mode resolves
 // EVERY request to the same unscoped solo identity regardless of who sent
 // it (auth/env-adapter.ts), so on its own "env" would make this gate a
@@ -109,6 +118,31 @@ export async function guardRestNodeWrite(
   if (outcome.kind === "allow") return true;
   respondJson(res, 403, writeGuardError(nodeId, outcome.kind, outcome.message));
   return false;
+}
+
+// Headless-only gate for the file-plane routes that stay otherwise ungated
+// above (PUT file content, register/register-batch, move, delete, sync,
+// remote-sweep) -- CentralClient's own teammate-sync channel calls these
+// with a bare (non-headless) device token and must keep working unchanged,
+// so this deliberately does NOT call guardRestNodeWrite unconditionally
+// (that would 403 every teammate's sync run, see the header comment). It
+// only enforces write scope when the caller IS a headless device token
+// (#212): an admin-minted, unattended credential with no elicitation
+// channel, distinguishable from a teammate's device token via
+// RequestIdentity.headless. resolveRestWriteContext already resolves a
+// headless identity to its bound session's write scope via
+// X-Portuni-Spawn-Id when present (home node only, headless sessions never
+// expand mid-run) and refuses outright with an empty scope when absent --
+// exactly the "resolve via the session it's bound to, otherwise refuse"
+// rule this issue asks for.
+export async function guardHeadlessFileWrite(
+  req: Pick<IncomingMessage, "headers">,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  nodeId: string,
+): Promise<boolean> {
+  if (!(identity.via === "device_token" && identity.headless === true)) return true;
+  return guardRestNodeWrite(req, res, identity, nodeId);
 }
 
 // Batch variant for handlePositions (api/nodes.ts): filters nodeIds down to
