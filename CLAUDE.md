@@ -265,6 +265,32 @@ symlink to this file.
   workspace drží historické `portuni`. Model:
   `docs/archive/specs/2026-07-04-desktop-multi-workspace-design.md`.
 
+- **Multi-window desktop, phase 1 (#222): windows are created at runtime,
+  not declared in `tauri.conf.json`.** `app.windows` there is `[]`; `.setup()`
+  calls `create_startup_window`, which picks a label from `active_workspace`:
+  `ws:<id>` when a v2 config already names one, else `bootstrap` (fresh
+  install, or a v1 config still awaiting migration — `active_workspace` only
+  understands v2). `ws_of(&tauri::Window)` is the per-window counterpart to
+  `active_workspace`'s "the currently active one" — it answers "which
+  workspace is THIS window for" by parsing the `ws:<id>` label and validating
+  it against `config.json`; `bootstrap` and any other label are errors. Not
+  called anywhere yet — phase 1's #223 is what routes workspace-bound
+  commands through it; until then every command still resolves via the
+  global `active_workspace`, unchanged. `capabilities/default.json`'s
+  `windows` list is `["bootstrap", "ws:*"]`. **Bootstrap → workspace
+  handoff**: `migrate_to_workspaces`, and the fresh-install branches of
+  `save_config`/`setup_central`, call `handoff_from_bootstrap` after saving
+  config.json — it opens the new `ws:<id>` window and closes `bootstrap`.
+  The onboarding gates (`WorkspaceMigrationGate`, and `TursoSetupGate`'s
+  fresh-install paths) dropped their `window.location.reload()` accordingly;
+  nothing left to do in JS once the command resolves, since that window is
+  about to close. `TursoSetupGate`'s add-missing-token path (an existing
+  workspace's window restarting its own sidecar) still reloads itself — no
+  handoff involved. Exit-gate code (`lib.rs`'s run handler and menu handler)
+  checks "any window exists" (`!app.webview_windows().is_empty()`) instead of
+  a fixed `get_webview_window("main")` — no window is ever labeled `"main"`
+  anymore. Model: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
+
 - **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
   keys; `.env.schema` declares only the 7 core ones. Full inventory with
   defaults: `docs/env-vars.md`. Watch out: `PORTUNI_ROOT` (write-scope

@@ -172,6 +172,90 @@ pub(crate) fn active_workspace(
     }
 }
 
+// Window identity (#222, phase 1 of the multi-window design). `app.windows`
+// in tauri.conf.json is now `[]` -- every window is created at runtime with
+// a label that says what it is: "bootstrap" before any workspace exists,
+// "ws:<id>" once one does. ws_of answers "which workspace is THIS window
+// for", the per-window counterpart to active_workspace's "the currently
+// active one" -- phase 1's #223 routes every workspace-bound command by it
+// instead. Split into a thin AppHandle-resolving wrapper and a pure(-ish,
+// filesystem-reading) core (ws_of_from_dir) so the label parsing and
+// existence check are unit-testable with a temp data_dir instead of a real
+// Tauri window. Not called yet -- #223 is the one that routes every
+// workspace-bound command through it; landing it now (unused) keeps this
+// phase's diff self-contained and #223's diff reviewable as "route by
+// ws_of", not "add ws_of and route by it" together.
+#[allow(dead_code)]
+pub(crate) fn ws_of(window: &tauri::Window) -> Result<String, String> {
+    let data_dir = window
+        .app_handle()
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    ws_of_from_dir(window.label(), &data_dir)
+}
+
+fn ws_of_from_dir(label: &str, data_dir: &Path) -> Result<String, String> {
+    let id = label
+        .strip_prefix("ws:")
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| format!("window '{label}' is not a workspace window"))?;
+    match workspace::load(data_dir)? {
+        workspace::LoadedConfig::V2(file) if file.workspaces.contains_key(id) => {
+            Ok(id.to_string())
+        }
+        workspace::LoadedConfig::V2(_) => Err(format!("unknown workspace '{id}'")),
+        workspace::LoadedConfig::V1(_) => Err("config awaiting workspace migration".to_string()),
+        workspace::LoadedConfig::Missing => Err("no config.json (fresh install)".to_string()),
+    }
+}
+
+// Same title/size/min-size/etc. tauri.conf.json's single static window used
+// to declare before app.windows became `[]` -- only the label varies now.
+fn open_window(app: &AppHandle, label: &str) -> tauri::Result<()> {
+    tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("index.html".into()))
+        .title("Portuni")
+        .inner_size(1600.0, 1000.0)
+        .min_inner_size(1024.0, 700.0)
+        .maximized(true)
+        .resizable(true)
+        .fullscreen(false)
+        .build()?;
+    Ok(())
+}
+
+// Startup window: ws:<id> when a v2 config already names an active
+// workspace, else bootstrap (fresh install, or a v1 config still awaiting
+// migration -- active_workspace only understands v2, so both land here).
+// Called once from .setup().
+fn create_startup_window(app: &AppHandle) -> tauri::Result<()> {
+    let label = match active_workspace(app) {
+        Ok((id, _)) => format!("ws:{id}"),
+        Err(_) => "bootstrap".to_string(),
+    };
+    open_window(app, &label)
+}
+
+// Bootstrap -> workspace handoff: once save_config / setup_central /
+// migrate_to_workspaces has produced (or confirmed) a real workspace, open
+// its ws:<id> window and close the bootstrap window that made the call --
+// the fresh-install/migration React gates dropped their own
+// window.location.reload() in favor of this (#222). Best-effort: a failure
+// to open the new window is logged rather than left to strand the user with
+// no window at all, and closing "bootstrap" is a no-op if it doesn't exist
+// (e.g. called from tests, or a future caller that isn't actually
+// bootstrap).
+fn handoff_from_bootstrap(app: &AppHandle, ws_id: &str) {
+    let label = format!("ws:{ws_id}");
+    if let Err(e) = open_window(app, &label) {
+        warn!("bootstrap handoff: failed to open {label}: {e}");
+        return;
+    }
+    if let Some(w) = app.get_webview_window("bootstrap") {
+        let _ = w.close();
+    }
+}
+
 #[tauri::command]
 fn set_turso_token(app: AppHandle, token: String) -> Result<(), String> {
     let (ws_id, _) = active_workspace(&app)?;
@@ -498,6 +582,7 @@ fn migrate_to_workspaces(app: AppHandle, id: String) -> Result<(), String> {
     // otherwise polls an empty BackendPorts map for 30 s. Idempotent:
     // spawn_sidecar_ws's contains_key guard skips any already-running child.
     spawn_all_sidecars(&app);
+    handoff_from_bootstrap(&app, &id);
     Ok(())
 }
 
@@ -806,6 +891,7 @@ fn save_config(app: AppHandle, turso_url: Option<String>) -> Result<(), String> 
     // the eventual restart's kill+respawn double-call safe.
     if fresh_install {
         spawn_all_sidecars(&app);
+        handoff_from_bootstrap(&app, &active);
     }
     Ok(())
 }
@@ -880,6 +966,7 @@ async fn setup_central(app: AppHandle, server_url: String) -> Result<(), String>
     workspace::save(&data_dir, &file)?;
     if fresh_install {
         spawn_all_sidecars(&app);
+        handoff_from_bootstrap(&app, &active);
     }
     Ok(())
 }
@@ -2323,6 +2410,11 @@ pub fn run() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            // app.windows in tauri.conf.json is [] (#222): the startup
+            // window is created here instead of automatically, so its label
+            // can reflect whether a workspace exists yet ("ws:<id>") or not
+            // ("bootstrap").
+            create_startup_window(&handle)?;
             // Each enabled workspace gets its own sidecar; spawn_sidecar_ws
             // caches the per-workspace MCP token into AuthTokens as it goes.
             // A v1/Missing config is a no-op until migration/onboarding.
@@ -2369,8 +2461,10 @@ pub fn run() {
             if event.id().as_ref() == "portuni-quit" {
                 // Same contract as the run-handler gate: ask the webview
                 // guards when there is a window to ask; otherwise just exit.
+                // "Any window" rather than a fixed "main" label (#222): a
+                // window is now "bootstrap" or "ws:<id>", never "main".
                 if !EXIT_APPROVED.load(Ordering::SeqCst)
-                    && app.get_webview_window("main").is_some()
+                    && !app.webview_windows().is_empty()
                     && app.emit("app-exit-requested", ()).is_ok()
                 {
                     info!("quit requested (menu/Cmd+Q) — delegated to webview guards");
@@ -2400,14 +2494,15 @@ pub fn run() {
             // menu Quit arrives via the native `terminate:` selector as
             // ExitRequested with code None — the same code the
             // all-windows-closed exit carries — so the branches are told
-            // apart by whether the main window still exists: Cmd+Q fires
-            // with the window alive, the post-close exit fires after it
-            // was destroyed (its JS onCloseRequested guard already ran).
-            // If there is no window to ask — or the emit fails — never
-            // block the exit.
+            // apart by whether a window still exists: Cmd+Q fires with a
+            // window alive, the post-close exit fires after it was
+            // destroyed (its JS onCloseRequested guard already ran). "Any
+            // window" rather than a fixed "main" label (#222): a window is
+            // now "bootstrap" or "ws:<id>", never "main". If there is no
+            // window to ask — or the emit fails — never block the exit.
             if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
                 let approved = EXIT_APPROVED.load(Ordering::SeqCst);
-                let has_window = app.get_webview_window("main").is_some();
+                let has_window = !app.webview_windows().is_empty();
                 info!("exit requested (code={code:?}, approved={approved}, window={has_window})");
                 if !approved && has_window && app.emit("app-exit-requested", ()).is_ok() {
                     api.prevent_exit();
@@ -2426,6 +2521,54 @@ pub fn run() {
                 kill_all_sidecars(app);
             }
         });
+}
+
+#[cfg(test)]
+mod ws_of_tests {
+    use super::ws_of_from_dir;
+    use std::path::PathBuf;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "portuni-ws-of-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn valid_label_resolves_a_registered_workspace() {
+        let dir = temp_dir("valid");
+        let file = crate::workspace::migrate_v1_value(&serde_json::json!({}), "acme");
+        crate::workspace::save(&dir, &file).unwrap();
+        assert_eq!(ws_of_from_dir("ws:acme", &dir).unwrap(), "acme");
+    }
+
+    #[test]
+    fn unknown_workspace_id_is_an_error() {
+        let dir = temp_dir("unknown");
+        let file = crate::workspace::migrate_v1_value(&serde_json::json!({}), "acme");
+        crate::workspace::save(&dir, &file).unwrap();
+        assert!(ws_of_from_dir("ws:nope", &dir).is_err());
+    }
+
+    #[test]
+    fn bootstrap_label_is_an_error() {
+        let dir = temp_dir("bootstrap");
+        let file = crate::workspace::migrate_v1_value(&serde_json::json!({}), "acme");
+        crate::workspace::save(&dir, &file).unwrap();
+        assert!(ws_of_from_dir("bootstrap", &dir).is_err());
+    }
+
+    #[test]
+    fn garbage_label_is_an_error() {
+        let dir = temp_dir("garbage");
+        assert!(ws_of_from_dir("not-a-real-label", &dir).is_err());
+        assert!(ws_of_from_dir("ws:", &dir).is_err(), "empty id after the prefix");
+        assert!(ws_of_from_dir("", &dir).is_err());
+    }
 }
 
 #[cfg(test)]
