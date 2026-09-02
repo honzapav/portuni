@@ -359,12 +359,11 @@ symlink to this file.
   focuses its new `ws:<id>` window right after `spawn_sidecar_ws`.
   `tauri-plugin-window-state` persists each window's own geometry by label,
   purely on the Rust side (no webview capability needed — its commands are
-  never invoked from JS). **Not yet done** (later phase-2 issues):
-  `backend-ready`/`pty-*` events are still broadcast rather than per-window
-  (#227), and the `on_window_event(Destroyed) → kill_all_sidecars` handler
-  still kills every workspace's sidecar when ANY window closes, not just
-  the closing one's (#229) — multi-window is therefore not yet safe to
-  actually rely on end-to-end.
+  never invoked from JS). **Not yet done** (later phase-2 issues): the
+  `on_window_event(Destroyed) → kill_all_sidecars` handler still kills
+  every workspace's sidecar when ANY window closes, not just the closing
+  one's (#229) — multi-window is therefore not yet safe to actually rely
+  on end-to-end.
 
 - **The workspace switcher opens/focuses a window, it doesn't swap content
   (#226).** `open_workspace_window(id)` (Rust) replaces
@@ -387,6 +386,33 @@ symlink to this file.
   for it now instead of the old document-local
   `portuni:workspaces-changed` `CustomEvent`, which only the dispatching
   window itself could ever hear.
+
+- **Backend/PTY events are per-window, not broadcast (#227).**
+  `backend-ready`, `backend-error` (`spawn_sidecar_ws`'s reader loop and
+  its deferred-central branch), `pty-data` and `pty-exit` all moved from
+  `app.emit` to `app.emit_to("ws:<id>", …)` (`emit_to(&label, …)` for the
+  PTY pair, keyed off `PtySession.ws_id`/`ws_of` at spawn time, same as
+  #223's write-side isolation). This removed the `is_active_ws` gating
+  entirely (and the function itself, now `#[allow(dead_code)]` — kept only
+  for #230's single-instance fallback) — a per-window target already
+  guarantees only that workspace's own window ever receives the event, so
+  the old "only the active workspace may emit, else the webview boot
+  contract mis-resolves" guard has nothing left to protect against.
+  **Replay on window create**: a sidecar can finish booting (or crash)
+  before its window exists — `spawn_all_sidecars` races window restoration
+  at startup — so `open_window` calls `replay_backend_status` right after
+  building a `ws:<id>` window: `backend-ready` replays from `BackendPorts`
+  if a port is already known, `backend-error` replays from
+  `PendingBackendErrors` (managed state, last error message per
+  workspace, `set_pending_backend_error`/`clear_pending_backend_error` —
+  cleared on the next `backend-ready`) if one is pending. Both use pure
+  cores (`backend_status_replay`, `record_pending_backend_error`,
+  `retire_pending_backend_error`) unit-tested against plain
+  `HashMap`s/tuples rather than real managed state. This is what makes
+  `useAppUpdate`'s check-timer bootstrap (`updater.ts`, starts only from
+  `backend-ready`) work in a restored window without any JS change — the
+  webview's `listen()` doesn't care whether Rust used `emit` or
+  `emit_to`.
 
 - **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
   keys; `.env.schema` declares only the 7 core ones. Full inventory with

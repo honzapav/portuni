@@ -123,6 +123,14 @@ struct ConfigLock(Mutex<()>);
 // "the most recently focused remaining window" when disabling/deleting the
 // workspace currently recorded as active (reassign_active_workspace).
 struct FocusHistory(Mutex<Vec<String>>);
+// Last backend-error message per workspace, if any (#227). backend-ready/
+// backend-error are per-window events now (emit_to("ws:<id>", ...)), so a
+// window created AFTER its sidecar already failed -- restoring several
+// windows at boot races spawn_all_sidecars -- would otherwise never learn
+// about it; open_window replays this to a newly created window. Cleared
+// whenever that workspace's sidecar reports ready again (a fresh
+// spawn/restart succeeding retires the stale failure).
+struct PendingBackendErrors(Mutex<HashMap<String, String>>);
 
 // Keychain coordinates for secrets we persist across launches. Service is
 // bundle-id-shaped so entries show up under "ooo.workflow.portuni" in
@@ -169,6 +177,13 @@ pub(crate) fn keychain_delete_ws(base: &str, ws_id: &str) {
 /// when the config is still v1 (awaiting migration) or missing (fresh
 /// install) — callers surface that as a command error to the UI rather
 /// than guessing at a workspace that doesn't exist yet.
+///
+/// No caller left as of #227 (every workspace-bound command now resolves
+/// via ws_of, and #225's startup restore reads the WorkspacesFile's
+/// active_workspace FIELD directly rather than this function) -- kept for
+/// #230's single-instance fallback ("opens ws:<active_workspace> when no
+/// window is open"), the one remaining use the spec calls out.
+#[allow(dead_code)]
 pub(crate) fn active_workspace(
     app: &AppHandle,
 ) -> Result<(String, workspace::WorkspaceConfig), String> {
@@ -303,8 +318,10 @@ pub(crate) fn with_config_mut(
 // Same title/size/min-size/etc. tauri.conf.json's single static window used
 // to declare before app.windows became `[]` -- only the label varies now.
 // Persists open_windows right after a successful "ws:<id>" open (#225,
-// "rewritten on every window open/close"); "bootstrap" is not a workspace
-// and is never recorded.
+// "rewritten on every window open/close") and replays that workspace's last
+// known backend-ready/backend-error (#227) -- its sidecar may already be up
+// or already have failed by the time this window exists. "bootstrap" is not
+// a workspace and gets neither.
 fn open_window(app: &AppHandle, label: &str) -> tauri::Result<()> {
     tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("index.html".into()))
         .title("Portuni")
@@ -314,8 +331,9 @@ fn open_window(app: &AppHandle, label: &str) -> tauri::Result<()> {
         .resizable(true)
         .fullscreen(false)
         .build()?;
-    if label.starts_with("ws:") {
+    if let Some(ws_id) = label.strip_prefix("ws:") {
         persist_open_windows(app);
+        replay_backend_status(app, ws_id);
     }
     Ok(())
 }
@@ -484,6 +502,73 @@ fn focus_history_snapshot(app: &AppHandle) -> Vec<String> {
     app.try_state::<FocusHistory>()
         .and_then(|s| s.0.lock().ok().map(|h| h.clone()))
         .unwrap_or_default()
+}
+
+// Pure core of set_pending_backend_error: record ws_id's latest message,
+// overwriting any earlier one for the same workspace. Unit-testable
+// against a bare HashMap instead of the real Mutex-guarded managed state.
+fn record_pending_backend_error(pending: &mut HashMap<String, String>, ws_id: &str, msg: &str) {
+    pending.insert(ws_id.to_string(), msg.to_string());
+}
+
+// Pure core of clear_pending_backend_error: retire ws_id's entry only,
+// leaving every other workspace's pending error untouched.
+fn retire_pending_backend_error(pending: &mut HashMap<String, String>, ws_id: &str) {
+    pending.remove(ws_id);
+}
+
+// Record ws_id's latest backend-error so a window created later can replay
+// it (#227). See PendingBackendErrors' doc comment.
+fn set_pending_backend_error(app: &AppHandle, ws_id: &str, msg: &str) {
+    if let Some(state) = app.try_state::<PendingBackendErrors>() {
+        if let Ok(mut pending) = state.0.lock() {
+            record_pending_backend_error(&mut pending, ws_id, msg);
+        }
+    }
+}
+
+// Retire ws_id's pending backend-error: its sidecar reported ready again.
+fn clear_pending_backend_error(app: &AppHandle, ws_id: &str) {
+    if let Some(state) = app.try_state::<PendingBackendErrors>() {
+        if let Ok(mut pending) = state.0.lock() {
+            retire_pending_backend_error(&mut pending, ws_id);
+        }
+    }
+}
+
+// Pure core of replay_backend_status: given the current port (if any) and
+// pending error message (if any) recorded for one workspace, what should
+// be replayed to a window of its just now created for it. Both, either, or
+// neither can apply -- CommandEvent::Terminated clears the port but sets
+// the error; a fresh ready clears the error but the port is of course
+// present.
+fn backend_status_replay(
+    port: Option<u16>,
+    pending_error: Option<&str>,
+) -> (Option<u16>, Option<String>) {
+    (port, pending_error.map(str::to_string))
+}
+
+// Replay backend-ready/backend-error to a just-created ws:<id> window
+// (#227): its sidecar may already be up (a restored window at startup) or
+// may have already failed (spawn_all_sidecars racing window restoration),
+// and per-window emit_to only ever reaches a window that already existed
+// at the moment the original event fired.
+fn replay_backend_status(app: &AppHandle, ws_id: &str) {
+    let port = app
+        .try_state::<BackendPorts>()
+        .and_then(|s| s.0.lock().ok().and_then(|ports| ports.get(ws_id).copied()));
+    let pending_error = app
+        .try_state::<PendingBackendErrors>()
+        .and_then(|s| s.0.lock().ok().and_then(|p| p.get(ws_id).cloned()));
+    let (ready_port, error_message) = backend_status_replay(port, pending_error.as_deref());
+    let label = format!("ws:{ws_id}");
+    if let Some(port) = ready_port {
+        let _ = app.emit_to(&label, "backend-ready", port);
+    }
+    if let Some(msg) = error_message {
+        let _ = app.emit_to(&label, "backend-error", msg);
+    }
 }
 
 #[tauri::command]
@@ -1627,14 +1712,6 @@ async fn api_request(
     Ok(ApiResponse { status, body })
 }
 
-// True when `ws_id` is the active workspace at call time. Gates the
-// `backend-ready` / `backend-error` emits: the webview boot contract
-// (apps/web/src/lib/backend-url.ts) resolves/rejects on ANY such event, so
-// events must only describe the workspace the webview is displaying.
-// Non-active workspace state stays visible via list_workspaces (`running`).
-fn is_active_ws(app: &AppHandle, ws_id: &str) -> bool {
-    active_workspace(app).map(|(id, _)| id).ok().as_deref() == Some(ws_id)
-}
 
 // Kill one workspace's sidecar child if we still hold a handle to it, and
 // drop its port entry. Used by the lifecycle commands (disable/delete/
@@ -1813,13 +1890,11 @@ pub(crate) fn spawn_sidecar_ws(
                     .lock()
                     .unwrap()
                     .insert(ws_id.to_string(), 0);
-                // Emit only for the active workspace: the webview boot
-                // resolves on any backend-ready, so another workspace's
-                // sentinel must not complete the active workspace's boot.
-                // Non-active status surfaces via list_workspaces instead.
-                if is_active_ws(app, ws_id) {
-                    let _ = app.emit("backend-ready", 0u16);
-                }
+                // Per-window (#227): only ws:<id>'s own window ever
+                // receives this, so a deferred sentinel for one workspace
+                // can never be mistaken for another's readiness.
+                clear_pending_backend_error(app, ws_id);
+                let _ = app.emit_to(format!("ws:{ws_id}"), "backend-ready", 0u16);
                 return Ok(());
             }
         }
@@ -1963,23 +2038,19 @@ pub(crate) fn spawn_sidecar_ws(
                                 .lock()
                                 .unwrap()
                                 .insert(ws.clone(), port);
-                            // Webview boot contract: it resolves/rejects on
-                            // any backend-ready/-error, so only the ACTIVE
-                            // workspace's sidecar may emit. Non-active status
-                            // surfaces via list_workspaces (`running`).
-                            if is_active_ws(&handle, &ws) {
-                                let _ = handle.emit("backend-ready", port);
-                            }
+                            // Per-window (#227): only ws:<id>'s own window
+                            // ever receives this.
+                            clear_pending_backend_error(&handle, &ws);
+                            let _ = handle.emit_to(format!("ws:{ws}"), "backend-ready", port);
                             info!("sidecar[{ws}] ready on port {port}");
                         }
                     } else if let Some(rest) = line.strip_prefix("PORTUNI_BACKEND_ERROR=") {
                         let msg = rest.trim().to_string();
                         error!("sidecar[{ws}] backend error: {msg}");
-                        // Active-only: a non-active workspace's startup
-                        // failure must not reject the webview boot.
-                        if is_active_ws(&handle, &ws) {
-                            let _ = handle.emit("backend-error", msg);
-                        }
+                        // Per-window (#227), with a replay for a window
+                        // created after this fires -- see PendingBackendErrors.
+                        set_pending_backend_error(&handle, &ws, &msg);
+                        let _ = handle.emit_to(format!("ws:{ws}"), "backend-error", msg);
                     } else {
                         info!("sidecar[{ws}]: {line}");
                     }
@@ -1998,15 +2069,11 @@ pub(crate) fn spawn_sidecar_ws(
                         .lock()
                         .unwrap()
                         .remove(&ws);
-                    // Active-only (webview boot contract): another
-                    // workspace's crash must not take down the UI boot;
-                    // it stays visible via list_workspaces (`running`).
-                    if is_active_ws(&handle, &ws) {
-                        let _ = handle.emit(
-                            "backend-error",
-                            format!("sidecar {ws} terminated (exit code {:?})", payload.code),
-                        );
-                    }
+                    // Per-window (#227), with a replay for a window created
+                    // after this fires -- see PendingBackendErrors.
+                    let msg = format!("sidecar {ws} terminated (exit code {:?})", payload.code);
+                    set_pending_backend_error(&handle, &ws, &msg);
+                    let _ = handle.emit_to(format!("ws:{ws}"), "backend-error", msg);
                 }
                 _ => {}
             }
@@ -2582,6 +2649,7 @@ pub fn run() {
         .manage(WebviewProxySecrets(Mutex::new(HashMap::new())))
         .manage(ConfigLock(Mutex::new(())))
         .manage(FocusHistory(Mutex::new(Vec::new())))
+        .manage(PendingBackendErrors(Mutex::new(HashMap::new())))
         .manage(pty::PtyState::default())
         .manage(updater::PendingUpdate::default())
         .register_uri_scheme_protocol("portuni-html", |ctx, request| {
@@ -3100,6 +3168,78 @@ mod multi_window_phase2_tests {
         let mut history = vec!["acme".to_string(), "beta".to_string()];
         untrack_focus(&mut history, "acme");
         assert_eq!(history, vec!["beta".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod backend_status_replay_tests {
+    use super::{
+        backend_status_replay, record_pending_backend_error, retire_pending_backend_error,
+    };
+    use std::collections::HashMap;
+
+    // --- record/retire_pending_backend_error: the replay-on-create source ---
+
+    #[test]
+    fn recording_overwrites_the_previous_message_for_the_same_workspace() {
+        let mut pending = HashMap::new();
+        record_pending_backend_error(&mut pending, "acme", "first failure");
+        record_pending_backend_error(&mut pending, "acme", "second failure");
+        assert_eq!(pending.get("acme").map(String::as_str), Some("second failure"));
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[test]
+    fn retiring_removes_only_that_workspace() {
+        let mut pending = HashMap::new();
+        record_pending_backend_error(&mut pending, "acme", "boom");
+        record_pending_backend_error(&mut pending, "beta", "also boom");
+        retire_pending_backend_error(&mut pending, "acme");
+        assert!(!pending.contains_key("acme"));
+        assert_eq!(pending.get("beta").map(String::as_str), Some("also boom"));
+    }
+
+    #[test]
+    fn retiring_an_unknown_workspace_is_a_no_op() {
+        let mut pending = HashMap::new();
+        retire_pending_backend_error(&mut pending, "ghost");
+        assert!(pending.is_empty());
+    }
+
+    // --- backend_status_replay: what a just-created window should be sent ---
+
+    #[test]
+    fn a_known_port_replays_ready() {
+        assert_eq!(backend_status_replay(Some(47011), None), (Some(47011), None));
+    }
+
+    #[test]
+    fn a_pending_error_replays_alone_when_the_port_was_cleared() {
+        // CommandEvent::Terminated removes the BackendPorts entry but
+        // records the error -- exactly the race this window-creation
+        // replay exists for.
+        assert_eq!(
+            backend_status_replay(None, Some("sidecar acme terminated")),
+            (None, Some("sidecar acme terminated".to_string()))
+        );
+    }
+
+    #[test]
+    fn neither_known_replays_nothing() {
+        assert_eq!(backend_status_replay(None, None), (None, None));
+    }
+
+    #[test]
+    fn a_stale_pending_error_alongside_a_fresh_port_replays_both() {
+        // Transient: a fresh spawn's PORTUNI_LISTENING_PORT= line lands in
+        // BackendPorts before clear_pending_backend_error runs. Harmless --
+        // both events describe real (if momentarily contradictory) history,
+        // and the webview's own state machine resolves the same way it
+        // would if it had witnessed both events live.
+        assert_eq!(
+            backend_status_replay(Some(47011), Some("old failure")),
+            (Some(47011), Some("old failure".to_string()))
+        );
     }
 }
 

@@ -5,9 +5,10 @@
 // the REST API.
 //
 // The `running` column matters more here than it looks: backend-ready /
-// backend-error events (see lib/backend-url.ts) only ever fire for the
-// ACTIVE workspace's sidecar, so this table is the only place a
-// non-active, enabled workspace's health is visible at all.
+// backend-error events (see lib/backend-url.ts) are per-window
+// (emit_to("ws:<id>", ...)) and only ever fire for THIS WINDOW's own
+// workspace's sidecar, so this table is the only place another, enabled
+// workspace's health is visible at all.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -168,8 +169,9 @@ export default function WorkspacesSection() {
         </div>
         <p className="mb-4 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
           Každý workspace má vlastní sidecar, port a data (lokální Turso nebo
-          centrální server). Zdraví neaktivního workspace se dá zjistit jen
-          tady – stavové eventy backendu chodí jen pro ten aktivní.
+          centrální server). Zdraví workspace bez otevřeného okna se dá
+          zjistit jen tady – stavové eventy backendu chodí jen do okna daného
+          workspace.
         </p>
 
         {rowError && (

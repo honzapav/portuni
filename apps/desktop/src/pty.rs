@@ -586,6 +586,13 @@ pub fn pty_spawn(
     // events. Exits when read returns 0 (pty closed) or errors.
     let app_for_reader = app.clone();
     let sid_for_reader = session_id.clone();
+    // Per-window events (#227): pty-data/pty-exit target only the window
+    // that owns this session, not every window (a second workspace's window
+    // must never see another's terminal output). Captured once here, same
+    // as PtySession.ws_id -- None falls back to a broadcast emit, the old
+    // (pre-#227) behavior, for the never-actually-happens case of no
+    // workspace resolved at spawn time.
+    let label_for_reader = spawn_ws_id.clone().map(|id| format!("ws:{id}"));
     let profile_for_cleanup = sandbox_profile_path.clone();
     thread::spawn(move || {
         let mut reader = reader;
@@ -602,13 +609,15 @@ pub fn pty_spawn(
                 }
                 Ok(n) => {
                     let encoded = BASE64_STANDARD.encode(&buf[..n]);
-                    if let Err(e) = app_for_reader.emit(
-                        "pty-data",
-                        PtyDataEvent {
-                            session_id: sid_for_reader.clone(),
-                            data_b64: encoded,
-                        },
-                    ) {
+                    let payload = PtyDataEvent {
+                        session_id: sid_for_reader.clone(),
+                        data_b64: encoded,
+                    };
+                    let sent = match &label_for_reader {
+                        Some(label) => app_for_reader.emit_to(label, "pty-data", payload),
+                        None => app_for_reader.emit("pty-data", payload),
+                    };
+                    if let Err(e) = sent {
                         error!("pty-data emit failed for {sid_for_reader}: {e}");
                         break;
                     }
@@ -620,13 +629,14 @@ pub fn pty_spawn(
             }
         }
         // Tell the webview the session is gone so it can clean up xterm.
-        let _ = app_for_reader.emit(
-            "pty-exit",
-            PtyExitEvent {
-                session_id: sid_for_reader.clone(),
-                code: None,
-            },
-        );
+        let exit_payload = PtyExitEvent {
+            session_id: sid_for_reader.clone(),
+            code: None,
+        };
+        let _ = match &label_for_reader {
+            Some(label) => app_for_reader.emit_to(label, "pty-exit", exit_payload),
+            None => app_for_reader.emit("pty-exit", exit_payload),
+        };
         // Removing returns the session so its ws_id (captured at spawn,
         // #219) is available for the exit report below without a second
         // capture into this closure.
