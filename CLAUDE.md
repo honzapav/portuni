@@ -142,11 +142,16 @@ symlink to this file.
 
 ## Gotchas
 
-- **Source of truth is Turso**, not the local SQLite at
-  `~/Library/Application Support/ooo.workflow.portuni/portuni.db`. That file
-  is the desktop sidecar's embedded replica and can be stale. To answer
-  "does node X exist?" hit Turso, the MCP server, or the desktop app –
-  never the local file.
+- **Source of truth depends on the workspace's DB mode.** A sidecar with
+  `TURSO_URL` set uses Turso; the legacy local SQLite at
+  `~/Library/Application Support/ooo.workflow.portuni/portuni.db` is then just
+  an embedded replica and can be stale — to answer "does node X exist?" hit
+  Turso, the MCP server, or the desktop app, never that file. A workspace
+  without `TURSO_URL` (local-only multi-workspace, e.g. `workspaces/<id>/`)
+  falls back to `file:<dataDir>/portuni.db` (`apps/server/desktop.ts`) — there
+  the local SQLite IS the source of truth and no Turso is involved. Central
+  mode (`data_mode: "central"`) has no graph DB in the sidecar at all;
+  everything goes through the central server.
 - **File state is deterministic, not agent-driven.** A mirror watcher
   (`apps/server/domain/sync/mirror-watcher.ts` → `reconcile.ts`) registers new
   files and reconciles edits/deletes on every disk change, so the UI's sync

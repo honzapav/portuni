@@ -5,7 +5,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile, readFile, stat } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, stat, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionScope } from "../apps/server/mcp/scope.js";
@@ -27,7 +27,9 @@ function fakeResolver(map: Record<string, string>) {
 }
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "portuni-diskproj-"));
+  // realpath: macOS tmpdir is a symlink (/var -> /private/var) and the
+  // projector resolves real paths, so the expected dir must match.
+  dir = await realpath(await mkdtemp(join(tmpdir(), "portuni-diskproj-")));
   home = join(dir, "home");
   neighbor = join(dir, "neighbor");
   await mkdir(join(home, "wip"), { recursive: true });
