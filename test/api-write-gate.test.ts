@@ -45,6 +45,17 @@ const centralUiIdentity = makeIdentity("session_jwt");
 const deviceTokenIdentity = makeIdentity("device_token");
 const oauthGrantIdentity = makeIdentity("oauth_grant");
 
+// #213: env-mode's blanket write exemption now requires this header to
+// prove the request came through a trusted proxy (Tauri host / Vite dev
+// proxy), not a spawned agent terminal holding the same bearer token.
+// Configured once for the whole file -- every `uiIdentity` call below that
+// wants "the desktop UI, proxied" behavior passes WEBVIEW_PROXY_HEADERS;
+// calls that omit it are exercising the no-proof/fail-closed path on
+// purpose (see "REST write gate: env-mode webview-proxy marker (#213)").
+const WEBVIEW_PROXY_SECRET = "test-webview-proxy-secret";
+process.env.PORTUNI_WEBVIEW_PROXY_SECRET = WEBVIEW_PROXY_SECRET;
+const WEBVIEW_PROXY_HEADERS = { "x-portuni-webview-proxy": WEBVIEW_PROXY_SECRET };
+
 interface MockResponse {
   statusCode: number;
   body: string;
@@ -199,8 +210,8 @@ describe("REST write gate: graph-plane mutations", () => {
       assert.equal(r.statusCode, 403, r.body);
     });
 
-    it(`${c.label}: env (desktop UI) identity is unaffected`, async () => {
-      const r = await call(c.method, c.path(), uiIdentity, c.body());
+    it(`${c.label}: env (desktop UI) identity is unaffected when proxy-marked (#213)`, async () => {
+      const r = await call(c.method, c.path(), uiIdentity, c.body(), WEBVIEW_PROXY_HEADERS);
       assert.ok(r.statusCode < 300, `expected success, got ${r.statusCode}: ${r.body}`);
     });
 
@@ -229,7 +240,7 @@ describe("REST write gate: graph-plane mutations", () => {
     assert.equal(r.statusCode, 403, r.body);
   });
 
-  it("POST /edges: env identity is unaffected", async () => {
+  it("POST /edges: env identity is unaffected when proxy-marked (#213)", async () => {
     const otherNode = ulid();
     await db.execute({
       sql: `INSERT INTO nodes (id, type, name, status, visibility, sync_key, created_by)
@@ -240,11 +251,13 @@ describe("REST write gate: graph-plane mutations", () => {
       sql: "INSERT INTO edges (id, source_id, target_id, relation, created_by) VALUES (?, ?, ?, 'belongs_to', ?)",
       args: [ulid(), otherNode, orgId, SOLO],
     });
-    const r = await call("POST", "/edges", uiIdentity, {
-      source_id: nodeId,
-      target_id: otherNode,
-      relation: "related_to",
-    });
+    const r = await call(
+      "POST",
+      "/edges",
+      uiIdentity,
+      { source_id: nodeId, target_id: otherNode, relation: "related_to" },
+      WEBVIEW_PROXY_HEADERS,
+    );
     assert.ok(r.statusCode < 300, `expected success, got ${r.statusCode}: ${r.body}`);
   });
 
@@ -304,8 +317,8 @@ describe("REST write gate: graph-plane mutations", () => {
     assert.equal(r.statusCode, 403, r.body);
   });
 
-  it("PUT /nodes/:id/access: env identity is unaffected (#210)", async () => {
-    const r = await call("PUT", `/nodes/${nodeId}/access`, uiIdentity, { entries: [] });
+  it("PUT /nodes/:id/access: env identity is unaffected when proxy-marked (#210, #213)", async () => {
+    const r = await call("PUT", `/nodes/${nodeId}/access`, uiIdentity, { entries: [] }, WEBVIEW_PROXY_HEADERS);
     assert.ok(r.statusCode < 300, `expected success, got ${r.statusCode}: ${r.body}`);
   });
 
@@ -317,23 +330,33 @@ describe("REST write gate: graph-plane mutations", () => {
     assert.deepEqual(JSON.parse(r.body), { updated: 0 });
   });
 
-  it("POST /positions: env identity is unaffected (#210)", async () => {
-    const r = await call("POST", "/positions", uiIdentity, {
-      updates: [{ id: nodeId, x: 3, y: 4 }],
-    });
+  it("POST /positions: env identity is unaffected when proxy-marked (#210, #213)", async () => {
+    const r = await call(
+      "POST",
+      "/positions",
+      uiIdentity,
+      { updates: [{ id: nodeId, x: 3, y: 4 }] },
+      WEBVIEW_PROXY_HEADERS,
+    );
     assert.ok(r.statusCode < 300, `expected success, got ${r.statusCode}: ${r.body}`);
     assert.deepEqual(JSON.parse(r.body), { updated: 1 });
   });
 });
 
-// #210 point 2: env auth mode resolves every request to the same unscoped
-// solo identity regardless of caller (auth/env-adapter.ts), which used to
-// make the REST write gate a no-op for anything reaching the loopback port
-// with the shared token -- not just the desktop webview's Tauri-proxied
-// calls, but a spawned agent terminal too. The X-Portuni-Spawn-Id header
-// (already minted for MCP connections, see domain/write-scope.ts) is reused
-// as an opt-in REST marker: a request carrying it is scoped to that
-// session's actual write set instead of the blanket "env" exemption.
+// #210 point 2 / #213: env auth mode resolves every request to the same
+// unscoped solo identity regardless of caller (auth/env-adapter.ts), which
+// used to make the REST write gate a no-op for anything reaching the
+// loopback port with the shared token -- not just the desktop webview's
+// Tauri-proxied calls, but a spawned agent terminal too (it holds the same
+// bearer token and can export X-Portuni-Spawn-Id itself). The
+// X-Portuni-Spawn-Id header (already minted for MCP connections, see
+// domain/write-scope.ts) scopes a request to that session's actual write
+// set. The blanket "env" exemption itself now requires proof it came
+// through a trusted proxy: a valid X-Portuni-Webview-Proxy header, checked
+// against PORTUNI_WEBVIEW_PROXY_SECRET (set once for this file, see
+// WEBVIEW_PROXY_SECRET above). A request with neither a resolvable spawn id
+// nor a proven proxy marker is refused outright -- no fallback, no
+// elicitation channel over REST.
 describe("REST write gate: env-mode spawn-id scoping (#210 point 2)", () => {
   let db: DbClient;
   let workspace: string;
@@ -378,9 +401,21 @@ describe("REST write gate: env-mode spawn-id scoping (#210 point 2)", () => {
     await rm(workspace, { recursive: true, force: true });
   });
 
-  it("no X-Portuni-Spawn-Id header: env identity keeps the blanket exemption", async () => {
+  it("no X-Portuni-Spawn-Id header and no proxy marker: env identity is refused (#213)", async () => {
     const r = await call("PATCH", `/nodes/${otherNodeId}`, uiIdentity, { name: "Renamed" });
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("X-Portuni-Webview-Proxy names the configured secret: env identity is exempt, no spawn id needed (#213)", async () => {
+    const r = await call("PATCH", `/nodes/${otherNodeId}`, uiIdentity, { name: "Renamed" }, WEBVIEW_PROXY_HEADERS);
     assert.ok(r.statusCode < 300, `expected success, got ${r.statusCode}: ${r.body}`);
+  });
+
+  it("X-Portuni-Webview-Proxy with the wrong value: env identity is refused, not exempt (#213)", async () => {
+    const r = await call("PATCH", `/nodes/${otherNodeId}`, uiIdentity, { name: "Renamed" }, {
+      "x-portuni-webview-proxy": "not-the-secret",
+    });
+    assert.equal(r.statusCode, 403, r.body);
   });
 
   it("X-Portuni-Spawn-Id names a running session: write to its home node is allowed", async () => {
@@ -404,10 +439,159 @@ describe("REST write gate: env-mode spawn-id scoping (#210 point 2)", () => {
     assert.equal(r.statusCode, 403, r.body);
   });
 
-  it("X-Portuni-Spawn-Id names an unknown session: falls back to the blanket env exemption", async () => {
+  it("X-Portuni-Spawn-Id names an unknown session: fails closed, does not fall back to the blanket exemption (#213)", async () => {
     const r = await call("PATCH", `/nodes/${otherNodeId}`, uiIdentity, { name: "Renamed" }, {
       "x-portuni-spawn-id": ulid(),
     });
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("X-Portuni-Spawn-Id names an unknown session even with a valid proxy marker: still fails closed (#213)", async () => {
+    const r = await call("PATCH", `/nodes/${otherNodeId}`, uiIdentity, { name: "Renamed" }, {
+      "x-portuni-spawn-id": ulid(),
+      ...WEBVIEW_PROXY_HEADERS,
+    });
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("session_jwt (central-mode UI) identity is unaffected: no marker needed, unlike env (#213)", async () => {
+    const r = await call("PATCH", `/nodes/${otherNodeId}`, centralUiIdentity, { name: "Renamed" });
     assert.ok(r.statusCode < 300, `expected success, got ${r.statusCode}: ${r.body}`);
+  });
+});
+
+// #212: the file-plane routes (PUT file, register(-batch), move, delete,
+// sync, remote-sweep) stay ungated for CentralClient's own bare device
+// token (teammate sync, asserted above at "PUT /nodes/:id/file (PUT
+// content) stays ungated for device_token"), but must refuse a HEADLESS
+// device token writing outside its bound session's home node -- headless
+// has no elicitation channel, so it is refused outright, never merely
+// deferred.
+describe("REST write gate: headless device-token file-plane gating (#212)", () => {
+  let db: DbClient;
+  let workspace: string;
+  let homeNodeId: string;
+  let otherNodeId: string;
+  let headlessSessionId: string;
+
+  const headlessIdentity: RequestIdentity = { ...deviceTokenIdentity, headless: true };
+
+  before(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-api-write-gate-headless-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+
+    db = createDbClient({ url: ":memory:" });
+    await ensureSchemaOn(db);
+    setDbForTesting(db);
+
+    homeNodeId = ulid();
+    otherNodeId = ulid();
+    for (const [id, name] of [
+      [homeNodeId, "Home"],
+      [otherNodeId, "Other"],
+    ] as const) {
+      await db.execute({
+        sql: `INSERT INTO nodes (id, type, name, status, visibility, sync_key, created_by)
+              VALUES (?, 'project', ?, 'active', 'team', ?, ?)`,
+        args: [id, name, id, SOLO],
+      });
+    }
+
+    const session = await createSession(db, SOLO, { node_id: homeNodeId, session_type: "headless" });
+    headlessSessionId = session.id;
+  });
+
+  after(async () => {
+    setDbForTesting(null);
+    resetLocalDbForTests();
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  it("PUT /nodes/:id/file: headless device token with no bound-session header is refused", async () => {
+    const r = await call("PUT", `/nodes/${homeNodeId}/file?path=wip/x.md`, headlessIdentity, { content: "hi" });
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("PUT /nodes/:id/file: headless device token naming its own home-node session is not refused", async () => {
+    const r = await call(
+      "PUT",
+      `/nodes/${homeNodeId}/file?path=wip/x.md`,
+      headlessIdentity,
+      { content: "hi" },
+      { "x-portuni-spawn-id": headlessSessionId },
+    );
+    assert.notEqual(r.statusCode, 403, r.body);
+  });
+
+  it("PUT /nodes/:id/file: headless session writing outside its home node is refused", async () => {
+    const r = await call(
+      "PUT",
+      `/nodes/${otherNodeId}/file?path=wip/x.md`,
+      headlessIdentity,
+      { content: "hi" },
+      { "x-portuni-spawn-id": headlessSessionId },
+    );
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("PUT /nodes/:id/file: a plain (non-headless) device token is unaffected", async () => {
+    const r = await call("PUT", `/nodes/${otherNodeId}/file?path=wip/x.md`, deviceTokenIdentity, { content: "hi" });
+    assert.notEqual(r.statusCode, 403, r.body);
+  });
+
+  it("POST /nodes/:id/files/register: headless device token with no bound session is refused", async () => {
+    const r = await call("POST", `/nodes/${homeNodeId}/files/register`, headlessIdentity, { relPath: "wip/x.md" });
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("POST /nodes/:id/files/register-batch: headless device token with no bound session is refused", async () => {
+    const r = await call("POST", `/nodes/${homeNodeId}/files/register-batch`, headlessIdentity, {
+      relPaths: ["wip/x.md"],
+    });
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("POST /nodes/:id/files/:fileId/move: headless device token with no bound session is refused (source)", async () => {
+    const r = await call("POST", `/nodes/${homeNodeId}/files/${ulid()}/move`, headlessIdentity, {
+      new_filename: "renamed.md",
+    });
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("POST /nodes/:id/files/:fileId/move: bound-session move into a foreign new_node_id is refused", async () => {
+    const r = await call(
+      "POST",
+      `/nodes/${homeNodeId}/files/${ulid()}/move`,
+      headlessIdentity,
+      { new_node_id: otherNodeId },
+      { "x-portuni-spawn-id": headlessSessionId },
+    );
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("DELETE /nodes/:id/files/:fileId: headless device token with no bound session is refused", async () => {
+    const r = await call("DELETE", `/nodes/${homeNodeId}/files/${ulid()}`, headlessIdentity);
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("DELETE /nodes/:id/files/:fileId: a plain (non-headless) device token is unaffected", async () => {
+    const r = await call("DELETE", `/nodes/${otherNodeId}/files/${ulid()}`, deviceTokenIdentity);
+    assert.notEqual(r.statusCode, 403, r.body);
+  });
+
+  it("POST /nodes/:id/sync: headless device token with no bound session is refused", async () => {
+    const r = await call("POST", `/nodes/${homeNodeId}/sync`, headlessIdentity);
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("POST /nodes/:id/sync/remote-sweep: headless device token with no bound session is refused", async () => {
+    const r = await call("POST", `/nodes/${homeNodeId}/sync/remote-sweep`, headlessIdentity);
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("POST /nodes/:id/sync: a plain (non-headless) device token is unaffected", async () => {
+    const r = await call("POST", `/nodes/${otherNodeId}/sync`, deviceTokenIdentity);
+    assert.notEqual(r.statusCode, 403, r.body);
   });
 });

@@ -133,7 +133,7 @@ export const AUTH_ENABLED = AUTH_TOKEN.length > 0;
 // onboarding wizard works before any token exists.
 const AUTH_PUBLIC_PATHS = new Set(["/health", "/mcp/info", "/auth/desktop-config"]);
 
-function timingSafeStringEqual(a: string, b: string): boolean {
+export function timingSafeStringEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }

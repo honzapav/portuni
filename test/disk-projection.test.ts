@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, readFile, stat, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createClient as createDbClient, type Client as DbClient } from "@libsql/client";
 import { SessionScope } from "../apps/server/mcp/scope.js";
 import { readableMirrorRoot, createDiskProjector, disposeSessionProjection } from "../apps/server/mcp/disk-projection.js";
 import {
@@ -15,12 +16,20 @@ import {
   UNNARROWED_PROJECTION_ID,
 } from "../apps/server/domain/session-projection.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { ensureSchemaOn } from "../apps/server/infra/schema.js";
+import { createSession } from "../apps/server/domain/sessions.js";
 
 let dir: string;
 let home: string;
 let neighbor: string;
 let originalPortuniRoot: string | undefined;
 let originalWorkspaceRoot: string | undefined;
+
+// disposeSessionProjection's #214 tests need a real DB-backed node (the
+// sessions table's node_id FK, and its id CHECK(length = 26)) -- unlike
+// every other test in this file, which uses "HOME" as a bare path segment
+// with no DB behind it.
+const HOME_NODE_ID = "01HOME00000000000000000000";
 
 function fakeResolver(map: Record<string, string>) {
   return async (_userId: string, nodeId: string) => map[nodeId] ?? null;
@@ -286,6 +295,21 @@ describe("createDiskProjector", () => {
 });
 
 describe("disposeSessionProjection", () => {
+  let db: DbClient;
+
+  beforeEach(async () => {
+    db = createDbClient({ url: ":memory:" });
+    await ensureSchemaOn(db);
+    await db.execute({
+      sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES ('u', 'u@x.com', 'U')",
+      args: [],
+    });
+    await db.execute({
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, 'project', 'Home', 'home', 'u')",
+      args: [HOME_NODE_ID],
+    });
+  });
+
   it("removes the narrow per-spawn projection directory on close", async () => {
     await writeFile(join(neighbor, "wip", "method.md"), "hello\n");
     const scope = new SessionScope("interactive_task");
@@ -301,7 +325,7 @@ describe("disposeSessionProjection", () => {
     const result = await projector.projectNode("ADHOC");
     assert.ok(result);
 
-    disposeSessionProjection(scope, "u");
+    disposeSessionProjection(scope, "u", db);
     // Fire-and-forget cleanup -- give the microtask queue a turn.
     await new Promise((r) => setTimeout(r, 20));
     await assert.rejects(() => stat(result.dir));
@@ -309,11 +333,13 @@ describe("disposeSessionProjection", () => {
 
   // #211: the shared bucket may still be in use by another concurrent
   // non-relaying (Codex/Vibe) session on the same node, so a single
-  // session's close must never remove it.
-  it("does NOT remove the shared bucket on close (#211)", async () => {
+  // session's close must never remove it purely because ITS OWN
+  // projectionSessionId happens to be the shared sentinel.
+  it("does NOT remove the shared bucket while another session on the node is still running (#211, #214)", async () => {
     await writeFile(join(neighbor, "wip", "method.md"), "hello\n");
+    await createSession(db, "u", { node_id: HOME_NODE_ID, session_type: "interactive_task" });
     const scope = new SessionScope("interactive_task");
-    scope.homeNodeId = "HOME";
+    scope.homeNodeId = HOME_NODE_ID;
     scope.sessionId = "SESS";
     scope.projectionSessionId = UNNARROWED_PROJECTION_ID;
     scope.add("ADHOC");
@@ -325,9 +351,37 @@ describe("disposeSessionProjection", () => {
     const result = await projector.projectNode("ADHOC");
     assert.ok(result);
 
-    disposeSessionProjection(scope, "u");
+    disposeSessionProjection(scope, "u", db);
     await new Promise((r) => setTimeout(r, 20));
     const linked = await readFile(join(result.dir, "wip", "method.md"), "utf8");
     assert.equal(linked, "hello\n");
+  });
+
+  // #214: unlike a narrow per-session directory, the shared bucket has no
+  // owner of its own -- it must be swept once NOTHING is running on its
+  // home node anymore, including when the closing session is itself the
+  // last one (and therefore still has a 'running' row in the durable table
+  // at the moment onclose fires -- it must be excluded from the "any other
+  // running session" check, not mistaken for one).
+  it("removes the shared bucket once this was the last running session on the node", async () => {
+    await writeFile(join(neighbor, "wip", "method.md"), "hello\n");
+    const sessionId = "01SESS00000000000000000000";
+    await createSession(db, "u", { node_id: HOME_NODE_ID, session_type: "interactive_task" }, sessionId);
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = HOME_NODE_ID;
+    scope.sessionId = sessionId;
+    scope.projectionSessionId = UNNARROWED_PROJECTION_ID;
+    scope.add("ADHOC");
+    const projector = createDiskProjector({
+      userId: "u",
+      scope,
+      resolveMirror: fakeResolver({ ADHOC: neighbor }),
+    });
+    const result = await projector.projectNode("ADHOC");
+    assert.ok(result);
+
+    disposeSessionProjection(scope, "u", db);
+    await new Promise((r) => setTimeout(r, 20));
+    await assert.rejects(() => stat(join(dir, ".portuni-sessions", HOME_NODE_ID, UNNARROWED_PROJECTION_ID)));
   });
 });

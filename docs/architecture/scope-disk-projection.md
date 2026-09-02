@@ -112,10 +112,34 @@ the other, so granting both does not defeat the narrow one's isolation.
 the resumed session's own id; the relayed `X-Portuni-Spawn-Id` (Claude); or
 the shared bucket (every other CLI). `mcp/disk-projection.ts` projects into
 whichever one `projectionSessionId` names, and `disposeSessionProjection`
-never tears the shared bucket down at any single session's close (other
-concurrent non-relaying sessions on the same node may still be reading it) —
-`sweepStaleSessionProjections` also leaves it alone permanently, the same
-way it was never cleaned up per-session before #208 existed at all.
+never tears the shared bucket down purely because one session's own close
+happens to key off it (other concurrent non-relaying sessions on the same
+node may still be reading it).
+
+**Bounding the shared bucket (#214).** Unlike a narrow per-session
+directory, `_shared` isn't owned by any one session row, so it can't be
+aged out by the per-`sessionId` rule below. It is instead governed by
+node-level running-session state: `disposeSessionProjection` sweeps it
+(removed outright, or reconciled in place) every time a session on that
+home node closes, and `sweepStaleSessionProjections`'s boot sweep does the
+same as a backstop for a crashed process. "Reconciled in place" means
+pruning hardlinks whose source mirror file is gone, the same "source is
+gone" condition `relinkProjectedFile` already handles for the live/watched
+path — an ad-hoc node deleted or unmirrored while `_shared` was still in
+use would otherwise leave stale links there forever. Relaying the spawn id
+for Codex/Vibe the way Claude's header does — so they'd land in the narrow
+per-session directory and stop needing `_shared` at all — turned out not to
+be implementable with either CLI's current config format: Codex has no
+per-mirror MCP registration whatsoever (`domain/scope-materialize.ts`'s
+per-mirror `.codex/config.toml` is sandbox-only; the MCP connection lives
+in the global, static `~/.codex/config.toml`), and Vibe's per-mirror
+`url`/`headers` fields are plain static strings materialized once at mirror
+creation with no runtime env-var expansion outside the auth-token-specific
+fields (`api_key_env` et al., confirmed against Mistral's own docs) — so a
+literal session id embedded there would go stale after the very first spawn
+on that mirror, since the id changes every spawn but the file is written
+once. `_shared` staying bounded rather than actually narrowed is the
+accepted outcome for those two CLIs.
 
 **Remaining gap.** `onclose` cleanup only runs on a graceful session end, so
 a crashed process (or the whole desktop app) leaves its hardlinks behind.
@@ -131,6 +155,7 @@ covered by tests (`test/sandbox-profile.test.ts`,
 `test/session-persistence.test.ts`, `test/sessions.test.ts`,
 `test/rest-sandbox-profile.test.ts`, `test/agent-router.test.ts`,
 `test/write-scope.test.ts`, `test/disk-projection.test.ts`,
+`test/session-projection.test.ts`,
 `test/scope-projection-session-id.test.ts`), but the live macOS
 verification itself is not.
 

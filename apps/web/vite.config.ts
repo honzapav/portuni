@@ -7,6 +7,16 @@ import tailwindcss from "@tailwindcss/vite";
 // the secret never lands in the client bundle. Run vite under varlock
 // (or `PORTUNI_AUTH_TOKEN=... vite dev`) for this to pick up the value.
 const AUTH_TOKEN = (process.env.PORTUNI_AUTH_TOKEN ?? "").trim();
+// Dev-mode stand-in for the desktop Tauri host's api_request proxy (#213):
+// proves a request came through this dev proxy, not a spawned agent
+// terminal holding the same PORTUNI_AUTH_TOKEN. In the packaged app the
+// Rust host generates this fresh per launch and never exposes it to a
+// spawned shell; here it is a developer-configured shared value (varlock),
+// matching AUTH_TOKEN's own dev-mode pattern. Only meaningful if the
+// backend also has PORTUNI_WEBVIEW_PROXY_SECRET set to the hardened
+// posture -- unset on both sides (the default) keeps env mode's legacy
+// unscoped REST writes; see apps/server/api/write-gate.ts.
+const WEBVIEW_PROXY_SECRET = (process.env.PORTUNI_WEBVIEW_PROXY_SECRET ?? "").trim();
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -33,6 +43,13 @@ export default defineConfig({
           proxy.on("proxyReq", (proxyReq) => {
             if (AUTH_TOKEN) {
               proxyReq.setHeader("Authorization", `Bearer ${AUTH_TOKEN}`);
+            }
+            // Drop any client-supplied marker before deciding whether to
+            // set our own, so client JS can never forward one through
+            // unmodified (mirrors the Rust proxy's own filtering).
+            proxyReq.removeHeader("X-Portuni-Webview-Proxy");
+            if (WEBVIEW_PROXY_SECRET) {
+              proxyReq.setHeader("X-Portuni-Webview-Proxy", WEBVIEW_PROXY_SECRET);
             }
           });
         },

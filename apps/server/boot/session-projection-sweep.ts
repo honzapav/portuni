@@ -30,7 +30,7 @@ export async function sweepStaleSessionProjectionsOnBoot(): Promise<void> {
       knownMirrors: mirrors.map((m) => m.local_path),
     });
     if (!portuniRoot) return;
-    const { removed } = await sweepStaleSessionProjections(getDb(), portuniRoot);
+    const { removed } = await sweepStaleSessionProjections(getDb(), portuniRoot, SOLO_USER);
     if (removed.length > 0) {
       console.log(`[boot] session projection sweep removed ${removed.length} stale dir(s)`);
     }

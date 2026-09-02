@@ -66,6 +66,14 @@ struct BackendPorts(Mutex<HashMap<String, u16>>);
 // without touching Keychain each time. regenerate_mcp_token rotates the
 // active workspace's entry in place without restarting the Tauri host.
 struct AuthTokens(Mutex<HashMap<String, String>>);
+// Per-workspace, per-launch secret proving a request came through THIS
+// Tauri host's api_request proxy rather than a spawned agent terminal
+// holding the same bearer token (#213). Generated fresh at every
+// spawn_sidecar_ws, handed to the sidecar only via its child-process env
+// (PORTUNI_WEBVIEW_PROXY_SECRET) and attached as X-Portuni-Webview-Proxy on
+// every locally-proxied api_request call. Never persisted, never exported
+// into pty_spawn's shell env -- see api_request and spawn_sidecar_ws.
+struct WebviewProxySecrets(Mutex<HashMap<String, String>>);
 
 // Keychain coordinates for secrets we persist across launches. Service is
 // bundle-id-shaped so entries show up under "ooo.workflow.portuni" in
@@ -1188,11 +1196,28 @@ async fn api_request(
         // Backend's PORTUNI_ALLOWED_ORIGINS includes tauri://localhost
         // so the existing origin allowlist accepts proxied requests.
         .header("Origin", "tauri://localhost");
+    // Proves this request came through the Tauri host, not a spawned
+    // agent terminal holding the same bearer token (#213) — the server's
+    // env-mode write gate treats this header as proof of the desktop UI's
+    // blanket write exemption. Only set when the sidecar for this
+    // workspace is known to have one (always true once spawn_sidecar_ws
+    // has run).
+    if let Some(secret) = app
+        .state::<WebviewProxySecrets>()
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(&ws_id)
+        .cloned()
+    {
+        req = req.header("X-Portuni-Webview-Proxy", secret);
+    }
     if let Some(headers) = headers {
         for (k, v) in headers {
-            // The host owns auth — drop any caller-provided
-            // Authorization to prevent webview JS from spoofing one.
-            if k.eq_ignore_ascii_case("authorization") {
+            // The host owns auth — drop any caller-provided Authorization
+            // or webview-proxy-secret header to prevent webview JS from
+            // spoofing one.
+            if k.eq_ignore_ascii_case("authorization") || k.eq_ignore_ascii_case("x-portuni-webview-proxy") {
                 continue;
             }
             req = req.header(k, v);
@@ -1435,6 +1460,17 @@ pub(crate) fn spawn_sidecar_ws(
         .unwrap()
         .insert(ws_id.to_string(), auth_token.clone());
 
+    // Per-launch webview-proxy secret (#213): proves an env-mode REST write
+    // came through this Tauri host's api_request proxy, not a spawned agent
+    // terminal holding the same bearer token. Regenerated on every spawn,
+    // kept only in memory and in the sidecar's own child-process env below.
+    let webview_proxy_secret = random_token();
+    app.state::<WebviewProxySecrets>()
+        .0
+        .lock()
+        .unwrap()
+        .insert(ws_id.to_string(), webview_proxy_secret.clone());
+
     // Tauri's webview ships requests from a non-loopback origin the backend's
     // default allowlist doesn't know about. Pass the Tauri origins explicitly.
     let allowed_origins = [
@@ -1462,6 +1498,7 @@ pub(crate) fn spawn_sidecar_ws(
         ("PORTUNI_DATA_DIR".to_string(), data_dir_str),
         ("PORTUNI_PORT".to_string(), port.to_string()),
         ("PORTUNI_AUTH_TOKEN".to_string(), auth_token),
+        ("PORTUNI_WEBVIEW_PROXY_SECRET".to_string(), webview_proxy_secret),
         ("PORTUNI_WORKSPACE_ROOT".to_string(), workspace_root),
         ("PORTUNI_WORKSPACE_ID".to_string(), ws_id.to_string()),
         ("PORTUNI_ALLOWED_ORIGINS".to_string(), allowed_origins),
@@ -2109,6 +2146,7 @@ pub fn run() {
         .manage(SidecarState(Mutex::new(HashMap::new())))
         .manage(BackendPorts(Mutex::new(HashMap::new())))
         .manage(AuthTokens(Mutex::new(HashMap::new())))
+        .manage(WebviewProxySecrets(Mutex::new(HashMap::new())))
         .manage(pty::PtyState::default())
         .manage(updater::PendingUpdate::default())
         .register_uri_scheme_protocol("portuni-html", |ctx, request| {
