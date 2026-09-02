@@ -1,7 +1,11 @@
 // User settings persisted in localStorage. Currently just the agent command
 // template used when copying a launch command from a node's detail pane.
 
-const AGENT_COMMAND_KEY = "portuni:agentCommand";
+import { scopedKey } from "./workspace-storage";
+
+// Exported so App.tsx's cross-window storage-event sync (#228) can tell
+// this global-preference key apart from workspace-scoped ones.
+export const AGENT_COMMAND_KEY = "portuni:agentCommand";
 
 // No automatic first prompt (spec: "Spawn UX") -- the terminal starts empty
 // and ready, so the command is just the plain CLI invocation. A `{prompt}`
@@ -128,7 +132,9 @@ export function agentDisplayName(template: string): string {
 //   $PORTUNI_COMMAND_AS  same command, escaped for AppleScript double-quoted
 //                        strings (\ -> \\, " -> \"), drops straight into a
 //                        `do script "..."` without further work.
-const TERMINAL_LAUNCH_KEY = "portuni:terminalLaunch";
+// Exported so App.tsx's cross-window storage-event sync (#228) can tell
+// this global-preference key apart from workspace-scoped ones.
+export const TERMINAL_LAUNCH_KEY = "portuni:terminalLaunch";
 
 // Default: Terminal.app via osascript. Carries the cold-start two-window fix
 // (a fresh Terminal launch opens a startup window AND a do-script window; we
@@ -237,12 +243,13 @@ export function saveTerminalLaunch(template: string): void {
 // working set survives an app restart. Terminals (PTYs) cannot be restored,
 // but the list of open nodes can. Stored as a JSON array of node ids; ids
 // that no longer exist are pruned against the graph on load (in App).
-const OPEN_NODES_KEY = "portuni:openNodes";
+// Workspace-scoped (#228): two windows must not share which nodes are open.
+const OPEN_NODES_KEY = "openNodes";
 
 export function loadOpenNodes(): string[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = window.localStorage.getItem(OPEN_NODES_KEY);
+    const raw = window.localStorage.getItem(scopedKey(OPEN_NODES_KEY));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -254,7 +261,7 @@ export function loadOpenNodes(): string[] {
 
 export function saveOpenNodes(ids: readonly string[]): void {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(OPEN_NODES_KEY, JSON.stringify(ids));
+  window.localStorage.setItem(scopedKey(OPEN_NODES_KEY), JSON.stringify(ids));
 }
 
 // --- File tree collapsed folders --------------------------------------------
@@ -263,13 +270,13 @@ export function saveOpenNodes(ids: readonly string[]): void {
 // tree doesn't reset to fully expanded every time the node detail remounts
 // (switching node, switching tab and back, app restart). Stored as
 // { [nodeId]: string[] } (TreeNode.path values); a node's entry is removed
-// once its collapsed set is empty.
-const COLLAPSED_FOLDERS_KEY = "portuni:fileTreeCollapsed";
+// once its collapsed set is empty. Workspace-scoped (#228).
+const COLLAPSED_FOLDERS_KEY = "fileTreeCollapsed";
 
 export function loadCollapsedFolders(nodeId: string): Set<string> {
   if (typeof window === "undefined") return new Set();
   try {
-    const raw = window.localStorage.getItem(COLLAPSED_FOLDERS_KEY);
+    const raw = window.localStorage.getItem(scopedKey(COLLAPSED_FOLDERS_KEY));
     if (!raw) return new Set();
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return new Set();
@@ -284,7 +291,8 @@ export function loadCollapsedFolders(nodeId: string): Set<string> {
 export function saveCollapsedFolders(nodeId: string, paths: Set<string>): void {
   if (typeof window === "undefined") return;
   try {
-    const raw = window.localStorage.getItem(COLLAPSED_FOLDERS_KEY);
+    const key = scopedKey(COLLAPSED_FOLDERS_KEY);
+    const raw = window.localStorage.getItem(key);
     const parsed = raw ? JSON.parse(raw) : {};
     const all = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
     if (paths.size === 0) {
@@ -292,7 +300,7 @@ export function saveCollapsedFolders(nodeId: string, paths: Set<string>): void {
     } else {
       all[nodeId] = Array.from(paths);
     }
-    window.localStorage.setItem(COLLAPSED_FOLDERS_KEY, JSON.stringify(all));
+    window.localStorage.setItem(key, JSON.stringify(all));
   } catch {
     // localStorage unavailable/full — collapsed state stays in-memory only.
   }

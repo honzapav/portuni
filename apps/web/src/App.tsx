@@ -41,7 +41,7 @@ import SyncOverview from "./components/SyncOverview";
 const GraphView = lazy(() => import("./components/GraphView"));
 import type { GraphPayload, NodeDetail } from "./types";
 import type { Theme } from "./lib/theme";
-import { loadTheme, saveTheme } from "./lib/theme";
+import { loadTheme, saveTheme, THEME_STORAGE_KEY } from "./lib/theme";
 import {
   loadAgentCommand,
   saveAgentCommand,
@@ -49,6 +49,8 @@ import {
   saveTerminalLaunch,
   loadOpenNodes,
   saveOpenNodes,
+  AGENT_COMMAND_KEY,
+  TERMINAL_LAUNCH_KEY,
 } from "./lib/settings";
 
 // Files that have a useful rendered preview (MarkdownPreview). These open in
@@ -96,6 +98,27 @@ export default function App() {
   const setTerminalLaunch = useCallback((value: string) => {
     setTerminalLaunchRaw(value);
     saveTerminalLaunch(value);
+  }, []);
+
+  // theme/agentCommand/terminalLaunch are global preferences (#228, unlike
+  // the workspace-scoped keys elsewhere), so a change made in one window
+  // must apply live in every other one too -- all windows share the same
+  // localStorage origin, but each only ever reads its own copy into React
+  // state once, at mount. The native `storage` event fires in every OTHER
+  // window when one of them writes, so re-reading here on that event is
+  // what keeps them in sync without a reload.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === THEME_STORAGE_KEY) {
+        setTheme(loadTheme());
+      } else if (e.key === AGENT_COMMAND_KEY) {
+        setAgentCommandRaw(loadAgentCommand());
+      } else if (e.key === TERMINAL_LAUNCH_KEY) {
+        setTerminalLaunchRaw(loadTerminalLaunch());
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   const [view, setView] = useState<AppView>(() => {

@@ -414,6 +414,36 @@ symlink to this file.
   webview's `listen()` doesn't care whether Rust used `emit` or
   `emit_to`.
 
+- **localStorage is namespaced per workspace (#228).** All windows share
+  one webview origin, so a plain key would leak between windows — which
+  nodes are open (`openNodes`), which file-tree folders are collapsed
+  (`fileTreeCollapsed`), the workspace view's detail-pane visibility
+  (`workspace.detailVisible`), and central mode's first-login guidance
+  flag (`first-steps-pending`) are all keyed `portuni:<ws_id>:<key>` now
+  (`apps/web/src/lib/workspace-storage.ts`). `currentWorkspaceId()` reads
+  this window's own workspace id straight from `getCurrentWindow().label`
+  (`"ws:<id>"`, stripped) — synchronous, no IPC round trip, since Tauri
+  injects that metadata before any page JS runs. `scopedKey(key)` is the
+  per-call helper (`namespacedKey(wsId, key)` when a workspace is known,
+  else the old unscoped `portuni:<key>` shape — a plain browser/vite-dev
+  build has no workspace concept, same fallback every other Tauri-only
+  feature in this codebase uses). **One-time migration**:
+  `migrateUnscopedStorageForCurrentWindow()` runs synchronously in
+  `main.tsx`, before the React tree renders and before anything (notably
+  `CentralLoginGate`'s mount-effect `first-steps-pending` check) could read
+  a workspace-scoped key — moves each old unscoped key into this window's
+  namespace, then deletes it; idempotent, and never clobbers a namespaced
+  value that already exists (first window/launch to run it wins). Its pure
+  core (`migrateUnscopedStorage`, operating on a `StorageLike` interface)
+  is unit-tested in `test/workspace-storage.test.ts`, server-side via
+  `tsx`, same pattern as `test/sessions-helpers.test.ts` importing from
+  `apps/web/src/lib/*.js`. `theme`, `agentCommand`, `terminalLaunch` stay
+  global/unscoped by design (user preferences, not workspace state) —
+  `App.tsx` now also subscribes to the native `storage` event (fires in
+  every OTHER window when one writes, since they share an origin) so a
+  change in one window's Settings applies live in every other one instead
+  of only taking effect on that window's own next mount.
+
 - **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
   keys; `.env.schema` declares only the 7 core ones. Full inventory with
   defaults: `docs/env-vars.md`. Watch out: `PORTUNI_ROOT` (write-scope

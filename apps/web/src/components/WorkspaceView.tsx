@@ -16,6 +16,7 @@ import type { GraphPayload, GraphNode, NodeDetail } from "../types";
 import type { TerminalSession } from "../lib/sessions";
 import type { Theme } from "../lib/theme";
 import type { FileEditor } from "../lib/use-file-editor";
+import { scopedKey } from "../lib/workspace-storage";
 import TerminalTabs from "./TerminalTabs";
 import WorkspaceEmpty from "./WorkspaceEmpty";
 import DetailPane from "./DetailPane";
@@ -91,11 +92,11 @@ export default function WorkspaceView({
   onExpandEditor,
 }: Props) {
   const [detailVisible, setDetailVisible] = useState<boolean>(() => {
-    return localStorage.getItem("portuni:workspace.detailVisible") !== "false";
+    return localStorage.getItem(scopedKey("workspace.detailVisible")) !== "false";
   });
   const toggleDetail = () => {
     setDetailVisible((v) => {
-      localStorage.setItem("portuni:workspace.detailVisible", String(!v));
+      localStorage.setItem(scopedKey("workspace.detailVisible"), String(!v));
       return !v;
     });
   };

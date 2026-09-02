@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { isTauri, getDataMode, authStatus, googleLogin } from "../lib/central";
+import { scopedKey } from "../lib/workspace-storage";
 
 type GateStatus =
   | { kind: "checking" }
@@ -39,7 +40,7 @@ export default function CentralLoginGate({ children }: { children: ReactNode }) 
       } else if (s.logged_in) {
         // First login on this install: show the one-time guidance that
         // mirror folders appear only after a terminal is opened on a node.
-        if (localStorage.getItem("portuni.first-steps-pending") === "1") {
+        if (localStorage.getItem(scopedKey("first-steps-pending")) === "1") {
           setStatus({ kind: "first-steps" });
         } else {
           setStatus({ kind: "ready" });
@@ -64,7 +65,7 @@ export default function CentralLoginGate({ children }: { children: ReactNode }) 
     setBusy(true);
     try {
       await googleLogin();
-      localStorage.setItem("portuni.first-steps-pending", "1");
+      localStorage.setItem(scopedKey("first-steps-pending"), "1");
       // Reload so the graph fetch, caches and auth-status re-run cleanly with
       // the freshly stored session JWT.
       window.location.reload();
@@ -75,7 +76,7 @@ export default function CentralLoginGate({ children }: { children: ReactNode }) 
   }
 
   function handleFirstStepsDone() {
-    localStorage.removeItem("portuni.first-steps-pending");
+    localStorage.removeItem(scopedKey("first-steps-pending"));
     setStatus({ kind: "ready" });
   }
 
