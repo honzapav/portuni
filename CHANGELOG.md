@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.0](https://github.com/honzapav/portuni/compare/v0.11.0...v0.12.0) (2026-09-02)
+
+
+### Features
+
+* **scope:** scope model v2, persistent sessions, spawn UX, overview ([88c6efe](https://github.com/honzapav/portuni/commit/88c6efe47b173d6cd2cd70f40deca84ae347607f))
+
+
+### Bug Fixes
+
+* **mcp:** access checks for unguarded write tools ([5f99b00](https://github.com/honzapav/portuni/commit/5f99b009005e97a2a84f9ede0499b08f67f76741))
+
 ## [0.11.0](https://github.com/honzapav/portuni/compare/v0.10.0...v0.11.0) (2026-08-31)
 
 
