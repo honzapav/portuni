@@ -14,19 +14,12 @@ import {
   createWorkspace,
   deleteWorkspace,
   listWorkspaces,
+  openWorkspaceWindow,
   restartWorkspace,
   setWorkspaceEnabled,
   slugify,
-  switchWorkspace,
   type WorkspaceInfo,
 } from "../lib/workspaces";
-
-// Dispatched by every successful workspace mutation (create, delete,
-// enable/disable, restart) so components outside this section -- notably
-// Sidebar's WorkspaceSwitcher -- can refresh without a full page reload.
-function notifyWorkspacesChanged() {
-  window.dispatchEvent(new CustomEvent("portuni:workspaces-changed"));
-}
 
 type ListState =
   | { kind: "loading" }
@@ -76,12 +69,37 @@ export default function WorkspacesSection() {
     void load();
   }, [load]);
 
-  // Every mutation (create, delete, enable/disable, restart) routes its
-  // post-success reload through here so the switcher-refresh event fires
-  // exactly once per mutation, from one place.
+  // Cross-window sync (#226): Rust broadcasts "workspaces-changed" after
+  // every config mutation, from ANY window -- replacing the old
+  // document-local CustomEvent that only this window's own dispatch could
+  // trigger (so e.g. a workspace created in another window's Settings now
+  // shows up here too).
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    void (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        unlisten = await listen("workspaces-changed", () => void load());
+      } catch {
+        /* not running in Tauri */
+      }
+    })();
+    return () => {
+      try {
+        unlisten?.();
+      } catch {
+        /* window already gone */
+      }
+    };
+  }, [load]);
+
+  // restartWorkspace doesn't mutate config.json (no workspaces-changed
+  // broadcast), so its own row needs an explicit reload; harmless to call
+  // for the broadcasting mutations too (create/enable/disable/delete) --
+  // just a redundant extra load alongside the one the event above already
+  // triggers.
   const reloadAfterMutation = useCallback(async () => {
     await load();
-    notifyWorkspacesChanged();
   }, [load]);
 
   function withPending<T>(id: string, fn: () => Promise<T>): Promise<T> {
@@ -96,14 +114,14 @@ export default function WorkspacesSection() {
     });
   }
 
-  async function handleActivate(id: string) {
+  async function handleOpen(id: string) {
     // Row action: an armed delete confirm elsewhere in the table must not
     // survive an unrelated action.
     setConfirmDeleteId(null);
     setRowError(null);
     try {
-      await withPending(id, () => switchWorkspace(id));
-      // switchWorkspace reloads the page on success -- nothing left to do.
+      await withPending(id, () => openWorkspaceWindow(id));
+      // Opens/focuses its own window -- nothing left to do here.
     } catch (e) {
       setRowError(e instanceof Error ? e.message : String(e));
     }
@@ -224,6 +242,11 @@ export default function WorkspacesSection() {
                               aktivní
                             </span>
                           )}
+                          {w.window_open && (
+                            <span className="rounded-sm border border-[var(--color-border)] px-1.5 py-0.5 font-mono text-[10.5px] uppercase tracking-wide text-[var(--color-text-dim)]">
+                              okno otevřené
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="py-2 pr-4 font-mono text-[var(--color-text-muted)]">
@@ -252,11 +275,11 @@ export default function WorkspacesSection() {
                         <div className="flex flex-wrap items-center gap-1.5">
                           <button
                             type="button"
-                            disabled={busy || w.active}
-                            onClick={() => void handleActivate(w.id)}
+                            disabled={busy || !w.enabled}
+                            onClick={() => void handleOpen(w.id)}
                             className="rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            Aktivovat
+                            {w.window_open ? "Přepnout na okno" : "Otevřít"}
                           </button>
                           {canRestart && (
                             <button

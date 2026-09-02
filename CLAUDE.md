@@ -359,13 +359,34 @@ symlink to this file.
   focuses its new `ws:<id>` window right after `spawn_sidecar_ws`.
   `tauri-plugin-window-state` persists each window's own geometry by label,
   purely on the Rust side (no webview capability needed — its commands are
-  never invoked from JS). **Not yet done** (later phase-2 issues): the
-  workspace switcher still calls the old `switchWorkspace`/reload path
-  (#226), `backend-ready`/`pty-*` events are still broadcast rather than
-  per-window (#227), and the `on_window_event(Destroyed) →
-  kill_all_sidecars` handler still kills every workspace's sidecar when ANY
-  window closes, not just the closing one's (#229) — multi-window is
-  therefore not yet safe to actually rely on end-to-end.
+  never invoked from JS). **Not yet done** (later phase-2 issues):
+  `backend-ready`/`pty-*` events are still broadcast rather than per-window
+  (#227), and the `on_window_event(Destroyed) → kill_all_sidecars` handler
+  still kills every workspace's sidecar when ANY window closes, not just
+  the closing one's (#229) — multi-window is therefore not yet safe to
+  actually rely on end-to-end.
+
+- **The workspace switcher opens/focuses a window, it doesn't swap content
+  (#226).** `open_workspace_window(id)` (Rust) replaces
+  `set_active_workspace` + a full-page reload: focuses the `ws:<id>` window
+  if one exists, else creates it (validating the workspace exists and is
+  enabled first — `open_window` itself doesn't check).
+  `openWorkspaceWindow` (`lib/workspaces.ts`) is the frontend wrapper;
+  `switchWorkspace` is gone. The Sidebar dropdown (`WorkspaceSwitcher` in
+  `Sidebar.tsx`) is a jump target, not a selection — always resets to a
+  disabled placeholder option rather than reflecting the calling window's
+  own workspace as "current", and marks each entry `(otevřeno)` from
+  `list_workspaces`' new `window_open: bool` (computed live from
+  `app.webview_windows()`, not the persisted `open_windows`, so it can
+  never lag). `WorkspacesSection.tsx`'s row action is the same command,
+  relabelled "Otevřít"/"Přepnout na okno". Cross-window sync: Rust emits a
+  broadcast `workspaces-changed` after every successful `with_config_mut`/
+  `with_config_write_lock` call (i.e. every config mutation AND every
+  window open/close, since #225's `persist_open_windows` also goes through
+  `with_config_mut`) — `Sidebar` and `WorkspacesSection` both `listen()`
+  for it now instead of the old document-local
+  `portuni:workspaces-changed` `CustomEvent`, which only the dispatching
+  window itself could ever hear.
 
 - **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
   keys; `.env.schema` declares only the 7 core ones. Full inventory with

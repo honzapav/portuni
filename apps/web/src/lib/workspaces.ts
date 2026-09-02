@@ -1,5 +1,5 @@
 // Multi-workspace client bindings — thin wrappers around the Tauri
-// `list_workspaces` / `create_workspace` / `set_active_workspace` /
+// `list_workspaces` / `create_workspace` / `open_workspace_window` /
 // `set_workspace_enabled` / `delete_workspace` commands (apps/desktop
 // src/lib.rs). No-ops (or empty results) outside Tauri — a plain browser
 // build has no workspace concept.
@@ -21,6 +21,9 @@ export interface WorkspaceInfo {
   deferred: boolean;
   mcp_server_name: string;
   workspace_root: string;
+  // True when a ws:<id> window is currently open for this workspace
+  // (#226) -- read live from the Rust side, not cached here.
+  window_open: boolean;
 }
 
 export async function listWorkspaces(): Promise<WorkspaceInfo[]> {
@@ -28,11 +31,13 @@ export async function listWorkspaces(): Promise<WorkspaceInfo[]> {
   return invoke<WorkspaceInfo[]>("list_workspaces");
 }
 
-export async function switchWorkspace(id: string): Promise<void> {
-  await invoke("set_active_workspace", { id });
-  // Full reload: every cached module-level state (data mode, backend port,
-  // graph queries) belongs to the previous workspace.
-  window.location.reload();
+// Focus the workspace's own window if one is already open, else create it
+// (#226, "one window per workspace") -- replaces switchWorkspace's
+// set_active_workspace + full-page-reload dance, since switching is no
+// longer "the same window shows different data" but "focus/open a
+// different window".
+export async function openWorkspaceWindow(id: string): Promise<void> {
+  await invoke("open_workspace_window", { id });
 }
 
 export interface CreateWorkspaceArgs {

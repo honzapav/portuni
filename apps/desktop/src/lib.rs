@@ -254,7 +254,15 @@ fn with_config_write_lock<T>(
 ) -> Result<T, String> {
     let state = app.state::<ConfigLock>();
     let _guard = state.0.lock().map_err(|e| e.to_string())?;
-    f()
+    let result = f();
+    // Broadcast after every successful config mutation (#226) so every
+    // window's Sidebar/WorkspacesSection can refresh instead of relying on
+    // the old document-local CustomEvent, which only the emitting window
+    // ever heard.
+    if result.is_ok() {
+        let _ = app.emit("workspaces-changed", ());
+    }
+    result
 }
 
 // with_config_mut: the common case for callers that already require an
@@ -283,7 +291,13 @@ pub(crate) fn with_config_mut(
     mutate: impl FnOnce(&mut workspace::WorkspacesFile) -> Result<(), String>,
 ) -> Result<(), String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    with_config_mut_at(&app.state::<ConfigLock>().0, &data_dir, mutate)
+    let result = with_config_mut_at(&app.state::<ConfigLock>().0, &data_dir, mutate);
+    // See with_config_write_lock's comment (#226) -- same broadcast, this
+    // is the common-case wrapper most mutating commands go through.
+    if result.is_ok() {
+        let _ = app.emit("workspaces-changed", ());
+    }
+    result
 }
 
 // Same title/size/min-size/etc. tauri.conf.json's single static window used
@@ -2100,6 +2114,11 @@ struct WorkspaceInfo {
     deferred: bool,
     mcp_server_name: String,
     workspace_root: String,
+    // True when a ws:<id> window is currently open for this workspace
+    // (#226) -- read live from app.webview_windows(), not from the
+    // persisted open_windows (which can lag a focus-only change). Drives
+    // the Sidebar switcher's "already open" marking.
+    window_open: bool,
 }
 
 #[tauri::command]
@@ -2130,8 +2149,32 @@ fn list_workspaces(app: AppHandle) -> Result<Vec<WorkspaceInfo>, String> {
             deferred: ports.get(id).is_some_and(|p| *p == 0),
             mcp_server_name: workspace::mcp_server_name(id, cfg),
             workspace_root: cfg.effective_workspace_root(),
+            window_open: window_open_for(&app, id),
         })
         .collect())
+}
+
+// Focus ws:<id> if it already has a window, else create one (#226) -- the
+// switcher's single entry point, replacing set_active_workspace + a full
+// page reload. Validates the workspace exists and is enabled first:
+// open_window itself doesn't check, and a disabled/unknown id would
+// otherwise silently create an unusable window.
+#[tauri::command]
+fn open_workspace_window(app: AppHandle, id: String) -> Result<(), String> {
+    let label = format!("ws:{id}");
+    if let Some(w) = app.get_webview_window(&label) {
+        return w.set_focus().map_err(|e| e.to_string());
+    }
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(file) => match file.workspaces.get(&id) {
+            Some(cfg) if cfg.enabled => {}
+            Some(_) => return Err(format!("workspace '{id}' is disabled")),
+            None => return Err(format!("unknown workspace '{id}'")),
+        },
+        _ => return Err("config not migrated to workspaces yet".to_string()),
+    }
+    open_window(&app, &label).map_err(|e| e.to_string())
 }
 
 #[derive(Deserialize)]
@@ -2663,6 +2706,7 @@ pub fn run() {
             set_active_workspace,
             set_workspace_enabled,
             delete_workspace,
+            open_workspace_window,
             list_profiles,
             create_profile,
             update_profile,
