@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 mod auth;
@@ -42,11 +42,34 @@ static EXIT_APPROVED: AtomicBool = AtomicBool::new(false);
 // exits itself instead of waiting on a webview that can no longer answer.
 const EXIT_FALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+// Generation counter making the fallback timer cancellable (#221 fix): the
+// webview DOES answer promptly on "Zpět do editoru" / "Zrušit" (both
+// resolve confirmExit() with false), but nothing told Rust — so the timer
+// armed by the emit fired 5s later regardless and force-exited anyway.
+// schedule_exit_fallback captures the generation current at arm time;
+// decline_exit bumps it, which invalidates that specific timer (and any
+// older one still in flight) without touching EXIT_APPROVED, so the next
+// Cmd+Q attempt is answered fresh.
+static EXIT_FALLBACK_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+// Pure decision for a fallback timer waking up: should it force-exit now?
+// No -- either something else already approved the exit (approve_exit's own
+// immediate app.exit(0) already ran; firing again would be a harmless but
+// pointless double-exit), or decline_exit (or a newer schedule_exit_fallback
+// call) bumped the generation counter past the one this timer was armed
+// with. Pure so both branches are unit-testable without a real AppHandle.
+fn fallback_should_fire(armed_generation: u64, current_generation: u64, approved: bool) -> bool {
+    !approved && armed_generation == current_generation
+}
+
 fn schedule_exit_fallback(app: &AppHandle) {
+    let generation = EXIT_FALLBACK_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         std::thread::sleep(EXIT_FALLBACK_TIMEOUT);
-        if !EXIT_APPROVED.load(Ordering::SeqCst) {
+        let current = EXIT_FALLBACK_GENERATION.load(Ordering::SeqCst);
+        let approved = EXIT_APPROVED.load(Ordering::SeqCst);
+        if fallback_should_fire(generation, current, approved) {
             warn!(
                 "webview did not answer app-exit-requested within {EXIT_FALLBACK_TIMEOUT:?} — forcing exit"
             );
@@ -54,6 +77,17 @@ fn schedule_exit_fallback(app: &AppHandle) {
             app_handle.exit(0);
         }
     });
+}
+
+// The webview's answer to `app-exit-requested` when the user declined
+// (cancelled a guard dialog, or is not actually quitting -- e.g. the
+// updater's "Restartovat" reusing the same guards). Cancels any pending
+// fallback timer so it doesn't force-exit 5s later; EXIT_APPROVED stays
+// false so the next Cmd+Q attempt asks the webview again. Harmless to call
+// with no timer pending (a bare generation bump).
+#[tauri::command]
+fn decline_exit() {
+    EXIT_FALLBACK_GENERATION.fetch_add(1, Ordering::SeqCst);
 }
 
 // Per-workspace running sidecar children, keyed by workspace id. Concurrent
@@ -2238,6 +2272,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             approve_exit,
+            decline_exit,
             get_backend_port,
             get_data_mode,
             open_external,
@@ -2391,6 +2426,41 @@ pub fn run() {
                 kill_all_sidecars(app);
             }
         });
+}
+
+#[cfg(test)]
+mod fallback_should_fire_tests {
+    use super::fallback_should_fire;
+
+    #[test]
+    fn armed_and_unanswered_still_exits() {
+        // Same generation the timer was armed with, never approved: the
+        // webview genuinely never answered -- must still force-exit.
+        assert!(fallback_should_fire(1, 1, false));
+    }
+
+    #[test]
+    fn armed_then_declined_does_not_exit() {
+        // decline_exit bumped the generation past what this timer was
+        // armed with while it was sleeping.
+        assert!(!fallback_should_fire(1, 2, false));
+    }
+
+    #[test]
+    fn armed_then_approved_does_not_double_exit() {
+        // approve_exit already called app.exit(0) itself; the timer waking
+        // up afterward on the same generation must not fire again.
+        assert!(!fallback_should_fire(1, 1, true));
+    }
+
+    #[test]
+    fn a_superseded_older_timer_does_not_exit() {
+        // A second schedule_exit_fallback call (e.g. a fresh Cmd+Q while an
+        // older, now-orphaned timer is still sleeping) bumps the generation
+        // too -- the older timer must defer to the newer one, not fire on
+        // its own stale view.
+        assert!(!fallback_should_fire(1, 3, false));
+    }
 }
 
 #[cfg(test)]

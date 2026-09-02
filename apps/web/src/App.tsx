@@ -666,6 +666,11 @@ export default function App() {
               const proceed = await confirmExit();
               if (proceed) {
                 await invoke("approve_exit").catch(() => undefined);
+              } else {
+                // Cancels the 5s fallback timer the Rust host armed
+                // alongside this event -- without this, "Zpět do editoru" /
+                // "Zrušit" force-exited anyway once the timer fired (#221).
+                await invoke("decline_exit").catch(() => undefined);
               }
             })();
           });
