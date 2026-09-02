@@ -147,6 +147,7 @@ export default function WorkspaceView({
         onOpenFile={onOpenFile}
         embedded
         onCollapse={collapsible ? toggleDetail : undefined}
+        terminalSessions={sessions}
       />
     );
 

@@ -449,36 +449,50 @@ symlink to this file.
   workspace at all yet. No capability entry needed — the plugin registers
   no invokable commands, only a Rust-side lifecycle hook.
 
-- **The window-close dialog offers Ukončit / Pozastavit / Zrušit for
-  running terminals (#231, replacing #229's plain confirm).**
-  `SessionSummary` (REST, `GET /nodes/:id/sessions`) gained `terminal_id:
-  string | null` (`toSummary`, `apps/server/api/sessions.ts`) so a window
-  can correlate its own local terminal ids (`lib/sessions.ts`'s
-  `TerminalSession.id` — always Claude-only, since Codex/Vibe's config
-  format has no header for it) to their persistent session rows without a
-  bespoke lookup. `apps/web/src/lib/session-suspend.ts` holds the shared
-  pure decision logic — meant for #232 to reuse too, "one implementation,
-  not two": `correlateSessions` (keep only `terminal_id`-bearing rows),
-  `suspendableTerminalIds` (agent command **and** a correlated `running`
-  session — the session row's `cli` column is always `NULL` and can't be
-  used for this), `allSuspended`/`suspendPollTimedOut` (the 30s poll's stop
-  conditions). `App.tsx`'s `onCloseRequested` guard fetches correlated
-  sessions (one `GET /nodes/:id/sessions` per distinct node among the
-  window's terminals) before showing the dialog. **Ukončit**:
-  `killTerminalsAndCloseWindow` — `pty_kill` every terminal (this is also
-  what #229's plain-confirm path was missing: destroying the window alone
-  never killed its PTYs, since `PtyState` is process-wide and a window
-  closing doesn't touch it — the child only dies when the whole app exits
-  and every fd, PTY masters included, finally closes), then destroys the
-  window. **Pozastavit** (`handleSuspendAndClose`, shown only when
-  `suspendableIds` is non-empty): `pty_write`s a plain-English instruction
-  (`SUSPEND_INSTRUCTION`) into each suspendable terminal asking the agent to
-  call `portuni_session_suspend` on its own initiative — there is no other
-  protocol for this, the agent decides — polls every 2s (re-fetching fresh
-  correlated state each tick) until none is `running` or 30s pass, then
-  **always** calls `killTerminalsAndCloseWindow` on every terminal in the
-  dialog regardless of outcome; a timeout flips the dialog to say so first.
-  **Zrušit**: `declineExit()`, same as the other two guards.
+- **"Pozastavit" (suspend a running agent terminal) is one shared
+  mechanism, used from two places: the window-close dialog (#231) and the
+  node-detail Sessions tab (#232).** `SessionSummary` (REST, `GET
+  /nodes/:id/sessions`) gained `terminal_id: string | null` (`toSummary`,
+  `apps/server/api/sessions.ts`) so either caller can correlate its own
+  local terminal ids (`lib/sessions.ts`'s `TerminalSession.id` — always
+  Claude-only, since Codex/Vibe's config format has no header for it) to
+  their persistent session rows without a bespoke lookup.
+  `apps/web/src/lib/session-suspend.ts` holds the whole mechanism, not just
+  decision logic: `correlateSessions`/`suspendableTerminalIds` (pure —
+  agent command **and** a correlated `running` session; the session row's
+  `cli` column is always `NULL` and can't be used for this),
+  `allSuspended`/`suspendPollTimedOut` (pure, the 30s poll's stop
+  conditions), and the async orchestration both callers actually invoke:
+  `fetchCorrelatedSessions` (one `GET /nodes/:id/sessions` per distinct
+  node among the given terminals) and `suspendTerminalsAndPoll` (`pty_write`s
+  a plain-English instruction, `SUSPEND_INSTRUCTION`, into each terminal
+  asking the agent to call `portuni_session_suspend` on its own initiative
+  — there is no other protocol for this, the agent decides — then polls
+  every 2s, re-fetching fresh correlated state each tick, until none is
+  `running` or 30s pass; returns whether it timed out and leaves "what
+  happens to the terminal" to the caller). **The close dialog** (`App.tsx`,
+  replacing #229's plain confirm): `onCloseRequested` fetches correlated
+  sessions before showing it. **Ukončit**: `killTerminalsAndCloseWindow` —
+  `pty_kill` every terminal (this is also what #229's plain-confirm path
+  was missing: destroying the window alone never killed its PTYs, since
+  `PtyState` is process-wide and a window closing doesn't touch it — the
+  child only dies when the whole app exits and every fd, PTY masters
+  included, finally closes), then destroys the window. **Pozastavit**
+  (`handleSuspendAndClose`, shown only when `suspendableIds` is non-empty):
+  calls `suspendTerminalsAndPoll`, then **always** `killTerminalsAndCloseWindow`s
+  every terminal in the dialog regardless of outcome; a timeout flips the
+  dialog to say so first. **Zrušit**: `declineExit()`, same as the other
+  two guards. **The Sessions tab** (`DetailPane.sessions.tsx`'s
+  `SessionRow`, #232): `DetailPane` gained a `terminalSessions` prop
+  (threaded from `App.tsx`/`WorkspaceView.tsx`'s own `sessions` state, the
+  window's live terminal tabs — previously `DetailPane` had no terminal
+  concept at all) so a `running` row can show "Pozastavit" when its
+  `terminal_id` is in the node-scoped `suspendableTerminalIds` set. Its own
+  click handler calls `suspendTerminalsAndPoll` for that one terminal, then
+  `pty_kill`s it regardless of outcome (a suspend attempt that's over, one
+  way or another, shouldn't leave a stale terminal behind — "Otevřít
+  terminál" spawns a fresh one on demand) and reloads the list so the row
+  picks up the real state.
 
 - **Backend/PTY events are per-window, not broadcast (#227).**
   `backend-ready`, `backend-error` (`spawn_sidecar_ws`'s reader loop and

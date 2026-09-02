@@ -11,6 +11,8 @@
 
 import type { SessionState, SessionSummary } from "../types";
 import { isAgentCommand, type TerminalSession } from "./sessions";
+import { isTauri } from "./backend-url";
+import { fetchNodePersistentSessions } from "../api";
 
 export const SUSPEND_POLL_TIMEOUT_MS = 30_000;
 export const SUSPEND_POLL_INTERVAL_MS = 2_000;
@@ -72,4 +74,51 @@ export function suspendPollTimedOut(
   timeoutMs: number = SUSPEND_POLL_TIMEOUT_MS,
 ): boolean {
   return now - startedAt >= timeoutMs;
+}
+
+// Persistent sessions correlated to the given terminals (#231/#232): one
+// GET /nodes/:id/sessions per distinct node among them, merged and reduced
+// to terminal_id-bearing rows by correlateSessions. A node's fetch failing
+// (e.g. it was deleted from under an open tab) just contributes no rows
+// for it rather than failing the whole caller.
+export async function fetchCorrelatedSessions(
+  terminals: readonly Pick<TerminalSession, "nodeId">[],
+): Promise<CorrelatedSession[]> {
+  const nodeIds = Array.from(new Set(terminals.map((t) => t.nodeId)));
+  const results = await Promise.all(
+    nodeIds.map((id) => fetchNodePersistentSessions(id).catch(() => ({ sessions: [] }))),
+  );
+  return correlateSessions(results.flatMap((r) => r.sessions));
+}
+
+// Write the suspend instruction into every given terminal id, then poll
+// (via fetchCorrelatedSessions over `terminals`, the full context needed to
+// know which nodes to query) until every one of `terminalIds` has left
+// "running" or the 30s timeout passes. Returns whether it timed out --
+// callers decide what happens next (#231's close dialog kills every
+// terminal it's showing regardless of outcome; #232's session-list row
+// kills just its own one terminal, also regardless -- an attempt that
+// either succeeded or ran out of time is done either way).
+export async function suspendTerminalsAndPoll(
+  terminalIds: string[],
+  terminals: readonly Pick<TerminalSession, "nodeId">[],
+): Promise<{ timedOut: boolean }> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    for (const id of terminalIds) {
+      await invoke("pty_write", {
+        args: { session_id: id, data: `${SUSPEND_INSTRUCTION}\n` },
+      }).catch(() => undefined);
+    }
+  }
+  const startedAt = Date.now();
+  while (true) {
+    const correlated = await fetchCorrelatedSessions(terminals);
+    const states = correlated
+      .filter((c) => terminalIds.includes(c.terminalId))
+      .map((c) => c.state);
+    if (allSuspended(states)) return { timedOut: false };
+    if (suspendPollTimedOut(startedAt, Date.now())) return { timedOut: true };
+    await new Promise((r) => setTimeout(r, SUSPEND_POLL_INTERVAL_MS));
+  }
 }

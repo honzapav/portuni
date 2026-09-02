@@ -14,7 +14,6 @@ import {
   fetchNodeMirror,
   createNodeMirror,
   fetchSandboxProfile,
-  fetchNodePersistentSessions,
   fetchMe,
 } from "./api";
 import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
@@ -22,13 +21,9 @@ import { useFileEditor } from "./lib/use-file-editor";
 import { buildAgentCommand } from "./lib/prompt";
 import { useDataMode } from "./lib/central";
 import {
-  correlateSessions,
   suspendableTerminalIds,
-  allSuspended,
-  suspendPollTimedOut,
-  SUSPEND_INSTRUCTION,
-  SUSPEND_POLL_INTERVAL_MS,
-  type CorrelatedSession,
+  fetchCorrelatedSessions,
+  suspendTerminalsAndPoll,
 } from "./lib/session-suspend";
 import {
   type TerminalSession,
@@ -95,22 +90,6 @@ async function destroyCurrentWindow(): Promise<void> {
   if (!isTauri()) return;
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   await getCurrentWindow().destroy().catch(() => undefined);
-}
-
-// Persistent sessions correlated to this window's local terminals (#231):
-// one GET /nodes/:id/sessions per distinct node among `terminals` (terminal
-// tabs across several open nodes are the common case), merged and filtered
-// down to terminal_id-bearing rows by correlateSessions. A node's fetch
-// failing (e.g. it was deleted from under an open tab) just contributes no
-// rows for it rather than failing the whole close dialog.
-async function fetchCorrelatedSessions(
-  terminals: readonly Pick<TerminalSession, "nodeId">[],
-): Promise<CorrelatedSession[]> {
-  const nodeIds = Array.from(new Set(terminals.map((t) => t.nodeId)));
-  const results = await Promise.all(
-    nodeIds.map((id) => fetchNodePersistentSessions(id).catch(() => ({ sessions: [] }))),
-  );
-  return correlateSessions(results.flatMap((r) => r.sessions));
 }
 
 // pty_kill every given terminal (best-effort, #231's "Ukončit" -- and the
@@ -761,26 +740,7 @@ export default function App() {
   const handleSuspendAndClose = useCallback(
     async (terminals: TerminalSession[], suspendableIds: string[]) => {
       setTerminalsCloseGuard({ kind: "suspending", terminals, suspendableIds, timedOut: false });
-      if (isTauri()) {
-        const { invoke } = await import("@tauri-apps/api/core");
-        for (const id of suspendableIds) {
-          await invoke("pty_write", {
-            args: { session_id: id, data: `${SUSPEND_INSTRUCTION}\n` },
-          }).catch(() => undefined);
-        }
-      }
-      const startedAt = Date.now();
-      let timedOut = false;
-      while (true) {
-        const correlated = await fetchCorrelatedSessions(terminals);
-        const states = correlated
-          .filter((c) => suspendableIds.includes(c.terminalId))
-          .map((c) => c.state);
-        if (allSuspended(states)) break;
-        timedOut = suspendPollTimedOut(startedAt, Date.now());
-        if (timedOut) break;
-        await new Promise((r) => setTimeout(r, SUSPEND_POLL_INTERVAL_MS));
-      }
+      const { timedOut } = await suspendTerminalsAndPoll(suspendableIds, terminals);
       if (timedOut) {
         setTerminalsCloseGuard({ kind: "suspending", terminals, suspendableIds, timedOut: true });
         // Give the user a moment to actually read "časový limit vypršel"
@@ -1248,6 +1208,7 @@ export default function App() {
             terminalLaunch={terminalLaunch}
             onOpenTerminal={openSessionForNodeId}
             onOpenFile={openFileInEditor}
+            terminalSessions={sessions}
           />
         ))}
 

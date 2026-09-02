@@ -52,6 +52,7 @@ import {
 import { safeHref } from "../lib/safe-url";
 import { groupEventsByDate } from "../lib/events";
 import { isTauri, openExternal, openInFinder } from "../lib/backend-url";
+import type { TerminalSession } from "../lib/sessions";
 import type { Actor } from "../api";
 import {
   updateNode,
@@ -155,6 +156,11 @@ type Props = {
   // Open a file (mirror-relative path) in the editor. Provided by the
   // workspace; absent in contexts without an editor surface.
   onOpenFile?: (nodeId: string, relPath: string) => void;
+  // This window's own live terminal tabs (#232) -- lets the Sessions tab
+  // show "Pozastavit" on a running row correlated to a live agent
+  // terminal, same mechanism as the window close dialog's Pozastavit
+  // (#231). Absent in contexts with no terminal concept (none today).
+  terminalSessions?: TerminalSession[];
 };
 
 // Memoized: 3.5k lines of pane re-rendered wholesale on every App render
@@ -176,6 +182,7 @@ function DetailPane({
   embedded,
   onCollapse,
   onOpenFile,
+  terminalSessions,
 }: Props) {
   // Fetched once and cached for the lifetime of this component instance
   // (this outer DetailPane stays mounted across node selections -- only
@@ -251,6 +258,7 @@ function DetailPane({
       embedded={embedded}
       onCollapse={onCollapse}
       onOpenFile={onOpenFile}
+      terminalSessions={terminalSessions}
     />
   );
 }
@@ -269,6 +277,7 @@ function DetailPaneBody({
   embedded,
   onCollapse,
   onOpenFile,
+  terminalSessions,
 }: {
   node: NodeDetail;
   graph: GraphPayload | null;
@@ -283,6 +292,7 @@ function DetailPaneBody({
   embedded?: boolean;
   onCollapse?: () => void;
   onOpenFile?: (nodeId: string, relPath: string) => void;
+  terminalSessions?: TerminalSession[];
 }) {
 
   const [editing, setEditing] = useState(false);
@@ -1178,6 +1188,7 @@ function DetailPaneBody({
             nodeId={node.id}
             onOpenTerminal={openEmbeddedTerminal}
             onOpenFile={onOpenFile}
+            terminalSessions={terminalSessions}
           />
         )}
 
