@@ -7,6 +7,9 @@
 // portuni_read_file. readableMirrorRoot decides which path (if any) a tool
 // response's local_path should carry.
 
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
+import type { Client } from "@libsql/client";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { resolveProjectionRootForNode } from "../domain/sandbox-profile.js";
 import {
@@ -105,25 +108,57 @@ export function createDiskProjector(args: {
   };
 }
 
+// #214: remove the shared bucket (#211) for homeNodeId once this was the
+// last running session on it -- it isn't keyed to any single session, so it
+// can't be torn down by that session's own close the way a narrow
+// projection directory is; it just has to outlive every session that might
+// still be reading it. excludeSessionId is the durable row this connection
+// is bound to (scope.sessionId, distinct from projectionSessionId which may
+// be the shared-bucket sentinel itself): excluded from the "any other
+// running session" check so a not-yet-updated row for the very session that
+// is closing right now never blocks the sweep.
+async function sweepSharedProjectionIfIdle(
+  db: Client,
+  homeNodeId: string,
+  userId: string,
+  excludeSessionId: string | null,
+): Promise<void> {
+  const other = await db.execute({
+    sql: excludeSessionId
+      ? "SELECT 1 FROM sessions WHERE node_id = ? AND state = 'running' AND id != ? LIMIT 1"
+      : "SELECT 1 FROM sessions WHERE node_id = ? AND state = 'running' LIMIT 1",
+    args: excludeSessionId ? [homeNodeId, excludeSessionId] : [homeNodeId],
+  });
+  if (other.rows.length > 0) return;
+  const root = await resolveProjectionRootForNode(userId, homeNodeId);
+  if (!root) return;
+  await rm(join(root.projectionRoot, UNNARROWED_PROJECTION_ID), { recursive: true, force: true });
+}
+
 // Session end (spec: "the agent never manages the directory" -- cleanup is
 // the system's job): drop this session's registry entries and remove its
 // projection directory from disk. Fire-and-forget by design (called from
 // transport.onclose, which cannot await); best-effort, matching the rest of
 // this module.
-export function disposeSessionProjection(scope: SessionScope, userId: string): void {
+export function disposeSessionProjection(scope: SessionScope, userId: string, db: Client): void {
   const projectionSessionId = scope.projectionSessionId;
-  // The shared bucket (#211) is never torn down at any single session's
-  // close -- other concurrent non-relaying sessions on the same node may
-  // still be reading it, and it isn't keyed to this session alone. It is
-  // simply left in place, same as every projection directory was before
-  // per-session narrowing existed.
-  if (!projectionSessionId || projectionSessionId === UNNARROWED_PROJECTION_ID) return;
-  unregisterSessionProjections(projectionSessionId);
   const homeNodeId = scope.homeNodeId;
-  if (!homeNodeId) return;
-  void resolveProjectionRootForNode(userId, homeNodeId)
-    .then((root) =>
-      root ? cleanupSessionProjection(root.projectionRoot, projectionSessionId) : undefined,
-    )
-    .catch(() => undefined);
+  // The shared bucket (#211) is never torn down purely because THIS
+  // session's projection directory happens to be it -- other concurrent
+  // non-relaying sessions on the same node may still be reading it. Its own
+  // lifetime is handled below, unconditionally, based on node-level running
+  // state rather than this one session's identity.
+  if (projectionSessionId && projectionSessionId !== UNNARROWED_PROJECTION_ID) {
+    unregisterSessionProjections(projectionSessionId);
+    if (homeNodeId) {
+      void resolveProjectionRootForNode(userId, homeNodeId)
+        .then((root) =>
+          root ? cleanupSessionProjection(root.projectionRoot, projectionSessionId) : undefined,
+        )
+        .catch(() => undefined);
+    }
+  }
+  if (homeNodeId) {
+    void sweepSharedProjectionIfIdle(db, homeNodeId, userId, scope.sessionId).catch(() => undefined);
+  }
 }

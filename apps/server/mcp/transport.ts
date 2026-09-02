@@ -103,7 +103,7 @@ export function createMcpTransport(): McpTransport {
         // (spec: "Disk contract") -- clean it up here, at session end.
         // `scope` is assigned by createMcpServer below; this closure only
         // runs after that call returns.
-        disposeSessionProjection(scope, identity.userId);
+        disposeSessionProjection(scope, identity.userId, getDb());
       };
 
       // Parsed here (before createMcpServer) because session_type
