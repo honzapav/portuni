@@ -1080,6 +1080,20 @@ pub(crate) fn sidecar_port_and_token(app: &AppHandle, ws_id: &str) -> Result<(u1
     Ok((port, token))
 }
 
+// The per-workspace, per-launch secret proving a request came through this
+// trusted Tauri host process rather than a spawned agent terminal (#213).
+// Shared by api_request's webview proxy and pty.rs's terminal-exit report
+// (#219) -- both originate in Rust code here, not webview JS or a shell's
+// env, so both are entitled to prove it the same way.
+pub(crate) fn webview_proxy_secret(app: &AppHandle, ws_id: &str) -> Option<String> {
+    app.state::<WebviewProxySecrets>()
+        .0
+        .lock()
+        .ok()?
+        .get(ws_id)
+        .cloned()
+}
+
 // Webview-side HTTP proxy. The webview no longer talks to the sidecar
 // directly: it invokes this command, which lives in the same trust
 // domain as the sidecar (the Tauri host that spawned it) and therefore

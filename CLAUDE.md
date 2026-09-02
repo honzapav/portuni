@@ -433,6 +433,26 @@ symlink to this file.
   and expands a leading `~` in each value to `$HOME` (reusing lib.rs's
   `expand_tilde`, `pub(crate)` for this) — portable-pty passes values to the
   child verbatim, no shell involved, so `~` is otherwise left literal.
+- **A durable session row learns its PTY died via a server call, not a
+  local signal.** `pty_spawn` exports `PORTUNI_TERMINAL_ID=<terminal id>`
+  (the frontend's `term_<node>_<ts>_<rand>`, i.e. `args.session_id` — no
+  separate id is minted); a Claude Code connection threads it through
+  `X-Portuni-Terminal` (Claude-only env-expansion, same channel as
+  `X-Portuni-Profile`/`X-Portuni-Spawn-Id`) into the session row's
+  `terminal_id` column. On PTY exit — `pty_kill`, the user typing `exit`,
+  or a crash — the reader thread's EOF/error path in `apps/desktop/src/
+  pty.rs` (`report_terminal_exit`) POSTs to the *owning workspace's*
+  sidecar (`ws_id` captured on `PtySession` at spawn time, not re-resolved
+  at exit) at `POST /terminals/:terminal_id/exit`, which moves every
+  `running` session sharing that `terminal_id` to `closed` (#218/#219).
+  Best-effort: failure just leaves the row until the MCP transport's idle
+  GC backstop (`transport.ts`'s `onclose`) closes it, the same backstop
+  that covers Codex/Vibe (no header support) and crashes that never reach
+  the reader thread's exit path. Like `api_request`'s webview proxy, this
+  call carries `X-Portuni-Webview-Proxy` (`lib.rs`'s `webview_proxy_secret`)
+  when the hardened posture (#213) is active for that workspace — it
+  originates from the same trusted Tauri host process, not a spawned
+  terminal.
 
 ## Security rules (from the auth refactor post-mortem)
 

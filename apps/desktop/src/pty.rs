@@ -126,6 +126,14 @@ struct PtySession {
     // tell "shell at prompt" (same pgrp) from "subprocess running" (different
     // pgrp). Only consumed on Unix; harmless to store on all platforms.
     shell_pid: Option<u32>,
+    // Workspace this terminal was spawned for, captured once at spawn time
+    // (#219) rather than re-resolved at exit -- the active workspace can
+    // change while the terminal is alive (pre-phase-1, "active" is global,
+    // not per-window). None when no workspace is configured yet (fresh
+    // install), in which case the exit report below is skipped: there is no
+    // sidecar to tell. Phase 1 (#223) reuses this field for per-window
+    // authorization once pty_spawn itself becomes window-routed.
+    ws_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -225,6 +233,91 @@ fn resolve_profile_env(
         .collect()
 }
 
+// Env var name a Claude Code connection reads via write-scope.ts's
+// X-Portuni-Terminal header (env-expanded at config-load time, same channel
+// PORTUNI_PROFILE_ID already uses) so the server can stamp the resulting
+// session row's `terminal_id` and later correlate it back to this PTY
+// (#219, "Sessions follow PTY exit").
+const TERMINAL_ID_ENV_VAR: &str = "PORTUNI_TERMINAL_ID";
+
+// The frontend's terminal id (`term_<node>_<ts>_<rand>`, `lib/sessions.ts`)
+// IS `args.session_id` -- pty_spawn is invoked with it directly, so there is
+// nothing to mint here. Exported unconditionally (unlike
+// PORTUNI_SPAWN_SESSION_ID, which is optional): the terminal id is always
+// known at spawn time. Pure so the mapping is unit-testable.
+fn terminal_id_env(session_id: &str) -> (&'static str, String) {
+    (TERMINAL_ID_ENV_VAR, session_id.to_string())
+}
+
+// URL + headers for the PTY-exit report (#219): pure so the request shape
+// is unit-testable without a running sidecar. webview_proxy_secret is None
+// when the hardened posture (#213) isn't active for this workspace's
+// sidecar, in which case the header is simply omitted -- the receiving
+// gate's unhardened default already allows the request through.
+fn terminal_exit_request(
+    port: u16,
+    terminal_id: &str,
+    token: &str,
+    webview_proxy_secret: Option<&str>,
+) -> (String, Vec<(String, String)>) {
+    let url = format!("http://127.0.0.1:{port}/terminals/{terminal_id}/exit");
+    let mut headers = vec![
+        ("Authorization".to_string(), format!("Bearer {token}")),
+        ("Origin".to_string(), "tauri://localhost".to_string()),
+    ];
+    if let Some(secret) = webview_proxy_secret {
+        headers.push(("X-Portuni-Webview-Proxy".to_string(), secret.to_string()));
+    }
+    (url, headers)
+}
+
+// Best-effort notification to the owning workspace's sidecar that a PTY
+// exited, so the server can close every `running` session sharing this
+// terminal_id (#219). Called from the reader thread's EOF/error path, so it
+// fires for every exit reason -- pty_kill, the user typing `exit`, a CLI
+// crash -- not just a deliberate close. Failures (no workspace resolved at
+// spawn time, sidecar unreachable, non-2xx) are logged and swallowed: a
+// missed report just leaves the row `running` until the MCP transport's
+// idle GC backstop closes it later; it must never block PTY teardown that
+// has already happened.
+fn report_terminal_exit(app: &AppHandle, ws_id: &str, terminal_id: &str) {
+    let (port, token) = match crate::sidecar_port_and_token(app, ws_id) {
+        Ok(pt) => pt,
+        Err(e) => {
+            warn!("pty exit report for {terminal_id} skipped: {e}");
+            return;
+        }
+    };
+    let secret = crate::webview_proxy_secret(app, ws_id);
+    let (url, headers) = terminal_exit_request(port, terminal_id, &token, secret.as_deref());
+    let terminal_id = terminal_id.to_string();
+    // block_on is safe here: the reader thread is a plain std::thread, not
+    // already inside an async context, same reasoning as
+    // ensure_device_token above.
+    tauri::async_runtime::block_on(async move {
+        let mut req = reqwest::Client::new()
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(5));
+        for (k, v) in headers {
+            req = req.header(k, v);
+        }
+        match req.send().await {
+            Ok(resp) if resp.status().is_success() => {
+                info!("pty exit reported for terminal {terminal_id}");
+            }
+            Ok(resp) => {
+                warn!(
+                    "pty exit report for {terminal_id} returned {}",
+                    resp.status()
+                );
+            }
+            Err(e) => {
+                warn!("pty exit report for {terminal_id} failed: {e}");
+            }
+        }
+    });
+}
+
 fn pick_shell() -> (String, Vec<String>) {
     // Prefer the user's $SHELL so they get their familiar prompt, history,
     // aliases, etc. Fall back to /bin/zsh on macOS (default since 10.15)
@@ -285,6 +378,12 @@ pub fn pty_spawn(
         })
         .map_err(|e| format!("openpty failed: {e}"))?;
 
+    // Workspace this terminal belongs to, captured once here rather than
+    // re-resolved at exit time (#219) -- see the PtySession.ws_id doc
+    // comment. None only for a fresh install with no workspace configured
+    // yet, which cannot have a node terminal open in the first place.
+    let spawn_ws_id = crate::active_workspace(&app).map(|(id, _)| id).ok();
+
     let (shell, shell_args) = pick_shell();
 
     // Materialise the Seatbelt profile to a temp file and wrap the shell
@@ -328,6 +427,10 @@ pub fn pty_spawn(
     // copies the parent env by default, which is what we want here so
     // the user's shell rc files have what they expect.
     cmd.env("TERM", "xterm-256color");
+    {
+        let (k, v) = terminal_id_env(&args.session_id);
+        cmd.env(k, v);
+    }
     // Spawn session id (#208 follow-up: "kernel-level isolation between
     // concurrent sessions on the same node"): the Seatbelt profile's own
     // projection grant is already narrowed to this id (it comes from the
@@ -435,6 +538,7 @@ pub fn pty_spawn(
         writer,
         _child: child,
         shell_pid,
+        ws_id: spawn_ws_id.clone(),
     };
 
     {
@@ -528,10 +632,23 @@ pub fn pty_spawn(
                 code: None,
             },
         );
+        // Removing returns the session so its ws_id (captured at spawn,
+        // #219) is available for the exit report below without a second
+        // capture into this closure.
+        let mut removed_ws_id: Option<String> = None;
         if let Some(state) = app_for_reader.try_state::<PtyState>() {
             if let Ok(mut sessions) = state.sessions.lock() {
-                sessions.remove(&sid_for_reader);
+                removed_ws_id = sessions.remove(&sid_for_reader).and_then(|s| s.ws_id);
             }
+        }
+        // Tell the sidecar this PTY is gone so it closes any correlated
+        // `running` session (#219). Fires for every exit reason; see
+        // report_terminal_exit's doc comment.
+        match removed_ws_id.as_deref() {
+            Some(ws_id) => report_terminal_exit(&app_for_reader, ws_id, &sid_for_reader),
+            None => warn!(
+                "pty exit report for {sid_for_reader} skipped: no workspace resolved at spawn time"
+            ),
         }
         // The sandbox profile tempfile is only needed at exec time;
         // remove it once the session is gone.
@@ -651,6 +768,49 @@ pub fn pty_kill(state: State<'_, PtyState>, args: KillArgs) -> Result<(), String
     // exits naturally.
     sessions.remove(&args.session_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod terminal_exit_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_id_env_exports_the_session_id_verbatim() {
+        let (k, v) = terminal_id_env("term_n1_1758012345_ab12");
+        assert_eq!(k, "PORTUNI_TERMINAL_ID");
+        assert_eq!(v, "term_n1_1758012345_ab12");
+    }
+
+    #[test]
+    fn exit_request_builds_url_and_headers_without_proxy_secret() {
+        let (url, headers) =
+            terminal_exit_request(47011, "term_n1_1_abc", "tok123", None);
+        assert_eq!(url, "http://127.0.0.1:47011/terminals/term_n1_1_abc/exit");
+        assert_eq!(
+            headers,
+            vec![
+                ("Authorization".to_string(), "Bearer tok123".to_string()),
+                ("Origin".to_string(), "tauri://localhost".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn exit_request_includes_webview_proxy_secret_when_present() {
+        let (_, headers) =
+            terminal_exit_request(47011, "term_n1_1_abc", "tok123", Some("secret-xyz"));
+        assert_eq!(
+            headers,
+            vec![
+                ("Authorization".to_string(), "Bearer tok123".to_string()),
+                ("Origin".to_string(), "tauri://localhost".to_string()),
+                (
+                    "X-Portuni-Webview-Proxy".to_string(),
+                    "secret-xyz".to_string()
+                ),
+            ]
+        );
+    }
 }
 
 #[cfg(test)]
