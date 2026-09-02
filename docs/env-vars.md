@@ -14,6 +14,7 @@ rest are optional tunables with code defaults. Grep check:
 | `PORTUNI_WORKSPACE_ROOT` | Root for local mirrors; also anchors the per-device `.portuni/sync.db` |
 | `PORTUNI_USER_EMAIL`, `PORTUNI_USER_NAME` | Solo-user identity seeded at boot |
 | `PORTUNI_AUTH_TOKEN` | Bearer for HTTP/MCP auth (sensitive); required for non-loopback bind or remote Turso |
+| `PORTUNI_WEBVIEW_PROXY_SECRET` | Env-mode REST write gate (sensitive, #213): when set, hardens the blanket write exemption -- a request needs a matching `X-Portuni-Webview-Proxy` header (proof it came through a trusted proxy, not a spawned agent terminal holding the same `PORTUNI_AUTH_TOKEN`) or a resolvable `X-Portuni-Spawn-Id` session, or it is refused. Empty (default) = legacy behavior, every env-mode REST write allowed. The packaged desktop app always sets its own per-launch value |
 
 ## HTTP server
 
@@ -67,6 +68,7 @@ rest are optional tunables with code defaults. Grep check:
 |---|---|---|---|
 | `PORTUNI_AUTH_MODE` | `env` | No | Authentication mode (`env` or `google`) |
 | `PORTUNI_AUTH_TOKEN` | — | Yes | Bearer for HTTP/MCP auth (see Core). Empty disables auth (safe only on loopback, trusted single-user box) |
+| `PORTUNI_WEBVIEW_PROXY_SECRET` | — | Yes | REST write gate proxy marker (see Core). Generated per-launch by the desktop app; unset elsewhere = legacy unscoped writes. Set the same value here and in `apps/web`'s env to opt the standalone/Vite dev flow into the hardened posture |
 | `PORTUNI_USER_EMAIL` | `solo@localhost` | No | Solo user email recorded on events/nodes in env mode |
 | `PORTUNI_USER_NAME` | `Solo User` | No | Solo user display name in env mode |
 

@@ -261,9 +261,22 @@ symlink to this file.
   `docs/archive/specs/2026-07-04-desktop-multi-workspace-design.md`.
 
 - **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
-  keys; `.env.schema` declares only the 6 core ones. Full inventory with
+  keys; `.env.schema` declares only the 7 core ones. Full inventory with
   defaults: `docs/env-vars.md`. Watch out: `PORTUNI_ROOT` (write-scope
   tiering) is a different thing than `PORTUNI_WORKSPACE_ROOT` (mirrors).
+- **`PORTUNI_WEBVIEW_PROXY_SECRET`** (#213), when set, hardens the
+  `env`-mode REST write gate's blanket exemption: a request then needs a
+  valid `X-Portuni-Webview-Proxy` header (proven against this var) OR a
+  resolvable `X-Portuni-Spawn-Id` session to write via REST — everything
+  else is refused outright. Unset (the default for the backend-tmux + Vite
+  dev loop and the whole test suite) keeps the legacy behavior: every
+  env-mode REST write allowed, unchanged. The packaged desktop app's Tauri
+  host always sets this itself (fresh per launch, never on disk, never
+  exported into a spawned terminal) — the hardened posture is always on
+  there. Doesn't affect MCP tool calls either way — those keep `env`'s
+  existing unscoped-write behavior, out of scope for this gate. See
+  `docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md` and
+  the scope-enforcement docs page.
 - **Disk read scope = the session scope, on REAL paths for the seed set, a
   hardlink projection for everything else.** The MCP `SessionScope` is the
   single source of truth. The Seatbelt profile grants rw on the home mirror
