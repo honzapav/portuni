@@ -26,7 +26,6 @@ import {
   createSession,
   removeSession,
   markActivity,
-  markForegroundBusy,
   renameSession,
   deriveWorkspaceNodeRows,
 } from "./lib/sessions";
@@ -740,7 +739,6 @@ export default function App() {
   useEffect(() => {
     let unlistenData: (() => void) | null = null;
     let unlistenExit: (() => void) | null = null;
-    let unlistenForeground: (() => void) | null = null;
     let cancelled = false;
     (async () => {
       if (typeof window === "undefined") return;
@@ -749,7 +747,6 @@ export default function App() {
         const { listen } = await import("@tauri-apps/api/event");
         type PtyData = { session_id: string };
         type PtyExit = { session_id: string; code: number | null };
-        type PtyForeground = { session_id: string; busy: boolean };
         unlistenData = await listen<PtyData>("pty-data", (e) => {
           if (cancelled) return;
           const id = e.payload.session_id;
@@ -771,15 +768,6 @@ export default function App() {
           // remains valid -- the workspace just shows the node's detail
           // center-stage instead of a terminal. Nothing to clear here.
         });
-        // Rust foreground-poll signal (Unix only, ~500 ms cadence).
-        // Authoritative "agent computing" indicator: green while a
-        // subprocess owns the PTY foreground, amber when the shell is
-        // idle at its prompt.
-        unlistenForeground = await listen<PtyForeground>("pty-foreground", (e) => {
-          if (cancelled) return;
-          const { session_id, busy } = e.payload;
-          setSessions((prev) => markForegroundBusy(prev, session_id, busy));
-        });
       } catch {
         // Not running in Tauri -- fine.
       }
@@ -788,7 +776,6 @@ export default function App() {
       cancelled = true;
       try { unlistenData?.(); } catch { /* unlisten can throw if Tauri is gone */ }
       try { unlistenExit?.(); } catch { /* same */ }
-      try { unlistenForeground?.(); } catch { /* same */ }
     };
   }, []);
 
