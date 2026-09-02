@@ -332,6 +332,41 @@ symlink to this file.
   events) for this to matter against. Model:
   `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
 
+- **Multi-window desktop, phase 2 (#225): multiple `ws:<id>` windows can now
+  actually be open.** `config.json`'s `open_windows: Vec<String>`
+  (`#[serde(default)]`) is rewritten by `persist_open_windows` (`open` =
+  every currently live `ws:<id>` window's own id from
+  `app.webview_windows()`; `active_workspace` is also refreshed there from
+  `FocusHistory`'s last entry) whenever a `ws:<id>` window opens
+  (`open_window`) or is destroyed (`on_window_event`) — never on a bare
+  focus change. `FocusHistory` (managed state, `Vec<String>`, oldest first)
+  is the *only* thing focus updates in-memory (`touch_focus` on
+  `WindowEvent::Focused(true)`, `untrack_focus` on `Destroyed`); it answers
+  both "what should `active_workspace` be" and, via
+  `reassign_active_workspace`, "what should it become next" when the
+  workspace it currently names gets disabled or deleted (falls back to the
+  first remaining enabled workspace, BTreeMap order, if the history has
+  nothing useful). Startup (`create_startup_windows` /
+  `startup_window_labels`, pure and unit-tested): one window per
+  `open_windows` id that's still there and enabled; an empty/fully-invalid
+  list falls back to a single window for `active_workspace`; nothing valid
+  at all opens `bootstrap`. `set_workspace_enabled(id, false)` and
+  `delete_workspace` now refuse ("Nejdřív zavři okno tohoto workspace.")
+  while `window_open_for`/`is_window_open_for` finds a `ws:<id>` window —
+  this replaces the old "cannot disable/delete the *active* workspace"
+  guard (a window can now be open for a NON-active workspace too); "cannot
+  delete the last workspace" is unchanged. `create_workspace` opens and
+  focuses its new `ws:<id>` window right after `spawn_sidecar_ws`.
+  `tauri-plugin-window-state` persists each window's own geometry by label,
+  purely on the Rust side (no webview capability needed — its commands are
+  never invoked from JS). **Not yet done** (later phase-2 issues): the
+  workspace switcher still calls the old `switchWorkspace`/reload path
+  (#226), `backend-ready`/`pty-*` events are still broadcast rather than
+  per-window (#227), and the `on_window_event(Destroyed) →
+  kill_all_sidecars` handler still kills every workspace's sidecar when ANY
+  window closes, not just the closing one's (#229) — multi-window is
+  therefore not yet safe to actually rely on end-to-end.
+
 - **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
   keys; `.env.schema` declares only the 7 core ones. Full inventory with
   defaults: `docs/env-vars.md`. Watch out: `PORTUNI_ROOT` (write-scope

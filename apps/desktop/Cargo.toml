@@ -28,6 +28,10 @@ tauri = { version = "2.11.1", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2.3.5"
 tauri-plugin-updater = "2"
+# Per-window (by label) size/position persistence -- each ws:<id> window
+# remembers its own geometry across launches (#225, desktop multi-window
+# phase 2).
+tauri-plugin-window-state = "2"
 rand = "0.9"
 # v3 has no default features; pick platform-native stores explicitly. macOS
 # is the only smoke-tested target for this PR but cross-platform features

@@ -93,6 +93,15 @@ pub(crate) struct WorkspacesFile {
     /// simply ignored by callers, never an error.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub default_profile_by_org: BTreeMap<String, String>,
+    /// Workspace ids with an open `ws:<id>` window, as of the last window
+    /// open/close (#225, desktop multi-window phase 2) -- restores the same
+    /// set of windows on the next launch. `#[serde(default)]` so existing v2
+    /// files without this key still load (empty list, same as today's
+    /// single-window startup). Not rewritten during quit (the `quitting`
+    /// flag, #229), so a crash mid-session doesn't lose it and a normal
+    /// quit doesn't empty it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_windows: Vec<String>,
 }
 
 pub(crate) enum LoadedConfig {
@@ -350,6 +359,7 @@ pub(crate) fn migrate_v1_value(v1: &serde_json::Value, id: &str) -> WorkspacesFi
         workspaces,
         profiles: BTreeMap::new(),
         default_profile_by_org: BTreeMap::new(),
+        open_windows: Vec::new(),
     }
 }
 
@@ -512,6 +522,47 @@ mod tests {
     }
 
     #[test]
+    fn open_windows_defaults_to_empty_on_a_v2_file_without_the_key() {
+        let dir = std::env::temp_dir().join(format!(
+            "portuni-open-windows-default-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A pre-#225 v2 file has no "open_windows" key at all.
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"config_version":2,"active_workspace":"default","workspaces":{"default":{"enabled":true}}}"#,
+        )
+        .unwrap();
+        match load(&dir).unwrap() {
+            LoadedConfig::V2(f) => assert!(f.open_windows.is_empty()),
+            _ => panic!("expected V2"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_windows_round_trips_through_save_and_load() {
+        let dir = std::env::temp_dir().join(format!(
+            "portuni-open-windows-roundtrip-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut file = migrate_v1_value(&serde_json::json!({}), "default");
+        file.open_windows = vec!["default".to_string(), "acme".to_string()];
+        save(&dir, &file).unwrap();
+        match load(&dir).unwrap() {
+            LoadedConfig::V2(f) => {
+                assert_eq!(f.open_windows, vec!["default".to_string(), "acme".to_string()])
+            }
+            _ => panic!("expected V2"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn apply_migration_moves_db_files_idempotently() {
         let dir = std::env::temp_dir().join(format!("portuni-mig-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -541,6 +592,7 @@ mod tests {
             workspaces,
             profiles: BTreeMap::new(),
             default_profile_by_org: BTreeMap::new(),
+            open_windows: Vec::new(),
         }
     }
 

@@ -115,6 +115,14 @@ struct WebviewProxySecrets(Mutex<HashMap<String, String>>);
 // loser's edit is silently lost (last rename wins). with_config_mut below
 // is the standard way through this lock.
 struct ConfigLock(Mutex<()>);
+// Ordered focus history of ws:<id> windows (#225), oldest first, most
+// recently focused last. Updated in-memory on WindowEvent::Focused(true);
+// NOT persisted on every focus change -- only its last() entry is written
+// to config.json's active_workspace, together with open_windows, whenever
+// a window opens or closes (persist_open_windows). Also the source for
+// "the most recently focused remaining window" when disabling/deleting the
+// workspace currently recorded as active (reassign_active_workspace).
+struct FocusHistory(Mutex<Vec<String>>);
 
 // Keychain coordinates for secrets we persist across launches. Service is
 // bundle-id-shaped so entries show up under "ooo.workflow.portuni" in
@@ -280,6 +288,9 @@ pub(crate) fn with_config_mut(
 
 // Same title/size/min-size/etc. tauri.conf.json's single static window used
 // to declare before app.windows became `[]` -- only the label varies now.
+// Persists open_windows right after a successful "ws:<id>" open (#225,
+// "rewritten on every window open/close"); "bootstrap" is not a workspace
+// and is never recorded.
 fn open_window(app: &AppHandle, label: &str) -> tauri::Result<()> {
     tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("index.html".into()))
         .title("Portuni")
@@ -289,19 +300,66 @@ fn open_window(app: &AppHandle, label: &str) -> tauri::Result<()> {
         .resizable(true)
         .fullscreen(false)
         .build()?;
+    if label.starts_with("ws:") {
+        persist_open_windows(app);
+    }
     Ok(())
 }
 
-// Startup window: ws:<id> when a v2 config already names an active
-// workspace, else bootstrap (fresh install, or a v1 config still awaiting
-// migration -- active_workspace only understands v2, so both land here).
-// Called once from .setup().
-fn create_startup_window(app: &AppHandle) -> tauri::Result<()> {
-    let label = match active_workspace(app) {
-        Ok((id, _)) => format!("ws:{id}"),
-        Err(_) => "bootstrap".to_string(),
+// Pure selection of which ws:<id> windows to restore at startup (#225):
+// - each id in open_windows that still names an existing, enabled
+//   workspace gets a window;
+// - an empty or fully invalid open_windows list falls back to a single
+//   window for active_workspace, itself only if it is still valid;
+// - anything else (no workspaces, active_workspace invalid too) returns
+//   empty, which the caller treats as "open bootstrap instead".
+fn startup_window_labels(file: &workspace::WorkspacesFile) -> Vec<String> {
+    let restored: Vec<String> = file
+        .open_windows
+        .iter()
+        .filter(|id| file.workspaces.get(id.as_str()).is_some_and(|c| c.enabled))
+        .map(|id| format!("ws:{id}"))
+        .collect();
+    if !restored.is_empty() {
+        return restored;
+    }
+    if file
+        .workspaces
+        .get(&file.active_workspace)
+        .is_some_and(|c| c.enabled)
+    {
+        return vec![format!("ws:{}", file.active_workspace)];
+    }
+    Vec::new()
+}
+
+// AppHandle-resolving wrapper around startup_window_labels: any read
+// failure (missing config, corrupt v2, v1 still awaiting migration) is
+// treated as "no workspace yet" (empty list -> bootstrap), consistent with
+// every other config-read failure in this file.
+fn resolve_startup_window_labels(app: &AppHandle) -> Vec<String> {
+    let Ok(data_dir) = app.path().app_data_dir() else {
+        return Vec::new();
     };
-    open_window(app, &label)
+    let Ok(workspace::LoadedConfig::V2(file)) = workspace::load(&data_dir) else {
+        return Vec::new();
+    };
+    startup_window_labels(&file)
+}
+
+// Startup windows: one per id in open_windows that's still there and
+// enabled; falls back to a single window for active_workspace, or
+// "bootstrap" if neither resolves to anything (fresh install, or a v1
+// config still awaiting migration). Called once from .setup().
+fn create_startup_windows(app: &AppHandle) -> tauri::Result<()> {
+    let labels = resolve_startup_window_labels(app);
+    if labels.is_empty() {
+        return open_window(app, "bootstrap");
+    }
+    for label in labels {
+        open_window(app, &label)?;
+    }
+    Ok(())
 }
 
 // Bootstrap -> workspace handoff: once save_config / setup_central /
@@ -322,6 +380,96 @@ fn handoff_from_bootstrap(app: &AppHandle, ws_id: &str) {
     if let Some(w) = app.get_webview_window("bootstrap") {
         let _ = w.close();
     }
+}
+
+// True when `open_labels` contains "ws:<ws_id>" -- the disable/delete
+// refusal check (#225), pulled apart from window_open_for's AppHandle
+// query so it's unit-testable. Pure.
+fn is_window_open_for(open_labels: &[String], ws_id: &str) -> bool {
+    let target = format!("ws:{ws_id}");
+    open_labels.iter().any(|l| l == &target)
+}
+
+// True when a ws:<id> window for this workspace is currently open (#225).
+fn window_open_for(app: &AppHandle, ws_id: &str) -> bool {
+    let labels: Vec<String> = app.webview_windows().keys().cloned().collect();
+    is_window_open_for(&labels, ws_id)
+}
+
+// Move ws_id to the end of the focus history, removing any earlier
+// occurrence first (re-focusing an already-tracked window just moves it,
+// never duplicates). Pure.
+fn touch_focus(history: &mut Vec<String>, ws_id: &str) {
+    history.retain(|id| id != ws_id);
+    history.push(ws_id.to_string());
+}
+
+// Drop ws_id from the focus history (its window closed). Pure.
+fn untrack_focus(history: &mut Vec<String>, ws_id: &str) {
+    history.retain(|id| id != ws_id);
+}
+
+// After disabling/deleting removed_id (only possible once its own window
+// is closed -- window_open_for already guards that), pick the next
+// active_workspace: the most recently focused remaining window, else the
+// first remaining enabled workspace (BTreeMap iteration is sorted, so this
+// is deterministic), else removed_id itself unchanged -- unreachable in
+// the real flows ("cannot delete the last workspace" already guards
+// delete_workspace) but a safe default over a panic. Pure.
+fn reassign_active_workspace(
+    removed_id: &str,
+    focus_history: &[String],
+    workspaces: &std::collections::BTreeMap<String, workspace::WorkspaceConfig>,
+) -> String {
+    focus_history
+        .iter()
+        .rev()
+        .find(|id| id.as_str() != removed_id && workspaces.get(id.as_str()).is_some_and(|c| c.enabled))
+        .cloned()
+        .or_else(|| {
+            workspaces
+                .iter()
+                .find(|(id, c)| id.as_str() != removed_id && c.enabled)
+                .map(|(id, _)| id.clone())
+        })
+        .unwrap_or_else(|| removed_id.to_string())
+}
+
+// Rewrite open_windows (every currently-open ws:<id> window) and, when the
+// focus history has an entry, active_workspace -- together, under the
+// config lock, whenever a window opens or closes (#225; NOT on every focus
+// change, only the open/close events that call this). Best-effort: a
+// failure to persist is logged, never propagated -- a window has already
+// opened/closed by the time this runs, so there's nothing left to roll
+// back.
+fn persist_open_windows(app: &AppHandle) {
+    let open: Vec<String> = app
+        .webview_windows()
+        .keys()
+        .filter_map(|label| label.strip_prefix("ws:").map(str::to_string))
+        .collect();
+    let active = app
+        .try_state::<FocusHistory>()
+        .and_then(|s| s.0.lock().ok().and_then(|h| h.last().cloned()));
+    if let Err(e) = with_config_mut(app, |file| {
+        file.open_windows = open.clone();
+        if let Some(a) = &active {
+            file.active_workspace = a.clone();
+        }
+        Ok(())
+    }) {
+        warn!("failed to persist open_windows: {e}");
+    }
+}
+
+// Snapshot of the current focus history for reassign_active_workspace
+// callers -- cloned out from behind the Mutex rather than held, since
+// they need it inside a with_config_mut closure that's already holding
+// ConfigLock (a different lock, but no reason to hold both at once).
+fn focus_history_snapshot(app: &AppHandle) -> Vec<String> {
+    app.try_state::<FocusHistory>()
+        .and_then(|s| s.0.lock().ok().map(|h| h.clone()))
+        .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -2033,6 +2181,13 @@ fn create_workspace(app: AppHandle, args: CreateWorkspaceArgs) -> Result<(), Str
     if let Err(e) = spawn_sidecar_ws(&app, &args.id) {
         warn!("new workspace {} sidecar spawn failed: {e}", args.id);
     }
+    // Open and focus the new workspace's own window (#225).
+    let label = format!("ws:{}", args.id);
+    if let Err(e) = open_window(&app, &label) {
+        warn!("new workspace {}: window open failed: {e}", args.id);
+    } else if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.set_focus();
+    }
     Ok(())
 }
 
@@ -2049,6 +2204,10 @@ fn set_active_workspace(app: AppHandle, id: String) -> Result<(), String> {
 
 #[tauri::command]
 fn set_workspace_enabled(app: AppHandle, id: String, enabled: bool) -> Result<(), String> {
+    if !enabled && window_open_for(&app, &id) {
+        return Err("Nejdřív zavři okno tohoto workspace.".to_string());
+    }
+    let history = focus_history_snapshot(&app);
     with_config_mut(&app, |file| {
         {
             let cfg = file
@@ -2057,8 +2216,14 @@ fn set_workspace_enabled(app: AppHandle, id: String, enabled: bool) -> Result<()
                 .ok_or_else(|| format!("unknown workspace '{id}'"))?;
             cfg.enabled = enabled;
         }
+        // The window-open guard above already means this workspace's own
+        // window is closed, but the value config.json last recorded as
+        // active_workspace can still be stale-pointing at it (persisted
+        // only on open/close, not on every focus) -- reassign so a later
+        // "empty open_windows -> fall back to active_workspace" startup
+        // never lands on a disabled workspace.
         if !enabled && file.active_workspace == id {
-            return Err("cannot disable the active workspace — switch first".to_string());
+            file.active_workspace = reassign_active_workspace(&id, &history, &file.workspaces);
         }
         Ok(())
     })?;
@@ -2075,11 +2240,12 @@ fn set_workspace_enabled(app: AppHandle, id: String, enabled: bool) -> Result<()
 
 #[tauri::command]
 fn delete_workspace(app: AppHandle, id: String) -> Result<(), String> {
+    if window_open_for(&app, &id) {
+        return Err("Nejdřív zavři okno tohoto workspace.".to_string());
+    }
+    let history = focus_history_snapshot(&app);
     let mut mcp_name = String::new();
     with_config_mut(&app, |file| {
-        if file.active_workspace == id {
-            return Err("cannot delete the active workspace — switch first".to_string());
-        }
         if file.workspaces.len() == 1 {
             return Err("cannot delete the last workspace".to_string());
         }
@@ -2103,6 +2269,12 @@ fn delete_workspace(app: AppHandle, id: String) -> Result<(), String> {
         // still fully intact (config lists it, Keychain holds its secrets)
         // and its sidecar re-spawns on the next launch.
         file.workspaces.remove(&id);
+        // See set_workspace_enabled's comment: config.json's active_workspace
+        // can be stale-pointing at the just-deleted id even though its
+        // window (guarded above) is already closed.
+        if file.active_workspace == id {
+            file.active_workspace = reassign_active_workspace(&id, &history, &file.workspaces);
+        }
         Ok(())
     })?;
     // Config committed — the workspace is gone. Everything below is best-effort
@@ -2341,6 +2513,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Per-window (by label) size/position persistence (#225): each
+        // ws:<id> window remembers its own geometry across launches.
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         // Logger plugin is initialised before spawn_all_sidecars so every line we
         // emit during boot — including the auth-token confirmation and any
         // sidecar stdout/stderr — lands in the file at
@@ -2363,6 +2538,7 @@ pub fn run() {
         .manage(AuthTokens(Mutex::new(HashMap::new())))
         .manage(WebviewProxySecrets(Mutex::new(HashMap::new())))
         .manage(ConfigLock(Mutex::new(())))
+        .manage(FocusHistory(Mutex::new(Vec::new())))
         .manage(pty::PtyState::default())
         .manage(updater::PendingUpdate::default())
         .register_uri_scheme_protocol("portuni-html", |ctx, request| {
@@ -2501,10 +2677,9 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             // app.windows in tauri.conf.json is [] (#222): the startup
-            // window is created here instead of automatically, so its label
-            // can reflect whether a workspace exists yet ("ws:<id>") or not
-            // ("bootstrap").
-            create_startup_window(&handle)?;
+            // window(s) are created here instead of automatically, restoring
+            // open_windows (#225) or falling back to a single window / bootstrap.
+            create_startup_windows(&handle)?;
             // Each enabled workspace gets its own sidecar; spawn_sidecar_ws
             // caches the per-workspace MCP token into AuthTokens as it goes.
             // A v1/Missing config is a no-op until migration/onboarding.
@@ -2570,8 +2745,40 @@ pub fn run() {
             // request may be cancelled in JS. Killing the sidecars on the
             // request would leave a live window with dead backends.
             // Cmd+Q / app exit is covered by ExitRequested/Exit below.
+            // TODO(#229): this kills EVERY workspace's sidecar on ANY
+            // window closing, which is wrong once more than one can be
+            // open -- sidecar teardown moves to app-exit-only there.
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 kill_all_sidecars(window.app_handle());
+            }
+            // #225: track ws:<id> windows for open_windows/active_workspace
+            // persistence. "bootstrap" is never a workspace and ws_of
+            // rejects it, so this is a no-op for it.
+            match event {
+                tauri::WindowEvent::Focused(true) => {
+                    if let Ok(ws_id) = ws_of(window) {
+                        if let Some(state) = window.app_handle().try_state::<FocusHistory>() {
+                            if let Ok(mut history) = state.0.lock() {
+                                touch_focus(&mut history, &ws_id);
+                            }
+                        }
+                        // Not persisted here -- only in-memory. persist_open_windows
+                        // (called on the next open/close) is what writes it out,
+                        // matching the spec's "not on every focus change".
+                    }
+                }
+                tauri::WindowEvent::Destroyed => {
+                    if let Ok(ws_id) = ws_of(window) {
+                        let app = window.app_handle();
+                        if let Some(state) = app.try_state::<FocusHistory>() {
+                            if let Ok(mut history) = state.0.lock() {
+                                untrack_focus(&mut history, &ws_id);
+                            }
+                        }
+                        persist_open_windows(app);
+                    }
+                }
+                _ => {}
             }
         })
         .build(tauri::generate_context!())
@@ -2723,6 +2930,132 @@ mod config_lock_tests {
         assert!(file.workspaces.contains_key("seed"));
         assert!(file.workspaces.contains_key("alpha"), "alpha's write was lost");
         assert!(file.workspaces.contains_key("beta"), "beta's write was lost");
+    }
+}
+
+#[cfg(test)]
+mod multi_window_phase2_tests {
+    use super::{
+        is_window_open_for, reassign_active_workspace, startup_window_labels, touch_focus,
+        untrack_focus,
+    };
+    use crate::workspace::{WorkspaceConfig, WorkspacesFile};
+    use std::collections::BTreeMap;
+
+    fn ws(enabled: bool) -> WorkspaceConfig {
+        WorkspaceConfig {
+            enabled,
+            ..Default::default()
+        }
+    }
+
+    fn file(active: &str, open_windows: &[&str], workspaces: &[(&str, bool)]) -> WorkspacesFile {
+        WorkspacesFile {
+            config_version: 2,
+            active_workspace: active.to_string(),
+            workspaces: workspaces
+                .iter()
+                .map(|(id, enabled)| (id.to_string(), ws(*enabled)))
+                .collect(),
+            profiles: BTreeMap::new(),
+            default_profile_by_org: BTreeMap::new(),
+            open_windows: open_windows.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    // --- startup_window_labels: startup selection rules ---
+
+    #[test]
+    fn restores_every_valid_enabled_open_window() {
+        let f = file("acme", &["acme", "beta"], &[("acme", true), ("beta", true)]);
+        let mut labels = startup_window_labels(&f);
+        labels.sort();
+        assert_eq!(labels, vec!["ws:acme".to_string(), "ws:beta".to_string()]);
+    }
+
+    #[test]
+    fn filters_out_disabled_or_unknown_open_window_ids() {
+        // "beta" is disabled, "ghost" no longer exists -- neither gets a window.
+        let f = file("acme", &["acme", "beta", "ghost"], &[("acme", true), ("beta", false)]);
+        assert_eq!(startup_window_labels(&f), vec!["ws:acme".to_string()]);
+    }
+
+    #[test]
+    fn empty_open_windows_falls_back_to_active_workspace() {
+        let f = file("acme", &[], &[("acme", true), ("beta", true)]);
+        assert_eq!(startup_window_labels(&f), vec!["ws:acme".to_string()]);
+    }
+
+    #[test]
+    fn fully_invalid_open_windows_falls_back_to_active_workspace() {
+        let f = file("acme", &["ghost", "beta"], &[("acme", true), ("beta", false)]);
+        assert_eq!(startup_window_labels(&f), vec!["ws:acme".to_string()]);
+    }
+
+    #[test]
+    fn no_valid_fallback_either_returns_empty_for_bootstrap() {
+        // active_workspace itself is disabled, open_windows is empty.
+        let f = file("acme", &[], &[("acme", false)]);
+        assert!(startup_window_labels(&f).is_empty());
+    }
+
+    // --- is_window_open_for: disable/delete refusal ---
+
+    #[test]
+    fn refuses_while_its_window_is_open() {
+        let open = vec!["ws:acme".to_string(), "bootstrap".to_string()];
+        assert!(is_window_open_for(&open, "acme"));
+        assert!(!is_window_open_for(&open, "beta"));
+    }
+
+    // --- reassign_active_workspace: fallback reassignment ---
+
+    #[test]
+    fn reassigns_to_the_most_recently_focused_remaining_window() {
+        let workspaces: BTreeMap<String, WorkspaceConfig> =
+            [("acme", true), ("beta", true), ("gamma", true)]
+                .into_iter()
+                .map(|(id, e)| (id.to_string(), ws(e)))
+                .collect();
+        let history = vec!["gamma".to_string(), "beta".to_string(), "acme".to_string()];
+        // "acme" is being removed; "beta" is the next-most-recently focused.
+        assert_eq!(reassign_active_workspace("acme", &history, &workspaces), "beta");
+    }
+
+    #[test]
+    fn skips_history_entries_that_are_disabled_or_the_removed_id_itself() {
+        let workspaces: BTreeMap<String, WorkspaceConfig> =
+            [("acme", true), ("beta", false), ("gamma", true)]
+                .into_iter()
+                .map(|(id, e)| (id.to_string(), ws(e)))
+                .collect();
+        let history = vec!["gamma".to_string(), "beta".to_string(), "acme".to_string()];
+        assert_eq!(reassign_active_workspace("acme", &history, &workspaces), "gamma");
+    }
+
+    #[test]
+    fn falls_back_to_the_first_remaining_enabled_workspace_with_no_useful_history() {
+        let workspaces: BTreeMap<String, WorkspaceConfig> = [("acme", true), ("beta", true)]
+            .into_iter()
+            .map(|(id, e)| (id.to_string(), ws(e)))
+            .collect();
+        assert_eq!(reassign_active_workspace("acme", &[], &workspaces), "beta");
+    }
+
+    // --- touch_focus / untrack_focus ---
+
+    #[test]
+    fn touch_focus_moves_an_existing_entry_to_the_end_without_duplicating() {
+        let mut history = vec!["acme".to_string(), "beta".to_string()];
+        touch_focus(&mut history, "acme");
+        assert_eq!(history, vec!["beta".to_string(), "acme".to_string()]);
+    }
+
+    #[test]
+    fn untrack_focus_removes_the_entry() {
+        let mut history = vec!["acme".to_string(), "beta".to_string()];
+        untrack_focus(&mut history, "acme");
+        assert_eq!(history, vec!["beta".to_string()]);
     }
 }
 
