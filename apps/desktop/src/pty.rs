@@ -304,6 +304,18 @@ fn report_terminal_exit(app: &AppHandle, ws_id: &str, terminal_id: &str) {
     });
 }
 
+// A session (spawned in some window, PtySession.ws_id, #219) may only be
+// written to, resized, or killed by a caller whose OWN window resolves to
+// that same workspace (#223) -- PtyState is process-wide, so without this
+// one workspace's window could otherwise reach into another's PTY. Pure so
+// the same/different/unresolved cases are unit-testable without a real
+// window; unresolved on either side (a session with no workspace captured
+// at spawn time, or a caller whose own window isn't a workspace window)
+// is a deny, not a free pass.
+fn session_owned_by(session_ws_id: Option<&str>, caller_ws_id: Option<&str>) -> bool {
+    matches!((session_ws_id, caller_ws_id), (Some(a), Some(b)) if a == b)
+}
+
 fn pick_shell() -> (String, Vec<String>) {
     // Prefer the user's $SHELL so they get their familiar prompt, history,
     // aliases, etc. Fall back to /bin/zsh on macOS (default since 10.15)
@@ -328,6 +340,7 @@ fn pick_shell() -> (String, Vec<String>) {
 #[tauri::command]
 pub fn pty_spawn(
     app: AppHandle,
+    window: tauri::Window,
     state: State<'_, PtyState>,
     args: SpawnArgs,
 ) -> Result<(), String> {
@@ -364,11 +377,12 @@ pub fn pty_spawn(
         })
         .map_err(|e| format!("openpty failed: {e}"))?;
 
-    // Workspace this terminal belongs to, captured once here rather than
-    // re-resolved at exit time (#219) -- see the PtySession.ws_id doc
-    // comment. None only for a fresh install with no workspace configured
-    // yet, which cannot have a node terminal open in the first place.
-    let spawn_ws_id = crate::active_workspace(&app).map(|(id, _)| id).ok();
+    // Workspace this terminal belongs to: the CALLING WINDOW's own (#223),
+    // captured once here rather than re-resolved at exit time (#219) -- see
+    // the PtySession.ws_id doc comment. None only for a fresh install with
+    // no workspace configured yet, which cannot have a node terminal open
+    // in the first place (every window that can spawn one is ws:<id>).
+    let spawn_ws_id = crate::ws_of(&window).ok();
 
     let (shell, shell_args) = pick_shell();
 
@@ -437,8 +451,9 @@ pub fn pty_spawn(
     // Inject one token env var per enabled workspace, so per-mirror configs
     // (which reference ${PORTUNI_MCP_TOKEN_<ID>:-}) resolve the right
     // credential regardless of which workspace the terminal's cwd belongs
-    // to. PORTUNI_MCP_TOKEN keeps carrying the ACTIVE workspace's token for
-    // backward compatibility with pre-workspace mirror configs.
+    // to. PORTUNI_MCP_TOKEN keeps carrying the CALLING WINDOW's own
+    // workspace token (#223; was the globally-active workspace pre-#222)
+    // for backward compatibility with pre-workspace mirror configs.
     //
     // Both central-mode (agent) and local-mode terminals inject the LOCAL
     // sidecar's per-launch token (the value cached in AuthTokens / Keychain
@@ -447,7 +462,7 @@ pub fn pty_spawn(
     // the central device token would be rejected (401) by the local gate —
     // see workspace::terminal_mcp_token.
     {
-        let active_id = crate::active_workspace(&app).map(|(id, _)| id).ok();
+        let active_id = spawn_ws_id.clone();
         if let Ok(workspaces) = crate::enabled_workspaces(&app) {
             for (ws_id, cfg) in workspaces {
                 let local_token = app
@@ -647,11 +662,19 @@ pub struct WriteArgs {
 }
 
 #[tauri::command]
-pub fn pty_write(state: State<'_, PtyState>, args: WriteArgs) -> Result<(), String> {
+pub fn pty_write(
+    window: tauri::Window,
+    state: State<'_, PtyState>,
+    args: WriteArgs,
+) -> Result<(), String> {
+    let caller_ws = crate::ws_of(&window).ok();
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions
         .get_mut(&args.session_id)
         .ok_or_else(|| format!("no session {}", args.session_id))?;
+    if !session_owned_by(session.ws_id.as_deref(), caller_ws.as_deref()) {
+        return Err(format!("session {} does not belong to this window", args.session_id));
+    }
     session
         .writer
         .write_all(args.data.as_bytes())
@@ -668,11 +691,19 @@ pub struct ResizeArgs {
 }
 
 #[tauri::command]
-pub fn pty_resize(state: State<'_, PtyState>, args: ResizeArgs) -> Result<(), String> {
+pub fn pty_resize(
+    window: tauri::Window,
+    state: State<'_, PtyState>,
+    args: ResizeArgs,
+) -> Result<(), String> {
+    let caller_ws = crate::ws_of(&window).ok();
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions
         .get(&args.session_id)
         .ok_or_else(|| format!("no session {}", args.session_id))?;
+    if !session_owned_by(session.ws_id.as_deref(), caller_ws.as_deref()) {
+        return Err(format!("session {} does not belong to this window", args.session_id));
+    }
     session
         .master
         .resize(PtySize {
@@ -691,13 +722,56 @@ pub struct KillArgs {
 }
 
 #[tauri::command]
-pub fn pty_kill(state: State<'_, PtyState>, args: KillArgs) -> Result<(), String> {
+pub fn pty_kill(
+    window: tauri::Window,
+    state: State<'_, PtyState>,
+    args: KillArgs,
+) -> Result<(), String> {
+    let caller_ws = crate::ws_of(&window).ok();
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let Some(session) = sessions.get(&args.session_id) else {
+        // Already gone (e.g. the reader thread's own removal raced this
+        // call) -- killing a nonexistent session is a no-op, not an error.
+        return Ok(());
+    };
+    if !session_owned_by(session.ws_id.as_deref(), caller_ws.as_deref()) {
+        return Err(format!("session {} does not belong to this window", args.session_id));
+    }
     // Dropping the PtySession drops the child handle, which sends
     // SIGHUP to the process group. The reader thread sees EOF and
     // exits naturally.
     sessions.remove(&args.session_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod session_owned_by_tests {
+    use super::session_owned_by;
+
+    #[test]
+    fn same_workspace_is_owned() {
+        assert!(session_owned_by(Some("acme"), Some("acme")));
+    }
+
+    #[test]
+    fn different_workspace_is_refused() {
+        assert!(!session_owned_by(Some("acme"), Some("other")));
+    }
+
+    #[test]
+    fn a_session_with_no_captured_workspace_is_refused() {
+        assert!(!session_owned_by(None, Some("acme")));
+    }
+
+    #[test]
+    fn a_caller_with_no_resolved_workspace_is_refused() {
+        assert!(!session_owned_by(Some("acme"), None));
+    }
+
+    #[test]
+    fn both_unresolved_is_refused() {
+        assert!(!session_owned_by(None, None));
+    }
 }
 
 #[cfg(test)]

@@ -26,7 +26,7 @@ use std::{
     sync::mpsc,
     time::Duration,
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 // ─── Keychain accounts ───────────────────────────────────────────────────────
 //
@@ -58,8 +58,8 @@ pub struct AuthConfig {
     pub google_client_secret: String,
 }
 
-pub fn load_auth_config(app: &AppHandle) -> Option<(String, AuthConfig)> {
-    let (ws_id, cfg) = crate::active_workspace(app).ok()?;
+pub fn load_auth_config(app: &AppHandle, ws_id: &str) -> Option<AuthConfig> {
+    let cfg = crate::workspace_config_for(app, ws_id).ok()?;
     let server_url = cfg.server_url?.trim().to_string();
     let google_client_id = cfg.google_client_id?.trim().to_string();
     let google_client_secret = cfg
@@ -70,28 +70,28 @@ pub fn load_auth_config(app: &AppHandle) -> Option<(String, AuthConfig)> {
     if server_url.is_empty() || google_client_id.is_empty() {
         return None;
     }
-    Some((
-        ws_id,
-        AuthConfig {
-            server_url,
-            google_client_id,
-            google_client_secret,
-        },
-    ))
+    Some(AuthConfig {
+        server_url,
+        google_client_id,
+        google_client_secret,
+    })
 }
 
 /// Google client for Drive OAuth: unlike load_auth_config this does NOT
 /// require server_url — local-mode workspaces have no central server.
-pub fn load_google_client(app: &AppHandle) -> Option<(String, String, String)> {
-    let (ws_id, cfg) = crate::active_workspace(app).ok()?;
-    let id = cfg.google_client_id.clone().filter(|s| !s.trim().is_empty())?;
-    let secret = cfg.google_client_secret.clone().filter(|s| !s.trim().is_empty())?;
-    Some((ws_id, id, secret))
+pub fn load_google_client(app: &AppHandle, ws_id: &str) -> Option<(String, String)> {
+    let cfg = crate::workspace_config_for(app, ws_id).ok()?;
+    let id = cfg.google_client_id.filter(|s| !s.trim().is_empty())?;
+    let secret = cfg.google_client_secret.filter(|s| !s.trim().is_empty())?;
+    Some((id, secret))
 }
 
 #[tauri::command]
-pub fn google_client_configured(app: AppHandle) -> bool {
-    load_google_client(&app).is_some()
+pub fn google_client_configured(window: tauri::Window) -> bool {
+    let Ok(ws_id) = crate::ws_of(&window) else {
+        return false;
+    };
+    load_google_client(window.app_handle(), &ws_id).is_some()
 }
 
 // ─── JWT payload decode (display-only, no signature verification) ─────────────
@@ -386,15 +386,18 @@ pub struct AuthStatus {
 /// Return auth status: whether the desktop is configured for central auth,
 /// whether a session JWT is present, and the decoded user claims (display-only).
 #[tauri::command]
-pub fn auth_status(app: AppHandle) -> AuthStatus {
-    let config = load_auth_config(&app);
+pub fn auth_status(window: tauri::Window) -> AuthStatus {
+    let ws_id = crate::ws_of(&window).ok();
+    let config = ws_id
+        .as_deref()
+        .and_then(|id| load_auth_config(window.app_handle(), id));
     let configured = config.is_some();
     // Independent of `configured`: a workspace can hold a session JWT even
     // if server_url/google_client_id checks above were incomplete, so look
-    // up the active workspace directly rather than reusing `config`.
-    let jwt = crate::active_workspace(&app)
-        .ok()
-        .and_then(|(ws_id, _)| keychain_get_ws(KEYCHAIN_SESSION_JWT, &ws_id));
+    // it up directly rather than reusing `config`.
+    let jwt = ws_id
+        .as_deref()
+        .and_then(|id| keychain_get_ws(KEYCHAIN_SESSION_JWT, id));
     let logged_in = jwt.is_some();
     let user = jwt.as_deref().and_then(decode_jwt_payload);
     AuthStatus {
@@ -414,8 +417,10 @@ pub fn auth_status(app: AppHandle) -> AuthStatus {
 /// 7. Store refresh_token + session JWT in Keychain.
 /// 8. Return user JSON from server response.
 #[tauri::command]
-pub async fn google_login(app: AppHandle) -> Result<Value, String> {
-    let (ws_id, config) = load_auth_config(&app)
+pub async fn google_login(window: tauri::Window) -> Result<Value, String> {
+    let ws_id = crate::ws_of(&window)?;
+    let app = window.app_handle().clone();
+    let config = load_auth_config(&app, &ws_id)
         .ok_or_else(|| "server_url and google_client_id must be set in config.json".to_string())?;
 
     let verifier = pkce_verifier();
@@ -510,8 +515,10 @@ pub async fn google_login(app: AppHandle) -> Result<Value, String> {
 /// scope includes drive. The refresh token goes straight to the sidecar
 /// over loopback — it must never transit the webview (security rule 1).
 #[tauri::command]
-pub async fn google_drive_connect(app: AppHandle) -> Result<Value, String> {
-    let (ws_id, client_id, client_secret) = load_google_client(&app)
+pub async fn google_drive_connect(window: tauri::Window) -> Result<Value, String> {
+    let ws_id = crate::ws_of(&window)?;
+    let app = window.app_handle().clone();
+    let (client_id, client_secret) = load_google_client(&app, &ws_id)
         .ok_or_else(|| "google_client_id and google_client_secret must be set in config.json".to_string())?;
 
     let verifier = pkce_verifier();
@@ -588,8 +595,13 @@ pub async fn google_drive_connect(app: AppHandle) -> Result<Value, String> {
 /// Refresh the session using the stored Google refresh token.
 /// Returns the updated user JSON from the central server.
 #[tauri::command]
-pub async fn auth_refresh(app: AppHandle) -> Result<Value, String> {
-    let (ws_id, config) = load_auth_config(&app)
+pub async fn auth_refresh(window: tauri::Window) -> Result<Value, String> {
+    // Resolved from THIS window (#223), never re-derived via the globally
+    // "active" workspace: api_request's 401 retry passes its own already-
+    // resolved window along so a refresh always targets the same workspace
+    // the request that triggered it was for.
+    let ws_id = crate::ws_of(&window)?;
+    let config = load_auth_config(window.app_handle(), &ws_id)
         .ok_or_else(|| "server_url and google_client_id must be set in config.json".to_string())?;
 
     let refresh_token = keychain_get_ws(KEYCHAIN_GOOGLE_REFRESH, &ws_id)
@@ -611,10 +623,10 @@ pub async fn auth_refresh(app: AppHandle) -> Result<Value, String> {
     Ok(central.user)
 }
 
-/// Delete the active workspace's Keychain entries. Idempotent.
+/// Delete this window's workspace's Keychain entries. Idempotent.
 #[tauri::command]
-pub fn auth_logout(app: AppHandle) -> Result<(), String> {
-    let (ws_id, _) = crate::active_workspace(&app)?;
+pub fn auth_logout(window: tauri::Window) -> Result<(), String> {
+    let ws_id = crate::ws_of(&window)?;
     keychain_delete_ws(KEYCHAIN_GOOGLE_REFRESH, &ws_id);
     keychain_delete_ws(KEYCHAIN_SESSION_JWT, &ws_id);
     keychain_delete_ws(crate::pty::KEYCHAIN_DEVICE_TOKEN_ACCOUNT, &ws_id);
@@ -635,12 +647,13 @@ pub struct CentralResponse {
 /// Returns the response shape matching api_request for webview compatibility.
 #[tauri::command]
 pub async fn central_request(
-    app: AppHandle,
+    window: tauri::Window,
     method: String,
     path: String,
     body: Option<Value>,
 ) -> Result<CentralResponse, String> {
-    let (ws_id, config) = load_auth_config(&app)
+    let ws_id = crate::ws_of(&window)?;
+    let config = load_auth_config(window.app_handle(), &ws_id)
         .ok_or_else(|| "server_url is not configured".to_string())?;
 
     let jwt = keychain_get_ws(KEYCHAIN_SESSION_JWT, &ws_id)
@@ -649,9 +662,9 @@ pub async fn central_request(
     let resp = do_central_request(&config.server_url, &method, &path, body.as_ref(), &jwt).await?;
 
     if resp.status == 401 {
-        // Try silent refresh once.
+        // Try silent refresh once. Same window, so the same workspace.
         info!("central_request: got 401, attempting silent refresh");
-        match auth_refresh(app).await {
+        match auth_refresh(window).await {
             Err(e) => {
                 warn!("central_request: silent refresh failed: {e}");
                 // Return the original 401 so the frontend can decide what to do.

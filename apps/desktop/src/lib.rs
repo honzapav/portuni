@@ -177,15 +177,11 @@ pub(crate) fn active_workspace(
 // a label that says what it is: "bootstrap" before any workspace exists,
 // "ws:<id>" once one does. ws_of answers "which workspace is THIS window
 // for", the per-window counterpart to active_workspace's "the currently
-// active one" -- phase 1's #223 routes every workspace-bound command by it
-// instead. Split into a thin AppHandle-resolving wrapper and a pure(-ish,
-// filesystem-reading) core (ws_of_from_dir) so the label parsing and
-// existence check are unit-testable with a temp data_dir instead of a real
-// Tauri window. Not called yet -- #223 is the one that routes every
-// workspace-bound command through it; landing it now (unused) keeps this
-// phase's diff self-contained and #223's diff reviewable as "route by
-// ws_of", not "add ws_of and route by it" together.
-#[allow(dead_code)]
+// active one" -- #223 routes every workspace-bound command through it
+// instead of active_workspace. Split into a thin AppHandle-resolving
+// wrapper and a pure(-ish, filesystem-reading) core (ws_of_from_dir) so the
+// label parsing and existence check are unit-testable with a temp data_dir
+// instead of a real Tauri window.
 pub(crate) fn ws_of(window: &tauri::Window) -> Result<String, String> {
     let data_dir = window
         .app_handle()
@@ -205,6 +201,24 @@ fn ws_of_from_dir(label: &str, data_dir: &Path) -> Result<String, String> {
             Ok(id.to_string())
         }
         workspace::LoadedConfig::V2(_) => Err(format!("unknown workspace '{id}'")),
+        workspace::LoadedConfig::V1(_) => Err("config awaiting workspace migration".to_string()),
+        workspace::LoadedConfig::Missing => Err("no config.json (fresh install)".to_string()),
+    }
+}
+
+// Sibling of active_workspace for callers that already have a specific
+// ws_id (from ws_of, #223) instead of wanting "whichever one is active".
+pub(crate) fn workspace_config_for(
+    app: &AppHandle,
+    ws_id: &str,
+) -> Result<workspace::WorkspaceConfig, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(file) => file
+            .workspaces
+            .get(ws_id)
+            .cloned()
+            .ok_or_else(|| format!("workspace '{ws_id}' missing from config")),
         workspace::LoadedConfig::V1(_) => Err("config awaiting workspace migration".to_string()),
         workspace::LoadedConfig::Missing => Err("no config.json (fresh install)".to_string()),
     }
@@ -257,14 +271,14 @@ fn handoff_from_bootstrap(app: &AppHandle, ws_id: &str) {
 }
 
 #[tauri::command]
-fn set_turso_token(app: AppHandle, token: String) -> Result<(), String> {
-    let (ws_id, _) = active_workspace(&app)?;
+fn set_turso_token(window: tauri::Window, token: String) -> Result<(), String> {
+    let ws_id = ws_of(&window)?;
     keychain_set_ws(KEYCHAIN_TURSO_ACCOUNT, &ws_id, &token)
 }
 
 #[tauri::command]
-fn clear_turso_token(app: AppHandle) -> Result<(), String> {
-    let (ws_id, _) = active_workspace(&app)?;
+fn clear_turso_token(window: tauri::Window) -> Result<(), String> {
+    let ws_id = ws_of(&window)?;
     keychain_delete_ws(KEYCHAIN_TURSO_ACCOUNT, &ws_id);
     Ok(())
 }
@@ -280,8 +294,9 @@ fn clear_turso_token(app: AppHandle) -> Result<(), String> {
 // to the central server with the device token itself, so the device token
 // is never the credential a client needs.
 #[tauri::command]
-fn get_mcp_token(app: AppHandle) -> Result<String, String> {
-    let (ws_id, _cfg) = active_workspace(&app)?;
+fn get_mcp_token(window: tauri::Window) -> Result<String, String> {
+    let ws_id = ws_of(&window)?;
+    let app = window.app_handle();
     app.state::<AuthTokens>()
         .0
         .lock()
@@ -299,8 +314,9 @@ fn get_mcp_token(app: AppHandle) -> Result<String, String> {
 // Only ~/.claude.json embeds the literal token and goes stale until the
 // user re-runs "Install Claude (global)".
 #[tauri::command]
-fn regenerate_mcp_token(app: AppHandle) -> Result<String, String> {
-    let (ws_id, _) = active_workspace(&app)?;
+fn regenerate_mcp_token(window: tauri::Window) -> Result<String, String> {
+    let ws_id = ws_of(&window)?;
+    let app = window.app_handle();
     let fresh = random_token();
     keychain_set_ws(KEYCHAIN_MCP_ACCOUNT, &ws_id, &fresh)?;
     app.state::<AuthTokens>()
@@ -609,11 +625,13 @@ fn approve_exit(app: AppHandle) {
 }
 
 #[tauri::command]
-fn get_backend_port(app: AppHandle) -> Option<u16> {
-    // Port of the ACTIVE workspace's sidecar. None before the sidecar reports
-    // its port, or while config is still v1/Missing (the migration/onboarding
-    // gate handles that case in the UI).
-    let ws_id = active_workspace(&app).ok()?.0;
+fn get_backend_port(window: tauri::Window) -> Option<u16> {
+    // Port of THIS WINDOW's workspace's sidecar (#223). None before the
+    // sidecar reports its port, or while the window is "bootstrap" (no
+    // workspace yet — the migration/onboarding gate handles that case in
+    // the UI).
+    let ws_id = ws_of(&window).ok()?;
+    let app = window.app_handle();
     let port = app
         .state::<BackendPorts>()
         .0
@@ -763,8 +781,9 @@ struct DataModeResponse {
 /// Return the current data mode and server URL. Used by the React frontend
 /// to adapt its UI (hide mirror/sync affordances in central mode).
 #[tauri::command]
-fn get_data_mode(app: AppHandle) -> Result<DataModeResponse, String> {
-    let (_, cfg) = active_workspace(&app)?;
+fn get_data_mode(window: tauri::Window) -> Result<DataModeResponse, String> {
+    let ws_id = ws_of(&window)?;
+    let cfg = workspace_config_for(window.app_handle(), &ws_id)?;
     let mode = if workspace::is_central(&cfg) {
         "central"
     } else {
@@ -1088,8 +1107,10 @@ async fn open_in_finder(_path: String, _reveal: bool) -> Result<(), String> {
 // means the system default browser. The path is scope-guarded against the
 // configured workspace root so only files inside the mirror are reachable.
 #[tauri::command]
-fn open_path_external(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    let (_, cfg) = active_workspace(&app)?;
+fn open_path_external(window: tauri::Window, path: String) -> Result<(), String> {
+    let ws_id = ws_of(&window)?;
+    let app = window.app_handle();
+    let cfg = workspace_config_for(app, &ws_id)?;
     let raw_root = cfg.effective_workspace_root();
     // Expand the config's leading ~ to match the sidecar-derived absolute path.
     let root = match app.path().home_dir() {
@@ -1149,14 +1170,16 @@ async fn clipboard_file_path() -> Result<Option<String>, String> {
 
 // Bounce a workspace's Node sidecar so it picks up freshly-changed config
 // (Turso token, server URL, ...). Used by the first-run gate after the user
-// pastes their token (no id — defaults to the active workspace, preserving
-// today's behavior) and by WorkspacesSection for any enabled, non-running
-// workspace. Idempotent: if no sidecar is running, just spawns one.
+// pastes their token (no id — defaults to the calling window's own
+// workspace, #223) and by WorkspacesSection for any enabled, non-running
+// workspace (explicit id, which may differ from the calling window's own).
+// Idempotent: if no sidecar is running, just spawns one.
 #[tauri::command]
-async fn restart_sidecar(app: AppHandle, id: Option<String>) -> Result<(), String> {
+async fn restart_sidecar(window: tauri::Window, id: Option<String>) -> Result<(), String> {
+    let app = window.app_handle().clone();
     let ws = match id {
         Some(i) => i,
-        None => active_workspace(&app)?.0,
+        None => ws_of(&window)?,
     };
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     match workspace::load(&data_dir)? {
@@ -1228,13 +1251,16 @@ pub(crate) fn webview_proxy_secret(app: &AppHandle, ws_id: &str) -> Option<Strin
 #[tauri::command]
 async fn api_request(
     app: AppHandle,
+    window: tauri::Window,
     method: String,
     path: String,
     body: Option<String>,
     headers: Option<HashMap<String, String>>,
 ) -> Result<ApiResponse, String> {
-    // Route by the ACTIVE workspace's config.
-    let (ws_id, cfg) = active_workspace(&app)?;
+    // Route by THIS WINDOW's workspace config (#223), not the globally
+    // "active" one.
+    let ws_id = ws_of(&window)?;
+    let cfg = workspace_config_for(&app, &ws_id)?;
     let is_central = workspace::is_central(&cfg);
 
     // In central mode, LOCAL_ONLY paths (mirror/sync/scope/sandbox) are
@@ -1267,9 +1293,11 @@ async fn api_request(
         .await?;
 
         if resp.status == 401 {
-            // Silent refresh + retry once.
+            // Silent refresh + retry once. Same window, so the same
+            // workspace the request above was actually for (#223) --
+            // auth_refresh no longer re-derives it from "the active one".
             info!("api_request central: got 401, attempting silent refresh");
-            match auth::auth_refresh(app.clone()).await {
+            match auth::auth_refresh(window.clone()).await {
                 Err(e) => {
                     warn!("api_request central: silent refresh failed: {e}");
                     return Ok(ApiResponse {
@@ -2299,17 +2327,26 @@ pub fn run() {
                 .to_string();
             let candidate = std::path::PathBuf::from(&decoded);
 
-            // Scope the preview to the ACTIVE workspace's mirror root. Expand
-            // the config's leading ~ (the sidecar does this for the absolute
-            // local_path we compare against); fall back to the raw value if the
-            // home dir is somehow unavailable.
-            let root = active_workspace(app).ok().map(|(_, cfg)| {
-                let raw = cfg.effective_workspace_root();
-                match app.path().home_dir() {
-                    Ok(h) => expand_tilde(&h, &raw),
-                    Err(_) => std::path::PathBuf::from(raw),
-                }
-            });
+            // Scope the preview to THIS WINDOW's workspace mirror root (#223)
+            // -- resolved from the requesting webview's own label, not the
+            // globally-"active" workspace, so a preview in one window can
+            // never read another window's mirror. Expand the config's
+            // leading ~ (the sidecar does this for the absolute local_path
+            // we compare against); fall back to the raw value if the home
+            // dir is somehow unavailable.
+            let root = app
+                .path()
+                .app_data_dir()
+                .ok()
+                .and_then(|data_dir| ws_of_from_dir(ctx.webview_label(), &data_dir).ok())
+                .and_then(|ws_id| workspace_config_for(app, &ws_id).ok())
+                .map(|cfg| {
+                    let raw = cfg.effective_workspace_root();
+                    match app.path().home_dir() {
+                        Ok(h) => expand_tilde(&h, &raw),
+                        Err(_) => std::path::PathBuf::from(raw),
+                    }
+                });
 
             let forbidden = || {
                 Response::builder()

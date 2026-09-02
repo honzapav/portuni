@@ -265,18 +265,43 @@ symlink to this file.
   workspace drží historické `portuni`. Model:
   `docs/archive/specs/2026-07-04-desktop-multi-workspace-design.md`.
 
-- **Multi-window desktop, phase 1 (#222): windows are created at runtime,
-  not declared in `tauri.conf.json`.** `app.windows` there is `[]`; `.setup()`
+- **Multi-window desktop, phase 1 (#222, #223): windows are created at
+  runtime, not declared in `tauri.conf.json`.** `app.windows` there is `[]`; `.setup()`
   calls `create_startup_window`, which picks a label from `active_workspace`:
   `ws:<id>` when a v2 config already names one, else `bootstrap` (fresh
   install, or a v1 config still awaiting migration — `active_workspace` only
   understands v2). `ws_of(&tauri::Window)` is the per-window counterpart to
   `active_workspace`'s "the currently active one" — it answers "which
   workspace is THIS window for" by parsing the `ws:<id>` label and validating
-  it against `config.json`; `bootstrap` and any other label are errors. Not
-  called anywhere yet — phase 1's #223 is what routes workspace-bound
-  commands through it; until then every command still resolves via the
-  global `active_workspace`, unchanged. `capabilities/default.json`'s
+  it against `config.json`; `bootstrap` and any other label are errors.
+  **#223 routes every genuinely workspace-bound command through it**: each
+  takes `window: tauri::Window` (not just `app: AppHandle`) and resolves
+  `ws_of(&window)?` instead of `active_workspace(&app)` — `api_request`
+  (its 401 retry re-uses the SAME window for the refresh, not a fresh
+  `active_workspace` lookup, so a refresh always targets the request's own
+  workspace), `get_backend_port`, `get_mcp_token`, `regenerate_mcp_token`,
+  `set_turso_token`, `clear_turso_token`, `get_data_mode`, `open_path_external`,
+  `restart_sidecar` (explicit `id` still wins; `None` now means "this
+  window's own" instead of "the active one"), and `auth.rs`'s `auth_status`/
+  `google_login`/`google_client_configured`/`google_drive_connect`/
+  `auth_refresh`/`auth_logout`/`central_request` (`load_auth_config`/
+  `load_google_client` now take an explicit `ws_id` instead of resolving it
+  themselves). The `portuni-html` URI scheme handler resolves the same way
+  from `ctx.webview_label()` via `ws_of_from_dir` (no `tauri::Window` object
+  available there, just the label). `pty_spawn` captures the spawning
+  window's workspace onto `PtySession.ws_id` (already true since #219, now
+  window- rather than active-workspace-sourced); `pty_write`/`pty_resize`/
+  `pty_kill` refuse a session whose `ws_id` doesn't match the caller's own
+  window (`session_owned_by`, deny-by-default when either side is
+  unresolved) — `PtyState` is process-wide, so without this one workspace's
+  window could reach into another's PTY. App-global commands (workspace
+  list/CRUD, updater, profiles, clipboard, `open_external`, exit,
+  `workspace_migration_status`, `get_turso_status`, `save_config`/
+  `setup_central`/`migrate_to_workspaces` themselves — all legitimately
+  called from a `bootstrap` window where `ws_of` would error) keep
+  `AppHandle` and never call `ws_of`. No frontend changes anywhere in this
+  phase — Tauri injects `window` the same way it already injects `app`/
+  `State`. `capabilities/default.json`'s
   `windows` list is `["bootstrap", "ws:*"]`. **Bootstrap → workspace
   handoff**: `migrate_to_workspaces`, and the fresh-install branches of
   `save_config`/`setup_central`, call `handoff_from_bootstrap` after saving
