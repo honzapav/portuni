@@ -3,11 +3,18 @@
 import { ChevronLeft, Eye, Maximize2, Pencil, Save } from "lucide-react";
 import type { FileEditor } from "../lib/use-file-editor";
 import { isHtmlPath } from "../App";
+import { isShowtimePath } from "../lib/showtime";
 import HtmlPreview from "./HtmlPreview";
 import MarkdownEditor from "./MarkdownEditor";
 import MarkdownPreview from "./MarkdownPreview";
 
 export type EditorMode = "edit" | "preview";
+
+// A Showtime deck has no source to edit here: the editor holds the preview
+// the bundle carries, so the mode toggle and Save are not offered for it.
+export function isPreviewOnly(relPath: string): boolean {
+  return isShowtimePath(relPath);
+}
 
 export default function EditorPane({
   editor,
@@ -42,14 +49,16 @@ export default function EditorPane({
           {ed.dirty && <span className="ml-1 text-[var(--color-node-process)]">●</span>}
         </span>
         <span className="ml-auto flex items-center gap-1">
-          <button
-            onClick={() => ed.save()}
-            disabled={ed.saving || !ed.dirty}
-            title="Uložit (Cmd/Ctrl+S)"
-            className="flex items-center gap-1 rounded border border-[var(--color-border)] px-2 py-1 text-[12px] text-[var(--color-text)] hover:border-[var(--color-border-strong)] disabled:opacity-50"
-          >
-            <Save size={12} /> {ed.saving ? "Ukládám…" : "Uložit"}
-          </button>
+          {!isPreviewOnly(relPath) && (
+            <button
+              onClick={() => ed.save()}
+              disabled={ed.saving || !ed.dirty}
+              title="Uložit (Cmd/Ctrl+S)"
+              className="flex items-center gap-1 rounded border border-[var(--color-border)] px-2 py-1 text-[12px] text-[var(--color-text)] hover:border-[var(--color-border-strong)] disabled:opacity-50"
+            >
+              <Save size={12} /> {ed.saving ? "Ukládám…" : "Uložit"}
+            </button>
+          )}
           <button
             onClick={onExpand}
             title="Na celé okno"
@@ -85,6 +94,9 @@ export function EditorBody({
   onModeChange: (m: EditorMode) => void;
   capWidth?: boolean;
 }) {
+  const previewOnly = isPreviewOnly(relPath);
+  const effectiveMode: EditorMode = previewOnly ? "preview" : mode;
+  const fullWidthPreview = isHtmlPath(relPath) || isShowtimePath(relPath);
   if (ed.status.kind === "loading") {
     return (
       <div className="flex flex-1 items-center justify-center text-[13px] text-[var(--color-text-dim)]">
@@ -128,18 +140,20 @@ export function EditorBody({
           </div>
         </div>
       )}
-      <ModeToggle mode={mode} onChange={onModeChange} />
+      {!previewOnly && <ModeToggle mode={mode} onChange={onModeChange} />}
       <div className="min-h-0 flex-1 overflow-auto">
         {/* Cap the column width in fullscreen for readable line length --
             EXCEPT the rendered HTML preview, which is a self-contained
             document that should use the full window width. */}
         <div
           className={`mx-auto h-full w-full${
-            capWidth && !(isHtmlPath(relPath) && mode === "preview") ? " max-w-4xl" : ""
+            capWidth && !(fullWidthPreview && effectiveMode === "preview") ? " max-w-4xl" : ""
           }`}
         >
-          {mode === "edit" ? (
+          {effectiveMode === "edit" ? (
             <MarkdownEditor value={ed.content} onChange={ed.onChange} onSave={(v) => ed.save(v)} />
+          ) : isShowtimePath(relPath) ? (
+            <HtmlPreview content={ed.content} localPath={ed.localPath} kind="showtime" />
           ) : isHtmlPath(relPath) ? (
             <HtmlPreview content={ed.content} localPath={ed.localPath} />
           ) : (

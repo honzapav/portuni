@@ -1,5 +1,6 @@
 // REST handlers for file content + lifecycle within a node mirror.
-//   GET    /nodes/:nodeId/file?path=<rel>        -> read content
+//   GET    /nodes/:nodeId/file?path=<rel>        -> read content (a .showtime
+//                                                   bundle reads as its bundled preview.html)
 //   PUT    /nodes/:nodeId/file?path=<rel>        -> save (local-only, conflict-checked)
 //   POST   /nodes/:nodeId/files                  -> create (registers + pushes)
 //   POST   /nodes/:nodeId/files/:fileId/rename   -> rename (tracked)
@@ -30,6 +31,7 @@ import {
   registerFileRecordRemote,
   registerFileRecordsRemote,
 } from "../domain/sync/sync-remote-api.js";
+import { isShowtimePath, readShowtimePreview } from "../domain/sync/showtime-preview.js";
 
 // File-content bodies carry whole files (base64-inflated for binary), so the
 // generic 5 MB JSON cap would hard-413 any push over ~3.7 MB raw. Dedicated
@@ -52,6 +54,7 @@ const CODE_STATUS: Record<FileContentErrorCode, number> = {
   CONFLICT: 409,
   EXISTS: 409,
   INVALID_PATH: 400,
+  NO_PREVIEW: 422,
 };
 
 function handleFileContentError(res: ServerResponse, err: unknown): boolean {
@@ -99,6 +102,21 @@ export async function handleGetFileContent(
         filename: r.filename,
         mime_type: r.mime_type,
       });
+      return;
+    }
+    // A Showtime deck is a zip the editor cannot show; what it reads as is
+    // the rendered preview.html Showtime packs into it (mirror or remote,
+    // the reader picks). Read-only: PUT refuses the path below.
+    if (isShowtimePath(relPath)) {
+      const p = await readShowtimePreview(db, { userId: identity.userId, nodeId, relPath });
+      const payload: FileContentResponse = {
+        content: p.content,
+        version: p.version,
+        filename: p.filename,
+        mime_type: p.mime_type,
+        local_path: p.local_path,
+      };
+      respondJson(res, 200, payload);
       return;
     }
     // Mirror present -> local read (unchanged). No mirror (central / VPS)
@@ -174,6 +192,15 @@ export async function handlePutFileContent(
         force: body.force,
       });
       respondJson(res, 200, { version: r.version, canonical_hash: r.canonical_hash });
+      return;
+    }
+    // The text path never writes a .showtime bundle: what the editor holds
+    // for one is the bundled preview, not the file (the byte path above may).
+    if (isShowtimePath(relPath)) {
+      respondJson(res, 415, {
+        error: `a .showtime bundle is read-only here; edit it in Showtime: ${relPath}`,
+        code: "NOT_EDITABLE",
+      });
       return;
     }
     // Mirror present -> local write (unchanged, push deferred to sync). No

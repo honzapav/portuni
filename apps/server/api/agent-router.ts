@@ -28,6 +28,12 @@ import {
   type FileContentErrorCode,
 } from "../domain/sync/file-content.js";
 import {
+  extractZipEntry,
+  isShowtimePath,
+  readShowtimePreview,
+  SHOWTIME_PREVIEW_ENTRY,
+} from "../domain/sync/showtime-preview.js";
+import {
   computeSyncPendingCentral,
   createMirrorForNodeCentral,
   statusScanCentral,
@@ -104,6 +110,7 @@ const AGENT_CODE_STATUS: Record<FileContentErrorCode, number> = {
   CONFLICT: 409,
   EXISTS: 409,
   INVALID_PATH: 400,
+  NO_PREVIEW: 422,
 };
 
 function respondFileContentError(res: ServerResponse, err: unknown): boolean {
@@ -359,11 +366,12 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
       if (method === "GET") {
         if (mirror) {
           try {
-            const r = await readFileContent(NO_DB, {
-              userId: identity.userId,
-              nodeId,
-              relPath,
-            });
+            // A .showtime deck reads as the preview.html it carries; the
+            // reader never touches the DB when a mirror holds the file.
+            const args = { userId: identity.userId, nodeId, relPath };
+            const r = isShowtimePath(relPath)
+              ? await readShowtimePreview(NO_DB, args)
+              : await readFileContent(NO_DB, args);
             const payload: FileContentResponse = {
               content: r.content,
               version: r.version,
@@ -386,6 +394,34 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
           const filename = relPath.split("/").pop() ?? relPath;
           const mime = mimeFor(filename);
           const raw = await client.getFileRaw(nodeId, relPath);
+          if (isShowtimePath(relPath)) {
+            let entry: Buffer | null = null;
+            try {
+              entry = extractZipEntry(raw.bytes, SHOWTIME_PREVIEW_ENTRY);
+            } catch (e) {
+              respondJson(res, 422, {
+                error: `not a readable .showtime bundle (${(e as Error).message}): ${relPath}`,
+                code: "NO_PREVIEW",
+              });
+              return true;
+            }
+            if (!entry) {
+              respondJson(res, 422, {
+                error: `bundle carries no ${SHOWTIME_PREVIEW_ENTRY}; save it with a newer Showtime: ${relPath}`,
+                code: "NO_PREVIEW",
+              });
+              return true;
+            }
+            const payload: FileContentResponse = {
+              content: entry.toString("utf8"),
+              version: raw.version,
+              filename,
+              mime_type: "text/html",
+              local_path: null,
+            };
+            respondJson(res, 200, payload);
+            return true;
+          }
           if (!agentIsEditableMime(mime) || raw.bytes.includes(0)) {
             respondJson(res, 415, {
               error: `file is not editable text: ${relPath}`,
@@ -411,6 +447,14 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
       // PUT
       const body = await parseJsonBody(req, res, agentPutFileSchema);
       if (!body) return true;
+      if (isShowtimePath(relPath)) {
+        // The editor holds the bundled preview, never the bundle's text.
+        respondJson(res, 415, {
+          error: `a .showtime bundle is read-only here; edit it in Showtime: ${relPath}`,
+          code: "NOT_EDITABLE",
+        });
+        return true;
+      }
       try {
         if (mirror) {
           const r = await writeFileContent(NO_DB, {

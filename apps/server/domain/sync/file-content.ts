@@ -23,7 +23,9 @@ export type FileContentErrorCode =
   | "NOT_EDITABLE"
   | "CONFLICT"
   | "EXISTS"
-  | "INVALID_PATH";
+  | "INVALID_PATH"
+  // A .showtime bundle that is not a zip or carries no preview.html.
+  | "NO_PREVIEW";
 
 export class FileContentError extends Error {
   constructor(
@@ -46,7 +48,7 @@ function isEditableMime(mime: string | null): boolean {
   return false;
 }
 
-function resolveAbs(mirrorRoot: string, relPath: string): string {
+export function resolveMirrorAbs(mirrorRoot: string, relPath: string): string {
   const segments = relPath.split("/").filter((s) => s.length > 0);
   if (segments.length === 0) {
     throw new FileContentError("empty path", "INVALID_PATH");
@@ -70,7 +72,7 @@ export async function readFileContent(
 }> {
   const mirrorRoot = await getMirrorPath(a.userId, a.nodeId);
   if (!mirrorRoot) throw new FileContentError("node has no local mirror", "NO_MIRROR");
-  const abs = resolveAbs(mirrorRoot, a.relPath);
+  const abs = resolveMirrorAbs(mirrorRoot, a.relPath);
   const filename = basename(abs);
   const mime = mimeFor(filename);
 
@@ -108,7 +110,7 @@ export async function writeFileContent(
 ): Promise<{ version: string }> {
   const mirrorRoot = await getMirrorPath(a.userId, a.nodeId);
   if (!mirrorRoot) throw new FileContentError("node has no local mirror", "NO_MIRROR");
-  const abs = resolveAbs(mirrorRoot, a.relPath);
+  const abs = resolveMirrorAbs(mirrorRoot, a.relPath);
 
   if (a.baseVersion && !a.force) {
     let current: Buffer | null = null;

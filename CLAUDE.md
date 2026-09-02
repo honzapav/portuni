@@ -216,6 +216,14 @@ symlink to this file.
   User-scoped fallbacks for sessions outside any mirror:
   `~/.claude.json` (`install_claude_global`), `~/.codex/config.toml`
   (`install_codex_global`), `~/.vibe/config.toml` (`install_vibe_global`).
+- **A `.showtime` file reads as its bundled `preview.html`.** A Showtime deck
+  is a zip; `GET /nodes/:id/file` for a `.showtime` path returns the
+  `preview.html` entry Showtime packs at every save (`text/html`, the
+  bundle's sha256 as `version`, 422 `NO_PREVIEW` when the entry is missing),
+  PUT refuses it, and the desktop `portuni-html://` protocol unzips the same
+  entry from disk (`showtime_preview_bytes`). The web gates the whole thing
+  behind Settings → Integrace → Showtime (`localStorage`, off by default);
+  the server side is unconditional. Domain: `showtime-preview.ts`.
 - **Mistral Vibe needs `--trust`.** Vibe only loads the per-mirror
   `.vibe/config.toml` (and thus auto-seeds) when the folder is trusted, so
   the desktop "Mistral Vibe" preset launches `vibe --trust`

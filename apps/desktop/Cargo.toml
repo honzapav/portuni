@@ -49,6 +49,10 @@ portable-pty = "0.9"
 # (visible as duplicated rows and offset glyphs after Unicode chars).
 # xterm.js' write() accepts Uint8Array and handles streaming UTF-8.
 base64 = "0.22"
+# Read one entry (preview.html) out of a .showtime deck bundle for the
+# portuni-html preview protocol. Deflate only: that is what Showtime packs.
+# Already in Cargo.lock transitively (4.x), so no second copy.
+zip = { version = "4", default-features = false, features = ["deflate"] }
 # Open external URLs/paths in the OS default handler. The JS shell plugin's
 # `open` proved to be a silent no-op inside the macOS webview, so external
 # links (Google Drive folder, actor links) are opened natively via the
@@ -75,3 +79,8 @@ toml_edit = "0.25"
 # Already present transitively (Cargo.lock pins 2.3.2); promoted to a
 # direct dep so the protocol handler can use it explicitly.
 percent-encoding = "2"
+
+[dev-dependencies]
+# Scratch .showtime bundles for the preview protocol tests. Already in
+# Cargo.lock transitively.
+tempfile = "3"
