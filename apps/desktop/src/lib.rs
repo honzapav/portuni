@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 mod auth;
@@ -26,68 +26,189 @@ use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
-// Explicit-exit gate (Cmd+Q, menu Quit, app.exit). The first ExitRequested
-// that still has a live main window is prevented and delegated to the
-// webview guards (dirty editor, unsynced files); approve_exit sets this
-// and re-triggers the exit, which then passes. Window-close-driven exits
-// arrive after the window was destroyed and pass without consulting this
-// — the onCloseRequested guard already ran in JS on that path.
-static EXIT_APPROVED: AtomicBool = AtomicBool::new(false);
-
-// If the webview never answers `app-exit-requested` (e.g. its React tree
-// crashed on render before the approve_exit listener in App.tsx's effect
-// ever mounted — see #176), the gate above would block Cmd+Q / Quit
-// forever. schedule_exit_fallback arms a grace-period timer alongside
-// every emit; if still unanswered when it fires, it force-approves and
-// exits itself instead of waiting on a webview that can no longer answer.
-const EXIT_FALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-// Generation counter making the fallback timer cancellable (#221 fix): the
-// webview DOES answer promptly on "Zpět do editoru" / "Zrušit" (both
-// resolve confirmExit() with false), but nothing told Rust — so the timer
-// armed by the emit fired 5s later regardless and force-exited anyway.
-// schedule_exit_fallback captures the generation current at arm time;
-// decline_exit bumps it, which invalidates that specific timer (and any
-// older one still in flight) without touching EXIT_APPROVED, so the next
-// Cmd+Q attempt is answered fresh.
-static EXIT_FALLBACK_GENERATION: AtomicU64 = AtomicU64::new(0);
-
-// Pure decision for a fallback timer waking up: should it force-exit now?
-// No -- either something else already approved the exit (approve_exit's own
-// immediate app.exit(0) already ran; firing again would be a harmless but
-// pointless double-exit), or decline_exit (or a newer schedule_exit_fallback
-// call) bumped the generation counter past the one this timer was armed
-// with. Pure so both branches are unit-testable without a real AppHandle.
-fn fallback_should_fire(armed_generation: u64, current_generation: u64, approved: bool) -> bool {
-    !approved && armed_generation == current_generation
+// Sequential-close quit (#229). Cmd+Q / menu Quit / an OS-driven exit
+// request no longer broadcasts a single "app-exit-requested" the (one)
+// window answers once; instead Rust closes every open window itself, one
+// at a time, through window.close() -- the SAME tauri://close-requested
+// event each window's own onCloseRequested JS guard already handles for
+// its native close button. There is exactly one close-guard
+// implementation now, not two.
+#[derive(Clone, Debug, PartialEq)]
+enum QuitAction {
+    Exit,
+    Restart,
 }
 
-fn schedule_exit_fallback(app: &AppHandle) {
+#[derive(Clone, Debug, PartialEq)]
+struct QuitState {
+    // Window labels still waiting their turn; front = next to close.
+    remaining: Vec<String>,
+    action: QuitAction,
+}
+
+// None = no quit in progress; Some = one is, mid-sequence. The single
+// source of truth for "are we quitting" -- persist_open_windows checks
+// is_quitting() to skip a rewrite while this is Some, so the next launch
+// restores the PRE-quit window set rather than whatever's progressively
+// left as each window closes.
+struct QuitQueue(Mutex<Option<QuitState>>);
+
+fn is_quitting(app: &AppHandle) -> bool {
+    app.state::<QuitQueue>().0.lock().is_ok_and(|g| g.is_some())
+}
+
+// Persist_open_windows' pure gate, split out so "a completed quit leaves
+// open_windows exactly as it was before the quit started" is
+// unit-testable without a real AppHandle.
+fn should_persist_open_windows(quitting: bool) -> bool {
+    !quitting
+}
+
+// What advance_quit should actually DO next, decided purely from the
+// current queue -- the sequencing logic itself, without any window I/O.
+// Pure so "closes windows one at a time, in order" and "finishes with the
+// requested action once the queue is empty" are unit-testable.
+#[derive(Debug, PartialEq)]
+enum QuitAdvance {
+    CloseWindow { label: String, next_state: Option<QuitState> },
+    Finished(QuitAction),
+    Idle,
+}
+
+fn quit_advance(current: Option<QuitState>) -> QuitAdvance {
+    match current {
+        None => QuitAdvance::Idle,
+        Some(QuitState { mut remaining, action }) => {
+            if remaining.is_empty() {
+                QuitAdvance::Finished(action)
+            } else {
+                let label = remaining.remove(0);
+                QuitAdvance::CloseWindow {
+                    label,
+                    next_state: Some(QuitState { remaining, action }),
+                }
+            }
+        }
+    }
+}
+
+// decline_exit's pure effect: a declined close always aborts the whole
+// sequence, unconditionally -- windows already closed stay closed, but no
+// further window is asked and the app does not exit. Unit-testable
+// without a real AppHandle; also correct (a harmless no-op) when nothing
+// was in progress, e.g. a plain single-window close outside any quit.
+fn quit_abort(_current: &Option<QuitState>) -> Option<QuitState> {
+    None
+}
+
+fn begin_quit(app: &AppHandle, action: QuitAction) {
+    let state = app.state::<QuitQueue>();
+    {
+        let Ok(mut guard) = state.0.lock() else { return };
+        if guard.is_some() {
+            // Already mid-sequence (e.g. a second Cmd+Q, or the OS and our
+            // own menu item both requesting exit) -- let it run its course.
+            return;
+        }
+        let remaining: Vec<String> = app.webview_windows().keys().cloned().collect();
+        *guard = Some(QuitState { remaining, action });
+    }
+    advance_quit(app);
+}
+
+// Close the next queued window (arming the fallback timer in case it
+// never answers), or run the queue's terminal action once it's empty.
+// Called once to start the sequence (from begin_quit) and again from
+// on_window_event's Destroyed handler each time a window finishes closing
+// while still quitting -- a no-op (QuitAdvance::Idle) otherwise.
+fn advance_quit(app: &AppHandle) {
+    let state = app.state::<QuitQueue>();
+    let Ok(mut guard) = state.0.lock() else { return };
+    let current = guard.take();
+    match quit_advance(current) {
+        QuitAdvance::Idle => {}
+        QuitAdvance::CloseWindow { label, next_state } => {
+            *guard = next_state;
+            drop(guard);
+            match app.get_webview_window(&label) {
+                Some(w) => {
+                    schedule_exit_fallback(app, label);
+                    let _ = w.close();
+                }
+                // Vanished between being queued and now (raced a manual
+                // close elsewhere) -- move straight to the next one.
+                None => advance_quit(app),
+            }
+        }
+        QuitAdvance::Finished(action) => {
+            drop(guard);
+            match action {
+                QuitAction::Exit => app.exit(0),
+                QuitAction::Restart => {
+                    kill_all_sidecars(app);
+                    app.restart();
+                }
+            }
+        }
+    }
+}
+
+// If a window we asked to close (schedule_exit_fallback below) never
+// answers -- a crashed/hung webview -- Portuni must not block Cmd+Q/quit
+// forever. This is a safety net now, not the normal path: a healthy
+// window answers via decline_exit or an actual close well within 5s.
+const EXIT_FALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+// Generation counter making the fallback timer cancellable (#221): a
+// window that answers promptly (decline_exit, or its own close completing
+// and advance_quit arming a new timer for the NEXT window) invalidates
+// this one before it fires. schedule_exit_fallback captures the
+// generation current at arm time; decline_exit bumps it directly, an
+// overlapping schedule_exit_fallback call bumps it as a side effect of
+// arming its own timer.
+static EXIT_FALLBACK_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+// Pure decision for a fallback timer waking up: is IT still the current
+// one, or has it been superseded (declined, or a later window's timer
+// armed in the meantime)? Pure so both branches are unit-testable without
+// a real AppHandle.
+fn fallback_should_fire(armed_generation: u64, current_generation: u64) -> bool {
+    armed_generation == current_generation
+}
+
+fn schedule_exit_fallback(app: &AppHandle, label: String) {
     let generation = EXIT_FALLBACK_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         std::thread::sleep(EXIT_FALLBACK_TIMEOUT);
         let current = EXIT_FALLBACK_GENERATION.load(Ordering::SeqCst);
-        let approved = EXIT_APPROVED.load(Ordering::SeqCst);
-        if fallback_should_fire(generation, current, approved) {
+        if fallback_should_fire(generation, current) {
             warn!(
-                "webview did not answer app-exit-requested within {EXIT_FALLBACK_TIMEOUT:?} — forcing exit"
+                "window {label} did not answer its close request within {EXIT_FALLBACK_TIMEOUT:?} — forcing it closed"
             );
-            EXIT_APPROVED.store(true, Ordering::SeqCst);
-            app_handle.exit(0);
+            // destroy(), not close(): skip the guard entirely rather than
+            // ask again -- it already had its chance. Its own Destroyed
+            // event fires the same as any other close and advance_quit
+            // continues the sequence from there.
+            if let Some(w) = app_handle.get_webview_window(&label) {
+                let _ = w.destroy();
+            }
         }
     });
 }
 
-// The webview's answer to `app-exit-requested` when the user declined
-// (cancelled a guard dialog, or is not actually quitting -- e.g. the
-// updater's "Restartovat" reusing the same guards). Cancels any pending
-// fallback timer so it doesn't force-exit 5s later; EXIT_APPROVED stays
-// false so the next Cmd+Q attempt asks the webview again. Harmless to call
-// with no timer pending (a bare generation bump).
+// The webview's answer to a close guard (dirty editor, unsynced files, or
+// the running-terminals confirm) when the user declined. Cancels the
+// pending fallback timer, and aborts any quit sequence in progress --
+// windows already closed stay closed, but no further one is asked and the
+// app does not exit. Harmless to call outside any quit (a plain
+// single-window close): both effects are no-ops when nothing was pending.
 #[tauri::command]
-fn decline_exit() {
+fn decline_exit(app: AppHandle) {
     EXIT_FALLBACK_GENERATION.fetch_add(1, Ordering::SeqCst);
+    if let Ok(mut guard) = app.state::<QuitQueue>().0.lock() {
+        *guard = quit_abort(&guard);
+    }
 }
 
 // Per-workspace running sidecar children, keyed by workspace id. Concurrent
@@ -470,11 +591,17 @@ fn reassign_active_workspace(
 // Rewrite open_windows (every currently-open ws:<id> window) and, when the
 // focus history has an entry, active_workspace -- together, under the
 // config lock, whenever a window opens or closes (#225; NOT on every focus
-// change, only the open/close events that call this). Best-effort: a
-// failure to persist is logged, never propagated -- a window has already
-// opened/closed by the time this runs, so there's nothing left to roll
-// back.
+// change, only the open/close events that call this). Skipped entirely
+// while a sequential quit is in progress (#229, should_persist_open_windows)
+// -- the next launch must restore the PRE-quit window set, not whatever's
+// progressively left as each window closes one by one. Best-effort
+// otherwise: a failure to persist is logged, never propagated -- a window
+// has already opened/closed by the time this runs, so there's nothing left
+// to roll back.
 fn persist_open_windows(app: &AppHandle) {
+    if !should_persist_open_windows(is_quitting(app)) {
+        return;
+    }
     let open: Vec<String> = app
         .webview_windows()
         .keys()
@@ -921,15 +1048,6 @@ fn random_token() -> String {
         .take(48)
         .map(char::from)
         .collect()
-}
-
-// The webview's answer to `app-exit-requested`: the user either had nothing
-// to guard or explicitly chose to leave. Marks the exit approved and
-// re-triggers it; the run-handler gate then lets it pass.
-#[tauri::command]
-fn approve_exit(app: AppHandle) {
-    EXIT_APPROVED.store(true, Ordering::SeqCst);
-    app.exit(0);
 }
 
 #[tauri::command]
@@ -2650,6 +2768,7 @@ pub fn run() {
         .manage(ConfigLock(Mutex::new(())))
         .manage(FocusHistory(Mutex::new(Vec::new())))
         .manage(PendingBackendErrors(Mutex::new(HashMap::new())))
+        .manage(QuitQueue(Mutex::new(None)))
         .manage(pty::PtyState::default())
         .manage(updater::PendingUpdate::default())
         .register_uri_scheme_protocol("portuni-html", |ctx, request| {
@@ -2735,7 +2854,6 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            approve_exit,
             decline_exit,
             get_backend_port,
             get_data_mode,
@@ -2836,86 +2954,73 @@ pub fn run() {
         })
         .on_menu_event(|app, event| {
             if event.id().as_ref() == "portuni-quit" {
-                // Same contract as the run-handler gate: ask the webview
-                // guards when there is a window to ask; otherwise just exit.
-                // "Any window" rather than a fixed "main" label (#222): a
-                // window is now "bootstrap" or "ws:<id>", never "main".
-                if !EXIT_APPROVED.load(Ordering::SeqCst)
-                    && !app.webview_windows().is_empty()
-                    && app.emit("app-exit-requested", ()).is_ok()
-                {
-                    info!("quit requested (menu/Cmd+Q) — delegated to webview guards");
-                    schedule_exit_fallback(app);
-                } else {
-                    app.exit(0);
-                }
+                info!("quit requested (menu/Cmd+Q) — closing windows in sequence");
+                begin_quit(app, QuitAction::Exit);
             }
         })
         .on_window_event(|window, event| {
             // Only Destroyed, not CloseRequested: the webview registers an
-            // onCloseRequested listener (dirty-editor guard), so a close
-            // request may be cancelled in JS. Killing the sidecars on the
-            // request would leave a live window with dead backends.
-            // Cmd+Q / app exit is covered by ExitRequested/Exit below.
-            // TODO(#229): this kills EVERY workspace's sidecar on ANY
-            // window closing, which is wrong once more than one can be
-            // open -- sidecar teardown moves to app-exit-only there.
+            // onCloseRequested listener (dirty-editor/unsynced-files/
+            // running-terminals guard), so a close request may be
+            // cancelled in JS. Sidecars are no longer killed here (#229) --
+            // a sidecar is bound to `enabled`, not to a window (external
+            // MCP clients address it on its fixed port regardless of any
+            // window), and killing it on every window close was already
+            // wrong once more than one window could be open. Sidecars die
+            // only in the app-exit ExitRequested/Exit handler below.
             if matches!(event, tauri::WindowEvent::Destroyed) {
-                kill_all_sidecars(window.app_handle());
-            }
-            // #225: track ws:<id> windows for open_windows/active_workspace
-            // persistence. "bootstrap" is never a workspace and ws_of
-            // rejects it, so this is a no-op for it.
-            match event {
-                tauri::WindowEvent::Focused(true) => {
-                    if let Ok(ws_id) = ws_of(window) {
-                        if let Some(state) = window.app_handle().try_state::<FocusHistory>() {
-                            if let Ok(mut history) = state.0.lock() {
-                                touch_focus(&mut history, &ws_id);
-                            }
+                // #225/#227: track window close for open_windows/
+                // active_workspace persistence and focus history.
+                // "bootstrap" is never a workspace and ws_of rejects it, so
+                // this is a no-op for it.
+                if let Ok(ws_id) = ws_of(window) {
+                    let app = window.app_handle();
+                    if let Some(state) = app.try_state::<FocusHistory>() {
+                        if let Ok(mut history) = state.0.lock() {
+                            untrack_focus(&mut history, &ws_id);
                         }
-                        // Not persisted here -- only in-memory. persist_open_windows
-                        // (called on the next open/close) is what writes it out,
-                        // matching the spec's "not on every focus change".
                     }
+                    persist_open_windows(app);
                 }
-                tauri::WindowEvent::Destroyed => {
-                    if let Ok(ws_id) = ws_of(window) {
-                        let app = window.app_handle();
-                        if let Some(state) = app.try_state::<FocusHistory>() {
-                            if let Ok(mut history) = state.0.lock() {
-                                untrack_focus(&mut history, &ws_id);
-                            }
+                // #229: this window's turn in a sequential quit (if one is
+                // running) is done -- close the next queued window, or
+                // finish the sequence. A harmless no-op otherwise.
+                advance_quit(window.app_handle());
+            } else if let tauri::WindowEvent::Focused(true) = event {
+                if let Ok(ws_id) = ws_of(window) {
+                    if let Some(state) = window.app_handle().try_state::<FocusHistory>() {
+                        if let Ok(mut history) = state.0.lock() {
+                            touch_focus(&mut history, &ws_id);
                         }
-                        persist_open_windows(app);
                     }
+                    // Not persisted here -- only in-memory. persist_open_windows
+                    // (called on the next open/close) is what writes it out,
+                    // matching the spec's "not on every focus change".
                 }
-                _ => {}
             }
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            // Explicit exit: prevent it once and hand the decision to the
-            // webview guards (dirty editor, unsynced files) via
-            // `app-exit-requested`; the webview answers with approve_exit,
-            // whose re-exit passes the EXIT_APPROVED gate. macOS Cmd+Q /
-            // menu Quit arrives via the native `terminate:` selector as
-            // ExitRequested with code None — the same code the
-            // all-windows-closed exit carries — so the branches are told
-            // apart by whether a window still exists: Cmd+Q fires with a
-            // window alive, the post-close exit fires after it was
-            // destroyed (its JS onCloseRequested guard already ran). "Any
-            // window" rather than a fixed "main" label (#222): a window is
-            // now "bootstrap" or "ws:<id>", never "main". If there is no
-            // window to ask — or the emit fails — never block the exit.
+            // An OS-driven exit request (Dock "Quit", session logout, or
+            // any trigger other than our own "portuni-quit" menu item,
+            // which never reaches this -- it calls begin_quit directly)
+            // while windows remain: defer to the same sequential-close
+            // quit every other trigger uses, rather than letting Tauri
+            // tear everything down unchecked. If one is already running
+            // (is_quitting), just keep deferring to it -- begin_quit's own
+            // is-already-quitting guard makes a second call here a no-op.
+            // Once every window is gone (has_window false -- either our
+            // own sequence finished and called app.exit(0) itself, never
+            // reaching this branch, or the user closed windows one by one
+            // by hand without ever quitting), fall through and let the
+            // exit proceed.
             if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
-                let approved = EXIT_APPROVED.load(Ordering::SeqCst);
                 let has_window = !app.webview_windows().is_empty();
-                info!("exit requested (code={code:?}, approved={approved}, window={has_window})");
-                if !approved && has_window && app.emit("app-exit-requested", ()).is_ok() {
+                info!("exit requested (code={code:?}, quitting={}, window={has_window})", is_quitting(app));
+                if has_window {
                     api.prevent_exit();
-                    schedule_exit_fallback(app);
+                    begin_quit(app, QuitAction::Exit);
                     return;
                 }
             }
@@ -3244,37 +3349,175 @@ mod backend_status_replay_tests {
 }
 
 #[cfg(test)]
+mod quit_sequence_tests {
+    use super::{
+        quit_abort, quit_advance, should_persist_open_windows, with_config_mut_at, QuitAction,
+        QuitAdvance, QuitState,
+    };
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    fn state(remaining: &[&str], action: QuitAction) -> Option<QuitState> {
+        Some(QuitState {
+            remaining: remaining.iter().map(|s| s.to_string()).collect(),
+            action,
+        })
+    }
+
+    #[test]
+    fn idle_when_nothing_is_queued() {
+        assert_eq!(quit_advance(None), QuitAdvance::Idle);
+    }
+
+    #[test]
+    fn closes_windows_one_at_a_time_in_order() {
+        match quit_advance(state(&["ws:a", "ws:b"], QuitAction::Exit)) {
+            QuitAdvance::CloseWindow { label, next_state } => {
+                assert_eq!(label, "ws:a");
+                assert_eq!(next_state, state(&["ws:b"], QuitAction::Exit));
+            }
+            other => panic!("expected CloseWindow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finishes_with_exit_once_the_queue_is_empty() {
+        assert_eq!(
+            quit_advance(state(&[], QuitAction::Exit)),
+            QuitAdvance::Finished(QuitAction::Exit)
+        );
+    }
+
+    #[test]
+    fn finishes_with_restart_when_that_was_the_requested_action() {
+        assert_eq!(
+            quit_advance(state(&[], QuitAction::Restart)),
+            QuitAdvance::Finished(QuitAction::Restart)
+        );
+    }
+
+    #[test]
+    fn a_declined_window_aborts_the_whole_sequence_and_clears_quitting() {
+        // "quit sequence with one declining window aborts and clears
+        // quitting": mid-sequence (one window already closed, one still
+        // queued), quit_abort clears the state entirely -- the still-queued
+        // window is never asked, and the next quit_advance sees Idle, not a
+        // resumed sequence. is_quitting (the AppHandle-resolving wrapper
+        // around the same Option<QuitState>) would read false right after.
+        let mid_sequence = state(&["ws:b"], QuitAction::Exit);
+        let aborted = quit_abort(&mid_sequence);
+        assert_eq!(aborted, None);
+        assert_eq!(quit_advance(aborted), QuitAdvance::Idle);
+    }
+
+    #[test]
+    fn declining_with_nothing_in_progress_is_a_harmless_no_op() {
+        assert_eq!(quit_abort(&None), None);
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "portuni-quit-persist-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn open_windows_survive_a_completed_quit() {
+        // "open_windows preserved across a completed quit": simulate three
+        // windows closing in sequence -- each would normally call
+        // persist_open_windows and shrink the on-disk list toward empty,
+        // but should_persist_open_windows(quitting) is false throughout
+        // (this IS a quit), so every one of those writes is skipped. What's
+        // on disk at the end is exactly what was there before the quit
+        // started.
+        let dir = temp_dir("completed");
+        let mut file = crate::workspace::migrate_v1_value(&serde_json::json!({}), "a");
+        file.workspaces
+            .insert("b".to_string(), crate::workspace::WorkspaceConfig::default());
+        file.workspaces
+            .insert("c".to_string(), crate::workspace::WorkspaceConfig::default());
+        file.open_windows = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        crate::workspace::save(&dir, &file).unwrap();
+
+        let lock = Mutex::new(());
+        for shrinking_list in [vec!["b", "c"], vec!["c"], Vec::<&str>::new()] {
+            if should_persist_open_windows(/* quitting = */ true) {
+                with_config_mut_at(&lock, &dir, |f| {
+                    f.open_windows = shrinking_list.iter().map(|s| s.to_string()).collect();
+                    Ok(())
+                })
+                .unwrap();
+            }
+        }
+
+        let reloaded = match crate::workspace::load(&dir).unwrap() {
+            crate::workspace::LoadedConfig::V2(f) => f,
+            _ => panic!("expected V2"),
+        };
+        assert_eq!(
+            reloaded.open_windows,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn open_windows_do_update_for_a_plain_close_outside_any_quit() {
+        // Same shape, but should_persist_open_windows(false) -- an ordinary
+        // window close, not a quit -- so the write DOES land.
+        let dir = temp_dir("plain-close");
+        let mut file = crate::workspace::migrate_v1_value(&serde_json::json!({}), "a");
+        file.workspaces
+            .insert("b".to_string(), crate::workspace::WorkspaceConfig::default());
+        file.open_windows = vec!["a".to_string(), "b".to_string()];
+        crate::workspace::save(&dir, &file).unwrap();
+
+        let lock = Mutex::new(());
+        if should_persist_open_windows(/* quitting = */ false) {
+            with_config_mut_at(&lock, &dir, |f| {
+                f.open_windows = vec!["a".to_string()];
+                Ok(())
+            })
+            .unwrap();
+        }
+
+        let reloaded = match crate::workspace::load(&dir).unwrap() {
+            crate::workspace::LoadedConfig::V2(f) => f,
+            _ => panic!("expected V2"),
+        };
+        assert_eq!(reloaded.open_windows, vec!["a".to_string()]);
+    }
+}
+
+#[cfg(test)]
 mod fallback_should_fire_tests {
     use super::fallback_should_fire;
 
     #[test]
-    fn armed_and_unanswered_still_exits() {
-        // Same generation the timer was armed with, never approved: the
-        // webview genuinely never answered -- must still force-exit.
-        assert!(fallback_should_fire(1, 1, false));
+    fn armed_and_unanswered_still_fires() {
+        // Same generation the timer was armed with: the window genuinely
+        // never answered its close request -- must still force it closed.
+        assert!(fallback_should_fire(1, 1));
     }
 
     #[test]
-    fn armed_then_declined_does_not_exit() {
+    fn armed_then_declined_does_not_fire() {
         // decline_exit bumped the generation past what this timer was
         // armed with while it was sleeping.
-        assert!(!fallback_should_fire(1, 2, false));
+        assert!(!fallback_should_fire(1, 2));
     }
 
     #[test]
-    fn armed_then_approved_does_not_double_exit() {
-        // approve_exit already called app.exit(0) itself; the timer waking
-        // up afterward on the same generation must not fire again.
-        assert!(!fallback_should_fire(1, 1, true));
-    }
-
-    #[test]
-    fn a_superseded_older_timer_does_not_exit() {
-        // A second schedule_exit_fallback call (e.g. a fresh Cmd+Q while an
-        // older, now-orphaned timer is still sleeping) bumps the generation
-        // too -- the older timer must defer to the newer one, not fire on
-        // its own stale view.
-        assert!(!fallback_should_fire(1, 3, false));
+    fn a_superseded_older_timer_does_not_fire() {
+        // A second schedule_exit_fallback call (advance_quit arming the
+        // NEXT window's timer once this one's window closed normally, or a
+        // fresh Cmd+Q while an older, now-orphaned timer is still
+        // sleeping) bumps the generation too -- the older timer must defer
+        // to the newer one, not fire on its own stale view.
+        assert!(!fallback_should_fire(1, 3));
     }
 }
 

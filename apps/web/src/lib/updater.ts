@@ -67,7 +67,7 @@ function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-export function useAppUpdate(confirmExit: () => Promise<boolean>): AppUpdate {
+export function useAppUpdate(): AppUpdate {
   const [state, setState] = useState<AppUpdateState>({ kind: "idle" });
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -179,13 +179,14 @@ export function useAppUpdate(confirmExit: () => Promise<boolean>): AppUpdate {
       .catch((e) => setState({ kind: "error", message: errorMessage(e) }));
   }, []);
 
-  // Same guards as Cmd+Q (dirty editor, unsynced files); on cancel the
-  // update stays installed and the state remains "ready" for a later retry.
+  // restart_app goes through the same sequential-close quit Cmd+Q uses
+  // (#229): every open window gets its own dirty-editor/unsynced-files/
+  // running-terminals guard chance before anything closes. A decline in
+  // any of them aborts the whole restart -- the update stays installed and
+  // this state remains "ready" for a later retry.
   const restart = useCallback(async () => {
-    const proceed = await confirmExit();
-    if (!proceed) return;
     await restartApp();
-  }, [confirmExit]);
+  }, []);
 
   return { state, currentVersion, updateInfo, hasChecked, checkNow, install, restart };
 }

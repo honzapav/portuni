@@ -14,7 +14,6 @@ import {
   fetchNodeMirror,
   createNodeMirror,
   fetchSandboxProfile,
-  fetchSyncPending,
   fetchMe,
 } from "./api";
 import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
@@ -62,6 +61,30 @@ function isMarkdownPath(relPath: string): boolean {
 export function isHtmlPath(relPath: string): boolean {
   const lower = relPath.toLowerCase();
   return lower.endsWith(".html") || lower.endsWith(".htm");
+}
+
+// Cancels a pending window close (#229): tells the Rust host this window's
+// close-guard chain (dirty editor / unsynced files / running terminals)
+// said no. Cancels the 5s fallback timer Rust armed alongside window.close()
+// (without this, cancelling force-closed anyway once the timer fired,
+// #221) and, if this close was part of a Cmd+Q/restart sequential quit,
+// aborts the whole sequence -- no further window is asked and the app does
+// not exit. A no-op outside Tauri, or when nothing was actually pending
+// (a plain single-window close outside any quit).
+async function declineExit(): Promise<void> {
+  if (!isTauri()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("decline_exit").catch(() => undefined);
+}
+
+// Proceeds with a window close the guard chain approved (#229): destroys
+// this window directly, bypassing any further guard (there is nothing left
+// to check). Whether this was a plain close or one step of a sequential
+// quit, Rust's on_window_event(Destroyed) handler takes it from there.
+async function destroyCurrentWindow(): Promise<void> {
+  if (!isTauri()) return;
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().destroy().catch(() => undefined);
 }
 
 export default function App() {
@@ -528,10 +551,6 @@ export default function App() {
     | { kind: "open"; nodeId: string; relPath: string }
     | { kind: "quit" }
   >(null);
-  // Set only while `confirmExit()` has a promise pending on the "quit" editor
-  // guard or the sync-quit guard, so the dialogs' resolution can answer that
-  // promise instead of (or as well as) doing their legacy direct action.
-  const confirmExitResolverRef = useRef<((ok: boolean) => void) | null>(null);
 
   // One shared editor instance, owned here and handed to BOTH the pane and
   // the fullscreen shell. Hooks must run unconditionally, so we call it with
@@ -556,36 +575,17 @@ export default function App() {
     syncPendingRef.current = syncPending.total;
   }, [syncPending.total]);
   const [syncQuitGuard, setSyncQuitGuard] = useState<{ count: number } | null>(null);
+  const sessionCountRef = useRef(sessions.length);
+  useEffect(() => {
+    sessionCountRef.current = sessions.length;
+  }, [sessions.length]);
+  // Third onCloseRequested guard (#229), after dirty editor and unsynced
+  // files: a plain confirm when this window has running terminals. The
+  // session-aware Ukončit/Pozastavit/Zrušit dialog is phase 3 -- for now
+  // any live session just means "closing kills it".
+  const [terminalsCloseGuard, setTerminalsCloseGuard] = useState<{ count: number } | null>(null);
 
-  // Shared by the Cmd+Q-equivalent exit path (app-exit-requested) and the
-  // updater's "Restartovat": same guards (dirty editor, unsynced files), only
-  // the action taken on approval differs (approve_exit vs. restart_app).
-  // Resolves once the user answers whichever dialog it raised (or
-  // immediately if neither guard applies).
-  const confirmExit = useCallback((): Promise<boolean> => {
-    return new Promise<boolean>((resolve) => {
-      void (async () => {
-        if (editorDirtyRef.current) {
-          confirmExitResolverRef.current = resolve;
-          setEditorGuard({ kind: "quit" });
-          return;
-        }
-        const fresh = await Promise.race([
-          fetchSyncPending().catch(() => null),
-          new Promise<null>((r) => setTimeout(() => r(null), 2000)),
-        ]);
-        const count = fresh ? fresh.total : syncPendingRef.current;
-        if (count > 0) {
-          confirmExitResolverRef.current = resolve;
-          setSyncQuitGuard({ count });
-        } else {
-          resolve(true);
-        }
-      })();
-    });
-  }, []);
-
-  const appUpdate = useAppUpdate(confirmExit);
+  const appUpdate = useAppUpdate();
 
   const reallyOpenFile = useCallback((nodeId: string, relPath: string) => {
     // Always open in the right-side pane first (replacing the detail pane in
@@ -626,9 +626,9 @@ export default function App() {
   }, [reallyCloseEditor]);
 
   // Resolve the guarded action: either after saving or after an explicit
-  // discard. Quit either answers a pending confirmExit() promise (the
-  // app-exit-requested / restart paths decide the actual action) or, for a
-  // plain window close request, destroys the Tauri window directly.
+  // discard. "quit" (raised by onCloseRequested, #229) destroys the window
+  // directly -- Rust's on_window_event(Destroyed) handler takes it from
+  // there, whether this was a plain close or one step of a sequential quit.
   const resolveEditorGuard = useCallback(
     async (how: "save" | "discard") => {
       const guard = editorGuard;
@@ -643,32 +643,26 @@ export default function App() {
         reallyCloseEditor();
       } else {
         setEditorGuard(null);
-        const resolveExit = confirmExitResolverRef.current;
-        if (resolveExit) {
-          confirmExitResolverRef.current = null;
-          resolveExit(true);
-        } else if (isTauri()) {
-          const { getCurrentWindow } = await import("@tauri-apps/api/window");
-          await getCurrentWindow().destroy().catch(() => undefined);
-        }
+        await destroyCurrentWindow();
       }
     },
     [editorGuard, fileEditor, reallyOpenFile, reallyCloseEditor],
   );
 
   // Browser: warn before unload while dirty. Tauri: intercept the window
-  // close request and route it through the same inline confirm. Cmd+Q /
-  // menu Quit never becomes a close request — the Rust host prevents that
-  // exit and emits `app-exit-requested` instead, so both paths end in the
-  // same guards. The exit path re-fetches the pending aggregate (bounded)
-  // because the 30s-poll ref can be stale right after focusing the app.
+  // close request and route it through the same inline confirms -- the
+  // ONLY close-guard chain now (#229): Cmd+Q, menu Quit, the updater's
+  // restart, and a plain click on this window's own close button all reach
+  // it the same way, since Rust closes windows via window.close(), which
+  // raises this same event, rather than a separate app-exit-requested
+  // broadcast + confirm dance. Order: dirty editor -> unsynced files ->
+  // running terminals.
   useEffect(() => {
     const beforeUnload = (e: BeforeUnloadEvent) => {
       if (editorDirtyRef.current) e.preventDefault();
     };
     window.addEventListener("beforeunload", beforeUnload);
     let unlisten: (() => void) | null = null;
-    let unlistenExit: (() => void) | null = null;
     if (isTauri()) {
       void (async () => {
         try {
@@ -680,22 +674,10 @@ export default function App() {
             } else if (syncPendingRef.current > 0) {
               event.preventDefault();
               setSyncQuitGuard({ count: syncPendingRef.current });
+            } else if (sessionCountRef.current > 0) {
+              event.preventDefault();
+              setTerminalsCloseGuard({ count: sessionCountRef.current });
             }
-          });
-          const { listen } = await import("@tauri-apps/api/event");
-          const { invoke } = await import("@tauri-apps/api/core");
-          unlistenExit = await listen("app-exit-requested", () => {
-            void (async () => {
-              const proceed = await confirmExit();
-              if (proceed) {
-                await invoke("approve_exit").catch(() => undefined);
-              } else {
-                // Cancels the 5s fallback timer the Rust host armed
-                // alongside this event -- without this, "Zpět do editoru" /
-                // "Zrušit" force-exited anyway once the timer fired (#221).
-                await invoke("decline_exit").catch(() => undefined);
-              }
-            })();
           });
         } catch {
           /* not running in Tauri */
@@ -706,12 +688,11 @@ export default function App() {
       window.removeEventListener("beforeunload", beforeUnload);
       try {
         unlisten?.();
-        unlistenExit?.();
       } catch {
         /* window already gone */
       }
     };
-  }, [confirmExit]);
+  }, []);
 
   // Refetch on focus AND tab-visible. Covers BOTH the graph selection and
   // the workspace selection so files registered elsewhere (MCP / another
@@ -1244,12 +1225,9 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
+                  const wasQuit = editorGuard?.kind === "quit";
                   setEditorGuard(null);
-                  const resolveExit = confirmExitResolverRef.current;
-                  if (resolveExit) {
-                    confirmExitResolverRef.current = null;
-                    resolveExit(false);
-                  }
+                  if (wasQuit) void declineExit();
                 }}
                 className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
               >
@@ -1302,11 +1280,7 @@ export default function App() {
                 type="button"
                 onClick={() => {
                   setSyncQuitGuard(null);
-                  const resolveExit = confirmExitResolverRef.current;
-                  if (resolveExit) {
-                    confirmExitResolverRef.current = null;
-                    resolveExit(false);
-                  }
+                  void declineExit();
                 }}
                 className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
               >
@@ -1317,11 +1291,7 @@ export default function App() {
                 onClick={() => {
                   setSyncQuitGuard(null);
                   setSyncOverviewOpen(true);
-                  const resolveExit = confirmExitResolverRef.current;
-                  if (resolveExit) {
-                    confirmExitResolverRef.current = null;
-                    resolveExit(false);
-                  }
+                  void declineExit();
                 }}
                 className="rounded-md border border-[var(--color-accent-dim)] px-3 py-1.5 text-[12.5px] text-[var(--color-accent)] hover:bg-[var(--color-surface)]"
               >
@@ -1331,18 +1301,46 @@ export default function App() {
                 type="button"
                 onClick={async () => {
                   setSyncQuitGuard(null);
-                  const resolveExit = confirmExitResolverRef.current;
-                  if (resolveExit) {
-                    confirmExitResolverRef.current = null;
-                    resolveExit(true);
-                    return;
-                  }
-                  const { getCurrentWindow } = await import("@tauri-apps/api/window");
-                  await getCurrentWindow().destroy().catch(() => undefined);
+                  await destroyCurrentWindow();
                 }}
                 className="rounded-md border border-[var(--color-danger-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-danger)] hover:bg-[var(--color-surface)]"
               >
                 Zavřít bez synchronizace
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {terminalsCloseGuard && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
+          <div className="w-[420px] rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-5 shadow-xl">
+            <div className="mb-2 text-[14.5px] font-semibold text-[var(--color-text)]">
+              Zavřít okno?
+            </div>
+            <p className="mb-4 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
+              Běží {terminalsCloseGuard.count}{" "}
+              {terminalsCloseGuard.count === 1 ? "terminál" : terminalsCloseGuard.count < 5 ? "terminály" : "terminálů"}, budou ukončeny.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setTerminalsCloseGuard(null);
+                  void declineExit();
+                }}
+                className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
+              >
+                Zrušit
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setTerminalsCloseGuard(null);
+                  await destroyCurrentWindow();
+                }}
+                className="rounded-md border border-[var(--color-danger-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-danger)] hover:bg-[var(--color-surface)]"
+              >
+                Zavřít
               </button>
             </div>
           </div>

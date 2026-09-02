@@ -359,11 +359,7 @@ symlink to this file.
   focuses its new `ws:<id>` window right after `spawn_sidecar_ws`.
   `tauri-plugin-window-state` persists each window's own geometry by label,
   purely on the Rust side (no webview capability needed — its commands are
-  never invoked from JS). **Not yet done** (later phase-2 issues): the
-  `on_window_event(Destroyed) → kill_all_sidecars` handler still kills
-  every workspace's sidecar when ANY window closes, not just the closing
-  one's (#229) — multi-window is therefore not yet safe to actually rely
-  on end-to-end.
+  never invoked from JS).
 
 - **The workspace switcher opens/focuses a window, it doesn't swap content
   (#226).** `open_workspace_window(id)` (Rust) replaces
@@ -386,6 +382,54 @@ symlink to this file.
   for it now instead of the old document-local
   `portuni:workspaces-changed` `CustomEvent`, which only the dispatching
   window itself could ever hear.
+
+- **Quitting closes windows one at a time through their own close guard —
+  there is exactly one close-guard implementation, not two (#229).**
+  Cmd+Q, menu Quit, an OS-driven exit request (Dock "Quit", session
+  logout), and the updater's "Restartovat" all funnel into
+  `begin_quit(app, QuitAction::{Exit,Restart})`: it snapshots every open
+  window's label into `QuitQueue` (managed state, `Option<QuitState>` —
+  `None` means no quit is in progress, the single source of truth
+  `is_quitting()` reads), then closes them **one at a time** via
+  `window.close()` — the same `tauri://close-requested` event a window's
+  own native close button already raises, which the webview's
+  `onCloseRequested` listener (`App.tsx`) already guards (dirty editor →
+  unsynced files → **running terminals**, new: a plain "Zavřít okno? Běží N
+  terminálů, budou ukončeny." confirm — the session-aware
+  Ukončit/Pozastavit/Zrušit dialog is phase 3). There is no more separate
+  `app-exit-requested` broadcast + `confirmExit()`/`approve_exit` dance —
+  `approve_exit` and `EXIT_APPROVED` are gone entirely. `quit_advance`
+  (pure: `Option<QuitState> -> QuitAdvance`) decides what happens next —
+  close the following queued window, or run the terminal action
+  (`app.exit(0)` / kill every sidecar then `app.restart()`) once the queue
+  is empty; `on_window_event`'s `Destroyed` handler calls it after every
+  window close, quit or not (a no-op — `QuitAdvance::Idle` — outside one).
+  Declining (any guard's cancel button, all routed through the shared
+  `declineExit()`/`decline_exit` command) calls `quit_abort`: unconditionally
+  clears `QuitQueue` to `None`, aborting the whole sequence — windows
+  already closed stay closed, but no further one is asked and the app does
+  not exit; harmless when nothing was in progress (a plain single-window
+  close). The 5s fallback timer (`schedule_exit_fallback`, generation-
+  counter design from #221) is now scoped to **whichever window was just
+  asked** and force-`destroy()`s only that one on timeout — a safety net
+  for a hung/crashed webview, not the normal path. **`open_windows` is
+  never rewritten mid-quit**: `persist_open_windows` checks
+  `should_persist_open_windows(is_quitting())` first, so the next launch
+  restores the pre-quit window set instead of whatever's progressively
+  left as each window closes. `on_window_event(Destroyed) →
+  kill_all_sidecars` is gone (a sidecar is bound to `enabled`, not to a
+  window — an external MCP client addresses it on its fixed port
+  regardless of any window, and killing it on every window close was
+  already wrong once more than one window could be open); sidecars die
+  only in the app-exit `RunEvent::ExitRequested`/`Exit` handler, same as
+  before. Rust tests (`quit_sequence_tests`) cover the pure reducer
+  end-to-end (closes windows in order, finishes with the right terminal
+  action, a decline mid-sequence aborts and clears) and, via
+  `with_config_mut_at` against a real temp file, that `open_windows`
+  genuinely survives a completed quit unchanged. Window-level behavior
+  (does Cmd+Q actually close two real windows in order, does a declined
+  dialog actually abort) is macOS-only verification — the container has no
+  display.
 
 - **Backend/PTY events are per-window, not broadcast (#227).**
   `backend-ready`, `backend-error` (`spawn_sidecar_ws`'s reader loop and
