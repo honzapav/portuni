@@ -35,6 +35,7 @@ async function createTestDb() {
       pos_y REAL,
       owner_id TEXT,
       lifecycle_state TEXT,
+      health TEXT NOT NULL DEFAULT 'on_track' CHECK(health IN ('on_track','at_risk','off_track')),
       goal TEXT,
       sync_key TEXT NOT NULL,
       created_by TEXT NOT NULL REFERENCES users(id),

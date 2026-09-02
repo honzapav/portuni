@@ -11,6 +11,7 @@ import {
   buildClaudeSettings,
   buildCodexMcpServer,
   buildCodexSandboxConfig,
+  buildOrientationHint,
   buildSoftHint,
   buildVibeMcpToml,
   VIBE_PROJECT_MARKER,
@@ -22,6 +23,7 @@ import {
   resolvePortuniMcpUrl,
   resolvePortuniRoot,
   resolveTokenEnvVar,
+  type OrientationSummary,
 } from "../apps/server/domain/write-scope.js";
 import { materializeScopeConfig } from "../apps/server/domain/scope-materialize.js";
 
@@ -365,6 +367,22 @@ describe("buildClaudeMcpJson", () => {
     } finally {
       delete process.env.PORTUNI_WORKSPACE_ID;
     }
+  });
+
+  it("carries the spawn profile id via env expansion, never a literal (phase 3)", () => {
+    const j = buildClaudeMcpJson({ url: "http://127.0.0.1:47011/mcp", homeNodeId: "01ABC" });
+    const portuni = (j as { mcpServers: { portuni: { headers?: Record<string, string> } } })
+      .mcpServers.portuni;
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded by Claude Code, not JS
+    assert.equal(portuni.headers?.["X-Portuni-Profile"], "${PORTUNI_PROFILE_ID:-}");
+  });
+
+  it("carries the spawn session id via env expansion, never a literal (#208 follow-up)", () => {
+    const j = buildClaudeMcpJson({ url: "http://127.0.0.1:47011/mcp", homeNodeId: "01ABC" });
+    const portuni = (j as { mcpServers: { portuni: { headers?: Record<string, string> } } })
+      .mcpServers.portuni;
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded by Claude Code, not JS
+    assert.equal(portuni.headers?.["X-Portuni-Spawn-Id"], "${PORTUNI_SPAWN_SESSION_ID:-}");
   });
 });
 
@@ -788,5 +806,118 @@ describe("materializeScopeConfig", () => {
     const scope = await readFile(join(cur, "PORTUNI_SCOPE.md"), "utf8");
     assert.match(scope, /Acme CRM/);
     assert.match(scope, /https:\/\/crm\.example\.com/);
+  });
+
+  it("fattens PORTUNI_SCOPE.md with orientation data but leaves .cursor/rules on the soft hint", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "portuni-scope-orient-"));
+    const cur = join(dir, "a");
+    await mkdir(cur, { recursive: true });
+
+    const orientation: OrientationSummary = {
+      node: {
+        name: "Tvůj Projekt",
+        type: "project",
+        description: "Popis projektu.",
+        status: "active",
+        goal: "Doručit MVP.",
+        lifecycle_state: "in_progress",
+      },
+      responsibilities: [
+        { title: "Nasazení", description: null, assignees: ["Honza"] },
+      ],
+      events: [
+        { type: "note", content: "Spuštěna implementace.", created_at: "2026-04-21T00:00:00Z" },
+      ],
+      handoff: {
+        sessionName: "Tvůj Projekt · 20.4.",
+        handoffPath: "wip/sessions/SESSION1-handoff.md",
+        suspendedAt: "2026-04-21T00:00:00Z",
+      },
+    };
+
+    await materializeScopeConfig({
+      currentMirror: cur,
+      otherMirrors: [],
+      portuniRoot: dir,
+      orientation,
+    });
+
+    const scope = await readFile(join(cur, "PORTUNI_SCOPE.md"), "utf8");
+    assert.match(scope, /Tvůj Projekt/);
+    assert.match(scope, /Nasazení/);
+    assert.match(scope, /Spuštěna implementace/);
+    assert.match(scope, /wip\/sessions\/SESSION1-handoff\.md/);
+    // The base soft hint is still there too, not replaced.
+    assert.match(scope, /Portuni write scope/);
+
+    const rules = await readFile(join(cur, ".cursor", "rules"), "utf8");
+    assert.doesNotMatch(rules, /Nasazení/);
+    assert.doesNotMatch(rules, /Node context/);
+  });
+
+  it("omits the orientation section entirely when none is provided", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "portuni-scope-noorient-"));
+    const cur = join(dir, "a");
+    await mkdir(cur, { recursive: true });
+
+    await materializeScopeConfig({
+      currentMirror: cur,
+      otherMirrors: [],
+      portuniRoot: dir,
+    });
+
+    const scope = await readFile(join(cur, "PORTUNI_SCOPE.md"), "utf8");
+    assert.doesNotMatch(scope, /## Node context/);
+    assert.doesNotMatch(scope, /## Handoff/);
+  });
+});
+
+describe("buildOrientationHint", () => {
+  it("renders context, responsibilities, events and handoff sections", () => {
+    const hint = buildOrientationHint({
+      node: {
+        name: "Acme",
+        type: "project",
+        description: "A project.",
+        status: "active",
+        goal: "Ship it.",
+        lifecycle_state: "in_progress",
+      },
+      responsibilities: [
+        { title: "Ops", description: null, assignees: ["Alice", "Bob"] },
+      ],
+      events: [{ type: "note", content: "Kickoff.", created_at: "2026-01-02T00:00:00Z" }],
+      handoff: {
+        sessionName: "Acme · 1.1.",
+        handoffPath: "wip/sessions/S1-handoff.md",
+        suspendedAt: "2026-01-02T00:00:00Z",
+      },
+    });
+    assert.match(hint, /\*\*Acme\*\* \(project\) — status: active, lifecycle: in_progress/);
+    assert.match(hint, /Ship it\./);
+    assert.match(hint, /A project\./);
+    assert.match(hint, /Ops — Alice, Bob/);
+    assert.match(hint, /\[note\]` 2026-01-02 — Kickoff\./);
+    assert.match(hint, /wip\/sessions\/S1-handoff\.md/);
+    assert.match(hint, /Acme · 1\.1\./);
+  });
+
+  it("omits optional sections when empty", () => {
+    const hint = buildOrientationHint({
+      node: {
+        name: "Bare",
+        type: "area",
+        description: null,
+        status: "active",
+        goal: null,
+        lifecycle_state: null,
+      },
+      responsibilities: [],
+      events: [],
+      handoff: null,
+    });
+    assert.doesNotMatch(hint, /## Responsibilities/);
+    assert.doesNotMatch(hint, /## Recent events/);
+    assert.doesNotMatch(hint, /## Handoff/);
   });
 });

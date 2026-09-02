@@ -91,3 +91,13 @@ The `status` field could be set in the tool layer alongside `lifecycle_state`, b
 Most queries filter by `status` (the coarse enum) because that's what indexes well and what most callers actually mean. Show me the active projects: `WHERE type = 'project' AND status = 'active'`. The fine-grained `lifecycle_state` is for display and for state-machine transitions, not for bulk filtering.
 
 When you do want to filter by lifecycle state – say, "all projects in `planned`" – the query works the same way; there just isn't a dedicated index, so it scans more.
+
+## Project health
+
+`health` is a separate field, orthogonal to `lifecycle_state`: a project can be `in_progress` *and* at risk at the same time. Folding health into the lifecycle enum would force a choice between the phase and the risk – you'd lose one to express the other. Keeping them as two columns lets a project be both.
+
+`health` is one flat, non-type-specific enum: `on_track` (default), `at_risk`, `off_track`. It only applies to `project` nodes. Process and area already have their own attention states inside their own `lifecycle_state` sets (`at_risk`/`broken` for process, `needs_attention` for area) – organization and principle need none.
+
+Both `portuni_create_node` and `portuni_update_node` accept an optional `health` parameter, validated the same way as `lifecycle_state`: setting it on a non-project node is rejected. Unlike `lifecycle_state`, `health` is not nullable – every node (including non-projects) always carries a value at the database level, defaulting to `on_track`; the UI badge and picker only show for `project` nodes.
+
+`health` maps to the same three-color badge used for lifecycle states: `on_track` → green, `at_risk` → yellow, `off_track` → red. See `HEALTH_COLORS` in `apps/web/src/types.ts`.

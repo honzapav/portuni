@@ -17,10 +17,12 @@ import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardListScope } from "../list-scope-gate.js";
 import { filterVisibleNodeIds, nodeVisibleTo } from "../../auth/node-access.js";
-import { readableMirrorRoot } from "../scope-reconciler.js";
+import { readableMirrorRoot } from "../disk-projection.js";
 import { guardNodeRead } from "../scope.js";
+import { guardNodeWrite } from "../write-gate.js";
 import { readNodeFile, formatNodeFileContent } from "../../domain/read-node-file.js";
 import { searchFiles } from "../../domain/search-files.js";
+import { SEARCH_HITS_DEFAULT_LIMIT, SEARCH_HITS_MAX_LIMIT, SEARCH_SNIPPET_MAX_CHARS } from "../../domain/sync/types.js";
 import type { SessionCtx } from "../server.js";
 import type { Client } from "@libsql/client";
 
@@ -52,20 +54,11 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
     },
     async (args) => {
       const db = getDb();
-      const guard = await guardNodeRead(
-        db,
-        scope,
-        args.node_id,
-        ctx.identity.userId,
-        async (action, targetId, detail) => {
-          await logAudit(ctx.identity.userId, action, "scope", targetId, detail);
-        },
-        ctx.identity,
-      );
+      const guard = await guardNodeRead(db, scope, args.node_id, ctx.identity.userId, ctx.identity, ctx.elicit);
       if (guard.kind === "not_found") {
         return { content: [{ type: "text" as const, text: "Node not found" }], isError: true };
       }
-      if (guard.kind === "elicit") {
+      if (guard.kind === "elicit" || guard.kind === "refused") {
         return {
           content: [{ type: "text" as const, text: JSON.stringify(guard.error) }],
           isError: true,
@@ -78,38 +71,21 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_search_files",
-    "Search file CONTENTS across Portuni-tracked files, using the configured remote(s)' own full-text search (Google Drive `fullText contains`; text grep on fs remotes). Only files registered with Portuni are returned, and results are limited to nodes the caller can see. With node_id the search is restricted to that node (which must be in scope); without node_id it is a global query -- mode-gated like portuni_list_files and, outside permissive mode, restricted to the session scope set. Each hit carries node_id + path: open it with portuni_read_file(node_id, path). Drive matches whole words/phrases in indexed content (docs, PDFs, text); it is not a substring or regex search.",
+    "Search file CONTENTS across Portuni-tracked files, using the configured remote(s)' own full-text search (Google Drive `fullText contains`; text grep on fs remotes). Search is discovery, not ingestion: permission-only in every session type, no scope gate -- results are filtered by node visibility, same as any other read, not by session scope. With node_id the search is restricted to that node; without node_id it searches every node the caller can see. Each hit carries node_id + path plus a bounded snippet; open the full file with portuni_read_file(node_id, path) (that read follows the normal scope-expansion rules). Drive matches whole words/phrases in indexed content (docs, PDFs, text); it is not a substring or regex search.",
     {
       query: z.string().min(1).describe("Words or a phrase to find in file contents"),
       node_id: z.string().optional().describe("Restrict to one node"),
-      limit: z.number().int().min(1).max(50).optional().describe("Max hits (default 20, max 50)"),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(SEARCH_HITS_MAX_LIMIT)
+        .optional()
+        .describe(`Max hits (default ${SEARCH_HITS_DEFAULT_LIMIT}, max ${SEARCH_HITS_MAX_LIMIT})`),
     },
     async (args) => {
       const db = getDb();
-      const limit = args.limit ?? 20;
-
-      const gate = await guardListScope(
-        db,
-        scope,
-        args.node_id,
-        "portuni_search_files",
-        "search_files",
-        { query: args.query },
-        ctx.identity.userId,
-        ctx.identity,
-      );
-      if (gate.kind === "error") return gate.response;
-
-      // Without a node filter and outside permissive mode, restrict to the
-      // in-memory scope set so unrelated nodes are never surfaced (same rule
-      // as portuni_list_files).
-      let nodeIds: string[] | null = null;
-      if (args.node_id === undefined && scope.mode !== "permissive") {
-        nodeIds = scope.list();
-        if (nodeIds.length === 0) {
-          return { content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }] };
-        }
-      }
+      const limit = args.limit ?? SEARCH_HITS_DEFAULT_LIMIT;
 
       // Over-fetch so group-visibility filtering below still leaves `limit`
       // rows in the common case.
@@ -117,7 +93,6 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         query: args.query,
         limit: Math.min(limit * 2, 100),
         nodeId: args.node_id,
-        nodeIds,
       });
       const distinctNodeIds = [...new Set(records.map((r) => r.node_id))];
       const visible = await filterVisibleNodeIds(db, ctx.identity, distinctNodeIds);
@@ -133,7 +108,12 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
           path: r.path,
           mime_type: r.mime_type,
           ...(r.modified_at !== undefined ? { modified_at: r.modified_at } : {}),
-          ...(r.snippet !== undefined ? { snippet: r.snippet } : {}),
+          // Cap enforced here, at the tool boundary, rather than trusted to
+          // each remote adapter: search is discovery, not ingestion (spec,
+          // "Search is discovery, not ingestion") -- a producer that forgets
+          // to bound its own snippet (or grows one from a backend-provided
+          // full match) must not turn into an ingestion channel.
+          ...(r.snippet !== undefined ? { snippet: r.snippet.slice(0, SEARCH_SNIPPET_MAX_CHARS) } : {}),
         }));
       return { content: [{ type: "text" as const, text: JSON.stringify(hits, null, 2) }] };
     },
@@ -160,6 +140,8 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
       if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
         return NODE_NOT_FOUND;
       }
+      const storeWriteGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
+      if (storeWriteGuard.kind === "error") return storeWriteGuard.response;
       const result = await storeFile(db, {
         userId: ctx.identity.userId,
         nodeId: args.node_id,
@@ -196,8 +178,12 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
       const db = getDb();
       if (args.file_id) {
         const nodeId = await fileNodeId(db, args.file_id);
-        if (nodeId && !(await nodeVisibleTo(db, ctx.identity, nodeId))) {
-          return NODE_NOT_FOUND;
+        if (nodeId) {
+          if (!(await nodeVisibleTo(db, ctx.identity, nodeId))) {
+            return NODE_NOT_FOUND;
+          }
+          const pullWriteGuard = await guardNodeWrite(scope, nodeId, ctx.elicit);
+          if (pullWriteGuard.kind === "error") return pullWriteGuard.response;
         }
         const r = await pullFile(db, { userId: ctx.identity.userId, fileId: args.file_id, force: args.force });
         return {
@@ -216,7 +202,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_list_files",
-    "List files across nodes, optionally filtered by node and/or status. Each file includes a derived local_path built from the current mirror + remote_path + sync_key (null when the node has no mirror on this device). With node_id the node must be in session scope; without node_id the call is a global query — see portuni://scope-rules.",
+    "List files across nodes, optionally filtered by node and/or status. Each file includes a derived local_path built from the current mirror + remote_path + sync_key (null when the node has no mirror on this device). With node_id the node must be in session scope; without node_id results are restricted to the current session scope set (empty scope means an empty result), except for connector (interactive_chat) sessions, which have no scope set and see every file on nodes visible to them — see portuni://scope-rules.",
     {
       node_id: z.string().optional(),
       status: z.enum(FILE_STATUSES).optional(),
@@ -229,11 +215,9 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         db,
         scope,
         args.node_id,
-        "portuni_list_files",
-        "list_files",
-        { status: args.status ?? null },
         ctx.identity.userId,
         ctx.identity,
+        ctx.elicit,
       );
       if (gate.kind === "error") return gate.response;
 
@@ -242,20 +226,22 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
       if (args.node_id !== undefined) {
         conds.push("f.node_id = ?");
         params.push(args.node_id);
+      } else if (scope.sessionType === "interactive_chat") {
+        // interactive_chat has no in-memory scope set to restrict to (read
+        // scope = permissions): fall through with no node filter, and rely
+        // on the group-visibility filter below, same as global list_nodes.
       } else {
-        // No node filter: when not yet permissive-mode auto-allowed, restrict
-        // to the in-memory scope set so unrelated nodes aren't surfaced.
+        // No node filter: restrict to the in-memory scope set so unrelated
+        // nodes aren't surfaced.
         const inScope = scope.list();
-        if (scope.mode !== "permissive") {
-          if (inScope.length === 0) {
-            return {
-              content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }],
-            };
-          }
-          const placeholders = inScope.map(() => "?").join(",");
-          conds.push(`f.node_id IN (${placeholders})`);
-          params.push(...inScope);
+        if (inScope.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }],
+          };
         }
+        const placeholders = inScope.map(() => "?").join(",");
+        conds.push(`f.node_id IN (${placeholders})`);
+        params.push(...inScope);
       }
       if (args.status !== undefined) {
         conds.push("f.status = ?");
@@ -284,7 +270,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
 
       // One mirror lookup per visible node, not per file row (it hits the
       // local sync.db each time). For in-scope non-home nodes, we resolve to
-      // the staged copy (<home>/.portuni-scope/<id>/) so paths match what the
+      // this session's hardlink projection directory so paths match what the
       // Seatbelt sandbox actually allows the agent to read.
       const mirrorByNode = new Map<string, string | null>();
       const homeMirror = scope.homeNodeId
@@ -294,12 +280,14 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         const nodeId = row.node_id as string;
         if (!mirrorByNode.has(nodeId)) {
           const real = await getMirrorPath(ctx.identity.userId, nodeId);
+          let projectionDir: string | null = null;
           if (nodeId !== scope.homeNodeId && scope.has(nodeId)) {
-            await ctx.reconciler.reconcileNode(nodeId);
+            const r = await ctx.projector.projectNode(nodeId);
+            projectionDir = r?.dir ?? null;
           }
           mirrorByNode.set(
             nodeId,
-            readableMirrorRoot({ scope, nodeId, homeMirror, realMirror: real }),
+            readableMirrorRoot({ scope, nodeId, homeMirror, realMirror: real, projectionDir }),
           );
         }
       }
@@ -364,11 +352,19 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
     async (args) => {
       const db = getDb();
       const sourceNodeId = await fileNodeId(db, args.file_id);
-      if (sourceNodeId && !(await nodeVisibleTo(db, ctx.identity, sourceNodeId))) {
-        return NODE_NOT_FOUND;
+      if (sourceNodeId) {
+        if (!(await nodeVisibleTo(db, ctx.identity, sourceNodeId))) {
+          return NODE_NOT_FOUND;
+        }
+        const sourceWriteGuard = await guardNodeWrite(scope, sourceNodeId, ctx.elicit);
+        if (sourceWriteGuard.kind === "error") return sourceWriteGuard.response;
       }
-      if (args.new_node_id && !(await nodeVisibleTo(db, ctx.identity, args.new_node_id))) {
-        return NODE_NOT_FOUND;
+      if (args.new_node_id) {
+        if (!(await nodeVisibleTo(db, ctx.identity, args.new_node_id))) {
+          return NODE_NOT_FOUND;
+        }
+        const destWriteGuard = await guardNodeWrite(scope, args.new_node_id, ctx.elicit);
+        if (destWriteGuard.kind === "error") return destWriteGuard.response;
       }
       const r = await moveFile(db, {
         userId: ctx.identity.userId,
@@ -396,6 +392,8 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
       if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
         return NODE_NOT_FOUND;
       }
+      const renameWriteGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
+      if (renameWriteGuard.kind === "error") return renameWriteGuard.response;
       const r = await renameFolder(db, {
         userId: ctx.identity.userId,
         nodeId: args.node_id,
@@ -420,6 +418,8 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
       if (!(await nodeVisibleTo(db, ctx.identity, args.node_id))) {
         return NODE_NOT_FOUND;
       }
+      const adoptWriteGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
+      if (adoptWriteGuard.kind === "error") return adoptWriteGuard.response;
       const r = await adoptFiles(db, {
         userId: ctx.identity.userId,
         nodeId: args.node_id,
@@ -441,8 +441,12 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
     async (args) => {
       const db = getDb();
       const nodeId = await fileNodeId(db, args.file_id);
-      if (nodeId && !(await nodeVisibleTo(db, ctx.identity, nodeId))) {
-        return NODE_NOT_FOUND;
+      if (nodeId) {
+        if (!(await nodeVisibleTo(db, ctx.identity, nodeId))) {
+          return NODE_NOT_FOUND;
+        }
+        const deleteWriteGuard = await guardNodeWrite(scope, nodeId, ctx.elicit);
+        if (deleteWriteGuard.kind === "error") return deleteWriteGuard.response;
       }
       const r = await deleteFile(db, {
         userId: ctx.identity.userId,

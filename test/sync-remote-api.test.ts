@@ -17,6 +17,7 @@ import {
   writeFileBytesRemote,
 } from "../apps/server/domain/sync/file-content-remote.js";
 import { FileContentError } from "../apps/server/domain/sync/file-content.js";
+import { addRule } from "../apps/server/domain/sync/routing.js";
 
 let workspace: string;
 let originalEnv: string | undefined;
@@ -89,6 +90,40 @@ describe("registerFileRecordRemote", () => {
     await assert.rejects(() =>
       registerFileRecordRemote(db, { userId: "U1", nodeId: "NOPE", relPath: "wip/a.md" }),
     );
+  });
+
+  // #201/#211: a local-only workspace (no routing configured at all) still
+  // registers successfully -- remote_name stays NULL rather than throwing,
+  // and remote_path is still computed since it is derived purely from the
+  // node's own identity, never from the remote (CLAUDE.md's "File state is
+  // deterministic" gotcha).
+  it("registers with remote_name NULL when routing does not resolve (#201)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await db.execute({ sql: "DELETE FROM remote_routing" });
+    const r = await registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "wip/orphan.md" });
+    assert.equal(r.remote_name, null);
+    assert.ok(r.remote_path.endsWith("/wip/orphan.md"));
+    const row = await db.execute({
+      sql: "SELECT remote_name, remote_path FROM files WHERE id = ?",
+      args: [r.id],
+    });
+    assert.equal(row.rows[0].remote_name, null);
+    assert.equal(row.rows[0].remote_path, r.remote_path);
+  });
+
+  // A later register on the SAME path backfills remote_name onto the
+  // existing row (migration 031's (node_id, remote_path) unique index)
+  // instead of creating a duplicate, once routing resolves.
+  it("a later register with routing configured backfills remote_name onto the same row", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await db.execute({ sql: "DELETE FROM remote_routing" });
+    const first = await registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "wip/a.md" });
+    assert.equal(first.remote_name, null);
+
+    await addRule(db, { priority: 10, node_type: null, org_slug: null, remote_name: "test-fs" });
+    const second = await registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "wip/a.md" });
+    assert.equal(second.id, first.id);
+    assert.equal(second.remote_name, "test-fs");
   });
 });
 
@@ -360,5 +395,22 @@ describe("registerFileRecordsRemote (batch)", () => {
     assert.equal(batch[0].id, single.id);
     const row = await db.execute({ sql: "SELECT current_remote_hash FROM files WHERE id = ?", args: [single.id] });
     assert.equal(row.rows[0].current_remote_hash, "kept");
+  });
+
+  it("registers with remote_name NULL for every file when routing does not resolve (#201)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await db.execute({ sql: "DELETE FROM remote_routing" });
+    const results = await registerFileRecordsRemote(db, {
+      userId: "U1",
+      nodeId,
+      relPaths: ["wip/a.md", "outputs/b.pdf"],
+    });
+    assert.equal(results.length, 2);
+    for (const r of results) assert.equal(r.remote_name, null);
+    const rows = await db.execute({
+      sql: "SELECT remote_name FROM files WHERE node_id = ?",
+      args: [nodeId],
+    });
+    for (const row of rows.rows) assert.equal(row.remote_name, null);
   });
 });

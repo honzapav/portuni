@@ -18,6 +18,12 @@ export interface RequestIdentity {
   groups: string[];
   groupIds: string[];
   via: "env" | "session_jwt" | "device_token" | "oauth_grant";
+  // Set when `via === "device_token"` and the token was minted with the
+  // headless flag (admin-granted credential for unattended/RALPH-style
+  // sessions). Absent/false for every other auth path. Drives session_type
+  // derivation in apps/server/mcp/scope.ts -- never self-declared by the
+  // client.
+  headless?: boolean;
 }
 
 export interface IdentityContext {
@@ -72,6 +78,7 @@ export async function resolveRequestIdentity(
       groups: access.groups,
       groupIds: access.groupIds,
       via: "device_token",
+      headless: hit.headless,
     };
   }
 

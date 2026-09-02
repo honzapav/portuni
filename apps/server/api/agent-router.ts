@@ -38,6 +38,7 @@ import {
 import { findEntryByFileId } from "../mcp/agent-tools.js";
 import { mimeFor, PullDirtyLocalError } from "../domain/sync/engine.js";
 import { getLocalMirror } from "../domain/sync/local-db.js";
+import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
 import { MirrorCreateError } from "../domain/sync/mirror-create.js";
 import {
   buildSeatbeltProfile,
@@ -177,6 +178,15 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
       return true;
     }
 
+    // #202: same in-process buffer mirror-watcher.ts writes to -- this
+    // front door and the local sidecar's own watcher run in the same
+    // process, so no cross-process wiring is needed. No group-visibility
+    // filter here: agent mode is always a single device's own user.
+    if (pathname === "/sync/health" && method === "GET") {
+      respondJson(res, 200, { errors: getWatcherErrors() });
+      return true;
+    }
+
     if (pathname === "/sandbox-profile" && method === "GET") {
       const cwd = url.searchParams.get("cwd");
       if (!cwd) {
@@ -200,6 +210,8 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
           profile: buildSeatbeltProfile(r.scope),
           portuni_root: r.scope.portuniRoot,
           home_mirror: r.scope.homeMirror,
+          projection_root: r.scope.projectionRoot ?? null,
+          session_id: r.scope.sessionId ?? null,
         });
       } catch (err) {
         respondError(res, "GET /sandbox-profile", err);
@@ -253,7 +265,12 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
           local_path: u.local_path,
           mime_type: mimeFor(u.filename),
         }));
-        const payload: SyncStatusResponse = { files: tagged, untracked };
+        const watcherErrors = getWatcherErrors(nodeId);
+        const payload: SyncStatusResponse = {
+          files: tagged,
+          untracked,
+          ...(watcherErrors.length > 0 ? { watcher_errors: watcherErrors } : {}),
+        };
         respondJson(res, 200, payload);
       } catch (err) {
         if (respondCentral404(res, err)) return true;
@@ -482,6 +499,8 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
           profile: buildSeatbeltProfile(scope),
           portuni_root: scope.portuniRoot,
           home_mirror: scope.homeMirror,
+          projection_root: scope.projectionRoot ?? null,
+          session_id: scope.sessionId ?? null,
         });
       } catch (err) {
         respondError(res, `GET /nodes/${nodeId}/sandbox-profile`, err);

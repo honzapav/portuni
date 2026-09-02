@@ -39,12 +39,15 @@ import type {
   GraphPayload,
   SyncStatusFile,
   SyncRunResponse,
+  WatcherErrorEntry,
   UntrackedFile,
 } from "../types";
 import {
   RELATION_TYPES,
   LIFECYCLE_COLORS,
   LIFECYCLE_STATES_BY_TYPE,
+  HEALTH_COLORS,
+  HEALTH_STATES,
 } from "../types";
 import { safeHref } from "../lib/safe-url";
 import { groupEventsByDate } from "../lib/events";
@@ -90,8 +93,10 @@ import {
   SyncBar,
   NoMirrorBanner,
   TerminalSplitButton,
+  WatcherErrorBanner,
 } from "./DetailPane.files";
 import { AccessSection } from "./DetailPane.access";
+import { SessionsSection } from "./DetailPane.sessions";
 import { RequestAccessControl } from "./AccessRequests";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
@@ -101,8 +106,10 @@ import { RequestAccessControl } from "./AccessRequests";
 // already DB-only, but caching here also avoids the network round-trip
 // for repeat visits during a single session.
 const SYNC_STATUS_CACHE = new Map<string, Map<string, SyncStatusFile>>();
+// Same caching rationale, for sync-status's watcher_errors field (#202).
+const SYNC_WATCHER_ERRORS_CACHE = new Map<string, WatcherErrorEntry[]>();
 
-type DetailTab = "overview" | "events" | "files" | "connections" | "sharing";
+type DetailTab = "overview" | "events" | "files" | "connections" | "sessions" | "sharing";
 // Survives the DetailPane unmount that happens when the editor takes over
 // the right slot (Option C). Without this, closing a file remounts the
 // pane and resets the tab to "overview" -- the bug in ukol 9.
@@ -135,7 +142,7 @@ type Props = {
   onMutate: () => Promise<void>;
   agentCommand: string;
   terminalLaunch: string;
-  onOpenTerminal: (nodeId: string) => void | Promise<void>;
+  onOpenTerminal: (nodeId: string, profileId?: string | null) => void | Promise<void>;
   // True when this pane is rendered inside another column (e.g. the
   // workspace's right-side detail). Drops the slide-in animation, the
   // 40vw / min-w-440 sizing, and the left border so the parent's layout
@@ -272,7 +279,7 @@ function DetailPaneBody({
   onMutate: () => Promise<void>;
   agentCommand: string;
   terminalLaunch: string;
-  onOpenTerminal: (nodeId: string) => void | Promise<void>;
+  onOpenTerminal: (nodeId: string, profileId?: string | null) => void | Promise<void>;
   embedded?: boolean;
   onCollapse?: () => void;
   onOpenFile?: (nodeId: string, relPath: string) => void;
@@ -311,6 +318,11 @@ function DetailPaneBody({
     null,
   );
   const [untracked, setUntracked] = useState<UntrackedFile[]>([]);
+  // Recent mirror-watcher failures for this node (#202) -- rides along on
+  // the same sync-status fetch, no separate poll.
+  const [watcherErrors, setWatcherErrors] = useState<WatcherErrorEntry[]>(
+    () => SYNC_WATCHER_ERRORS_CACHE.get(node.id) ?? [],
+  );
   // Inline new-file form + shared error line for file create/rename/delete.
   // window.prompt/confirm/alert are silent no-ops in the Tauri macOS
   // webview (commit d229d84), so all file operations use inline UI.
@@ -343,6 +355,7 @@ function DetailPaneBody({
       setSyncStatus(cached ?? new Map());
       setSyncLoaded(cached !== undefined);
       setSyncError(null);
+      setWatcherErrors(SYNC_WATCHER_ERRORS_CACHE.get(node.id) ?? []);
       setSyncRunning(false);
       setSyncRunResult(null);
       // Untracked files belong to the previous node until the new node's
@@ -356,11 +369,11 @@ function DetailPaneBody({
     }
   }, [node.id, node.name]);
 
-  const openEmbeddedTerminal = async () => {
+  const openEmbeddedTerminal = async (profileId?: string | null) => {
     if (launchingTerminal) return;
     setLaunchingTerminal(true);
     try {
-      await onOpenTerminal(node.id);
+      await onOpenTerminal(node.id, profileId);
     } finally {
       setLaunchingTerminal(false);
     }
@@ -391,6 +404,8 @@ function DetailPaneBody({
         SYNC_STATUS_CACHE.set(requestNodeId, m);
         setSyncStatus(m);
         setSyncLoaded(true);
+        SYNC_WATCHER_ERRORS_CACHE.set(requestNodeId, fresh.watcher_errors ?? []);
+        setWatcherErrors(fresh.watcher_errors ?? []);
       } catch {
         /* keep stale badges */
       }
@@ -428,6 +443,8 @@ function DetailPaneBody({
         SYNC_STATUS_CACHE.set(requestNodeId, m);
         setSyncStatus(m);
         setSyncLoaded(true);
+        SYNC_WATCHER_ERRORS_CACHE.set(requestNodeId, fresh.watcher_errors ?? []);
+        setWatcherErrors(fresh.watcher_errors ?? []);
       } catch {
         /* keep stale badges */
       }
@@ -462,6 +479,8 @@ function DetailPaneBody({
       setUntracked(res.untracked ?? []);
       setSyncLoaded(true);
       setSyncError(null);
+      SYNC_WATCHER_ERRORS_CACHE.set(requestNodeId, res.watcher_errors ?? []);
+      setWatcherErrors(res.watcher_errors ?? []);
     } catch (e) {
       if (lastIdRef.current !== requestNodeId) return;
       // Central mode before login: the sync agent is not up yet and the
@@ -743,6 +762,14 @@ function DetailPaneBody({
             onMutate={onMutate}
             onError={setErrorMsg}
           />
+          {node.type === "project" && (
+            <HealthDropdown
+              nodeId={node.id}
+              value={node.health}
+              onMutate={onMutate}
+              onError={setErrorMsg}
+            />
+          )}
           <StatusDot status={node.status} />
         </div>
         {editing ? (
@@ -817,6 +844,13 @@ function DetailPaneBody({
           label="Propojení"
           count={node.edges.length}
         />
+        {node.type !== "organization" && (
+          <TabButton
+            active={tab === "sessions"}
+            onClick={() => setTab("sessions")}
+            label="Relace"
+          />
+        )}
         <TabButton
           active={tab === "sharing"}
           onClick={() => setTab("sharing")}
@@ -1028,6 +1062,7 @@ function DetailPaneBody({
             {/* Rendered here (not inside SyncBar) so the "connect Drive"
                 hint shows even on a node with no files yet. */}
             <DriveNotConfiguredBanner />
+            <WatcherErrorBanner errors={watcherErrors} />
             {node.type !== "organization" && !node.local_mirror && (
               <NoMirrorBanner
                 pending={creatingMirror}
@@ -1136,6 +1171,14 @@ function DetailPaneBody({
               </div>
             )}
           </div>
+        )}
+
+        {tab === "sessions" && (
+          <SessionsSection
+            nodeId={node.id}
+            onOpenTerminal={openEmbeddedTerminal}
+            onOpenFile={onOpenFile}
+          />
         )}
 
         {tab === "sharing" && (
@@ -1797,6 +1840,86 @@ function LifecycleDropdown({
               <span
                 className={`lifecycle-badge lifecycle-${LIFECYCLE_COLORS[s] ?? "gray"}`}
               >
+                {s}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Clickable health badge for project nodes -- same interaction pattern as
+// LifecycleDropdown, but a flat 3-value enum with no per-type set and no
+// "unset" option (health always has a value; default is on_track).
+function HealthDropdown({
+  nodeId,
+  value,
+  onMutate,
+  onError,
+}: {
+  nodeId: string;
+  value: string;
+  onMutate: () => Promise<void>;
+  onError: (msg: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const pick = async (next: string) => {
+    setOpen(false);
+    if (next === value) return;
+    setSaving(true);
+    onError(null);
+    try {
+      await updateNode(nodeId, { health: next });
+      await onMutate();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div ref={containerRef} className="relative inline-flex">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        disabled={saving}
+        title="Změnit zdraví projektu"
+        className={`lifecycle-badge lifecycle-${HEALTH_COLORS[value] ?? "gray"} cursor-pointer transition-opacity hover:opacity-80 disabled:opacity-50`}
+      >
+        {value}
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-1 min-w-[160px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
+          {HEALTH_STATES.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => pick(s)}
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
+                value === s ? "bg-[var(--color-surface-2)]" : ""
+              }`}
+            >
+              <span className={`lifecycle-badge lifecycle-${HEALTH_COLORS[s] ?? "gray"}`}>
                 {s}
               </span>
             </button>

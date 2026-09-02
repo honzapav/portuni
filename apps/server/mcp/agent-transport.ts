@@ -41,23 +41,29 @@ import {
   CallToolRequestSchema,
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
+  ElicitRequestSchema,
+  type ClientCapabilities,
 } from "@modelcontextprotocol/sdk/types.js";
 import { parseBody, RequestBodyTooLargeError } from "../http/middleware.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import type { McpTransport } from "./transport.js";
 import { INSTRUCTIONS } from "./server.js";
 import { parseHomeNodeIdFromUrl } from "./auto-seed.js";
+import type { SessionType } from "./scope.js";
 import {
   LOCAL_TOOLS,
   callLocalTool,
   enrichGetNodeResult,
   enrichGetContextResult,
   isProxiedDiskMutation,
+  localToolWriteTargets,
   snapshotForDiskMutation,
   applyLocalAfterSnapshot,
   applyLocalAfterProxiedMutation,
 } from "./agent-tools.js";
 import { readNodeFileFromMirror, formatNodeFileContent } from "../domain/read-node-file.js";
+import { guardWrite, writeGuardError, type WriteContext } from "../domain/write-gate.js";
+import { createElicitorFromServer, AGENT_RELAY_ELICIT_TIMEOUT_MS } from "./elicit.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 
 const MAX_SESSIONS = Number(process.env.PORTUNI_MAX_SESSIONS ?? 100);
@@ -87,9 +93,42 @@ function upstreamUrl(centralUrl: string, homeNodeId: string | null): URL {
   return url;
 }
 
+// The first request on a brand-new session is always `initialize` (the SDK
+// rejects anything else -- see the 400 path in handle() below), and its
+// params carry the real downstream client's declared capabilities. Peeking
+// at the already-parsed body here -- before opening the upstream connection
+// -- is what lets that upstream connection advertise the SAME capabilities
+// (elicitation in particular) instead of the historical `capabilities: {}`,
+// so central knows it can send the agent-mode session an elicitation
+// request at all.
+function extractDownstreamCapabilities(body: unknown): ClientCapabilities | undefined {
+  const msg = Array.isArray(body) ? body[0] : body;
+  if (
+    msg !== null &&
+    typeof msg === "object" &&
+    (msg as { method?: unknown }).method === "initialize"
+  ) {
+    const params = (msg as { params?: { capabilities?: ClientCapabilities } }).params;
+    return params?.capabilities;
+  }
+  return undefined;
+}
+
+// Advertise upstream only the capabilities this front door can actually
+// relay in the reverse direction. Today that is elicitation alone (the
+// setRequestHandler(ElicitRequestSchema, ...) reverse path in
+// buildAgentServer below); forwarding the whole downstream capabilities
+// object made central believe e.g. sampling/createMessage or roots/list were
+// available here too, and a central-initiated request for either would fail
+// with "method not found" instead of never being offered.
+function relayableCapabilities(caps: ClientCapabilities | undefined): ClientCapabilities {
+  return caps?.elicitation ? { elicitation: caps.elicitation } : {};
+}
+
 async function openUpstream(
   opts: AgentTransportOpts,
   homeNodeId: string | null,
+  downstreamCapabilities: ClientCapabilities | undefined,
 ): Promise<Client> {
   const transport = new StreamableHTTPClientTransport(
     upstreamUrl(opts.centralUrl, homeNodeId),
@@ -101,10 +140,31 @@ async function openUpstream(
   );
   const client = new Client(
     { name: "portuni-agent-upstream", version: "0.1.0" },
-    { capabilities: {} },
+    { capabilities: relayableCapabilities(downstreamCapabilities) },
   );
   await client.connect(transport);
   return client;
+}
+
+// Session type for the LOCAL_TOOLS write gate below. This is deliberately
+// NOT mcp/scope.ts's deriveSessionType(identity, homeNodeId): that function
+// treats identity.via === "env" as the exempt, unscoped solo-desktop-UI
+// case -- but every connection reaching THIS front door is, by construction,
+// a desktop-spawned terminal (this transport serves only /mcp, carries
+// ?home_node_id, and is never reached by the webview's own REST calls), so
+// it is always a real scoped session. It just never has a chance to prove
+// that through identity.via: the sidecar's own local HTTP server defaults
+// to PORTUNI_AUTH_MODE=env for agent mode too, so identity.via is "env"
+// here regardless of what actually spawned the connection. Falling through
+// to deriveSessionType's "env" case would make guardWrite allow every
+// LOCAL_TOOLS write unconditionally -- the gate above would never fire in
+// production. headless/oauth_grant are kept for forward compatibility (a
+// future auth mode that resolves real identities for this front door) but
+// are not reachable today.
+function deriveAgentSessionType(identity: RequestIdentity): SessionType {
+  if (identity.via === "oauth_grant") return "interactive_chat";
+  if (identity.headless) return "headless";
+  return "interactive_task";
 }
 
 // Low-level server wired to proxy tools/list + resources/* upstream and to
@@ -117,11 +177,46 @@ function buildAgentServer(
   upstream: Client,
   identity: RequestIdentity,
   homeNodeId: string | null,
+  downstreamCapabilities: ClientCapabilities | undefined,
 ): Server {
   const server = new Server(
     { name: "portuni-agent", version: "0.1.0" },
     { capabilities: { tools: {}, resources: {} }, instructions: INSTRUCTIONS },
   );
+  const elicitor = createElicitorFromServer(server);
+
+  // Reverse path for server-initiated elicitation: central (reached via
+  // `upstream`, a Client from this process's point of view) sends an
+  // `elicitation/create` request when a graph-plane tool call hits an
+  // "elicit" classification. Without this handler the upstream Client has
+  // no way to answer it, even though openUpstream() now advertises the real
+  // downstream client's capabilities (so central believes it can ask).
+  // Forwarding to server.elicitInput() relays the dialog one hop further
+  // down to the actual connected client (the real CLI), and its answer
+  // flows back up through this same chain to unblock central's call.
+  // Only registered when the real client actually declared elicitation --
+  // the Client class asserts its own registered capabilities include it
+  // before allowing this handler at all, matching the capabilities
+  // openUpstream() just advertised upstream (see extractDownstreamCapabilities).
+  if (downstreamCapabilities?.elicitation) {
+    upstream.setRequestHandler(ElicitRequestSchema, async (request) =>
+      server.elicitInput(request.params, { timeout: AGENT_RELAY_ELICIT_TIMEOUT_MS }),
+    );
+  }
+
+  // Write context for the LOCAL_TOOLS gate below. Built once per session
+  // (this function runs once per local MCP session -- see
+  // createAgentMcpTransport) rather than once per tool call, so writableNodes
+  // accumulates accepted elicitation grants across the session's lifetime:
+  // an accepted write dialog for a node is remembered, and a later write to
+  // the same node is allowed without re-prompting. No SessionScope exists at
+  // this layer (the local sidecar has no graph DB / expansion history, so
+  // there is no session_scope row to persist into either) -- this in-memory
+  // set, scoped to the local session's own lifetime (same TTL/GC as the rest
+  // of AgentSessionEntry), is the front door's equivalent.
+  const sessionType = deriveAgentSessionType(identity);
+  const writableNodes = new Set<string>();
+  const writeCtx: WriteContext = { sessionType, homeNodeId, writableNodes };
 
   server.setRequestHandler(ListToolsRequestSchema, async () => upstream.listTools());
 
@@ -129,6 +224,29 @@ function buildAgentServer(
     const name = request.params.name;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     if (LOCAL_TOOLS.has(name)) {
+      // LOCAL_TOOLS never reach apps/server/mcp/tools/*.ts (they dispatch
+      // straight to CentralClient/REST from here), so the domain-layer write
+      // gate every other mutating tool goes through has to be applied here
+      // instead -- otherwise it is bypassed.
+      const writeTargets = await localToolWriteTargets(opts.client, identity.userId, name, args);
+      for (const nodeId of writeTargets) {
+        const outcome = guardWrite(writeCtx, nodeId);
+        if (outcome.kind === "allow") continue;
+        // Same fallback rule as guardNodeWrite (mcp/write-gate.ts): try a
+        // real dialog for "elicit" (never headless, guardWrite only
+        // refuses that outright), otherwise fall back to the structured
+        // refusal.
+        if (outcome.kind === "elicit" && (await elicitor.confirm(outcome.message)) === "accept") {
+          writableNodes.add(nodeId);
+          continue;
+        }
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(writeGuardError(nodeId, outcome.kind, outcome.message)) },
+          ],
+          isError: true,
+        };
+      }
       try {
         return await callLocalTool(opts.client, identity.userId, name, args);
       } catch (err) {
@@ -332,8 +450,9 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
       // upstream is a 503 with the underlying reason (same contract as the
       // auto-seed 503 in transport.ts) rather than an empty-scope session.
       const homeNodeId = parseHomeNodeIdFromUrl(req.url);
+      const downstreamCapabilities = extractDownstreamCapabilities(body);
       try {
-        upstream = await openUpstream(opts, homeNodeId);
+        upstream = await openUpstream(opts, homeNodeId, downstreamCapabilities);
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         console.error("Agent MCP upstream connect failed:", err);
@@ -370,7 +489,7 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
         up.close().catch(() => undefined);
       };
 
-      const server = buildAgentServer(opts, up, identity, homeNodeId);
+      const server = buildAgentServer(opts, up, identity, homeNodeId, downstreamCapabilities);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
 

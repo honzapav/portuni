@@ -28,6 +28,7 @@ export const TOOL_MIN_SCOPE: Record<string, GlobalScope> = {
   portuni_session_init: "read",
   portuni_session_log: "read",
   portuni_expand_scope: "read",
+  portuni_session_suspend: "write",
   // portuni_resolve closes/finalises an event — it mutates state, so write.
   portuni_resolve: "write",
 
@@ -94,6 +95,10 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname === "/auth/users/invite" && m === "POST") return "admin";
   if (pathname === "/me" && m === "GET") return "read";
   if (pathname === "/graph" && m === "GET") return "read";
+  // Přehled tab (#196): the aggregate is readable at "read", same as
+  // /graph -- the one manage-gated field inside it (pending access
+  // requests) is filtered by the handler itself, not by this route gate.
+  if (pathname === "/overview" && m === "GET") return "read";
   if (pathname === "/scope" && m === "GET") return "read";
   // GET /users backs the OwnerPicker dropdown (apps/server/api/users.ts).
   // Its only frontend call site is ActorModal's user_id picker
@@ -106,6 +111,7 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // that can use it.
   if (pathname === "/users" && m === "GET") return "write";
   if (pathname === "/sync/pending" && m === "GET") return "read";
+  if (pathname === "/sync/health" && m === "GET") return "read";
 
   // --- Google Drive connect (Settings -> Synchronizace) ---
   // Configuring, inspecting, or tearing down the Drive remote is the REST
@@ -208,6 +214,15 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname === "/tools" && m === "POST") return "write";
   if (pathname.startsWith("/tools/") && m === "PATCH") return "write";
   if (pathname.startsWith("/tools/") && m === "DELETE") return "admin";
+
+  // --- Sessions (#192) --- List follows the anchor node's own read gate
+  // (handleListNodeSessions additionally filters by nodeVisibleTo); the
+  // single-session mutating/resume-info routes are further scoped to the
+  // caller's own sessions inside the handler (apps/server/api/sessions.ts).
+  if (/^\/nodes\/[^/]+\/sessions$/.test(pathname) && m === "GET") return "read";
+  if (/^\/sessions\/[^/]+$/.test(pathname) && m === "PATCH") return "write";
+  if (/^\/sessions\/[^/]+\/state$/.test(pathname) && m === "POST") return "write";
+  if (/^\/sessions\/[^/]+\/resume-info$/.test(pathname) && m === "GET") return "read";
 
   // --- Fail-closed: unknown future routes require admin ---
   return "admin";

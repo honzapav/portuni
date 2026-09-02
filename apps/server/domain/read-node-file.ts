@@ -1,8 +1,11 @@
 // Read a file's content for portuni_read_file. This is the universal
-// (no-hooks) read channel for ad-hoc in-scope nodes: they are not granted
-// disk access by the seatbelt (only home + depth-1 neighbours are), so
-// instead of a stale staged copy the agent asks portuni_read_file and the
-// server -- which is not sandboxed -- reads the live file and returns it.
+// (no-hooks) read channel for ad-hoc in-scope nodes: the seatbelt only
+// grants a real mirror path for home + depth-1 neighbours; an ad-hoc node
+// with a local mirror also gets hardlinked into the session's projection
+// directory (domain/session-projection.ts) so it becomes readable on disk
+// too, but a node with no local mirror on this device has no disk path at
+// all -- portuni_read_file is the one channel that always works, since the
+// server (unsandboxed) reads the live file or falls back to the remote.
 //
 // Two sources, tried in order by readNodeFile:
 //   1. the node's local mirror on disk (readNodeFileFromMirror);

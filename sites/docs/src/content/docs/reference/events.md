@@ -62,9 +62,9 @@ Query events with filters.
 
 Scope gating: with `node_id` the node must be in session scope (out of
 scope returns `scope_expansion_required`). Without `node_id` the call is
-a global query — mode-gated, and results are restricted to the session
-scope set (empty scope returns an empty array) unless the mode is
-`permissive`.
+always restricted to the current session scope set (empty scope returns
+an empty array, not a gate) — see [Scope
+Enforcement](/concepts/scope-enforcement/).
 
 Returns: Array of events ordered by `created_at` DESC. Each row includes
 `id`, `node_id`, `node_name`, `type`, `content`, `meta`, `status`,

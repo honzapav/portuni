@@ -21,6 +21,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createAgentMcpTransport } from "../apps/server/mcp/agent-transport.js";
 import type { CentralClient } from "../apps/server/domain/sync/central/client.js";
 import type { NodeSyncInfo } from "../apps/server/domain/sync/sync-remote-api.js";
@@ -70,6 +71,20 @@ const identity: RequestIdentity = {
   via: "env",
 };
 
+// Identities for the write-gate tests below. Production identities reaching
+// this front door always have via: "env" -- the sidecar's own local HTTP
+// server defaults to PORTUNI_AUTH_MODE=env for agent mode too, so
+// resolveRequestIdentity never produces a device_token/oauth_grant identity
+// here even for a genuinely spawned terminal. That is exactly the bug
+// deriveAgentSessionType (agent-transport.ts) fixes: it derives
+// interactive_task/headless from identity.headless rather than falling
+// through to "env" (which mcp/scope.ts's deriveSessionType would treat as
+// exempt). headlessIdentity sets the headless flag directly to exercise
+// that branch even though no real auth path sets it on an "env" identity
+// today -- see deriveAgentSessionType's comment.
+const headlessIdentity: RequestIdentity = { ...identity, headless: true };
+const taskIdentity: RequestIdentity = { ...identity };
+
 interface StubCentral {
   base: string;
   close: () => Promise<void>;
@@ -111,6 +126,27 @@ function startStubCentral(): Promise<StubCentral> {
         { node_id: z.string() },
         async () => ({ content: [{ type: "text" as const, text: "central-marker" }] }),
       );
+      // Exists only to drive the front-door elicitation round-trip test
+      // below: calls elicitInput on the stub's own low-level Server exactly
+      // the way a graph-plane tool's "elicit" classification would, so the
+      // request travels stub-central -> agent-transport's upstream Client ->
+      // (reverse handler) -> the real downstream Server -> the actual local
+      // test client, and the answer flows back the same way.
+      mcp.tool(
+        "portuni_test_elicit",
+        { message: z.string() },
+        async (a) => {
+          const result = await mcp.server.elicitInput({
+            message: a.message,
+            requestedSchema: {
+              type: "object",
+              properties: { confirm: { type: "boolean", title: "Confirm" } },
+              required: ["confirm"],
+            },
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+        },
+      );
       mcp.tool(
         "portuni_read_file",
         { node_id: z.string(), path: z.string() },
@@ -139,6 +175,19 @@ function startStubCentral(): Promise<StubCentral> {
         { node_id: z.string(), targets: z.array(z.string()).optional() },
         async () => ({
           content: [{ type: "text" as const, text: "CENTRAL SHOULD NOT SERVE THIS" }],
+        }),
+      );
+      // Exists only to drive the capability-filtering test below: reports
+      // what capabilities central actually saw from the agent-transport's
+      // upstream Client at initialize, so the test can assert the front
+      // door only forwards what it can relay (#206).
+      mcp.tool(
+        "portuni_test_capabilities",
+        {},
+        async () => ({
+          content: [
+            { type: "text" as const, text: JSON.stringify(mcp.server.getClientCapabilities() ?? {}) },
+          ],
         }),
       );
       const t = new StreamableHTTPServerTransport({
@@ -203,8 +252,18 @@ before(async () => {
   const addr = agentServer.address() as AddressInfo;
   agentBase = `http://127.0.0.1:${addr.port}`;
 
+  // home_node_id matches the node id the LOCAL_TOOLS tests below target
+  // (portuni_mirror, portuni_store) so those calls clear the write gate and
+  // reach callLocalTool exactly as before deriveAgentSessionType stopped
+  // treating this front door's "env" identity as unscoped/exempt -- the
+  // write-gate-specific behavior (refusal on a NON-home node) is exercised
+  // separately below in "write gate on LOCAL_TOOLS".
   localClient = new Client({ name: "agent-transport-test", version: "0.0.0" });
-  await localClient.connect(new StreamableHTTPClientTransport(new URL(`${agentBase}/mcp`)));
+  await localClient.connect(
+    new StreamableHTTPClientTransport(
+      new URL(`${agentBase}/mcp?home_node_id=01TESTNODE0000000000000000`),
+    ),
+  );
   // Let the shared session's upstream standalone GET stream settle so the
   // leak test below starts from a stable openGets baseline.
   await waitFor(() => central.openGets() >= 1);
@@ -335,5 +394,263 @@ describe("agent MCP front door", () => {
     );
     await new Promise((r) => setTimeout(r, 150));
     assert.equal(central.openGets(), getsBefore, "upstream GET stream reopened after close");
+  });
+});
+
+// The five LOCAL_TOOLS (portuni_mirror, portuni_status, portuni_store,
+// portuni_pull, portuni_adopt_files) dispatch straight to CentralClient from
+// this transport -- they never reach apps/server/mcp/tools/*.ts, so the
+// domain-layer write gate (guardWrite in domain/write-gate.ts) has to be
+// applied here too, or it is bypassed for exactly this path. See
+// docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md
+// ("Enforcement points").
+describe("agent MCP front door: write gate on LOCAL_TOOLS", () => {
+  const HOME = "01HOMENODE00000000000000A";
+  const OTHER = "01OTHERNODE0000000000000B";
+
+  async function connectAs(reqIdentity: RequestIdentity, homeNodeId: string): Promise<Client> {
+    const server = createServer((req, res) => {
+      void agentTransport.handle(req, res, reqIdentity);
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    const client = new Client({ name: "write-gate-test", version: "0.0.0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${base}/mcp?home_node_id=${homeNodeId}`)),
+    );
+    (client as unknown as { __server: Server }).__server = server;
+    return client;
+  }
+
+  async function closeClient(client: Client): Promise<void> {
+    const server = (client as unknown as { __server: Server }).__server;
+    await client.close().catch(() => undefined);
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+
+  it("headless session: portuni_mirror on the home node is not write-gated (allowed through to the local handler)", async () => {
+    const client = await connectAs(headlessIdentity, HOME);
+    try {
+      const r = (await client.callTool({
+        name: "portuni_mirror",
+        arguments: { node_id: HOME, targets: ["local"] },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      // Blocked by fakeCentral (no such node), NOT by the write gate --
+      // proves the home node passed guardWrite and reached callLocalTool.
+      assert.equal(r.isError, true);
+      assert.doesNotMatch(r.content[0].text, /write_refused|write_expansion_required/);
+    } finally {
+      await closeClient(client);
+    }
+  });
+
+  it("headless session: portuni_mirror on a non-home node is refused outright, never reaching the local handler", async () => {
+    const client = await connectAs(headlessIdentity, HOME);
+    try {
+      const r = (await client.callTool({
+        name: "portuni_mirror",
+        arguments: { node_id: OTHER, targets: ["local"] },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.equal(r.isError, true);
+      const payload = JSON.parse(r.content[0].text);
+      assert.equal(payload.error, "write_refused");
+      assert.equal(payload.node_id, OTHER);
+    } finally {
+      await closeClient(client);
+    }
+  });
+
+  it("headless session: portuni_store on a non-home node is refused outright", async () => {
+    const client = await connectAs(headlessIdentity, HOME);
+    try {
+      const r = (await client.callTool({
+        name: "portuni_store",
+        arguments: { node_id: OTHER, local_path: "/tmp/nope.md" },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.equal(r.isError, true);
+      const payload = JSON.parse(r.content[0].text);
+      assert.equal(payload.error, "write_refused");
+    } finally {
+      await closeClient(client);
+    }
+  });
+
+  it("interactive (non-headless) session: a non-home node elicits rather than being refused outright", async () => {
+    const client = await connectAs(taskIdentity, HOME);
+    try {
+      const r = (await client.callTool({
+        name: "portuni_mirror",
+        arguments: { node_id: OTHER, targets: ["local"] },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.equal(r.isError, true);
+      const payload = JSON.parse(r.content[0].text);
+      assert.equal(payload.error, "write_expansion_required");
+    } finally {
+      await closeClient(client);
+    }
+  });
+
+  // #206: writableNodes used to be rebuilt empty on every tool call, so an
+  // accepted write dialog was forgotten immediately and the user was
+  // re-prompted on every write to the same node. It must now be remembered
+  // for the life of the local session.
+  it("an accepted write grant is remembered: a second write to the same node does not re-prompt", async () => {
+    // Tracks this local server's own standalone GET/SSE stream the same way
+    // startStubCentral's openGets() does above: a server-initiated request
+    // (the elicitation dialog) can only be delivered once the client's
+    // standalone GET stream is open, and that stream is established
+    // asynchronously just after client.connect() resolves -- calling a tool
+    // that triggers a push before it is up would leave the push with
+    // nowhere to go until the client reconnects, well past this test's
+    // patience. waitFor(() => openGets() >= 1) below is the same guard the
+    // top-level before() hook already uses for the OTHER standalone stream
+    // in this file (the front door's own upstream connection to the stub).
+    let openGets = 0;
+    const server = createServer((req, res) => {
+      if (req.method === "GET") {
+        openGets++;
+        res.on("close", () => {
+          openGets--;
+        });
+      }
+      void agentTransport.handle(req, res, taskIdentity);
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    const client = new Client(
+      { name: "write-persist-test", version: "0.0.0" },
+      { capabilities: { elicitation: {} } },
+    );
+    let elicitCalls = 0;
+    client.setRequestHandler(ElicitRequestSchema, async () => {
+      elicitCalls++;
+      return { action: "accept", content: { confirm: true } };
+    });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${base}/mcp?home_node_id=${HOME}`)),
+    );
+    try {
+      const streamReady = await waitFor(() => openGets >= 1);
+      assert.ok(streamReady, "client's standalone GET stream never opened");
+
+      const call = () =>
+        client.callTool({
+          name: "portuni_mirror",
+          arguments: { node_id: OTHER, targets: ["local"] },
+        }) as Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+
+      const r1 = await call();
+      assert.equal(elicitCalls, 1, "first write to a non-home node must elicit once");
+      assert.doesNotMatch(r1.content[0].text, /write_expansion_required|write_refused/);
+
+      const r2 = await call();
+      assert.equal(elicitCalls, 1, "second write to the SAME node must not re-prompt");
+      assert.doesNotMatch(r2.content[0].text, /write_expansion_required|write_refused/);
+    } finally {
+      await client.close().catch(() => undefined);
+      await new Promise<void>((res) => server.close(() => res()));
+    }
+  });
+});
+
+// #206: the front door forwarded the whole downstream capabilities object
+// upstream, even though only elicitation has a reverse handler -- a
+// central-initiated sampling/roots request would get "method not found"
+// instead of never being offered. Only elicitation should be advertised.
+describe("agent MCP front door: capability filtering", () => {
+  it("advertises only elicitation upstream, even when the real client declares more", async () => {
+    const server = createServer((req, res) => {
+      void agentTransport.handle(req, res, taskIdentity);
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    const client = new Client(
+      { name: "capability-filter-test", version: "0.0.0" },
+      { capabilities: { elicitation: {}, sampling: {}, roots: { listChanged: true } } },
+    );
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
+    try {
+      const r = (await client.callTool({
+        name: "portuni_test_capabilities",
+        arguments: {},
+      })) as { content: Array<{ text: string }> };
+      const seen = JSON.parse(r.content[0].text);
+      // The SDK normalizes an empty elicitation capability to { form: {} }
+      // (backwards-compat default) when the server reads it back via
+      // getClientCapabilities() -- the point under test is that sampling and
+      // roots, which this front door has no reverse handler for, did not
+      // survive the trip.
+      assert.deepEqual(seen, { elicitation: { form: {} } });
+    } finally {
+      await client.close().catch(() => undefined);
+      await new Promise<void>((res) => server.close(() => res()));
+    }
+  });
+});
+
+// The front-door round trip (#188): a server-initiated elicitation request
+// from central has to travel central -> agent-transport's upstream Client
+// (a server-initiated request arriving on what is, from this process's
+// point of view, a Client) -> the reverse handler registered in
+// buildAgentServer -> the real downstream Server's own elicitInput -> the
+// actual connected local client -> and the answer has to flow all the way
+// back to unblock central's original call. Exercised via
+// portuni_test_elicit on the stub central (added above).
+describe("agent MCP front door: elicitation round trip", () => {
+  async function connectElicitationCapable(
+    dialogAnswer: "accept" | "decline",
+  ): Promise<{ client: Client; server: Server }> {
+    const server = createServer((req, res) => {
+      void agentTransport.handle(req, res, taskIdentity);
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    const client = new Client(
+      { name: "elicit-round-trip-test", version: "0.0.0" },
+      { capabilities: { elicitation: {} } },
+    );
+    client.setRequestHandler(ElicitRequestSchema, async () => ({
+      action: dialogAnswer,
+      content: dialogAnswer === "accept" ? { confirm: true } : undefined,
+    }));
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
+    return { client, server };
+  }
+
+  it("relays an elicitInput call from central all the way down to the real client and back: accept", async () => {
+    const { client, server } = await connectElicitationCapable("accept");
+    try {
+      const r = (await client.callTool({
+        name: "portuni_test_elicit",
+        arguments: { message: "Confirm the round trip?" },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.equal(r.isError, undefined, JSON.stringify(r));
+      const result = JSON.parse(r.content[0].text);
+      assert.equal(result.action, "accept");
+      assert.equal(result.content.confirm, true);
+    } finally {
+      await client.close().catch(() => undefined);
+      await new Promise<void>((res) => server.close(() => res()));
+    }
+  });
+
+  it("relays a decline answer back to central too", async () => {
+    const { client, server } = await connectElicitationCapable("decline");
+    try {
+      const r = (await client.callTool({
+        name: "portuni_test_elicit",
+        arguments: { message: "Confirm the round trip?" },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.equal(r.isError, undefined, JSON.stringify(r));
+      const result = JSON.parse(r.content[0].text);
+      assert.equal(result.action, "decline");
+    } finally {
+      await client.close().catch(() => undefined);
+      await new Promise<void>((res) => server.close(() => res()));
+    }
   });
 });

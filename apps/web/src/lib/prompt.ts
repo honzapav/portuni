@@ -1,88 +1,7 @@
 import type { NodeDetail } from "../types";
+import { DEFAULT_AGENT_COMMAND } from "./settings";
 
-/**
- * Build an agent-ready prompt from a node detail payload.
- *
- * The prompt is a pointer, not a cached truth: it tells the agent to call
- * portuni_get_node first so state stays honest. The snapshot that follows is
- * for orientation only.
- */
-function buildAgentPrompt(node: NodeDetail): string {
-  const lines: string[] = [];
-
-  lines.push(
-    `You are working on the Portuni node **${node.name}** (type: ${node.type}, id: \`${node.id}\`).`,
-  );
-  lines.push("");
-  lines.push(
-    "Before doing anything else, call `portuni_get_node({ node_id: \"" +
-      node.id +
-      "\" })` to refresh state. The context below is a snapshot captured when this prompt was generated and may be stale.",
-  );
-  lines.push("");
-  lines.push("---");
-  lines.push("");
-  lines.push("## Snapshot");
-  lines.push("");
-
-  if (node.description) {
-    lines.push("**Description:** " + node.description);
-    lines.push("");
-  }
-
-  lines.push(`**Status:** ${node.status}`);
-  if (node.local_mirror) {
-    lines.push(`**Local mirror:** \`${node.local_mirror.local_path}\``);
-  }
-  lines.push("");
-
-  if (node.edges.length > 0) {
-    lines.push("### Connections");
-    lines.push("");
-    const grouped = new Map<string, typeof node.edges>();
-    for (const e of node.edges) {
-      if (!grouped.has(e.relation)) grouped.set(e.relation, []);
-      grouped.get(e.relation)!.push(e);
-    }
-    for (const [relation, edges] of grouped) {
-      lines.push(`- **${relation}**`);
-      for (const e of edges) {
-        const arrow = e.direction === "outgoing" ? "→" : "←";
-        lines.push(
-          `    ${arrow} ${e.peer_name} _(${e.peer_type}, \`${e.peer_id}\`)_`,
-        );
-      }
-    }
-    lines.push("");
-  }
-
-  if (node.events.length > 0) {
-    lines.push("### Recent events");
-    lines.push("");
-    const shown = node.events.slice(0, 10);
-    for (const e of shown) {
-      const date = e.created_at.slice(0, 10);
-      lines.push(`- \`[${e.type}]\` ${date} — ${e.content}`);
-    }
-    if (node.events.length > shown.length) {
-      const more = node.events.length - shown.length;
-      lines.push(
-        `- _…and at least ${more} older — use \`portuni_list_events({ node_id: "${node.id}" })\` for full history_`,
-      );
-    }
-    lines.push("");
-  }
-
-  lines.push("---");
-  lines.push("");
-  lines.push(
-    "When you understand the state, ask me what I'd like you to do next, or propose a sensible next step based on the events above.",
-  );
-
-  return lines.join("\n");
-}
-
-// POSIX single-quote escape. Safe for arbitrary prompt content (newlines,
+// POSIX single-quote escape. Safe for arbitrary content (newlines,
 // backticks, $, quotes). Internal single quotes are closed, escaped, reopened.
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
@@ -90,22 +9,29 @@ function shellQuote(s: string): string {
 
 /**
  * Build a full shell command that cd's into the node's local mirror (if any)
- * and launches the user's configured agent with the prompt as argument.
+ * and launches the user's configured agent command, unmodified.
  *
- * The template may contain `{prompt}` which is replaced by the shell-escaped
- * prompt. If the template has no placeholder, the escaped prompt is appended.
+ * The terminal starts empty and ready -- no orientation prompt is generated
+ * or injected. Everything an agent used to need a first message for (node
+ * context, responsibilities, recent events, a handoff pointer for resumed
+ * work) lives in `PORTUNI_SCOPE.md` in the mirror instead, so the agent
+ * reads it on its own rather than being told it upfront. `{prompt}` is a
+ * placeholder from a template saved before this change; settings.ts's
+ * AGENT_COMMAND_MIGRATIONS upgrades every *exact* known preset string on
+ * load, but a hand-customized template built around one (e.g. `gemini -p
+ * {prompt} --yolo`) never matches that table exactly. Blindly stripping just
+ * the placeholder would leave its preceding flag dangling with the next
+ * token as its value (`gemini -p --yolo`); since there is no prompt to
+ * substitute anymore and no reliable way to tell which flag, if any,
+ * belonged to the placeholder, an unmigrated `{prompt}` here falls back to
+ * the default command instead of guessing.
  */
 export function buildAgentCommand(node: NodeDetail, template: string): string {
-  const prompt = buildAgentPrompt(node);
-  const escaped = shellQuote(prompt);
-
-  const tpl = template.trim() || "claude {prompt}";
-  const invocation = tpl.includes("{prompt}")
-    ? tpl.replaceAll("{prompt}", escaped)
-    : `${tpl} ${escaped}`;
+  const trimmed = template.trim() || DEFAULT_AGENT_COMMAND;
+  const tpl = /\{prompt\}/.test(trimmed) ? DEFAULT_AGENT_COMMAND : trimmed;
 
   if (node.local_mirror) {
-    return `cd ${shellQuote(node.local_mirror.local_path)} && ${invocation}`;
+    return `cd ${shellQuote(node.local_mirror.local_path)} && ${tpl}`;
   }
-  return invocation;
+  return tpl;
 }

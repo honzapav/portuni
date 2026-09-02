@@ -38,7 +38,7 @@ The fix is to launch with `--trust`, which trusts the working directory **for th
 vibe --trust
 ```
 
-The desktop app's "Mistral Vibe" agent preset is `vibe --trust {prompt}` precisely for this reason, so every terminal it spawns inside a mirror loads the project config and auto-seeds. (Session trust overrides an `untrusted` entry, so you don't have to clean that file up.)
+The desktop app's "Mistral Vibe" agent preset is `vibe --trust` precisely for this reason, so every terminal it spawns inside a mirror loads the project config and auto-seeds. (Session trust overrides an `untrusted` entry, so you don't have to clean that file up.)
 
 ## Auto-seed, the same as Claude Code
 

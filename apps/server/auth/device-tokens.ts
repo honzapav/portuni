@@ -22,7 +22,7 @@ export async function mintDeviceToken(
   db: Client,
   userId: string,
   label: string,
-  opts: { ttlDays?: number } = {},
+  opts: { ttlDays?: number; headless?: boolean } = {},
 ): Promise<MintedDeviceToken> {
   const id = ulid();
   const token = `ptk_${randomBytes(32).toString("base64url")}`;
@@ -31,10 +31,11 @@ export async function mintDeviceToken(
     .toISOString()
     .replace("T", " ")
     .slice(0, 19);
+  const headless = opts.headless === true ? 1 : 0;
   await db.execute({
-    sql: `INSERT INTO device_tokens (id, user_id, label, token_hash, expires_at)
-          VALUES (?, ?, ?, ?, ?)`,
-    args: [id, userId, label, hashToken(token), expiresAt],
+    sql: `INSERT INTO device_tokens (id, user_id, label, token_hash, expires_at, headless)
+          VALUES (?, ?, ?, ?, ?, ?)`,
+    args: [id, userId, label, hashToken(token), expiresAt, headless],
   });
   return { id, token, expires_at: expiresAt };
 }
@@ -42,6 +43,10 @@ export async function mintDeviceToken(
 export interface DeviceTokenHit {
   tokenId: string;
   userId: string;
+  // See RequestIdentity.headless: an admin-granted credential for headless
+  // sessions. Required (and enforced at MCP seed time) to carry
+  // ?home_node_id on connect -- see apps/server/mcp/transport.ts.
+  headless: boolean;
 }
 
 export async function verifyDeviceToken(
@@ -49,7 +54,7 @@ export async function verifyDeviceToken(
   token: string,
 ): Promise<DeviceTokenHit | null> {
   const r = await db.execute({
-    sql: `SELECT id, user_id FROM device_tokens
+    sql: `SELECT id, user_id, headless FROM device_tokens
           WHERE token_hash = ?
             AND revoked_at IS NULL
             AND (expires_at IS NULL OR expires_at > datetime('now'))`,
@@ -61,7 +66,11 @@ export async function verifyDeviceToken(
     sql: "UPDATE device_tokens SET last_used_at = datetime('now') WHERE id = ?",
     args: [row.id],
   });
-  return { tokenId: String(row.id), userId: String(row.user_id) };
+  return {
+    tokenId: String(row.id),
+    userId: String(row.user_id),
+    headless: Number(row.headless) === 1,
+  };
 }
 
 export async function revokeDeviceToken(

@@ -42,6 +42,31 @@ export function parseHomeNodeIdFromUrl(
   return trimmed;
 }
 
+// Extract `resume_session_id` from a raw MCP connection URL, same shape as
+// parseHomeNodeIdFromUrl. Set only when the app respawns a terminal for a
+// suspended session (#204, spec "Lifecycle" / "Resume") -- the query param
+// name matches the one the disk-plane sandbox-profile endpoints already use
+// (api/nodes.ts, api/write-scope.ts) so both planes resume off the same id.
+export function parseResumeSessionIdFromUrl(
+  rawUrl: string | undefined | null,
+): string | null {
+  if (!rawUrl) return null;
+  let params: URLSearchParams;
+  try {
+    const url = rawUrl.startsWith("http")
+      ? new URL(rawUrl)
+      : new URL(rawUrl, "http://placeholder");
+    params = url.searchParams;
+  } catch {
+    return null;
+  }
+  const value = params.get("resume_session_id");
+  if (value === null) return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  return trimmed;
+}
+
 interface AutoSeedArgs {
   scope: SessionScope;
   homeNodeId: string | null;

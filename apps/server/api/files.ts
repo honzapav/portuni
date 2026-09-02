@@ -41,6 +41,7 @@ const FILE_BODY_MAX_BYTES = Number(
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { renameFile, deleteFile, moveFile } from "../domain/sync/engine-mutations.js";
 import { nodeVisibleTo } from "../auth/node-access.js";
+import { guardRestNodeWrite } from "./write-gate.js";
 import type { FileContentResponse } from "../shared/api-types.js";
 
 const CODE_STATUS: Record<FileContentErrorCode, number> = {
@@ -350,6 +351,7 @@ export async function handleCreateFile(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
     // Mirror present -> local create (registers + pushes). No mirror
     // (central / VPS) -> adapter-direct create against the routed remote.
     const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
@@ -435,6 +437,7 @@ export async function handleRenameFile(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
     const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
     const r = mirrorRoot
       ? await renameFile(db, {

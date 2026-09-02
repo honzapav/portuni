@@ -15,6 +15,7 @@ import { classifyWrite, resolvePortuniRoot } from "../domain/write-scope.js";
 import {
   buildSeatbeltProfile,
   resolveSandboxScopeForCwd,
+  ResumeSessionUnauthorizedError,
 } from "../domain/sandbox-profile.js";
 import { respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 import { nodeVisibleTo } from "../auth/node-access.js";
@@ -67,7 +68,9 @@ export async function handleSandboxProfileByCwd(
   }
   try {
     const db = getDb();
-    const r = await resolveSandboxScopeForCwd(db, identity.userId, cwd);
+    // Restart consolidation (#191): see handleNodeSandboxProfile.
+    const resumeSessionId = url.searchParams.get("resume_session_id") ?? undefined;
+    const r = await resolveSandboxScopeForCwd(db, identity.userId, cwd, resumeSessionId);
     if (!r) {
       respondJson(res, 409, {
         error: `cwd is not inside any registered mirror: ${cwd}`,
@@ -90,8 +93,14 @@ export async function handleSandboxProfileByCwd(
       profile: buildSeatbeltProfile(r.scope),
       portuni_root: r.scope.portuniRoot,
       home_mirror: r.scope.homeMirror,
+      projection_root: r.scope.projectionRoot ?? null,
+      session_id: r.scope.sessionId ?? null,
     });
   } catch (err) {
+    if (err instanceof ResumeSessionUnauthorizedError) {
+      respondJson(res, 403, { error: err.message, code: "RESUME_UNAUTHORIZED" });
+      return;
+    }
     respondError(res, `${req.method} ${url.pathname}`, err);
   }
 }

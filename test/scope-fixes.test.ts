@@ -1,17 +1,19 @@
-// Regression tests for the post-review scope fixes:
-//   - decideGlobalQuery: strict refuses, balanced first-time refuses,
-//     permissive auto-allows.
+// Regression tests for the scope-decision helpers:
 //   - violatesHardFloor matches what decideRead's hard-floor branch checks.
 //   - guardNodeRead: returns elicit/allow with audit + auto-add.
 //   - loadNodeScopeMeta: pulls visibility / created_by / scope_sensitive.
+// (decideGlobalQuery is gone -- search and global list_nodes are
+// permission-only now, see docs/superpowers/specs/
+// 2026-08-31-scope-sessions-redesign-design.md, "Search is discovery, not
+// ingestion".)
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
 import {
   SessionScope,
-  decideGlobalQuery,
   guardNodeRead,
+  isEdgeReachable,
   loadNodeScopeMeta,
   violatesHardFloor,
 } from "../apps/server/mcp/scope.js";
@@ -21,26 +23,14 @@ async function freshDb() {
   await db.execute(
     `CREATE TABLE nodes (id TEXT PRIMARY KEY, type TEXT, name TEXT, owner_id TEXT, created_by TEXT, visibility TEXT NOT NULL DEFAULT 'team', meta TEXT)`,
   );
+  await db.execute(
+    `CREATE TABLE edges (id TEXT PRIMARY KEY, source_id TEXT, target_id TEXT, relation TEXT)`,
+  );
+  await db.execute(
+    `CREATE TABLE audit_log (id TEXT PRIMARY KEY, user_id TEXT, action TEXT, target_type TEXT, target_id TEXT, detail TEXT, timestamp TEXT)`,
+  );
   return db;
 }
-
-describe("decideGlobalQuery", () => {
-  it("strict always elicits", () => {
-    const s = new SessionScope("strict");
-    s.add("X");
-    assert.equal(decideGlobalQuery(s).kind, "elicit");
-  });
-  it("balanced elicits first time, allows after globalQuerySeen flips", () => {
-    const s = new SessionScope("balanced");
-    assert.equal(decideGlobalQuery(s).kind, "elicit");
-    s.globalQuerySeen = true;
-    assert.equal(decideGlobalQuery(s).kind, "allow");
-  });
-  it("permissive auto-allows", () => {
-    const s = new SessionScope("permissive");
-    assert.equal(decideGlobalQuery(s).kind, "allow");
-  });
-});
 
 describe("violatesHardFloor", () => {
   it("flags scope_sensitive=true", () => {
@@ -116,44 +106,127 @@ describe("loadNodeScopeMeta", () => {
 describe("guardNodeRead", () => {
   it("returns not_found for missing node", async () => {
     const db = await freshDb();
-    const scope = new SessionScope("strict");
-    let audited = 0;
-    const r = await guardNodeRead(db, scope, "MISSING", "U1", async () => {
-      audited++;
-    });
+    const scope = new SessionScope("interactive_task");
+    const r = await guardNodeRead(db, scope, "MISSING", "U1");
     assert.equal(r.kind, "not_found");
-    assert.equal(audited, 0);
   });
 
-  it("auto-adds and audits the new in-scope node on allow", async () => {
+  it("allow for a node already in scope", async () => {
     const db = await freshDb();
     await db.execute({
       sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
       args: ["N1", "project", "P", null, "U1", "team", null],
     });
-    const scope = new SessionScope("permissive");
-    let audited = 0;
-    const r = await guardNodeRead(db, scope, "N1", "U1", async () => {
-      audited++;
-    });
+    const scope = new SessionScope("interactive_task");
+    scope.add("N1"); // already in scope: allow without an elicit round-trip
+    const r = await guardNodeRead(db, scope, "N1", "U1");
     assert.equal(r.kind, "allow");
     assert.equal(scope.has("N1"), true);
-    assert.equal(audited, 1);
   });
 
-  it("elicits in strict mode for out-of-scope node", async () => {
+  it("elicits for a disconnected out-of-scope node (no edge to anything in scope)", async () => {
     const db = await freshDb();
     await db.execute({
       sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
       args: ["N1", "project", "P", null, "U1", "team", null],
     });
-    const scope = new SessionScope("strict");
-    let audited = 0;
-    const r = await guardNodeRead(db, scope, "N1", "U1", async () => {
-      audited++;
-    });
+    const scope = new SessionScope("interactive_task");
+    const r = await guardNodeRead(db, scope, "N1", "U1");
     assert.equal(r.kind, "elicit");
-    assert.equal(audited, 0);
     assert.equal(scope.has("N1"), false);
+  });
+
+  it("auto-expands an edge-reachable out-of-scope node without an elicit round-trip", async () => {
+    const db = await freshDb();
+    await db.execute({
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N1", "project", "P", null, "U1", "team", null],
+    });
+    await db.execute({
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N2", "project", "Q", null, "U1", "team", null],
+    });
+    await db.execute({
+      sql: `INSERT INTO edges (id, source_id, target_id, relation) VALUES (?,?,?,?)`,
+      args: ["e1", "N1", "N2", "related_to"],
+    });
+    const scope = new SessionScope("interactive_task");
+    scope.add("N1");
+    const r = await guardNodeRead(db, scope, "N2", "U1");
+    assert.equal(r.kind, "allow");
+    assert.equal(scope.has("N2"), true, "reachable node is added to scope as a side effect");
+    const expansions = scope.expansions();
+    assert.equal(expansions.length, 1);
+    assert.equal(expansions[0].addedVia, "edge");
+  });
+
+  it("interactive_chat: allows a disconnected, never-in-scope node directly (permission-only, no expansion)", async () => {
+    const db = await freshDb();
+    await db.execute({
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N1", "project", "P", null, "U1", "team", null],
+    });
+    const scope = new SessionScope("interactive_chat");
+    const r = await guardNodeRead(db, scope, "N1", "U1");
+    assert.equal(r.kind, "allow");
+    assert.equal(scope.has("N1"), false, "chat reads do not populate the scope set");
+    assert.equal(scope.expansions().length, 0, "no expansion is recorded for a plain chat read");
+  });
+
+  it("interactive_chat: still elicits on a hard floor (scope_sensitive)", async () => {
+    const db = await freshDb();
+    await db.execute({
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N1", "project", "P", null, "U1", "team", JSON.stringify({ scope_sensitive: true })],
+    });
+    const scope = new SessionScope("interactive_chat");
+    const r = await guardNodeRead(db, scope, "N1", "U1");
+    assert.equal(r.kind, "elicit");
+  });
+
+  it("refuses (not elicits) a headless session hitting a hard floor", async () => {
+    const db = await freshDb();
+    await db.execute({
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N1", "project", "P", null, "U_OTHER", "private", null],
+    });
+    const scope = new SessionScope("headless");
+    const r = await guardNodeRead(db, scope, "N1", "U_SELF");
+    assert.equal(r.kind, "refused");
+    assert.equal(scope.has("N1"), false);
+  });
+});
+
+describe("isEdgeReachable", () => {
+  it("false when the scope set is empty", async () => {
+    const db = await freshDb();
+    const scope = new SessionScope("interactive_task");
+    assert.equal(await isEdgeReachable(db, scope, "N1"), false);
+  });
+
+  it("true when the target shares an edge with an in-scope node", async () => {
+    const db = await freshDb();
+    await db.execute({
+      sql: `INSERT INTO edges (id, source_id, target_id, relation) VALUES (?,?,?,?)`,
+      args: ["e1", "A", "B", "related_to"],
+    });
+    const scope = new SessionScope("interactive_task");
+    scope.add("A");
+    assert.equal(await isEdgeReachable(db, scope, "B"), true);
+  });
+
+  it("false for a node two hops away with nothing in between in scope", async () => {
+    const db = await freshDb();
+    await db.execute({
+      sql: `INSERT INTO edges (id, source_id, target_id, relation) VALUES (?,?,?,?)`,
+      args: ["e1", "A", "B", "related_to"],
+    });
+    await db.execute({
+      sql: `INSERT INTO edges (id, source_id, target_id, relation) VALUES (?,?,?,?)`,
+      args: ["e2", "B", "C", "related_to"],
+    });
+    const scope = new SessionScope("interactive_task");
+    scope.add("A");
+    assert.equal(await isEdgeReachable(db, scope, "C"), false);
   });
 });

@@ -17,11 +17,12 @@ import { tmpdir } from "node:os";
 import { createClient } from "@libsql/client";
 import { ulid } from "ulid";
 import { ensureSchemaOn, SOLO_USER } from "../apps/server/infra/schema.js";
-import { setDbForTesting } from "../apps/server/infra/db.js";
+import { getDb, setDbForTesting } from "../apps/server/infra/db.js";
 import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { startHttpServer, type HttpServerHandle } from "../apps/server/http/server.js";
+import { createSession } from "../apps/server/domain/sessions.js";
 
 const BASE = "http://127.0.0.1:14913";
 
@@ -85,18 +86,43 @@ describe("GET /nodes/:id/sandbox-profile", () => {
       profile: string;
       portuni_root: string;
       home_mirror: string;
+      projection_root: string | null;
+      session_id: string | null;
     };
     assert.ok(body.home_mirror.endsWith(join("acme", "projects", "proj")));
+    assert.ok(body.session_id, "session_id is returned (#208 follow-up)");
     assert.ok(body.profile.startsWith("(version 1)"));
     assert.ok(body.profile.includes(`(allow file-read* file-write* (subpath "${body.home_mirror}"))`));
     assert.ok(body.profile.includes(`(deny file-read* file-write* (subpath "${body.portuni_root}"))`));
     // The org (depth-1 neighbour, which has a mirror) is granted read-only on
-    // its REAL path -- exactly one standalone read-allow, and it's the org dir.
-    const neighborReadLines = body.profile.split("\n").filter(
+    // its REAL path; the per-node projection parent gets TWO read-allows
+    // (#191, #211): this session's own narrowed subdirectory, and the fixed
+    // shared bucket every CLI that cannot relay the spawn id back falls
+    // back to (Codex/Vibe) -- three standalone read-allows in total.
+    const readLines = body.profile.split("\n").filter(
       (l) => l.startsWith("(allow file-read* (subpath"),
     );
-    assert.equal(neighborReadLines.length, 1);
-    assert.ok(neighborReadLines[0].includes(`${sep}acme"`), "grants the org real mirror");
+    assert.equal(readLines.length, 3);
+    assert.ok(readLines.some((l) => l.includes(`${sep}acme"`)), "grants the org real mirror");
+    assert.ok(body.projection_root, "projection_root is returned");
+    assert.ok(
+      readLines.some((l) => l.includes(body.projection_root as string)),
+      "grants the projection root",
+    );
+    assert.ok(body.projection_root?.includes(".portuni-sessions"));
+    // The projection grant is narrowed to this session's own subdirectory
+    // (#208 follow-up), not the whole per-node projection parent.
+    assert.ok(
+      readLines.some((l) =>
+        l.includes(join(body.projection_root as string, body.session_id as string)),
+      ),
+      "narrows the projection grant to <projectionRoot>/<session_id>",
+    );
+    // #211: the shared bucket is granted too, alongside the narrow one.
+    assert.ok(
+      readLines.some((l) => l.includes(join(body.projection_root as string, "_shared"))),
+      "also grants the shared bucket for non-relaying CLIs",
+    );
   });
 
   it("409 NO_MIRROR when the node has no local mirror", async () => {
@@ -109,6 +135,34 @@ describe("GET /nodes/:id/sandbox-profile", () => {
   it("404 for an unknown node", async () => {
     const res = await fetch(`${BASE}/nodes/${ulid()}/sandbox-profile`);
     assert.equal(res.status, 404);
+  });
+
+  it("403s a resume_session_id that is running (not suspended) rather than silently ignoring it (#204)", async () => {
+    const session = await createSession(getDb(), SOLO_USER, {
+      node_id: projId,
+      session_type: "interactive_task",
+    });
+    const res = await fetch(
+      `${BASE}/nodes/${projId}/sandbox-profile?resume_session_id=${session.id}`,
+    );
+    assert.equal(res.status, 403);
+    const body = (await res.json()) as { code?: string };
+    assert.equal(body.code, "RESUME_UNAUTHORIZED");
+  });
+
+  it("403s a resume_session_id owned by a different user (#204)", async () => {
+    await getDb().execute({
+      sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+      args: ["someone-else", "else@x.com", "Someone Else"],
+    });
+    const session = await createSession(getDb(), "someone-else", {
+      node_id: projId,
+      session_type: "interactive_task",
+    });
+    const res = await fetch(
+      `${BASE}/nodes/${projId}/sandbox-profile?resume_session_id=${session.id}`,
+    );
+    assert.equal(res.status, 403);
   });
 });
 

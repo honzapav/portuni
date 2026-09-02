@@ -290,7 +290,28 @@ export function buildClaudeMcpJson(args: {
         // Claude Code expands ${VAR:-default} at config load; the :- form
         // degrades to an empty header instead of a config load failure
         // when the variable is unset (e.g. a shell outside the app).
-        headers: { Authorization: `Bearer \${${tokenVar}:-}` },
+        //
+        // X-Portuni-Profile carries the spawn profile id (phase 3, spawn
+        // UX): pty_spawn exports PORTUNI_PROFILE_ID into the shell only
+        // when the terminal was launched under a profile, so this degrades
+        // to an empty header (parsed as "no profile") otherwise. This is
+        // the same env-expansion trick as the bearer token, applied to a
+        // non-secret value -- Claude first (spec: "Explicitly out of
+        // scope: Codex/Vibe/Gemini resume pointers, per-CLI capability"),
+        // Codex/Vibe's config formats have no equivalent runtime expansion
+        // for a second header.
+        // X-Portuni-Spawn-Id (#208 follow-up): pty_spawn exports
+        // PORTUNI_SPAWN_SESSION_ID when the sandbox profile it fetched
+        // before spawning carried a session_id, so the MCP session this
+        // connection creates reuses that id instead of minting an unrelated
+        // one -- the disk projector's per-session subdirectory then lines
+        // up with the Seatbelt grant already narrowed to it. Same
+        // Claude-only, degrades-to-empty-header pattern as X-Portuni-Profile.
+        headers: {
+          Authorization: `Bearer \${${tokenVar}:-}`,
+          "X-Portuni-Profile": `\${PORTUNI_PROFILE_ID:-}`,
+          "X-Portuni-Spawn-Id": `\${PORTUNI_SPAWN_SESSION_ID:-}`,
+        },
       },
     },
   };
@@ -540,5 +561,71 @@ export function buildSoftHint(args: {
     "confirm with the user, then `portuni_expand_scope`.",
     "",
   );
+  return lines.join("\n");
+}
+
+// Orientation data for PORTUNI_SCOPE.md (spec: "Spawn UX" -- fatten
+// provisioning so the automatic first prompt is unnecessary). This is what
+// the old orientation prompt used to fetch and hand the agent as its first
+// message; now the agent reads it off disk on its own, on demand.
+export interface OrientationSummary {
+  node: {
+    name: string;
+    type: string;
+    description: string | null;
+    status: string;
+    goal: string | null;
+    lifecycle_state: string | null;
+  };
+  responsibilities: Array<{
+    title: string;
+    description: string | null;
+    assignees: string[];
+  }>;
+  events: Array<{ type: string; content: string; created_at: string }>;
+  // Most recent suspended session on this node with a handoff note, if any.
+  handoff: { sessionName: string; handoffPath: string; suspendedAt: string } | null;
+}
+
+// Appended to PORTUNI_SCOPE.md only -- .cursor/rules, CLAUDE.md and
+// AGENTS.md stay on the leaner buildSoftHint content, since they are meant
+// as terse per-harness rules rather than a full orientation doc.
+export function buildOrientationHint(o: OrientationSummary): string {
+  const lines: string[] = ["## Node context", ""];
+  const lifecycle = o.node.lifecycle_state ? `, lifecycle: ${o.node.lifecycle_state}` : "";
+  lines.push(`**${o.node.name}** (${o.node.type}) — status: ${o.node.status}${lifecycle}`);
+  if (o.node.goal) lines.push(`Goal: ${o.node.goal}`);
+  if (o.node.description) {
+    lines.push("");
+    lines.push(o.node.description);
+  }
+  lines.push("");
+
+  if (o.responsibilities.length > 0) {
+    lines.push("## Responsibilities", "");
+    for (const r of o.responsibilities) {
+      const who = r.assignees.length > 0 ? ` — ${r.assignees.join(", ")}` : "";
+      lines.push(`- ${r.title}${who}`);
+    }
+    lines.push("");
+  }
+
+  if (o.events.length > 0) {
+    lines.push("## Recent events", "");
+    for (const e of o.events) {
+      const date = e.created_at.slice(0, 10);
+      lines.push(`- \`[${e.type}]\` ${date} — ${e.content}`);
+    }
+    lines.push("");
+  }
+
+  if (o.handoff) {
+    lines.push("## Handoff", "");
+    lines.push(
+      `A previous session ("${o.handoff.sessionName}", suspended ${o.handoff.suspendedAt.slice(0, 10)}) left a handoff note at \`${o.handoff.handoffPath}\`. Read it before starting if you are picking up that work.`,
+    );
+    lines.push("");
+  }
+
   return lines.join("\n");
 }

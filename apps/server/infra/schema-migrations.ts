@@ -53,6 +53,12 @@ import {
   INDEX_OAUTH_GRANTS_REFRESH_HASH,
   DDL_OAUTH_CODES,
   INDEX_OAUTH_CODES_HASH,
+  DDL_SESSIONS,
+  INDEX_SESSIONS_NODE,
+  INDEX_SESSIONS_USER,
+  INDEX_SESSIONS_STATE,
+  DDL_SESSION_SCOPE,
+  INDEX_SESSION_SCOPE_SESSION,
 } from "./schema-triggers.js";
 
 interface Migration {
@@ -1211,6 +1217,150 @@ const MIGRATIONS: Migration[] = [
     },
     up: runMigration025,
   },
+
+  // Migration 026: device_tokens.headless -- an admin-granted credential for
+  // unattended/RALPH-style sessions (docs/superpowers/specs/
+  // 2026-08-31-scope-sessions-redesign-design.md, phase 1). Session type
+  // `headless` is derived from this flag; a headless-flagged token connecting
+  // without ?home_node_id is refused at seed time (apps/server/mcp/
+  // transport.ts). Constant DEFAULT 0 + CHECK is accepted directly on ADD
+  // COLUMN (same shape as migration 020's access_mode), so no nullable-then-
+  // backfill dance is needed.
+  {
+    id: "026_device_tokens_headless",
+    isApplied: async (db) => {
+      const info = await db.execute("PRAGMA table_info(device_tokens)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      return cols.has("headless");
+    },
+    up: async (db) => {
+      await db.execute(
+        "ALTER TABLE device_tokens ADD COLUMN headless INTEGER NOT NULL DEFAULT 0 CHECK(headless IN (0,1))",
+      );
+    },
+  },
+
+  // Migration 027: sessions + session_scope (phase 2 of docs/superpowers/
+  // specs/2026-08-31-scope-sessions-redesign-design.md, "Persistent
+  // sessions"). Fresh installs already get both tables via DDL; existing
+  // installs need them added explicitly. Same DDL constants as the fresh
+  // path so the two can never drift.
+  {
+    id: "027_sessions",
+    isApplied: async (db) => {
+      const r = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'",
+      );
+      if (r.rows.length === 0) return false;
+      const r2 = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='session_scope'",
+      );
+      return r2.rows.length > 0;
+    },
+    up: runMigration027,
+  },
+
+  // Migration 028: sessions.name + name_is_custom (phase 2 of docs/superpowers/
+  // specs/2026-08-31-scope-sessions-redesign-design.md, "Naming & UI"). name
+  // is NOT NULL -- every session always has a display name -- so existing
+  // rows need a backfill matching domain/sessions.ts's
+  // computeDefaultSessionName exactly (node name + ' · ' + created_at's date
+  // part; 'Chat' for the anchor-less interactive_chat rows). name_is_custom
+  // tracks whether a human has renamed the session: 0 means suspend-time
+  // handoff-title enrichment (session-handoff.ts) is still allowed to
+  // overwrite name; a REST rename (domain/sessions.ts's renameSession) sets
+  // it to 1 so that enrichment never clobbers a deliberate choice.
+  {
+    id: "028_sessions_name",
+    isApplied: async (db) => {
+      const info = await db.execute("PRAGMA table_info(sessions)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      return cols.has("name") && cols.has("name_is_custom");
+    },
+    up: runMigration028,
+  },
+
+  // Migration 029: nodes.health (phase 4 of docs/superpowers/specs/
+  // 2026-08-31-scope-sessions-redesign-design.md, "Project health").
+  // Meaningful for project nodes only, orthogonal to lifecycle_state.
+  // Same shape as migration 020's access_mode: constant DEFAULT + CHECK on
+  // ADD COLUMN, no nullable-then-backfill dance needed.
+  {
+    id: "029_nodes_health",
+    up: async (db) => {
+      const info = await db.execute("PRAGMA table_info(nodes)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      if (!cols.has("health")) {
+        await db.execute(
+          "ALTER TABLE nodes ADD COLUMN health TEXT NOT NULL DEFAULT 'on_track' CHECK(health IN ('on_track','at_risk','off_track'))",
+        );
+      }
+    },
+  },
+
+  // Migration 030: sessions.node_id ON DELETE CASCADE -> SET NULL (#208).
+  // CASCADE deleted the durable session record (and, transitively via its
+  // own FK, session_scope's audit rows for OTHER nodes too, since they hang
+  // off sessions.id) the moment its anchor node was deleted -- contradicting
+  // the spec's "durable core outlives every CLI's transcript retention by
+  // design". SQLite has no ALTER TABLE for an FK's ON DELETE clause, so this
+  // is a table rebuild (same shape as migrations 007/008's actors rebuild).
+  {
+    id: "030_sessions_node_set_null",
+    isApplied: async (db) => {
+      const r = await db.execute({
+        sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'",
+        args: [],
+      });
+      return String(r.rows[0]?.sql ?? "").includes("ON DELETE SET NULL");
+    },
+    up: runMigration030,
+  },
+
+  // Migration 031: idx_files_unique_remote drops remote_name from its key
+  // (#201). registerLocalFile/registerFileRecordRemote no longer require a
+  // resolvable remote -- a local-only workspace registers with remote_name
+  // NULL -- but the old (node_id, remote_name, remote_path) index treats
+  // every NULL remote_name as distinct (standard SQL NULL semantics), so it
+  // could never dedupe re-registrations of the same file, and a later
+  // storeFile resolving the remote would insert a second row instead of
+  // backfilling the first. remote_path alone already identifies "the same
+  // file" (derived purely from node identity, never from the remote), so
+  // (node_id, remote_path) is both sufficient and NULL-safe.
+  {
+    id: "031_files_unique_remote_drop_remote_name",
+    isApplied: async (db) => {
+      const r = await db.execute({
+        sql: "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_files_unique_remote'",
+        args: [],
+      });
+      const sql = String(r.rows[0]?.sql ?? "");
+      return sql.length > 0 && !sql.includes("remote_name");
+    },
+    up: async (db) => {
+      // Dedupe on the NEW key first: two rows that previously differed only
+      // by remote_name (e.g. a stale NULL-remote row alongside a since-
+      // resolved one for the same path -- possible pre-fix, if a race ever
+      // slipped past the old index) would now collide. Prefer keeping
+      // whichever row has a resolved remote_name (more complete data) over
+      // a NULL one, then the most recently updated.
+      await db.execute(`
+        DELETE FROM files WHERE remote_path IS NOT NULL AND id NOT IN (
+          SELECT id FROM (
+            SELECT id, ROW_NUMBER() OVER (
+              PARTITION BY node_id, remote_path
+              ORDER BY (remote_name IS NULL) ASC, updated_at DESC, id DESC
+            ) AS rn
+            FROM files WHERE remote_path IS NOT NULL
+          ) WHERE rn = 1
+        )`);
+      await db.execute("DROP INDEX IF EXISTS idx_files_unique_remote");
+      await db.execute(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_files_unique_remote
+           ON files(node_id, remote_path) WHERE remote_path IS NOT NULL`,
+      );
+    },
+  },
 ];
 
 export async function runMigration024(db: Client): Promise<void> {
@@ -1226,6 +1376,87 @@ export async function runMigration025(db: Client): Promise<void> {
   await db.execute(INDEX_OAUTH_GRANTS_REFRESH_HASH);
   await db.execute(DDL_OAUTH_CODES);
   await db.execute(INDEX_OAUTH_CODES_HASH);
+}
+
+export async function runMigration027(db: Client): Promise<void> {
+  await db.execute(DDL_SESSIONS);
+  await db.execute(INDEX_SESSIONS_NODE);
+  await db.execute(INDEX_SESSIONS_USER);
+  await db.execute(INDEX_SESSIONS_STATE);
+  await db.execute(DDL_SESSION_SCOPE);
+  await db.execute(INDEX_SESSION_SCOPE_SESSION);
+}
+
+export async function runMigration028(db: Client): Promise<void> {
+  // Guarded (unlike the other ADD COLUMN steps here) because, unlike a
+  // fresh install where isApplied() already prevents a second call, this
+  // one is also called directly by tests exercising the up() function in
+  // isolation -- ALTER TABLE ADD COLUMN itself has no "IF NOT EXISTS" form.
+  const info = await db.execute("PRAGMA table_info(sessions)");
+  const cols = new Set(info.rows.map((r) => r.name as string));
+  if (cols.has("name") && cols.has("name_is_custom")) return;
+
+  await db.execute(
+    "ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT ''",
+  );
+  await db.execute(
+    "ALTER TABLE sessions ADD COLUMN name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1))",
+  );
+  // Backfill: same format as computeDefaultSessionName (apps/server/domain/
+  // sessions.ts) -- '<node name> · <created_at date>', or 'Chat · <date>'
+  // for the anchor-less interactive_chat rows.
+  await db.execute(
+    "UPDATE sessions SET name = 'Chat · ' || substr(created_at,1,10) WHERE node_id IS NULL",
+  );
+  await db.execute(
+    `UPDATE sessions SET name = (SELECT n.name FROM nodes n WHERE n.id = sessions.node_id) || ' · ' || substr(sessions.created_at,1,10)
+     WHERE node_id IS NOT NULL`,
+  );
+}
+
+// Table rebuild: sessions.node_id ON DELETE CASCADE -> SET NULL. Same shape
+// as migrations 007/008's actors rebuild (foreign_keys off, new table,
+// copy, drop, rename, recreate indexes). No triggers reference `sessions`.
+export async function runMigration030(db: Client): Promise<void> {
+  await db.execute("PRAGMA foreign_keys = OFF");
+  try {
+    await db.execute("DROP INDEX IF EXISTS idx_sessions_node");
+    await db.execute("DROP INDEX IF EXISTS idx_sessions_user");
+    await db.execute("DROP INDEX IF EXISTS idx_sessions_state");
+
+    await db.execute(`CREATE TABLE sessions_new (
+      id TEXT PRIMARY KEY CHECK(length(id) = 26),
+      node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      session_type TEXT NOT NULL CHECK(session_type IN ('interactive_task','interactive_chat','headless','env')),
+      cli TEXT,
+      profile_id TEXT,
+      agent_session_id TEXT,
+      state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived')),
+      handoff_path TEXT,
+      handoff_hash TEXT,
+      name TEXT NOT NULL DEFAULT '',
+      name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
+      created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+      last_active_at DATETIME NOT NULL DEFAULT (datetime('now')),
+      closed_at DATETIME
+    )`);
+    await db.execute(`INSERT INTO sessions_new (
+      id, node_id, user_id, session_type, cli, profile_id, agent_session_id, state,
+      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at
+    ) SELECT
+      id, node_id, user_id, session_type, cli, profile_id, agent_session_id, state,
+      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at
+    FROM sessions`);
+    await db.execute("DROP TABLE sessions");
+    await db.execute("ALTER TABLE sessions_new RENAME TO sessions");
+
+    await db.execute(INDEX_SESSIONS_NODE);
+    await db.execute(INDEX_SESSIONS_USER);
+    await db.execute(INDEX_SESSIONS_STATE);
+  } finally {
+    await db.execute("PRAGMA foreign_keys = ON");
+  }
 }
 
 export async function runMigrations(db: Client): Promise<void> {

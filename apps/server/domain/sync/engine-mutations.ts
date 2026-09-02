@@ -640,7 +640,7 @@ export async function adoptFiles(
     const inserted = await db.execute({
       sql: `INSERT INTO files (id, node_id, filename, status, remote_name, remote_path, current_remote_hash, is_native_format, last_pushed_by, last_pushed_at, created_by, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL
+            ON CONFLICT(node_id, remote_path) WHERE remote_path IS NOT NULL
             DO NOTHING
             RETURNING id`,
       args: [

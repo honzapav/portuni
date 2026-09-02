@@ -17,7 +17,7 @@ import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
 import type { CentralClient } from "./client.js";
 import { CentralHttpError } from "./client.js";
-import { localHashFor, cleanupDeletedRemote, diskHashMatching, PullDirtyLocalError } from "../engine.js";
+import { localHashFor, cleanupDeletedRemote, diskHashMatching, PullDirtyLocalError, ROUTING_GUIDANCE } from "../engine.js";
 import type {
   StatusResult,
   StatusFileEntry,
@@ -597,6 +597,16 @@ export async function storeFileCentral(
     nodeId: a.nodeId,
     localPath,
   });
+  // registerLocalFileCentral (like registerLocalFile) no longer requires a
+  // resolvable remote (#201) -- registration is local-only. This IS a
+  // deliberate push, though, so it needs the same upfront guard storeFile
+  // has: pushing with nowhere to push to is the right moment for
+  // ROUTING_GUIDANCE, not a silent no-op.
+  if (!reg.remote_name) {
+    throw new Error(
+      `No remote routing configured for node ${a.nodeId}\n${ROUTING_GUIDANCE}`,
+    );
+  }
 
   const state = await getFileState(reg.file_id);
   const baseline = state?.last_synced_hash ?? null;

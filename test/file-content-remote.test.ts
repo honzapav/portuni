@@ -49,7 +49,7 @@ async function seedRemote(relPath: string, content: string): Promise<string> {
 
 async function insertFileRow(
   relPath: string,
-  opts: { hash?: string | null; isNative?: boolean } = {},
+  opts: { hash?: string | null; isNative?: boolean; remoteName?: string | null } = {},
 ): Promise<string> {
   const remotePath = await remotePathFor(relPath);
   const id = ulid();
@@ -61,7 +61,7 @@ async function insertFileRow(
       id,
       shared.nodeId,
       relPath.split("/").pop()!,
-      "test-fs",
+      opts.remoteName === undefined ? "test-fs" : opts.remoteName,
       remotePath,
       opts.hash ?? null,
       opts.isNative ? 1 : 0,
@@ -169,6 +169,29 @@ describe("writeFileContentRemote", () => {
     // fs adapter reports sha256 of the put bytes as its canonical hash.
     assert.equal(row.rows[0].current_remote_hash, sha256Buffer(Buffer.from("v2", "utf8")));
     assert.equal(row.rows[0].last_pushed_by, "U1");
+  });
+
+  // #201: a row registered locally before this node had a routed remote
+  // (remote_name NULL) must get remote_name backfilled the moment it is
+  // actually written through a resolved remote -- getFileRecord's lookup no
+  // longer filters on remote_name, so this existing row is found (not
+  // missed into a fresh, colliding insert) and claimed.
+  it("backfills remote_name onto a pre-existing NULL-remote row", async () => {
+    await seedRemote("wip/x.md", "v1");
+    const fileId = await insertFileRow("wip/x.md", { hash: null, remoteName: null });
+    await writeFileContentRemote(shared.db, {
+      userId: "U1",
+      nodeId: shared.nodeId,
+      relPath: "wip/x.md",
+      content: "v2",
+    });
+    const row = await shared.db.execute({
+      sql: "SELECT remote_name, current_remote_hash FROM files WHERE id = ?",
+      args: [fileId],
+    });
+    assert.equal(row.rows.length, 1, "same row, not a duplicate");
+    assert.equal(row.rows[0].remote_name, "test-fs");
+    assert.equal(row.rows[0].current_remote_hash, sha256Buffer(Buffer.from("v2", "utf8")));
   });
 
   it("accepts a save when baseVersion matches the current remote bytes", async () => {

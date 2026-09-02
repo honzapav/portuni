@@ -9,6 +9,7 @@ import {
   NODE_TYPES,
   NODE_VISIBILITIES,
 } from "../infra/schema.js";
+import { HEALTH_STATES } from "../shared/popp.js";
 import { buildNodeRoot, deriveLocalPath } from "../domain/sync/remote-path.js";
 import { resolveRemote } from "../domain/sync/routing.js";
 import { getAdapter } from "../domain/sync/adapter-cache.js";
@@ -35,11 +36,14 @@ import {
 import {
   buildSeatbeltProfile,
   resolveSandboxScopeForNode,
+  ResumeSessionUnauthorizedError,
 } from "../domain/sandbox-profile.js";
 import type { SyncStatusResponse, SyncRunResponse, UntrackedFile } from "../shared/api-types.js";
 import { computeSyncPending } from "../domain/sync/pending.js";
+import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
 import { parseBody, parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 import { nodeVisibleTo, filterVisibleNodeIds } from "../auth/node-access.js";
+import { guardRestNodeWrite, filterRestWritableNodeIds } from "./write-gate.js";
 import { z } from "zod";
 
 export async function handleGetNode(
@@ -87,6 +91,7 @@ export async function handlePatchNode(
           lifecycle_state?: string | null;
           owner_id?: string | null;
           visibility?: string;
+          health?: string;
         }
       | undefined;
     if (!body) {
@@ -101,6 +106,7 @@ export async function handlePatchNode(
       lifecycle_state?: string | null;
       owner_id?: string | null;
       visibility?: (typeof NODE_VISIBILITIES)[number];
+      health?: (typeof HEALTH_STATES)[number];
     } = { node_id: nodeId };
     if (typeof body.name === "string" && body.name.trim().length > 0) {
       update.name = body.name.trim();
@@ -127,13 +133,23 @@ export async function handlePatchNode(
       }
       update.visibility = body.visibility as (typeof NODE_VISIBILITIES)[number];
     }
+    if (body.health !== undefined) {
+      if (!(HEALTH_STATES as readonly string[]).includes(body.health)) {
+        respondJson(res, 400, {
+          error: `invalid health '${body.health}'. Valid: ${HEALTH_STATES.join(", ")}`,
+        });
+        return;
+      }
+      update.health = body.health as (typeof HEALTH_STATES)[number];
+    }
     const hasUpdate =
       update.name !== undefined ||
       update.description !== undefined ||
       update.goal !== undefined ||
       update.lifecycle_state !== undefined ||
       update.owner_id !== undefined ||
-      update.visibility !== undefined;
+      update.visibility !== undefined ||
+      update.health !== undefined;
     if (!hasUpdate) {
       respondJson(res, 400, { error: "no fields to update" });
       return;
@@ -142,6 +158,7 @@ export async function handlePatchNode(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
     await updateNodeInternal(getDb(), identity.userId, update);
     const node = await loadNodeDetail(getDb(), identity.userId, nodeId, identity);
     if (!node) {
@@ -185,6 +202,7 @@ export async function handleMoveNode(
       respondJson(res, 404, { error: "organization not found" });
       return;
     }
+    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
     const result = await moveNodeToOrganization(
       getDb(),
       identity.userId,
@@ -210,6 +228,7 @@ const CreateNodeBody = z
     organization_id: z.string().optional(),
     goal: z.string().nullable().optional(),
     lifecycle_state: z.string().nullable().optional(),
+    health: z.enum(HEALTH_STATES).optional(),
   })
   .refine(
     (b) => b.type === "organization" || typeof b.organization_id === "string",
@@ -244,6 +263,7 @@ export async function handleCreateNode(
       organization_id: body.organization_id,
       goal: body.goal ?? undefined,
       lifecycle_state: body.lifecycle_state ?? undefined,
+      health: body.health ?? undefined,
     });
     const node = await loadNodeDetail(getDb(), identity.userId, id, identity);
     respondJson(res, 201, node);
@@ -273,6 +293,7 @@ export async function handleDeleteNode(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
     await db.execute({
       sql: "UPDATE nodes SET status = 'archived', updated_at = ? WHERE id = ?",
       args: [new Date().toISOString(), nodeId],
@@ -356,7 +377,14 @@ export async function handleSyncStatus(
       local_path: u.local_path,
       mime_type: mimeFor(u.filename),
     }));
-    const payload: SyncStatusResponse = { files: tagged, untracked };
+    // #202: only present when this node has ever had a watcher error
+    // tracked, so a node with none sees no shape change.
+    const watcherErrors = getWatcherErrors(nodeId);
+    const payload: SyncStatusResponse = {
+      files: tagged,
+      untracked,
+      ...(watcherErrors.length > 0 ? { watcher_errors: watcherErrors } : {}),
+    };
     respondJson(res, 200, payload);
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sync-status`, err);
@@ -373,6 +401,28 @@ export async function handleSyncPending(
     respondJson(res, 200, result);
   } catch (err) {
     respondError(res, `${req.method} /sync/pending`, err);
+  }
+}
+
+// GET /sync/health -- workspace-wide watcher-error diagnostics (#202): every
+// currently-tracked mirror-watcher failure on this device, group-visibility
+// filtered the same way computeSyncPending is. Backs the Nastavení ->
+// Synchronizace banner; the per-node view is sync-status's watcher_errors
+// field above.
+export async function handleSyncHealth(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const errors = getWatcherErrors();
+    const visibleIds = await filterVisibleNodeIds(db, identity, [
+      ...new Set(errors.map((e) => e.node_id)),
+    ]);
+    respondJson(res, 200, { errors: errors.filter((e) => visibleIds.has(e.node_id)) });
+  } catch (err) {
+    respondError(res, `${req.method} /sync/health`, err);
   }
 }
 
@@ -749,6 +799,7 @@ export async function handleResolveFile(
       respondJson(res, 404, { error: "file not found" });
       return;
     }
+    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
     if (action === "keep_local") {
       const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
       if (!mirrorRoot) {
@@ -818,6 +869,7 @@ export async function handleCreateNodeMirror(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
     const result = await createMirrorForNode(db, identity.userId, { nodeId });
     // Best-effort folder URL on the routed remote — not part of the
     // happy-path mirror creation. We don't await any heavy listing here;
@@ -881,7 +933,12 @@ export async function handleNodeSandboxProfile(
       respondJson(res, 404, { error: `node ${nodeId} not found` });
       return;
     }
-    const scope = await resolveSandboxScopeForNode(db, identity.userId, nodeId);
+    // Restart consolidation (#191): a resumed session passes the suspended
+    // session's id so its accumulated read set gets real-mirror grants too,
+    // not just the depth-1 seed set. Absent for a fresh spawn.
+    const resumeSessionId =
+      new URL(req.url ?? "", "http://internal").searchParams.get("resume_session_id") ?? undefined;
+    const scope = await resolveSandboxScopeForNode(db, identity.userId, nodeId, resumeSessionId);
     if (!scope) {
       respondJson(res, 409, {
         error: `node ${nodeId} has no local mirror on this device`,
@@ -893,8 +950,14 @@ export async function handleNodeSandboxProfile(
       profile: buildSeatbeltProfile(scope),
       portuni_root: scope.portuniRoot,
       home_mirror: scope.homeMirror,
+      projection_root: scope.projectionRoot ?? null,
+      session_id: scope.sessionId ?? null,
     });
   } catch (err) {
+    if (err instanceof ResumeSessionUnauthorizedError) {
+      respondJson(res, 403, { error: err.message, code: "RESUME_UNAUTHORIZED" });
+      return;
+    }
     respondError(res, `${req.method} /nodes/${nodeId}/sandbox-profile`, err);
   }
 }
@@ -972,7 +1035,12 @@ export async function handlePositions(
       identity,
       valid.map((entry) => entry.id),
     );
-    const writable = valid.filter((entry) => visibleIds.has(entry.id));
+    const writeScopedIds = await filterRestWritableNodeIds(
+      req,
+      identity,
+      valid.map((entry) => entry.id),
+    );
+    const writable = valid.filter((entry) => visibleIds.has(entry.id) && writeScopedIds.has(entry.id));
     let updated = 0;
     if (writable.length > 0) {
       // One batch instead of a round trip per node -- this fires after every

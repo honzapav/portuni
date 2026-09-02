@@ -7,7 +7,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -20,6 +20,15 @@ import {
 } from "../apps/server/domain/sync/mirror-watcher.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
+import {
+  registerProjectedNode,
+  nodeProjectionDir,
+  clearProjectionRegistryForTests,
+} from "../apps/server/domain/session-projection.js";
+import {
+  getWatcherErrors,
+  clearWatcherErrorBufferForTests,
+} from "../apps/server/domain/sync/watcher-error-buffer.js";
 
 describe("ownerNodeForPath", () => {
   it("returns the innermost (longest-prefix) mirror containing the path", () => {
@@ -73,6 +82,43 @@ describe("createMirrorWatcher dispatch", () => {
     assert.deepEqual(calls[0], { nodeId: "N1", absPath: "/m/wip/a.md" });
   });
 
+  it("re-links an active session projection when a watched file changes (#191)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "portuni-watch-proj-"));
+    const mirror = join(root, "mirror");
+    await mkdir(join(mirror, "wip"), { recursive: true });
+    clearProjectionRegistryForTests();
+    const target = nodeProjectionDir(join(root, ".portuni-sessions", "HOME"), "SESS", "N1");
+    registerProjectedNode("N1", { sessionId: "SESS", mirrorPath: mirror, targetDir: target });
+
+    let emit: ((p: string) => void) | null = null;
+    const watcher = createMirrorWatcher({
+      db: {} as unknown as Client,
+      userId: "U1",
+      listMirrors: async () => [
+        { user_id: "U1", node_id: "N1", local_path: mirror, registered_at: "" },
+      ],
+      reconcile: async () => ({ action: "noop" }),
+      backfill: false,
+      watchFactory: (_root, onPath) => {
+        emit = onPath;
+        return { close() { /* no-op */ } };
+      },
+      debounceMs: 10,
+    });
+    await watcher.start();
+    assert.ok(emit);
+
+    const src = join(mirror, "wip", "a.md");
+    await writeFile(src, "hello\n");
+    emit!(src);
+    await delay(60);
+    watcher.stop();
+
+    assert.equal(await readFile(join(target, "wip", "a.md"), "utf8"), "hello\n");
+    clearProjectionRegistryForTests();
+    await rm(root, { recursive: true, force: true });
+  });
+
   it("ignores events outside any mirror", async () => {
     const calls: string[] = [];
     let emit: ((p: string) => void) | null = null;
@@ -100,6 +146,109 @@ describe("createMirrorWatcher dispatch", () => {
     await delay(40);
     watcher.stop();
     assert.equal(calls.length, 0);
+  });
+});
+
+// #202: reconcile failures used to only reach onError/console. They must
+// also land in the shared watcher-error buffer (keyed by node+path) so the
+// REST layer can surface them, and clear again once the same path
+// reconciles successfully.
+describe("createMirrorWatcher: watcher-error buffer wiring", () => {
+  beforeEach(() => {
+    clearWatcherErrorBufferForTests();
+  });
+
+  it("records a reconcile failure with the node id and path", async () => {
+    let emit: ((p: string) => void) | null = null;
+    const watcher = createMirrorWatcher({
+      db: {} as unknown as Client,
+      userId: "U1",
+      listMirrors: async () => [
+        { user_id: "U1", node_id: "N1", local_path: "/m", registered_at: "" },
+      ],
+      reconcile: async () => {
+        throw new Error("no remote routing configured");
+      },
+      backfill: false,
+      watchFactory: (_root, onPath) => {
+        emit = onPath;
+        return { close() { /* no-op */ } };
+      },
+      onError: () => undefined,
+      debounceMs: 10,
+    });
+    await watcher.start();
+    emit!("/m/wip/a.md");
+    await delay(40);
+    watcher.stop();
+
+    const errors = getWatcherErrors("N1");
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0].path, "/m/wip/a.md");
+    assert.equal(errors[0].message, "no remote routing configured");
+  });
+
+  it("clears the entry once the same path reconciles successfully", async () => {
+    let emit: ((p: string) => void) | null = null;
+    let shouldFail = true;
+    const watcher = createMirrorWatcher({
+      db: {} as unknown as Client,
+      userId: "U1",
+      listMirrors: async () => [
+        { user_id: "U1", node_id: "N1", local_path: "/m", registered_at: "" },
+      ],
+      reconcile: async () => {
+        if (shouldFail) throw new Error("boom");
+        return { action: "noop" };
+      },
+      backfill: false,
+      watchFactory: (_root, onPath) => {
+        emit = onPath;
+        return { close() { /* no-op */ } };
+      },
+      onError: () => undefined,
+      debounceMs: 10,
+    });
+    await watcher.start();
+    emit!("/m/wip/a.md");
+    await delay(40);
+    assert.equal(getWatcherErrors("N1").length, 1);
+
+    shouldFail = false;
+    emit!("/m/wip/a.md");
+    await delay(40);
+    watcher.stop();
+
+    assert.deepEqual(getWatcherErrors("N1"), []);
+  });
+
+  it("a repeated failure for the same path stays one entry (dedupe)", async () => {
+    let emit: ((p: string) => void) | null = null;
+    const watcher = createMirrorWatcher({
+      db: {} as unknown as Client,
+      userId: "U1",
+      listMirrors: async () => [
+        { user_id: "U1", node_id: "N1", local_path: "/m", registered_at: "" },
+      ],
+      reconcile: async () => {
+        throw new Error("still broken");
+      },
+      backfill: false,
+      watchFactory: (_root, onPath) => {
+        emit = onPath;
+        return { close() { /* no-op */ } };
+      },
+      onError: () => undefined,
+      debounceMs: 10,
+    });
+    await watcher.start();
+    emit!("/m/wip/a.md");
+    await delay(30);
+    emit!("/m/wip/a.md");
+    await delay(30);
+    watcher.stop();
+
+    assert.equal(getWatcherErrors("N1").length, 1);
   });
 });
 

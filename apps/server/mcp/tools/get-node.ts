@@ -6,8 +6,8 @@ import { buildContextPayload } from "./context.js";
 import { getLocalMirror } from "../../domain/sync/local-db.js";
 import { deriveLocalPath, buildNodeRoot } from "../../domain/sync/remote-path.js";
 import { guardNodeRead, scopeExpansionError } from "../scope.js";
-import { readableMirrorRoot } from "../scope-reconciler.js";
-import { logAudit } from "../../infra/audit.js";
+import { readableMirrorRoot } from "../disk-projection.js";
+import { filterVisibleNodeIds } from "../../auth/node-access.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
@@ -51,8 +51,21 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
       // Name-based lookup: filter ambiguity to in-scope candidates BEFORE
       // surfacing match metadata. Unscoped name probing should not return
       // type/id pairs for nodes the agent isn't allowed to see.
+      // interactive_chat has no scope set to filter by (read = permissions),
+      // so it filters to visible candidates instead -- the same substitution
+      // guardNodeRead below makes for the single-node read gate.
       if (args.name && result.rows.length > 1) {
-        const inScopeRows = result.rows.filter((r) => scope.has(r.id as string));
+        let inScopeRows: typeof result.rows;
+        if (scope.sessionType === "interactive_chat") {
+          const visibleIds = await filterVisibleNodeIds(
+            db,
+            ctx.identity,
+            result.rows.map((r) => r.id as string),
+          );
+          inScopeRows = result.rows.filter((r) => visibleIds.has(r.id as string));
+        } else {
+          inScopeRows = result.rows.filter((r) => scope.has(r.id as string));
+        }
         if (inScopeRows.length === 0) {
           return {
             content: [
@@ -91,16 +104,14 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
 
       // Scope gate via central helper. Passing identity enables group-
       // visibility check: non-members get not_found, never an elicit.
-      const guard = await guardNodeRead(db, scope, row.id, ctx.identity.userId, async (action, targetId, detail) => {
-        await logAudit(ctx.identity.userId, action, "scope", targetId, detail);
-      }, ctx.identity);
+      const guard = await guardNodeRead(db, scope, row.id, ctx.identity.userId, ctx.identity, ctx.elicit);
       if (guard.kind === "not_found") {
         return {
           content: [{ type: "text" as const, text: "Node not found" }],
           isError: true,
         };
       }
-      if (guard.kind === "elicit") {
+      if (guard.kind === "elicit" || guard.kind === "refused") {
         return {
           content: [{ type: "text" as const, text: JSON.stringify(guard.error) }],
           isError: true,
@@ -124,20 +135,24 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
         : null;
 
       // Single-source disk projection: for a non-home in-scope node the agent
-      // can only read the staged copy, so derive file paths from there and
-      // ensure the copy is fresh first. local_mirror keeps pointing at the real
-      // mirror (it is metadata about registration, not a read path).
+      // can only read this session's hardlink projection, so derive file
+      // paths from there and ensure it is fresh first. local_mirror keeps
+      // pointing at the real mirror (it is metadata about registration, not
+      // a read path).
       const homeMirror = scope.homeNodeId
         ? (await getLocalMirror(ctx.identity.userId, scope.homeNodeId))?.local_path ?? null
         : null;
+      let projectionDir: string | null = null;
       if (row.id !== scope.homeNodeId && scope.has(row.id)) {
-        await ctx.reconciler.reconcileNode(row.id);
+        const r = await ctx.projector.projectNode(row.id);
+        projectionDir = r?.dir ?? null;
       }
       const effectiveMirrorRoot = readableMirrorRoot({
         scope,
         nodeId: row.id,
         homeMirror,
         realMirror: mirrorPath,
+        projectionDir,
       });
 
       // 4. Resolve the org_sync_key once for the per-file derivation below.
@@ -204,6 +219,7 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
         visibility: row.visibility,
         goal: root.goal,
         lifecycle_state: root.lifecycle_state,
+        health: root.health,
         owner: root.owner,
         responsibilities: root.responsibilities,
         data_sources: root.data_sources,

@@ -21,7 +21,6 @@ import { ulid } from "ulid";
 import { resolveNodeInfo } from "./node-info.js";
 import { resolveRemote } from "./routing.js";
 import { mimeFor } from "./engine.js";
-import { FileContentError } from "./file-content.js";
 import { parseRelPath, buildRemotePathOrThrow } from "./file-content-remote.js";
 
 export interface SyncInfoFile {
@@ -187,7 +186,9 @@ function dedupeByRemotePath(
 export interface RegisterFileRecordResult {
   id: string;
   filename: string;
-  remote_name: string;
+  // null when no remote is routed for this node yet (#201) -- see
+  // registerLocalFile in engine.ts, whose upsert semantics this mirrors.
+  remote_name: string | null;
   remote_path: string;
 }
 
@@ -195,19 +196,15 @@ export interface RegisterFileRecordResult {
 // wants it tracked before any upload. Mirrors registerLocalFile's upsert
 // exactly: current_remote_hash + last_pushed_* stay NULL (pending upload);
 // on conflict (already registered) the synced state is left untouched so a
-// synced file is never demoted.
+// synced file is never demoted. Local-only workspaces (no remote routed at
+// all) still register successfully -- remote_name stays null until a
+// deliberate sync resolves routing and backfills it (#201).
 export async function registerFileRecordRemote(
   db: Client,
   a: { userId: string; nodeId: string; relPath: string },
 ): Promise<RegisterFileRecordResult> {
   const info = await resolveNodeInfo(db, a.nodeId);
   const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
-  if (!remoteName) {
-    throw new FileContentError(
-      `no remote routed for node ${a.nodeId} (type=${info.nodeType}, org=${info.orgSyncKey ?? "null"})`,
-      "NO_REMOTE",
-    );
-  }
   const { section, subpath, filename } = parseRelPath(a.relPath);
   const remotePath = buildRemotePathOrThrow(info, section, subpath, filename);
 
@@ -219,10 +216,11 @@ export async function registerFileRecordRemote(
                               remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
                               is_native_format, created_by, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?, ?)
-          ON CONFLICT(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL
+          ON CONFLICT(node_id, remote_path) WHERE remote_path IS NOT NULL
           DO UPDATE SET
             filename = excluded.filename,
             mime_type = excluded.mime_type,
+            remote_name = COALESCE(excluded.remote_name, files.remote_name),
             updated_at = excluded.updated_at
           RETURNING id`,
     args: [ulid(), a.nodeId, filename, status, mt, remoteName, remotePath, a.userId, now, now],
@@ -256,12 +254,6 @@ export async function registerFileRecordsRemote(
   if (a.relPaths.length === 0) return [];
   const info = await resolveNodeInfo(db, a.nodeId);
   const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
-  if (!remoteName) {
-    throw new FileContentError(
-      `no remote routed for node ${a.nodeId} (type=${info.nodeType}, org=${info.orgSyncKey ?? "null"})`,
-      "NO_REMOTE",
-    );
-  }
   const now = new Date().toISOString();
   const parsed = a.relPaths.map((relPath) => {
     const { section, subpath, filename } = parseRelPath(relPath);
@@ -279,10 +271,11 @@ export async function registerFileRecordsRemote(
                                 remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
                                 is_native_format, created_by, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?, ?)
-            ON CONFLICT(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL
+            ON CONFLICT(node_id, remote_path) WHERE remote_path IS NOT NULL
             DO UPDATE SET
               filename = excluded.filename,
               mime_type = excluded.mime_type,
+              remote_name = COALESCE(excluded.remote_name, files.remote_name),
               updated_at = excluded.updated_at
             RETURNING id`,
       args: [ulid(), a.nodeId, p.filename, p.status, p.mt, remoteName, p.remotePath, a.userId, now, now],

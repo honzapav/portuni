@@ -3,9 +3,44 @@ import { parseDriveConfig, parseServiceAccountJson, assertSaDriveConfig, type Se
 import { getDriveAccessToken, __setTokenFetchForTests } from "./drive-sa-auth.js";
 import { getUserAccessToken } from "./drive-user-auth.js";
 import { detectNativeFormat, EXPORT_MIME } from "./native-format.js";
+import { SEARCH_SNIPPET_MAX_CHARS } from "./types.js";
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
+
+// Bounded prefix fetched per search hit to extract a snippet from -- see
+// search()'s snippetSource.
+const SNIPPET_FETCH_MAX_CHARS = 65_536;
+
+// #211 cleanup: snippet fetches used to run one-at-a-time inside the paging
+// loop -- up to `limit` sequential round trips per search. A small
+// concurrency cap parallelizes them without hammering the Drive API quota
+// the way an unbounded Promise.all over the whole page would.
+const SNIPPET_FETCH_CONCURRENCY = 5;
+
+// Bounded-concurrency map: workers pull from a shared index, results land in
+// the same positions as the inputs. Mirrors engine.ts's mapWithConcurrency
+// (statusScan) -- small enough, and specific enough to this module's fetch
+// shape, that sharing one generic helper across the two isn't worth the
+// coupling.
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const idx = next++;
+      if (idx >= items.length) return;
+      results[idx] = await fn(items[idx]);
+    }
+  };
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
 
 let driveFetch: typeof fetch = globalThis.fetch.bind(globalThis);
 export function __setDriveFetchForTests(f: typeof fetch): void {
@@ -478,6 +513,17 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
     // folder this account cannot read) is dropped. Folder lookups are memoised
     // per call: a hundred hits under one node folder cost one files.get per
     // distinct ancestor, not per hit.
+    //
+    // Drive's search API has no per-hit match snippet the way a local grep
+    // does, so bounded-snippet discovery (spec: "Search is discovery, not
+    // ingestion") produced no snippet at all here -- the agent had to read
+    // every hit in full to judge relevance. snippetFor below fetches a
+    // bounded prefix of each hit's content (export to text/plain for
+    // Google-native docs/sheets/slides, a byte-range request otherwise) and
+    // extracts the line around the query match, same shape as the fs/memory
+    // adapter's own snippet. The match may sit outside that bounded prefix
+    // (Drive's full-text index covers the whole file, this doesn't) --
+    // snippet stays undefined then rather than fetching the whole file.
     async search(query, opts) {
       const limit = Math.max(1, opts?.limit ?? 20);
       const q = `fullText contains '${escapeQ(query)}' and trashed = false`;
@@ -516,6 +562,43 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
         }
         return null;
       }
+      // Bounded prefix of a hit's content to search for the match in --
+      // large enough to catch a match near the top of most notes/docs,
+      // small enough that a hundred hits stays a cheap round trip each,
+      // not a full download. Returns null on any fetch failure, a binary
+      // file (NUL byte), or a format with no plain-text export.
+      async function snippetSource(f: DriveFile): Promise<string | null> {
+        try {
+          const native = detectNativeFormat(f.mimeType);
+          if (native.is_native_format) {
+            const params = new URLSearchParams({ mimeType: "text/plain" });
+            const res = await driveFetch(`${DRIVE_API}/files/${f.id}/export?${params.toString()}`, {
+              headers: await authHeaders(),
+            });
+            if (!res.ok) return null;
+            return (await res.text()).slice(0, SNIPPET_FETCH_MAX_CHARS);
+          }
+          const headers = { ...(await authHeaders()), Range: `bytes=0-${SNIPPET_FETCH_MAX_CHARS - 1}` };
+          const res = await driveFetch(`${DRIVE_API}/files/${f.id}?alt=media`, { headers });
+          if (!res.ok && res.status !== 206) return null;
+          const buf = Buffer.from(await res.arrayBuffer());
+          if (buf.includes(0)) return null;
+          // Defensive cap: the Range header is a request, not a guarantee --
+          // a server (or, in tests, a fake) that ignores it and returns the
+          // whole file must not turn this into an unbounded read.
+          return buf.subarray(0, SNIPPET_FETCH_MAX_CHARS).toString("utf8");
+        } catch {
+          return null;
+        }
+      }
+      function extractSnippet(text: string): string | undefined {
+        const at = text.toLowerCase().indexOf(query.toLowerCase());
+        if (at < 0) return undefined;
+        const lineStart = text.lastIndexOf("\n", at) + 1;
+        const lineEndRaw = text.indexOf("\n", at);
+        const lineEnd = lineEndRaw < 0 ? text.length : lineEndRaw;
+        return text.slice(lineStart, Math.min(lineEnd, lineStart + SEARCH_SNIPPET_MAX_CHARS)).trim();
+      }
       const out: SearchHit[] = [];
       const seen = new Set<string>();
       let pageToken: string | undefined;
@@ -531,15 +614,40 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
         const res = await driveFetch(`${DRIVE_API}/files?${params.toString()}`, { headers: await authHeaders() });
         if (!res.ok) throw new Error(`Drive search: ${res.status} ${await res.text()}`);
         const b = (await res.json()) as { files?: DriveFile[]; nextPageToken?: string };
+        // Path resolution stays sequential (seen-dedup + the memoized
+        // ancestor walk both depend on processing hits in order), but only
+        // resolves as many as still fit under `limit` this page. Snippet
+        // fetches for the resolved candidates then run with bounded
+        // concurrency instead of one at a time (#211 cleanup).
+        const candidates: Array<{ file: DriveFile; path: string }> = [];
         for (const f of b.files ?? []) {
           examined++;
           if (isFolder(f)) continue;
           const path = await pathFor(f);
           if (path === null || seen.has(path)) continue;
           seen.add(path);
-          out.push({ path, name: f.name, mimeType: f.mimeType, modifiedTime: f.modifiedTime });
-          if (out.length >= limit) return out;
+          candidates.push({ file: f, path });
+          if (out.length + candidates.length >= limit) break;
         }
+        const snippets = await mapWithConcurrency(
+          candidates,
+          SNIPPET_FETCH_CONCURRENCY,
+          async ({ file }) => {
+            const source = await snippetSource(file);
+            return source ? extractSnippet(source) : undefined;
+          },
+        );
+        for (let i = 0; i < candidates.length; i++) {
+          const { file, path } = candidates[i];
+          out.push({
+            path,
+            name: file.name,
+            mimeType: file.mimeType,
+            modifiedTime: file.modifiedTime,
+            snippet: snippets[i],
+          });
+        }
+        if (out.length >= limit) return out;
         pageToken = b.nextPageToken;
         // Stop paging once enough raw hits were examined: a query that
         // matches thousands of files elsewhere on the drive must not turn

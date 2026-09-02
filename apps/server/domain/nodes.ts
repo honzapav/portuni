@@ -14,7 +14,12 @@ import {
 } from "../infra/schema.js";
 import { generateSyncKey } from "./sync/sync-key.js";
 import { unregisterMirror } from "./sync/mirror-registry.js";
-import { getLifecycleStatesForType } from "../shared/popp.js";
+import {
+  getLifecycleStatesForType,
+  HEALTH_STATES,
+  DEFAULT_HEALTH,
+  isHealthApplicableForType,
+} from "../shared/popp.js";
 import type { NodeType } from "../shared/popp.js";
 import { writeAudit } from "../infra/audit.js";
 
@@ -94,6 +99,7 @@ const CreateNodeInput = z.object({
   visibility: z.enum(NODE_VISIBILITIES).optional(),
   goal: z.string().optional(),
   lifecycle_state: z.string().optional(),
+  health: z.enum(HEALTH_STATES).optional(),
 });
 type CreateNodeInput = z.infer<typeof CreateNodeInput>;
 
@@ -107,6 +113,7 @@ const UpdateNodeInput = z.object({
   goal: z.string().nullable().optional(),
   lifecycle_state: z.string().nullable().optional(),
   owner_id: z.string().nullable().optional(),
+  health: z.enum(HEALTH_STATES).optional(),
 });
 type UpdateNodeInput = z.infer<typeof UpdateNodeInput>;
 
@@ -157,6 +164,10 @@ export async function updateNodeInternal(
     }
   }
 
+  if (args.health !== undefined && !isHealthApplicableForType(nodeType)) {
+    throw new Error(`health is only meaningful for type 'project' (got type '${nodeType}')`);
+  }
+
   // Update non-lifecycle fields first (all in one UPDATE so owner_id trigger
   // fires once, and updated_at bumps once).
   const sets: string[] = [];
@@ -188,6 +199,10 @@ export async function updateNodeInternal(
   if (args.owner_id !== undefined) {
     sets.push("owner_id = ?");
     values.push(args.owner_id);
+  }
+  if (args.health !== undefined) {
+    sets.push("health = ?");
+    values.push(args.health);
   }
 
   if (sets.length > 0) {
@@ -256,6 +271,10 @@ export async function createNodeInternal(
     }
   }
 
+  if (args.health !== undefined && !isHealthApplicableForType(args.type as NodeType)) {
+    throw new Error(`health is only meaningful for type 'project' (got type '${args.type}')`);
+  }
+
   const id = ulid();
   const now = new Date().toISOString();
   const edgeId = args.type !== "organization" ? ulid() : null;
@@ -267,8 +286,8 @@ export async function createNodeInternal(
   // exists without its required organization link.
   const statements: Parameters<typeof db.batch>[0] = [
     {
-      sql: `INSERT INTO nodes (id, type, name, description, meta, status, visibility, sync_key, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      sql: `INSERT INTO nodes (id, type, name, description, meta, status, visibility, health, sync_key, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         id,
         args.type,
@@ -277,6 +296,7 @@ export async function createNodeInternal(
         args.meta ? JSON.stringify(args.meta) : null,
         args.status ?? "active",
         args.visibility ?? "team",
+        args.health ?? DEFAULT_HEALTH,
         syncKey,
         createdBy,
         now,
@@ -317,6 +337,7 @@ export async function createNodeInternal(
     ...(args.organization_id ? { organization_id: args.organization_id } : {}),
     ...(args.goal !== undefined ? { goal: args.goal } : {}),
     ...(args.lifecycle_state !== undefined ? { lifecycle_state: args.lifecycle_state } : {}),
+    ...(args.health !== undefined ? { health: args.health } : {}),
   });
 
   return id;

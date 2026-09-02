@@ -3,9 +3,11 @@
 
 const AGENT_COMMAND_KEY = "portuni:agentCommand";
 
-// Template uses {prompt} as a placeholder for the shell-escaped prompt.
-// If the template has no placeholder, the prompt is appended as the last arg.
-export const DEFAULT_AGENT_COMMAND = "claude {prompt}";
+// No automatic first prompt (spec: "Spawn UX") -- the terminal starts empty
+// and ready, so the command is just the plain CLI invocation. A `{prompt}`
+// placeholder is still tolerated (and stripped) for commands saved before
+// this change; it has no meaning going forward.
+export const DEFAULT_AGENT_COMMAND = "claude";
 
 export type AgentPreset = {
   id: string;
@@ -18,36 +20,32 @@ export const AGENT_PRESETS: AgentPreset[] = [
   {
     id: "claude",
     label: "Claude Code",
-    command: "claude {prompt}",
-    hint: "Launches claude with the prompt as the first user message.",
+    command: "claude",
+    hint: "Spustí Claude Code s prázdným, připraveným terminálem.",
   },
   {
     id: "codex",
     label: "Codex CLI",
-    command: "codex {prompt}",
+    command: "codex",
     hint: "OpenAI Codex CLI.",
   },
   {
     id: "gemini",
     label: "Gemini CLI",
-    command: "gemini -p {prompt}",
-    hint: "Google Gemini CLI, prompt mode.",
+    command: "gemini",
+    hint: "Google Gemini CLI.",
   },
   {
     id: "cursor",
     label: "Cursor Agent",
-    command: "cursor-agent {prompt}",
+    command: "cursor-agent",
     hint: "Cursor CLI agent.",
   },
   {
     id: "opencode",
     label: "OpenCode",
-    // --prompt opens the interactive TUI with the prompt pre-filled.
-    // `opencode run {prompt}` is the headless one-shot mode: it streams the
-    // answer to stdout and exits, so no TUI ever appears — which reads as
-    // "opencode didn't open" when launched from a Portuni terminal.
-    command: "opencode --prompt {prompt}",
-    hint: "OpenCode CLI, interactive TUI with the prompt pre-filled.",
+    command: "opencode",
+    hint: "OpenCode CLI, interaktivní TUI.",
   },
   {
     id: "vibe",
@@ -56,36 +54,52 @@ export const AGENT_PRESETS: AgentPreset[] = [
     // scope auto-seed). Without it, Vibe ignores project config in folders
     // not on its persistent trust list and the session starts unscoped.
     // Session-only: never written to the user's trusted_folders.toml.
-    command: "vibe --trust {prompt}",
+    command: "vibe --trust",
     label: "Mistral Vibe",
-    hint: "Mistral Vibe CLI; trusts the mirror so it auto-seeds Portuni scope.",
+    hint: "Mistral Vibe CLI; označí mirror jako důvěryhodný, takže se automaticky nasadí scope Portuni.",
   },
 ];
 
-// One-shot migrations for agent commands stored before a preset gained a
-// required flag. Selecting a preset persists its command string verbatim,
-// so a later change to AGENT_PRESETS does NOT reach users who already
-// picked it — we upgrade the stored value on load instead. Keyed by exact
-// old string so a user's hand-customised command is never touched.
+// One-shot migrations for agent commands stored before a preset's command
+// string changed shape. Selecting a preset persists its command string
+// verbatim, so a later change to AGENT_PRESETS does NOT reach users who
+// already picked it -- we upgrade the stored value on load instead. Keyed by
+// exact old string so a user's hand-customised command is never touched.
+// Applied repeatedly until no key matches, so multi-step migrations (e.g. a
+// command that changed twice) converge in a single load.
 const AGENT_COMMAND_MIGRATIONS: Record<string, string> = {
+  // The automatic first prompt was removed -- every preset that used to
+  // carry {prompt} as an argument now runs bare.
+  "claude {prompt}": "claude",
+  "codex {prompt}": "codex",
+  "gemini -p {prompt}": "gemini",
+  "cursor-agent {prompt}": "cursor-agent",
+  "opencode --prompt {prompt}": "opencode",
+  "opencode run {prompt}": "opencode",
   // Vibe needs --trust so Portuni-spawned terminals load the per-mirror
   // ./.vibe/config.toml (scope auto-seed). Stored before that was added.
-  "vibe {prompt}": "vibe --trust {prompt}",
-  // `opencode run` is headless one-shot (no TUI); the preset now opens the
-  // interactive TUI with the prompt pre-filled.
-  "opencode run {prompt}": "opencode --prompt {prompt}",
+  "vibe {prompt}": "vibe --trust",
+  "vibe --trust {prompt}": "vibe --trust",
 };
+
+// Bound on the migration chain below so a cyclic table (a bug, not a valid
+// state) can never hang loadAgentCommand -- longest real chain today is 2.
+const AGENT_COMMAND_MIGRATIONS_MAX_HOPS = 5;
 
 export function loadAgentCommand(): string {
   if (typeof window === "undefined") return DEFAULT_AGENT_COMMAND;
   const stored = window.localStorage.getItem(AGENT_COMMAND_KEY);
   if (!stored?.trim()) return DEFAULT_AGENT_COMMAND;
-  const migrated = AGENT_COMMAND_MIGRATIONS[stored.trim()];
-  if (migrated) {
-    window.localStorage.setItem(AGENT_COMMAND_KEY, migrated);
-    return migrated;
+  let current = stored.trim();
+  for (let i = 0; i < AGENT_COMMAND_MIGRATIONS_MAX_HOPS; i++) {
+    const migrated = AGENT_COMMAND_MIGRATIONS[current];
+    if (!migrated || migrated === current) break;
+    current = migrated;
   }
-  return stored;
+  if (current !== stored) {
+    window.localStorage.setItem(AGENT_COMMAND_KEY, current);
+  }
+  return current;
 }
 
 export function saveAgentCommand(template: string): void {
@@ -96,7 +110,7 @@ export function saveAgentCommand(template: string): void {
 // "Spustit X" / "spustí X" labels in the UI so they reflect Settings.
 // Falls back to the capitalised first token of the template when the
 // user has typed a custom command — accurate for any well-formed
-// invocation (`codex {prompt}`, `gemini -p {prompt}`, `my-agent ...`).
+// invocation (`codex`, `gemini --foo`, `my-agent ...`).
 export function agentDisplayName(template: string): string {
   const bin = template.trim().split(/\s+/)[0] ?? "";
   if (!bin) return "agenta";
@@ -110,7 +124,7 @@ export function agentDisplayName(template: string): string {
 // these env vars exposed, so one template covers Terminal.app, iTerm2,
 // Ghostty, Warp, cmux, or anything else without per-terminal Rust code:
 //   $PORTUNI_CWD         working directory of the node
-//   $PORTUNI_COMMAND     full shell command (cd '<path>' && claude '<prompt>')
+//   $PORTUNI_COMMAND     full shell command (cd '<path>' && claude)
 //   $PORTUNI_COMMAND_AS  same command, escaped for AppleScript double-quoted
 //                        strings (\ -> \\, " -> \"), drops straight into a
 //                        `do script "..."` without further work.

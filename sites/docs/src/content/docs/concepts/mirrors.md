@@ -96,6 +96,17 @@ freshly registered file simply shows as "needs push" until someone
 deliberately pushes it. The watcher runs by default in the desktop sidecar;
 on a standalone server it is opt-in via `PORTUNI_WATCH_MIRRORS=1`.
 
+**A watcher failure surfaces in the UI, not only the sidecar log.** When
+registering or reconciling a file fails (a misconfiguration, an unreadable
+file, a mirror that moved away), it used to reach only
+`~/Library/Logs/ooo.workflow.portuni/sidecar-<workspace>.log` — the user
+just saw that files "were not there". A bounded per-node buffer of recent
+failures (path, error message, timestamp) now backs a warning banner on the
+node's Files tab and a workspace-wide banner on Nastavení → Synchronizace
+(`GET /sync/health`, and the `watcher_errors` field on
+`GET /nodes/:id/sync-status`), so a misconfiguration is diagnosable without
+opening logs. A later successful reconcile of the same path clears it.
+
 The watcher also understands the two everyday shell operations:
 
 - **`mv` inside a mirror** is recognized by inode identity (the rename

@@ -32,6 +32,7 @@ import {
   buildClaudeMcpJson,
   buildClaudeSettings,
   buildCodexSandboxConfig,
+  buildOrientationHint,
   buildSoftHint,
   buildVibeMcpToml,
   normalize,
@@ -39,8 +40,11 @@ import {
   resolvePortuniMcpUrl,
   resolvePortuniRoot,
   VIBE_PROJECT_MARKER,
+  type OrientationSummary,
 } from "./write-scope.js";
 import { listUserMirrors } from "./sync/mirror-registry.js";
+import { listSessions } from "./sessions.js";
+import { listResponsibilities } from "./responsibilities.js";
 import { SOLO_USER } from "../infra/schema.js";
 import type { DataSourceRow } from "../shared/types.js";
 import { getDb } from "../infra/db.js";
@@ -74,6 +78,12 @@ export interface MaterializeArgs {
   // passed in (keeps this module DB-free and pure). Omit/empty -> the hint
   // falls back to a "call portuni_list_data_sources" instruction.
   dataSources?: readonly DataSourceRow[];
+  // Orientation data (context summary, responsibilities, recent events,
+  // handoff pointer) appended to PORTUNI_SCOPE.md only -- what the removed
+  // automatic first prompt used to fetch (spec: "Spawn UX"). Caller-fetched,
+  // same reasoning as dataSources. Null/omitted -> PORTUNI_SCOPE.md carries
+  // just the soft hint, as before.
+  orientation?: OrientationSummary | null;
 }
 
 export interface MaterializeResult {
@@ -290,10 +300,15 @@ export async function materializeScopeConfig(
     result.errors.push({ path: ".cursor/rules", message: (e as Error).message });
   }
 
-  // 5. PORTUNI_SCOPE.md (always present, harness-agnostic)
+  // 5. PORTUNI_SCOPE.md (always present, harness-agnostic). Fattened with
+  //    orientation data when available -- unlike .cursor/rules and the
+  //    CLAUDE.md/AGENTS.md hint blocks, which stay on the leaner `hint`.
   try {
     const path = join(cur, "PORTUNI_SCOPE.md");
-    await safeWrite(path, hint);
+    const scopeMdContent = args.orientation
+      ? `${hint}\n\n${buildOrientationHint(args.orientation)}`
+      : hint;
+    await safeWrite(path, scopeMdContent);
     result.written.push(path);
   } catch (e) {
     result.errors.push({ path: "PORTUNI_SCOPE.md", message: (e as Error).message });
@@ -321,6 +336,68 @@ export async function dataSourcesForNode(
   }
 }
 
+// Best-effort fetch of a node's orientation summary for PORTUNI_SCOPE.md
+// (context, responsibilities, recent events, handoff pointer). Same
+// degrade-to-nothing contract as dataSourcesForNode: config materialization
+// must never fail because this read did.
+export async function orientationForNode(
+  nodeId: string | null | undefined,
+): Promise<OrientationSummary | null> {
+  if (!nodeId) return null;
+  try {
+    const db = getDb();
+
+    const nodeRes = await db.execute({
+      sql: "SELECT name, type, description, status, goal, lifecycle_state FROM nodes WHERE id = ?",
+      args: [nodeId],
+    });
+    if (nodeRes.rows.length === 0) return null;
+    const row = nodeRes.rows[0];
+
+    const responsibilities = await listResponsibilities(db, { node_id: nodeId });
+
+    const eventRes = await db.execute({
+      sql: `SELECT type, content, created_at FROM events
+            WHERE node_id = ? AND status IN ('active', 'resolved')
+            ORDER BY created_at DESC LIMIT 10`,
+      args: [nodeId],
+    });
+
+    const suspended = await listSessions(db, { node_id: nodeId, state: "suspended" });
+    const withHandoff = suspended.find((s) => s.handoff_path);
+
+    return {
+      node: {
+        name: row.name as string,
+        type: row.type as string,
+        description: (row.description as string | null) ?? null,
+        status: row.status as string,
+        goal: (row.goal as string | null) ?? null,
+        lifecycle_state: (row.lifecycle_state as string | null) ?? null,
+      },
+      responsibilities: responsibilities.map((r) => ({
+        title: r.title,
+        description: r.description ?? null,
+        assignees: r.assignees.map((a) => a.name),
+      })),
+      events: eventRes.rows.map((e) => ({
+        type: e.type as string,
+        content: e.content as string,
+        created_at: e.created_at as string,
+      })),
+      handoff: withHandoff
+        ? {
+            sessionName: withHandoff.name,
+            handoffPath: withHandoff.handoff_path as string,
+            suspendedAt: withHandoff.last_active_at,
+          }
+        : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Re-materialise every mirror registered for the solo user, picking up
 // the current MCP URL + auth token from env. Called at sidecar boot so
 // per-mirror .mcp.json files written by an older launch (random port,
@@ -333,9 +410,16 @@ export async function materializeAllRegisteredMirrors(opts?: {
   // so it injects a resolver backed by the central server; the default reads
   // the local db (dataSourcesForNode).
   dataSourcesFor?: (nodeId: string) => Promise<DataSourceRow[]>;
+  // Alternate orientation resolver, same reasoning as dataSourcesFor. The
+  // central-mode agent has no local db AND the central client has no
+  // orientation endpoint yet, so its caller passes a resolver that always
+  // returns null (deliberate scope cut, not an oversight) instead of the
+  // default (orientationForNode).
+  orientationFor?: (nodeId: string) => Promise<OrientationSummary | null>;
 }): Promise<MaterializeResult> {
   const aggregated: MaterializeResult = { written: [], errors: [] };
   const resolveDataSources = opts?.dataSourcesFor ?? dataSourcesForNode;
+  const resolveOrientation = opts?.orientationFor ?? orientationForNode;
   const mirrors = await listUserMirrors(SOLO_USER);
   if (mirrors.length === 0) return aggregated;
 
@@ -353,6 +437,7 @@ export async function materializeAllRegisteredMirrors(opts?: {
     const others = paths.filter((p) => p !== m.local_path);
     try {
       const dataSources = await resolveDataSources(m.node_id);
+      const orientation = await resolveOrientation(m.node_id);
       const r = await materializeScopeConfig({
         currentMirror: m.local_path,
         nodeId: m.node_id,
@@ -361,6 +446,7 @@ export async function materializeAllRegisteredMirrors(opts?: {
         portuniRoot,
         guardScriptPath,
         dataSources,
+        orientation,
       });
       aggregated.written.push(...r.written);
       aggregated.errors.push(...r.errors);

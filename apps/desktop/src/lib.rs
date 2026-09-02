@@ -558,9 +558,11 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
 
     // Exact top-level paths. /sync/pending aggregates the DEVICE's mirrors
     // (footer unsynced indicator + quit guard); the central server has none
-    // and would answer an empty aggregate. /sync/drive/* is NOT here: Drive
+    // and would answer an empty aggregate. /sync/health is the same shape
+    // for the mirror-watcher error buffer (#202) -- also device-local, also
+    // empty on the central server. /sync/drive/* is NOT here: Drive
     // remote config lives on the central server in central mode.
-    if p == "/scope" || p == "/sandbox-profile" || p == "/sync/pending" {
+    if p == "/scope" || p == "/sandbox-profile" || p == "/sync/pending" || p == "/sync/health" {
         return true;
     }
 
@@ -615,7 +617,7 @@ fn path_within_root(root: &std::path::Path, candidate: &std::path::Path) -> bool
 /// PathBuf leaves `~` literal. A config value like "~/Workspaces/portuni-tempo"
 /// must therefore be expanded before it can be compared against that absolute
 /// path in `path_within_root`; without this every preview 403s.
-fn expand_tilde(home: &std::path::Path, raw: &str) -> std::path::PathBuf {
+pub(crate) fn expand_tilde(home: &std::path::Path, raw: &str) -> std::path::PathBuf {
     if raw == "~" {
         home.to_path_buf()
     } else if let Some(rest) = raw.strip_prefix("~/") {
@@ -1859,6 +1861,226 @@ fn delete_workspace(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
+// --- CLI profiles registry (phase 3, spawn UX) -----------------------------
+//
+// Non-secret, so it lives in config.json like the workspace registry rather
+// than Keychain. Zero registered profiles keeps the whole feature invisible
+// on the web side; these commands are only ever called from the Settings
+// "Profily" section and the per-spawn picker.
+//
+// #207: env VALUES never leave this process. list_profiles returns only key
+// NAMES -- a value round-tripped through list_profiles would violate "no
+// secret in webview JS, ever" the moment a value actually is one, even
+// though this registry is meant for non-secret config. create_profile/
+// update_profile additionally reject secret-shaped keys outright (see
+// workspace::is_secret_shaped_env_key) so a user pasting e.g.
+// ANTHROPIC_API_KEY=... gets pointed at the Keychain instead of persisting
+// it to plaintext config.json. Because values are never read back, editing
+// an existing profile is a partial-update: update_profile treats an empty
+// submitted value for a key that already exists as "leave unchanged"
+// (apps/web/src/components/ProfilesSection.tsx pre-fills existing keys with
+// an empty value for exactly this reason) -- only a non-empty value
+// actually overwrites the stored one.
+
+fn reject_secret_shaped_keys(env: &std::collections::BTreeMap<String, String>) -> Result<(), String> {
+    for key in env.keys() {
+        if workspace::is_secret_shaped_env_key(key) {
+            return Err(format!(
+                "'{key}' looks like a secret (matches *_TOKEN/*_KEY/*_SECRET/*PASSWORD*) -- store secrets in the OS keychain, not the profiles registry"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct ProfileInfo {
+    id: String,
+    label: String,
+    env_keys: Vec<String>,
+    command: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ProfilesData {
+    profiles: Vec<ProfileInfo>,
+    default_by_org: std::collections::BTreeMap<String, String>,
+}
+
+#[tauri::command]
+fn list_profiles(app: AppHandle) -> Result<ProfilesData, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        _ => {
+            return Ok(ProfilesData {
+                profiles: vec![],
+                default_by_org: std::collections::BTreeMap::new(),
+            })
+        }
+    };
+    Ok(ProfilesData {
+        profiles: file
+            .profiles
+            .into_iter()
+            .map(|(id, cfg)| ProfileInfo {
+                id,
+                label: cfg.label,
+                env_keys: cfg.env.into_keys().collect(),
+                command: cfg.command,
+            })
+            .collect(),
+        default_by_org: file.default_profile_by_org,
+    })
+}
+
+#[derive(Deserialize)]
+struct CreateProfileArgs {
+    id: String,
+    label: String,
+    env: std::collections::BTreeMap<String, String>,
+    command: Option<String>,
+}
+
+#[tauri::command]
+fn create_profile(app: AppHandle, args: CreateProfileArgs) -> Result<(), String> {
+    if !workspace::is_valid_profile_id(&args.id) {
+        return Err("invalid profile id (use lowercase letters, digits, dashes)".to_string());
+    }
+    if args.label.trim().is_empty() {
+        return Err("profile label is required".to_string());
+    }
+    reject_secret_shaped_keys(&args.env)?;
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        _ => return Err("config not migrated to workspaces yet".to_string()),
+    };
+    if file.profiles.contains_key(&args.id) {
+        return Err(format!("profile '{}' already exists", args.id));
+    }
+    file.profiles.insert(
+        args.id,
+        workspace::ProfileConfig {
+            label: args.label,
+            env: args.env,
+            command: args.command.filter(|s| !s.trim().is_empty()),
+        },
+    );
+    workspace::save(&data_dir, &file)
+}
+
+#[derive(Deserialize)]
+struct UpdateProfileArgs {
+    id: String,
+    label: String,
+    env: std::collections::BTreeMap<String, String>,
+    command: Option<String>,
+}
+
+/// Merge a profile update's submitted env into its stored one: an empty
+/// submitted value for a key that already exists means "leave unchanged"
+/// (the webview never received the old value to resubmit it verbatim, see
+/// ProfilesSection.tsx's envKeysToText) -- only a non-empty value, or a
+/// genuinely new key, is actually stored as given. A key omitted from
+/// `submitted` entirely is dropped (the user deleted that line).
+fn merge_profile_env_update(
+    stored: &std::collections::BTreeMap<String, String>,
+    submitted: std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    submitted
+        .into_iter()
+        .map(|(k, v)| {
+            if v.is_empty() {
+                if let Some(existing) = stored.get(&k) {
+                    return (k, existing.clone());
+                }
+            }
+            (k, v)
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn update_profile(app: AppHandle, args: UpdateProfileArgs) -> Result<(), String> {
+    if args.label.trim().is_empty() {
+        return Err("profile label is required".to_string());
+    }
+    reject_secret_shaped_keys(&args.env)?;
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        _ => return Err("config not migrated to workspaces yet".to_string()),
+    };
+    let cfg = file
+        .profiles
+        .get_mut(&args.id)
+        .ok_or_else(|| format!("unknown profile '{}'", args.id))?;
+    cfg.label = args.label;
+    cfg.env = merge_profile_env_update(&cfg.env, args.env);
+    cfg.command = args.command.filter(|s| !s.trim().is_empty());
+    workspace::save(&data_dir, &file)
+}
+
+// Narrow, purpose-built exception to "list_profiles never returns env
+// values" (#207): DetailPane.sessions.tsx's resume-info check needs the
+// resumed session's CLAUDE_CONFIG_DIR value to ask the sidecar about
+// conversation-resumability at the right transcript location (#204).
+// CLAUDE_CONFIG_DIR is a plain directory path, never secret-shaped
+// (create_profile/update_profile reject secret-shaped keys outright), and
+// this command exposes exactly that one well-known key -- not the general
+// env map -- so it cannot become a path for a future secret-shaped key to
+// leak into the webview the way returning the whole map would.
+#[tauri::command]
+fn profile_config_dir(app: AppHandle, id: String) -> Result<Option<String>, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        _ => return Ok(None),
+    };
+    Ok(file.profiles.get(&id).and_then(|cfg| cfg.env.get("CLAUDE_CONFIG_DIR").cloned()))
+}
+
+#[tauri::command]
+fn delete_profile(app: AppHandle, id: String) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        _ => return Err("config not migrated to workspaces yet".to_string()),
+    };
+    if !file.profiles.contains_key(&id) {
+        return Err(format!("unknown profile '{id}'"));
+    }
+    file.profiles.remove(&id);
+    file.default_profile_by_org.retain(|_, p| p != &id);
+    workspace::save(&data_dir, &file)
+}
+
+#[tauri::command]
+fn set_default_profile_for_org(
+    app: AppHandle,
+    org_id: String,
+    profile_id: Option<String>,
+) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut file = match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        _ => return Err("config not migrated to workspaces yet".to_string()),
+    };
+    match profile_id {
+        Some(pid) => {
+            if !file.profiles.contains_key(&pid) {
+                return Err(format!("unknown profile '{pid}'"));
+            }
+            file.default_profile_by_org.insert(org_id, pid);
+        }
+        None => {
+            file.default_profile_by_org.remove(&org_id);
+        }
+    }
+    workspace::save(&data_dir, &file)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // State maps start empty and are filled per workspace by .setup()'s
@@ -2001,6 +2223,12 @@ pub fn run() {
             set_active_workspace,
             set_workspace_enabled,
             delete_workspace,
+            list_profiles,
+            create_profile,
+            update_profile,
+            delete_profile,
+            set_default_profile_for_org,
+            profile_config_dir,
             updater::check_update,
             updater::install_update,
             updater::restart_app,
@@ -2179,6 +2407,14 @@ mod local_only_path_tests {
     }
 
     #[test]
+    fn sync_health_is_local_only() {
+        // The mirror-watcher error buffer (#202) is in-process state on this
+        // device's sidecar; the central server never runs a watcher against
+        // this device's mirrors and would answer an empty/wrong result.
+        assert!(is_local_only_path("/sync/health"));
+    }
+
+    #[test]
     fn sync_drive_stays_central() {
         // Drive remote config lives on the central server in central mode
         // (the agent has no Drive credentials) -- only /sync/pending is
@@ -2294,5 +2530,78 @@ mod expand_tilde_tests {
         let local_path =
             Path::new("/Users/honzapav/Workspaces/portuni-tempo/nodes/abc/wip/page.html");
         assert!(super::path_within_root(&root, local_path));
+    }
+}
+
+#[cfg(test)]
+mod reject_secret_shaped_keys_tests {
+    use super::reject_secret_shaped_keys;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn rejects_a_secret_shaped_key_among_ordinary_ones() {
+        let mut env = BTreeMap::new();
+        env.insert("CLAUDE_CONFIG_DIR".to_string(), "/Users/x/.claude-work".to_string());
+        env.insert("ANTHROPIC_API_KEY".to_string(), "sk-...".to_string());
+        let err = reject_secret_shaped_keys(&env).unwrap_err();
+        assert!(err.contains("ANTHROPIC_API_KEY"));
+        assert!(err.to_lowercase().contains("keychain"));
+    }
+
+    #[test]
+    fn accepts_ordinary_keys() {
+        let mut env = BTreeMap::new();
+        env.insert("CLAUDE_CONFIG_DIR".to_string(), "/Users/x/.claude-work".to_string());
+        env.insert("EDITOR".to_string(), "vim".to_string());
+        assert!(reject_secret_shaped_keys(&env).is_ok());
+    }
+
+    #[test]
+    fn accepts_an_empty_map() {
+        assert!(reject_secret_shaped_keys(&BTreeMap::new()).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod merge_profile_env_update_tests {
+    use super::merge_profile_env_update;
+    use std::collections::BTreeMap;
+
+    fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn empty_value_for_an_existing_key_keeps_the_stored_value() {
+        let stored = map(&[("CLAUDE_CONFIG_DIR", "/Users/x/.claude-work")]);
+        let submitted = map(&[("CLAUDE_CONFIG_DIR", "")]);
+        assert_eq!(
+            merge_profile_env_update(&stored, submitted),
+            map(&[("CLAUDE_CONFIG_DIR", "/Users/x/.claude-work")])
+        );
+    }
+
+    #[test]
+    fn non_empty_value_overwrites_the_stored_value() {
+        let stored = map(&[("CLAUDE_CONFIG_DIR", "/Users/x/.claude-work")]);
+        let submitted = map(&[("CLAUDE_CONFIG_DIR", "/Users/x/.claude-other")]);
+        assert_eq!(
+            merge_profile_env_update(&stored, submitted),
+            map(&[("CLAUDE_CONFIG_DIR", "/Users/x/.claude-other")])
+        );
+    }
+
+    #[test]
+    fn empty_value_for_a_brand_new_key_is_stored_as_empty() {
+        let stored = BTreeMap::new();
+        let submitted = map(&[("NEW_KEY", "")]);
+        assert_eq!(merge_profile_env_update(&stored, submitted), map(&[("NEW_KEY", "")]));
+    }
+
+    #[test]
+    fn a_key_omitted_from_the_submission_is_dropped() {
+        let stored = map(&[("A", "1"), ("B", "2")]);
+        let submitted = map(&[("A", "1")]);
+        assert_eq!(merge_profile_env_update(&stored, submitted), map(&[("A", "1")]));
     }
 }

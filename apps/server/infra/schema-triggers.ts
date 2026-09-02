@@ -39,7 +39,8 @@ export const DDL_DEVICE_TOKENS = `CREATE TABLE IF NOT EXISTS device_tokens (
     created_at DATETIME NOT NULL DEFAULT (datetime('now')),
     expires_at DATETIME,
     revoked_at DATETIME,
-    last_used_at DATETIME
+    last_used_at DATETIME,
+    headless INTEGER NOT NULL DEFAULT 0 CHECK(headless IN (0,1))
   )`;
 
 export const INDEX_DEVICE_TOKENS_USER = `CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_id)`;
@@ -127,6 +128,58 @@ export const DDL_OAUTH_CODES = `CREATE TABLE IF NOT EXISTS oauth_codes (
 
 export const INDEX_OAUTH_CODES_HASH = `CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_codes_hash ON oauth_codes(code_hash)`;
 
+// Migration 027: persistent sessions + session_scope (phase 2 of
+// docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md,
+// "Persistent sessions" -- data model sketch). SessionScope (mcp/scope.ts)
+// becomes a live cache over these rows via
+// apps/server/mcp/session-persistence.ts; the domain module is
+// apps/server/domain/sessions.ts. node_id is nullable: interactive_chat
+// sessions have no anchor. state's terminal value is 'archived' -- a view
+// filter (domain/sessions.ts's autoArchiveClosedSessions), never a delete.
+// name/name_is_custom added by migration 028 -- see there for the
+// default-name / handoff-enrichment / rename model. node_id is ON DELETE
+// SET NULL (migration 030 fixes this on existing DBs): the durable session
+// record and its session_scope audit outlive the anchor node's deletion --
+// CASCADE here would silently destroy the audit trail the spec calls
+// "durable core outlives every CLI's transcript retention by design".
+export const DDL_SESSIONS = `CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY CHECK(length(id) = 26),
+    node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    session_type TEXT NOT NULL CHECK(session_type IN ('interactive_task','interactive_chat','headless','env')),
+    cli TEXT,
+    profile_id TEXT,
+    agent_session_id TEXT,
+    state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived')),
+    handoff_path TEXT,
+    handoff_hash TEXT,
+    name TEXT NOT NULL DEFAULT '',
+    name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
+    created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    last_active_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    closed_at DATETIME
+  )`;
+
+export const INDEX_SESSIONS_NODE = `CREATE INDEX IF NOT EXISTS idx_sessions_node ON sessions(node_id)`;
+export const INDEX_SESSIONS_USER = `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`;
+export const INDEX_SESSIONS_STATE = `CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state)`;
+
+// One row per (session, node) currently in the session's read-scope set --
+// membership, not an append-only event log (an expansion that re-adds an
+// already-in-scope node upserts added_via/reason rather than inserting a
+// second row). writable mirrors SessionScope.canWrite(node_id).
+export const DDL_SESSION_SCOPE = `CREATE TABLE IF NOT EXISTS session_scope (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    added_via TEXT NOT NULL CHECK(added_via IN ('seed','edge','disconnected','created','elicited')),
+    reason TEXT,
+    writable INTEGER NOT NULL DEFAULT 0 CHECK(writable IN (0,1)),
+    added_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (session_id, node_id)
+  )`;
+
+export const INDEX_SESSION_SCOPE_SESSION = `CREATE INDEX IF NOT EXISTS idx_session_scope_session ON session_scope(session_id)`;
+
 // Ground-truth DDL for fresh installs. Includes all CHECK constraints.
 // Existing installs get constraints via migrations.
 export const DDL = [
@@ -149,6 +202,12 @@ export const DDL = [
   INDEX_OAUTH_GRANTS_REFRESH_HASH,
   DDL_OAUTH_CODES,
   INDEX_OAUTH_CODES_HASH,
+  DDL_SESSIONS,
+  INDEX_SESSIONS_NODE,
+  INDEX_SESSIONS_USER,
+  INDEX_SESSIONS_STATE,
+  DDL_SESSION_SCOPE,
+  INDEX_SESSION_SCOPE_SESSION,
   `CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY CHECK(length(id) = 26),
     type TEXT NOT NULL CHECK(type IN (${NODE_TYPES_SQL})),
@@ -162,6 +221,7 @@ export const DDL = [
     pos_y REAL,
     owner_id TEXT,
     lifecycle_state TEXT,
+    health TEXT NOT NULL DEFAULT 'on_track' CHECK(health IN ('on_track','at_risk','off_track')),
     goal TEXT,
     sync_key TEXT NOT NULL,
     created_by TEXT NOT NULL,
@@ -240,12 +300,19 @@ export const DDL = [
     updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_files_node ON files(node_id)`,
-  // One files row per remote object. Concurrent writers (sidecar + tmux
-  // server + agents) do SELECT-then-INSERT; without this index a lost race
-  // registers the same remote file twice and a later delete of either row
-  // trashes the remote while stranding the other.
+  // One files row per remote_path (migration 031 dropped remote_name from
+  // the key, #201). Concurrent writers (sidecar + tmux server + agents) do
+  // SELECT-then-INSERT; without this index a lost race registers the same
+  // object twice and a later delete of either row trashes the remote while
+  // stranding the other. remote_name is deliberately NOT part of the key:
+  // remote_path is derived purely from the node's own identity (section,
+  // subpath, filename), never from which remote is routed, so it alone
+  // already identifies "the same file" -- a row registered before any
+  // remote was configured (remote_name NULL) and the same file registered
+  // again after routing resolves must collide on this index so the upsert
+  // backfills remote_name onto the existing row instead of duplicating it.
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_files_unique_remote
-     ON files(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL`,
+     ON files(node_id, remote_path) WHERE remote_path IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,
     node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,

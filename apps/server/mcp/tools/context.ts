@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { getDb } from "../../infra/db.js";
 import { listUserMirrors, unregisterMirror, getMirrorPath } from "../../domain/sync/mirror-registry.js";
-import { readableMirrorRoot } from "../scope-reconciler.js";
+import { readableMirrorRoot } from "../disk-projection.js";
 import type { Client, InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardNodeRead } from "../scope.js";
@@ -61,6 +61,7 @@ export type ContextRootNode = {
   description: string | null;
   goal: string | null;
   lifecycle_state: string | null;
+  health: string;
   status: string;
   owner: ContextOwner | null;
   responsibilities: ContextResponsibility[];
@@ -78,6 +79,7 @@ export type ContextConnectedNode = {
   name: string;
   description: string | null;
   lifecycle_state: string | null;
+  health: string;
   status: string;
   owner_name: string | null;
   responsibilities_count: number;
@@ -212,7 +214,7 @@ export async function buildContextPayload(
   //    added by migration 006; fall back to nulls if not present (shouldn't
   //    happen in production, but keeps us robust against older test schemas).
   const rootRes = await db.execute({
-    sql: `SELECT id, type, name, description, status, owner_id, goal, lifecycle_state
+    sql: `SELECT id, type, name, description, status, owner_id, goal, lifecycle_state, health
             FROM nodes WHERE id = ?`,
     args: [nodeId],
   });
@@ -235,7 +237,7 @@ export async function buildContextPayload(
           )
           SELECT gw.node_id, MIN(gw.d) AS d,
                  n.type, n.name, n.description, n.status,
-                 n.owner_id, n.lifecycle_state
+                 n.owner_id, n.lifecycle_state, n.health
           FROM graph_walk gw
           JOIN nodes n ON n.id = gw.node_id
           GROUP BY gw.node_id
@@ -345,6 +347,7 @@ export async function buildContextPayload(
     description: (rootRow.description as string | null) ?? null,
     goal: (rootRow.goal as string | null) ?? null,
     lifecycle_state: (rootRow.lifecycle_state as string | null) ?? null,
+    health: rootRow.health as string,
     status: rootRow.status as string,
     owner,
     responsibilities,
@@ -425,6 +428,7 @@ export async function buildContextPayload(
       name: row.name as string,
       description: (row.description as string | null) ?? null,
       lifecycle_state: (row.lifecycle_state as string | null) ?? null,
+      health: row.health as string,
       status: row.status as string,
       owner_name: ownerId ? (ownerNameById.get(ownerId) ?? null) : null,
       responsibilities_count: respCountByNode.get(id) ?? 0,
@@ -515,16 +519,14 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
 
       // Scope gate on the start node. Passing identity enables group-
       // visibility check: non-members get not_found, never an elicit.
-      const guard = await guardNodeRead(db, scope, args.node_id, ctx.identity.userId, async (action, targetId, detail) => {
-        await logAudit(ctx.identity.userId, action, "scope", targetId, detail);
-      }, ctx.identity);
+      const guard = await guardNodeRead(db, scope, args.node_id, ctx.identity.userId, ctx.identity, ctx.elicit);
       if (guard.kind === "not_found") {
         return {
           content: [{ type: "text" as const, text: `Error: node ${args.node_id} not found` }],
           isError: true,
         };
       }
-      if (guard.kind === "elicit") {
+      if (guard.kind === "elicit" || guard.kind === "refused") {
         return {
           content: [
             { type: "text" as const, text: JSON.stringify(guard.error) },
@@ -535,9 +537,9 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
 
       // Depth gate. depth=0/1 is the natural "this node + its immediate
       // neighbors" read; depth>=2 walks out beyond what session_init seeded
-      // and is treated as breadth expansion. strict/balanced refuse without
-      // explicit confirmation; permissive auto-allows + audits.
-      if (args.depth >= 2 && scope.mode !== "permissive") {
+      // and is treated as breadth expansion, always refused without
+      // explicit confirmation.
+      if (args.depth >= 2) {
         return {
           content: [
             {
@@ -547,7 +549,7 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
                 node_id: args.node_id,
                 hint:
                   `Traversal depth ${args.depth} from ${args.node_id} reaches beyond the session scope's depth-1 horizon. ` +
-                  "Ask the user to confirm the breadth, then either call portuni_get_context with depth=1 (and walk further with explicit portuni_expand_scope), or run under PORTUNI_SCOPE_MODE=permissive.",
+                  "Ask the user to confirm the breadth, then call portuni_get_context with depth=1 (and walk further with explicit portuni_expand_scope).",
               }),
             },
           ],
@@ -559,8 +561,7 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
         const payload = await buildContextPayload(db, args.node_id, args.depth, ctx.identity.userId, ctx.identity);
         // depth=0/1 reads everything within one hop of an in-scope start
         // node, which is consistent with the "home + depth-1" seed rule.
-        // permissive mode also auto-adds depth>=2 results. We never auto-add
-        // beyond what the gate above lets through.
+        // We never auto-add beyond what the gate above lets through.
         const added: string[] = [];
         for (const n of [payload.root, ...payload.connected]) {
           if (scope.add(n.id)) added.push(n.id);
@@ -578,26 +579,32 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
             triggered_by: "traversal",
             start: args.node_id,
             depth: args.depth,
-            mode: scope.mode,
+            session_type: scope.sessionType,
           });
         }
 
-        // Rewrite local_path for non-home in-scope nodes to the staged copy
-        // that the Seatbelt sandbox actually allows reading. Await staging
-        // first so the copy is complete before the agent acts on the path:
-        // a node discovered for the FIRST time in this call has its onAdd
-        // staging still in flight, so a follow-up Read could hit a mid-copy
-        // dir. The reconciler's in-flight dedup means this joins the copy
-        // onAdd already started (no double work). Scoped to the nodes this
-        // get_context call surfaces — not the whole session scope.
+        // Rewrite local_path for non-home in-scope nodes to the disk path
+        // the Seatbelt sandbox actually allows reading: the real mirror for
+        // seed nodes, this session's hardlink projection for ad-hoc ones.
+        // Await projection first so the links are complete before the agent
+        // acts on the path: a node discovered for the FIRST time in this
+        // call has its onAdd projection still in flight, so a follow-up
+        // Read could hit a partially-linked dir. The projector's in-flight
+        // dedup means this joins the projection onAdd already started (no
+        // double work). Scoped to the nodes this get_context call surfaces
+        // — not the whole session scope.
         const allPayloadNodes: Array<{ id: string; local_path: string | null }> = [
           payload.root,
           ...payload.connected,
         ];
+        const projectionByNode = new Map<string, string | null>();
         await Promise.all(
           allPayloadNodes
             .filter((n) => n.id !== scope.homeNodeId && scope.has(n.id))
-            .map((n) => ctx.reconciler.reconcileNode(n.id)),
+            .map(async (n) => {
+              const r = await ctx.projector.projectNode(n.id);
+              projectionByNode.set(n.id, r?.dir ?? null);
+            }),
         );
         const homeMirror = scope.homeNodeId
           ? await getMirrorPath(ctx.identity.userId, scope.homeNodeId)
@@ -608,6 +615,7 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
             nodeId: n.id,
             homeMirror,
             realMirror: n.local_path,
+            projectionDir: projectionByNode.get(n.id) ?? null,
           });
         }
 

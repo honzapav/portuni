@@ -149,6 +149,20 @@ pub struct SpawnArgs {
     /// spawns unsandboxed (older frontends, nodes without mirrors).
     #[serde(default)]
     pub sandbox_profile: Option<String>,
+    /// Session id the sandbox profile's projection grant is narrowed to
+    /// (from the same GET /nodes/:id/sandbox-profile response as
+    /// sandbox_profile, #208 follow-up). Exported as
+    /// PORTUNI_SPAWN_SESSION_ID so a Claude Code connection reuses it as
+    /// the MCP session's own id. Absent/empty for older frontends or a
+    /// profile response minted before this field existed.
+    #[serde(default)]
+    pub spawn_session_id: Option<String>,
+    /// Id of a CLI spawn profile (config.json `profiles`, phase 3 spawn UX).
+    /// When set and known, its env vars are merged into the shell and its
+    /// `command` override (if any) replaces `command` above. Absent/unknown
+    /// spawns exactly as before -- profiles are additive, never required.
+    #[serde(default)]
+    pub profile_id: Option<String>,
 }
 
 /// Compute the (program, argv) pair for the PTY child. Pure so the
@@ -175,6 +189,40 @@ fn spawn_program(
 // reopening: 'a'b' -> 'a'\''b'.
 fn shell_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Expand a leading `~` (bare, or `~/...`) in a profile env value to
+/// `home`, reusing lib.rs's path-tilde-expansion (same PORTUNI_WORKSPACE_ROOT
+/// rule, just applied to a plain string value here instead of a PathBuf).
+/// portable-pty's CommandBuilder passes env values to the child verbatim (no
+/// shell involved), so `~` is never expanded on its own -- without this,
+/// `CLAUDE_CONFIG_DIR=~/.claude-work` makes Claude Code create a literal `~`
+/// directory inside the mirror cwd instead of switching accounts (#207).
+fn expand_tilde(value: &str, home: Option<&str>) -> String {
+    match home {
+        Some(home) => crate::expand_tilde(std::path::Path::new(home), value)
+            .to_string_lossy()
+            .into_owned(),
+        None => value.to_string(),
+    }
+}
+
+/// Env vars to actually inject from a profile's stored map (#207): `PORTUNI_*`
+/// keys are dropped so a profile can never silently override the
+/// credential/profile-id env pty_spawn already exported before this merge
+/// runs (a profile defining e.g. `PORTUNI_MCP_TOKEN` would otherwise make
+/// every MCP call 401), and each value gets `expand_tilde` applied. Pure and
+/// order-preserving (BTreeMap iterates sorted by key) so it is unit-testable
+/// without a real CommandBuilder/child process.
+fn resolve_profile_env(
+    profile_env: &std::collections::BTreeMap<String, String>,
+    home: Option<&str>,
+) -> Vec<(String, String)> {
+    profile_env
+        .iter()
+        .filter(|(k, _)| !k.starts_with("PORTUNI_"))
+        .map(|(k, v)| (k.clone(), expand_tilde(v, home)))
+        .collect()
 }
 
 fn pick_shell() -> (String, Vec<String>) {
@@ -280,6 +328,23 @@ pub fn pty_spawn(
     // copies the parent env by default, which is what we want here so
     // the user's shell rc files have what they expect.
     cmd.env("TERM", "xterm-256color");
+    // Spawn session id (#208 follow-up: "kernel-level isolation between
+    // concurrent sessions on the same node"): the Seatbelt profile's own
+    // projection grant is already narrowed to this id (it comes from the
+    // same GET /nodes/:id/sandbox-profile response as sandbox_profile
+    // above), so exporting it lets a Claude Code connection thread it
+    // through (write-scope.ts's X-Portuni-Spawn-Id header) and reuse it as
+    // the MCP session's own id instead of minting an unrelated one.
+    // Exported whenever present, regardless of whether sandbox_profile
+    // itself was applied (non-macOS spawns still benefit from the session
+    // id lining up with the disk projection directory).
+    if let Some(sid) = args
+        .spawn_session_id
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        cmd.env("PORTUNI_SPAWN_SESSION_ID", sid);
+    }
     // Inject one token env var per enabled workspace, so per-mirror configs
     // (which reference ${PORTUNI_MCP_TOKEN_<ID>:-}) resolve the right
     // credential regardless of which workspace the terminal's cwd belongs
@@ -316,6 +381,33 @@ pub fn pty_spawn(
             }
         }
     }
+
+    // Spawn profile (phase 3, spawn UX): merge its env vars into the shell
+    // and, when it carries a command override, use that instead of the
+    // caller's derived agent command. Also exports PORTUNI_PROFILE_ID so a
+    // Claude Code connection can thread it through to the session record
+    // (see write-scope.ts's X-Portuni-Profile header) -- exported whenever
+    // a profile id was requested, even if the registry lookup below finds
+    // nothing (a profile since deleted from config.json), so the session
+    // record still reflects the user's intent. resolve_profile_env drops
+    // PORTUNI_* keys (must not override the token/profile-id env already
+    // set above) and expands a leading `~` in each value (#207).
+    let mut command_override: Option<String> = None;
+    if let Some(pid) = args.profile_id.as_deref().filter(|p| !p.trim().is_empty()) {
+        cmd.env("PORTUNI_PROFILE_ID", pid);
+        if let Ok(data_dir) = app.path().app_data_dir() {
+            if let Ok(crate::workspace::LoadedConfig::V2(file)) = crate::workspace::load(&data_dir) {
+                if let Some(profile) = file.profiles.get(pid) {
+                    let home = std::env::var("HOME").ok();
+                    for (k, v) in resolve_profile_env(&profile.env, home.as_deref()) {
+                        cmd.env(k, v);
+                    }
+                    command_override = profile.command.clone();
+                }
+            }
+        }
+    }
+    let effective_command = command_override.unwrap_or_else(|| args.command.clone());
 
     let child = pair
         .slave
@@ -359,12 +451,12 @@ pub fn pty_spawn(
     // makes bash print PS2 continuation prompts (`cmdand quote>`) for
     // every embedded newline in the agent prompt, which looks broken
     // even though it eventually executes correctly.
-    if !args.command.trim().is_empty() {
+    if !effective_command.trim().is_empty() {
         let tempfile = std::env::temp_dir().join(format!(
             "portuni-precmd-{}.sh",
             session_id.replace('/', "_"),
         ));
-        let script = format!("#!/bin/bash\n{}\n", args.command.trim());
+        let script = format!("#!/bin/bash\n{}\n", effective_command.trim());
         if let Err(e) = std::fs::write(&tempfile, script) {
             warn!("pty pre-command tempfile write failed: {e}");
         } else {
@@ -581,5 +673,70 @@ mod spawn_program_tests {
         let (program, argv) = spawn_program("/bin/zsh", &["-l".to_string()], None);
         assert_eq!(program, "/bin/zsh");
         assert_eq!(argv, vec!["-l"]);
+    }
+}
+
+#[cfg(test)]
+mod profile_env_tests {
+    use super::*;
+
+    #[test]
+    fn expand_tilde_expands_leading_slash_form() {
+        assert_eq!(
+            expand_tilde("~/.claude-work", Some("/Users/honza")),
+            "/Users/honza/.claude-work"
+        );
+    }
+
+    #[test]
+    fn expand_tilde_expands_bare_tilde() {
+        assert_eq!(expand_tilde("~", Some("/Users/honza")), "/Users/honza");
+    }
+
+    #[test]
+    fn expand_tilde_leaves_absolute_paths_untouched() {
+        assert_eq!(
+            expand_tilde("/Users/honza/.claude-work", Some("/Users/honza")),
+            "/Users/honza/.claude-work"
+        );
+    }
+
+    #[test]
+    fn expand_tilde_only_expands_a_leading_tilde() {
+        // A tilde elsewhere in the value (not the leading char) is not a
+        // shell home-dir reference and must be left alone.
+        assert_eq!(
+            expand_tilde("foo~/bar", Some("/Users/honza")),
+            "foo~/bar"
+        );
+    }
+
+    #[test]
+    fn expand_tilde_without_a_known_home_is_a_no_op() {
+        assert_eq!(expand_tilde("~/.claude-work", None), "~/.claude-work");
+    }
+
+    #[test]
+    fn resolve_profile_env_drops_portuni_keys_and_expands_tilde() {
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("CLAUDE_CONFIG_DIR".to_string(), "~/.claude-work".to_string());
+        env.insert("PORTUNI_MCP_TOKEN".to_string(), "attacker-supplied".to_string());
+        env.insert("PORTUNI_PROFILE_ID".to_string(), "sneaky".to_string());
+        env.insert("EDITOR".to_string(), "vim".to_string());
+
+        let resolved = resolve_profile_env(&env, Some("/Users/honza"));
+
+        assert_eq!(
+            resolved,
+            vec![
+                ("CLAUDE_CONFIG_DIR".to_string(), "/Users/honza/.claude-work".to_string()),
+                ("EDITOR".to_string(), "vim".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_profile_env_of_an_empty_map_is_empty() {
+        assert!(resolve_profile_env(&std::collections::BTreeMap::new(), Some("/Users/honza")).is_empty());
     }
 }

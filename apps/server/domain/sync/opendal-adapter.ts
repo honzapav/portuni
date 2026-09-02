@@ -1,7 +1,7 @@
 import { Operator } from "opendal";
 import { createHash } from "node:crypto";
 import type { FileAdapter, FileRef, RemoteConfig, DeviceTokens, SearchHit } from "./types.js";
-import { CapabilityError } from "./types.js";
+import { CapabilityError, SEARCH_SNIPPET_MAX_CHARS } from "./types.js";
 
 function asString(v: unknown, name: string): string {
   if (typeof v !== "string" || v.length === 0) {
@@ -43,7 +43,6 @@ function isNotFound(e: unknown): boolean {
 }
 
 const SEARCH_MAX_BYTES = 5_000_000;
-const SNIPPET_MAX_CHARS = 200;
 
 function sha256Buffer(buf: Buffer): string {
   return createHash("sha256").update(buf).digest("hex");
@@ -189,7 +188,7 @@ export function createOpenDALAdapter(
         const lineStart = text.lastIndexOf("\n", at) + 1;
         const lineEndRaw = text.indexOf("\n", at);
         const lineEnd = lineEndRaw < 0 ? text.length : lineEndRaw;
-        const snippet = text.slice(lineStart, Math.min(lineEnd, lineStart + SNIPPET_MAX_CHARS)).trim();
+        const snippet = text.slice(lineStart, Math.min(lineEnd, lineStart + SEARCH_SNIPPET_MAX_CHARS)).trim();
         out.push({
           path: ref.path,
           name: ref.path.split("/").pop() ?? ref.path,

@@ -249,8 +249,19 @@ describe("agent router over HTTP", () => {
     await registerMirror(SOLO_USER, NODE_ID, mirrorRoot);
     const r200 = await fetch(`${base}/nodes/${NODE_ID}/sandbox-profile`);
     assert.equal(r200.status, 200);
-    const body = (await r200.json()) as { profile: string; home_mirror: string };
+    const body = (await r200.json()) as {
+      profile: string;
+      home_mirror: string;
+      session_id: string | null;
+    };
     assert.ok(body.profile.includes("(deny default)") || body.profile.length > 0);
+    assert.ok(body.session_id, "session_id is minted even in central mode (#208 follow-up)");
+
+    // Central mode has no db, so it must never trust a caller-supplied
+    // resumeSessionId for the narrowing -- every call mints its own fresh id.
+    const r200Again = await fetch(`${base}/nodes/${NODE_ID}/sandbox-profile`);
+    const bodyAgain = (await r200Again.json()) as { session_id: string | null };
+    assert.notEqual(body.session_id, bodyAgain.session_id);
   });
 
   it("grants central depth-1 neighbour real mirrors in the sandbox profile", async () => {

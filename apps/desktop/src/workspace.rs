@@ -62,11 +62,37 @@ impl WorkspaceConfig {
     }
 }
 
+/// A CLI spawn profile (phase 3, spawn UX): what to inject into a
+/// terminal's environment (and optionally, the command line itself) when
+/// the user launches an agent under this profile. Purely declarative --
+/// Portuni never detects or parses the user's own profile mechanism
+/// (shell aliases, rc files, etc.), it just sets env vars before the
+/// shell starts.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub(crate) struct ProfileConfig {
+    pub label: String,
+    /// Env vars merged into the spawned shell, typically `CLAUDE_CONFIG_DIR`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// Optional full command override, replacing the derived agent command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct WorkspacesFile {
     pub config_version: u32,
     pub active_workspace: String,
     pub workspaces: BTreeMap<String, WorkspaceConfig>,
+    /// CLI profiles registry, keyed by profile id. Empty by default -- zero
+    /// registered profiles means the feature is invisible everywhere else.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub profiles: BTreeMap<String, ProfileConfig>,
+    /// Default profile per organization node id. Only meaningful for ids
+    /// present in `profiles`; a stale entry (profile since deleted) is
+    /// simply ignored by callers, never an error.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub default_profile_by_org: BTreeMap<String, String>,
 }
 
 pub(crate) enum LoadedConfig {
@@ -125,6 +151,18 @@ fn validate(file: &WorkspacesFile) -> Result<(), String> {
             }
         }
     }
+    for id in file.profiles.keys() {
+        if !is_valid_profile_id(id) {
+            return Err(format!("invalid profile id '{id}'"));
+        }
+    }
+    for (org_id, profile_id) in &file.default_profile_by_org {
+        if !file.profiles.contains_key(profile_id) {
+            return Err(format!(
+                "default profile '{profile_id}' for organization '{org_id}' is not registered"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -150,6 +188,25 @@ pub(crate) fn is_valid_workspace_id(id: &str) -> bool {
     bytes
         .iter()
         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+}
+
+/// Same character-set rule as workspace ids (lowercase start, then
+/// lowercase/digit/dash, <=32 chars) -- kept as its own name so profile
+/// and workspace id validity can diverge later without a rename.
+pub(crate) fn is_valid_profile_id(id: &str) -> bool {
+    is_valid_workspace_id(id)
+}
+
+/// A profile's env is a plain `config.json` field (#207): `list_profiles`
+/// returns only `env_keys` (names, never values) to the webview, but the
+/// values themselves are still stored in plaintext on disk, so this
+/// violates "no secret in plaintext on disk" (root CLAUDE.md security
+/// rules) the moment a value actually is one. create_profile/update_profile
+/// reject any key shaped like this outright -- secrets belong in the OS
+/// keychain, not this registry.
+pub(crate) fn is_secret_shaped_env_key(key: &str) -> bool {
+    let upper = key.to_ascii_uppercase();
+    upper.ends_with("_TOKEN") || upper.ends_with("_KEY") || upper.ends_with("_SECRET") || upper.contains("PASSWORD")
 }
 
 /// Env var per-mirror configs reference for this workspace's MCP token.
@@ -291,6 +348,8 @@ pub(crate) fn migrate_v1_value(v1: &serde_json::Value, id: &str) -> WorkspacesFi
         config_version: 2,
         active_workspace: id.to_string(),
         workspaces,
+        profiles: BTreeMap::new(),
+        default_profile_by_org: BTreeMap::new(),
     }
 }
 
@@ -475,25 +534,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn wsfile(active: &str, workspaces: BTreeMap<String, WorkspaceConfig>) -> WorkspacesFile {
+        WorkspacesFile {
+            config_version: 2,
+            active_workspace: active.to_string(),
+            workspaces,
+            profiles: BTreeMap::new(),
+            default_profile_by_org: BTreeMap::new(),
+        }
+    }
+
     #[test]
     fn validate_rejects_duplicate_ports_and_bad_active() {
         let mut m = BTreeMap::new();
         m.insert("a".to_string(), ws(Some(47011)));
         m.insert("b".to_string(), ws(Some(47011)));
-        let file = WorkspacesFile {
-            config_version: 2,
-            active_workspace: "a".to_string(),
-            workspaces: m,
-        };
+        let file = wsfile("a", m);
         assert!(super::validate(&file).is_err());
 
         let mut m2 = BTreeMap::new();
         m2.insert("a".to_string(), ws(Some(47011)));
-        let file2 = WorkspacesFile {
-            config_version: 2,
-            active_workspace: "zzz".to_string(),
-            workspaces: m2,
-        };
+        let file2 = wsfile("zzz", m2);
+        assert!(super::validate(&file2).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_profile_id_and_dangling_org_default() {
+        let mut m = BTreeMap::new();
+        m.insert("a".to_string(), ws(Some(47011)));
+
+        let mut file = wsfile("a", m.clone());
+        file.profiles.insert(
+            "Bad Id".to_string(),
+            ProfileConfig { label: "x".to_string(), ..Default::default() },
+        );
+        assert!(super::validate(&file).is_err());
+
+        let mut file2 = wsfile("a", m);
+        file2.default_profile_by_org.insert("org1".to_string(), "missing".to_string());
         assert!(super::validate(&file2).is_err());
     }
 
@@ -530,5 +608,22 @@ mod tests {
         // the desktop-config response — https only, loopback excepted for dev.
         assert!(normalize_server_url("http://api.example.com").is_err());
         assert!(normalize_server_url("http://192.168.1.10:4011").is_err());
+    }
+
+    #[test]
+    fn secret_shaped_env_keys_are_flagged_case_insensitively() {
+        assert!(is_secret_shaped_env_key("ANTHROPIC_API_KEY"));
+        assert!(is_secret_shaped_env_key("anthropic_api_key"));
+        assert!(is_secret_shaped_env_key("GH_TOKEN"));
+        assert!(is_secret_shaped_env_key("MY_SECRET"));
+        assert!(is_secret_shaped_env_key("DB_PASSWORD"));
+        assert!(is_secret_shaped_env_key("PASSWORD_HASH"));
+    }
+
+    #[test]
+    fn ordinary_config_keys_are_not_flagged() {
+        assert!(!is_secret_shaped_env_key("CLAUDE_CONFIG_DIR"));
+        assert!(!is_secret_shaped_env_key("PORTUNI_PROFILE_ID"));
+        assert!(!is_secret_shaped_env_key("EDITOR"));
     }
 }

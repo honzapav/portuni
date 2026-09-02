@@ -9,6 +9,7 @@ import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardListScope } from "../list-scope-gate.js";
 import { nodeVisibleTo, filterVisibleNodeIds } from "../../auth/node-access.js";
+import { guardNodeWrite } from "../write-gate.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
@@ -45,6 +46,8 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
+      const logWriteGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
+      if (logWriteGuard.kind === "error") return logWriteGuard.response;
 
       // B5: Validate refs -- warn (not error) if any referenced event is missing.
       let refsWarning: string | null = null;
@@ -151,6 +154,8 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
+      const resolveWriteGuard = await guardNodeWrite(scope, row.node_id, ctx.elicit);
+      if (resolveWriteGuard.kind === "error") return resolveWriteGuard.response;
       if (row.status !== "active") {
         return {
           content: [{ type: "text" as const, text: `Error: event ${args.event_id} is not active (status: ${row.status})` }],
@@ -214,6 +219,8 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
+      const supersedeWriteGuard = await guardNodeWrite(scope, oldRow.node_id, ctx.elicit);
+      if (supersedeWriteGuard.kind === "error") return supersedeWriteGuard.response;
 
       let result: Awaited<ReturnType<typeof supersedeEventInternal>>;
       try {
@@ -245,7 +252,7 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_list_events",
-    "List events from the knowledge graph, optionally filtered by node, type, status, or time range. Returns up to 100 events by default (newest first); pass `limit` to override. With node_id the node must be in session scope; without node_id the call is a global query — see portuni://scope-rules.",
+    "List events from the knowledge graph, optionally filtered by node, type, status, or time range. Returns up to 100 events by default (newest first); pass `limit` to override. With node_id the node must be in session scope; without node_id results are restricted to the current session scope set (empty scope means an empty result), except for connector (interactive_chat) sessions, which have no scope set and see every event on nodes visible to them — see portuni://scope-rules.",
     {
       node_id: z.string().optional().describe("Filter by node ID"),
       type: z.enum(EVENT_TYPES).optional().describe("Filter by event type"),
@@ -260,15 +267,9 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
         db,
         scope,
         args.node_id,
-        "portuni_list_events",
-        "list_events",
-        {
-          type: args.type ?? null,
-          status: args.status ?? null,
-          since: args.since ?? null,
-        },
         ctx.identity.userId,
         ctx.identity,
+        ctx.elicit,
       );
       if (gate.kind === "error") return gate.response;
 
@@ -278,21 +279,23 @@ export function registerEventTools(server: McpServer, ctx: SessionCtx): void {
       if (args.node_id !== undefined) {
         conditions.push("e.node_id = ?");
         values.push(args.node_id);
+      } else if (scope.sessionType === "interactive_chat") {
+        // interactive_chat has no in-memory scope set to restrict to (read
+        // scope = permissions): fall through with no node filter, and rely
+        // on the group-visibility filter below, same as global list_nodes.
       } else {
-        // No node filter: when not yet permissive-mode auto-allowed, restrict
-        // to the in-memory scope set so unrelated nodes aren't surfaced as
-        // a side channel through cross-cutting filters.
+        // No node filter: restrict to the in-memory scope set so unrelated
+        // nodes aren't surfaced as a side channel through cross-cutting
+        // filters.
         const inScope = scope.list();
-        if (scope.mode !== "permissive") {
-          if (inScope.length === 0) {
-            return {
-              content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }],
-            };
-          }
-          const placeholders = inScope.map(() => "?").join(",");
-          conditions.push(`e.node_id IN (${placeholders})`);
-          values.push(...inScope);
+        if (inScope.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }],
+          };
         }
+        const placeholders = inScope.map(() => "?").join(",");
+        conditions.push(`e.node_id IN (${placeholders})`);
+        values.push(...inScope);
       }
       if (args.type !== undefined) {
         conditions.push("e.type = ?");

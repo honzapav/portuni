@@ -20,6 +20,7 @@ import {
 } from "../auth/device-tokens.js";
 import { listGrantsForUser, revokeGrant } from "../auth/oauth/grants.js";
 import { logAudit } from "../infra/audit.js";
+import { scopeAtLeast } from "../auth/roles.js";
 
 const LoginBody = z.object({ id_token: z.string().min(1) });
 
@@ -91,7 +92,14 @@ export async function handleMe(
   });
 }
 
-const MintBody = z.object({ label: z.string().min(1).max(200) });
+const MintBody = z.object({
+  label: z.string().min(1).max(200),
+  // Admin-granted credential for unattended/RALPH-style sessions (see
+  // docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md).
+  // Gated below to admin scope: a self-minted headless token would let any
+  // "write"-scoped user skip the interactive elicitation path.
+  headless: z.boolean().optional().default(false),
+});
 
 export async function handleMintDeviceToken(
   req: IncomingMessage,
@@ -101,9 +109,16 @@ export async function handleMintDeviceToken(
   try {
     const body = await parseJsonBody(req, res, MintBody);
     if (!body) return;
-    const minted = await mintDeviceToken(getDb(), identity.userId, body.label);
+    if (body.headless && !scopeAtLeast(identity.globalScope, "admin")) {
+      respondJson(res, 403, { error: "Minting a headless device token requires admin scope" });
+      return;
+    }
+    const minted = await mintDeviceToken(getDb(), identity.userId, body.label, {
+      headless: body.headless,
+    });
     await logAudit(identity.userId, "mint_device_token", "device_token", minted.id, {
       label: body.label,
+      headless: body.headless,
     });
     respondJson(res, 201, minted);
   } catch (err) {

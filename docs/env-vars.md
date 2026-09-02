@@ -33,7 +33,6 @@ rest are optional tunables with code defaults. Grep check:
 | `PORTUNI_SESSION_TTL_MS` | see `apps/server/mcp/transport.ts` | MCP session idle TTL |
 | `PORTUNI_SESSION_GC_INTERVAL_MS` | ditto | Session GC sweep interval |
 | `PORTUNI_MAX_SESSIONS` | ditto | Concurrent MCP session cap |
-| `PORTUNI_SCOPE_MODE` | default gating | List-tool scope gating mode (see `portuni://scope-rules`) |
 | `PORTUNI_URL` | derived | Server URL override used in materialized scope configs |
 | `PORTUNI_GUARD_SCRIPT` | `scripts/portuni-guard.sh` | Guard hook path written into mirror settings |
 

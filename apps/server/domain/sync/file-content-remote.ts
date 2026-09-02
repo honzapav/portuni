@@ -138,13 +138,17 @@ async function resolveRemoteTarget(
 async function getFileRecord(
   db: Client,
   nodeId: string,
-  remoteName: string,
   remotePath: string,
 ): Promise<{ id: string; isNative: boolean; currentRemoteHash: string | null } | null> {
+  // remote_name is not part of the lookup (#201): remote_path alone already
+  // identifies "the same file" regardless of routing, so this also finds a
+  // row registered locally (remote_name NULL) before this remote existed --
+  // callers backfill remote_name onto it instead of missing it and risking
+  // a second, colliding row.
   const r = await db.execute({
     sql: `SELECT id, is_native_format, current_remote_hash FROM files
-          WHERE node_id = ? AND remote_name = ? AND remote_path = ?`,
-    args: [nodeId, remoteName, remotePath],
+          WHERE node_id = ? AND remote_path = ?`,
+    args: [nodeId, remotePath],
   });
   if (r.rows.length === 0) return null;
   return {
@@ -167,7 +171,7 @@ export async function readFileContentRemote(
   const { remoteName, remotePath, filename } = await resolveRemoteTarget(db, a.nodeId, a.relPath);
   const mime = mimeFor(filename);
 
-  const record = await getFileRecord(db, a.nodeId, remoteName, remotePath);
+  const record = await getFileRecord(db, a.nodeId, remotePath);
   if (record?.isNative) {
     throw new FileContentError(`file is a native format, not editable text: ${a.relPath}`, "NOT_EDITABLE");
   }
@@ -213,7 +217,7 @@ export async function writeFileContentRemote(
   const { remoteName, remotePath, filename } = await resolveRemoteTarget(db, a.nodeId, a.relPath);
   const mime = mimeFor(filename);
 
-  const record = await getFileRecord(db, a.nodeId, remoteName, remotePath);
+  const record = await getFileRecord(db, a.nodeId, remotePath);
   if (record?.isNative) {
     throw new FileContentError(`file is a native format, not editable text: ${a.relPath}`, "NOT_EDITABLE");
   }
@@ -249,15 +253,18 @@ export async function writeFileContentRemote(
   // Refresh the canonical hash on the file record so the graph plane matches
   // the bytes now on the remote. Use whatever the backend reports as its
   // canonical hash (Drive: md5, fs: sha256), falling back to sha256 of the
-  // bytes -- the same selection storeFile makes.
+  // bytes -- the same selection storeFile makes. remote_name is also
+  // (re)written here (#201): getFileRecord's lookup no longer filters on it,
+  // so `record` may be a row registered locally before this remote existed
+  // (remote_name NULL) -- this backfills it, same as storeFile's upsert.
   if (record) {
     const canonicalHash = ref.hash ? ref.hash.toLowerCase() : sha256Buffer(bytes);
     const now = new Date().toISOString();
     await db.execute({
       sql: `UPDATE files
-            SET current_remote_hash = ?, last_pushed_by = ?, last_pushed_at = ?, updated_at = ?
+            SET remote_name = ?, current_remote_hash = ?, last_pushed_by = ?, last_pushed_at = ?, updated_at = ?
             WHERE id = ?`,
-      args: [canonicalHash, a.userId, now, now, record.id],
+      args: [remoteName, canonicalHash, a.userId, now, now, record.id],
     });
   }
 
@@ -283,7 +290,7 @@ export async function readFileBytesRemote(
   a: { nodeId: string; relPath: string },
 ): Promise<{ bytes: Buffer; version: string; canonical_hash: string; filename: string; mime_type: string | null }> {
   const { remoteName, remotePath, filename } = await resolveRemoteTarget(db, a.nodeId, a.relPath);
-  const record = await getFileRecord(db, a.nodeId, remoteName, remotePath);
+  const record = await getFileRecord(db, a.nodeId, remotePath);
   if (record?.isNative) {
     throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
   }
@@ -358,7 +365,7 @@ export async function writeFileBytesRemote(
   },
 ): Promise<{ version: string; canonical_hash: string }> {
   const { remoteName, remotePath, filename } = await resolveRemoteTarget(db, a.nodeId, a.relPath);
-  const record = await getFileRecord(db, a.nodeId, remoteName, remotePath);
+  const record = await getFileRecord(db, a.nodeId, remotePath);
   if (record?.isNative) {
     throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
   }
@@ -421,11 +428,12 @@ export async function writeFileBytesRemote(
 
   if (record) {
     const now = new Date().toISOString();
+    // remote_name backfill: see writeFileContentRemote's identical comment.
     await db.execute({
       sql: `UPDATE files
-            SET current_remote_hash = ?, last_pushed_by = ?, last_pushed_at = ?, updated_at = ?
+            SET remote_name = ?, current_remote_hash = ?, last_pushed_by = ?, last_pushed_at = ?, updated_at = ?
             WHERE id = ?`,
-      args: [canonicalHash, a.userId, now, now, record.id],
+      args: [remoteName, canonicalHash, a.userId, now, now, record.id],
     });
   }
 
@@ -515,9 +523,12 @@ export async function createFileRemote(
   const adapter = await getAdapter(db, remoteName);
   // Refuse to clobber: an existing tracked record OR an object already on the
   // remote at this path means EXISTS (mirrors the local createFile guard).
+  // remote_name is not part of the lookup (#201): remote_path alone already
+  // identifies "the same file" regardless of routing, so this also catches
+  // a row registered locally before any remote was configured.
   const existingRow = await db.execute({
-    sql: "SELECT id FROM files WHERE node_id = ? AND remote_name = ? AND remote_path = ? LIMIT 1",
-    args: [a.nodeId, remoteName, remotePath],
+    sql: "SELECT id FROM files WHERE node_id = ? AND remote_path = ? LIMIT 1",
+    args: [a.nodeId, remotePath],
   });
   if (existingRow.rows.length > 0) {
     throw new FileContentError(`file already exists: ${a.filename}`, "EXISTS");
@@ -542,7 +553,7 @@ export async function createFileRemote(
                              remote_name, remote_path, current_remote_hash, is_native_format,
                              last_pushed_by, last_pushed_at, created_by, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL
+          ON CONFLICT(node_id, remote_path) WHERE remote_path IS NOT NULL
           DO NOTHING
           RETURNING id`,
     args: [

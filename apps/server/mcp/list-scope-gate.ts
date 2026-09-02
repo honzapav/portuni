@@ -1,13 +1,19 @@
-// Shared scope-gate for global-listing MCP tools (portuni_list_events,
-// portuni_list_files, ...). With node_id we run the standard read guard;
-// without it we run the global-query gate and audit the pass-through. The
+// Shared scope-gate for per-node MCP listing tools (portuni_list_events,
+// portuni_list_files, ...). With node_id we run the standard read guard; the
 // per-tool callback shape (content + isError) is encoded once here so the
-// listing tools don't each re-implement it.
+// listing tools don't each re-implement it. Without node_id there is nothing
+// to gate here -- each caller restricts to its own in-memory scope set
+// directly, except interactive_chat (no in-memory scope set; read scope is
+// permission-only, so those callers skip the restriction and rely on their
+// own group-visibility filter -- search and global list_nodes skip this
+// module entirely for the same reason, see
+// docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md
+// "Search is discovery, not ingestion").
 
 import type { Client } from "@libsql/client";
-import { logAudit } from "../infra/audit.js";
-import { decideGlobalQuery, guardNodeRead, type SessionScope } from "./scope.js";
+import { guardNodeRead, type SessionScope } from "./scope.js";
 import type { GroupIdentityView } from "../auth/node-access.js";
+import type { Elicitor } from "./elicit.js";
 
 type ToolErrorResponse = {
   content: Array<{ type: "text"; text: string }>;
@@ -22,68 +28,32 @@ export async function guardListScope(
   db: Client,
   scope: SessionScope,
   nodeId: string | undefined,
-  toolName: string,
-  auditTarget: string,
-  filters: Record<string, unknown>,
   userId: string,
   identity?: GroupIdentityView,
+  elicitor?: Elicitor,
 ): Promise<ListScopeGateResult> {
-  if (nodeId !== undefined) {
-    const guard = await guardNodeRead(
-      db,
-      scope,
-      nodeId,
-      userId,
-      async (action, targetId, detail) => {
-        await logAudit(userId, action, "scope", targetId, detail);
-      },
-      identity,
-    );
-    if (guard.kind === "not_found") {
-      return {
-        kind: "error",
-        response: {
-          content: [{ type: "text", text: `Error: node ${nodeId} not found` }],
-          isError: true,
-        },
-      };
-    }
-    if (guard.kind === "elicit") {
-      return {
-        kind: "error",
-        response: {
-          content: [{ type: "text", text: JSON.stringify(guard.error) }],
-          isError: true,
-        },
-      };
-    }
+  if (nodeId === undefined) {
     return { kind: "ok" };
   }
 
-  const g = decideGlobalQuery(scope);
-  if (g.kind === "elicit") {
+  const guard = await guardNodeRead(db, scope, nodeId, userId, identity, elicitor);
+  if (guard.kind === "not_found") {
     return {
       kind: "error",
       response: {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              error: "scope_expansion_required",
-              tool: toolName,
-              hint: g.message,
-            }),
-          },
-        ],
+        content: [{ type: "text", text: `Error: node ${nodeId} not found` }],
         isError: true,
       },
     };
   }
-  scope.globalQuerySeen = true;
-  await logAudit(userId, "scope_global_query", "scope", auditTarget, {
-    tool: toolName,
-    filters,
-    mode: scope.mode,
-  });
+  if (guard.kind === "elicit" || guard.kind === "refused") {
+    return {
+      kind: "error",
+      response: {
+        content: [{ type: "text", text: JSON.stringify(guard.error) }],
+        isError: true,
+      },
+    };
+  }
   return { kind: "ok" };
 }

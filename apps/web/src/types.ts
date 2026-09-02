@@ -16,6 +16,8 @@ export type {
   SyncStatusResponse,
   SyncRunResponse,
   SyncPendingResponse,
+  WatcherErrorEntry,
+  SyncHealthResponse,
   UntrackedFile,
   FileContentResponse,
   NodeAccessEntry,
@@ -25,6 +27,17 @@ export type {
   DirectoryGroup,
   AccountUser,
   UserAdmin,
+  SessionState,
+  SessionSummary,
+  SessionResumeInfo,
+  OverviewPayload,
+  OverviewSessionRow,
+  OverviewDisconnectedJump,
+  OverviewAttentionNode,
+  OverviewSyncIssue,
+  OverviewEvent,
+  OverviewSessionWrite,
+  OverviewNewNode,
 } from "../../server/shared/api-types";
 
 // Request-only shape for PUT /nodes/:id/access -- not a server response, so
@@ -72,4 +85,13 @@ export {
   EVENT_TYPES,
   LIFECYCLE_STATES_BY_TYPE,
   NODE_VISIBILITIES,
+  HEALTH_STATES,
 } from "../../server/shared/popp";
+
+// Project health -> UI color bucket. Every value maps to a color (no "gray
+// unset" case -- health always has a value, default 'on_track').
+export const HEALTH_COLORS: Record<string, "green" | "yellow" | "red"> = {
+  on_track: "green",
+  at_risk: "yellow",
+  off_track: "red",
+};

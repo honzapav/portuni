@@ -15,6 +15,7 @@ import {
   removeTool,
 } from "../../domain/entity-attributes.js";
 import { nodeVisibleTo } from "../../auth/node-access.js";
+import { guardNodeWrite } from "../write-gate.js";
 import type { SessionCtx } from "../server.js";
 
 async function guardNodeAccess(
@@ -28,7 +29,22 @@ async function guardNodeAccess(
   return { allowed: true };
 }
 
+// node_id for an existing data_sources/tools row, for the write-gate check
+// on remove -- both tables share the same (id, node_id) shape.
+async function attrNodeId(
+  db: Client,
+  table: "data_sources" | "tools",
+  id: string,
+): Promise<string | null> {
+  const row = await db.execute({
+    sql: `SELECT node_id FROM ${table} WHERE id = ?`,
+    args: [id],
+  });
+  return row.rows.length > 0 ? (row.rows[0].node_id as string) : null;
+}
+
 export function registerEntityAttributeTools(server: McpServer, ctx: SessionCtx): void {
+  const { scope } = ctx;
   server.tool(
     "portuni_add_data_source",
     "Attach a data source (where the entity gets information: CRM, data warehouse, report, dashboard) to a project/process/area. Create only when the user explicitly asks. The name and description should identify what the source is, not duplicate live state from it (row counts, last refresh, current values) — Portuni does not auto-sync, so any such state goes stale.",
@@ -48,6 +64,8 @@ export function registerEntityAttributeTools(server: McpServer, ctx: SessionCtx)
             isError: true,
           };
         }
+        const writeGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
+        if (writeGuard.kind === "error") return writeGuard.response;
         const row = await addDataSource(db, ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
       } catch (err) {
@@ -67,7 +85,17 @@ export function registerEntityAttributeTools(server: McpServer, ctx: SessionCtx)
     },
     async (args) => {
       try {
-        await removeDataSource(getDb(), ctx.identity.userId, args.data_source_id);
+        const db = getDb();
+        const nodeId = await attrNodeId(db, "data_sources", args.data_source_id);
+        if (nodeId) {
+          const guard = await guardNodeAccess(db, nodeId, ctx.identity);
+          if (!guard.allowed) {
+            return { content: [{ type: "text" as const, text: guard.error }], isError: true };
+          }
+          const writeGuard = await guardNodeWrite(scope, nodeId, ctx.elicit);
+          if (writeGuard.kind === "error") return writeGuard.response;
+        }
+        await removeDataSource(db, ctx.identity.userId, args.data_source_id);
         return {
           content: [{ type: "text" as const, text: JSON.stringify({ id: args.data_source_id, action: "removed" }) }],
         };
@@ -125,6 +153,8 @@ export function registerEntityAttributeTools(server: McpServer, ctx: SessionCtx)
             isError: true,
           };
         }
+        const writeGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
+        if (writeGuard.kind === "error") return writeGuard.response;
         const row = await addTool(db, ctx.identity.userId, args);
         return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
       } catch (err) {
@@ -144,7 +174,17 @@ export function registerEntityAttributeTools(server: McpServer, ctx: SessionCtx)
     },
     async (args) => {
       try {
-        await removeTool(getDb(), ctx.identity.userId, args.tool_id);
+        const db = getDb();
+        const nodeId = await attrNodeId(db, "tools", args.tool_id);
+        if (nodeId) {
+          const guard = await guardNodeAccess(db, nodeId, ctx.identity);
+          if (!guard.allowed) {
+            return { content: [{ type: "text" as const, text: guard.error }], isError: true };
+          }
+          const writeGuard = await guardNodeWrite(scope, nodeId, ctx.elicit);
+          if (writeGuard.kind === "error") return writeGuard.response;
+        }
+        await removeTool(db, ctx.identity.userId, args.tool_id);
         return {
           content: [{ type: "text" as const, text: JSON.stringify({ id: args.tool_id, action: "removed" }) }],
         };

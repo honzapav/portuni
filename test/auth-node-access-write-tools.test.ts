@@ -21,7 +21,7 @@ import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { upsertRemote, addRule } from "../apps/server/domain/sync/routing.js";
 import { createMcpServer, type SessionCtx } from "../apps/server/mcp/server.js";
 import { SessionScope } from "../apps/server/mcp/scope.js";
-import { createScopeReconciler } from "../apps/server/mcp/scope-reconciler.js";
+import { createDiskProjector } from "../apps/server/mcp/disk-projection.js";
 import { registerFileTools } from "../apps/server/mcp/tools/files.js";
 import {
   __setSnapshotExporterForTests,
@@ -37,9 +37,15 @@ import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 // tools directly (bypassing gateToolsByScope) so a non-admin identity can
 // reach the handler and prove the nodeVisibleTo guard fires on its own.
 async function connectRawFileTools(identity: RequestIdentity): Promise<McpClient> {
-  const scope = new SessionScope("strict");
-  const reconciler = createScopeReconciler({ userId: identity.userId, scope });
-  const ctx: SessionCtx = { scope, identity, reconciler };
+  // "env": historical unscoped behavior -- these tests deliberately bypass
+  // the normal tool-scope gate to isolate the group-visibility check, and
+  // "env" is also exempt from the write gate (write-gate.test.ts covers the
+  // write gate itself). "strict" was a pre-#184 scope-mode literal; it is
+  // not a valid SessionType and only worked here by accident (test files
+  // are outside tsconfig's typecheck).
+  const scope = new SessionScope("env");
+  const projector = createDiskProjector({ userId: identity.userId, scope });
+  const ctx: SessionCtx = { scope, identity, projector };
   const server = new McpServer({ name: "raw-files-test", version: "0.0.1" }, {});
   registerFileTools(server, ctx);
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();

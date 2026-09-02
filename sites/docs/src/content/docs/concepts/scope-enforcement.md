@@ -4,12 +4,12 @@ description: How a session's reach is bounded – what an agent can read and whe
 ---
 
 :::note[Scope enforcement is implemented]
-Both halves are in code: read-scope enforcement (session scope set, scope modes, expansion audit) and filesystem write-scope config generation (per-harness configs, `/scope` endpoint, `portuni-guard` hook). Session-close summaries and harness-mode detection are incremental polish. See `docs/superpowers/specs/2026-04-24-scope-model.md` for the full design.
+All three halves are in code: graph read-scope (session scope set, session types, expansion audit), graph write-scope (domain-layer write gate), and filesystem write-scope config generation (per-harness configs, `/scope` endpoint, `portuni-guard` hook). See `docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md` for the full design and `portuni://scope-rules` for the agent-facing contract this page summarizes.
 :::
 
-A Portuni session always has two boundaries: what files the agent can write to, and what nodes it can read from. Without bounds, the agent in a "Goldea Presale" project session can edit files in a sibling process mirror, or list every project across every organization the user can see. Neither is the intended behavior.
+A Portuni session always has boundaries: what files the agent can write to, what graph nodes it can read from, and which of those it can mutate. Without bounds, the agent in a "Goldea Presale" project session can edit files in a sibling process mirror, or list every project across every organization the user can see. Neither is the intended behavior.
 
-The scope model adds two enforceable, complementary mechanisms – one for filesystem writes, one for graph reads – both anchored on the same idea: the **session home node**.
+The scope model adds enforceable, complementary mechanisms – one for filesystem writes, one for graph reads, one for graph writes – all anchored on the same idea: the **session home node**.
 
 ## Session home node
 
@@ -68,7 +68,8 @@ The generated files:
 
   Portuni writes this file only when it is missing or already carries the Portuni marker comment; a hand-edited Codex config is preserved.
 - **`.vibe/config.toml`** – project-scoped MCP server for Mistral Vibe: an `[[mcp_servers]]` entry named `portuni` (transport `streamable-http`, `url = <PORTUNI_URL>?home_node_id=<id>`) plus a `[mcp_servers.auth]` block using `api_key_env = "PORTUNI_MCP_TOKEN"`. Vibe merges this over `~/.vibe/config.toml` (union-merge by `name`), so it adds only the Portuni server. Vibe loads project config **only in trusted folders**, so launch it with `vibe --trust` (the desktop preset does). Marker-guarded like Codex. See [Mistral Vibe](/clients/mistral-vibe/).
-- **`PORTUNI_SCOPE.md`, `.cursor/rules`** – plain-text rules so the agent has the same picture even if the harness config is missing.
+- **`.cursor/rules`** – plain-text write-scope rules so the agent has the same picture even if the harness config is missing.
+- **`PORTUNI_SCOPE.md`** – the same write-scope rules, plus an orientation section (node context, responsibilities, recent events, and a handoff pointer for a suspended session) when that data is available. No automatic first prompt is sent to a spawned terminal anymore (spec: "Spawn UX") — the agent reads this file on its own instead of being told its contents upfront.
 - **`CLAUDE.md` / `AGENTS.md`** – refreshed only if they already exist, between BEGIN/END `portuni-scope` markers. User content outside the markers is preserved.
 
 When the registry changes (mirror added, removed, or renamed), every affected mirror's config is regenerated. Result of every regen:
@@ -87,7 +88,6 @@ When the registry changes (mirror added, removed, or renamed), every affected mi
 | `PORTUNI_GUARD_SCRIPT` | Absolute path of `portuni-guard.sh` written into `.claude/settings.local.json` as the PreToolUse hook command. | Resolved relative to the Portuni install (`scripts/portuni-guard.sh`) |
 | `PORTUNI_URL` | MCP server base URL written into `.mcp.json`, `.codex/config.toml`, and `.vibe/config.toml`. The `/mcp` suffix is appended if missing. | `http://${HOST}:${PORT}/mcp`, defaulting to `http://127.0.0.1:4011/mcp` |
 | `PORTUNI_MCP_TOKEN` (or `PORTUNI_MCP_TOKEN_<ID>` per workspace) | The bearer token the generated configs *reference* via env expansion – never written into them. Set it in the shell that runs the agent; the desktop app injects it into spawned terminals automatically. | unset (header degrades to empty) |
-| `PORTUNI_SCOPE_MODE` | Read-scope elicitation strictness (`strict` / `balanced` / `permissive`). | `strict` |
 
 ### Backstop hook
 
@@ -116,6 +116,19 @@ This catches drift in the declarative config, harness bugs, and cases where the 
 
 Graph reads are bounded by a **session scope set** – the set of node IDs the agent is allowed to fetch in this session. Initially narrow, expanded only by explicit, audited actions.
 
+### Session types
+
+The server derives a `session_type` for every MCP session from the **authentication path** – it is never self-declared by the client or the agent:
+
+| Type | How recognized | Anchor / initial scope | Elicitation |
+|------|-----------------|-------------------------|-------------|
+| `interactive_task` | Connection carries `?home_node_id` (desktop-spawned terminal, mirror `.mcp.json`) | Task node + its depth-1 neighbours | Dialog (or structured refusal fallback) |
+| `interactive_chat` | OAuth-grant connection (claude.ai, Claude Desktop chat, Claude Code added as a connector) | No anchor, no scope set – read is permission-only: any node visible to the user is readable directly, no edge-reachability or expansion round trip | Dialog for hard floors and writes only |
+| `headless` | Device token minted with the `headless` flag (admin-granted credential) | Task node, **required** – a connection without `home_node_id` is refused outright | None – always a hard structured refusal, no dialog, no deferred bypass |
+| `env` | Solo/loopback auth (the standalone server's default) | Same as `interactive_task` | Historical unscoped behavior; writes are unconditionally allowed, reads still nominally scope-gated |
+
+`session_init`, `session_log`, and every scope-related audit entry carry `session_type`.
+
 ### Initial scope set
 
 At session start, if the MCP URL carries `?home_node_id=<id>` (which `portuni_mirror`-generated configs always do), the server auto-seeds the scope set with:
@@ -125,26 +138,57 @@ At session start, if the MCP URL carries `?home_node_id=<id>` (which `portuni_mi
 
 The seed runs as part of session initialization, before the agent's first tool call, and is logged as an audit entry with `triggered_by: "init"`.
 
-Without a `home_node_id` query param (legacy mirror config or ad-hoc client), the scope set starts empty. The agent must call `portuni_session_init` or `portuni_expand_scope` to populate it.
+Without a `home_node_id` query param – a legacy mirror config or an ad-hoc client, still classified `interactive_task` – the scope set starts empty. The agent must call `portuni_session_init` or `portuni_expand_scope` to populate it – edge-reachable expansion has nothing to be reachable from until then.
+
+`interactive_chat` connector sessions are a different case: their read gate never consults a scope set, seeded or not (see the session types table above) – every visible node is readable directly. Neither `portuni_session_init` nor `portuni_expand_scope` is needed to read in that session type.
 
 ### Three ways to expand
 
-| Path | Trigger | User confirmation |
-|------|---------|-------------------|
-| User-initiated pull | User names a node in the prompt ("look at project Evoluce") | Not needed – the user already asked |
-| Agent-initiated expansion | Agent calls a read tool with an out-of-scope node | Required – server elicits confirmation via MCP |
-| Connection-following | Agent walks an edge from an in-scope node | Allowed if the neighbor is within depth 1 of any in-scope node |
+| Path | Trigger | Classification | User confirmation |
+|------|---------|-----------------|--------------------|
+| Edge-reachable expansion | Agent reads a node directly connected by a graph edge to something already in scope | `added_via: "edge"` | None – auto-approved and audited. The server computes reachability itself, never taken from the agent |
+| Disconnected jump | Agent reads a node found only via search or name, with no edge path from anything in scope | `added_via: "disconnected"` | Required for interactive types (dialog, or `portuni_expand_scope` with an honest `reason`); `headless` proceeds only with a declared reason and the jump is surfaced prominently in review |
+| Node creation | The session creates a node (`portuni_create_node`) | `added_via: "created"` | None – a task's own outputs are part of its context by definition |
 
-Every expansion is logged to the audit trail with the reason (the user's quoted phrase, or the agent's stated rationale).
+Repeated disconnected jumps to the same node across sessions are a signal of a missing edge in the graph, not a workflow to route around.
+
+**Hard floors** override the table above: a node with `meta.scope_sensitive: true`, or a `visibility: private` node owned by another user, always elicits in interactive types and is **always refused** in `headless` – there is no `confirmed_hard_floor` override for a headless session.
+
+Every expansion (and every refusal) is logged to the audit trail with the reason (the user's quoted phrase, the agent's stated rationale, or the server's own classification) and surfaced in `portuni_session_log`.
+
+### Protocol elicitation
+
+Clients that declare the `elicitation` capability at `initialize` (MCP SDK ≥ 1.29's `elicitInput`) get a real yes/no dialog instead of the structured-refusal round trip: the same "elicit" classifications above (disconnected jumps, hard floors for non-headless sessions, and write expansion below) try the dialog first. Accepting performs the expansion immediately server-side; declining, cancelling, or talking to a client that never declared the capability falls back to the same `scope_expansion_required` / `write_expansion_required` JSON shape, so an agent sees a consistent contract either way. `headless` sessions never see a dialog, by session-type design, regardless of what the connected client declared.
+
+Agent-mode sessions (the desktop app's central-mode sidecar, `apps/server/mcp/agent-transport.ts`) proxy this transparently: the sidecar advertises the real terminal client's declared capabilities upstream to central, and relays a server-initiated elicitation request from central back down to that same real client, so the dialog appears in the terminal exactly as it would for a direct central session.
 
 ### Disk projection – how read scope reaches the filesystem
 
-The session scope set is the single source of truth for disk reads too, projected onto **real** mirror paths — no copies. The scope splits into two tiers:
+The session scope set is the single source of truth for disk reads too. The scope splits into three tiers:
 
 - **Seed set — home + depth-1 neighbours** (stable, known at spawn). The Seatbelt profile grants read on each neighbour's **real** mirror. Read tools (`portuni_get_node`, `portuni_get_context`, `portuni_list_files`) return those real paths as `local_path`; read the files natively with your own tools. Because the seed set does not shrink during a session (scope only grows), a spawn-time grant never drifts for it.
-- **Ad-hoc set — deeper than depth-1** (added mid-session by `portuni_expand_scope`). The Seatbelt profile is fixed at spawn and cannot be widened, so these nodes are **not** placed on disk. Read their content with [`portuni_read_file`](/reference/files/) (`node_id` + path) — the server reads the live file and returns it. Native `grep`/`glob` over ad-hoc file content is the deliberate trade for tight, hook-free dynamic scope; graph *structure* traversal is unaffected.
+- **Ad-hoc set — deeper than depth-1** (added mid-session by `portuni_expand_scope` or an auto-allowed edge traversal). The Seatbelt profile is fixed at spawn and cannot be widened with a new real path, but it does grant read on a per-node **projection directory** up front. The first time a read tool touches an ad-hoc node that has a local mirror on this device, the server hardlinks that mirror into the session's own subdirectory there — no data duplication, content always current — and `local_path` (and `portuni_expand_scope`'s `projected` field) points at it. The hardlinks stay live for the rest of the session (a file change in the source mirror is reflected automatically) and are cleaned up when the session ends. On resume, a client can pass the suspended session's id (`?resume_session_id=<id>`) when fetching a fresh sandbox profile, so every node that session ever read gets its real mirror granted again up front — a re-expansion from before the restart does not need re-projecting.
+- **No local mirror on this device.** Whatever the tier, a node with no local mirror has no disk path either way. Read its content with [`portuni_read_file`](/reference/files/) (`node_id` + path) — the server reads the live file (or falls back to the routed remote) and returns it. This is the one channel that always works regardless of mirror presence.
 
-The old `.portuni-scope/` copy staging is retired: copies went stale, edits to a copy were never written back, and out-of-scope copies lingered. Real paths dissolve all three. The canonical model is `docs/architecture/scope-disk-projection.md` in the repository.
+The old `.portuni-scope/` copy staging is retired: copies went stale, edits to a copy were never written back, and out-of-scope copies lingered. The hardlink projection above replaced it. The canonical model is `docs/architecture/scope-disk-projection.md` in the repository.
+
+## Write scope – graph mutations
+
+Separate from (and narrower than) read scope: being able to read a node does not make it writable. Enforced in the **domain layer** (`apps/server/domain/write-gate.ts`), not the MCP tool layer – a check embedded only in `tools/*.ts` would be bypassed by any other entry point reaching the same mutation, specifically the agent-mode sidecar's local tools (mirror/status/store/pull/adopt_files) that dispatch straight to REST from `agent-transport.ts`, never touching the MCP tool layer at all.
+
+Every mutating tool (create/update/delete on nodes, edges, events, responsibilities, data sources, tools, files, mirrors, snapshot) checks write scope on its target node before mutating:
+
+| Session type | Write set |
+|--------------|-----------|
+| `interactive_task` / `headless` | Home node, plus any node created by this session, plus any node explicitly granted via `portuni_expand_scope(..., writable: true)` |
+| `interactive_chat` | Starts and stays empty (no home node) – every write needs elicitation |
+| `env` | Every write allowed unconditionally (subject to the usual permission tier) – historical behavior, not part of this model |
+
+A mutating call outside the write set returns `{"error": "write_expansion_required", "node_id": "...", "hint": "..."}` for interactive types, or `{"error": "write_refused", "node_id": "...", "hint": "..."}` for `headless` – a hard, non-negotiable refusal, since a headless session cannot expand its write set mid-run (`portuni_expand_scope(..., writable: true)` itself is rejected outright for it). For interactive types, write-set expansion happens *only* through a real elicitation dialog – whether triggered on the spot by the mutating call, or proactively via `portuni_expand_scope(..., writable: true)` – and `reason` text is never a substitute for it. A client without the elicitation capability cannot grant write access through either path: there is no honor-system fallback for writes the way there is for reads.
+
+Actors (`portuni_create_actor`/`update`/`delete`) and sync-remote administration (`portuni_setup_remote`, `portuni_set_routing_policy`) are global registries, explicitly exempt from write scope (permissions still apply).
+
+The same domain-layer gate also covers the REST API's graph-plane mutations (nodes, edges, events, responsibilities, data sources, tools, mirror creation) for any caller that isn't the desktop UI (`env`/`session_jwt` identity) — a `device_token` or `oauth_grant` identity hitting these routes directly gets the same `write_refused`/`write_expansion_required` shape. REST has no per-request session or elicitation channel, so an out-of-scope REST write is always refused outright, never deferred. The file-content/sync-plane REST endpoints are unaffected — they are the central-mode sync agent's own channel, gated once already at the MCP tool call that triggered the sync.
 
 ## Why this is its own page (and not a permission system)
 
@@ -152,28 +196,18 @@ Scope is **orthogonal** to permissions. Permissions (visibility, including group
 
 A user with read access to every node in their org still gets a narrow scope set when they start a session in one project. The agent isn't omniscient by default; it's focused, and expansion is auditable.
 
-## Scope modes
-
-`PORTUNI_SCOPE_MODE` controls how aggressively scope expansion is gated:
-
-| Mode | Behavior |
-|------|----------|
-| `strict` (default) | Every agent-initiated reach for an out-of-scope node elicits user confirmation. Safe default. |
-| `balanced` | First reach for a given node per session elicits; subsequent reads of the same node pass silently. Reduces prompt fatigue while still surfacing each new node once. |
-| `permissive` | No elicitation. Expansions auto-approved, audited, surfaced in `portuni_session_log`. Pairs well with harness auto mode. |
-
-Hard floors override mode. A node with `meta.scope_sensitive: true`, or a `visibility: private` node owned by another user, always elicits – even in `permissive`.
-
 ## MCP tools
 
 | Tool | Purpose |
 |------|---------|
 | `portuni_session_init(home_node_id)` | Manual fallback. Auto-seed normally runs on connect when the URL carries `?home_node_id=…`; this tool only exists for clients connecting without that param. Seeds the scope set with the home node + its depth-1 neighbors. |
-| `portuni_expand_scope(node_ids, reason, triggered_by, confirmed_hard_floor?)` | Add nodes to scope. Always audited. Hard-floor nodes (private-other, `meta.scope_sensitive`) require both `confirmed_hard_floor=true` AND a real user confirmation; a refusal entry is logged otherwise. |
-| `portuni_session_log()` | Returns the current scope set, mode, expansion history. |
+| `portuni_expand_scope(node_ids, reason, triggered_by, confirmed_hard_floor?, writable?)` | Add nodes to read scope (and, with `writable: true`, to write scope too). Always audited; the server independently classifies each accepted node `added_via: "edge"` or `"disconnected"` regardless of the stated `reason`. Hard-floor nodes (private-other, `meta.scope_sensitive`) require both `confirmed_hard_floor=true` AND a real user confirmation; a refusal entry is logged otherwise, and the flag is ignored outright for `headless`. `writable: true` requires a real elicitation dialog per node (refused outright, `refused_write`, without the elicitation capability — never granted from `reason` alone). |
+| `portuni_session_log()` | Returns the current scope set, session type, and ordered expansion history. |
 | `portuni_get_node` | Out-of-scope target returns `{"error":"scope_expansion_required",...}`. Name lookups are filtered to in-scope candidates first, so name probing cannot leak metadata. |
-| `portuni_get_context` | Start node must be in scope. Depth ≤ 1 is the natural read; depth ≥ 2 is treated as breadth expansion and refused in strict/balanced. |
-| `portuni_list_nodes` / `portuni_list_events` / `portuni_list_files` / `portuni_search_files` | Default to session scope. Global form (`scope: "global"` on `list_nodes`, no `node_id` on the others) is mode-gated: strict refuses, balanced refuses on first call, permissive auto-allows + audits. |
+| `portuni_get_context` | Start node must be in scope. Depth ≤ 1 is the natural read; depth ≥ 2 is treated as breadth expansion and always refused – call with depth ≤ 1, then expand explicitly. |
+| `portuni_list_nodes` / `portuni_list_events` / `portuni_list_files` | Default to session scope; without `node_id` (`list_events`/`list_files`) or with `scope: "session"` (`list_nodes`, the default) results are restricted to the current scope set (empty scope means an empty result, not a gate). |
+| `portuni_search_files`, `portuni_list_nodes(scope: "global")` | Discovery, not ingestion: permission-only in every session type, no scope gate — every node/hit the caller can see, filtered by visibility. Search hits carry a bounded snippet, not full content; reading a hit in full is the scope event. |
+| `portuni_session_suspend(content, agent_session_id?)` | Writes the handoff to `wip/sessions/<session-id>-handoff.md` (a normal synced path), stores its hash and the CLI's own conversation id, and marks the session `suspended` so a later resume can continue it. Requires a home node — `interactive_chat` has no anchor to write into. See [Scope reference](/reference/scope/#portuni_session_suspend). |
 
 ### REST surface (out of scope)
 
@@ -181,27 +215,6 @@ The HTTP REST endpoints (`/graph`, `/context`, `/nodes/:id/sync-status`, `/users
 
 ## Implementation status
 
-| Piece | Status |
-|-------|--------|
-| Spec | Written – `docs/superpowers/specs/2026-04-24-scope-model.md` |
-| URL-based auto-seed on MCP connect (`?home_node_id=…`) | Implemented |
-| Session home node detection (`portuni_session_init`) | Implemented (manual fallback) |
-| Read-scope set + per-MCP-connection state | Implemented |
-| `portuni_expand_scope`, `portuni_session_log` | Implemented |
-| Hard-floor enforcement in `expand_scope` (refuses without `confirmed_hard_floor`) | Implemented |
-| Read tools gated by scope: `get_node`, `get_context`, `list_nodes`, `list_events`, `list_files` | Implemented |
-| `get_node(name)` ambiguity filtered to in-scope candidates | Implemented |
-| `get_context(depth ≥ 2)` treated as breadth expansion | Implemented |
-| Mode-gated global queries (strict refuses, balanced first-time refuses, permissive auto-allow + audit) | Implemented |
-| `PORTUNI_SCOPE_MODE` (strict / balanced / permissive) | Implemented |
-| Per-harness write-scope config on `portuni_mirror` | Implemented |
-| Settings overlay strategy (`.claude/settings.local.json`, codex marker-aware) | Implemented |
-| Auto-wire `portuni-guard` as `PreToolUse` hook in generated Claude settings | Implemented |
-| `.mcp.json` for Claude Code project-scoped MCP registration | Implemented |
-| Codex MCP registration (user-scoped `~/.codex/config.toml`, token via env var) | Implemented |
-| Sibling regen on mirror add | Implemented |
-| `/scope` endpoint + `portuni-guard` PreToolUse hook (fail-closed on missing target) | Implemented |
-| Audit entries: `expand_scope`, `scope_global_query`, `scope_hard_floor_refusal`, `session_init` | Implemented |
-| Session-close summary | Pending |
-| Other harnesses (Gemini CLI, Cline, Continue, Aider, Windsurf, Roo) | Out of scope until requested |
-| Harness-mode -> scope-mode auto-alignment | Pending (intentionally fragile, may not ship) |
+Everything on this page is implemented: session types, edge-reachable/disconnected-jump read-scope classification, hard floors, protocol elicitation with structured-refusal fallback, the domain-layer write gate, permission-only discovery search, per-harness filesystem write-scope config generation, and the `portuni-guard` backstop hook. Design doc: `docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md`. Agent-facing contract detail beyond what's summarized here: `portuni://scope-rules`.
+
+Explicitly out of scope until requested: write-scope config generation for harnesses other than Claude Code, Codex, and Mistral Vibe (Gemini CLI, Cline, Continue, Aider, Windsurf, Roo).

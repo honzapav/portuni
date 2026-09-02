@@ -1,7 +1,8 @@
-// Tests for the read-scope module: pure decision logic + seed-from-home
-// helper that runs against an in-memory libsql DB.
+// Tests for the read-scope module: session-type derivation + pure decision
+// logic + seed-from-home helper that runs against an in-memory libsql DB.
 //
-// Spec: docs/superpowers/specs/2026-04-24-scope-model.md (Phase A).
+// Spec: docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md
+// ("Concepts" -- session types table).
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -9,9 +10,23 @@ import { createClient } from "@libsql/client";
 import {
   SessionScope,
   decideRead,
-  parseScopeMode,
+  deriveSessionType,
   seedScopeFromHome,
 } from "../apps/server/mcp/scope.js";
+import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
+
+function identity(overrides: Partial<RequestIdentity>): RequestIdentity {
+  return {
+    userId: "U1",
+    email: "u1@example.com",
+    name: "U1",
+    globalScope: "write",
+    groups: [],
+    groupIds: [],
+    via: "device_token",
+    ...overrides,
+  };
+}
 
 async function freshGraph() {
   const db = createClient({ url: ":memory:" });
@@ -36,23 +51,53 @@ async function freshGraph() {
   return db;
 }
 
-describe("parseScopeMode", () => {
-  it("defaults to strict on missing/unknown", () => {
-    assert.equal(parseScopeMode(undefined), "strict");
-    assert.equal(parseScopeMode(""), "strict");
-    assert.equal(parseScopeMode("foo"), "strict");
+describe("deriveSessionType", () => {
+  it("env: identity.via === 'env' regardless of home_node_id", () => {
+    assert.equal(deriveSessionType(identity({ via: "env" }), null), "env");
+    assert.equal(deriveSessionType(identity({ via: "env" }), "A"), "env");
   });
-  it("recognises the three modes case-insensitively", () => {
-    assert.equal(parseScopeMode("strict"), "strict");
-    assert.equal(parseScopeMode("BALANCED"), "balanced");
-    assert.equal(parseScopeMode("Permissive"), "permissive");
+
+  it("interactive_chat: identity.via === 'oauth_grant'", () => {
+    assert.equal(deriveSessionType(identity({ via: "oauth_grant" }), null), "interactive_chat");
+    assert.equal(deriveSessionType(identity({ via: "oauth_grant" }), "A"), "interactive_chat");
+  });
+
+  it("headless: device token minted with the headless flag", () => {
+    assert.equal(
+      deriveSessionType(identity({ via: "device_token", headless: true }), "A"),
+      "headless",
+    );
+  });
+
+  it("interactive_task: default for a plain device token (with or without home_node_id)", () => {
+    assert.equal(
+      deriveSessionType(identity({ via: "device_token", headless: false }), "A"),
+      "interactive_task",
+    );
+    assert.equal(
+      deriveSessionType(identity({ via: "device_token" }), null),
+      "interactive_task",
+    );
+  });
+
+  it("headless takes precedence over a present/absent home_node_id in the derivation itself", () => {
+    // Refusal for headless + no home_node_id is enforced by the transport,
+    // not by deriveSessionType -- the function is a pure classification.
+    assert.equal(
+      deriveSessionType(identity({ via: "device_token", headless: true }), null),
+      "headless",
+    );
+  });
+
+  it("session_jwt (desktop UI human session) falls back to interactive_task", () => {
+    assert.equal(deriveSessionType(identity({ via: "session_jwt" }), null), "interactive_task");
   });
 });
 
 describe("seedScopeFromHome", () => {
   it("seeds home + depth-1 neighbors", async () => {
     const db = await freshGraph();
-    const scope = new SessionScope("strict");
+    const scope = new SessionScope("interactive_task");
     const seeded = await seedScopeFromHome(db, scope, "A");
     // A + ORG (via belongs_to) + B (via related_to)
     assert.equal(scope.has("A"), true);
@@ -66,70 +111,108 @@ describe("seedScopeFromHome", () => {
 });
 
 describe("decideRead – allow when in scope", () => {
-  it("returns allow for in-scope nodes", () => {
-    const scope = new SessionScope("strict");
+  it("returns allow for in-scope nodes regardless of the reachable flag", () => {
+    const scope = new SessionScope("interactive_task");
     scope.add("A");
-    const d = decideRead(scope, "A", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1");
+    const d = decideRead(scope, "A", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1", false);
     assert.equal(d.kind, "allow");
   });
 });
 
 describe("decideRead – hard floors", () => {
-  it("elicits on scope_sensitive=true regardless of mode", () => {
-    for (const mode of ["strict", "balanced", "permissive"] as const) {
-      const scope = new SessionScope(mode);
-      const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: true }, "U1");
-      assert.equal(d.kind, "elicit", `mode=${mode}`);
+  it("elicits on scope_sensitive=true for interactive/env session types", () => {
+    for (const sessionType of ["interactive_task", "interactive_chat", "env"] as const) {
+      const scope = new SessionScope(sessionType);
+      const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: true }, "U1", false);
+      assert.equal(d.kind, "elicit", `session_type=${sessionType}`);
     }
   });
 
+  it("is refused outright (not elicited) for headless, hard floor or not", () => {
+    const scope = new SessionScope("headless");
+    const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: true }, "U1", false);
+    assert.equal(d.kind, "refused");
+  });
+
+  it("headless hard-floor refusal holds even when the target is edge-reachable", () => {
+    const scope = new SessionScope("headless");
+    const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: true }, "U1", true);
+    assert.equal(d.kind, "refused");
+  });
+
   it("elicits on visibility=private owned by other user", () => {
-    const scope = new SessionScope("permissive");
-    const d = decideRead(scope, "X", { visibility: "private", creatorUserId: "U_OTHER", scopeSensitive: false }, "U_SELF");
+    const scope = new SessionScope("interactive_task");
+    const d = decideRead(scope, "X", { visibility: "private", creatorUserId: "U_OTHER", scopeSensitive: false }, "U_SELF", false);
     assert.equal(d.kind, "elicit");
   });
 
-  it("does NOT elicit on visibility=private owned by self", () => {
-    const scope = new SessionScope("permissive");
-    const d = decideRead(scope, "X", { visibility: "private", creatorUserId: "U_SELF", scopeSensitive: false }, "U_SELF");
-    assert.equal(d.kind, "allow");
+  it("private owned by self is not routed through the hard-floor branch (still elicits as a plain out-of-scope read)", () => {
+    const scope = new SessionScope("interactive_task");
+    const d = decideRead(scope, "X", { visibility: "private", creatorUserId: "U_SELF", scopeSensitive: false }, "U_SELF", false);
+    assert.equal(d.kind, "elicit");
+    assert.match(d.message ?? "", /outside the session scope/);
   });
 });
 
-describe("decideRead – mode behaviour", () => {
-  it("strict elicits on out-of-scope", () => {
-    const scope = new SessionScope("strict");
-    const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1");
-    assert.equal(d.kind, "elicit");
+describe("decideRead – edge-reachable expansion", () => {
+  it("auto-allows a reachable target and tags it addedVia: edge", () => {
+    // interactive_chat is excluded: it never consults reachability (see the
+    // permission-only branch below), so it never gets addedVia: "edge".
+    for (const sessionType of ["interactive_task", "headless", "env"] as const) {
+      const scope = new SessionScope(sessionType);
+      const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1", true);
+      assert.equal(d.kind, "allow", `session_type=${sessionType}`);
+      assert.equal(d.addedVia, "edge", `session_type=${sessionType}`);
+    }
+  });
+});
+
+describe("decideRead – interactive_chat is permission-only", () => {
+  it("allows a non-hard-floor read with no edge-reachability, seed, or expansion involved", () => {
+    const scope = new SessionScope("interactive_chat");
+    const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1", false);
+    assert.equal(d.kind, "allow");
+    assert.equal(d.addedVia, undefined);
   });
 
-  it("balanced elicits first time, allows after agent expansion seen", () => {
-    const scope = new SessionScope("balanced");
-    const meta = { visibility: "team", creatorUserId: null, scopeSensitive: false };
-    let d = decideRead(scope, "X", meta, "U1");
+  it("still elicits on a hard floor (scope_sensitive)", () => {
+    const scope = new SessionScope("interactive_chat");
+    const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: true }, "U1", false);
     assert.equal(d.kind, "elicit");
-    // Simulate agent-initiated expansion (the user confirmed).
-    scope.recordExpansion({
-      at: new Date().toISOString(),
-      node_ids: ["X"],
-      reason: "user-confirmed-in-chat",
-      triggered_by: "agent",
-    });
-    // Don't add to scope.nodes — we want to test the seenAgentExpansion path.
-    d = decideRead(scope, "X", meta, "U1");
-    assert.equal(d.kind, "allow");
+  });
+});
+
+describe("decideRead – disconnected jump elicits", () => {
+  it("elicits regardless of session type when not reachable via an edge", () => {
+    // interactive_chat is excluded: it never reaches the disconnected-jump
+    // branch, see "decideRead – interactive_chat is permission-only" above.
+    for (const sessionType of ["interactive_task", "headless", "env"] as const) {
+      const scope = new SessionScope(sessionType);
+      const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1", false);
+      assert.equal(d.kind, "elicit", `session_type=${sessionType}`);
+      assert.match(d.message ?? "", /disconnected jump/);
+    }
   });
 
-  it("permissive auto-allows out-of-scope", () => {
-    const scope = new SessionScope("permissive");
-    const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1");
-    assert.equal(d.kind, "allow");
+  it("headless message points to portuni_expand_scope instead of asking a nonexistent user", () => {
+    const scope = new SessionScope("headless");
+    const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1", false);
+    assert.equal(d.kind, "elicit");
+    assert.doesNotMatch(d.message ?? "", /ask the user/i);
+    assert.match(d.message ?? "", /portuni_expand_scope/);
+  });
+
+  it("interactive message still asks the user to confirm", () => {
+    const scope = new SessionScope("interactive_task");
+    const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1", false);
+    assert.equal(d.kind, "elicit");
+    assert.match(d.message ?? "", /ask the user/i);
   });
 });
 
 describe("SessionScope.add idempotence", () => {
   it("returns true on first add, false on duplicate", () => {
-    const scope = new SessionScope("strict");
+    const scope = new SessionScope("interactive_task");
     assert.equal(scope.add("X"), true);
     assert.equal(scope.add("X"), false);
     assert.equal(scope.size(), 1);
@@ -138,7 +221,7 @@ describe("SessionScope.add idempotence", () => {
 
 describe("SessionScope.onAdd", () => {
   it("fires a listener once per newly-added node, with the node id", () => {
-    const scope = new SessionScope("strict");
+    const scope = new SessionScope("interactive_task");
     const seen: string[] = [];
     scope.onAdd((id) => seen.push(id));
     assert.equal(scope.add("A"), true);
@@ -148,7 +231,7 @@ describe("SessionScope.onAdd", () => {
   });
 
   it("supports multiple listeners", () => {
-    const scope = new SessionScope("strict");
+    const scope = new SessionScope("interactive_task");
     let a = 0, b = 0;
     scope.onAdd(() => a++);
     scope.onAdd(() => b++);
@@ -158,7 +241,7 @@ describe("SessionScope.onAdd", () => {
   });
 
   it("never throws out of add() when a listener throws", () => {
-    const scope = new SessionScope("strict");
+    const scope = new SessionScope("interactive_task");
     scope.onAdd(() => { throw new Error("boom"); });
     assert.doesNotThrow(() => scope.add("X"));
     assert.equal(scope.has("X"), true);

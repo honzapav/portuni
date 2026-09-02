@@ -8,6 +8,7 @@ import type {
   SyncStatusResponse,
   SyncRunResponse,
   SyncPendingResponse,
+  SyncHealthResponse,
   DetailFile,
   FileContentResponse,
   NodeAccessResponse,
@@ -17,6 +18,10 @@ import type {
   DirectoryGroup,
   AccountUser,
   UserAdmin,
+  SessionState,
+  SessionSummary,
+  SessionResumeInfo,
+  OverviewPayload,
 } from "./types";
 import { apiFetch } from "./lib/backend-url";
 
@@ -107,6 +112,15 @@ export async function fetchSyncPending(): Promise<SyncPendingResponse> {
   return res.json();
 }
 
+// Workspace-wide mirror-watcher error diagnostics (#202) -- backs the
+// Nastavení -> Synchronizace banner. Per-node view is the watcher_errors
+// field on fetchNodeSyncStatus's response.
+export async function fetchSyncHealth(): Promise<SyncHealthResponse> {
+  const res = await apiFetch(`/sync/health`);
+  await throwForStatus(res, "sync-health");
+  return res.json();
+}
+
 // Browser-openable folder URL for a node on its routed remote. Returns
 // { url: null, ... } when the node has no remote, the backend doesn't
 // support web URLs (s3, sftp, ...), or the folder hasn't been synced yet.
@@ -133,6 +147,52 @@ export async function fetchNodeFileUrl(
   );
   await throwForStatus(res, "file-url");
   return res.json();
+}
+
+// Node-detail *persistent* sessions list (#192, apps/server/domain/
+// sessions.ts) -- distinct from lib/sessions.ts's ephemeral TerminalSession
+// (a browser-local PTY tab). Named with the Persistent* prefix throughout
+// this block so a call site pulling in both never has to disambiguate by
+// import path alone. Archived sessions are hidden unless includeArchived --
+// "closed/archived (browse; archived behind a filter)".
+export function fetchNodePersistentSessions(
+  id: string,
+  includeArchived = false,
+): Promise<{ sessions: SessionSummary[] }> {
+  const qs = includeArchived ? "?include_archived=1" : "";
+  return jsonRequest<{ sessions: SessionSummary[] }>(
+    "GET",
+    `/nodes/${encodeURIComponent(id)}/sessions${qs}`,
+  );
+}
+
+export function renamePersistentSession(id: string, name: string): Promise<SessionSummary> {
+  return jsonRequest<SessionSummary>("PATCH", `/sessions/${encodeURIComponent(id)}`, { name });
+}
+
+export function transitionPersistentSessionState(
+  id: string,
+  state: SessionState,
+): Promise<SessionSummary> {
+  return jsonRequest<SessionSummary>("POST", `/sessions/${encodeURIComponent(id)}/state`, { state });
+}
+
+// configDir: the resumed session's profile CLAUDE_CONFIG_DIR, when the
+// caller can resolve one from the desktop profiles registry (#204) --
+// lets the server check conversation-resumability at the right transcript
+// location instead of always the default (~/.claude).
+export function fetchPersistentSessionResumeInfo(
+  id: string,
+  configDir?: string | null,
+): Promise<SessionResumeInfo> {
+  const qs = configDir ? `?config_dir=${encodeURIComponent(configDir)}` : "";
+  return jsonRequest<SessionResumeInfo>("GET", `/sessions/${encodeURIComponent(id)}/resume-info${qs}`);
+}
+
+// GET /overview -- Přehled tab (#196). One aggregate, permission-filtered
+// snapshot; see apps/server/api/overview.ts for the section breakdown.
+export function fetchOverview(): Promise<OverviewPayload> {
+  return jsonRequest<OverviewPayload>("GET", "/overview");
 }
 
 export async function runNodeSync(id: string): Promise<SyncRunResponse> {
@@ -162,14 +222,21 @@ export function createNodeMirror(id: string): Promise<CreateMirrorResponse> {
 
 // Seatbelt disk-scope profile for spawning an agent terminal inside the
 // node's mirror: home mirror read+write, the rest of PORTUNI_ROOT denied
-// by the kernel. Files of other in-scope nodes are reachable via staged
-// read-only copies under .portuni-scope/. Fetched right before pty_spawn;
-// the terminal launch is fail-closed on errors so an agent never starts
-// without the boundary by accident.
+// by the kernel. Depth-1 neighbours are readable via their real mirror;
+// nodes the session expands into mid-run are readable under
+// projection_root/<session-id>/<node-id>/ once the MCP session hardlinks
+// them there (domain/session-projection.ts). Fetched right before
+// pty_spawn; the terminal launch is fail-closed on errors so an agent
+// never starts without the boundary by accident.
 export type SandboxProfileResponse = {
   profile: string;
   portuni_root: string;
   home_mirror: string;
+  projection_root: string | null;
+  // Session id the profile's projection grant is already narrowed to
+  // (#208 follow-up). Threaded through pty_spawn -> Claude's .mcp.json
+  // X-Portuni-Spawn-Id header so the MCP session reuses this exact id.
+  session_id: string | null;
 };
 
 export function fetchSandboxProfile(id: string): Promise<SandboxProfileResponse> {
@@ -243,6 +310,7 @@ export function updateNode(
     lifecycle_state?: string | null;
     owner_id?: string | null;
     visibility?: string;
+    health?: string;
   },
 ): Promise<NodeDetail> {
   return jsonRequest<NodeDetail>(

@@ -192,16 +192,22 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
   // Upsert files row. Single statement against the idx_files_unique_remote
   // partial index -- a concurrent store of the same path becomes an UPDATE
   // instead of a duplicate row (the old SELECT-then-INSERT could interleave).
-  // RETURNING gives us the surviving row id either way. status/description
-  // only overwrite when explicitly provided.
+  // The conflict target is (node_id, remote_path) only, not remote_name
+  // (#201): this is also how a file registered before any remote existed
+  // (registerLocalFile, remote_name NULL) gets its remote_name backfilled
+  // here -- the row already matches on remote_path, so this INSERT becomes
+  // the UPDATE branch and excluded.remote_name (now resolved) overwrites
+  // the NULL. RETURNING gives us the surviving row id either way.
+  // status/description only overwrite when explicitly provided.
   const now = new Date().toISOString();
   const upsert = await db.execute({
     sql: `INSERT INTO files (id, node_id, filename, status, mime_type,
                               remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
                               is_native_format, created_by, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
-          ON CONFLICT(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL
+          ON CONFLICT(node_id, remote_path) WHERE remote_path IS NOT NULL
           DO UPDATE SET
+            remote_name = excluded.remote_name,
             filename = excluded.filename,
             status = COALESCE(?, files.status),
             current_remote_hash = excluded.current_remote_hash,
@@ -273,7 +279,10 @@ export interface RegisterLocalFileArgs {
 
 export interface RegisterLocalFileResult {
   file_id: string;
-  remote_name: string;
+  // null when no remote is routed for this node yet (#201) -- the file is
+  // still tracked locally and reads as `push` (statusScan); a later
+  // deliberate sync backfills this once routing resolves.
+  remote_name: string | null;
   remote_path: string;
   local_path: string;
   hash: string;
@@ -296,12 +305,13 @@ export async function registerLocalFile(
   a: RegisterLocalFileArgs,
 ): Promise<RegisterLocalFileResult> {
   const info = await resolveNodeInfo(db, a.nodeId);
+  // Registration is local-only (no upload -- a deliberate sync/storeFile
+  // uploads later), so unlike storeFile it does not require a resolvable
+  // remote (#201): a local-only workspace (no remote configured at all)
+  // must still track its files. remoteName stays null until routing
+  // resolves; remote_path is computed unconditionally below since it is
+  // derived purely from the node's own identity, never from the remote.
   const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
-  if (!remoteName) {
-    throw new Error(
-      `No remote routing configured for node ${a.nodeId} (type=${info.nodeType}, org=${info.orgSyncKey ?? "null"})\n${ROUTING_GUIDANCE}`,
-    );
-  }
 
   const mirrorRoot = await getMirrorPath(a.userId, a.nodeId);
   if (!mirrorRoot) {
@@ -367,11 +377,17 @@ export async function registerLocalFile(
                               remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
                               is_native_format, created_by, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?, ?)
-          ON CONFLICT(node_id, remote_name, remote_path) WHERE remote_path IS NOT NULL
+          ON CONFLICT(node_id, remote_path) WHERE remote_path IS NOT NULL
           DO UPDATE SET
             filename = excluded.filename,
             status = COALESCE(?, files.status),
             mime_type = excluded.mime_type,
+            -- A later registration that resolves a remote backfills it onto
+            -- an existing NULL-remote row (#201); never clobber an already-
+            -- routed remote_name with NULL on a re-register that races
+            -- routing being unset again (should not happen, but COALESCE
+            -- keeps whichever is non-null, favoring the newly resolved one).
+            remote_name = COALESCE(excluded.remote_name, files.remote_name),
             updated_at = excluded.updated_at
           RETURNING id`,
     args: [
@@ -796,7 +812,11 @@ async function scanRow(
   };
 
   if (isNative) return { bucket: "native", entry: { ...base, class: "native" } };
-  if (!remoteName || !remotePath) return { bucket: "remote_error", entry: { ...base, class: "remote_error" } };
+  // remotePath missing is a real data-integrity problem (every registered
+  // row computes it, remote-routed or not -- see registerLocalFile);
+  // remoteName alone missing is the normal "no remote configured yet" state
+  // (#201) and handled below, not an error.
+  if (!remotePath) return { bucket: "remote_error", entry: { ...base, class: "remote_error" } };
 
   const state = await getFileState(fileId);
   base.last_synced_hash = state?.last_synced_hash ?? null;
@@ -807,6 +827,18 @@ async function scanRow(
       ? await localHashFor(localPath, fileId, currentRemoteHash)
       : null;
   base.local_hash = localHash;
+
+  if (!remoteName) {
+    // No remote routed for this node (a local-only workspace, or routing
+    // simply not configured yet) -- there is nothing to compare local
+    // content against. Local content present reads as `push` (pending
+    // upload, same as a routed-but-never-synced file); no content is
+    // `clean` (nothing here to track).
+    return localHash === null
+      ? { bucket: "clean", entry: { ...base, class: "clean" } }
+      : { bucket: "push_candidates", entry: { ...base, class: "push" } };
+  }
+
   const rs = a.fast
     ? { hash: currentRemoteHash, exists: currentRemoteHash !== null }
     : await cachedRemoteStat(db, fileId, remoteName, remotePath);

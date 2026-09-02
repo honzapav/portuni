@@ -26,6 +26,7 @@ import { createMirrorWatcher, type MirrorWatcher } from "./domain/sync/mirror-wa
 import { listUserMirrors } from "./domain/sync/mirror-registry.js";
 import { createAgentRouter } from "./api/agent-router.js";
 import { createAgentMcpTransport } from "./mcp/agent-transport.js";
+import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
 
 // Reads a required env var, trimmed. Used for the two central-mode
 // connection settings: both are already validated non-empty by
@@ -230,6 +231,9 @@ async function agentMain(client: CentralClient): Promise<void> {
     try {
       const r = await materializeAllRegisteredMirrors({
         dataSourcesFor: (nodeId) => client.dataSources(nodeId).catch(() => []),
+        // No local db in agent mode, and CentralClient has no orientation
+        // endpoint yet -- PORTUNI_SCOPE.md falls back to the soft hint only.
+        orientationFor: () => Promise.resolve(null),
       });
       if (r.errors.length > 0) {
         console.error(
@@ -288,6 +292,8 @@ async function main(): Promise<void> {
   // single local owner of the mirrors); set PORTUNI_WATCH_MIRRORS=0 to disable.
   // Design: docs/archive/specs/2026-06-28-deterministic-file-state-design.md.
   const watcher = startMirrorWatcher(process.env.PORTUNI_WATCH_MIRRORS !== "0");
+
+  void sweepStaleSessionProjectionsOnBoot();
 
   // Refresh every registered mirror's harness configs so any .mcp.json
   // pointing at an older random port / rotated token picks up the

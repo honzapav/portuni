@@ -1,3 +1,8 @@
+// Not write-gated: remote/routing configuration is global (workspace-wide),
+// not node-scoped content -- explicitly scope-exempt for writes per
+// docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md
+// ("Write scope"). Both tools are already admin-tier in min-scopes.ts.
+
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getDb } from "../../infra/db.js";

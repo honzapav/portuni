@@ -26,6 +26,10 @@ export type GraphNode = {
   description: string | null;
   status: string;
   lifecycle_state: string | null;
+  // "on_track" | "at_risk" | "off_track" -- see HEALTH_STATES in popp.ts.
+  // Meaningful for type='project' only; other types always carry the
+  // default 'on_track' and it is not shown for them.
+  health: string;
   // "team" | "private" | "group" -- see NODE_VISIBILITIES in popp.ts. The
   // graph uses this to draw a dashed border on nodes restricted to a
   // group ACL, so sharing state is visible at a glance without opening
@@ -169,9 +173,35 @@ export type SyncStatusFile = {
   remote_path: string | null;
 };
 
+// A recent mirror-watcher failure to register/reconcile a file (#202): the
+// watcher used to only log these, so a misconfiguration (e.g. a local-only
+// workspace before #201, an unreadable file, a moved-away mirror) read as
+// "files are not there" with nothing to diagnose it from short of opening
+// the sidecar log. One entry per (node_id, path) -- a repeated failure for
+// the same path refreshes `at` rather than growing the buffer; a later
+// successful reconcile of that path clears it.
+export type WatcherErrorEntry = {
+  node_id: string;
+  path: string;
+  message: string;
+  at: string;
+};
+
 export type SyncStatusResponse = {
   files: SyncStatusFile[];
   untracked: UntrackedFile[];
+  // Present (possibly empty) only when this node has ever had a watcher
+  // error tracked; omitted entirely for a node with none, so existing
+  // callers that don't care about it see no shape change.
+  watcher_errors?: WatcherErrorEntry[];
+};
+
+// GET /sync/health -- workspace-wide, every currently-tracked watcher error
+// across all nodes on this device (#202). Used by the Settings ->
+// Synchronizace banner; the per-node view is the `watcher_errors` field on
+// SyncStatusResponse above.
+export type SyncHealthResponse = {
+  errors: WatcherErrorEntry[];
 };
 
 // Result of triggering a node-wide sync. The endpoint runs storeFile for
@@ -364,6 +394,149 @@ export type AccessRequest = {
   resolved_by: string | null;
 };
 
+// GET /nodes/:id/sessions -- node-detail sessions list (#192, "Naming &
+// UI"). One row per persistent session (apps/server/domain/sessions.ts),
+// enriched with what the row needs to render without a second round trip.
+export type SessionState = "running" | "suspended" | "closed" | "archived";
+
+export type SessionSummary = {
+  id: string;
+  node_id: string | null;
+  user_id: string;
+  session_type: "interactive_task" | "interactive_chat" | "headless" | "env";
+  cli: string | null;
+  profile_id: string | null;
+  state: SessionState;
+  name: string;
+  name_is_custom: boolean;
+  handoff_path: string | null;
+  write_count: number;
+  created_at: string;
+  last_active_at: string;
+  closed_at: string | null;
+};
+
+// GET /sessions/:id/resume-info -- drives the suspended row's "Nahodit:
+// pokračování vs předání" choice (spec, "Lifecycle"/"Resume"): whether the
+// underlying CLI conversation still exists (conversation-resume) versus
+// falling back to the handoff (handoff-resume), and whether the handoff on
+// disk has been edited since it was written at suspend.
+export type SessionResumeInfo = {
+  session_id: string;
+  handoff_path: string | null;
+  handoff_changed: boolean;
+  // False when this device has no local mirror for the session's node, so
+  // handoff_changed could not be evaluated (as opposed to evaluated and
+  // found unchanged) -- see domain/session-handoff.ts's ResumeInfo.
+  handoff_checkable: boolean;
+  conversation_resumable: boolean;
+};
+
+// GET /overview -- Přehled tab (phase 4, "Přehled (overview tab)" of the
+// scope/sessions redesign spec). One aggregate, permission-filtered
+// endpoint composing four deterministic sections. Every node reference is
+// dropped server-side if the caller cannot see the node
+// (filterVisibleNodeIds, apps/server/api/overview.ts); `access_requests`
+// is additionally empty for callers below "manage" scope, matching
+// GET /access/requests.
+
+// A workspace-wide session row, unlike SessionSummary (node-detail list):
+// enriched with the anchor node's name/type (there is no other node
+// context on this screen) and without write_count (an extra per-row query
+// this dashboard-scale list skips -- write_count remains available via
+// GET /nodes/:id/sessions for the node-detail view).
+export type OverviewSessionRow = {
+  id: string;
+  node_id: string | null;
+  node_name: string | null;
+  node_type: string | null;
+  user_id: string;
+  session_type: "interactive_task" | "interactive_chat" | "headless" | "env";
+  cli: string | null;
+  profile_id: string | null;
+  state: SessionState;
+  name: string;
+  name_is_custom: boolean;
+  handoff_path: string | null;
+  created_at: string;
+  last_active_at: string;
+  closed_at: string | null;
+};
+
+export type OverviewDisconnectedJump = {
+  session_id: string;
+  session_name: string;
+  node_id: string;
+  node_name: string;
+  node_type: string;
+  reason: string | null;
+  added_at: string;
+};
+
+export type OverviewAttentionNode = {
+  id: string;
+  type: string;
+  name: string;
+  lifecycle_state: string | null;
+  // "on_track" | "at_risk" | "off_track" -- see HEALTH_STATES in popp.ts.
+  health: string;
+};
+
+// See loadOverviewSyncIssues (domain/queries/overview.ts) for why this is a
+// pending_file_ops proxy rather than a true sync-conflict record.
+export type OverviewSyncIssue = {
+  id: string;
+  node_id: string;
+  node_name: string;
+  file_id: string;
+  last_error: string;
+  updated_at: string;
+};
+
+export type OverviewEvent = {
+  id: string;
+  node_id: string;
+  node_name: string;
+  node_type: string;
+  type: string;
+  content: string;
+  created_at: string;
+};
+
+export type OverviewSessionWrite = {
+  session_id: string;
+  session_name: string;
+  node_id: string;
+  node_name: string;
+  added_at: string;
+};
+
+export type OverviewNewNode = {
+  id: string;
+  type: string;
+  name: string;
+  created_at: string;
+  created_by_name: string;
+};
+
+export type OverviewPayload = {
+  sessions: {
+    running: OverviewSessionRow[];
+    suspended: OverviewSessionRow[];
+    disconnected_jumps: OverviewDisconnectedJump[];
+  };
+  attention: {
+    nodes: OverviewAttentionNode[];
+    access_requests: AccessRequest[];
+    sync_issues: OverviewSyncIssue[];
+  };
+  activity: {
+    events: OverviewEvent[];
+    session_writes: OverviewSessionWrite[];
+  };
+  new_nodes: OverviewNewNode[];
+};
+
 // GET /auth/groups -- Google Workspace domain group directory, used by the
 // sharing picker. 501 { error: "google_mode_only" } in env auth mode.
 export type DirectoryGroup = {
@@ -416,4 +589,7 @@ export type NodeDetail = {
   tools: DetailTool[];
   goal: string | null;
   lifecycle_state: string | null;
+  // "on_track" | "at_risk" | "off_track" -- see HEALTH_STATES in popp.ts.
+  // Meaningful for type='project' only.
+  health: string;
 };

@@ -36,6 +36,23 @@ type Props = {
   // Null spawns unsandboxed (legacy sessions only — new launches always
   // carry a profile).
   sandboxProfile: string | null;
+  // CLI spawn profile id (phase 3, spawn UX), if the user picked one at
+  // spawn time. Passed straight through to pty_spawn, which merges the
+  // profile's env vars into the shell and applies its command override
+  // when present. Null spawns exactly as before profiles existed.
+  spawnProfileId: string | null;
+  // Session id the sandbox profile's projection grant is already narrowed
+  // to (#208 follow-up). Passed straight through to pty_spawn, which
+  // exports it as PORTUNI_SPAWN_SESSION_ID so a Claude Code connection
+  // reuses it as the MCP session's own id. Null for legacy sessions or a
+  // profile response that omitted it.
+  spawnSessionId: string | null;
+  // Wall-clock ms (Date.now()) when the user's spawn action began, before
+  // mirror creation / sandbox profile fetch. Used only to print a one-line
+  // spawn-phase timing breakdown once the first byte comes back from the
+  // CLI (spec: "Spawn UX" -- instrument spawn phases so future tuning is
+  // measured, not guessed).
+  spawnRequestedAt: number;
   // True when the pane is the active tab. False for background panes
   // that are mounted but display:none — those skip resize-IPC since
   // their measurements would be wrong anyway.
@@ -100,6 +117,9 @@ export default function TerminalPane({
   cwd,
   command,
   sandboxProfile,
+  spawnProfileId,
+  spawnSessionId,
+  spawnRequestedAt,
   active,
   theme,
   onExit,
@@ -110,6 +130,14 @@ export default function TerminalPane({
   const termRef = useRef<Terminal | null>(null);
   const onExitRef = useRef(onExit);
   const onOutputRef = useRef(onOutput);
+  // Spawn-phase timing: filled in right around the pty_spawn invoke call,
+  // read once by the pty-data listener on the first byte back from the CLI.
+  const spawnTimingRef = useRef<{
+    requestedAt: number;
+    invokedAt: number;
+    spawnedAt: number;
+    printed: boolean;
+  } | null>(null);
   useEffect(() => {
     onExitRef.current = onExit;
   }, [onExit]);
@@ -222,6 +250,26 @@ export default function TerminalPane({
 
       unlistenData = await listen<PtyDataPayload>("pty-data", (e) => {
         if (e.payload.session_id === id) {
+          // First byte back from the CLI closes out the spawn-phase timing
+          // (request -> ready, pty_spawn round trip, CLI boot) -- printed
+          // once as a diagnostic line, same style as the pty-exit line
+          // below. Never blocks/reorders the actual output write.
+          const timing = spawnTimingRef.current;
+          if (timing && !timing.printed) {
+            timing.printed = true;
+            const firstOutputAt = Date.now();
+            const provisioning = timing.invokedAt - timing.requestedAt;
+            const ptySpawn = timing.spawnedAt - timing.invokedAt;
+            const boot = firstOutputAt - timing.spawnedAt;
+            const total = firstOutputAt - timing.requestedAt;
+            const line = `[spawn: provisioning ${provisioning}ms · pty_spawn ${ptySpawn}ms · boot ${boot}ms · total ${total}ms]`;
+            console.log(`[portuni] session ${id} ${line}`);
+            try {
+              term.writeln(`\x1b[90m${line}\x1b[0m`);
+            } catch {
+              // diagnostic only -- never let it break the real output write below
+            }
+          }
           // Defensive: a malformed escape sequence from a full-screen TUI
           // agent can make xterm (or the WebGL renderer) throw. This
           // listener is async, so an uncaught throw here escapes to
@@ -249,6 +297,19 @@ export default function TerminalPane({
       });
 
       if (cancelled) return;
+      const invokedAt = Date.now();
+      // Set before invoking, not after it resolves (#209): the pty-data
+      // listener above is already registered by this point, and the first
+      // byte can arrive (and its listener callback run) before the
+      // continuation after `await invoke(...)` gets to assign the ref --
+      // Tauri's event delivery and the invoke's own promise resolution are
+      // separate channels with no ordering guarantee between them. Filling
+      // in a provisional spawnedAt (= invokedAt) closes that race: a
+      // same-object mutation below updates it to the real value once known,
+      // which the listener sees if it fires after that point, same as
+      // before.
+      const timing = { requestedAt: spawnRequestedAt, invokedAt, spawnedAt: invokedAt, printed: false };
+      spawnTimingRef.current = timing;
       try {
         await invoke("pty_spawn", {
           args: {
@@ -258,12 +319,15 @@ export default function TerminalPane({
             cols: term.cols,
             rows: term.rows,
             sandbox_profile: sandboxProfile,
+            profile_id: spawnProfileId,
+            spawn_session_id: spawnSessionId,
           },
         });
       } catch (err) {
         term.writeln(`\x1b[31mFailed to spawn pty: ${String(err)}\x1b[0m`);
         return;
       }
+      timing.spawnedAt = Date.now();
 
       // Manual Meta/Option handling. macOptionIsMeta is off (CZ-keyboard
       // friendliness — see the constructor option above), so we re-inject

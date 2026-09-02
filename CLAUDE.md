@@ -154,7 +154,19 @@ symlink to this file.
   is current without anyone calling `portuni_store`/`portuni_status`.
   Registration is local-only (`registerLocalFile`, no upload); a file then
   reads as `push` until a deliberate "Synchronizovat"/`portuni_store` pushes
-  it to the remote. The watcher runs in the desktop sidecar by default
+  it to the remote. **Registration never requires a remote.** A local-only
+  workspace (no remote/routing configured at all) still tracks every file —
+  `registerLocalFile` and its central-mode/REST equivalents
+  (`registerFileRecordRemote(s)`) leave `remote_name` NULL instead of
+  throwing when routing does not resolve; `remote_path` is still always
+  computed (it is derived purely from the node's own identity, never from
+  the remote). `idx_files_unique_remote` is keyed on `(node_id, remote_path)`
+  alone (migration 031) so a later `storeFile`/write on the same path
+  backfills `remote_name` onto the existing row instead of creating a
+  duplicate. `storeFile` (and any other deliberate push/write) still
+  requires a resolved remote and throws `ROUTING_GUIDANCE` otherwise — that
+  guidance belongs at the moment of a deliberate sync, not at registration.
+  The watcher runs in the desktop sidecar by default
   (`PORTUNI_WATCH_MIRRORS`, on the standalone server it is opt-in `=1`); for
   backend dev against the tmux server, set `PORTUNI_WATCH_MIRRORS=1` if you
   want the same behavior. A deliberate sync run additionally sweeps the
@@ -206,7 +218,7 @@ symlink to this file.
   (`install_codex_global`), `~/.vibe/config.toml` (`install_vibe_global`).
 - **Mistral Vibe needs `--trust`.** Vibe only loads the per-mirror
   `.vibe/config.toml` (and thus auto-seeds) when the folder is trusted, so
-  the desktop "Mistral Vibe" preset launches `vibe --trust {prompt}`
+  the desktop "Mistral Vibe" preset launches `vibe --trust`
   (session-only trust). Without it Vibe falls back to `~/.vibe/config.toml`
   (no `home_node_id`) and starts unscoped. Vibe merges project over user
   config (union-merge of `mcp_servers` by `name`), so the per-mirror file is
@@ -252,22 +264,135 @@ symlink to this file.
   keys; `.env.schema` declares only the 6 core ones. Full inventory with
   defaults: `docs/env-vars.md`. Watch out: `PORTUNI_ROOT` (write-scope
   tiering) is a different thing than `PORTUNI_WORKSPACE_ROOT` (mirrors).
-- **Disk read scope = the session scope, on REAL paths (no more copies).** The
-  MCP `SessionScope` is the single source of truth. The Seatbelt profile grants
-  rw on the home mirror and **read-only on the REAL mirrors of the depth-1
-  neighbour set** (the stable spawn scope), computed at spawn — locally from the
-  graph, in central mode from `CentralClient.nodeNeighbours`
-  (`sandbox-profile.ts` `readMirrors` / `resolveNeighbourReadMirrors`). Read
-  tools (`get_node`/`get_context`/`list_files`) return those real paths;
-  `readableMirrorRoot` returns the real mirror for home+seed nodes. **Ad-hoc
-  nodes** (deeper than depth-1, added mid-session by `expand_scope`) are NOT on
-  disk — read their content with **`portuni_read_file(node_id, path)`**
-  (`read-node-file.ts`), the universal no-hooks channel. The old
-  `.portuni-scope/` copy staging is **retired**; the `ScopeReconciler` survives
-  only as a one-time sweeper of legacy staged dirs. Why real paths beat copies:
-  no stale snapshot, no cleanup, edits land on the real mirror. Model:
-  `docs/architecture/scope-disk-projection.md`;
-  plan: `docs/superpowers/plans/2026-07-06-scope-real-paths.md`.
+- **Disk read scope = the session scope, on REAL paths for the seed set, a
+  hardlink projection for everything else.** The MCP `SessionScope` is the
+  single source of truth. The Seatbelt profile grants rw on the home mirror
+  and **read-only on the REAL mirrors of the depth-1 neighbour set** (the
+  stable spawn scope), computed at spawn — locally from the graph, in central
+  mode from `CentralClient.nodeNeighbours` (`sandbox-profile.ts`
+  `readMirrors` / `resolveNeighbourReadMirrors`). It also grants read-only on
+  a per-node **projection parent**, `<portuniRoot>/.portuni-sessions/
+  <homeNodeId>/` (`SandboxScope.projectionRoot` /
+  `resolveProjectionRootForNode`), narrowed further to
+  `<projectionRoot>/<sessionId>/` when the session id is already known
+  (`SandboxScope.sessionId`, #208 follow-up) — a fresh spawn mints one in
+  `resolveSandboxScopeForNode` (central mode, `db` absent, always mints
+  fresh rather than trusting an unvalidated caller-supplied
+  `resumeSessionId`) and returns it as `session_id` on the sandbox-profile
+  REST response; a resume reuses its already-validated `resumeSessionId`.
+  Threaded to the spawned shell as `PORTUNI_SPAWN_SESSION_ID`
+  (`pty_spawn`'s `spawn_session_id`), then to the MCP connection via a
+  `X-Portuni-Spawn-Id` header (`buildClaudeMcpJson`, Claude-only like
+  `X-Portuni-Profile`) that `mcp/transport.ts` hands to
+  `domain/sessions.ts`'s `createSession` as a pre-assigned id, so the
+  session row's own id matches what the kernel already granted. **Non-relaying
+  CLIs (#211 fix):** a real spawn always mints a `sessionId`, so the kernel
+  cannot tell in advance which CLI is about to connect and grant only the
+  narrow subdirectory for it — `buildSeatbeltProfile` grants BOTH
+  `<projectionRoot>/<sessionId>/` (works when the connecting CLI relays that
+  id back, Claude only today) AND a second, fixed
+  `<projectionRoot>/_shared/` bucket (`session-projection.ts`'s
+  `UNNARROWED_PROJECTION_ID`) unconditionally — neither is an ancestor of
+  the other, so isolation between different sessions' own narrow
+  subdirectories still holds. `mcp/scope.ts`'s `SessionScope
+  .projectionSessionId` (set synchronously by `createMcpServer`, before any
+  tool call could race a persisted session id) resolves to the resumed
+  session's own id, the relayed spawn id, or the shared bucket, in that
+  order — the disk projector and `disposeSessionProjection` key off this,
+  not off the persisted `sessionId`. **Ad-hoc nodes** (deeper than depth-1,
+  added mid-session by `expand_scope` or an auto-allowed edge traversal) get
+  hardlinked there — `<projectionRoot>/<projectionSessionId>/<nodeId>/`, no
+  data duplication, always current — by the disk projector
+  (`mcp/disk-projection.ts` `DiskProjector`, `domain/session-projection.ts`)
+  the first time a read tool touches them; the mirror-watcher re-links/
+  removes the hardlink on every create/delete in the source mirror, and a
+  narrow (non-shared) session's own subdirectory is cleaned up when its MCP
+  session closes (`disposeSessionProjection`) — the shared bucket is never
+  torn down per-session, since other concurrent non-relaying sessions on the
+  same node may still be reading it — the agent never manages any of this.
+  Read tools (`get_node`/`get_context`/`list_files`) and
+  `portuni_expand_scope` return that path via `readableMirrorRoot`; a node
+  with **no local mirror on this device** has no projection either way — read
+  it with **`portuni_read_file(node_id, path)`** (`read-node-file.ts`), the
+  universal no-hooks channel that always works. **Restart consolidation**: a
+  resumed session passes `?resume_session_id=<id>` on either sandbox-profile
+  REST endpoint so `readMirrors` also widens with that session's accumulated
+  read set (real mirrors, not re-projected) — local mode only, central mode
+  is inert here (`NO_DB`). The old `.portuni-scope/`
+  copy staging and its `ScopeReconciler` sweeper are fully retired (no
+  successor of that name — `disk-projection.ts` is a clean rename, not a
+  continuation). Remaining gap: `onclose` cleanup only runs on a graceful
+  session end, so a crashed process leaves its hardlinks behind until the
+  next boot; `sweepStaleSessionProjections` (`session-projection.ts`), run
+  once at boot from both entry points (`boot/session-projection-sweep.ts`),
+  removes any `<sessionId>/` subdirectory whose session is not `running` in
+  the durable `sessions` table. The kernel actually refusing a second
+  session's read into the first's narrowed `<sessionId>/` grant is macOS-only
+  verification territory (a live `sandbox-exec` run) — the plumbing above is
+  covered by tests, that live check is not. Model:
+  `docs/architecture/scope-disk-projection.md`; plan:
+  `docs/superpowers/plans/2026-07-06-scope-real-paths.md`.
+
+- **No automatic first prompt on spawn.** A terminal opened from a node
+  detail (`buildAgentCommand`, `apps/web/src/lib/prompt.ts`) starts empty
+  and ready — the app never sends an orientation message. What that prompt
+  used to fetch (node context, responsibilities, recent events, a handoff
+  pointer for a suspended session) is written into `PORTUNI_SCOPE.md`
+  instead (`domain/write-scope.ts` `buildOrientationHint`,
+  `domain/scope-materialize.ts` `orientationForNode`) — appended there only,
+  never into `.cursor/rules` or the `CLAUDE.md`/`AGENTS.md` marker blocks,
+  which stay on the terser write-scope hint. Central-mode mirrors get the
+  write-scope hint but no orientation section: `CentralClient` has no
+  endpoint for it yet, a deliberate scope cut, not a bug. Agent-command
+  presets carry no `{prompt}` placeholder anymore (`apps/web/src/lib/
+  settings.ts`); `TerminalPane.tsx` times spawn phases (provisioning ->
+  `pty_spawn` -> CLI boot to first byte) and prints/logs a one-line
+  breakdown on first output.
+- **CLI spawn profiles are a desktop `config.json` registry, opt-in and
+  invisible until populated.** Settings → Profily (`ProfilesSection.tsx`,
+  `lib/profiles.ts`) manages `profiles`/`default_profile_by_org` on
+  `WorkspacesFile` (`apps/desktop/src/workspace.rs` `ProfileConfig`) via
+  the `list_profiles`/`create_profile`/`update_profile`/`delete_profile`/
+  `set_default_profile_for_org` Tauri commands — non-secret, so it lives
+  alongside the workspace registry rather than Keychain. Portuni never
+  detects or parses the user's own profile mechanism (shell aliases, rc
+  files); a profile is just env vars (typically `CLAUDE_CONFIG_DIR=…`) and
+  an optional command override, merged into the shell by `pty_spawn`
+  (`apps/desktop/src/pty.rs`) when the caller passes a `profile_id`. With
+  zero profiles registered the feature is invisible everywhere; the
+  per-spawn picker (`TerminalSplitButton` in `DetailPane.files.tsx`) only
+  renders once >=2 exist, defaulting to the node's organization's
+  configured profile (derived from `belongs_to` in `node.edges`) — with
+  exactly one profile and no org default set, spawns still carry no
+  profile. `pty_spawn` also exports `PORTUNI_PROFILE_ID` into the shell
+  whenever a profile id was requested (even one since deleted from the
+  registry, so the session record still reflects intent); the per-mirror
+  `.mcp.json`'s `X-Portuni-Profile` header (`buildClaudeMcpJson`,
+  `write-scope.ts`) expands it at Claude Code's config-load time the same
+  way the bearer token is — Claude only for now (Codex/Vibe's config
+  formats have no equivalent runtime expansion for a second header).
+  `transport.ts` reads that header and threads it through
+  `createMcpServer`/`bindSessionPersistence` into the session row's
+  `profile_id` column (`domain/sessions.ts`, columns pre-provisioned since
+  #189). Profile threading stops at the embedded terminal: `TerminalSplitButton`'s
+  external-launch path (`launch_claude_for_node`) has no `profile_id`
+  parameter at all, so picking a profile and choosing "Otevřít v externím
+  terminálu" spawns without it (#207) — deliberately not extended, since
+  that command doesn't inject even the MCP-token/`PORTUNI_PROFILE_ID` env
+  `pty_spawn` does either. **Env values never reach the webview** (#207):
+  `list_profiles` returns `env_keys` (names only), never the map itself, so
+  editing an existing profile is a partial update (`update_profile` treats
+  an empty submitted value for an already-known key as "leave unchanged" —
+  `ProfilesSection.tsx` pre-fills existing keys with an empty value for
+  exactly this reason). `create_profile`/`update_profile` also reject
+  secret-shaped keys outright (`*_TOKEN`/`*_KEY`/`*_SECRET`/`*PASSWORD*`,
+  `workspace::is_secret_shaped_env_key`) — Keychain is where a secret
+  belongs, not this plaintext registry. `pty_spawn`'s merge
+  (`resolve_profile_env`) drops any `PORTUNI_*` key from a profile's env
+  (it must never be able to override the token/profile-id env already set)
+  and expands a leading `~` in each value to `$HOME` (reusing lib.rs's
+  `expand_tilde`, `pub(crate)` for this) — portable-pty passes values to the
+  child verbatim, no shell involved, so `~` is otherwise left literal.
 
 ## Security rules (from the auth refactor post-mortem)
 

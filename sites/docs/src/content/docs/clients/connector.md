@@ -36,7 +36,7 @@ Claude Code opens the same browser-based login + consent flow on a loopback redi
 
 ## What works from here
 
-Same as any client with no local mirror — see the "What works from here" and "Scope" sections on the [Claude Desktop](/clients/claude-desktop/) page; they apply identically to a connector session.
+Same "no local mirror" starting point as the [Claude Desktop](/clients/claude-desktop/) page, but scope behavior itself differs: an OAuth connector session is the `interactive_chat` [session type](/concepts/scope-enforcement/#session-types), which reads are permission-only for — any node visible to you is readable directly, with no `portuni_session_init`/`portuni_expand_scope` dance, no edge-reachability or disconnected-jump distinction. `portuni_list_events`/`portuni_list_files` called without a `node_id` likewise see every row on a visible node rather than an empty result. Only a hard floor (a scope-sensitive node, or a private node someone else created) or a write still needs confirmation. The write-scope set stays empty for the whole session either way (every write elicits), same as an `interactive_task` client with no home node.
 
 ## Revoking access
 

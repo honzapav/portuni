@@ -12,6 +12,7 @@ import SettingsUsersPanel from "./SettingsPage.users";
 import SettingsAccessRequestsPanel from "./AccessRequests";
 import AccountSection from "./AccountSection";
 import WorkspacesSection from "./WorkspacesSection";
+import ProfilesSection from "./ProfilesSection";
 import SyncSection from "./SyncSection";
 import UpdateSection from "./UpdateSection";
 import { fetchAccessRequestCount, fetchMe } from "../api";
@@ -30,6 +31,7 @@ type SubTab =
   | "actors"
   | "account"
   | "workspaces"
+  | "profiles"
   | "sync"
   | "users"
   | "access-requests";
@@ -47,6 +49,7 @@ export default function SettingsPage({
     if (t === "actors") return "actors";
     if (t === "account") return "account";
     if (t === "workspaces") return "workspaces";
+    if (t === "profiles") return "profiles";
     if (t === "sync") return "sync";
     if (t === "users") return "users";
     if (t === "access-requests") return "access-requests";
@@ -135,33 +138,7 @@ export default function SettingsPage({
   const matchingTerminal = TERMINAL_PRESETS.find((p) => p.template === termDraft);
 
   const previewPath = "/Users/ty/workspaces/portuni/tvuj-projekt";
-  const samplePrompt = [
-    "Pracuješ na Portuni uzlu **Tvůj Projekt** (typ: project, id: `node_abc123`).",
-    "",
-    "Než cokoli uděláš, zavolej `portuni_get_node({ node_id: \"node_abc123\" })` pro obnovení stavu. Kontext níže je snapshot zachycený při generování promptu a může být zastaralý.",
-    "",
-    "---",
-    "",
-    "## Snapshot",
-    "",
-    "**Stav:** active",
-    "**Lokální mirror:** `" + previewPath + "`",
-    "",
-    "### Propojení",
-    "- **belongs_to**",
-    "    -> Acme Corp _(organization, `node_org01`)_",
-    "",
-    "### Nedávné události",
-    "- `[note]` 2026-04-21 -- Spuštěna implementace.",
-    "",
-    "---",
-    "",
-    "Až pochopíš stav, zeptej se mě, co bys měl dělat dál, nebo navrhni rozumný další krok na základě událostí výše.",
-  ].join("\n");
-  const escapedPrompt = `'${samplePrompt.replace(/'/g, "'\\''")}'`;
-  const invocation = draft.includes("{prompt}")
-    ? draft.replaceAll("{prompt}", escapedPrompt)
-    : `${draft} ${escapedPrompt}`;
+  const invocation = (draft.trim() || DEFAULT_AGENT_COMMAND).replace(/\s*\{prompt\}\s*/g, " ").trim();
   const preview = `cd '${previewPath}' && ${invocation}`;
 
   return (
@@ -218,6 +195,16 @@ export default function SettingsPage({
               Workspaces
             </button>
             <button
+              onClick={() => setTab("profiles")}
+              className={`rounded px-3 py-1 text-[13px] transition-colors ${
+                tab === "profiles"
+                  ? "bg-[var(--color-bg)] text-[var(--color-text)]"
+                  : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+              }`}
+            >
+              Profily
+            </button>
+            <button
               onClick={() => setTab("sync")}
               className={`rounded px-3 py-1 text-[13px] transition-colors ${
                 tab === "sync"
@@ -265,6 +252,8 @@ export default function SettingsPage({
 
         {tab === "workspaces" && <WorkspacesSection />}
 
+        {tab === "profiles" && <ProfilesSection />}
+
         {tab === "sync" && <SyncSection />}
 
         {tab === "users" && isAdmin && <SettingsUsersPanel />}
@@ -290,14 +279,16 @@ export default function SettingsPage({
                 Příkaz agenta
               </div>
               <p className="mb-3 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-                Když zkopíruješ příkaz pro spuštění agenta z uzlu, Portuni ho prefixuje
-                přechodem <code className="font-mono">cd</code> do lokální složky uzlu
-                a spustí tenhle příkaz. Použij{" "}
+                Když otevřeš terminál z uzlu, Portuni ho prefixuje přechodem{" "}
+                <code className="font-mono">cd</code> do lokální složky uzlu a
+                spustí tenhle příkaz beze změny — terminál se otevře prázdný a
+                připravený, žádný úvodní prompt se neposílá. Kontext uzlu
+                (souhrn, odpovědnosti, nedávné události, ukazatel na handoff)
+                najde agent sám v{" "}
                 <code className="font-mono text-[var(--color-accent)]">
-                  {"{prompt}"}
+                  PORTUNI_SCOPE.md
                 </code>{" "}
-                tam, kde má být vygenerovaný prompt. Když placeholder vynecháš, prompt
-                se připojí jako poslední argument.
+                v pracovní složce.
               </p>
 
               <div className="mb-4 space-y-1.5">
@@ -349,7 +340,7 @@ export default function SettingsPage({
                     Náhled
                   </div>
                   <div className="text-[12px] text-[var(--color-text-dim)]">
-                    Vzorový uzel – skutečný prompt vznikne z vybraného uzlu.
+                    Vzorová cesta – skutečná cesta vznikne z vybraného uzlu.
                   </div>
                 </div>
                 <pre className="scroll-thin max-h-[360px] overflow-auto whitespace-pre-wrap break-words rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2.5 font-mono text-[12.5px] leading-relaxed text-[var(--color-text-muted)]">

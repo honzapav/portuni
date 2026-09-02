@@ -166,7 +166,9 @@ export async function handleListNodeAccessRequests(
 
 // Loads requests of one status and drops those on nodes the caller cannot
 // see. One chain query for the whole node set (filterVisibleNodeIds).
-async function listVisibleRequests(
+// Exported for reuse by api/overview.ts's "pending access requests"
+// attention section (same "manage" gate, applied by that caller).
+export async function listVisibleRequests(
   db: Client,
   identity: RequestIdentity,
   status: AccessRequestStatus,

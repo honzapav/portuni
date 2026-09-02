@@ -9,6 +9,7 @@ import {
   NODE_STATUSES,
   NODE_VISIBILITIES,
 } from "../../infra/schema.js";
+import { HEALTH_STATES } from "../../shared/popp.js";
 import { getMirrorPath } from "../../domain/sync/mirror-registry.js";
 import { NodeRow, NodeSummaryRow } from "../../shared/types.js";
 import type { InValue } from "@libsql/client";
@@ -18,14 +19,17 @@ import {
   purgeNodeRows,
   updateNodeInternal,
 } from "../../domain/nodes.js";
-import { decideGlobalQuery } from "../scope.js";
 import { filterVisibleNodeIds, nodeVisibleTo } from "../../auth/node-access.js";
+import { guardNodeWrite } from "../write-gate.js";
 import type { SessionCtx } from "../server.js";
 
 export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
   const { scope } = ctx;
   server.tool(
     "portuni_create_node",
+    // Not write-gated: creation is exempt because there is no existing node
+    // to protect -- the new node is added to the read AND write set below,
+    // as soon as it exists (see the addWritable call after createNodeInternal).
     "Create a new node in the Portuni knowledge graph. Create only when the user explicitly asks — agent-initiative nodes pollute the graph and the user cannot easily distinguish them later. Non-organization nodes must specify organization_id; the node and its belongs_to edge are inserted atomically. Optionally set goal (textual purpose) and lifecycle_state — status is derived. See portuni://architecture for the invariant and portuni://enums for the closed type / lifecycle sets.",
     {
       type: z.enum(NODE_TYPES).describe("Node type. See portuni://enums for the closed set."),
@@ -37,6 +41,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
       visibility: z.enum(NODE_VISIBILITIES).optional().describe("Visibility (default: team)"),
       goal: z.string().optional().describe("Optional textual goal / purpose of the node."),
       lifecycle_state: z.string().optional().describe("Optional primary lifecycle state — type-specific. See portuni://enums for the per-type closed set. status is derived from this."),
+      health: z.enum(HEALTH_STATES).optional().describe("Optional project health (default: on_track). Only meaningful for type='project' — orthogonal to lifecycle_state."),
     },
     async (args) => {
       const db = getDb();
@@ -76,6 +81,18 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
         };
       }
 
+      // A node created by this session enters its read and write set
+      // automatically -- a task's outputs are part of its context by
+      // definition (spec: "Read scope").
+      scope.addWritable(id);
+      scope.recordExpansion({
+        at: new Date().toISOString(),
+        node_ids: [id],
+        reason: "node created by this session",
+        triggered_by: "agent",
+        addedVia: "created",
+      });
+
       const result = {
         id,
         type: args.type,
@@ -104,6 +121,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
       goal: z.string().nullable().optional().describe("New goal text. Pass null to clear."),
       lifecycle_state: z.string().nullable().optional().describe("New lifecycle state — type-specific. See portuni://enums for the per-type closed set. Pass null to clear."),
       owner_id: z.string().nullable().optional().describe("New owner (actors.id). Any existing actor works — person, placeholder, or automation. Pass null to clear."),
+      health: z.enum(HEALTH_STATES).optional().describe("New project health. Only meaningful for type='project' — orthogonal to lifecycle_state."),
     },
     async (args) => {
       const db = getDb();
@@ -125,6 +143,8 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
+      const writeGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
+      if (writeGuard.kind === "error") return writeGuard.response;
       NodeRow.parse(current.rows[0]);
 
       const provided = [
@@ -136,6 +156,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
         args.goal,
         args.lifecycle_state,
         args.owner_id,
+        args.health,
       ].some((v) => v !== undefined);
       if (!provided) {
         return {
@@ -167,7 +188,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_list_nodes",
-    "List nodes from the Portuni knowledge graph, optionally filtered by type and/or status. Default scope='session' returns only nodes already in the session scope set; scope='global' returns the full graph and is mode-gated. Empty session-scope results mean the agent should call portuni_expand_scope or ask the user. See portuni://scope-rules.",
+    "List nodes from the Portuni knowledge graph, optionally filtered by type and/or status. Default scope='session' returns only nodes already in the session scope set. scope='global' is discovery, not ingestion: it is permission-only in every session type (no scope gate) and returns every node the caller can see, filtered by visibility like any other read. Empty session-scope results mean the agent should call portuni_expand_scope or ask the user; a global result is not itself added to scope -- reading a hit's full detail follows the normal expansion rules. See portuni://scope-rules.",
     {
       type: z.enum(NODE_TYPES).optional().describe("Filter by node type"),
       status: z.enum(NODE_STATUSES).optional().describe("Filter by status"),
@@ -175,7 +196,7 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
         .enum(["session", "global"])
         .optional()
         .default("session")
-        .describe("session (default): nodes already in the session scope set. global: full graph; subject to scope mode — see portuni://scope-rules."),
+        .describe("session (default): nodes already in the session scope set. global: every node the caller can see, permission-only — see portuni://scope-rules."),
     },
     async (args) => {
       const db = getDb();
@@ -192,31 +213,8 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
         values.push(args.status);
       }
 
-      const inScope = scope.list();
-      if (args.scope === "global") {
-        const guard = decideGlobalQuery(scope);
-        if (guard.kind === "elicit") {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  error: "scope_expansion_required",
-                  tool: "portuni_list_nodes",
-                  hint: guard.message,
-                }),
-              },
-            ],
-            isError: true,
-          };
-        }
-        scope.globalQuerySeen = true;
-        await logAudit(ctx.identity.userId, "scope_global_query", "scope", "list_nodes", {
-          tool: "portuni_list_nodes",
-          filters: { type: args.type ?? null, status: args.status ?? null },
-          mode: scope.mode,
-        });
-      } else {
+      if (args.scope !== "global") {
+        const inScope = scope.list();
         if (inScope.length === 0) {
           return { content: [{ type: "text" as const, text: JSON.stringify([], null, 2) }] };
         }
@@ -273,6 +271,8 @@ export function registerNodeTools(server: McpServer, ctx: SessionCtx): void {
           isError: true,
         };
       }
+      const deleteWriteGuard = await guardNodeWrite(scope, args.node_id, ctx.elicit);
+      if (deleteWriteGuard.kind === "error") return deleteWriteGuard.response;
       const node = existing.rows[0];
       const nodeType = node.type as string;
       const nodeName = node.name as string;

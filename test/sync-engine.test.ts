@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
 import { storeFile, resolveNodeInfo, pullFile, statusScan, previewNode } from "../apps/server/domain/sync/engine.js";
+import { registerFileRecordRemote } from "../apps/server/domain/sync/sync-remote-api.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { sha256Buffer, } from "../apps/server/domain/sync/hash.js";
 import { getFileState, resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
@@ -136,6 +137,26 @@ describe("pullFile", () => {
   it("throws when file_id does not exist", async () => {
     const { db } = await makeSharedDb();
     await assert.rejects(() => pullFile(db, { userId: "U1", fileId: "BADID" }));
+  });
+
+  // #211 cleanup: a file registered without a resolvable remote (#201, no
+  // routing configured) has remote_name = NULL -- pullFile's dirty-local
+  // guard runs after this check, so this must throw before it, not crash on
+  // a null remote_name/remote_path downstream.
+  it("throws 'no remote binding' for a file registered with NULL remote_name (#201)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await db.execute({ sql: "DELETE FROM remote_routing" });
+    await registerMirror("U1", nodeId, join(workspace, "mirror"));
+    const registered = await registerFileRecordRemote(db, {
+      userId: "U1",
+      nodeId,
+      relPath: "wip/orphan.md",
+    });
+    assert.equal(registered.remote_name, null);
+    await assert.rejects(
+      () => pullFile(db, { userId: "U1", fileId: registered.id }),
+      /no remote binding/,
+    );
   });
 });
 

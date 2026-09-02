@@ -20,10 +20,30 @@
 // docs/archive/sandbox-spike-2026-06-10.md.
 
 import { realpath } from "node:fs/promises";
+import { join } from "node:path";
+import { ulid } from "ulid";
 import type { Client } from "@libsql/client";
 import { getMirrorPath, listUserMirrors } from "./sync/mirror-registry.js";
 import { nodeNeighbourIds } from "./queries/neighbours.js";
+import { getSessionScope, loadResumableSession } from "./sessions.js";
 import { findContainingMirror, normalize, resolvePortuniRoot } from "./write-scope.js";
+import { UNNARROWED_PROJECTION_ID } from "./session-projection.js";
+
+// Thrown by resolveSandboxScopeForNode (and, transitively,
+// resolveSandboxScopeForCwd) when a caller supplies a resumeSessionId that
+// does not resolve to a session it owns, anchored to the requested node, in
+// the suspended state (#204: "resume_session_id has no ownership/anchor
+// check -- sandbox scope bypass"). Callers must refuse the request (403),
+// never silently fall back to the non-resumed profile -- a silent
+// degradation would look like a successful, authorized resume.
+export class ResumeSessionUnauthorizedError extends Error {
+  constructor(sessionId: string) {
+    super(
+      `resume_session_id ${sessionId} is not a suspended session owned by this user and anchored to this node`,
+    );
+    this.name = "ResumeSessionUnauthorizedError";
+  }
+}
 
 // Seatbelt string literal: double-quoted, backslash and quote escaped.
 function sbQuote(path: string): string {
@@ -38,6 +58,40 @@ export interface SandboxScope {
   // because Seatbelt matches realpaths (a symlink resolves to the denied
   // root). Empty falls back to the home-only profile.
   readMirrors: string[];
+  // Read-only parent directory for this node's session projection
+  // directories (domain/session-projection.ts, spec: "Disk contract",
+  // #191): <portuniRoot>/.portuni-sessions/<homeNodeId>/. Ad-hoc (non-seed)
+  // nodes a session expands into mid-run are hardlinked under
+  // <projectionRoot>/<sessionId>/<nodeId>/ once the MCP session exists --
+  // keyed by node (not session) here because this profile is built and
+  // frozen into Seatbelt BEFORE that session's id is minted, but a subpath
+  // allow on the parent already covers whatever subdirectory the session
+  // creates later. Optional so hand-built SandboxScope literals (existing
+  // tests, callers with no session concept) keep working without it.
+  projectionRoot?: string;
+  // The MCP session id this profile's projection grant is narrowed to, when
+  // known (#208 follow-up: "kernel-level isolation between concurrent
+  // sessions on the same node"). A resumed spawn reuses the already-
+  // validated resumeSessionId; a fresh spawn mints one here, before the MCP
+  // session itself exists, so it can be threaded out to the caller (REST
+  // response -> pty_spawn env -> Claude's .mcp.json header ->
+  // mcp/transport.ts) and handed back in as that session's pre-assigned id
+  // (domain/sessions.ts createSession). Central mode (db absent) always
+  // mints fresh rather than trusting a caller-supplied resumeSessionId,
+  // which is unvalidated there. Optional for the same hand-built-literal
+  // reason as projectionRoot; absent, buildSeatbeltProfile grants only the
+  // shared bucket below (#211: e.g. a hand-built test scope).
+  //
+  // #211: this id can only ever help a CLI whose config format can relay it
+  // back to the MCP connection at connect time (today: Claude Code only,
+  // via X-Portuni-Spawn-Id -- see domain/write-scope.ts). At the point this
+  // profile is minted the server does not yet know which CLI is about to
+  // connect (GET /sandbox-profile runs before exec), so buildSeatbeltProfile
+  // below grants BOTH this narrow per-spawn subdirectory AND the fixed
+  // UNNARROWED_PROJECTION_ID bucket unconditionally: whichever one the
+  // connecting MCP session's disk projector actually uses (mcp/scope.ts's
+  // SessionScope.projectionSessionId), the kernel already allows it.
+  sessionId?: string;
 }
 
 // Render the Seatbelt profile. Paths must already be realpath-resolved.
@@ -69,6 +123,31 @@ export function buildSeatbeltProfile(scope: SandboxScope): string {
   for (const m of scope.readMirrors) {
     lines.push(`(allow file-read* (subpath ${sbQuote(normalize(m))}))`);
   }
+  if (scope.projectionRoot) {
+    // Narrow per-spawn subdirectory -- two sessions spawned against the
+    // same node no longer share a kernel-level read grant into each
+    // other's ad-hoc projections, PROVIDED the connecting CLI relays this
+    // id back (Claude only today, #208/#211). Granted whenever a sessionId
+    // is known (always, for a real spawn -- resolveSandboxScopeForNode
+    // mints one unconditionally); absent only for hand-built test scopes.
+    if (scope.sessionId) {
+      lines.push(
+        `(allow file-read* (subpath ${sbQuote(normalize(join(scope.projectionRoot, scope.sessionId)))}))`,
+      );
+    }
+    // Shared bucket (#211) -- granted unconditionally, alongside the narrow
+    // one above, because at grant time the server does not yet know which
+    // CLI is about to connect (GET /sandbox-profile runs before exec). A
+    // CLI that cannot relay the spawn id (Codex, Vibe) projects ad-hoc
+    // nodes here instead (mcp/scope.ts's SessionScope.projectionSessionId),
+    // so it stays readable on disk instead of silently regressing to
+    // portuni_read_file-only. This is a FIXED subdirectory name, never a
+    // per-session one, so it does not defeat the narrow grant's isolation
+    // above: they are siblings under projectionRoot, not nested.
+    lines.push(
+      `(allow file-read* (subpath ${sbQuote(normalize(join(scope.projectionRoot, UNNARROWED_PROJECTION_ID)))}))`,
+    );
+  }
   lines.push(`(allow file-read* file-write* (subpath ${sbQuote(home)}))`);
   return lines.join("\n") + "\n";
 }
@@ -93,10 +172,22 @@ async function resolveReal(path: string): Promise<string> {
 // local mirror is simply omitted (no grant). When db is absent (central-mode
 // agent-router passes NO_DB) neighbors can't be resolved here -- readMirrors
 // stays empty and central mode fills it in Phase 3.
+//
+// resumeSessionId is restart consolidation (spec: "Disk contract" -- "on
+// resume the sandbox profile is computed from the session's accumulated
+// read set"): when set, every node that suspended session ever read
+// (domain/sessions.ts session_scope) and that still has a local mirror on
+// this device is ALSO granted its real mirror here, on top of the depth-1
+// seed set -- not just what the session originally spawned with. A
+// re-expansion the agent already did once does not need re-projecting
+// after a restart; the projection directory (domain/session-projection.ts)
+// only has to cover whatever this widened readMirrors set cannot (nodes
+// with no local mirror on this device).
 export async function resolveSandboxScopeForNode(
   db: Client,
   userId: string,
   nodeId: string,
+  resumeSessionId?: string,
 ): Promise<SandboxScope | null> {
   const home = await getMirrorPath(userId, nodeId);
   if (!home) return null;
@@ -109,14 +200,59 @@ export async function resolveSandboxScopeForNode(
   if (!portuniRoot) return null;
 
   const homeReal = await resolveReal(home);
-  const readMirrors = db
+  const portuniRootReal = await resolveReal(portuniRoot);
+  let readMirrors = db
     ? await resolveNeighbourReadMirrors(userId, await nodeNeighbourIds(db, nodeId), homeReal)
     : [];
 
+  // Session id this profile's projection grant narrows to (#208 follow-up).
+  // A resumed spawn reuses its already-validated resumeSessionId; anything
+  // else -- fresh spawn, or db absent (central mode, where a caller-supplied
+  // resumeSessionId is unvalidated and must not be trusted for this) --
+  // mints a fresh one.
+  let sessionId = ulid();
+
+  if (db && resumeSessionId) {
+    const resumable = await loadResumableSession(db, userId, nodeId, resumeSessionId);
+    if (!resumable) throw new ResumeSessionUnauthorizedError(resumeSessionId);
+    const accumulated = await getSessionScope(db, resumeSessionId);
+    const resumedMirrors = await resolveNeighbourReadMirrors(
+      userId,
+      accumulated.map((r) => r.node_id),
+      homeReal,
+    );
+    readMirrors = [...new Set([...readMirrors, ...resumedMirrors])];
+    sessionId = resumeSessionId;
+  }
+
   return {
-    portuniRoot: await resolveReal(portuniRoot),
+    portuniRoot: portuniRootReal,
     homeMirror: homeReal,
     readMirrors,
+    projectionRoot: join(portuniRootReal, ".portuni-sessions", nodeId),
+    sessionId,
+  };
+}
+
+// Lightweight variant of resolveSandboxScopeForNode's projectionRoot
+// computation, for callers that only need the projection paths (the MCP
+// disk-projector) and neither a db nor the node's own mirror/neighbours.
+// Returns null under the same condition resolveSandboxScopeForNode would
+// (no PORTUNI_ROOT resolvable from env + known mirrors).
+export async function resolveProjectionRootForNode(
+  userId: string,
+  homeNodeId: string,
+): Promise<{ portuniRoot: string; projectionRoot: string } | null> {
+  const allMirrors = await listUserMirrors(userId);
+  const portuniRoot = resolvePortuniRoot({
+    envValue: process.env.PORTUNI_ROOT ?? null,
+    knownMirrors: allMirrors.map((m) => m.local_path),
+  });
+  if (!portuniRoot) return null;
+  const portuniRootReal = await resolveReal(portuniRoot);
+  return {
+    portuniRoot: portuniRootReal,
+    projectionRoot: join(portuniRootReal, ".portuni-sessions", homeNodeId),
   };
 }
 
@@ -149,6 +285,7 @@ export async function resolveSandboxScopeForCwd(
   db: Client,
   userId: string,
   cwd: string,
+  resumeSessionId?: string,
 ): Promise<{ nodeId: string; scope: SandboxScope } | null> {
   const mirrors = await listUserMirrors(userId);
   // Match against the paths as registered (normalized, NOT realpath'd):
@@ -162,7 +299,7 @@ export async function resolveSandboxScopeForCwd(
   if (!containing) return null;
   const row = mirrors.find((m) => normalize(m.local_path) === containing);
   if (!row) return null;
-  const scope = await resolveSandboxScopeForNode(db, userId, row.node_id);
+  const scope = await resolveSandboxScopeForNode(db, userId, row.node_id, resumeSessionId);
   if (!scope) return null;
   return { nodeId: row.node_id, scope };
 }

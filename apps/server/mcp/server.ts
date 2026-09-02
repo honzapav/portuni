@@ -4,7 +4,7 @@
 // transport layer calls).
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { SessionScope, parseScopeMode } from "./scope.js";
+import { SessionScope, deriveSessionType } from "./scope.js";
 import { registerResources } from "./resources/index.js";
 import { registerScopeTools } from "./tools/scope.js";
 import { registerNodeTools } from "./tools/nodes.js";
@@ -20,10 +20,14 @@ import { registerEventTools } from "./tools/events.js";
 import { registerActorTools } from "./tools/actors.js";
 import { registerResponsibilityTools } from "./tools/responsibilities.js";
 import { registerEntityAttributeTools } from "./tools/entity-attributes.js";
-import { createScopeReconciler, type ScopeReconciler } from "./scope-reconciler.js";
+import { createDiskProjector, type DiskProjector } from "./disk-projection.js";
+import { createElicitor, type Elicitor } from "./elicit.js";
+import { bindSessionPersistence } from "./session-persistence.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { TOOL_MIN_SCOPE } from "../auth/min-scopes.js";
 import { scopeAtLeast } from "../auth/roles.js";
+import { getDb } from "../infra/db.js";
+import { UNNARROWED_PROJECTION_ID } from "../domain/session-projection.js";
 
 // Top-level server brief. Kept short -- many MCP clients truncate this
 // field at ~2 KB. Anything load-bearing for an individual tool lives in
@@ -38,7 +42,12 @@ For semantics, contracts, and enums fetch resources: portuni://architecture, por
 export interface SessionCtx {
   scope: SessionScope;
   identity: RequestIdentity;
-  reconciler: ScopeReconciler;
+  projector: DiskProjector;
+  // Optional: absent in most test harnesses that build a SessionCtx by hand,
+  // which is equivalent to every confirm() call resolving "unsupported"
+  // (the pre-elicitation honor-system fallback). createMcpServer always
+  // provides a real one.
+  elicit?: Elicitor;
 }
 
 // Default identity used when createMcpServer() is called without arguments
@@ -125,17 +134,50 @@ function registerSetupDriveRemotePrompt(server: McpServer): void {
   );
 }
 
+// `homeNodeId` is the ?home_node_id query param off the connection URL, when
+// present (parsed by the transport before this is called). It feeds
+// deriveSessionType so a headless-flagged device token without it can be
+// refused at seed time by the caller (transport.ts) before a server/scope
+// pair is even built for it.
+//
+// `profileId` is the X-Portuni-Profile header (transport.ts), phase 3's
+// spawn profile id -- see bindSessionPersistence.
+//
+// `resumeSessionId` is the ?resume_session_id query param (#204). When set,
+// the caller (transport.ts) is responsible for awaiting
+// resumeSessionPersistence itself -- attaching to an existing session must
+// be authorized and rehydrated before any tool call, which the fire-and-
+// forget bindSessionPersistence path cannot guarantee. This function only
+// skips its own bindSessionPersistence call in that case so the two paths
+// never race to create/attach the same connection's session row twice.
+// `spawnSessionId` is the X-Portuni-Spawn-Id header (transport.ts) -- see
+// bindSessionPersistence for what it threads through and why.
 export function createMcpServer(
   identity: RequestIdentity,
+  homeNodeId: string | null = null,
+  profileId: string | null = null,
+  resumeSessionId: string | null = null,
+  spawnSessionId: string | null = null,
 ): { server: McpServer; scope: SessionScope } {
-  const scope = new SessionScope(parseScopeMode(process.env.PORTUNI_SCOPE_MODE));
-  const reconciler = createScopeReconciler({ userId: identity.userId, scope });
-  scope.onAdd((nodeId) => reconciler.schedule(nodeId));
-  const ctx: SessionCtx = { scope, identity, reconciler };
+  const scope = new SessionScope(deriveSessionType(identity, homeNodeId));
+  // #211: resolved synchronously, before any tool call can race it (unlike
+  // scope.sessionId, set later by bindSessionPersistence's fire-and-forget
+  // createSession INSERT). A resume reuses its own already-agreed-on id;
+  // a fresh connection uses the relayed spawn id when the CLI sent one
+  // (Claude only -- see mcp/scope.ts's SessionScope.projectionSessionId
+  // doc), otherwise the shared bucket every other CLI's Seatbelt grant
+  // also covers.
+  scope.projectionSessionId = resumeSessionId ?? spawnSessionId ?? UNNARROWED_PROJECTION_ID;
+  const projector = createDiskProjector({ userId: identity.userId, scope });
+  scope.onAdd((nodeId) => projector.schedule(nodeId));
+  if (!resumeSessionId) {
+    bindSessionPersistence(getDb(), scope, identity, profileId, homeNodeId, spawnSessionId);
+  }
   const server = new McpServer(
     { name: "portuni", version: "0.1.0" },
     { instructions: INSTRUCTIONS },
   );
+  const ctx: SessionCtx = { scope, identity, projector, elicit: createElicitor(server) };
   gateToolsByScope(server, identity);
   registerResources(server);
   registerScopeTools(server, ctx);

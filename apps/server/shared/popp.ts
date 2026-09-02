@@ -105,3 +105,15 @@ export function deriveStatusFromLifecycle(
 }
 
 export const STATUS_FROM_LIFECYCLE = LIFECYCLE_TO_STATUS;
+
+// Project health. Orthogonal to lifecycle_state: a project can be
+// in_progress *and* at risk. Meaningful for project nodes only -- process
+// and area already carry their own attention states inside
+// LIFECYCLE_STATES_BY_TYPE (at_risk/broken, needs_attention).
+export const HEALTH_STATES = ["on_track", "at_risk", "off_track"] as const;
+export type HealthState = (typeof HEALTH_STATES)[number];
+export const DEFAULT_HEALTH: HealthState = "on_track";
+
+export function isHealthApplicableForType(type: NodeType): boolean {
+  return type === "project";
+}

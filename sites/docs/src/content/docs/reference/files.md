@@ -121,11 +121,12 @@ not on disk; read their content with `portuni_read_file` (below). See
 [disk read scope](/concepts/scope-enforcement/).
 
 Scope gating: with `node_id` the node must be in session scope (out of
-scope returns `scope_expansion_required`). Without `node_id` the call is
-a global query — mode-gated, and results are restricted to the session
-scope set (empty scope returns an empty array) unless the mode is
-`permissive`. The same gating applies to the other list tools
-(`portuni_list_events`, ...).
+scope returns `scope_expansion_required`). Without `node_id` results are
+restricted to the current session scope set (empty scope returns an
+empty array) — no confirmation needed, it is not a broad query. The same
+gating applies to `portuni_list_events`. `portuni_search_files` and
+`portuni_list_nodes(scope: "global")` are the exception — see below and
+[scope enforcement](/concepts/scope-enforcement/).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -140,18 +141,22 @@ Returns: Array of files, each with: `id`, `node_id`, `node_name`,
 
 ## portuni_read_file
 
-Read a file's content from an in-scope node that the seatbelt does **not**
-expose on disk — an ad-hoc node reached by deeper graph traversal (beyond
-the home node and its depth-1 neighbours, whose folders you read natively
-via the `local_path` returned by `portuni_get_context` / `portuni_get_node`).
-The server reads the live file from the node's local mirror and returns it,
-so there is no stale copy and no `.portuni-scope` staging. When the serving
-machine holds **no mirror** of the node — the central server, or a remote
-client (Claude Desktop against `https://…/mcp` with a device token) with no
-local workspace — the file is read straight from the node's routed remote
-(Google Drive), the same path `GET /nodes/:id/file` takes. In agent mode
-the sidecar reads its own mirror first and proxies the call to central when
-it has none.
+Read a file's content from an in-scope node the seatbelt does not expose on
+its **real** mirror path — an ad-hoc node reached by deeper graph traversal
+(beyond the home node and its depth-1 neighbours, whose folders you read
+natively via the `local_path` returned by `portuni_get_context` /
+`portuni_get_node`). Such a node, if it has a local mirror on this device,
+is also readable natively at its hardlink projection directory (same
+`local_path` field, created on first touch — see [disk read
+scope](/concepts/scope-enforcement/)); `portuni_read_file` is the channel
+that works regardless, since it has no dependency on a local mirror at all.
+The server reads the live file from the node's local mirror when one
+exists — no stale copy — and otherwise, when the serving machine holds
+**no mirror** of the node (the central server, or a remote client such as
+Claude Desktop against `https://…/mcp` with a device token, with no local
+workspace), reads straight from the node's routed remote (Google Drive),
+the same path `GET /nodes/:id/file` takes. In agent mode the sidecar reads
+its own mirror first and proxies the call to central when it has none.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -173,19 +178,18 @@ the configured remote(s) — Google Drive's `fullText contains` (which indexes
 Docs, PDFs and text files; whole words and phrases, not substrings or regex)
 or a text grep on an `fs` remote — and each hit is joined back onto the
 `files` registry, so a loose Drive object Portuni never registered is never
-returned. Results are limited to nodes the caller can see (group
-visibility), and outside `permissive` scope mode to the session scope set.
+returned. Search is discovery, not ingestion: it is **permission-only in
+every session type** — no scope gate, with or without `node_id`. Results
+are limited only to nodes the caller can see (group visibility). Each hit
+carries a short, length-capped snippet, not the full file; read a hit in
+full with `portuni_read_file`, which follows the normal scope-expansion
+rules. See [scope enforcement](/concepts/scope-enforcement/).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `query` | string | yes | Words or a phrase to find in file contents |
-| `node_id` | string | no | Restrict to one node (must be in scope) |
+| `node_id` | string | no | Restrict to one node |
 | `limit` | number | no | Max hits (default 20, max 50) |
-
-Scope gating mirrors `portuni_list_files`: with `node_id` the node must be
-in session scope; without it the call is a global query — mode-gated
-(strict refuses, balanced refuses on first call, permissive auto-allows +
-audits) and restricted to the scope set unless the mode is `permissive`.
 
 Returns: Array of hits, each with `file_id`, `node_id`, `node_name`,
 `node_type`, `filename`, `path` (the node-relative path, e.g.
@@ -233,6 +237,11 @@ Returns: classified buckets (`clean`, `push_candidates`, `pull_candidates`,
   gone, and adopts a file newly present anywhere under `wip/`,
   `outputs/`, or `resources/` at any depth (a dot-prefixed filename or subfolder is
   skipped).
+- **A remote is not required for tracking.** In a local-only workspace (no
+  remote configured at all), a new file still registers and reads as
+  `push_candidates` — registration never depends on routing resolving.
+  Once a remote is connected, `portuni_store` (or any other deliberate
+  write) resolves it and backfills the record's `remote_name`.
 :::
 
 ## portuni_list_remotes / portuni_setup_remote / portuni_set_routing_policy
