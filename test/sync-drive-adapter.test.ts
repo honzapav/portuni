@@ -372,4 +372,50 @@ describe("DriveAdapter search (fullText contains)", () => {
     assert.equal(hits.length, 1);
     assert.equal(hits[0].snippet, undefined);
   });
+
+  // #211 cleanup: snippet fetches (the per-hit alt=media reads) used to run
+  // one at a time inside the paging loop. Wrap the fake fetch to track how
+  // many alt=media requests are in flight simultaneously and assert it goes
+  // above 1 (genuinely concurrent) without exceeding the adapter's cap.
+  it("fetches snippets with bounded concurrency, not one request at a time", async () => {
+    const { FakeDrive } = await import("./helpers/fake-drive.js");
+    const { __setUserTokenFetchForTests, resetUserTokenCacheForTests } = await import(
+      "../apps/server/domain/sync/drive-user-auth.js"
+    );
+    const drive = new FakeDrive();
+    resetUserTokenCacheForTests();
+    __setUserTokenFetchForTests(async () => ({ access_token: "UAT", expires_in: 3600 }));
+
+    const org = drive.addFolder("workflow", drive.rootId);
+    const wip = drive.addFolder("wip", org);
+    const HIT_COUNT = 8;
+    for (let i = 0; i < HIT_COUNT; i++) drive.addFile(`f${i}.md`, wip, "needle content\n");
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    __setDriveFetchForTests(async (url, init) => {
+      const isSnippetFetch = url.toString().includes("alt=media");
+      if (!isSnippetFetch) return drive.fetch(url, init);
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        // Small delay so overlapping requests actually overlap in time
+        // instead of the event loop trivially serializing them.
+        await new Promise((r) => setTimeout(r, 5));
+        return await drive.fetch(url, init);
+      } finally {
+        inFlight--;
+      }
+    });
+
+    const adapter = createDriveAdapter(
+      { name: "dw", type: "gdrive", config: { shared_drive_id: "ROOT" } },
+      { dw: { mode: "refresh_token", refresh_token: "r", client_id: "c", client_secret: "s" } },
+    );
+    const hits = await adapter.search!("needle", { limit: 10 });
+    assert.equal(hits.length, HIT_COUNT);
+    assert.ok(hits.every((h) => h.snippet === "needle content"));
+    assert.ok(maxInFlight > 1, `expected overlapping snippet fetches, saw max ${maxInFlight} in flight`);
+    assert.ok(maxInFlight <= 5, `expected the concurrency cap to hold, saw max ${maxInFlight} in flight`);
+  });
 });

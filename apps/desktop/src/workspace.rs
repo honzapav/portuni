@@ -197,12 +197,13 @@ pub(crate) fn is_valid_profile_id(id: &str) -> bool {
     is_valid_workspace_id(id)
 }
 
-/// A profile's env is a plain `config.json` field (#207): it is read back
-/// to the webview by `list_profiles` and stored in plaintext on disk, so it
-/// violates both "no secret in webview JS" and "no secret in plaintext on
-/// disk" (root CLAUDE.md security rules) the moment a value actually is one.
-/// create_profile/update_profile reject any key shaped like this outright --
-/// secrets belong in the OS keychain, not this registry.
+/// A profile's env is a plain `config.json` field (#207): `list_profiles`
+/// returns only `env_keys` (names, never values) to the webview, but the
+/// values themselves are still stored in plaintext on disk, so this
+/// violates "no secret in plaintext on disk" (root CLAUDE.md security
+/// rules) the moment a value actually is one. create_profile/update_profile
+/// reject any key shaped like this outright -- secrets belong in the OS
+/// keychain, not this registry.
 pub(crate) fn is_secret_shaped_env_key(key: &str) -> bool {
     let upper = key.to_ascii_uppercase();
     upper.ends_with("_TOKEN") || upper.ends_with("_KEY") || upper.ends_with("_SECRET") || upper.contains("PASSWORD")

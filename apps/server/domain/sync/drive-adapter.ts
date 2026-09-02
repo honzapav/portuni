@@ -12,6 +12,36 @@ const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
 // search()'s snippetSource.
 const SNIPPET_FETCH_MAX_CHARS = 65_536;
 
+// #211 cleanup: snippet fetches used to run one-at-a-time inside the paging
+// loop -- up to `limit` sequential round trips per search. A small
+// concurrency cap parallelizes them without hammering the Drive API quota
+// the way an unbounded Promise.all over the whole page would.
+const SNIPPET_FETCH_CONCURRENCY = 5;
+
+// Bounded-concurrency map: workers pull from a shared index, results land in
+// the same positions as the inputs. Mirrors engine.ts's mapWithConcurrency
+// (statusScan) -- small enough, and specific enough to this module's fetch
+// shape, that sharing one generic helper across the two isn't worth the
+// coupling.
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const idx = next++;
+      if (idx >= items.length) return;
+      results[idx] = await fn(items[idx]);
+    }
+  };
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
 let driveFetch: typeof fetch = globalThis.fetch.bind(globalThis);
 export function __setDriveFetchForTests(f: typeof fetch): void {
   driveFetch = f;
@@ -584,17 +614,40 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
         const res = await driveFetch(`${DRIVE_API}/files?${params.toString()}`, { headers: await authHeaders() });
         if (!res.ok) throw new Error(`Drive search: ${res.status} ${await res.text()}`);
         const b = (await res.json()) as { files?: DriveFile[]; nextPageToken?: string };
+        // Path resolution stays sequential (seen-dedup + the memoized
+        // ancestor walk both depend on processing hits in order), but only
+        // resolves as many as still fit under `limit` this page. Snippet
+        // fetches for the resolved candidates then run with bounded
+        // concurrency instead of one at a time (#211 cleanup).
+        const candidates: Array<{ file: DriveFile; path: string }> = [];
         for (const f of b.files ?? []) {
           examined++;
           if (isFolder(f)) continue;
           const path = await pathFor(f);
           if (path === null || seen.has(path)) continue;
           seen.add(path);
-          const source = await snippetSource(f);
-          const snippet = source ? extractSnippet(source) : undefined;
-          out.push({ path, name: f.name, mimeType: f.mimeType, modifiedTime: f.modifiedTime, snippet });
-          if (out.length >= limit) return out;
+          candidates.push({ file: f, path });
+          if (out.length + candidates.length >= limit) break;
         }
+        const snippets = await mapWithConcurrency(
+          candidates,
+          SNIPPET_FETCH_CONCURRENCY,
+          async ({ file }) => {
+            const source = await snippetSource(file);
+            return source ? extractSnippet(source) : undefined;
+          },
+        );
+        for (let i = 0; i < candidates.length; i++) {
+          const { file, path } = candidates[i];
+          out.push({
+            path,
+            name: file.name,
+            mimeType: file.mimeType,
+            modifiedTime: file.modifiedTime,
+            snippet: snippets[i],
+          });
+        }
+        if (out.length >= limit) return out;
         pageToken = b.nextPageToken;
         // Stop paging once enough raw hits were examined: a query that
         // matches thousands of files elsewhere on the drive must not turn

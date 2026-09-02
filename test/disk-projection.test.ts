@@ -9,8 +9,11 @@ import { mkdtemp, rm, mkdir, writeFile, readFile, stat } from "node:fs/promises"
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionScope } from "../apps/server/mcp/scope.js";
-import { readableMirrorRoot, createDiskProjector } from "../apps/server/mcp/disk-projection.js";
-import { clearProjectionRegistryForTests } from "../apps/server/domain/session-projection.js";
+import { readableMirrorRoot, createDiskProjector, disposeSessionProjection } from "../apps/server/mcp/disk-projection.js";
+import {
+  clearProjectionRegistryForTests,
+  UNNARROWED_PROJECTION_ID,
+} from "../apps/server/domain/session-projection.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 
 let dir: string;
@@ -113,6 +116,7 @@ describe("createDiskProjector", () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.sessionId = "SESS";
+    scope.projectionSessionId = "SESS";
     const projector = createDiskProjector({
       userId: "u",
       scope,
@@ -125,6 +129,7 @@ describe("createDiskProjector", () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.sessionId = "SESS";
+    scope.projectionSessionId = "SESS";
     scope.addSeed("NEIGHBOR");
     const projector = createDiskProjector({
       userId: "u",
@@ -138,6 +143,7 @@ describe("createDiskProjector", () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.sessionId = "SESS";
+    scope.projectionSessionId = "SESS";
     const projector = createDiskProjector({
       userId: "u",
       scope,
@@ -146,7 +152,7 @@ describe("createDiskProjector", () => {
     assert.equal(await projector.projectNode("NEIGHBOR"), null);
   });
 
-  it("returns null when the session has no persisted id yet", async () => {
+  it("returns null when the scope was never bound to a projection directory (no createMcpServer)", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.add("ADHOC");
@@ -158,10 +164,37 @@ describe("createDiskProjector", () => {
     assert.equal(await projector.projectNode("ADHOC"), null);
   });
 
+  // #211: a CLI whose config format cannot relay the spawn-minted session id
+  // back to the MCP connection (Codex, Vibe -- unlike Claude's
+  // X-Portuni-Spawn-Id) still gets its ad-hoc expansions projected, into the
+  // fixed shared bucket every Seatbelt profile grants unconditionally for
+  // exactly this case (domain/sandbox-profile.ts), instead of regressing to
+  // portuni_read_file-only.
+  it("projects into the shared bucket when no spawn/resume id is known (Codex/Vibe)", async () => {
+    await writeFile(join(neighbor, "wip", "method.md"), "hello\n");
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    scope.sessionId = "SESS"; // persisted DB session id -- unrelated to the projection key
+    scope.projectionSessionId = UNNARROWED_PROJECTION_ID;
+    scope.add("ADHOC");
+    const projector = createDiskProjector({
+      userId: "u",
+      scope,
+      resolveMirror: fakeResolver({ ADHOC: neighbor }),
+    });
+
+    const result = await projector.projectNode("ADHOC");
+    assert.ok(result);
+    assert.equal(result.dir, join(dir, ".portuni-sessions", "HOME", UNNARROWED_PROJECTION_ID, "ADHOC"));
+    const linked = await readFile(join(result.dir, "wip", "method.md"), "utf8");
+    assert.equal(linked, "hello\n");
+  });
+
   it("returns null when the ad-hoc node has no local mirror on this device", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.sessionId = "SESS";
+    scope.projectionSessionId = "SESS";
     scope.add("ADHOC");
     const projector = createDiskProjector({
       userId: "u",
@@ -182,6 +215,7 @@ describe("createDiskProjector", () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.sessionId = "SESS";
+    scope.projectionSessionId = "SESS";
     scope.add("ADHOC");
     const projector = createDiskProjector({
       userId: "u",
@@ -212,6 +246,7 @@ describe("createDiskProjector", () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.sessionId = "SESS";
+    scope.projectionSessionId = "SESS";
     scope.add("ADHOC");
     const projector = createDiskProjector({
       userId: "u",
@@ -230,6 +265,7 @@ describe("createDiskProjector", () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.sessionId = "SESS";
+    scope.projectionSessionId = "SESS";
     scope.add("ADHOC");
     let calls = 0;
     const projector = createDiskProjector({
@@ -244,5 +280,52 @@ describe("createDiskProjector", () => {
     const [a, b] = await Promise.all([projector.projectNode("ADHOC"), projector.projectNode("ADHOC")]);
     assert.deepEqual(a, b);
     assert.equal(calls, 1);
+  });
+});
+
+describe("disposeSessionProjection", () => {
+  it("removes the narrow per-spawn projection directory on close", async () => {
+    await writeFile(join(neighbor, "wip", "method.md"), "hello\n");
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    scope.sessionId = "SESS";
+    scope.projectionSessionId = "SESS";
+    scope.add("ADHOC");
+    const projector = createDiskProjector({
+      userId: "u",
+      scope,
+      resolveMirror: fakeResolver({ ADHOC: neighbor }),
+    });
+    const result = await projector.projectNode("ADHOC");
+    assert.ok(result);
+
+    disposeSessionProjection(scope, "u");
+    // Fire-and-forget cleanup -- give the microtask queue a turn.
+    await new Promise((r) => setTimeout(r, 20));
+    await assert.rejects(() => stat(result.dir));
+  });
+
+  // #211: the shared bucket may still be in use by another concurrent
+  // non-relaying (Codex/Vibe) session on the same node, so a single
+  // session's close must never remove it.
+  it("does NOT remove the shared bucket on close (#211)", async () => {
+    await writeFile(join(neighbor, "wip", "method.md"), "hello\n");
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    scope.sessionId = "SESS";
+    scope.projectionSessionId = UNNARROWED_PROJECTION_ID;
+    scope.add("ADHOC");
+    const projector = createDiskProjector({
+      userId: "u",
+      scope,
+      resolveMirror: fakeResolver({ ADHOC: neighbor }),
+    });
+    const result = await projector.projectNode("ADHOC");
+    assert.ok(result);
+
+    disposeSessionProjection(scope, "u");
+    await new Promise((r) => setTimeout(r, 20));
+    const linked = await readFile(join(result.dir, "wip", "method.md"), "utf8");
+    assert.equal(linked, "hello\n");
   });
 });

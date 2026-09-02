@@ -88,11 +88,34 @@ header). `mcp/transport.ts` reads that header and passes it through
 minting a second, unrelated one — so the MCP session's own id matches what
 the kernel already granted. Central mode (`db` absent in
 `resolveSandboxScopeForNode`) always mints fresh rather than trusting a
-caller-supplied `resumeSessionId`, which is unvalidated there. A non-Claude
-CLI, or a plain shell outside the app, degrades to the pre-#208-follow-up
-behavior (the wide per-node grant, `buildSeatbeltProfile` falls back to it
-when `sessionId` is absent) — not a regression, since that was the only
-behavior before this change.
+caller-supplied `resumeSessionId`, which is unvalidated there.
+
+**Non-relaying CLIs (#211 fix).** At the point `GET /nodes/:id/sandbox-profile`
+runs (before `pty_spawn`/exec), the server does not yet know which CLI is
+about to connect, so it cannot decide up front whether to narrow or not.
+The first cut at this (the #208 follow-up) fell back to granting the WHOLE
+`<projectionRoot>/` when no `sessionId` was known — but `sessionId` is
+minted unconditionally for every real spawn, so that fallback branch was
+dead in production; every non-Claude CLI's MCP session instead minted its
+OWN, unrelated fresh id for its `sessions` row (no relay channel), and the
+disk projector hardlinked into `<projectionRoot>/<thatUnrelatedId>/` — a
+directory the kernel had never granted, so ad-hoc expansions silently
+stopped being readable on disk for Codex/Vibe (regressing to
+`portuni_read_file`-only). The fix: `buildSeatbeltProfile` grants BOTH the
+narrow `<projectionRoot>/<sessionId>/` subdirectory (works only when the
+connecting CLI relays it back) AND a second, fixed subdirectory,
+`<projectionRoot>/_shared/` (`session-projection.ts`'s
+`UNNARROWED_PROJECTION_ID`), unconditionally — neither is an ancestor of
+the other, so granting both does not defeat the narrow one's isolation.
+`mcp/scope.ts`'s `SessionScope.projectionSessionId` (set synchronously by
+`createMcpServer`, so no persistence-race window) resolves to, in order:
+the resumed session's own id; the relayed `X-Portuni-Spawn-Id` (Claude); or
+the shared bucket (every other CLI). `mcp/disk-projection.ts` projects into
+whichever one `projectionSessionId` names, and `disposeSessionProjection`
+never tears the shared bucket down at any single session's close (other
+concurrent non-relaying sessions on the same node may still be reading it) —
+`sweepStaleSessionProjections` also leaves it alone permanently, the same
+way it was never cleaned up per-session before #208 existed at all.
 
 **Remaining gap.** `onclose` cleanup only runs on a graceful session end, so
 a crashed process (or the whole desktop app) leaves its hardlinks behind.
@@ -107,7 +130,9 @@ verifiable only with a live `sandbox-exec` run — the plumbing above is
 covered by tests (`test/sandbox-profile.test.ts`,
 `test/session-persistence.test.ts`, `test/sessions.test.ts`,
 `test/rest-sandbox-profile.test.ts`, `test/agent-router.test.ts`,
-`test/write-scope.test.ts`), but the live macOS verification itself is not.
+`test/write-scope.test.ts`, `test/disk-projection.test.ts`,
+`test/scope-projection-session-id.test.ts`), but the live macOS
+verification itself is not.
 
 ## Restart consolidation
 

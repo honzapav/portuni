@@ -75,7 +75,7 @@ describe("buildSeatbeltProfile (real-path model)", () => {
     assert.ok(p.includes('"/ws/we\\"ird\\\\dir"'));
   });
 
-  it("re-allows read-only on projectionRoot when set, omits the line when absent", () => {
+  it("re-allows read-only on the shared bucket when projectionRoot is set, omits the line when absent", () => {
     const withProjection = buildSeatbeltProfile({
       portuniRoot: "/root",
       homeMirror: "/root/a",
@@ -84,11 +84,11 @@ describe("buildSeatbeltProfile (real-path model)", () => {
     });
     assert.match(
       withProjection,
-      /\(allow file-read\* \(subpath "\/root\/\.portuni-sessions\/HOME"\)\)/,
+      /\(allow file-read\* \(subpath "\/root\/\.portuni-sessions\/HOME\/_shared"\)\)/,
     );
     assert.doesNotMatch(
       withProjection,
-      /\(allow file-read\* file-write\* \(subpath "\/root\/\.portuni-sessions\/HOME"\)\)/,
+      /\(allow file-read\* file-write\* \(subpath "\/root\/\.portuni-sessions\/HOME\/_shared"\)\)/,
     );
 
     const withoutProjection = buildSeatbeltProfile({
@@ -99,7 +99,7 @@ describe("buildSeatbeltProfile (real-path model)", () => {
     assert.doesNotMatch(withoutProjection, /\.portuni-sessions/);
   });
 
-  it("narrows the projection allow to <projectionRoot>/<sessionId> when sessionId is set (#208 follow-up)", () => {
+  it("also allows <projectionRoot>/<sessionId> when sessionId is set (#208 follow-up)", () => {
     const p = buildSeatbeltProfile({
       portuniRoot: "/root",
       homeMirror: "/root/a",
@@ -111,21 +111,35 @@ describe("buildSeatbeltProfile (real-path model)", () => {
       p,
       /\(allow file-read\* \(subpath "\/root\/\.portuni-sessions\/HOME\/SESSION123"\)\)/,
     );
-    // The wide, unnarrowed grant must not also appear.
-    assert.doesNotMatch(
-      p,
-      /\(allow file-read\* \(subpath "\/root\/\.portuni-sessions\/HOME"\)\)/,
-    );
   });
 
-  it("falls back to the wide projectionRoot grant when sessionId is absent", () => {
+  // #211: at grant time the server does not yet know which CLI is about to
+  // connect (Claude relays this spawn's session id back via
+  // X-Portuni-Spawn-Id; Codex/Vibe cannot), so BOTH the narrow per-spawn
+  // subdirectory and the fixed shared bucket are granted unconditionally
+  // whenever a sessionId is known -- whichever one the connecting session's
+  // disk projector actually uses, the kernel already allows it. Neither is
+  // an ancestor of the other, so the narrow grant's isolation from other
+  // sessions' own narrow subdirectories still holds.
+  it("grants both the narrow subdirectory and the shared bucket, never the whole projectionRoot (#211)", () => {
     const p = buildSeatbeltProfile({
       portuniRoot: "/root",
       homeMirror: "/root/a",
       readMirrors: [],
       projectionRoot: "/root/.portuni-sessions/HOME",
+      sessionId: "SESSION123",
     });
     assert.match(
+      p,
+      /\(allow file-read\* \(subpath "\/root\/\.portuni-sessions\/HOME\/SESSION123"\)\)/,
+    );
+    assert.match(
+      p,
+      /\(allow file-read\* \(subpath "\/root\/\.portuni-sessions\/HOME\/_shared"\)\)/,
+    );
+    // The bare projectionRoot itself (which would also cover every OTHER
+    // session's narrow subdirectory) must never be granted.
+    assert.doesNotMatch(
       p,
       /\(allow file-read\* \(subpath "\/root\/\.portuni-sessions\/HOME"\)\)/,
     );

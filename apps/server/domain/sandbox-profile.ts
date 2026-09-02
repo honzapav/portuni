@@ -27,6 +27,7 @@ import { getMirrorPath, listUserMirrors } from "./sync/mirror-registry.js";
 import { nodeNeighbourIds } from "./queries/neighbours.js";
 import { getSessionScope, loadResumableSession } from "./sessions.js";
 import { findContainingMirror, normalize, resolvePortuniRoot } from "./write-scope.js";
+import { UNNARROWED_PROJECTION_ID } from "./session-projection.js";
 
 // Thrown by resolveSandboxScopeForNode (and, transitively,
 // resolveSandboxScopeForCwd) when a caller supplies a resumeSessionId that
@@ -78,8 +79,18 @@ export interface SandboxScope {
   // (domain/sessions.ts createSession). Central mode (db absent) always
   // mints fresh rather than trusting a caller-supplied resumeSessionId,
   // which is unvalidated there. Optional for the same hand-built-literal
-  // reason as projectionRoot; absent, buildSeatbeltProfile falls back to
-  // the wide (unnarrowed) projection grant.
+  // reason as projectionRoot; absent, buildSeatbeltProfile grants only the
+  // shared bucket below (#211: e.g. a hand-built test scope).
+  //
+  // #211: this id can only ever help a CLI whose config format can relay it
+  // back to the MCP connection at connect time (today: Claude Code only,
+  // via X-Portuni-Spawn-Id -- see domain/write-scope.ts). At the point this
+  // profile is minted the server does not yet know which CLI is about to
+  // connect (GET /sandbox-profile runs before exec), so buildSeatbeltProfile
+  // below grants BOTH this narrow per-spawn subdirectory AND the fixed
+  // UNNARROWED_PROJECTION_ID bucket unconditionally: whichever one the
+  // connecting MCP session's disk projector actually uses (mcp/scope.ts's
+  // SessionScope.projectionSessionId), the kernel already allows it.
   sessionId?: string;
 }
 
@@ -113,14 +124,29 @@ export function buildSeatbeltProfile(scope: SandboxScope): string {
     lines.push(`(allow file-read* (subpath ${sbQuote(normalize(m))}))`);
   }
   if (scope.projectionRoot) {
-    // Narrow to this session's own subdirectory when known -- two sessions
-    // spawned against the same node no longer share a kernel-level read
-    // grant into each other's ad-hoc projections. Falls back to the wide
-    // per-node grant when sessionId is absent (hand-built scopes, tests).
-    const projectionAllow = scope.sessionId
-      ? join(scope.projectionRoot, scope.sessionId)
-      : scope.projectionRoot;
-    lines.push(`(allow file-read* (subpath ${sbQuote(normalize(projectionAllow))}))`);
+    // Narrow per-spawn subdirectory -- two sessions spawned against the
+    // same node no longer share a kernel-level read grant into each
+    // other's ad-hoc projections, PROVIDED the connecting CLI relays this
+    // id back (Claude only today, #208/#211). Granted whenever a sessionId
+    // is known (always, for a real spawn -- resolveSandboxScopeForNode
+    // mints one unconditionally); absent only for hand-built test scopes.
+    if (scope.sessionId) {
+      lines.push(
+        `(allow file-read* (subpath ${sbQuote(normalize(join(scope.projectionRoot, scope.sessionId)))}))`,
+      );
+    }
+    // Shared bucket (#211) -- granted unconditionally, alongside the narrow
+    // one above, because at grant time the server does not yet know which
+    // CLI is about to connect (GET /sandbox-profile runs before exec). A
+    // CLI that cannot relay the spawn id (Codex, Vibe) projects ad-hoc
+    // nodes here instead (mcp/scope.ts's SessionScope.projectionSessionId),
+    // so it stays readable on disk instead of silently regressing to
+    // portuni_read_file-only. This is a FIXED subdirectory name, never a
+    // per-session one, so it does not defeat the narrow grant's isolation
+    // above: they are siblings under projectionRoot, not nested.
+    lines.push(
+      `(allow file-read* (subpath ${sbQuote(normalize(join(scope.projectionRoot, UNNARROWED_PROJECTION_ID)))}))`,
+    );
   }
   lines.push(`(allow file-read* file-write* (subpath ${sbQuote(home)}))`);
   return lines.join("\n") + "\n";

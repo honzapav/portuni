@@ -95,12 +95,14 @@ describe("GET /nodes/:id/sandbox-profile", () => {
     assert.ok(body.profile.includes(`(allow file-read* file-write* (subpath "${body.home_mirror}"))`));
     assert.ok(body.profile.includes(`(deny file-read* file-write* (subpath "${body.portuni_root}"))`));
     // The org (depth-1 neighbour, which has a mirror) is granted read-only on
-    // its REAL path, and the per-node projection parent is granted read-only
-    // too (#191) -- exactly two standalone read-allows.
+    // its REAL path; the per-node projection parent gets TWO read-allows
+    // (#191, #211): this session's own narrowed subdirectory, and the fixed
+    // shared bucket every CLI that cannot relay the spawn id back falls
+    // back to (Codex/Vibe) -- three standalone read-allows in total.
     const readLines = body.profile.split("\n").filter(
       (l) => l.startsWith("(allow file-read* (subpath"),
     );
-    assert.equal(readLines.length, 2);
+    assert.equal(readLines.length, 3);
     assert.ok(readLines.some((l) => l.includes(`${sep}acme"`)), "grants the org real mirror");
     assert.ok(body.projection_root, "projection_root is returned");
     assert.ok(
@@ -115,6 +117,11 @@ describe("GET /nodes/:id/sandbox-profile", () => {
         l.includes(join(body.projection_root as string, body.session_id as string)),
       ),
       "narrows the projection grant to <projectionRoot>/<session_id>",
+    );
+    // #211: the shared bucket is granted too, alongside the narrow one.
+    assert.ok(
+      readLines.some((l) => l.includes(join(body.projection_root as string, "_shared"))),
+      "also grants the shared bucket for non-relaying CLIs",
     );
   });
 

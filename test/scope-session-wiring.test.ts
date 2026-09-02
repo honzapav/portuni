@@ -37,6 +37,7 @@ describe("scope.onAdd -> disk projector wiring", () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.sessionId = "SESS";
+    scope.projectionSessionId = "SESS";
     await writeFile(join(adhoc, "wip", "x.md"), "content\n");
 
     const projector = createDiskProjector({
@@ -61,6 +62,7 @@ describe("scope.onAdd -> disk projector wiring", () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.sessionId = "SESS";
+    scope.projectionSessionId = "SESS";
 
     const projector = createDiskProjector({
       userId: "u",

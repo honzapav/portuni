@@ -27,6 +27,7 @@ import type { RequestIdentity } from "../auth/request-identity.js";
 import { TOOL_MIN_SCOPE } from "../auth/min-scopes.js";
 import { scopeAtLeast } from "../auth/roles.js";
 import { getDb } from "../infra/db.js";
+import { UNNARROWED_PROJECTION_ID } from "../domain/session-projection.js";
 
 // Top-level server brief. Kept short -- many MCP clients truncate this
 // field at ~2 KB. Anything load-bearing for an individual tool lives in
@@ -159,6 +160,14 @@ export function createMcpServer(
   spawnSessionId: string | null = null,
 ): { server: McpServer; scope: SessionScope } {
   const scope = new SessionScope(deriveSessionType(identity, homeNodeId));
+  // #211: resolved synchronously, before any tool call can race it (unlike
+  // scope.sessionId, set later by bindSessionPersistence's fire-and-forget
+  // createSession INSERT). A resume reuses its own already-agreed-on id;
+  // a fresh connection uses the relayed spawn id when the CLI sent one
+  // (Claude only -- see mcp/scope.ts's SessionScope.projectionSessionId
+  // doc), otherwise the shared bucket every other CLI's Seatbelt grant
+  // also covers.
+  scope.projectionSessionId = resumeSessionId ?? spawnSessionId ?? UNNARROWED_PROJECTION_ID;
   const projector = createDiskProjector({ userId: identity.userId, scope });
   scope.onAdd((nodeId) => projector.schedule(nodeId));
   if (!resumeSessionId) {

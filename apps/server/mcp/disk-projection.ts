@@ -15,6 +15,7 @@ import {
   projectNode as hardlinkNode,
   registerProjectedNode,
   unregisterSessionProjections,
+  UNNARROWED_PROJECTION_ID,
 } from "../domain/session-projection.js";
 import type { SessionScope } from "./scope.js";
 
@@ -68,9 +69,13 @@ export function createDiskProjector(args: {
     const { scope, userId } = args;
     if (nodeId === scope.homeNodeId || scope.isSeed(nodeId)) return null;
     if (!scope.has(nodeId)) return null;
-    const sessionId = scope.sessionId;
+    // #211: the directory key is projectionSessionId, not sessionId -- see
+    // mcp/scope.ts's doc comment. It is set synchronously by createMcpServer,
+    // so (unlike the old sessionId-keyed guard this replaces) there is no
+    // persistence race to wait out here.
+    const projectionSessionId = scope.projectionSessionId;
     const homeNodeId = scope.homeNodeId;
-    if (!sessionId || !homeNodeId) return null;
+    if (!projectionSessionId || !homeNodeId) return null;
 
     const mirrorPath = await resolveMirror(userId, nodeId);
     if (!mirrorPath) return null; // no local mirror to link from
@@ -78,9 +83,9 @@ export function createDiskProjector(args: {
     const root = await resolveProjectionRootForNode(userId, homeNodeId);
     if (!root) return null;
 
-    const dir = nodeProjectionDir(root.projectionRoot, sessionId, nodeId);
+    const dir = nodeProjectionDir(root.projectionRoot, projectionSessionId, nodeId);
     const files = await hardlinkNode(mirrorPath, dir);
-    registerProjectedNode(nodeId, { sessionId, mirrorPath, targetDir: dir });
+    registerProjectedNode(nodeId, { sessionId: projectionSessionId, mirrorPath, targetDir: dir });
     return { dir, files };
   }
 
@@ -106,12 +111,19 @@ export function createDiskProjector(args: {
 // transport.onclose, which cannot await); best-effort, matching the rest of
 // this module.
 export function disposeSessionProjection(scope: SessionScope, userId: string): void {
-  const sessionId = scope.sessionId;
-  if (!sessionId) return;
-  unregisterSessionProjections(sessionId);
+  const projectionSessionId = scope.projectionSessionId;
+  // The shared bucket (#211) is never torn down at any single session's
+  // close -- other concurrent non-relaying sessions on the same node may
+  // still be reading it, and it isn't keyed to this session alone. It is
+  // simply left in place, same as every projection directory was before
+  // per-session narrowing existed.
+  if (!projectionSessionId || projectionSessionId === UNNARROWED_PROJECTION_ID) return;
+  unregisterSessionProjections(projectionSessionId);
   const homeNodeId = scope.homeNodeId;
   if (!homeNodeId) return;
   void resolveProjectionRootForNode(userId, homeNodeId)
-    .then((root) => (root ? cleanupSessionProjection(root.projectionRoot, sessionId) : undefined))
+    .then((root) =>
+      root ? cleanupSessionProjection(root.projectionRoot, projectionSessionId) : undefined,
+    )
     .catch(() => undefined);
 }

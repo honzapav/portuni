@@ -115,6 +115,21 @@ export class SessionScope {
   // session-persistence.ts) -- null until then, and for SessionScope
   // instances built by test harnesses that never persist at all.
   sessionId: string | null = null;
+  // Directory key the disk projector (mcp/disk-projection.ts) hardlinks
+  // ad-hoc nodes under, INDEPENDENT of sessionId above (#211). Set
+  // synchronously by createMcpServer, before any tool call can race it --
+  // unlike sessionId, which is written later by the fire-and-forget
+  // createSession INSERT. Resolves to (in order): the resumed session's own
+  // id (resume always supplies a validated, already-agreed-on id -- see
+  // resumeSessionPersistence); the relayed X-Portuni-Spawn-Id header value
+  // (Claude only, matches what domain/sandbox-profile.ts narrowed the
+  // Seatbelt grant to for this spawn); or
+  // domain/session-projection.ts's UNNARROWED_PROJECTION_ID, the fixed
+  // shared bucket every CLI that cannot relay the id (Codex, Vibe) falls
+  // back to, which the Seatbelt profile grants unconditionally for exactly
+  // this reason. Null only for SessionScope instances built directly by
+  // tests/callers that never went through createMcpServer.
+  projectionSessionId: string | null = null;
   readonly sessionType: SessionType;
   readonly createdAt: string;
 

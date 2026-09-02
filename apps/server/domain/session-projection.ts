@@ -55,6 +55,22 @@ export async function linkOrCopy(src: string, dest: string): Promise<boolean> {
 // Section) -- the same scope discover-local.ts and remote-sweep.ts walk.
 const SECTIONS = ["wip", "outputs", "resources"] as const;
 
+// Reserved projection-directory key for a session whose CLI has no way to
+// relay the spawn-minted session id back to the MCP connection (#211: Codex
+// and Vibe today -- only Claude Code's per-mirror .mcp.json can expand
+// ${PORTUNI_SPAWN_SESSION_ID:-} into the X-Portuni-Spawn-Id header at
+// config-load time, see domain/write-scope.ts's buildClaudeMcpJson). The
+// Seatbelt profile (domain/sandbox-profile.ts) grants this bucket
+// unconditionally, alongside the per-spawn narrow one, because it cannot
+// know in advance which CLI is about to connect. mcp/scope.ts's
+// SessionScope.projectionSessionId falls back to this constant when no
+// spawn/resume id is known, so the projector and the kernel agree on the
+// same directory even though per-session isolation cannot apply -- matching
+// the pre-#208 behavior for those CLIs instead of silently becoming
+// unreadable on disk. Never collides with a real session id: ulid() output
+// is Crockford base32 and never contains "_".
+export const UNNARROWED_PROJECTION_ID = "_shared";
+
 export function sessionProjectionDir(projectionRoot: string, sessionId: string): string {
   return join(projectionRoot, sessionId);
 }
@@ -169,6 +185,11 @@ export async function sweepStaleSessionProjections(
       continue;
     }
     for (const sessionId of sessionIds) {
+      // The shared bucket (#211) isn't a session row and never goes stale
+      // by this sweep's rule -- it's cleaned up (or not) the same way it
+      // was before per-session narrowing existed: left in place, kept
+      // current by the mirror-watcher's relink-on-change, never torn down.
+      if (sessionId === UNNARROWED_PROJECTION_ID) continue;
       try {
         const running = await db.execute({
           sql: "SELECT 1 FROM sessions WHERE id = ? AND state = 'running'",

@@ -285,20 +285,32 @@ symlink to this file.
   `X-Portuni-Spawn-Id` header (`buildClaudeMcpJson`, Claude-only like
   `X-Portuni-Profile`) that `mcp/transport.ts` hands to
   `domain/sessions.ts`'s `createSession` as a pre-assigned id, so the
-  session row's own id matches what the kernel already granted. Without a
-  known session id (older frontend, non-Claude CLI, plain shell outside the
-  app) `buildSeatbeltProfile` falls back to the wide, node-keyed grant — a
-  `subpath` allow on the parent covers whatever `<sessionId>/` subdirectory
-  that session creates later, same as before this change. **Ad-hoc nodes**
-  (deeper than depth-1, added mid-session by
-  `expand_scope` or an auto-allowed edge traversal) get hardlinked there —
-  `<projectionRoot>/<sessionId>/<nodeId>/`, no data duplication, always
-  current — by the disk projector (`mcp/disk-projection.ts` `DiskProjector`,
-  `domain/session-projection.ts`) the first time a read tool touches them;
-  the mirror-watcher re-links/removes the hardlink on every create/delete in
-  the source mirror, and the whole session directory is cleaned up when the
-  MCP session closes (`disposeSessionProjection`) — the agent never manages
-  it. Read tools (`get_node`/`get_context`/`list_files`) and
+  session row's own id matches what the kernel already granted. **Non-relaying
+  CLIs (#211 fix):** a real spawn always mints a `sessionId`, so the kernel
+  cannot tell in advance which CLI is about to connect and grant only the
+  narrow subdirectory for it — `buildSeatbeltProfile` grants BOTH
+  `<projectionRoot>/<sessionId>/` (works when the connecting CLI relays that
+  id back, Claude only today) AND a second, fixed
+  `<projectionRoot>/_shared/` bucket (`session-projection.ts`'s
+  `UNNARROWED_PROJECTION_ID`) unconditionally — neither is an ancestor of
+  the other, so isolation between different sessions' own narrow
+  subdirectories still holds. `mcp/scope.ts`'s `SessionScope
+  .projectionSessionId` (set synchronously by `createMcpServer`, before any
+  tool call could race a persisted session id) resolves to the resumed
+  session's own id, the relayed spawn id, or the shared bucket, in that
+  order — the disk projector and `disposeSessionProjection` key off this,
+  not off the persisted `sessionId`. **Ad-hoc nodes** (deeper than depth-1,
+  added mid-session by `expand_scope` or an auto-allowed edge traversal) get
+  hardlinked there — `<projectionRoot>/<projectionSessionId>/<nodeId>/`, no
+  data duplication, always current — by the disk projector
+  (`mcp/disk-projection.ts` `DiskProjector`, `domain/session-projection.ts`)
+  the first time a read tool touches them; the mirror-watcher re-links/
+  removes the hardlink on every create/delete in the source mirror, and a
+  narrow (non-shared) session's own subdirectory is cleaned up when its MCP
+  session closes (`disposeSessionProjection`) — the shared bucket is never
+  torn down per-session, since other concurrent non-relaying sessions on the
+  same node may still be reading it — the agent never manages any of this.
+  Read tools (`get_node`/`get_context`/`list_files`) and
   `portuni_expand_scope` return that path via `readableMirrorRoot`; a node
   with **no local mirror on this device** has no projection either way — read
   it with **`portuni_read_file(node_id, path)`** (`read-node-file.ts`), the
