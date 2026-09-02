@@ -102,6 +102,7 @@ import {
   handleGetSessionResumeInfo,
   handleListNodeSessions,
   handleRenameSession,
+  handleTerminalExit,
   handleTransitionSessionState,
 } from "./sessions.js";
 
@@ -670,10 +671,11 @@ async function routeAccessRequests(
   return false;
 }
 
-// --- Sessions (node-detail sessions list, rename, state transitions).
-// /sessions/:id/state and /sessions/:id/resume-info MUST match before the
-// bare /sessions/:id PATCH handler for the same reason as /responsibilities'
-// assignments precedence -- they're longer paths under the same prefix. ---
+// --- Sessions (node-detail sessions list, rename, state transitions) and
+// terminals (PTY-exit correlation, #218). /sessions/:id/state and
+// /sessions/:id/resume-info MUST match before the bare /sessions/:id PATCH
+// handler for the same reason as /responsibilities' assignments precedence
+// -- they're longer paths under the same prefix. ---
 async function routeSessions(
   req: IncomingMessage,
   res: ServerResponse,
@@ -682,6 +684,11 @@ async function routeSessions(
   identity: RequestIdentity,
 ): Promise<boolean> {
   const { pathname } = url;
+  const terminalExitMatch = pathname.match(/^\/terminals\/([^/]+)\/exit$/);
+  if (terminalExitMatch && method === "POST") {
+    await handleTerminalExit(req, res, identity, decodeURIComponent(terminalExitMatch[1]));
+    return true;
+  }
   const stateMatch = pathname.match(/^\/sessions\/([^/]+)\/state$/);
   if (stateMatch && method === "POST") {
     await handleTransitionSessionState(req, res, identity, decodeURIComponent(stateMatch[1]));

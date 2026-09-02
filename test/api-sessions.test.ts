@@ -220,4 +220,54 @@ describe("session REST endpoints", () => {
     const res = await call(makeIdentity("U2"), "GET", `/sessions/${session.id}/resume-info`);
     assert.equal(res.statusCode, 404);
   });
+
+  test("POST /terminals/:id/exit closes only running sessions sharing the terminal id", async () => {
+    const running = await createSession(db, SOLO, {
+      node_id: nodeId,
+      session_type: "interactive_task",
+      terminal_id: "term-abc",
+    });
+    const other = await createSession(db, SOLO, {
+      node_id: nodeId,
+      session_type: "interactive_task",
+      terminal_id: "term-xyz",
+    });
+    const res = await call(makeIdentity(SOLO), "POST", "/terminals/term-abc/exit");
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(JSON.parse(res.body), { closed: 1 });
+
+    const closedRes = await call(makeIdentity(SOLO), "GET", `/nodes/${nodeId}/sessions`);
+    const closedBody = JSON.parse(closedRes.body) as { sessions: SessionSummary[] };
+    const runningRow = closedBody.sessions.find((s) => s.id === running.id);
+    const otherRow = closedBody.sessions.find((s) => s.id === other.id);
+    assert.equal(runningRow?.state, "closed");
+    assert.equal(otherRow?.state, "running");
+  });
+
+  test("POST /terminals/:id/exit is idempotent", async () => {
+    await createSession(db, SOLO, {
+      node_id: nodeId,
+      session_type: "interactive_task",
+      terminal_id: "term-idempotent",
+    });
+    const first = await call(makeIdentity(SOLO), "POST", "/terminals/term-idempotent/exit");
+    assert.deepEqual(JSON.parse(first.body), { closed: 1 });
+    const second = await call(makeIdentity(SOLO), "POST", "/terminals/term-idempotent/exit");
+    assert.deepEqual(JSON.parse(second.body), { closed: 0 });
+  });
+
+  test("POST /terminals/:id/exit never closes another user's session", async () => {
+    const session = await createSession(db, "U2", {
+      node_id: nodeId,
+      session_type: "interactive_task",
+      terminal_id: "term-foreign",
+    });
+    const res = await call(makeIdentity(SOLO), "POST", "/terminals/term-foreign/exit");
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(JSON.parse(res.body), { closed: 0 });
+
+    const check = await call(makeIdentity("U2"), "GET", `/nodes/${nodeId}/sessions`);
+    const body = JSON.parse(check.body) as { sessions: SessionSummary[] };
+    assert.equal(body.sessions.find((s) => s.id === session.id)?.state, "running");
+  });
 });

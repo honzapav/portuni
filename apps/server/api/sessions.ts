@@ -27,6 +27,7 @@ import {
 } from "../http/middleware.js";
 import { nodeVisibleTo } from "../auth/node-access.js";
 import {
+  closeSessionsByTerminalId,
   getSession,
   getSessionWriteCount,
   listSessions,
@@ -146,6 +147,26 @@ export async function handleTransitionSessionState(
     }
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/state`, err);
+  }
+}
+
+// PTY exit (#218, "Sessions follow PTY exit"): desktop's pty.rs reader
+// thread calls this whenever the PTY that spawned a CLI exits (pty_kill,
+// the user typing `exit`, a crash). Closes every 'running' session sharing
+// this terminal_id and owned by the caller; idempotent (a terminal_id with
+// no running session is a no-op, so a retry after a transient failure is
+// safe). No request body -- the terminal_id is the whole input.
+export async function handleTerminalExit(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  terminalId: string,
+): Promise<void> {
+  try {
+    const closed = await closeSessionsByTerminalId(getDb(), identity.userId, terminalId);
+    respondJson(res, 200, { closed });
+  } catch (err) {
+    respondError(res, `${req.method} /terminals/${terminalId}/exit`, err);
   }
 }
 

@@ -13,6 +13,7 @@ import { resumeSessionPersistence } from "./session-persistence.js";
 import { disposeSessionProjection } from "./disk-projection.js";
 import { logAudit } from "../infra/audit.js";
 import { getDb } from "../infra/db.js";
+import { closeSessionIfRunning } from "../domain/sessions.js";
 
 const MAX_SESSIONS = Number(process.env.PORTUNI_MAX_SESSIONS ?? 100);
 const SESSION_TTL_MS = Number(process.env.PORTUNI_SESSION_TTL_MS ?? 30 * 60 * 1000);
@@ -99,10 +100,22 @@ export function createMcpTransport(): McpTransport {
         if (transport.sessionId) {
           sessions.delete(transport.sessionId);
         }
+        // GC backstop (#218, "Sessions follow PTY exit"): a CLI whose config
+        // format cannot carry X-Portuni-Terminal (Codex, Vibe) or a crash
+        // that never reaches POST /terminals/:terminal_id/exit would
+        // otherwise leave its session row stuck 'running' until the
+        // 30-minute idle GC. closeSessionIfRunning never touches
+        // 'suspended' -- an agent that called portuni_session_suspend
+        // before disconnecting must stay resumable. `scope` is assigned by
+        // createMcpServer below; this closure only runs after that call
+        // returns.
+        if (scope.sessionId) {
+          closeSessionIfRunning(getDb(), scope.sessionId).catch((err) => {
+            console.error("closeSessionIfRunning on transport close failed:", err);
+          });
+        }
         // Disk contract: the agent never manages its projection directory
         // (spec: "Disk contract") -- clean it up here, at session end.
-        // `scope` is assigned by createMcpServer below; this closure only
-        // runs after that call returns.
         disposeSessionProjection(scope, identity.userId, getDb());
       };
 
@@ -134,6 +147,14 @@ export function createMcpTransport(): McpTransport {
       const spawnSessionId =
         (Array.isArray(spawnIdHeader) ? spawnIdHeader[0] : spawnIdHeader)?.trim() || null;
 
+      // X-Portuni-Terminal (#218): the desktop PTY that spawned this
+      // connection's CLI (PORTUNI_TERMINAL_ID), sent only by Claude Code
+      // connections whose per-mirror .mcp.json carries the
+      // ${PORTUNI_TERMINAL_ID:-} header expansion -- see buildClaudeMcpJson.
+      const terminalIdHeader = req.headers["x-portuni-terminal"];
+      const terminalId =
+        (Array.isArray(terminalIdHeader) ? terminalIdHeader[0] : terminalIdHeader)?.trim() || null;
+
       // Headless connections without a task anchor are refused at seed
       // time — a headless session has no elicitation channel, so it must
       // arrive with its home node already known (see the session-type
@@ -155,6 +176,7 @@ export function createMcpTransport(): McpTransport {
         profileId,
         resumeSessionId,
         spawnSessionId,
+        terminalId,
       );
 
       // Resume (#204): must be authorized and rehydrated before any tool

@@ -94,6 +94,25 @@ describe("bindSessionPersistence: SessionScope as a cache over session_scope", (
     assert.equal(sessionRow!.profile_id, "work");
   });
 
+  it("stores the terminal id (#218) when the caller passes one", async () => {
+    const shared = await makeSharedDb();
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = shared.nodeId;
+
+    bindSessionPersistence(shared.db, scope, { userId: "U1" }, null, undefined, undefined, "term-1");
+    scope.addSeed(shared.nodeId);
+    scope.recordExpansion({
+      at: new Date().toISOString(),
+      node_ids: [shared.nodeId],
+      reason: "session_init seed (home + depth-1)",
+      triggered_by: "init",
+    });
+
+    await waitUntil(() => scope.sessionId !== null);
+    const sessionRow = await getSession(shared.db, scope.sessionId!);
+    assert.equal(sessionRow!.terminal_id, "term-1");
+  });
+
   it("reuses a pre-assigned spawnSessionId (#208 follow-up) instead of minting a new one", async () => {
     const shared = await makeSharedDb();
     const scope = new SessionScope("interactive_task");
