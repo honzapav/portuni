@@ -314,7 +314,23 @@ symlink to this file.
   handoff involved. Exit-gate code (`lib.rs`'s run handler and menu handler)
   checks "any window exists" (`!app.webview_windows().is_empty()`) instead of
   a fixed `get_webview_window("main")` — no window is ever labeled `"main"`
-  anymore. Model: `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
+  anymore. **`ConfigLock` (#224)** serializes every config.json
+  load-modify-save: a plain `Mutex<()>` in managed state, taken by
+  `with_config_mut(app, |file| ...)` (the common case — load an existing v2
+  config, apply the closure, save) or `with_config_write_lock(app, || ...)`
+  (onboarding/migration commands that may start from v1/Missing and
+  construct the initial v2 file themselves, e.g. `migrate_to_workspaces`
+  wraps its whole DB-file/Keychain/config sequence, not just the final
+  save). Every one of the 11 config-mutating commands goes through one or
+  the other. Both are thin `AppHandle`-resolving wrappers around
+  `with_config_mut_at(lock: &Mutex<()>, data_dir: &Path, mutate)`, the
+  actually-testable core — the unit test spawns two threads sharing one
+  lock and one temp `data_dir`, each inserting a distinct workspace, and
+  asserts both land (the race the lock fixes: two loads of the same
+  pre-write state followed by two saves, the second clobbering the first).
+  Phase 2 (#225) is what actually adds a second writer (window open/close
+  events) for this to matter against. Model:
+  `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
 
 - **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
   keys; `.env.schema` declares only the 7 core ones. Full inventory with

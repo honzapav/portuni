@@ -108,6 +108,13 @@ struct AuthTokens(Mutex<HashMap<String, String>>);
 // every locally-proxied api_request call. Never persisted, never exported
 // into pty_spawn's shell env -- see api_request and spawn_sidecar_ws.
 struct WebviewProxySecrets(Mutex<HashMap<String, String>>);
+// Serializes every config.json read-modify-write (#224). Every mutating
+// command does load -> modify -> workspace::save through one fixed
+// config.json.tmp with no lock; two concurrent writers (phase 2 adds
+// window open/close events to the set) can otherwise interleave and the
+// loser's edit is silently lost (last rename wins). with_config_mut below
+// is the standard way through this lock.
+struct ConfigLock(Mutex<()>);
 
 // Keychain coordinates for secrets we persist across launches. Service is
 // bundle-id-shaped so entries show up under "ooo.workflow.portuni" in
@@ -222,6 +229,53 @@ pub(crate) fn workspace_config_for(
         workspace::LoadedConfig::V1(_) => Err("config awaiting workspace migration".to_string()),
         workspace::LoadedConfig::Missing => Err("no config.json (fresh install)".to_string()),
     }
+}
+
+// Config-lock helpers (#224). Split so the interesting part -- serializing
+// load-modify-save against a real Mutex and a real data_dir -- is
+// unit-testable with two threads and a temp dir, without needing a real
+// Tauri AppHandle/managed state.
+//
+// with_config_write_lock: for callers that do their own load/construct/save
+// (onboarding/migration, which may start from V1 or Missing and construct
+// the initial V2 file themselves) but still need to serialize against every
+// other writer.
+fn with_config_write_lock<T>(
+    app: &AppHandle,
+    f: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let state = app.state::<ConfigLock>();
+    let _guard = state.0.lock().map_err(|e| e.to_string())?;
+    f()
+}
+
+// with_config_mut: the common case for callers that already require an
+// existing V2 config -- load it, let `mutate` apply the change, save.
+fn with_config_mut_at(
+    lock: &Mutex<()>,
+    data_dir: &Path,
+    mutate: impl FnOnce(&mut workspace::WorkspacesFile) -> Result<(), String>,
+) -> Result<(), String> {
+    let _guard = lock.lock().map_err(|e| e.to_string())?;
+    let mut file = match workspace::load(data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        workspace::LoadedConfig::V1(_) => {
+            return Err("config awaiting workspace migration".to_string())
+        }
+        workspace::LoadedConfig::Missing => {
+            return Err("no config.json (fresh install)".to_string())
+        }
+    };
+    mutate(&mut file)?;
+    workspace::save(data_dir, &file)
+}
+
+pub(crate) fn with_config_mut(
+    app: &AppHandle,
+    mutate: impl FnOnce(&mut workspace::WorkspacesFile) -> Result<(), String>,
+) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    with_config_mut_at(&app.state::<ConfigLock>().0, &data_dir, mutate)
 }
 
 // Same title/size/min-size/etc. tauri.conf.json's single static window used
@@ -550,49 +604,56 @@ fn migrate_to_workspaces(app: AppHandle, id: String) -> Result<(), String> {
     if !workspace::is_valid_workspace_id(&id) {
         return Err("invalid workspace id (use lowercase letters, digits, dashes)".to_string());
     }
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let v1 = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V1(v) => v,
-        workspace::LoadedConfig::V2(_) => return Ok(()), // already migrated
-        workspace::LoadedConfig::Missing => serde_json::json!({}),
-    };
+    // The whole migration -- not just the final config.json write -- runs
+    // under the config lock (#224): it starts with a load and ends with a
+    // save, and nothing else touching config.json may interleave with the
+    // DB-file/Keychain steps in between either.
+    with_config_write_lock(&app, || {
+        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let v1 = match workspace::load(&data_dir)? {
+            workspace::LoadedConfig::V1(v) => v,
+            workspace::LoadedConfig::V2(_) => return Ok(()), // already migrated
+            workspace::LoadedConfig::Missing => serde_json::json!({}),
+        };
 
-    // 1. DB files into workspaces/<id>/.
-    workspace::apply_migration_files(&data_dir, &id)?;
+        // 1. DB files into workspaces/<id>/.
+        workspace::apply_migration_files(&data_dir, &id)?;
 
-    // 1.5 Any legacy plaintext turso_auth_token still sitting in config.json
-    // needs to land in the (unsuffixed) Keychain account first, so the
-    // per-workspace copy step below finds it there.
-    migrate_turso_token_to_keychain(&data_dir);
+        // 1.5 Any legacy plaintext turso_auth_token still sitting in config.json
+        // needs to land in the (unsuffixed) Keychain account first, so the
+        // per-workspace copy step below finds it there.
+        migrate_turso_token_to_keychain(&data_dir);
 
-    // 2. Keychain: copy unsuffixed accounts to <base>.<id>, delete originals.
-    //    Copy-if-missing keeps re-runs safe after a partial failure.
-    const BASES: [&str; 5] = [
-        "turso_auth_token",
-        "mcp_auth_token",
-        "google_refresh_token",
-        "portuni_session_jwt",
-        "portuni_device_token",
-    ];
-    for base in BASES {
-        let old = keyring::Entry::new(KEYCHAIN_SERVICE, base)
-            .ok()
-            .and_then(|e| e.get_password().ok())
-            .filter(|s| !s.is_empty());
-        if let Some(value) = old {
-            if keychain_get_ws(base, &id).is_none() {
-                keychain_set_ws(base, &id, &value)?;
-            }
-            if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, base) {
-                let _ = entry.delete_credential();
+        // 2. Keychain: copy unsuffixed accounts to <base>.<id>, delete originals.
+        //    Copy-if-missing keeps re-runs safe after a partial failure.
+        const BASES: [&str; 5] = [
+            "turso_auth_token",
+            "mcp_auth_token",
+            "google_refresh_token",
+            "portuni_session_jwt",
+            "portuni_device_token",
+        ];
+        for base in BASES {
+            let old = keyring::Entry::new(KEYCHAIN_SERVICE, base)
+                .ok()
+                .and_then(|e| e.get_password().ok())
+                .filter(|s| !s.is_empty());
+            if let Some(value) = old {
+                if keychain_get_ws(base, &id).is_none() {
+                    keychain_set_ws(base, &id, &value)?;
+                }
+                if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, base) {
+                    let _ = entry.delete_credential();
+                }
             }
         }
-    }
 
-    // 3. config.json v2 — completion marker.
-    let file = workspace::migrate_v1_value(&v1, &id);
-    workspace::save(&data_dir, &file)?;
-    info!("migrated config.json to v2 with workspace '{id}'");
+        // 3. config.json v2 — completion marker.
+        let file = workspace::migrate_v1_value(&v1, &id);
+        workspace::save(&data_dir, &file)?;
+        info!("migrated config.json to v2 with workspace '{id}'");
+        Ok(())
+    })?;
     // .setup()'s spawn_all_sidecars was a no-op on the pre-migration v1/Missing
     // config, so no sidecar is running. Spawn now — the migration gate's reload
     // otherwise polls an empty BackendPorts map for 30 s. Idempotent:
@@ -874,33 +935,38 @@ fn get_turso_status(app: AppHandle) -> Result<TursoStatus, String> {
 // has chosen local mode and we should stop showing the wizard.
 #[tauri::command]
 fn save_config(app: AppHandle, turso_url: Option<String>) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let turso = turso_url
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let loaded = workspace::load(&data_dir)?;
-    // Fresh install path: .setup()'s spawn_all_sidecars was a no-op (config was
-    // Missing at boot), so nothing is running yet and we must spawn below.
-    let fresh_install = matches!(loaded, workspace::LoadedConfig::Missing);
-    let mut file = match loaded {
-        workspace::LoadedConfig::V2(f) => f,
-        // Fresh install: onboarding commits its first choice here — create a
-        // v2 file with a single `default` workspace so the install is v2 from
-        // the outset (no separate v1->v2 migration step needed).
-        workspace::LoadedConfig::Missing => {
-            workspace::migrate_v1_value(&serde_json::json!({}), "default")
-        }
-        workspace::LoadedConfig::V1(_) => {
-            return Err("config awaiting workspace migration".to_string())
-        }
-    };
-    let active = file.active_workspace.clone();
-    let cfg = file
-        .workspaces
-        .get_mut(&active)
-        .ok_or_else(|| "active workspace missing from config".to_string())?;
-    cfg.turso_url = turso;
-    workspace::save(&data_dir, &file)?;
+    let mut fresh_install = false;
+    let mut active = String::new();
+    with_config_write_lock(&app, || {
+        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let loaded = workspace::load(&data_dir)?;
+        // Fresh install path: .setup()'s spawn_all_sidecars was a no-op
+        // (config was Missing at boot), so nothing is running yet and we
+        // must spawn below.
+        fresh_install = matches!(loaded, workspace::LoadedConfig::Missing);
+        let mut file = match loaded {
+            workspace::LoadedConfig::V2(f) => f,
+            // Fresh install: onboarding commits its first choice here — create a
+            // v2 file with a single `default` workspace so the install is v2 from
+            // the outset (no separate v1->v2 migration step needed).
+            workspace::LoadedConfig::Missing => {
+                workspace::migrate_v1_value(&serde_json::json!({}), "default")
+            }
+            workspace::LoadedConfig::V1(_) => {
+                return Err("config awaiting workspace migration".to_string())
+            }
+        };
+        active = file.active_workspace.clone();
+        let cfg = file
+            .workspaces
+            .get_mut(&active)
+            .ok_or_else(|| "active workspace missing from config".to_string())?;
+        cfg.turso_url = turso;
+        workspace::save(&data_dir, &file)
+    })?;
     // Fresh install: bring the just-created `default` workspace's sidecar up
     // now so the wizard's reload finds a running backend instead of polling an
     // empty BackendPorts map for 30 s. On the "connect to org" path
@@ -960,29 +1026,33 @@ async fn setup_central(app: AppHandle, server_url: String) -> Result<(), String>
         return Err("desktop-config response is missing the client id or secret".to_string());
     }
 
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let loaded = workspace::load(&data_dir)?;
-    let fresh_install = matches!(loaded, workspace::LoadedConfig::Missing);
-    let mut file = match loaded {
-        workspace::LoadedConfig::V2(f) => f,
-        workspace::LoadedConfig::Missing => {
-            workspace::migrate_v1_value(&serde_json::json!({}), "default")
-        }
-        workspace::LoadedConfig::V1(_) => {
-            return Err("config awaiting workspace migration".to_string())
-        }
-    };
-    let active = file.active_workspace.clone();
-    let cfg = file
-        .workspaces
-        .get_mut(&active)
-        .ok_or_else(|| "active workspace missing from config".to_string())?;
-    cfg.server_url = Some(server);
-    cfg.google_client_id = Some(client.google_client_id.trim().to_string());
-    cfg.google_client_secret = Some(client.google_client_secret.trim().to_string());
-    cfg.data_mode = Some("central".to_string());
-    cfg.turso_url = None;
-    workspace::save(&data_dir, &file)?;
+    let mut fresh_install = false;
+    let mut active = String::new();
+    with_config_write_lock(&app, || {
+        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let loaded = workspace::load(&data_dir)?;
+        fresh_install = matches!(loaded, workspace::LoadedConfig::Missing);
+        let mut file = match loaded {
+            workspace::LoadedConfig::V2(f) => f,
+            workspace::LoadedConfig::Missing => {
+                workspace::migrate_v1_value(&serde_json::json!({}), "default")
+            }
+            workspace::LoadedConfig::V1(_) => {
+                return Err("config awaiting workspace migration".to_string())
+            }
+        };
+        active = file.active_workspace.clone();
+        let cfg = file
+            .workspaces
+            .get_mut(&active)
+            .ok_or_else(|| "active workspace missing from config".to_string())?;
+        cfg.server_url = Some(server.clone());
+        cfg.google_client_id = Some(client.google_client_id.trim().to_string());
+        cfg.google_client_secret = Some(client.google_client_secret.trim().to_string());
+        cfg.data_mode = Some("central".to_string());
+        cfg.turso_url = None;
+        workspace::save(&data_dir, &file)
+    })?;
     if fresh_install {
         spawn_all_sidecars(&app);
         handoff_from_bootstrap(&app, &active);
@@ -1933,33 +2003,33 @@ fn create_workspace(app: AppHandle, args: CreateWorkspaceArgs) -> Result<(), Str
     if !workspace::is_valid_workspace_id(&args.id) {
         return Err("invalid workspace id (use lowercase letters, digits, dashes)".to_string());
     }
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Err("config not migrated to workspaces yet".to_string()),
-    };
-    if file.workspaces.contains_key(&args.id) {
-        return Err(format!("workspace '{}' already exists", args.id));
-    }
-    let port = workspace::allocate_port(&file.workspaces);
-    let cfg = workspace::WorkspaceConfig {
-        label: args.label,
-        enabled: true,
-        turso_url: args.turso_url.filter(|s| !s.trim().is_empty()),
-        workspace_root: Some(args.workspace_root),
-        mcp_port: Some(port),
-        server_url: args.server_url.filter(|s| !s.trim().is_empty()),
-        google_client_id: args.google_client_id.filter(|s| !s.trim().is_empty()),
-        google_client_secret: args.google_client_secret.filter(|s| !s.trim().is_empty()),
-        data_mode: if args.data_mode == "central" {
-            Some("central".to_string())
-        } else {
-            None
-        },
-        mcp_server_name: None,
-    };
-    file.workspaces.insert(args.id.clone(), cfg);
-    workspace::save(&data_dir, &file)?;
+    with_config_mut(&app, |file| {
+        if file.workspaces.contains_key(&args.id) {
+            return Err(format!("workspace '{}' already exists", args.id));
+        }
+        let port = workspace::allocate_port(&file.workspaces);
+        let cfg = workspace::WorkspaceConfig {
+            label: args.label.clone(),
+            enabled: true,
+            turso_url: args.turso_url.clone().filter(|s| !s.trim().is_empty()),
+            workspace_root: Some(args.workspace_root.clone()),
+            mcp_port: Some(port),
+            server_url: args.server_url.clone().filter(|s| !s.trim().is_empty()),
+            google_client_id: args.google_client_id.clone().filter(|s| !s.trim().is_empty()),
+            google_client_secret: args
+                .google_client_secret
+                .clone()
+                .filter(|s| !s.trim().is_empty()),
+            data_mode: if args.data_mode == "central" {
+                Some("central".to_string())
+            } else {
+                None
+            },
+            mcp_server_name: None,
+        };
+        file.workspaces.insert(args.id.clone(), cfg);
+        Ok(())
+    })?;
     if let Err(e) = spawn_sidecar_ws(&app, &args.id) {
         warn!("new workspace {} sidecar spawn failed: {e}", args.id);
     }
@@ -1968,36 +2038,30 @@ fn create_workspace(app: AppHandle, args: CreateWorkspaceArgs) -> Result<(), Str
 
 #[tauri::command]
 fn set_active_workspace(app: AppHandle, id: String) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Err("config not migrated to workspaces yet".to_string()),
-    };
-    if !file.workspaces.contains_key(&id) {
-        return Err(format!("unknown workspace '{id}'"));
-    }
-    file.active_workspace = id;
-    workspace::save(&data_dir, &file)
+    with_config_mut(&app, |file| {
+        if !file.workspaces.contains_key(&id) {
+            return Err(format!("unknown workspace '{id}'"));
+        }
+        file.active_workspace = id.clone();
+        Ok(())
+    })
 }
 
 #[tauri::command]
 fn set_workspace_enabled(app: AppHandle, id: String, enabled: bool) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Err("config not migrated to workspaces yet".to_string()),
-    };
-    {
-        let cfg = file
-            .workspaces
-            .get_mut(&id)
-            .ok_or_else(|| format!("unknown workspace '{id}'"))?;
-        cfg.enabled = enabled;
-    }
-    if !enabled && file.active_workspace == id {
-        return Err("cannot disable the active workspace — switch first".to_string());
-    }
-    workspace::save(&data_dir, &file)?;
+    with_config_mut(&app, |file| {
+        {
+            let cfg = file
+                .workspaces
+                .get_mut(&id)
+                .ok_or_else(|| format!("unknown workspace '{id}'"))?;
+            cfg.enabled = enabled;
+        }
+        if !enabled && file.active_workspace == id {
+            return Err("cannot disable the active workspace — switch first".to_string());
+        }
+        Ok(())
+    })?;
     if enabled {
         if let Err(e) = spawn_sidecar_ws(&app, &id) {
             warn!("enable {id}: sidecar spawn failed: {e}");
@@ -2011,36 +2075,36 @@ fn set_workspace_enabled(app: AppHandle, id: String, enabled: bool) -> Result<()
 
 #[tauri::command]
 fn delete_workspace(app: AppHandle, id: String) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Err("config not migrated to workspaces yet".to_string()),
-    };
-    if file.active_workspace == id {
-        return Err("cannot delete the active workspace — switch first".to_string());
-    }
-    if file.workspaces.len() == 1 {
-        return Err("cannot delete the last workspace".to_string());
-    }
-    if !file.workspaces.contains_key(&id) {
-        return Err(format!("unknown workspace '{id}'"));
-    }
-    // Resolve the MCP entry name while the workspace is still in config — the
-    // migrated workspace keeps the historical "portuni" name, which we could
-    // not recover once it's removed below.
-    let mcp_name = file
-        .workspaces
-        .get(&id)
-        .map(|c| workspace::mcp_server_name(&id, c))
-        .unwrap_or_else(|| format!("portuni-{id}"));
-    // Stop the sidecar (a process, no persisted state).
-    kill_sidecar_ws(&app, &id);
-    // COMMIT POINT: drop the workspace from config.json and persist FIRST. If
-    // this save fails we return early having touched no credentials — the
-    // workspace is still fully intact (config lists it, Keychain holds its
-    // secrets) and its sidecar re-spawns on the next launch.
-    file.workspaces.remove(&id);
-    workspace::save(&data_dir, &file)?;
+    let mut mcp_name = String::new();
+    with_config_mut(&app, |file| {
+        if file.active_workspace == id {
+            return Err("cannot delete the active workspace — switch first".to_string());
+        }
+        if file.workspaces.len() == 1 {
+            return Err("cannot delete the last workspace".to_string());
+        }
+        if !file.workspaces.contains_key(&id) {
+            return Err(format!("unknown workspace '{id}'"));
+        }
+        // Resolve the MCP entry name while the workspace is still in config
+        // — the migrated workspace keeps the historical "portuni" name,
+        // which we could not recover once it's removed below.
+        mcp_name = file
+            .workspaces
+            .get(&id)
+            .map(|c| workspace::mcp_server_name(&id, c))
+            .unwrap_or_else(|| format!("portuni-{id}"));
+        // Stop the sidecar (a process, no persisted state) before the
+        // commit point below.
+        kill_sidecar_ws(&app, &id);
+        // COMMIT POINT: drop the workspace from config.json; with_config_mut
+        // persists it right after this closure returns. If that save fails
+        // we return early having touched no credentials — the workspace is
+        // still fully intact (config lists it, Keychain holds its secrets)
+        // and its sidecar re-spawns on the next launch.
+        file.workspaces.remove(&id);
+        Ok(())
+    })?;
     // Config committed — the workspace is gone. Everything below is best-effort
     // cleanup of now-orphaned state, logged but never propagated, so a Keychain
     // or config-file hiccup cannot leave the workspace half-listed with its
@@ -2151,23 +2215,20 @@ fn create_profile(app: AppHandle, args: CreateProfileArgs) -> Result<(), String>
         return Err("profile label is required".to_string());
     }
     reject_secret_shaped_keys(&args.env)?;
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Err("config not migrated to workspaces yet".to_string()),
-    };
-    if file.profiles.contains_key(&args.id) {
-        return Err(format!("profile '{}' already exists", args.id));
-    }
-    file.profiles.insert(
-        args.id,
-        workspace::ProfileConfig {
-            label: args.label,
-            env: args.env,
-            command: args.command.filter(|s| !s.trim().is_empty()),
-        },
-    );
-    workspace::save(&data_dir, &file)
+    with_config_mut(&app, |file| {
+        if file.profiles.contains_key(&args.id) {
+            return Err(format!("profile '{}' already exists", args.id));
+        }
+        file.profiles.insert(
+            args.id.clone(),
+            workspace::ProfileConfig {
+                label: args.label.clone(),
+                env: args.env.clone(),
+                command: args.command.clone().filter(|s| !s.trim().is_empty()),
+            },
+        );
+        Ok(())
+    })
 }
 
 #[derive(Deserialize)]
@@ -2207,19 +2268,16 @@ fn update_profile(app: AppHandle, args: UpdateProfileArgs) -> Result<(), String>
         return Err("profile label is required".to_string());
     }
     reject_secret_shaped_keys(&args.env)?;
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Err("config not migrated to workspaces yet".to_string()),
-    };
-    let cfg = file
-        .profiles
-        .get_mut(&args.id)
-        .ok_or_else(|| format!("unknown profile '{}'", args.id))?;
-    cfg.label = args.label;
-    cfg.env = merge_profile_env_update(&cfg.env, args.env);
-    cfg.command = args.command.filter(|s| !s.trim().is_empty());
-    workspace::save(&data_dir, &file)
+    with_config_mut(&app, |file| {
+        let cfg = file
+            .profiles
+            .get_mut(&args.id)
+            .ok_or_else(|| format!("unknown profile '{}'", args.id))?;
+        cfg.label = args.label.clone();
+        cfg.env = merge_profile_env_update(&cfg.env, args.env.clone());
+        cfg.command = args.command.clone().filter(|s| !s.trim().is_empty());
+        Ok(())
+    })
 }
 
 // Narrow, purpose-built exception to "list_profiles never returns env
@@ -2243,17 +2301,14 @@ fn profile_config_dir(app: AppHandle, id: String) -> Result<Option<String>, Stri
 
 #[tauri::command]
 fn delete_profile(app: AppHandle, id: String) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Err("config not migrated to workspaces yet".to_string()),
-    };
-    if !file.profiles.contains_key(&id) {
-        return Err(format!("unknown profile '{id}'"));
-    }
-    file.profiles.remove(&id);
-    file.default_profile_by_org.retain(|_, p| p != &id);
-    workspace::save(&data_dir, &file)
+    with_config_mut(&app, |file| {
+        if !file.profiles.contains_key(&id) {
+            return Err(format!("unknown profile '{id}'"));
+        }
+        file.profiles.remove(&id);
+        file.default_profile_by_org.retain(|_, p| p != &id);
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -2262,23 +2317,20 @@ fn set_default_profile_for_org(
     org_id: String,
     profile_id: Option<String>,
 ) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Err("config not migrated to workspaces yet".to_string()),
-    };
-    match profile_id {
-        Some(pid) => {
-            if !file.profiles.contains_key(&pid) {
-                return Err(format!("unknown profile '{pid}'"));
+    with_config_mut(&app, |file| {
+        match &profile_id {
+            Some(pid) => {
+                if !file.profiles.contains_key(pid) {
+                    return Err(format!("unknown profile '{pid}'"));
+                }
+                file.default_profile_by_org.insert(org_id.clone(), pid.clone());
             }
-            file.default_profile_by_org.insert(org_id, pid);
+            None => {
+                file.default_profile_by_org.remove(&org_id);
+            }
         }
-        None => {
-            file.default_profile_by_org.remove(&org_id);
-        }
-    }
-    workspace::save(&data_dir, &file)
+        Ok(())
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2310,6 +2362,7 @@ pub fn run() {
         .manage(BackendPorts(Mutex::new(HashMap::new())))
         .manage(AuthTokens(Mutex::new(HashMap::new())))
         .manage(WebviewProxySecrets(Mutex::new(HashMap::new())))
+        .manage(ConfigLock(Mutex::new(())))
         .manage(pty::PtyState::default())
         .manage(updater::PendingUpdate::default())
         .register_uri_scheme_protocol("portuni-html", |ctx, request| {
@@ -2605,6 +2658,71 @@ mod ws_of_tests {
         assert!(ws_of_from_dir("not-a-real-label", &dir).is_err());
         assert!(ws_of_from_dir("ws:", &dir).is_err(), "empty id after the prefix");
         assert!(ws_of_from_dir("", &dir).is_err());
+    }
+}
+
+#[cfg(test)]
+mod config_lock_tests {
+    use super::with_config_mut_at;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Barrier, Mutex};
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "portuni-config-lock-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // The bug #224 fixes: two commands each doing their own load ->
+    // modify -> workspace::save (no lock) can interleave -- thread A loads,
+    // thread B loads the same pre-A-write state, A saves, B saves and
+    // clobbers A's change. Guarding the whole cycle with one Mutex<()>
+    // serializes them so both edits land regardless of interleaving.
+    #[test]
+    fn two_concurrent_mutations_both_land() {
+        let dir = temp_dir("concurrent");
+        let seed = crate::workspace::migrate_v1_value(&serde_json::json!({}), "seed");
+        crate::workspace::save(&dir, &seed).unwrap();
+
+        let lock = Arc::new(Mutex::new(()));
+        // Release both threads at the same instant so a missing lock would
+        // actually race in practice, not just in theory.
+        let barrier = Arc::new(Barrier::new(2));
+
+        let handles: Vec<_> = ["alpha", "beta"]
+            .into_iter()
+            .map(|id| {
+                let lock = lock.clone();
+                let dir = dir.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    with_config_mut_at(&lock, &dir, |file| {
+                        file.workspaces.insert(
+                            id.to_string(),
+                            crate::workspace::WorkspaceConfig::default(),
+                        );
+                        Ok(())
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let file = match crate::workspace::load(&dir).unwrap() {
+            crate::workspace::LoadedConfig::V2(f) => f,
+            _ => panic!("expected V2"),
+        };
+        assert!(file.workspaces.contains_key("seed"));
+        assert!(file.workspaces.contains_key("alpha"), "alpha's write was lost");
+        assert!(file.workspaces.contains_key("beta"), "beta's write was lost");
     }
 }
 
