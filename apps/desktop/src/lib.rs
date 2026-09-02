@@ -22,6 +22,7 @@ use rand::distr::Alphanumeric;
 use rand::{Rng, TryRngCore};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -984,6 +985,18 @@ fn open_path_external(app: tauri::AppHandle, path: String) -> Result<(), String>
     }
     info!("open_path_external: {path}");
     open::that(&candidate).map_err(|e| e.to_string())
+}
+
+// Write text to the system clipboard. The webview's navigator.clipboard
+// rejects with NotAllowedError in WKWebView whenever WebKit does not grant
+// user activation (tauri:// origin, unfocused window), so every copy button
+// in the frontend goes through this native command instead.
+#[tauri::command]
+fn copy_text(app: AppHandle, text: String) -> Result<(), String> {
+    app.clipboard().write_text(text).map_err(|e| {
+        error!("copy_text failed: {e}");
+        e.to_string()
+    })
 }
 
 // Read a file path from the macOS clipboard. Uses osascript to coerce
@@ -2088,6 +2101,7 @@ pub fn run() {
     // MCP token into AuthTokens and its bound port into BackendPorts.
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         // Logger plugin is initialised before spawn_all_sidecars so every line we
         // emit during boot — including the auth-token confirmation and any
@@ -2207,6 +2221,7 @@ pub fn run() {
             open_in_finder,
             open_path_external,
             clipboard_file_path,
+            copy_text,
             pty::pty_spawn,
             pty::pty_write,
             pty::pty_resize,

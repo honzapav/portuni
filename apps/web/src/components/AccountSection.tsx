@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Copy, RefreshCw, Trash2 } from "lucide-react";
+import { copyText } from "../lib/clipboard";
 import {
   isTauri,
   authStatus,
@@ -471,7 +472,7 @@ function DeviceTokensTable() {
 
   async function copyToken(token: string) {
     try {
-      await navigator.clipboard.writeText(token);
+      await copyText(token);
       setCopied(true);
       if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
       copiedTimerRef.current = setTimeout(() => setCopied(false), 2000);

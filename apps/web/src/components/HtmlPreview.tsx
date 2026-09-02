@@ -8,6 +8,7 @@
 // protocol (its own origin + permissive CSP, served by Rust from disk).
 import { useState } from "react";
 import { isTauri, openPathExternal } from "../lib/backend-url";
+import { copyText } from "../lib/clipboard";
 
 // Build the protocol URL for the desktop webview. The absolute path is
 // percent-encoded as the URL path; the Rust handler decodes + scope-checks it.
@@ -28,7 +29,7 @@ export default function HtmlPreview({
   async function copyPath() {
     if (!localPath) return;
     try {
-      await navigator.clipboard.writeText(localPath);
+      await copyText(localPath);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {

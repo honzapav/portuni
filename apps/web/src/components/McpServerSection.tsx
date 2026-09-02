@@ -17,6 +17,7 @@ import { Copy, Eye, EyeOff, RefreshCw } from "lucide-react";
 import { apiFetch, isTauri } from "../lib/backend-url";
 import { useDataMode } from "../lib/central";
 import { listWorkspaces } from "../lib/workspaces";
+import { copyText } from "../lib/clipboard";
 
 type McpInfo = {
   url: string;
@@ -104,7 +105,7 @@ export default function McpServerSection() {
 
   async function copy(text: string, label: string) {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       flash("ok", `${label} zkopírováno do schránky`);
     } catch (e) {
       flash("err", `Kopírování selhalo: ${e instanceof Error ? e.message : String(e)}`);
