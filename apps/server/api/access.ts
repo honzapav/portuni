@@ -17,6 +17,7 @@ import {
   type RequestIdentity,
 } from "../http/middleware.js";
 import { nodeVisibleTo, resolveAccessChain } from "../auth/node-access.js";
+import { guardRestNodeWrite } from "./write-gate.js";
 
 const AccessEntryBody = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("group"), principal: z.string().min(1), display_email: z.string().email() }),
@@ -157,6 +158,7 @@ export async function handlePutNodeAccess(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
 
     const body = await parseJsonBody(req, res, PutAccessBody);
     if (!body) return;

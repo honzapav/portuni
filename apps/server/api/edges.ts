@@ -56,7 +56,7 @@ export async function handleCreateEdge(
       respondJson(res, 200, { id: dup.rows[0].id, duplicate: true });
       return;
     }
-    if (!guardRestNodeWrite(res, identity, body.source_id)) return;
+    if (!(await guardRestNodeWrite(req, res, identity, body.source_id))) return;
     const id = ulid();
     await db.execute({
       sql: `INSERT INTO edges (id, source_id, target_id, relation, meta, created_by, created_at)
@@ -102,7 +102,7 @@ export async function handleDeleteEdge(
         respondJson(res, 404, { error: "edge not found" });
         return;
       }
-      if (!guardRestNodeWrite(res, identity, src)) return;
+      if (!(await guardRestNodeWrite(req, res, identity, src))) return;
     }
     const result = await disconnectEdgeById(db, identity.userId, edgeId);
     respondJson(res, 200, result);

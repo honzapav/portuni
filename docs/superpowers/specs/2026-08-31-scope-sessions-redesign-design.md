@@ -97,7 +97,8 @@ The write gate is a domain-layer function taking a session context
   lack even a visibility check).
 - REST routes: the "graph plane" mutations (nodes, edges, events,
   responsibilities, data sources, tools, mirror creation, file
-  create/rename) are gated (`api/write-gate.ts`). The desktop UI's own
+  create/rename, node access grants (`PUT /nodes/:id/access`), positions
+  (`POST /positions`)) are gated (`api/write-gate.ts`). The desktop UI's own
   REST calls are the documented exemption — the UI acts as the human — and
   are marked as such by their auth path (`env` / `session_jwt`), not by
   route. **Not** gated: the file-content/sync-plane REST endpoints (PUT
@@ -112,7 +113,25 @@ The write gate is a domain-layer function taking a session context
   acting on the device's own disk state (see root CLAUDE.md's "File state
   is deterministic" gotcha). Closing that gap for real needs a session
   context to actually thread through `CentralClient`'s requests, which is
-  more than this hotfix does today.
+  more than this hotfix does today (issue #210 tried to close it by simply
+  adding the gate to those routes too; `test/api-write-gate.test.ts`
+  already asserted the exemption and would have caught the regression --
+  every central-mode teammate's sync run authenticates with exactly the
+  bare device token the gate would then refuse. Left as documented here).
+- `#210` also closed a second REST hole: `env` auth mode resolves every
+  request to the same unscoped solo identity regardless of who sent it
+  (`auth/env-adapter.ts`), so the graph-plane gate above was a no-op for
+  anything reaching the loopback port with the shared token, including a
+  spawned agent terminal — not just the desktop webview's Tauri-proxied
+  calls. `api/write-gate.ts` now recognizes an opt-in `X-Portuni-Spawn-Id`
+  header (the same id `mcp/transport.ts` accepts for MCP connections,
+  minted by `domain/write-scope.ts`): when present and it names a
+  `running` session owned by the caller, the REST write gate enforces that
+  session's real write scope (home node + `session_scope` writable rows)
+  instead of the blanket `env` exemption. A request without the header, or
+  naming an unknown/foreign/non-running session, keeps the previous
+  blanket exemption — a narrowing, not a new gap, since nothing sent this
+  header before.
 - Deterministic consumers (future in-app automation) call the same guarded
   domain functions with a session context — one semantics, no LLM required.
 

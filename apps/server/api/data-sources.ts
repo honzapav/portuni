@@ -51,7 +51,7 @@ export async function handleCreateDataSource(
       respondJson(res, 404, { error: `node ${nodeId} not found` });
       return;
     }
-    if (!guardRestNodeWrite(res, identity, nodeId)) return;
+    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
     const row = await addDataSource(
       db,
       identity.userId,
@@ -84,7 +84,7 @@ export async function handleDeleteDataSource(
       respondJson(res, 404, { error: `data source ${dsId} not found` });
       return;
     }
-    if (!guardRestNodeWrite(res, identity, nodeId)) return;
+    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
     await removeDataSource(db, identity.userId, dsId);
     respondJson(res, 200, { deleted: dsId });
   } catch (err) {
@@ -118,7 +118,7 @@ export async function handleUpdateDataSource(
       respondJson(res, 404, { error: `data source ${dsId} not found` });
       return;
     }
-    if (!guardRestNodeWrite(res, identity, nodeId)) return;
+    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
     const row = await updateDataSource(
       db,
       identity.userId,

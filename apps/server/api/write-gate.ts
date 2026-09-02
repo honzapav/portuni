@@ -1,8 +1,8 @@
 // REST-layer wrapper around the domain write gate (../domain/write-gate.ts),
 // mirroring mcp/write-gate.ts's pattern for MCP tools. Covers the
 // "graph plane" REST mutations (nodes, edges, events, responsibilities,
-// data sources, tools, mirror creation) that have a direct MCP-tool
-// equivalent already gated by guardNodeWrite -- see
+// data sources, tools, mirror creation, access grants, positions) that have
+// a direct MCP-tool equivalent already gated by guardNodeWrite -- see
 // docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md
 // ("Enforcement points").
 //
@@ -19,40 +19,108 @@
 // the mirror watcher acting on the device's own disk state -- see
 // CLAUDE.md's "File state is deterministic" gotcha). File lifecycle
 // endpoints CentralClient never calls (create, rename) stay gated below.
-import type { ServerResponse } from "node:http";
+// #211 (verification follow-up to #203) asked to also gate the routes above
+// on the strength of "a device-token agent can still use them" -- but
+// test/api-write-gate.test.ts already asserts PUT /nodes/:id/file passes for
+// a bare device_token identity precisely because that IS CentralClient's own
+// channel; gating it would 403 every central-mode teammate's sync run, not
+// just a rogue caller, since the REST layer has no way to tell the two
+// apart without a properly threaded session context (a materially bigger
+// change than a single write-gate call -- CentralClient would need to
+// forward its triggering session's id on every request, and the mirror
+// watcher's session-less reconcile loop has no session id to forward at
+// all). Left as-is; see the comment on issue #210 for the full reasoning.
+//
+// Trust boundary for the "env" exemption below: env auth mode resolves
+// EVERY request to the same unscoped solo identity regardless of who sent
+// it (auth/env-adapter.ts), so on its own "env" would make this gate a
+// no-op for anything that can reach the loopback port with the shared
+// token -- including a spawned agent terminal, not just the desktop
+// webview's Tauri-proxied calls (#210 point 2). The X-Portuni-Spawn-Id
+// header (mcp/transport.ts, minted into the per-mirror .mcp.json by
+// domain/write-scope.ts for MCP connections) is reused here as an opt-in
+// REST marker: when a request carries it, we resolve the session it names
+// (must be owned by this identity and still running) and enforce that
+// session's actual write scope (home node + accepted expansions from
+// session_scope) instead of the blanket "env" exemption. A request that
+// omits the header -- the webview/Tauri-proxy path, and any caller that
+// simply doesn't send it -- keeps today's "env" exemption; this is a
+// narrowing, not a new hole, matching the issue's own framing ("the plain
+// webview/Tauri-proxy path stays exempt").
+import type { IncomingMessage, ServerResponse } from "node:http";
 import type { RequestIdentity } from "../auth/request-identity.js";
-import { guardWrite, writeGuardError, type WriteContext, type WriteSessionType } from "../domain/write-gate.js";
+import { guardWrite, writeGuardError, type WriteContext } from "../domain/write-gate.js";
 import { respondJson } from "../http/middleware.js";
+import { getDb } from "../infra/db.js";
+import { getSession, getSessionScope } from "../domain/sessions.js";
 
-// REST requests carry no SessionScope (that lives only in the MCP layer,
-// per-connection), so there is no home node / write-set to check an
-// agent identity against -- an "elicit" outcome has no dialog to round-trip
-// through either. Both cases refuse outright here. The desktop UI (webview
-// via the Tauri proxy) and the central-mode account UI ("central_request",
-// session_jwt) are the human-driven surface this model exempts, matching
-// domain/write-gate.ts's "env" case for both.
-function restSessionType(identity: Pick<RequestIdentity, "via" | "headless">): WriteSessionType {
-  if (identity.via === "env" || identity.via === "session_jwt") return "env";
-  if (identity.via === "oauth_grant") return "interactive_chat";
-  if (identity.headless) return "headless";
-  return "interactive_task";
+function spawnSessionIdFromRequest(req: Pick<IncomingMessage, "headers">): string | null {
+  const header = req.headers["x-portuni-spawn-id"];
+  const value = (Array.isArray(header) ? header[0] : header)?.trim();
+  return value || null;
+}
+
+// Resolve the WriteContext a REST mutation should be checked against.
+// oauth_grant (the claude.ai connector) has no home node and never gets
+// one -- empty write set, every write elicited (refused outright here, no
+// dialog channel). A device_token/session_jwt/env identity carrying a
+// resolvable X-Portuni-Spawn-Id is scoped to that session's actual write
+// set; otherwise env/session_jwt keep the "env" exemption and any other
+// identity (a bare device_token, or a headless one) gets the narrowest
+// applicable session type with an empty write set, matching
+// domain/write-gate.ts's headless/interactive_task semantics.
+export async function resolveRestWriteContext(
+  req: Pick<IncomingMessage, "headers">,
+  identity: RequestIdentity,
+): Promise<WriteContext> {
+  if (identity.via === "oauth_grant") {
+    return { sessionType: "interactive_chat", homeNodeId: null, writableNodes: new Set() };
+  }
+  const spawnSessionId = spawnSessionIdFromRequest(req);
+  if (spawnSessionId) {
+    const db = getDb();
+    const session = await getSession(db, spawnSessionId);
+    if (session && session.user_id === identity.userId && session.state === "running") {
+      const scopeRows = await getSessionScope(db, spawnSessionId);
+      const writableNodes = new Set(scopeRows.filter((r) => r.writable === 1).map((r) => r.node_id));
+      return { sessionType: "interactive_task", homeNodeId: session.node_id, writableNodes };
+    }
+  }
+  if (identity.via === "env" || identity.via === "session_jwt") {
+    return { sessionType: "env", homeNodeId: null, writableNodes: new Set() };
+  }
+  if (identity.headless) {
+    return { sessionType: "headless", homeNodeId: null, writableNodes: new Set() };
+  }
+  return { sessionType: "interactive_task", homeNodeId: null, writableNodes: new Set() };
 }
 
 // Gate a REST mutation targeting nodeId. Returns true when the caller may
 // proceed. On refusal, writes the 403 response itself (same JSON shape as
 // the MCP write gate's structured refusal) and returns false.
-export function guardRestNodeWrite(
+export async function guardRestNodeWrite(
+  req: Pick<IncomingMessage, "headers">,
   res: ServerResponse,
   identity: RequestIdentity,
   nodeId: string,
-): boolean {
-  const ctx: WriteContext = {
-    sessionType: restSessionType(identity),
-    homeNodeId: null,
-    writableNodes: new Set(),
-  };
+): Promise<boolean> {
+  const ctx = await resolveRestWriteContext(req, identity);
   const outcome = guardWrite(ctx, nodeId);
   if (outcome.kind === "allow") return true;
   respondJson(res, 403, writeGuardError(nodeId, outcome.kind, outcome.message));
   return false;
+}
+
+// Batch variant for handlePositions (api/nodes.ts): filters nodeIds down to
+// the ones this request's write context may touch, silently dropping the
+// rest -- matching the existing "hidden node -> silently omitted" pattern
+// for batch endpoints (e.g. handleSyncInfoBatch) rather than 403ing the
+// whole batch over one out-of-scope entry.
+export async function filterRestWritableNodeIds(
+  req: Pick<IncomingMessage, "headers">,
+  identity: RequestIdentity,
+  nodeIds: readonly string[],
+): Promise<Set<string>> {
+  const ctx = await resolveRestWriteContext(req, identity);
+  return new Set(nodeIds.filter((id) => guardWrite(ctx, id).kind === "allow"));
 }

@@ -24,6 +24,7 @@ import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { routeApiRequest } from "../apps/server/api/router.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { createSession, upsertSessionScopeRead, setSessionScopeWritable } from "../apps/server/domain/sessions.js";
 
 const SOLO = "01SOLO0000000000000000000";
 
@@ -53,6 +54,7 @@ function makeMockReqRes(
   method: string,
   pathname: string,
   bodyJson?: unknown,
+  extraHeaders?: Record<string, string>,
 ): { req: IncomingMessage; res: ServerResponse; captured: MockResponse } {
   const captured: MockResponse = { statusCode: 0, body: "" };
   const bodyStr = bodyJson !== undefined ? JSON.stringify(bodyJson) : "";
@@ -64,7 +66,10 @@ function makeMockReqRes(
   }) as unknown as IncomingMessage;
   req.method = method;
   req.url = pathname;
-  req.headers = bodyJson !== undefined ? { "content-type": "application/json" } : {};
+  req.headers = {
+    ...(bodyJson !== undefined ? { "content-type": "application/json" } : {}),
+    ...extraHeaders,
+  };
 
   const res = new Writable({
     write(chunk: Buffer, _enc: string, cb: () => void) {
@@ -88,8 +93,9 @@ async function call(
   pathname: string,
   identity: RequestIdentity,
   bodyJson?: unknown,
+  extraHeaders?: Record<string, string>,
 ): Promise<MockResponse> {
-  const { req, res, captured } = makeMockReqRes(method, pathname, bodyJson);
+  const { req, res, captured } = makeMockReqRes(method, pathname, bodyJson, extraHeaders);
   await routeApiRequest(req, res, new URL(`http://localhost${pathname}`), identity);
   return captured;
 }
@@ -291,5 +297,117 @@ describe("REST write gate: graph-plane mutations", () => {
       content: "hi",
     });
     assert.notEqual(r.statusCode, 403, r.body);
+  });
+
+  it("PUT /nodes/:id/access: device_token identity is refused (#210)", async () => {
+    const r = await call("PUT", `/nodes/${nodeId}/access`, deviceTokenIdentity, { entries: [] });
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("PUT /nodes/:id/access: env identity is unaffected (#210)", async () => {
+    const r = await call("PUT", `/nodes/${nodeId}/access`, uiIdentity, { entries: [] });
+    assert.ok(r.statusCode < 300, `expected success, got ${r.statusCode}: ${r.body}`);
+  });
+
+  it("POST /positions: out-of-write-scope entries are silently dropped for device_token, not 403'd (#210)", async () => {
+    const r = await call("POST", "/positions", deviceTokenIdentity, {
+      updates: [{ id: nodeId, x: 1, y: 2 }],
+    });
+    assert.ok(r.statusCode < 300, `expected success, got ${r.statusCode}: ${r.body}`);
+    assert.deepEqual(JSON.parse(r.body), { updated: 0 });
+  });
+
+  it("POST /positions: env identity is unaffected (#210)", async () => {
+    const r = await call("POST", "/positions", uiIdentity, {
+      updates: [{ id: nodeId, x: 3, y: 4 }],
+    });
+    assert.ok(r.statusCode < 300, `expected success, got ${r.statusCode}: ${r.body}`);
+    assert.deepEqual(JSON.parse(r.body), { updated: 1 });
+  });
+});
+
+// #210 point 2: env auth mode resolves every request to the same unscoped
+// solo identity regardless of caller (auth/env-adapter.ts), which used to
+// make the REST write gate a no-op for anything reaching the loopback port
+// with the shared token -- not just the desktop webview's Tauri-proxied
+// calls, but a spawned agent terminal too. The X-Portuni-Spawn-Id header
+// (already minted for MCP connections, see domain/write-scope.ts) is reused
+// as an opt-in REST marker: a request carrying it is scoped to that
+// session's actual write set instead of the blanket "env" exemption.
+describe("REST write gate: env-mode spawn-id scoping (#210 point 2)", () => {
+  let db: DbClient;
+  let workspace: string;
+  let homeNodeId: string;
+  let otherNodeId: string;
+  let expandedNodeId: string;
+  let sessionId: string;
+
+  before(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "portuni-api-write-gate-spawn-"));
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+
+    db = createDbClient({ url: ":memory:" });
+    await ensureSchemaOn(db);
+    setDbForTesting(db);
+
+    homeNodeId = ulid();
+    otherNodeId = ulid();
+    expandedNodeId = ulid();
+    for (const [id, name] of [
+      [homeNodeId, "Home"],
+      [otherNodeId, "Other"],
+      [expandedNodeId, "Expanded"],
+    ] as const) {
+      await db.execute({
+        sql: `INSERT INTO nodes (id, type, name, status, visibility, sync_key, created_by)
+              VALUES (?, 'project', ?, 'active', 'team', ?, ?)`,
+        args: [id, name, id, SOLO],
+      });
+    }
+
+    const session = await createSession(db, SOLO, { node_id: homeNodeId, session_type: "interactive_task" });
+    sessionId = session.id;
+    await upsertSessionScopeRead(db, sessionId, expandedNodeId, "elicited", "test");
+    await setSessionScopeWritable(db, sessionId, expandedNodeId);
+  });
+
+  after(async () => {
+    setDbForTesting(null);
+    resetLocalDbForTests();
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  it("no X-Portuni-Spawn-Id header: env identity keeps the blanket exemption", async () => {
+    const r = await call("PATCH", `/nodes/${otherNodeId}`, uiIdentity, { name: "Renamed" });
+    assert.ok(r.statusCode < 300, `expected success, got ${r.statusCode}: ${r.body}`);
+  });
+
+  it("X-Portuni-Spawn-Id names a running session: write to its home node is allowed", async () => {
+    const r = await call("PATCH", `/nodes/${homeNodeId}`, uiIdentity, { name: "Renamed" }, {
+      "x-portuni-spawn-id": sessionId,
+    });
+    assert.ok(r.statusCode < 300, `expected success, got ${r.statusCode}: ${r.body}`);
+  });
+
+  it("X-Portuni-Spawn-Id names a running session: write to a session-writable node is allowed", async () => {
+    const r = await call("PATCH", `/nodes/${expandedNodeId}`, uiIdentity, { name: "Renamed" }, {
+      "x-portuni-spawn-id": sessionId,
+    });
+    assert.ok(r.statusCode < 300, `expected success, got ${r.statusCode}: ${r.body}`);
+  });
+
+  it("X-Portuni-Spawn-Id names a running session: write outside its scope is refused", async () => {
+    const r = await call("PATCH", `/nodes/${otherNodeId}`, uiIdentity, { name: "Renamed" }, {
+      "x-portuni-spawn-id": sessionId,
+    });
+    assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("X-Portuni-Spawn-Id names an unknown session: falls back to the blanket env exemption", async () => {
+    const r = await call("PATCH", `/nodes/${otherNodeId}`, uiIdentity, { name: "Renamed" }, {
+      "x-portuni-spawn-id": ulid(),
+    });
+    assert.ok(r.statusCode < 300, `expected success, got ${r.statusCode}: ${r.body}`);
   });
 });

@@ -51,7 +51,7 @@ export async function handleCreateTool(
       respondJson(res, 404, { error: `node ${nodeId} not found` });
       return;
     }
-    if (!guardRestNodeWrite(res, identity, nodeId)) return;
+    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
     const row = await addTool(db, identity.userId, body as Parameters<typeof addTool>[2]);
     respondJson(res, 201, row);
   } catch (err) {
@@ -80,7 +80,7 @@ export async function handleDeleteTool(
       respondJson(res, 404, { error: `tool ${toolId} not found` });
       return;
     }
-    if (!guardRestNodeWrite(res, identity, nodeId)) return;
+    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
     await removeTool(db, identity.userId, toolId);
     respondJson(res, 200, { deleted: toolId });
   } catch (err) {
@@ -114,7 +114,7 @@ export async function handleUpdateTool(
       respondJson(res, 404, { error: `tool ${toolId} not found` });
       return;
     }
-    if (!guardRestNodeWrite(res, identity, nodeId)) return;
+    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
     const row = await updateTool(
       db,
       identity.userId,

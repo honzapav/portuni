@@ -351,7 +351,7 @@ export async function handleCreateFile(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
-    if (!guardRestNodeWrite(res, identity, nodeId)) return;
+    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
     // Mirror present -> local create (registers + pushes). No mirror
     // (central / VPS) -> adapter-direct create against the routed remote.
     const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
@@ -437,7 +437,7 @@ export async function handleRenameFile(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
-    if (!guardRestNodeWrite(res, identity, nodeId)) return;
+    if (!(await guardRestNodeWrite(req, res, identity, nodeId))) return;
     const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
     const r = mirrorRoot
       ? await renameFile(db, {

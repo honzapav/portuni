@@ -33,7 +33,7 @@ export async function handleCreateEvent(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
-    if (!guardRestNodeWrite(res, identity, body.node_id)) return;
+    if (!(await guardRestNodeWrite(req, res, identity, body.node_id))) return;
     const id = ulid();
     const now = new Date().toISOString();
     await db.execute({
@@ -86,7 +86,7 @@ export async function handleUpdateEvent(
       respondJson(res, 404, { error: "event not found" });
       return;
     }
-    if (!guardRestNodeWrite(res, identity, eventNodeId)) return;
+    if (!(await guardRestNodeWrite(req, res, identity, eventNodeId))) return;
     const updates: string[] = [];
     const values: (string | null)[] = [];
     if (typeof body.content === "string" && body.content.trim().length > 0) {
@@ -167,7 +167,7 @@ export async function handleArchiveEvent(
       respondJson(res, 404, { error: "event not found or already archived" });
       return;
     }
-    if (!guardRestNodeWrite(res, identity, eventNodeId)) return;
+    if (!(await guardRestNodeWrite(req, res, identity, eventNodeId))) return;
     const result = await db.execute({
       sql: "UPDATE events SET status = 'archived' WHERE id = ? AND status != 'archived'",
       args: [eventId],
