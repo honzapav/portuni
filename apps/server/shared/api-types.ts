@@ -406,6 +406,14 @@ export type SessionSummary = {
   session_type: "interactive_task" | "interactive_chat" | "headless" | "env";
   cli: string | null;
   profile_id: string | null;
+  // Correlates to the desktop terminal that spawned this session's CLI
+  // (apps/desktop/src/pty.rs's PORTUNI_TERMINAL_ID, threaded through the
+  // X-Portuni-Terminal header, #218) -- Claude only; Codex/Vibe sessions
+  // always carry null here (their config format has no equivalent runtime
+  // header). Lets a desktop window match its own local terminals (whose id
+  // IS the terminal id, see lib/sessions.ts) to their persistent session
+  // rows without a second bespoke lookup (#231, close-dialog Pozastavit).
+  terminal_id: string | null;
   state: SessionState;
   name: string;
   name_is_custom: boolean;

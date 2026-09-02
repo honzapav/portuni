@@ -14,12 +14,22 @@ import {
   fetchNodeMirror,
   createNodeMirror,
   fetchSandboxProfile,
+  fetchNodePersistentSessions,
   fetchMe,
 } from "./api";
 import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
 import { useFileEditor } from "./lib/use-file-editor";
 import { buildAgentCommand } from "./lib/prompt";
 import { useDataMode } from "./lib/central";
+import {
+  correlateSessions,
+  suspendableTerminalIds,
+  allSuspended,
+  suspendPollTimedOut,
+  SUSPEND_INSTRUCTION,
+  SUSPEND_POLL_INTERVAL_MS,
+  type CorrelatedSession,
+} from "./lib/session-suspend";
 import {
   type TerminalSession,
   createSession,
@@ -85,6 +95,41 @@ async function destroyCurrentWindow(): Promise<void> {
   if (!isTauri()) return;
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   await getCurrentWindow().destroy().catch(() => undefined);
+}
+
+// Persistent sessions correlated to this window's local terminals (#231):
+// one GET /nodes/:id/sessions per distinct node among `terminals` (terminal
+// tabs across several open nodes are the common case), merged and filtered
+// down to terminal_id-bearing rows by correlateSessions. A node's fetch
+// failing (e.g. it was deleted from under an open tab) just contributes no
+// rows for it rather than failing the whole close dialog.
+async function fetchCorrelatedSessions(
+  terminals: readonly Pick<TerminalSession, "nodeId">[],
+): Promise<CorrelatedSession[]> {
+  const nodeIds = Array.from(new Set(terminals.map((t) => t.nodeId)));
+  const results = await Promise.all(
+    nodeIds.map((id) => fetchNodePersistentSessions(id).catch(() => ({ sessions: [] }))),
+  );
+  return correlateSessions(results.flatMap((r) => r.sessions));
+}
+
+// pty_kill every given terminal (best-effort, #231's "Ukončit" -- and the
+// terminal step of "Pozastavit", whether the poll actually succeeded or
+// timed out), then proceed with the window close. Without the kill step, a
+// destroyed window's own PTYs kept running invisibly in the background
+// until the whole app quit (the master fd -- and so the child's controlling
+// terminal -- only closes then); pty_kill's explicit removal SIGHUPs them
+// immediately.
+async function killTerminalsAndCloseWindow(
+  terminals: readonly Pick<TerminalSession, "id">[],
+): Promise<void> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    for (const t of terminals) {
+      await invoke("pty_kill", { args: { session_id: t.id } }).catch(() => undefined);
+    }
+  }
+  await destroyCurrentWindow();
 }
 
 export default function App() {
@@ -575,15 +620,19 @@ export default function App() {
     syncPendingRef.current = syncPending.total;
   }, [syncPending.total]);
   const [syncQuitGuard, setSyncQuitGuard] = useState<{ count: number } | null>(null);
-  const sessionCountRef = useRef(sessions.length);
+  const sessionsRef = useRef(sessions);
   useEffect(() => {
-    sessionCountRef.current = sessions.length;
-  }, [sessions.length]);
-  // Third onCloseRequested guard (#229), after dirty editor and unsynced
-  // files: a plain confirm when this window has running terminals. The
-  // session-aware Ukončit/Pozastavit/Zrušit dialog is phase 3 -- for now
-  // any live session just means "closing kills it".
-  const [terminalsCloseGuard, setTerminalsCloseGuard] = useState<{ count: number } | null>(null);
+    sessionsRef.current = sessions;
+  }, [sessions]);
+  // Third onCloseRequested guard (#229/#231), after dirty editor and
+  // unsynced files: this window's running terminals. "confirm" offers
+  // Ukončit / Pozastavit (only when at least one terminal is suspendable,
+  // #231) / Zrušit; "suspending" is the Pozastavit poll in progress.
+  const [terminalsCloseGuard, setTerminalsCloseGuard] = useState<
+    | null
+    | { kind: "confirm"; terminals: TerminalSession[]; suspendableIds: string[] }
+    | { kind: "suspending"; terminals: TerminalSession[]; suspendableIds: string[]; timedOut: boolean }
+  >(null);
 
   const appUpdate = useAppUpdate();
 
@@ -674,9 +723,16 @@ export default function App() {
             } else if (syncPendingRef.current > 0) {
               event.preventDefault();
               setSyncQuitGuard({ count: syncPendingRef.current });
-            } else if (sessionCountRef.current > 0) {
+            } else if (sessionsRef.current.length > 0) {
               event.preventDefault();
-              setTerminalsCloseGuard({ count: sessionCountRef.current });
+              const terminals = sessionsRef.current;
+              void fetchCorrelatedSessions(terminals).then((correlated) => {
+                setTerminalsCloseGuard({
+                  kind: "confirm",
+                  terminals,
+                  suspendableIds: suspendableTerminalIds(terminals, correlated),
+                });
+              });
             }
           });
         } catch {
@@ -693,6 +749,48 @@ export default function App() {
       }
     };
   }, []);
+
+  // "Pozastavit" (#231): write the suspend instruction into every
+  // suspendable terminal, then poll their correlated sessions (re-fetched
+  // fresh each tick, since a session's own state can change from the
+  // agent's own action) until none is "running" or 30s pass. Either way,
+  // every terminal in the dialog -- suspendable or not -- gets killed and
+  // the window closes; a timeout just means the dialog says so first
+  // (briefly, before the same close happens) rather than pretending
+  // everything suspended cleanly.
+  const handleSuspendAndClose = useCallback(
+    async (terminals: TerminalSession[], suspendableIds: string[]) => {
+      setTerminalsCloseGuard({ kind: "suspending", terminals, suspendableIds, timedOut: false });
+      if (isTauri()) {
+        const { invoke } = await import("@tauri-apps/api/core");
+        for (const id of suspendableIds) {
+          await invoke("pty_write", {
+            args: { session_id: id, data: `${SUSPEND_INSTRUCTION}\n` },
+          }).catch(() => undefined);
+        }
+      }
+      const startedAt = Date.now();
+      let timedOut = false;
+      while (true) {
+        const correlated = await fetchCorrelatedSessions(terminals);
+        const states = correlated
+          .filter((c) => suspendableIds.includes(c.terminalId))
+          .map((c) => c.state);
+        if (allSuspended(states)) break;
+        timedOut = suspendPollTimedOut(startedAt, Date.now());
+        if (timedOut) break;
+        await new Promise((r) => setTimeout(r, SUSPEND_POLL_INTERVAL_MS));
+      }
+      if (timedOut) {
+        setTerminalsCloseGuard({ kind: "suspending", terminals, suspendableIds, timedOut: true });
+        // Give the user a moment to actually read "časový limit vypršel"
+        // before the window disappears out from under the dialog.
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      await killTerminalsAndCloseWindow(terminals);
+    },
+    [],
+  );
 
   // Refetch on focus AND tab-visible. Covers BOTH the graph selection and
   // the workspace selection so files registered elsewhere (MCP / another
@@ -1313,36 +1411,74 @@ export default function App() {
       )}
       {terminalsCloseGuard && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
-          <div className="w-[420px] rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-5 shadow-xl">
-            <div className="mb-2 text-[14.5px] font-semibold text-[var(--color-text)]">
-              Zavřít okno?
-            </div>
-            <p className="mb-4 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
-              Běží {terminalsCloseGuard.count}{" "}
-              {terminalsCloseGuard.count === 1 ? "terminál" : terminalsCloseGuard.count < 5 ? "terminály" : "terminálů"}, budou ukončeny.
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setTerminalsCloseGuard(null);
-                  void declineExit();
-                }}
-                className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
-              >
-                Zrušit
-              </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  setTerminalsCloseGuard(null);
-                  await destroyCurrentWindow();
-                }}
-                className="rounded-md border border-[var(--color-danger-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-danger)] hover:bg-[var(--color-surface)]"
-              >
-                Zavřít
-              </button>
-            </div>
+          <div className="w-[440px] rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-5 shadow-xl">
+            {terminalsCloseGuard.kind === "confirm" ? (
+              <>
+                <div className="mb-2 text-[14.5px] font-semibold text-[var(--color-text)]">
+                  Zavřít okno?
+                </div>
+                <p className="mb-4 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
+                  Běží {terminalsCloseGuard.terminals.length}{" "}
+                  {terminalsCloseGuard.terminals.length === 1
+                    ? "terminál"
+                    : terminalsCloseGuard.terminals.length < 5
+                      ? "terminály"
+                      : "terminálů"}
+                  .{" "}
+                  {terminalsCloseGuard.suspendableIds.length > 0
+                    ? "Agenty lze před zavřením pozastavit, nebo terminály rovnou ukončit."
+                    : "Budou ukončeny."}
+                </p>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTerminalsCloseGuard(null);
+                      void declineExit();
+                    }}
+                    className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
+                  >
+                    Zrušit
+                  </button>
+                  {terminalsCloseGuard.suspendableIds.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void handleSuspendAndClose(
+                          terminalsCloseGuard.terminals,
+                          terminalsCloseGuard.suspendableIds,
+                        )
+                      }
+                      className="rounded-md border border-[var(--color-accent-dim)] px-3 py-1.5 text-[12.5px] text-[var(--color-accent)] hover:bg-[var(--color-surface)]"
+                    >
+                      Pozastavit
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const terminals = terminalsCloseGuard.terminals;
+                      setTerminalsCloseGuard(null);
+                      await killTerminalsAndCloseWindow(terminals);
+                    }}
+                    className="rounded-md border border-[var(--color-danger-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-danger)] hover:bg-[var(--color-surface)]"
+                  >
+                    Ukončit
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="mb-2 text-[14.5px] font-semibold text-[var(--color-text)]">
+                  {terminalsCloseGuard.timedOut ? "Časový limit vypršel" : "Pozastavuji…"}
+                </div>
+                <p className="mb-4 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
+                  {terminalsCloseGuard.timedOut
+                    ? "Relace se nestihly pozastavit včas, terminály se zavřou."
+                    : `Čekám, až ${terminalsCloseGuard.suspendableIds.length === 1 ? "agent uloží" : "agenti uloží"} rozdělanou práci…`}
+                </p>
+              </>
+            )}
           </div>
         </div>
       )}

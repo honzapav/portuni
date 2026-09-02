@@ -449,6 +449,37 @@ symlink to this file.
   workspace at all yet. No capability entry needed — the plugin registers
   no invokable commands, only a Rust-side lifecycle hook.
 
+- **The window-close dialog offers Ukončit / Pozastavit / Zrušit for
+  running terminals (#231, replacing #229's plain confirm).**
+  `SessionSummary` (REST, `GET /nodes/:id/sessions`) gained `terminal_id:
+  string | null` (`toSummary`, `apps/server/api/sessions.ts`) so a window
+  can correlate its own local terminal ids (`lib/sessions.ts`'s
+  `TerminalSession.id` — always Claude-only, since Codex/Vibe's config
+  format has no header for it) to their persistent session rows without a
+  bespoke lookup. `apps/web/src/lib/session-suspend.ts` holds the shared
+  pure decision logic — meant for #232 to reuse too, "one implementation,
+  not two": `correlateSessions` (keep only `terminal_id`-bearing rows),
+  `suspendableTerminalIds` (agent command **and** a correlated `running`
+  session — the session row's `cli` column is always `NULL` and can't be
+  used for this), `allSuspended`/`suspendPollTimedOut` (the 30s poll's stop
+  conditions). `App.tsx`'s `onCloseRequested` guard fetches correlated
+  sessions (one `GET /nodes/:id/sessions` per distinct node among the
+  window's terminals) before showing the dialog. **Ukončit**:
+  `killTerminalsAndCloseWindow` — `pty_kill` every terminal (this is also
+  what #229's plain-confirm path was missing: destroying the window alone
+  never killed its PTYs, since `PtyState` is process-wide and a window
+  closing doesn't touch it — the child only dies when the whole app exits
+  and every fd, PTY masters included, finally closes), then destroys the
+  window. **Pozastavit** (`handleSuspendAndClose`, shown only when
+  `suspendableIds` is non-empty): `pty_write`s a plain-English instruction
+  (`SUSPEND_INSTRUCTION`) into each suspendable terminal asking the agent to
+  call `portuni_session_suspend` on its own initiative — there is no other
+  protocol for this, the agent decides — polls every 2s (re-fetching fresh
+  correlated state each tick) until none is `running` or 30s pass, then
+  **always** calls `killTerminalsAndCloseWindow` on every terminal in the
+  dialog regardless of outcome; a timeout flips the dialog to say so first.
+  **Zrušit**: `declineExit()`, same as the other two guards.
+
 - **Backend/PTY events are per-window, not broadcast (#227).**
   `backend-ready`, `backend-error` (`spawn_sidecar_ws`'s reader loop and
   its deferred-central branch), `pty-data` and `pty-exit` all moved from

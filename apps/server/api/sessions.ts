@@ -47,6 +47,7 @@ async function toSummary(row: SessionRow): Promise<SessionSummary> {
     session_type: row.session_type,
     cli: row.cli,
     profile_id: row.profile_id,
+    terminal_id: row.terminal_id,
     state: row.state,
     name: row.name,
     name_is_custom: row.name_is_custom === 1,

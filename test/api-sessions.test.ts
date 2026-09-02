@@ -144,6 +144,25 @@ describe("session REST endpoints", () => {
     assert.equal(bodyAll.sessions.length, 2);
   });
 
+  test("GET /nodes/:id/sessions includes terminal_id, null when the session carries none (#231)", async () => {
+    const identity = makeIdentity(SOLO);
+    const withTerminal = await createSession(db, SOLO, {
+      node_id: nodeId,
+      session_type: "interactive_task",
+      terminal_id: "term_abc_1_xyz",
+    });
+    const withoutTerminal = await createSession(db, SOLO, {
+      node_id: nodeId,
+      session_type: "headless",
+    });
+
+    const res = await call(identity, "GET", `/nodes/${nodeId}/sessions`);
+    const body = JSON.parse(res.body) as { sessions: SessionSummary[] };
+    const byId = new Map(body.sessions.map((s) => [s.id, s]));
+    assert.equal(byId.get(withTerminal.id)?.terminal_id, "term_abc_1_xyz");
+    assert.equal(byId.get(withoutTerminal.id)?.terminal_id, null);
+  });
+
   test("GET /nodes/:id/sessions 404s for an unknown node", async () => {
     const res = await call(makeIdentity(SOLO), "GET", `/nodes/${ulid()}/sessions`);
     assert.equal(res.statusCode, 404);
