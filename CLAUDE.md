@@ -431,6 +431,24 @@ symlink to this file.
   dialog actually abort) is macOS-only verification — the container has no
   display.
 
+- **A second launch relays to the first instance instead of starting a
+  separate process (#230).** `spawn_sidecar_ws`'s `reap_orphan_sidecar(port)`
+  `kill -9`s any foreign `portuni-sidecar` already holding a workspace's
+  port, so without this, `open -n` (or a Dock re-click while the app has no
+  frontmost window) would run a full second `.setup()` that kills the first
+  instance's sidecars out from under it. `tauri_plugin_single_instance::init`
+  is registered as the **very first** plugin (Tauri's own requirement) and
+  relays a second launch's argv/cwd to `focus_or_open_most_recent_window`
+  instead of letting the second process proceed — it exits immediately, so
+  it never reaches `spawn_all_sidecars` at all. Target selection
+  (`single_instance_target`, pure and unit-tested): the most recently
+  focused window (`FocusHistory`'s last entry, #225), else one for
+  `active_workspace` (the one caller left using this function — every
+  workspace-bound command resolves via `ws_of` instead, and #225's startup
+  restore reads the config field directly), else `bootstrap` if there's no
+  workspace at all yet. No capability entry needed — the plugin registers
+  no invokable commands, only a Rust-side lifecycle hook.
+
 - **Backend/PTY events are per-window, not broadcast (#227).**
   `backend-ready`, `backend-error` (`spawn_sidecar_ws`'s reader loop and
   its deferred-central branch), `pty-data` and `pty-exit` all moved from

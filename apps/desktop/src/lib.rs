@@ -299,12 +299,11 @@ pub(crate) fn keychain_delete_ws(base: &str, ws_id: &str) {
 /// install) — callers surface that as a command error to the UI rather
 /// than guessing at a workspace that doesn't exist yet.
 ///
-/// No caller left as of #227 (every workspace-bound command now resolves
-/// via ws_of, and #225's startup restore reads the WorkspacesFile's
-/// active_workspace FIELD directly rather than this function) -- kept for
+/// Every workspace-bound command resolves via ws_of instead, and #225's
+/// startup restore reads the WorkspacesFile's active_workspace FIELD
+/// directly rather than this function -- the one remaining caller is
 /// #230's single-instance fallback ("opens ws:<active_workspace> when no
-/// window is open"), the one remaining use the spec calls out.
-#[allow(dead_code)]
+/// window is open"), the one use the spec itself calls out for this.
 pub(crate) fn active_workspace(
     app: &AppHandle,
 ) -> Result<(String, workspace::WorkspaceConfig), String> {
@@ -513,6 +512,36 @@ fn create_startup_windows(app: &AppHandle) -> tauri::Result<()> {
         open_window(app, &label)?;
     }
     Ok(())
+}
+
+// Pure decision for focus_or_open_most_recent_window: which window label
+// should get focus (creating it first if it doesn't exist)? Prefers the
+// most recently focused workspace (FocusHistory's last entry, #225, kept
+// accurate by touch_focus/untrack_focus); falls back to active_workspace's
+// result, then finally "bootstrap" if there's no workspace at all yet.
+// Pure so it's unit-testable without a real AppHandle.
+fn single_instance_target(focus_history: &[String], active_workspace_id: Option<&str>) -> String {
+    if let Some(ws_id) = focus_history.last() {
+        return format!("ws:{ws_id}");
+    }
+    match active_workspace_id {
+        Some(id) => format!("ws:{id}"),
+        None => "bootstrap".to_string(),
+    }
+}
+
+// A second launch (`open -n`, a Dock re-click while the app has no
+// frontmost window) relays here instead of running its own .setup() (#230)
+// -- see the single_instance plugin registration in run().
+fn focus_or_open_most_recent_window(app: &AppHandle) {
+    let history = focus_history_snapshot(app);
+    let active = active_workspace(app).ok().map(|(id, _)| id);
+    let label = single_instance_target(&history, active.as_deref());
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.set_focus();
+    } else if let Err(e) = open_window(app, &label) {
+        warn!("single-instance: failed to open {label}: {e}");
+    }
 }
 
 // Bootstrap -> workspace handoff: once save_config / setup_central /
@@ -2739,6 +2768,15 @@ pub fn run() {
     // spawn_all_sidecars — each spawn_sidecar_ws caches that workspace's
     // MCP token into AuthTokens and its bound port into BackendPorts.
     tauri::Builder::default()
+        // Must be the very first plugin registered (Tauri's own
+        // requirement) -- a second launch (`open -n`, a Dock re-click)
+        // relays its argv/cwd here instead of running its own .setup(),
+        // which would otherwise spawn its own sidecars and kill the first
+        // instance's out from under it (#230; reap_orphan_sidecar kill -9s
+        // any foreign process already holding a workspace's port).
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            focus_or_open_most_recent_window(app);
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         // Per-window (by label) size/position persistence (#225): each
@@ -3153,8 +3191,8 @@ mod config_lock_tests {
 #[cfg(test)]
 mod multi_window_phase2_tests {
     use super::{
-        is_window_open_for, reassign_active_workspace, startup_window_labels, touch_focus,
-        untrack_focus,
+        is_window_open_for, reassign_active_workspace, single_instance_target,
+        startup_window_labels, touch_focus, untrack_focus,
     };
     use crate::workspace::{WorkspaceConfig, WorkspacesFile};
     use std::collections::BTreeMap;
@@ -3273,6 +3311,24 @@ mod multi_window_phase2_tests {
         let mut history = vec!["acme".to_string(), "beta".to_string()];
         untrack_focus(&mut history, "acme");
         assert_eq!(history, vec!["beta".to_string()]);
+    }
+
+    // --- single_instance_target: #230 second-launch relay ---
+
+    #[test]
+    fn prefers_the_most_recently_focused_window() {
+        let history = vec!["acme".to_string(), "beta".to_string()];
+        assert_eq!(single_instance_target(&history, Some("acme")), "ws:beta");
+    }
+
+    #[test]
+    fn falls_back_to_active_workspace_with_no_focus_history() {
+        assert_eq!(single_instance_target(&[], Some("acme")), "ws:acme");
+    }
+
+    #[test]
+    fn falls_back_to_bootstrap_with_neither() {
+        assert_eq!(single_instance_target(&[], None), "bootstrap");
     }
 }
 
