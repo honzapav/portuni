@@ -14,7 +14,7 @@ describe("drive adapter in refresh-token mode", () => {
     const seen: string[] = [];
     __setDriveFetchForTests((async (url: string, init?: RequestInit) => {
       seen.push(url);
-      assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer UAT");
+      assert.equal((init?.headers as Record<string, string> | undefined)?.Authorization, "Bearer UAT");
       return new Response(JSON.stringify({ files: [] }), { status: 200 });
     }) as typeof fetch);
     const adapter = createDriveAdapter(REMOTE, TOKENS);
