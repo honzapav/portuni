@@ -8,13 +8,15 @@ the discovery that produced it.
 
 - **DMG build pipeline.** Shipped as `.github/workflows/release.yml`.
   Tag-triggered (`v*`), `macos-14` (Apple Silicon only — Intel dropped
-  2026-07-04, no Intel users), uses `tauri-apps/tauri-action@v0` to
+  2026-07-04, no Intel users), uses `tauri-apps/tauri-action@v1` (`releaseDraft: false`, so it
+  attaches to the non-draft pre-release release-please made) to
   build and attach the DMG to the GitHub Release release-please created
   for the tag (a pre-release until a maintainer promotes it).
   Builds are Developer ID signed and notarized (see below).
 - **Auto-updater artefacts.** Shipped (2026-08-28). `release.yml` builds with
   `--bundles app,dmg --config apps/desktop/tauri.release.conf.json`
-  (`createUpdaterArtifacts: true`) and `includeUpdaterJson: true`, so the
+  (`createUpdaterArtifacts: true`) and tauri-action's default
+  `uploadUpdaterJson: true`, so the
   release also gets `Portuni.app.tar.gz`, its minisign `.sig`, and
   `latest.json`. Signed with the `TAURI_SIGNING_PRIVATE_KEY` secret (see the
   signing checklist below); the verify step fails the job if any of the

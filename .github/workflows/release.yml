@@ -33,8 +33,8 @@ name: Release
 # Bundle list is `app,dmg` with `--config tauri.release.conf.json`
 # (createUpdaterArtifacts: true): `--bundles dmg` alone builds no updater
 # tarball ("no updater-enabled targets were built", verified locally,
-# tauri-cli 2.11.4). `includeUpdaterJson: true` makes tauri-action generate
-# and attach latest.json to the release.
+# tauri-cli 2.11.4). tauri-action's default `uploadUpdaterJson: true` makes
+# it generate and attach latest.json to the release.
 
 on:
   push:
@@ -119,12 +119,17 @@ jobs:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
           releaseName: "Portuni ${{ github.ref_name }}"
-          # Only used when no release exists for the tag (release-please
-          # normally creates it first); keep the fallback hidden from the
-          # updater too.
-          releaseDraft: true
+          # tauri-action@v1 attaches to an existing release for the tag only
+          # when releaseDraft matches that release's status. release-please
+          # creates the release first as a NON-draft pre-release, so this
+          # must be false -- with true, v1 ignores it ("Found release ... but
+          # it's NOT a draft!") and creates a second, draft release that the
+          # verify step below never sees (0.13.1). `prerelease` only applies
+          # to the fallback release created when none exists for the tag.
+          releaseDraft: false
           prerelease: true
-          includeUpdaterJson: true
+          # v1 uploads latest.json by default (uploadUpdaterJson: true); the
+          # v0-era `includeUpdaterJson` input no longer exists.
           args: --target ${{ matrix.target }} --bundles app,dmg --config tauri.release.conf.json
 
       # Content smoke test of the shipped artifact: fails the release when a
@@ -145,9 +150,9 @@ jobs:
       # Updater artefacts: --config tauri.release.conf.json turns on
       # createUpdaterArtifacts, which produces Portuni.app.tar.gz + .sig next
       # to the .app in bundle/macos (the DMG build no longer deletes the
-      # intermediate .app once `app` is also in --bundles). includeUpdaterJson
-      # makes tauri-action generate and attach latest.json to the
-      # release; fetch that release asset back down to check its content,
+      # intermediate .app once `app` is also in --bundles). tauri-action
+      # (uploadUpdaterJson, on by default) generates and attaches latest.json
+      # to the release; fetch that release asset back down to check its content,
       # since tauri-action does not expose it as a job output.
       - name: Verify updater artefacts
         env:
