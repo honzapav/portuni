@@ -58,7 +58,7 @@ portable-pty = "0.9"
 # replacement changes cell widths and desyncs TUIs like Claude Code
 # (visible as duplicated rows and offset glyphs after Unicode chars).
 # xterm.js' write() accepts Uint8Array and handles streaming UTF-8.
-base64 = "0.22"
+base64 = "0.23"
 # Read one entry (preview.html) out of a .showtime deck bundle for the
 # portuni-html preview protocol. Deflate only: that is what Showtime packs.
 # Already in Cargo.lock transitively (4.x), so no second copy.
