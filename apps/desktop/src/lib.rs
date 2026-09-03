@@ -981,17 +981,120 @@ fn open_path_external(app: tauri::AppHandle, path: String) -> Result<(), String>
     }
     // Extension allowlist: open::that launches the OS default handler, so an
     // arbitrary in-scope file type could trigger code execution. Mirror the
-    // portuni-html protocol handler and only ever open .html/.htm externally.
-    let ext_ok = candidate
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
-        .unwrap_or(false);
-    if !ext_ok {
-        return Err("only .html/.htm may be opened externally".into());
+    // portuni-html protocol handler: .html/.htm (the browser) and .showtime
+    // (the Showtime deck bundle, opened by Showtime.app).
+    if !is_previewable_ext(&candidate) {
+        return Err("only .html/.htm/.showtime may be opened externally".into());
     }
     info!("open_path_external: {path}");
     open::that(&candidate).map_err(|e| e.to_string())
+}
+
+/// The file types the preview protocol serves and `open_path_external` hands
+/// to the OS: .html/.htm (rendered as they are, opened in the browser) and
+/// .showtime (a Showtime deck bundle: served as its bundled preview.html,
+/// opened in Showtime.app).
+fn is_previewable_ext(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            e.eq_ignore_ascii_case("html")
+                || e.eq_ignore_ascii_case("htm")
+                || e.eq_ignore_ascii_case("showtime")
+        })
+        .unwrap_or(false)
+}
+
+fn is_showtime_ext(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("showtime"))
+        .unwrap_or(false)
+}
+
+/// The entry of a `.showtime` bundle that holds the rendered deck. Showtime
+/// writes it at every save; a bundle saved by an older Showtime has none.
+const SHOWTIME_PREVIEW_ENTRY: &str = "preview.html";
+
+/// `preview.html` out of a `.showtime` bundle on disk. Errors name what went
+/// wrong (not a zip, no preview entry) so the protocol handler's log line does.
+fn showtime_preview_bytes(bundle: &std::path::Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(bundle).map_err(|e| e.to_string())?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("not a .showtime bundle: {e}"))?;
+    let mut entry = archive
+        .by_name(SHOWTIME_PREVIEW_ENTRY)
+        .map_err(|_| format!("bundle carries no {SHOWTIME_PREVIEW_ENTRY}"))?;
+    let mut bytes = Vec::with_capacity(entry.size() as usize);
+    entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(bytes)
+}
+
+/// Whether Showtime.app is installed, so the deck preview can offer to open
+/// the bundle in it. One `stat` per call; the webview asks once per session.
+#[tauri::command]
+fn showtime_installed(app: tauri::AppHandle) -> bool {
+    let mut candidates = vec![std::path::PathBuf::from("/Applications/Showtime.app")];
+    if let Ok(home) = app.path().home_dir() {
+        candidates.push(home.join("Applications").join("Showtime.app"));
+    }
+    candidates.iter().any(|p| p.is_dir())
+}
+
+#[cfg(test)]
+mod showtime_preview_tests {
+    use super::{is_previewable_ext, is_showtime_ext, showtime_preview_bytes, SHOWTIME_PREVIEW_ENTRY};
+    use std::io::Write;
+    use std::path::Path;
+
+    fn bundle_with(entries: &[(&str, &[u8])]) -> tempfile::NamedTempFile {
+        let mut tmp = tempfile::Builder::new().suffix(".showtime").tempfile().unwrap();
+        {
+            let mut zip = zip::ZipWriter::new(&mut tmp);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            for (name, data) in entries {
+                zip.start_file(*name, opts).unwrap();
+                zip.write_all(data).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        tmp
+    }
+
+    #[test]
+    fn extensions_are_matched_case_insensitively() {
+        assert!(is_previewable_ext(Path::new("/w/a.html")));
+        assert!(is_previewable_ext(Path::new("/w/a.HTM")));
+        assert!(is_previewable_ext(Path::new("/w/deck.Showtime")));
+        assert!(!is_previewable_ext(Path::new("/w/deck.showtime.bak")));
+        assert!(!is_previewable_ext(Path::new("/w/a.md")));
+        assert!(is_showtime_ext(Path::new("/w/deck.showtime")));
+        assert!(!is_showtime_ext(Path::new("/w/a.html")));
+    }
+
+    #[test]
+    fn reads_the_preview_entry_out_of_a_bundle() {
+        let html = b"<!doctype html><section>slide</section>";
+        let tmp = bundle_with(&[("deck.md", b"# deck"), (SHOWTIME_PREVIEW_ENTRY, html)]);
+        assert_eq!(showtime_preview_bytes(tmp.path()).unwrap(), html.to_vec());
+    }
+
+    #[test]
+    fn names_a_bundle_without_a_preview() {
+        let tmp = bundle_with(&[("deck.md", b"# deck")]);
+        let err = showtime_preview_bytes(tmp.path()).unwrap_err();
+        assert!(err.contains(SHOWTIME_PREVIEW_ENTRY), "{err}");
+    }
+
+    #[test]
+    fn names_a_file_that_is_not_a_zip() {
+        let mut tmp = tempfile::Builder::new().suffix(".showtime").tempfile().unwrap();
+        tmp.write_all(b"not a zip").unwrap();
+        let err = showtime_preview_bytes(tmp.path()).unwrap_err();
+        assert!(err.contains("not a .showtime bundle"), "{err}");
+    }
 }
 
 // Read a file path from the macOS clipboard. Uses osascript to coerce
@@ -2189,20 +2292,23 @@ pub fn run() {
                 error!("portuni-html refused out-of-scope path: {decoded}");
                 return forbidden();
             }
-            // Defense-in-depth: only serve .html/.htm files. The preview
-            // never requests anything else, so this never breaks normal use;
-            // it narrows what the protocol can serve even if the scope check
-            // were somehow bypassed.
-            let ext_ok = candidate
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
-                .unwrap_or(false);
-            if !ext_ok {
+            // Defense-in-depth: only serve .html/.htm files and .showtime
+            // bundles. The preview never requests anything else, so this
+            // never breaks normal use; it narrows what the protocol can serve
+            // even if the scope check were somehow bypassed.
+            if !is_previewable_ext(&candidate) {
                 error!("portuni-html refused non-html path: {decoded}");
                 return forbidden();
             }
-            match std::fs::read(&candidate) {
+            // A .showtime bundle is served as the preview.html it carries
+            // (Showtime packs the rendered deck into the zip at every save);
+            // an .html file is served as it is.
+            let read = if is_showtime_ext(&candidate) {
+                showtime_preview_bytes(&candidate)
+            } else {
+                std::fs::read(&candidate).map_err(|e| e.to_string())
+            };
+            match read {
                 Ok(bytes) => Response::builder()
                     .status(200)
                     .header("Content-Type", "text/html; charset=utf-8")
@@ -2244,6 +2350,7 @@ pub fn run() {
             launch_claude_for_node,
             open_in_finder,
             open_path_external,
+            showtime_installed,
             clipboard_file_path,
             pty::pty_spawn,
             pty::pty_write,

@@ -64,6 +64,9 @@ const MIME: Record<string, string> = {
   ".jpeg": "image/jpeg",
   ".svg": "image/svg+xml",
   ".zip": "application/zip",
+  // Showtime deck bundle (a zip). Binary for the editor; the GET file route
+  // serves its bundled preview.html instead (showtime-preview.ts).
+  ".showtime": "application/zip",
 };
 
 export function mimeFor(n: string): string | null {
