@@ -289,9 +289,22 @@ symlink to this file.
   `docs/archive/specs/2026-07-04-desktop-multi-workspace-design.md`.
 
 - **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
-  keys; `.env.schema` declares only the 6 core ones. Full inventory with
+  keys; `.env.schema` declares only the 7 core ones. Full inventory with
   defaults: `docs/env-vars.md`. Watch out: `PORTUNI_ROOT` (write-scope
   tiering) is a different thing than `PORTUNI_WORKSPACE_ROOT` (mirrors).
+- **`PORTUNI_WEBVIEW_PROXY_SECRET`** (#213), when set, hardens the
+  `env`-mode REST write gate's blanket exemption: a request then needs a
+  valid `X-Portuni-Webview-Proxy` header (proven against this var) OR a
+  resolvable `X-Portuni-Spawn-Id` session to write via REST — everything
+  else is refused outright. Unset (the default for the backend-tmux + Vite
+  dev loop and the whole test suite) keeps the legacy behavior: every
+  env-mode REST write allowed, unchanged. The packaged desktop app's Tauri
+  host always sets this itself (fresh per launch, never on disk, never
+  exported into a spawned terminal) — the hardened posture is always on
+  there. Doesn't affect MCP tool calls either way — those keep `env`'s
+  existing unscoped-write behavior, out of scope for this gate. See
+  `docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md` and
+  the scope-enforcement docs page.
 - **Disk read scope = the session scope, on REAL paths for the seed set, a
   hardlink projection for everything else.** The MCP `SessionScope` is the
   single source of truth. The Seatbelt profile grants rw on the home mirror
@@ -336,8 +349,30 @@ symlink to this file.
   removes the hardlink on every create/delete in the source mirror, and a
   narrow (non-shared) session's own subdirectory is cleaned up when its MCP
   session closes (`disposeSessionProjection`) — the shared bucket is never
-  torn down per-session, since other concurrent non-relaying sessions on the
-  same node may still be reading it — the agent never manages any of this.
+  torn down purely because one session's own close happens to key off it,
+  since other concurrent non-relaying sessions on the same node may still be
+  reading it. It IS bounded (#214, closing the leak #211 left): removed
+  outright once nothing is `running` on that home node anymore (checked both
+  at every session close and, as a backstop, in the boot sweep
+  `sweepStaleSessionProjections`), and reconciled in place while at least
+  one session is still running (hardlinks whose source mirror file is gone
+  are pruned, same "source is gone" condition `relinkProjectedFile` already
+  handles for the live/watched path). Relaying the spawn id for Codex/Vibe
+  the way Claude's header does — so they'd land in the narrow per-session
+  directory instead of `_shared` at all — turned out not to be
+  implementable with either CLI's current config format: Codex has no
+  per-mirror MCP registration whatsoever (global `~/.codex/config.toml`
+  only, scope-materialize.ts's `.codex/config.toml` is sandbox-only), and
+  Vibe's per-mirror `url`/`headers` fields are static strings materialized
+  once at mirror creation with no runtime env-var expansion outside the
+  auth-token-specific fields (`api_key_env` et al.) — confirmed against
+  Mistral's own docs — so a literal session id embedded there would go
+  stale after the very first spawn on that mirror. `_shared` staying
+  bounded rather than actually narrowed is the accepted outcome for those
+  two CLIs; see the #214 issue comment for the full reasoning and a
+  possible follow-up (rematerializing the per-mirror config synchronously
+  from the sandbox-profile endpoint on every spawn) — the agent never
+  manages any of this cleanup.
   Read tools (`get_node`/`get_context`/`list_files`) and
   `portuni_expand_scope` return that path via `readableMirrorRoot`; a node
   with **no local mirror on this device** has no projection either way — read

@@ -43,7 +43,7 @@ const FILE_BODY_MAX_BYTES = Number(
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { renameFile, deleteFile, moveFile } from "../domain/sync/engine-mutations.js";
 import { nodeVisibleTo } from "../auth/node-access.js";
-import { guardRestNodeWrite } from "./write-gate.js";
+import { guardRestNodeWrite, guardHeadlessFileWrite } from "./write-gate.js";
 import type { FileContentResponse } from "../shared/api-types.js";
 
 const CODE_STATUS: Record<FileContentErrorCode, number> = {
@@ -177,6 +177,7 @@ export async function handlePutFileContent(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
     // Binary-safe byte write for the central-mode sync agent (remote-only,
     // see the GET handler). Response carries canonical_hash so the agent can
     // record its synced baseline in files.current_remote_hash terms.
@@ -281,6 +282,7 @@ export async function handleRegisterFile(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
     const r = await registerFileRecordRemote(db, {
       userId: identity.userId,
       nodeId,
@@ -313,6 +315,7 @@ export async function handleRegisterFilesBatch(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
     const results = await registerFileRecordsRemote(db, {
       userId: identity.userId,
       nodeId,
@@ -432,6 +435,8 @@ export async function handleMoveFile(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
+    if (body.new_node_id && !(await guardHeadlessFileWrite(req, res, identity, body.new_node_id))) return;
     const r = await moveFile(db, {
       userId: identity.userId,
       fileId,
@@ -485,7 +490,7 @@ export async function handleRenameFile(
 }
 
 export async function handleDeleteFile(
-  _req: IncomingMessage,
+  req: IncomingMessage,
   res: ServerResponse,
   identity: RequestIdentity,
   nodeId: string,
@@ -499,6 +504,7 @@ export async function handleDeleteFile(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
     const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
     const r = mirrorRoot
       ? await deleteFile(db, {

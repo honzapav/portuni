@@ -19,8 +19,11 @@ import {
   clearProjectionRegistryForTests,
   linkOrCopy,
   sweepStaleSessionProjections,
+  UNNARROWED_PROJECTION_ID,
 } from "../apps/server/domain/session-projection.js";
 import { createSession, transitionSessionState } from "../apps/server/domain/sessions.js";
+import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
+import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
 
 let dir: string;
@@ -284,7 +287,7 @@ describe("sweepStaleSessionProjections", () => {
       await writeFile(join(target, "f.md"), "x\n");
     }
 
-    const { removed } = await sweepStaleSessionProjections(db, dir);
+    const { removed } = await sweepStaleSessionProjections(db, dir, "U1");
 
     assert.equal(removed.length, 3);
     await assert.doesNotReject(() => stat(join(base, running.id)), "running session's projection survives");
@@ -295,7 +298,61 @@ describe("sweepStaleSessionProjections", () => {
 
   it("is a no-op when no .portuni-sessions directory exists yet", async () => {
     const { db } = await makeSharedDb();
-    const { removed } = await sweepStaleSessionProjections(db, join(dir, "never-created"));
+    const { removed } = await sweepStaleSessionProjections(db, join(dir, "never-created"), "U1");
     assert.deepEqual(removed, []);
+  });
+
+  // #214: the shared bucket (#211) isn't a session row, so the per-sessionId
+  // rule above can't age it out -- it used to be skipped unconditionally and
+  // grew forever. It's now governed by node-level running-session state.
+  describe("shared bucket (#214)", () => {
+    beforeEach(() => {
+      process.env.PORTUNI_WORKSPACE_ROOT = dir;
+      resetLocalDbForTests();
+    });
+
+    it("removes the shared bucket outright once no session on its node is running", async () => {
+      const { db, nodeId } = await makeSharedDb();
+      const base = join(dir, ".portuni-sessions", nodeId);
+      const sharedTarget = join(base, UNNARROWED_PROJECTION_ID, "SOME_ADHOC_NODE");
+      await mkdir(sharedTarget, { recursive: true });
+      await writeFile(join(sharedTarget, "f.md"), "x\n");
+
+      const { removed } = await sweepStaleSessionProjections(db, dir, "U1");
+
+      assert.ok(removed.includes(join(base, UNNARROWED_PROJECTION_ID)));
+      await assert.rejects(() => stat(join(base, UNNARROWED_PROJECTION_ID)));
+    });
+
+    it("reconciles instead of removing while a session on its node is still running", async () => {
+      const { db, nodeId } = await makeSharedDb();
+      await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+      const base = join(dir, ".portuni-sessions", nodeId);
+      const sharedDir = join(base, UNNARROWED_PROJECTION_ID);
+
+      // Ad-hoc node with no mirror registered at all anymore: source is
+      // entirely gone, so its whole subdirectory is pruned.
+      const gone = join(sharedDir, "GONE_NODE");
+      await mkdir(gone, { recursive: true });
+      await writeFile(join(gone, "f.md"), "x\n");
+
+      // Ad-hoc node with a registered mirror: one linked file still exists
+      // there (kept), one no longer does (pruned).
+      const adhocMirror = join(dir, "adhoc-mirror");
+      await mkdir(join(adhocMirror, "wip"), { recursive: true });
+      await writeFile(join(adhocMirror, "wip", "keep.md"), "keep\n");
+      await registerMirror("U1", "ADHOC", adhocMirror);
+      const linkedDir = join(sharedDir, "ADHOC", "wip");
+      await mkdir(linkedDir, { recursive: true });
+      await writeFile(join(linkedDir, "keep.md"), "keep\n");
+      await writeFile(join(linkedDir, "deleted.md"), "stale\n");
+
+      const { removed } = await sweepStaleSessionProjections(db, dir, "U1");
+
+      assert.ok(!removed.includes(sharedDir), "shared bucket itself is not removed");
+      await assert.rejects(() => stat(gone), "node with no mirror at all is pruned entirely");
+      await assert.doesNotReject(() => stat(join(linkedDir, "keep.md")), "still-present source file survives");
+      await assert.rejects(() => stat(join(linkedDir, "deleted.md")), "hardlink with no source is pruned");
+    });
   });
 });

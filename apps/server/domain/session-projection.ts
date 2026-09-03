@@ -27,6 +27,7 @@ import { dirname, join, relative, sep } from "node:path";
 import { copyFile, link, mkdir, readdir, rm, stat } from "node:fs/promises";
 import type { Client } from "@libsql/client";
 import { loadMirrorIgnore } from "./sync/mirror-ignore.js";
+import { getMirrorPath } from "./sync/mirror-registry.js";
 
 // Hardlink, falling back to a real copy across a filesystem boundary
 // (EXDEV -- a mirror on another volume than the projection root, e.g. a
@@ -162,9 +163,22 @@ export async function cleanupSessionProjection(
 // it from the accumulated read set regardless (spec: "Restart consolidates").
 // Best-effort throughout: a single node/session directory that fails to
 // read or remove is logged and skipped, never aborts the whole sweep.
+//
+// #214: the shared bucket (#211, UNNARROWED_PROJECTION_ID) isn't a session
+// row, so it can't be aged out by the per-sessionId rule above -- it used to
+// be skipped here entirely and never cleaned up. It is now governed by
+// node-level running-session state instead: removed outright once nothing
+// is running on <homeNodeId> (nobody left to read it), otherwise reconciled
+// in place (stale hardlinks whose source mirror file is gone are pruned,
+// same "source is gone" condition relinkProjectedFile already handles for
+// the live/watched path). userId resolves which mirror each ad-hoc node
+// under the bucket currently has on this device (mirrors.mirror-registry is
+// keyed by user), matching this module's existing solo-only scope (see
+// boot/session-projection-sweep.ts).
 export async function sweepStaleSessionProjections(
   db: Client,
   portuniRoot: string,
+  userId: string,
 ): Promise<{ removed: string[] }> {
   const base = join(portuniRoot, ".portuni-sessions");
   const removed: string[] = [];
@@ -185,10 +199,6 @@ export async function sweepStaleSessionProjections(
       continue;
     }
     for (const sessionId of sessionIds) {
-      // The shared bucket (#211) isn't a session row and never goes stale
-      // by this sweep's rule -- it's cleaned up (or not) the same way it
-      // was before per-session narrowing existed: left in place, kept
-      // current by the mirror-watcher's relink-on-change, never torn down.
       if (sessionId === UNNARROWED_PROJECTION_ID) continue;
       try {
         const running = await db.execute({
@@ -206,8 +216,81 @@ export async function sweepStaleSessionProjections(
         );
       }
     }
+
+    if (!sessionIds.includes(UNNARROWED_PROJECTION_ID)) continue;
+    const sharedDir = join(nodeDir, UNNARROWED_PROJECTION_ID);
+    try {
+      const stillRunning = await db.execute({
+        sql: "SELECT 1 FROM sessions WHERE node_id = ? AND state = 'running' LIMIT 1",
+        args: [nodeId],
+      });
+      if (stillRunning.rows.length === 0) {
+        await rm(sharedDir, { recursive: true, force: true });
+        removed.push(sharedDir);
+      } else {
+        await reconcileSharedProjection(sharedDir, userId);
+      }
+    } catch (err) {
+      console.error(
+        `[portuni:session-projection] sweep: failed to reconcile shared bucket ${sharedDir}:`,
+        err,
+      );
+    }
   }
   return { removed };
+}
+
+// Prune hardlinks under the shared bucket whose source mirror file no
+// longer exists -- the bucket has no per-node cleanup hook the way a
+// session's own projection directory does (dispose only fires when it goes
+// away entirely, see disposeSessionProjection), so a deleted/relocated ad-
+// hoc node's files would otherwise sit there forever. sharedDir nests one
+// level by node id (nodeProjectionDir's shape, same as any session dir):
+// sharedDir/<nodeId>/<relpath...>. A node with no local mirror at all
+// anymore drops its whole subdirectory; one that still has a mirror keeps
+// only the files still present there.
+async function reconcileSharedProjection(sharedDir: string, userId: string): Promise<void> {
+  let nodeIds: string[];
+  try {
+    nodeIds = await readdir(sharedDir);
+  } catch {
+    return;
+  }
+  for (const nodeId of nodeIds) {
+    const target = join(sharedDir, nodeId);
+    const mirrorPath = await getMirrorPath(userId, nodeId);
+    if (!mirrorPath) {
+      await rm(target, { recursive: true, force: true }).catch(() => undefined);
+      continue;
+    }
+    await pruneLinksWithoutSource(target, target, mirrorPath);
+  }
+}
+
+async function pruneLinksWithoutSource(
+  dir: string,
+  targetRoot: string,
+  mirrorPath: string,
+): Promise<void> {
+  let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const ent of entries) {
+    const p = join(dir, ent.name);
+    if (ent.isDirectory()) {
+      await pruneLinksWithoutSource(p, targetRoot, mirrorPath);
+    } else if (ent.isFile()) {
+      const src = join(mirrorPath, relative(targetRoot, p));
+      try {
+        await stat(src);
+      } catch {
+        await rm(p, { force: true }).catch(() => undefined);
+      }
+    }
+  }
 }
 
 // --- Registry -------------------------------------------------------------

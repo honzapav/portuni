@@ -141,7 +141,7 @@ const AUTH_PUBLIC_PATHS = new Set([
   "/auth/handoff/exchange",
 ]);
 
-function timingSafeStringEqual(a: string, b: string): boolean {
+export function timingSafeStringEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
