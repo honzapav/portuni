@@ -18,6 +18,8 @@ import ProfilesSection from "./ProfilesSection";
 import SyncSection from "./SyncSection";
 import UpdateSection from "./UpdateSection";
 import { fetchAccessRequestCount, fetchMe } from "../api";
+import { isTauri } from "../lib/backend-url";
+import { showtimeInstalled } from "../lib/showtime";
 import type { AppUpdate } from "../lib/updater";
 
 type Props = {
@@ -127,6 +129,17 @@ export default function SettingsPage({
 
   const [termDraft, setTermDraft] = useState(terminalLaunch);
   const [showtimeEnabled, setShowtimeEnabled] = useState(loadShowtimeEnabled);
+  // null while the desktop is still answering; false in the browser.
+  const [showtimeFound, setShowtimeFound] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void showtimeInstalled().then((ok) => {
+      if (!cancelled) setShowtimeFound(ok);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const toggleShowtime = (enabled: boolean) => {
     saveShowtimeEnabled(enabled);
     setShowtimeEnabled(enabled);
@@ -435,7 +448,19 @@ export default function SettingsPage({
                   <span className="block text-[13px] leading-relaxed text-[var(--color-text-muted)]">
                     Soubor <code className="font-mono">.showtime</code> se otevře jako náhled
                     prezentace (náhled, který Showtime uloží do souboru při každém uložení).
-                    Když je Showtime nainstalovaný, náhled nabídne „Otevřít v Showtime“.
+                    Když je Showtime nainstalovaný, náhled nabídne „Otevřít v Showtime“: deck
+                    se otevře v Showtime a agent, kterého Showtime spustí, dostane připojení
+                    k Portuni s tímto uzlem jako domovským a zrcadlo uzlu jako druhý pracovní
+                    adresář.
+                  </span>
+                  <span className="mt-1 block text-[12.5px] text-[var(--color-text-dim)]">
+                    {showtimeFound === null
+                      ? "Hledám Showtime.app…"
+                      : showtimeFound
+                        ? "Showtime.app nalezena."
+                        : isTauri()
+                          ? "Showtime.app nenalezena (hledá se v /Applications a ~/Applications)."
+                          : "Otevření v Showtime je dostupné jen v desktopové aplikaci."}
                   </span>
                 </span>
               </label>

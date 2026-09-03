@@ -19,6 +19,7 @@ import type { RequestIdentity } from "../auth/request-identity.js";
 import { parseBody, parseJsonBody, respondError, respondJson } from "../http/middleware.js";
 import { handleHealth } from "./health.js";
 import { handleWriteScope } from "./write-scope.js";
+import { handleExchangeHandoff, handleMintHandoff } from "./auth.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 import { CentralHttpError } from "../domain/sync/central/client.js";
 import {
@@ -168,6 +169,19 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
 
     if (pathname === "/health") {
       handleHealth(res);
+      return true;
+    }
+
+    // Showtime handoff in agent mode: the local sidecar mints against the
+    // per-launch token (the same one Portuni's terminals get) and answers
+    // the exchange with its own MCP front door; node access is central's
+    // verdict (404 -> not visible), node name comes from sync-info.
+    if (pathname === "/auth/handoff/exchange" && method === "POST") {
+      await handleExchangeHandoff(req, res, async (nodeId) => (await client.syncInfo(nodeId)).node.name);
+      return true;
+    }
+    if (pathname === "/auth/handoff" && method === "POST") {
+      await handleMintHandoff(req, res, identity, (nodeId) => client.nodeExists(nodeId));
       return true;
     }
 
