@@ -37,6 +37,7 @@ import { isTauri, openInFinder } from "../lib/backend-url";
 import { getCachedDriveStatus } from "../lib/sync-drive";
 import { listWorkspaces } from "../lib/workspaces";
 import { listProfiles, type ProfileInfo } from "../lib/profiles";
+import { copyText } from "../lib/clipboard";
 
 // ---------------------------------------------------------------------------
 // File tree (Files tab)
@@ -450,7 +451,7 @@ function CopyPathButton({ value, title }: { value: string; title: string }) {
       onClick={async (e) => {
         e.stopPropagation();
         try {
-          await navigator.clipboard.writeText(value);
+          await copyText(value);
           setCopied(true);
           setTimeout(() => setCopied(false), 1200);
         } catch {
@@ -477,7 +478,7 @@ function CopyDriveLinkButton({ nodeId, fileId }: { nodeId: string; fileId: strin
         try {
           const r = await fetchNodeFileUrl(nodeId, fileId);
           if (r.url) {
-            await navigator.clipboard.writeText(r.url);
+            await copyText(r.url);
             setState("copied");
           } else {
             setState("none");
@@ -1216,7 +1217,7 @@ export function TerminalSplitButton({
         }
       }
 
-      await navigator.clipboard.writeText(cmd);
+      await copyText(cmd);
       setExternalState({ kind: "copied" });
       setTimeout(() => setExternalState({ kind: "idle" }), 1800);
     } catch (err) {

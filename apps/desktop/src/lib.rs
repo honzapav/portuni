@@ -22,6 +22,7 @@ use rand::distr::Alphanumeric;
 use rand::{Rng, TryRngCore};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -1596,6 +1597,18 @@ fn open_path_external(window: tauri::Window, path: String) -> Result<(), String>
     open::that(&candidate).map_err(|e| e.to_string())
 }
 
+// Write text to the system clipboard. The webview's navigator.clipboard
+// rejects with NotAllowedError in WKWebView whenever WebKit does not grant
+// user activation (tauri:// origin, unfocused window), so every copy button
+// in the frontend goes through this native command instead.
+#[tauri::command]
+fn copy_text(app: AppHandle, text: String) -> Result<(), String> {
+    app.clipboard().write_text(text).map_err(|e| {
+        error!("copy_text failed: {e}");
+        e.to_string()
+    })
+}
+
 fn is_html_ext(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -3021,6 +3034,7 @@ pub fn run() {
             focus_or_open_most_recent_window(app);
         }))
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         // Per-window (by label) size/position persistence (#225): each
         // ws:<id> window remembers its own geometry across launches.
@@ -3162,6 +3176,7 @@ pub fn run() {
             open_in_showtime,
             showtime_installed,
             clipboard_file_path,
+            copy_text,
             pty::pty_spawn,
             pty::pty_write,
             pty::pty_resize,

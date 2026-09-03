@@ -99,6 +99,7 @@ import {
 import { AccessSection } from "./DetailPane.access";
 import { SessionsSection } from "./DetailPane.sessions";
 import { RequestAccessControl } from "./AccessRequests";
+import { copyText } from "../lib/clipboard";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
 // node shows the last-known badges instantly while the background
@@ -3549,9 +3550,13 @@ function IdCopy({ id }: { id: string }) {
   const [copied, setCopied] = useState(false);
   const handle = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    await navigator.clipboard.writeText(id);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1200);
+    try {
+      await copyText(id);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      /* clipboard write rejected; skip copied state */
+    }
   };
   return (
     <button
@@ -3688,9 +3693,13 @@ function PathCopy({ path }: { path: string }) {
   const [copied, setCopied] = useState(false);
   const handle = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    await navigator.clipboard.writeText(path);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1200);
+    try {
+      await copyText(path);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      /* clipboard write rejected; skip copied state */
+    }
   };
   return (
     <button

@@ -14,6 +14,7 @@
 // and the handoff carries the node with it (`openInShowtime`).
 import { useEffect, useState } from "react";
 import { isTauri, openPathExternal } from "../lib/backend-url";
+import { copyText } from "../lib/clipboard";
 import { openInShowtime, showtimeInstalled } from "../lib/showtime";
 
 export type HtmlPreviewKind = "html" | "showtime";
@@ -55,7 +56,7 @@ export default function HtmlPreview({
   async function copyPath() {
     if (!localPath) return;
     try {
-      await navigator.clipboard.writeText(localPath);
+      await copyText(localPath);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
