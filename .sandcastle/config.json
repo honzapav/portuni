@@ -26,5 +26,6 @@
   "commitPrefix": "RALPH",
   "promptProject": ".sandcastle/prompt.project.md",
   "mainBranch": "main",
-  "requireMain": true
+  "requireMain": true,
+  "notify": "curl -s -m 8 -H \"Title: sandcastle $SANDCASTLE_PROJECT: $SANDCASTLE_EVENT\" -d \"$SANDCASTLE_MESSAGE\" https://ntfy.sh/sandcastle-honzapav-8159501a >/dev/null"
 }
