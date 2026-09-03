@@ -229,6 +229,21 @@ symlink to this file.
   entry from disk (`showtime_preview_bytes`). The web gates the whole thing
   behind Settings → Integrace → Showtime (`localStorage`, off by default);
   the server side is unconditional. Domain: `showtime-preview.ts`.
+  **„Otevřít v Showtime" hands over the node, never the bearer.** The
+  desktop `open_in_showtime` command (not `open_path_external`, which is
+  `.html/.htm` only now) mints a one-time code on the sidecar — `POST
+  /auth/handoff` (`write`, caller must see the node, bearer = the
+  terminal token Rust already holds) — and opens
+  `showtime://open?deck=…&portuni=<sidecar base>&code=…`. Showtime trades
+  the code on `POST /auth/handoff/exchange` (public in `AUTH_PUBLIC_PATHS`,
+  loopback peers only, single-use, 60 s, `404 HANDOFF_INVALID`) for
+  `{ token, mcp_url (?home_node_id=), home_node_id, node_name, mirror }`.
+  The bearer never enters a URL, argv or disk; both routers (local
+  `router.ts`, agent `agent-router.ts`) share the handlers in
+  `api/auth.ts`, codes live in `domain/handoff.ts`. The agent Showtime
+  spawns connects with the node as home, so its session shows up under
+  the node's Relace. Spec:
+  `docs/superpowers/specs/2026-09-02-showtime-handoff-design.md`.
 - **Mistral Vibe needs `--trust`.** Vibe only loads the per-mirror
   `.vibe/config.toml` (and thus auto-seeds) when the folder is trusted, so
   the desktop "Mistral Vibe" preset launches `vibe --trust`

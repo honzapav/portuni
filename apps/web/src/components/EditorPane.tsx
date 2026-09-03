@@ -153,7 +153,12 @@ export function EditorBody({
           {effectiveMode === "edit" ? (
             <MarkdownEditor value={ed.content} onChange={ed.onChange} onSave={(v) => ed.save(v)} />
           ) : isShowtimePath(relPath) ? (
-            <HtmlPreview content={ed.content} localPath={ed.localPath} kind="showtime" />
+            <HtmlPreview
+              content={ed.content}
+              localPath={ed.localPath}
+              kind="showtime"
+              nodeId={ed.nodeId}
+            />
           ) : isHtmlPath(relPath) ? (
             <HtmlPreview content={ed.content} localPath={ed.localPath} />
           ) : (
