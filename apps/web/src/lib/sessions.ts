@@ -47,11 +47,6 @@ export type TerminalSession = TerminalSessionInput & {
   createdAt: number;
   lastOutputAt: number;
   spawnRequestedAt: number;
-  // Set by the Rust foreground-poll thread via the `pty-foreground` event.
-  // True when a subprocess owns the PTY foreground (agent computing),
-  // false when the shell is at its prompt (idle). Absent when no signal
-  // has arrived yet (before the first poll tick, or on non-Unix builds).
-  foregroundBusy?: boolean;
   // User-assigned tab label. Absent until the user renames the session;
   // the UI falls back to "#<n>" via sessionDisplayName. In-memory only --
   // a PTY (and therefore its label) does not survive an app restart.
@@ -84,24 +79,6 @@ export function removeSession(
   id: string,
 ): TerminalSession[] {
   return sessions.filter((s) => s.id !== id);
-}
-
-// Update the foregroundBusy flag for one session. Emits a new array only
-// when the flag actually changes; returns the original reference otherwise
-// to short-circuit React's identity check on setState.
-export function markForegroundBusy(
-  sessions: readonly TerminalSession[],
-  id: string,
-  busy: boolean,
-): TerminalSession[] {
-  let mutated = false;
-  const next = sessions.map((s) => {
-    if (s.id !== id) return s;
-    if (s.foregroundBusy === busy) return s;
-    mutated = true;
-    return { ...s, foregroundBusy: busy };
-  });
-  return mutated ? next : (sessions as unknown as TerminalSession[]);
 }
 
 // Set or clear a session's custom tab label. An empty/whitespace label
@@ -182,20 +159,16 @@ export function isAgentCommand(command: string): boolean {
 }
 
 // A session is "agent working" when it was launched as an agent AND it is
-// currently computing. The command gate answers "which kind of session".
-// When the Rust foreground-poll signal is available (foregroundBusy is set),
-// it is authoritative: green only while a subprocess owns the PTY foreground.
-// Before the first poll tick arrives, fall back to the output-recency
-// heuristic so the indicator is not dark during the first ~500 ms of a run.
+// currently computing. The command gate answers "which kind of session";
+// output recency answers "is it computing right now" -- an interactive
+// agent TUI owns the PTY foreground for its whole lifetime (idle or not),
+// so foreground ownership can't distinguish the two and isn't used here.
 export function sessionIsAgentWorking(
-  session: Pick<TerminalSession, "command" | "lastOutputAt" | "foregroundBusy">,
+  session: Pick<TerminalSession, "command" | "lastOutputAt">,
   now: number,
   thresholdMs: number = ACTIVITY_THRESHOLD_MS,
 ): boolean {
   if (!isAgentCommand(session.command)) return false;
-  if (session.foregroundBusy !== undefined) {
-    return session.foregroundBusy;
-  }
   return isSessionActive(now, session.lastOutputAt, thresholdMs);
 }
 

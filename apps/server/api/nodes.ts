@@ -43,7 +43,7 @@ import { computeSyncPending } from "../domain/sync/pending.js";
 import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
 import { parseBody, parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 import { nodeVisibleTo, filterVisibleNodeIds } from "../auth/node-access.js";
-import { guardRestNodeWrite, filterRestWritableNodeIds } from "./write-gate.js";
+import { guardRestNodeWrite, filterRestWritableNodeIds, guardHeadlessFileWrite } from "./write-gate.js";
 import { z } from "zod";
 
 export async function handleGetNode(
@@ -602,6 +602,7 @@ export async function handleSyncRun(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
     // Sweep the remote before scanning: records whose remote object is
     // confirmed gone are dropped (their local copy is untracked afterward
     // and picked up by the tombstone cleanup below), and files that
@@ -739,6 +740,7 @@ export async function handleRemoteSweep(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
     respondJson(res, 200, await remoteSweep(db, { userId: identity.userId, nodeId }));
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sync/remote-sweep`, err);

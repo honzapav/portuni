@@ -16,6 +16,8 @@ import {
   renameSession,
   computeDefaultSessionName,
   loadResumableSession,
+  closeSessionsByTerminalId,
+  closeSessionIfRunning,
 } from "../apps/server/domain/sessions.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
 
@@ -206,6 +208,91 @@ describe("transitionSessionState: the state machine", () => {
   it("throws for an unknown session id", async () => {
     const { db } = await makeSharedDb();
     await assert.rejects(transitionSessionState(db, "U1", "nope", "closed"), /not found/);
+  });
+});
+
+describe("closeSessionsByTerminalId (#218, PTY exit)", () => {
+  it("closes only running sessions sharing the terminal id", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const running = await createSession(db, "U1", {
+      node_id: nodeId,
+      session_type: "interactive_task",
+      terminal_id: "term-1",
+    });
+    const suspended = await createSession(db, "U1", {
+      node_id: nodeId,
+      session_type: "interactive_task",
+      terminal_id: "term-1",
+    });
+    await transitionSessionState(db, "U1", suspended.id, "suspended");
+    const otherTerminal = await createSession(db, "U1", {
+      node_id: nodeId,
+      session_type: "interactive_task",
+      terminal_id: "term-2",
+    });
+
+    const closed = await closeSessionsByTerminalId(db, "U1", "term-1");
+    assert.equal(closed, 1);
+
+    assert.equal((await getSession(db, running.id))?.state, "closed");
+    assert.equal((await getSession(db, suspended.id))?.state, "suspended");
+    assert.equal((await getSession(db, otherTerminal.id))?.state, "running");
+  });
+
+  it("is idempotent -- a second call with nothing running closes nothing", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", {
+      node_id: nodeId,
+      session_type: "interactive_task",
+      terminal_id: "term-1",
+    });
+    assert.equal(await closeSessionsByTerminalId(db, "U1", "term-1"), 1);
+    assert.equal(await closeSessionsByTerminalId(db, "U1", "term-1"), 0);
+    assert.equal((await getSession(db, row.id))?.state, "closed");
+  });
+
+  it("never closes another user's session sharing the same terminal id", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await db.execute({
+      sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+      args: ["U2", "u2@b", "B"],
+    });
+    const row = await createSession(db, "U2", {
+      node_id: nodeId,
+      session_type: "interactive_task",
+      terminal_id: "term-1",
+    });
+    assert.equal(await closeSessionsByTerminalId(db, "U1", "term-1"), 0);
+    assert.equal((await getSession(db, row.id))?.state, "running");
+  });
+
+  it("a session with no terminal_id is unaffected by any exit call", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    assert.equal(await closeSessionsByTerminalId(db, "U1", ""), 0);
+    assert.equal((await getSession(db, row.id))?.state, "running");
+  });
+});
+
+describe("closeSessionIfRunning (#218, GC backstop)", () => {
+  it("closes a running session", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await closeSessionIfRunning(db, row.id);
+    assert.equal((await getSession(db, row.id))?.state, "closed");
+  });
+
+  it("never touches a suspended session", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await transitionSessionState(db, "U1", row.id, "suspended");
+    await closeSessionIfRunning(db, row.id);
+    assert.equal((await getSession(db, row.id))?.state, "suspended");
+  });
+
+  it("is a no-op for an unknown session id", async () => {
+    const { db } = await makeSharedDb();
+    await assert.doesNotReject(closeSessionIfRunning(db, "nope"));
   });
 });
 

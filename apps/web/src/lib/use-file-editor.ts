@@ -114,6 +114,7 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
   }, [nodeId, relPath, version]);
 
   return {
+    nodeId,
     status,
     content,
     onChange,

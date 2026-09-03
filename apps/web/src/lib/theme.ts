@@ -120,7 +120,10 @@ export const THEMES: Record<Theme, ThemeColors> = {
   light: LIGHT_THEME,
 };
 
-const STORAGE_KEY = "portuni:theme";
+// Exported so App.tsx's cross-window storage-event sync (#228) can tell
+// this key apart from workspace-scoped ones without duplicating the string.
+export const THEME_STORAGE_KEY = "portuni:theme";
+const STORAGE_KEY = THEME_STORAGE_KEY;
 
 export function loadTheme(): Theme {
   if (typeof window === "undefined") return "dark";

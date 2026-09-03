@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.13.0](https://github.com/honzapav/portuni/compare/v0.12.0...v0.13.0) (2026-09-03)
+
+
+### Features
+
+* **desktop:** hand the node context to Showtime (handoff code, deep link) ([eac5ef5](https://github.com/honzapav/portuni/commit/eac5ef5574950517499d7e3a2e0ef6ccb2ed9ea0))
+* **desktop:** hand the node context to Showtime (handoff code, deep link) ([138692e](https://github.com/honzapav/portuni/commit/138692ef12776bf2ed6f0a76870a6c773306a320)), closes [#237](https://github.com/honzapav/portuni/issues/237)
+* **desktop:** multi-window phases 0-2 (terminal correlation, Cmd+Q fix, window identity, per-window routing, config lock, restore, switcher) ([16586ba](https://github.com/honzapav/portuni/commit/16586ba115876bfc8b464a4e33009bff441c9ef0))
+* **web:** preview Showtime decks from the bundled preview.html ([d599216](https://github.com/honzapav/portuni/commit/d599216fd6897e384fa7e53b4e03f5d4f6b9830e))
+* **web:** preview Showtime decks from the bundled preview.html ([c900c48](https://github.com/honzapav/portuni/commit/c900c489816c59fbac889cbb34067f1366e3363f))
+
+
+### Bug Fixes
+
+* **scope:** round 4 REST write-gate follow-ups ([#212](https://github.com/honzapav/portuni/issues/212), [#213](https://github.com/honzapav/portuni/issues/213)) ([9343004](https://github.com/honzapav/portuni/commit/9343004a069415201a5cbfea44470834b7b67325))
+* **web:** read the window label without importing @tauri-apps/api ([f59b8dc](https://github.com/honzapav/portuni/commit/f59b8dce734c106e43a3e9e5b49bfbb171e104e9))
+
 ## [0.12.0](https://github.com/honzapav/portuni/compare/v0.11.0...v0.12.0) (2026-09-02)
 
 

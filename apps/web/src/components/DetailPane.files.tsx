@@ -5,6 +5,8 @@
 // "open in agent" / archive node action buttons.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { loadShowtimeEnabled } from "../lib/settings";
+import { isShowtimePath } from "../lib/showtime";
 import {
   Check,
   ChevronDown,
@@ -535,7 +537,10 @@ function FileRow({
   );
 
   const sync = f.fileId ? syncStatus.get(f.fileId) : undefined;
-  const editable = isEditableFile(f.mime_type);
+  // A Showtime deck is binary, but with the integration on it opens in the
+  // rendered preview the bundle carries (Settings -> Integrace).
+  const showtimeDeck = isShowtimePath(f.relative_path) && loadShowtimeEnabled();
+  const editable = isEditableFile(f.mime_type) || showtimeDeck;
 
   const submitRename = async () => {
     const name = draft.trim();
@@ -601,7 +606,13 @@ function FileRow({
               type="button"
               disabled={!editable}
               onClick={() => editable && onOpenFile(f.relative_path)}
-              title={editable ? "Otevřít v editoru" : "Tento soubor nelze editovat"}
+              title={
+                showtimeDeck
+                  ? "Otevřít náhled prezentace"
+                  : editable
+                    ? "Otevřít v editoru"
+                    : "Tento soubor nelze editovat"
+              }
               className={
                 "truncate text-left text-[13.5px] text-[var(--color-text)] " +
                 (editable ? "hover:underline" : "cursor-default opacity-70")

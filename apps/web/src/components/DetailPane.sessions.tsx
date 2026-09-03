@@ -8,7 +8,7 @@
 // fetches on mount and whenever nodeId changes, same pattern as
 // DetailPane.access.tsx's AccessSection.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, Pencil, X } from "lucide-react";
 import type { SessionState, SessionSummary } from "../types";
 import {
@@ -18,6 +18,13 @@ import {
   transitionPersistentSessionState,
 } from "../api";
 import { getProfileConfigDir } from "../lib/profiles";
+import type { TerminalSession } from "../lib/sessions";
+import { isTauri } from "../lib/backend-url";
+import {
+  correlateSessions,
+  suspendableTerminalIds,
+  suspendTerminalsAndPoll,
+} from "../lib/session-suspend";
 
 // Exported for reuse by OverviewView's workspace-wide session rows (#196).
 export const STATE_LABEL: Record<SessionState, string> = {
@@ -61,9 +68,18 @@ type Props = {
   // nodeId would otherwise be misread as a profile id).
   onOpenTerminal: () => void | Promise<void>;
   onOpenFile?: (nodeId: string, relPath: string) => void;
+  // This window's own live terminal tabs (#232), for correlating a
+  // `running` row to a live agent terminal -- see suspendableTerminalIds.
+  // Absent in contexts with no terminal concept (none today).
+  terminalSessions?: TerminalSession[];
 };
 
-export function SessionsSection({ nodeId, onOpenTerminal, onOpenFile }: Props) {
+export function SessionsSection({
+  nodeId,
+  onOpenTerminal,
+  onOpenFile,
+  terminalSessions,
+}: Props) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -96,6 +112,35 @@ export function SessionsSection({ nodeId, onOpenTerminal, onOpenFile }: Props) {
       updateOne(updated);
     } catch (e) {
       setError(String(e));
+    }
+  };
+
+  // Which rows show "Pozastavit" (#232): this node's terminals among the
+  // window's own live tabs, correlated against the freshly-fetched
+  // sessions -- same mechanism suspendableTerminalIds already drives for
+  // the window close dialog (#231), just scoped to one node's rows.
+  const nodeTerminals = useMemo(
+    () => (terminalSessions ?? []).filter((t) => t.nodeId === nodeId),
+    [terminalSessions, nodeId],
+  );
+  const suspendableIds = useMemo(
+    () => new Set(suspendableTerminalIds(nodeTerminals, correlateSessions(sessions))),
+    [nodeTerminals, sessions],
+  );
+
+  const handleSuspend = async (terminalId: string) => {
+    try {
+      // The poll's outcome (suspended vs. timed out) doesn't change what
+      // happens next: either way the attempt is over, so the terminal goes
+      // away and "Otevřít terminál" spawns a fresh one on demand -- same
+      // as #231's close dialog treats a timeout.
+      await suspendTerminalsAndPoll([terminalId], nodeTerminals);
+      if (isTauri()) {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("pty_kill", { args: { session_id: terminalId } }).catch(() => undefined);
+      }
+    } finally {
+      await load();
     }
   };
 
@@ -142,6 +187,8 @@ export function SessionsSection({ nodeId, onOpenTerminal, onOpenFile }: Props) {
                   ? () => onOpenFile(nodeId, s.handoff_path!)
                   : undefined
               }
+              suspendable={s.terminal_id !== null && suspendableIds.has(s.terminal_id)}
+              onSuspend={s.terminal_id ? () => handleSuspend(s.terminal_id!) : undefined}
             />
           ))}
         </div>
@@ -156,16 +203,24 @@ function SessionRow({
   onClose,
   onOpenTerminal,
   onOpenHandoff,
+  suspendable,
+  onSuspend,
 }: {
   session: SessionSummary;
   onRenamed: (updated: SessionSummary) => void;
   onClose: () => void;
   onOpenTerminal: () => void;
   onOpenHandoff?: () => void;
+  // #232: true when this row's terminal_id is a live, agent-launched
+  // terminal in this window -- suspendableTerminalIds already narrowed it
+  // to `running` rows too.
+  suspendable: boolean;
+  onSuspend?: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.name);
   const [saving, setSaving] = useState(false);
+  const [suspending, setSuspending] = useState(false);
   const [resumeInfo, setResumeInfo] = useState<{
     conversation_resumable: boolean;
     handoff_changed: boolean;
@@ -300,6 +355,17 @@ function SessionRow({
           <RowButton onClick={onOpenTerminal}>Otevřít terminál</RowButton>
         )}
         {onOpenHandoff && <RowButton onClick={onOpenHandoff}>Zobrazit handoff</RowButton>}
+        {session.state === "running" && suspendable && onSuspend && (
+          <RowButton
+            disabled={suspending}
+            onClick={() => {
+              setSuspending(true);
+              void onSuspend().finally(() => setSuspending(false));
+            }}
+          >
+            {suspending ? "Pozastavuji…" : "Pozastavit"}
+          </RowButton>
+        )}
         {(session.state === "running" || session.state === "suspended") && (
           <RowButton onClick={onClose}>Uzavřít</RowButton>
         )}
@@ -311,14 +377,17 @@ function SessionRow({
 function RowButton({
   onClick,
   children,
+  disabled,
 }: {
   onClick: () => void;
   children: React.ReactNode;
+  disabled?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[11.5px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+      disabled={disabled}
+      className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[11.5px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
     >
       {children}
     </button>

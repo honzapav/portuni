@@ -5,6 +5,8 @@ import {
   DEFAULT_AGENT_COMMAND,
   TERMINAL_PRESETS,
   DEFAULT_TERMINAL_LAUNCH,
+  loadShowtimeEnabled,
+  saveShowtimeEnabled,
 } from "../lib/settings";
 import McpServerSection from "./McpServerSection";
 import SettingsActorsPanel from "./SettingsPage.actors";
@@ -16,6 +18,8 @@ import ProfilesSection from "./ProfilesSection";
 import SyncSection from "./SyncSection";
 import UpdateSection from "./UpdateSection";
 import { fetchAccessRequestCount, fetchMe } from "../api";
+import { isTauri } from "../lib/backend-url";
+import { showtimeInstalled } from "../lib/showtime";
 import type { AppUpdate } from "../lib/updater";
 
 type Props = {
@@ -124,6 +128,22 @@ export default function SettingsPage({
   const matchingPreset = AGENT_PRESETS.find((p) => p.command === draft);
 
   const [termDraft, setTermDraft] = useState(terminalLaunch);
+  const [showtimeEnabled, setShowtimeEnabled] = useState(loadShowtimeEnabled);
+  // null while the desktop is still answering; false in the browser.
+  const [showtimeFound, setShowtimeFound] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void showtimeInstalled().then((ok) => {
+      if (!cancelled) setShowtimeFound(ok);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const toggleShowtime = (enabled: boolean) => {
+    saveShowtimeEnabled(enabled);
+    setShowtimeEnabled(enabled);
+  };
 
   useEffect(() => {
     setTermDraft(terminalLaunch);
@@ -408,6 +428,42 @@ export default function SettingsPage({
                 className="scroll-thin w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[13px] leading-relaxed text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)]"
                 placeholder={DEFAULT_TERMINAL_LAUNCH}
               />
+            </section>
+
+            <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
+              <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
+                Integrace
+              </div>
+              <label className="flex cursor-pointer items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={showtimeEnabled}
+                  onChange={(e) => toggleShowtime(e.target.checked)}
+                  className="mt-1 accent-[var(--color-accent)]"
+                />
+                <span>
+                  <span className="block text-[13.5px] font-medium text-[var(--color-text)]">
+                    Showtime
+                  </span>
+                  <span className="block text-[13px] leading-relaxed text-[var(--color-text-muted)]">
+                    Soubor <code className="font-mono">.showtime</code> se otevře jako náhled
+                    prezentace (náhled, který Showtime uloží do souboru při každém uložení).
+                    Když je Showtime nainstalovaný, náhled nabídne „Otevřít v Showtime“: deck
+                    se otevře v Showtime a agent, kterého Showtime spustí, dostane připojení
+                    k Portuni s tímto uzlem jako domovským a zrcadlo uzlu jako druhý pracovní
+                    adresář.
+                  </span>
+                  <span className="mt-1 block text-[12.5px] text-[var(--color-text-dim)]">
+                    {showtimeFound === null
+                      ? "Hledám Showtime.app…"
+                      : showtimeFound
+                        ? "Showtime.app nalezena."
+                        : isTauri()
+                          ? "Showtime.app nenalezena (hledá se v /Applications a ~/Applications)."
+                          : "Otevření v Showtime je dostupné jen v desktopové aplikaci."}
+                  </span>
+                </span>
+              </label>
             </section>
           </>
         )}

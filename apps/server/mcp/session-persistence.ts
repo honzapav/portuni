@@ -138,6 +138,10 @@ function wireOngoingSync(db: Client, scope: SessionScope, sessionId: string): vo
 // what the kernel already granted, so the disk projector's per-session
 // subdirectory (<projectionRoot>/<sessionId>/) lines up with the narrowed
 // Seatbelt allow instead of a second, unrelated id.
+// terminalId is the X-Portuni-Terminal header (transport.ts, #218): the
+// desktop PTY that spawned this connection's CLI, when known -- stored on
+// the session row so POST /terminals/:terminal_id/exit can close it when
+// that PTY exits.
 export function bindSessionPersistence(
   db: Client,
   scope: SessionScope,
@@ -145,6 +149,7 @@ export function bindSessionPersistence(
   profileId: string | null = null,
   homeNodeId?: string | null,
   spawnSessionId?: string | null,
+  terminalId?: string | null,
 ): void {
   safe(
     (async () => {
@@ -155,6 +160,7 @@ export function bindSessionPersistence(
           node_id: homeNodeId !== undefined ? homeNodeId : scope.homeNodeId,
           session_type: scope.sessionType,
           profile_id: profileId,
+          terminal_id: terminalId ?? null,
         },
         spawnSessionId,
       );

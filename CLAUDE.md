@@ -221,6 +221,29 @@ symlink to this file.
   User-scoped fallbacks for sessions outside any mirror:
   `~/.claude.json` (`install_claude_global`), `~/.codex/config.toml`
   (`install_codex_global`), `~/.vibe/config.toml` (`install_vibe_global`).
+- **A `.showtime` file reads as its bundled `preview.html`.** A Showtime deck
+  is a zip; `GET /nodes/:id/file` for a `.showtime` path returns the
+  `preview.html` entry Showtime packs at every save (`text/html`, the
+  bundle's sha256 as `version`, 422 `NO_PREVIEW` when the entry is missing),
+  PUT refuses it, and the desktop `portuni-html://` protocol unzips the same
+  entry from disk (`showtime_preview_bytes`). The web gates the whole thing
+  behind Settings → Integrace → Showtime (`localStorage`, off by default);
+  the server side is unconditional. Domain: `showtime-preview.ts`.
+  **„Otevřít v Showtime" hands over the node, never the bearer.** The
+  desktop `open_in_showtime` command (not `open_path_external`, which is
+  `.html/.htm` only now) mints a one-time code on the sidecar — `POST
+  /auth/handoff` (`write`, caller must see the node, bearer = the
+  terminal token Rust already holds) — and opens
+  `showtime://open?deck=…&portuni=<sidecar base>&code=…`. Showtime trades
+  the code on `POST /auth/handoff/exchange` (public in `AUTH_PUBLIC_PATHS`,
+  loopback peers only, single-use, 60 s, `404 HANDOFF_INVALID`) for
+  `{ token, mcp_url (?home_node_id=), home_node_id, node_name, mirror }`.
+  The bearer never enters a URL, argv or disk; both routers (local
+  `router.ts`, agent `agent-router.ts`) share the handlers in
+  `api/auth.ts`, codes live in `domain/handoff.ts`. The agent Showtime
+  spawns connects with the node as home, so its session shows up under
+  the node's Relace. Spec:
+  `docs/superpowers/specs/2026-09-02-showtime-handoff-design.md`.
 - **Mistral Vibe needs `--trust`.** Vibe only loads the per-mirror
   `.vibe/config.toml` (and thus auto-seeds) when the folder is trusted, so
   the desktop "Mistral Vibe" preset launches `vibe --trust`
@@ -265,10 +288,309 @@ symlink to this file.
   workspace drží historické `portuni`. Model:
   `docs/archive/specs/2026-07-04-desktop-multi-workspace-design.md`.
 
+- **Multi-window desktop, phase 1 (#222, #223): windows are created at
+  runtime, not declared in `tauri.conf.json`.** `app.windows` there is `[]`; `.setup()`
+  calls `create_startup_window`, which picks a label from `active_workspace`:
+  `ws:<id>` when a v2 config already names one, else `bootstrap` (fresh
+  install, or a v1 config still awaiting migration — `active_workspace` only
+  understands v2). `ws_of(&tauri::Window)` is the per-window counterpart to
+  `active_workspace`'s "the currently active one" — it answers "which
+  workspace is THIS window for" by parsing the `ws:<id>` label and validating
+  it against `config.json`; `bootstrap` and any other label are errors.
+  **#223 routes every genuinely workspace-bound command through it**: each
+  takes `window: tauri::Window` (not just `app: AppHandle`) and resolves
+  `ws_of(&window)?` instead of `active_workspace(&app)` — `api_request`
+  (its 401 retry re-uses the SAME window for the refresh, not a fresh
+  `active_workspace` lookup, so a refresh always targets the request's own
+  workspace), `get_backend_port`, `get_mcp_token`, `regenerate_mcp_token`,
+  `set_turso_token`, `clear_turso_token`, `get_data_mode`, `open_path_external`,
+  `restart_sidecar` (explicit `id` still wins; `None` now means "this
+  window's own" instead of "the active one"), and `auth.rs`'s `auth_status`/
+  `google_login`/`google_client_configured`/`google_drive_connect`/
+  `auth_refresh`/`auth_logout`/`central_request` (`load_auth_config`/
+  `load_google_client` now take an explicit `ws_id` instead of resolving it
+  themselves). The `portuni-html` URI scheme handler resolves the same way
+  from `ctx.webview_label()` via `ws_of_from_dir` (no `tauri::Window` object
+  available there, just the label). `pty_spawn` captures the spawning
+  window's workspace onto `PtySession.ws_id` (already true since #219, now
+  window- rather than active-workspace-sourced); `pty_write`/`pty_resize`/
+  `pty_kill` refuse a session whose `ws_id` doesn't match the caller's own
+  window (`session_owned_by`, deny-by-default when either side is
+  unresolved) — `PtyState` is process-wide, so without this one workspace's
+  window could reach into another's PTY. App-global commands (workspace
+  list/CRUD, updater, profiles, clipboard, `open_external`, exit,
+  `workspace_migration_status`, `get_turso_status`, `save_config`/
+  `setup_central`/`migrate_to_workspaces` themselves — all legitimately
+  called from a `bootstrap` window where `ws_of` would error) keep
+  `AppHandle` and never call `ws_of`. No frontend changes anywhere in this
+  phase — Tauri injects `window` the same way it already injects `app`/
+  `State`. `capabilities/default.json`'s
+  `windows` list is `["bootstrap", "ws:*"]`. **Bootstrap → workspace
+  handoff**: `migrate_to_workspaces`, and the fresh-install branches of
+  `save_config`/`setup_central`, call `handoff_from_bootstrap` after saving
+  config.json — it opens the new `ws:<id>` window and closes `bootstrap`.
+  The onboarding gates (`WorkspaceMigrationGate`, and `TursoSetupGate`'s
+  fresh-install paths) dropped their `window.location.reload()` accordingly;
+  nothing left to do in JS once the command resolves, since that window is
+  about to close. `TursoSetupGate`'s add-missing-token path (an existing
+  workspace's window restarting its own sidecar) still reloads itself — no
+  handoff involved. Exit-gate code (`lib.rs`'s run handler and menu handler)
+  checks "any window exists" (`!app.webview_windows().is_empty()`) instead of
+  a fixed `get_webview_window("main")` — no window is ever labeled `"main"`
+  anymore. **`ConfigLock` (#224)** serializes every config.json
+  load-modify-save: a plain `Mutex<()>` in managed state, taken by
+  `with_config_mut(app, |file| ...)` (the common case — load an existing v2
+  config, apply the closure, save) or `with_config_write_lock(app, || ...)`
+  (onboarding/migration commands that may start from v1/Missing and
+  construct the initial v2 file themselves, e.g. `migrate_to_workspaces`
+  wraps its whole DB-file/Keychain/config sequence, not just the final
+  save). Every one of the 11 config-mutating commands goes through one or
+  the other. Both are thin `AppHandle`-resolving wrappers around
+  `with_config_mut_at(lock: &Mutex<()>, data_dir: &Path, mutate)`, the
+  actually-testable core — the unit test spawns two threads sharing one
+  lock and one temp `data_dir`, each inserting a distinct workspace, and
+  asserts both land (the race the lock fixes: two loads of the same
+  pre-write state followed by two saves, the second clobbering the first).
+  Phase 2 (#225) is what actually adds a second writer (window open/close
+  events) for this to matter against. Model:
+  `docs/superpowers/specs/2026-09-01-desktop-multi-window-design.md`.
+
+- **Multi-window desktop, phase 2 (#225): multiple `ws:<id>` windows can now
+  actually be open.** `config.json`'s `open_windows: Vec<String>`
+  (`#[serde(default)]`) is rewritten by `persist_open_windows` (`open` =
+  every currently live `ws:<id>` window's own id from
+  `app.webview_windows()`; `active_workspace` is also refreshed there from
+  `FocusHistory`'s last entry) whenever a `ws:<id>` window opens
+  (`open_window`) or is destroyed (`on_window_event`) — never on a bare
+  focus change. `FocusHistory` (managed state, `Vec<String>`, oldest first)
+  is the *only* thing focus updates in-memory (`touch_focus` on
+  `WindowEvent::Focused(true)`, `untrack_focus` on `Destroyed`); it answers
+  both "what should `active_workspace` be" and, via
+  `reassign_active_workspace`, "what should it become next" when the
+  workspace it currently names gets disabled or deleted (falls back to the
+  first remaining enabled workspace, BTreeMap order, if the history has
+  nothing useful). Startup (`create_startup_windows` /
+  `startup_window_labels`, pure and unit-tested): one window per
+  `open_windows` id that's still there and enabled; an empty/fully-invalid
+  list falls back to a single window for `active_workspace`; nothing valid
+  at all opens `bootstrap`. `set_workspace_enabled(id, false)` and
+  `delete_workspace` now refuse ("Nejdřív zavři okno tohoto workspace.")
+  while `window_open_for`/`is_window_open_for` finds a `ws:<id>` window —
+  this replaces the old "cannot disable/delete the *active* workspace"
+  guard (a window can now be open for a NON-active workspace too); "cannot
+  delete the last workspace" is unchanged. `create_workspace` opens and
+  focuses its new `ws:<id>` window right after `spawn_sidecar_ws`.
+  `tauri-plugin-window-state` persists each window's own geometry by label,
+  purely on the Rust side (no webview capability needed — its commands are
+  never invoked from JS).
+
+- **The workspace switcher opens/focuses a window, it doesn't swap content
+  (#226).** `open_workspace_window(id)` (Rust) replaces
+  `set_active_workspace` + a full-page reload: focuses the `ws:<id>` window
+  if one exists, else creates it (validating the workspace exists and is
+  enabled first — `open_window` itself doesn't check).
+  `openWorkspaceWindow` (`lib/workspaces.ts`) is the frontend wrapper;
+  `switchWorkspace` is gone. The Sidebar dropdown (`WorkspaceSwitcher` in
+  `Sidebar.tsx`) is a jump target, not a selection — always resets to a
+  disabled placeholder option rather than reflecting the calling window's
+  own workspace as "current", and marks each entry `(otevřeno)` from
+  `list_workspaces`' new `window_open: bool` (computed live from
+  `app.webview_windows()`, not the persisted `open_windows`, so it can
+  never lag). `WorkspacesSection.tsx`'s row action is the same command,
+  relabelled "Otevřít"/"Přepnout na okno". Cross-window sync: Rust emits a
+  broadcast `workspaces-changed` after every successful `with_config_mut`/
+  `with_config_write_lock` call (i.e. every config mutation AND every
+  window open/close, since #225's `persist_open_windows` also goes through
+  `with_config_mut`) — `Sidebar` and `WorkspacesSection` both `listen()`
+  for it now instead of the old document-local
+  `portuni:workspaces-changed` `CustomEvent`, which only the dispatching
+  window itself could ever hear.
+
+- **Quitting closes windows one at a time through their own close guard —
+  there is exactly one close-guard implementation, not two (#229).**
+  Cmd+Q, menu Quit, an OS-driven exit request (Dock "Quit", session
+  logout), and the updater's "Restartovat" all funnel into
+  `begin_quit(app, QuitAction::{Exit,Restart})`: it snapshots every open
+  window's label into `QuitQueue` (managed state, `Option<QuitState>` —
+  `None` means no quit is in progress, the single source of truth
+  `is_quitting()` reads), then closes them **one at a time** via
+  `window.close()` — the same `tauri://close-requested` event a window's
+  own native close button already raises, which the webview's
+  `onCloseRequested` listener (`App.tsx`) already guards (dirty editor →
+  unsynced files → **running terminals**, new: a plain "Zavřít okno? Běží N
+  terminálů, budou ukončeny." confirm — the session-aware
+  Ukončit/Pozastavit/Zrušit dialog is phase 3). There is no more separate
+  `app-exit-requested` broadcast + `confirmExit()`/`approve_exit` dance —
+  `approve_exit` and `EXIT_APPROVED` are gone entirely. `quit_advance`
+  (pure: `Option<QuitState> -> QuitAdvance`) decides what happens next —
+  close the following queued window, or run the terminal action
+  (`app.exit(0)` / kill every sidecar then `app.restart()`) once the queue
+  is empty; `on_window_event`'s `Destroyed` handler calls it after every
+  window close, quit or not (a no-op — `QuitAdvance::Idle` — outside one).
+  Declining (any guard's cancel button, all routed through the shared
+  `declineExit()`/`decline_exit` command) calls `quit_abort`: unconditionally
+  clears `QuitQueue` to `None`, aborting the whole sequence — windows
+  already closed stay closed, but no further one is asked and the app does
+  not exit; harmless when nothing was in progress (a plain single-window
+  close). The 5s fallback timer (`schedule_exit_fallback`, generation-
+  counter design from #221) is now scoped to **whichever window was just
+  asked** and force-`destroy()`s only that one on timeout — a safety net
+  for a hung/crashed webview, not the normal path. **`open_windows` is
+  never rewritten mid-quit**: `persist_open_windows` checks
+  `should_persist_open_windows(is_quitting())` first, so the next launch
+  restores the pre-quit window set instead of whatever's progressively
+  left as each window closes. `on_window_event(Destroyed) →
+  kill_all_sidecars` is gone (a sidecar is bound to `enabled`, not to a
+  window — an external MCP client addresses it on its fixed port
+  regardless of any window, and killing it on every window close was
+  already wrong once more than one window could be open); sidecars die
+  only in the app-exit `RunEvent::ExitRequested`/`Exit` handler, same as
+  before. Rust tests (`quit_sequence_tests`) cover the pure reducer
+  end-to-end (closes windows in order, finishes with the right terminal
+  action, a decline mid-sequence aborts and clears) and, via
+  `with_config_mut_at` against a real temp file, that `open_windows`
+  genuinely survives a completed quit unchanged. Window-level behavior
+  (does Cmd+Q actually close two real windows in order, does a declined
+  dialog actually abort) is macOS-only verification — the container has no
+  display.
+
+- **A second launch relays to the first instance instead of starting a
+  separate process (#230).** `spawn_sidecar_ws`'s `reap_orphan_sidecar(port)`
+  `kill -9`s any foreign `portuni-sidecar` already holding a workspace's
+  port, so without this, `open -n` (or a Dock re-click while the app has no
+  frontmost window) would run a full second `.setup()` that kills the first
+  instance's sidecars out from under it. `tauri_plugin_single_instance::init`
+  is registered as the **very first** plugin (Tauri's own requirement) and
+  relays a second launch's argv/cwd to `focus_or_open_most_recent_window`
+  instead of letting the second process proceed — it exits immediately, so
+  it never reaches `spawn_all_sidecars` at all. Target selection
+  (`single_instance_target`, pure and unit-tested): the most recently
+  focused window (`FocusHistory`'s last entry, #225), else one for
+  `active_workspace` (the one caller left using this function — every
+  workspace-bound command resolves via `ws_of` instead, and #225's startup
+  restore reads the config field directly), else `bootstrap` if there's no
+  workspace at all yet. No capability entry needed — the plugin registers
+  no invokable commands, only a Rust-side lifecycle hook.
+
+- **"Pozastavit" (suspend a running agent terminal) is one shared
+  mechanism, used from two places: the window-close dialog (#231) and the
+  node-detail Sessions tab (#232).** `SessionSummary` (REST, `GET
+  /nodes/:id/sessions`) gained `terminal_id: string | null` (`toSummary`,
+  `apps/server/api/sessions.ts`) so either caller can correlate its own
+  local terminal ids (`lib/sessions.ts`'s `TerminalSession.id` — always
+  Claude-only, since Codex/Vibe's config format has no header for it) to
+  their persistent session rows without a bespoke lookup.
+  `apps/web/src/lib/session-suspend.ts` holds the whole mechanism, not just
+  decision logic: `correlateSessions`/`suspendableTerminalIds` (pure —
+  agent command **and** a correlated `running` session; the session row's
+  `cli` column is always `NULL` and can't be used for this),
+  `allSuspended`/`suspendPollTimedOut` (pure, the 30s poll's stop
+  conditions), and the async orchestration both callers actually invoke:
+  `fetchCorrelatedSessions` (one `GET /nodes/:id/sessions` per distinct
+  node among the given terminals) and `suspendTerminalsAndPoll` (`pty_write`s
+  a plain-English instruction, `SUSPEND_INSTRUCTION`, into each terminal
+  asking the agent to call `portuni_session_suspend` on its own initiative
+  — there is no other protocol for this, the agent decides — then polls
+  every 2s, re-fetching fresh correlated state each tick, until none is
+  `running` or 30s pass; returns whether it timed out and leaves "what
+  happens to the terminal" to the caller). **The close dialog** (`App.tsx`,
+  replacing #229's plain confirm): `onCloseRequested` fetches correlated
+  sessions before showing it. **Ukončit**: `killTerminalsAndCloseWindow` —
+  `pty_kill` every terminal (this is also what #229's plain-confirm path
+  was missing: destroying the window alone never killed its PTYs, since
+  `PtyState` is process-wide and a window closing doesn't touch it — the
+  child only dies when the whole app exits and every fd, PTY masters
+  included, finally closes), then destroys the window. **Pozastavit**
+  (`handleSuspendAndClose`, shown only when `suspendableIds` is non-empty):
+  calls `suspendTerminalsAndPoll`, then **always** `killTerminalsAndCloseWindow`s
+  every terminal in the dialog regardless of outcome; a timeout flips the
+  dialog to say so first. **Zrušit**: `declineExit()`, same as the other
+  two guards. **The Sessions tab** (`DetailPane.sessions.tsx`'s
+  `SessionRow`, #232): `DetailPane` gained a `terminalSessions` prop
+  (threaded from `App.tsx`/`WorkspaceView.tsx`'s own `sessions` state, the
+  window's live terminal tabs — previously `DetailPane` had no terminal
+  concept at all) so a `running` row can show "Pozastavit" when its
+  `terminal_id` is in the node-scoped `suspendableTerminalIds` set. Its own
+  click handler calls `suspendTerminalsAndPoll` for that one terminal, then
+  `pty_kill`s it regardless of outcome (a suspend attempt that's over, one
+  way or another, shouldn't leave a stale terminal behind — "Otevřít
+  terminál" spawns a fresh one on demand) and reloads the list so the row
+  picks up the real state.
+
+- **Backend/PTY events are per-window, not broadcast (#227).**
+  `backend-ready`, `backend-error` (`spawn_sidecar_ws`'s reader loop and
+  its deferred-central branch), `pty-data` and `pty-exit` all moved from
+  `app.emit` to `app.emit_to("ws:<id>", …)` (`emit_to(&label, …)` for the
+  PTY pair, keyed off `PtySession.ws_id`/`ws_of` at spawn time, same as
+  #223's write-side isolation). This removed the `is_active_ws` gating
+  entirely (and the function itself, now `#[allow(dead_code)]` — kept only
+  for #230's single-instance fallback) — a per-window target already
+  guarantees only that workspace's own window ever receives the event, so
+  the old "only the active workspace may emit, else the webview boot
+  contract mis-resolves" guard has nothing left to protect against.
+  **Replay on window create**: a sidecar can finish booting (or crash)
+  before its window exists — `spawn_all_sidecars` races window restoration
+  at startup — so `open_window` calls `replay_backend_status` right after
+  building a `ws:<id>` window: `backend-ready` replays from `BackendPorts`
+  if a port is already known, `backend-error` replays from
+  `PendingBackendErrors` (managed state, last error message per
+  workspace, `set_pending_backend_error`/`clear_pending_backend_error` —
+  cleared on the next `backend-ready`) if one is pending. Both use pure
+  cores (`backend_status_replay`, `record_pending_backend_error`,
+  `retire_pending_backend_error`) unit-tested against plain
+  `HashMap`s/tuples rather than real managed state. This is what makes
+  `useAppUpdate`'s check-timer bootstrap (`updater.ts`, starts only from
+  `backend-ready`) work in a restored window without any JS change — the
+  webview's `listen()` doesn't care whether Rust used `emit` or
+  `emit_to`.
+
+- **localStorage is namespaced per workspace (#228).** All windows share
+  one webview origin, so a plain key would leak between windows — which
+  nodes are open (`openNodes`), which file-tree folders are collapsed
+  (`fileTreeCollapsed`), the workspace view's detail-pane visibility
+  (`workspace.detailVisible`), and central mode's first-login guidance
+  flag (`first-steps-pending`) are all keyed `portuni:<ws_id>:<key>` now
+  (`apps/web/src/lib/workspace-storage.ts`). `currentWorkspaceId()` reads
+  this window's own workspace id straight from `getCurrentWindow().label`
+  (`"ws:<id>"`, stripped) — synchronous, no IPC round trip, since Tauri
+  injects that metadata before any page JS runs. `scopedKey(key)` is the
+  per-call helper (`namespacedKey(wsId, key)` when a workspace is known,
+  else the old unscoped `portuni:<key>` shape — a plain browser/vite-dev
+  build has no workspace concept, same fallback every other Tauri-only
+  feature in this codebase uses). **One-time migration**:
+  `migrateUnscopedStorageForCurrentWindow()` runs synchronously in
+  `main.tsx`, before the React tree renders and before anything (notably
+  `CentralLoginGate`'s mount-effect `first-steps-pending` check) could read
+  a workspace-scoped key — moves each old unscoped key into this window's
+  namespace, then deletes it; idempotent, and never clobbers a namespaced
+  value that already exists (first window/launch to run it wins). Its pure
+  core (`migrateUnscopedStorage`, operating on a `StorageLike` interface)
+  is unit-tested in `test/workspace-storage.test.ts`, server-side via
+  `tsx`, same pattern as `test/sessions-helpers.test.ts` importing from
+  `apps/web/src/lib/*.js`. `theme`, `agentCommand`, `terminalLaunch` stay
+  global/unscoped by design (user preferences, not workspace state) —
+  `App.tsx` now also subscribes to the native `storage` event (fires in
+  every OTHER window when one writes, since they share an origin) so a
+  change in one window's Settings applies live in every other one instead
+  of only taking effect on that window's own next mount.
+
 - **Env vars beyond `.env.schema`:** the server reads ~27 `process.env`
-  keys; `.env.schema` declares only the 6 core ones. Full inventory with
+  keys; `.env.schema` declares only the 7 core ones. Full inventory with
   defaults: `docs/env-vars.md`. Watch out: `PORTUNI_ROOT` (write-scope
   tiering) is a different thing than `PORTUNI_WORKSPACE_ROOT` (mirrors).
+- **`PORTUNI_WEBVIEW_PROXY_SECRET`** (#213), when set, hardens the
+  `env`-mode REST write gate's blanket exemption: a request then needs a
+  valid `X-Portuni-Webview-Proxy` header (proven against this var) OR a
+  resolvable `X-Portuni-Spawn-Id` session to write via REST — everything
+  else is refused outright. Unset (the default for the backend-tmux + Vite
+  dev loop and the whole test suite) keeps the legacy behavior: every
+  env-mode REST write allowed, unchanged. The packaged desktop app's Tauri
+  host always sets this itself (fresh per launch, never on disk, never
+  exported into a spawned terminal) — the hardened posture is always on
+  there. Doesn't affect MCP tool calls either way — those keep `env`'s
+  existing unscoped-write behavior, out of scope for this gate. See
+  `docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md` and
+  the scope-enforcement docs page.
 - **Disk read scope = the session scope, on REAL paths for the seed set, a
   hardlink projection for everything else.** The MCP `SessionScope` is the
   single source of truth. The Seatbelt profile grants rw on the home mirror
@@ -313,8 +635,30 @@ symlink to this file.
   removes the hardlink on every create/delete in the source mirror, and a
   narrow (non-shared) session's own subdirectory is cleaned up when its MCP
   session closes (`disposeSessionProjection`) — the shared bucket is never
-  torn down per-session, since other concurrent non-relaying sessions on the
-  same node may still be reading it — the agent never manages any of this.
+  torn down purely because one session's own close happens to key off it,
+  since other concurrent non-relaying sessions on the same node may still be
+  reading it. It IS bounded (#214, closing the leak #211 left): removed
+  outright once nothing is `running` on that home node anymore (checked both
+  at every session close and, as a backstop, in the boot sweep
+  `sweepStaleSessionProjections`), and reconciled in place while at least
+  one session is still running (hardlinks whose source mirror file is gone
+  are pruned, same "source is gone" condition `relinkProjectedFile` already
+  handles for the live/watched path). Relaying the spawn id for Codex/Vibe
+  the way Claude's header does — so they'd land in the narrow per-session
+  directory instead of `_shared` at all — turned out not to be
+  implementable with either CLI's current config format: Codex has no
+  per-mirror MCP registration whatsoever (global `~/.codex/config.toml`
+  only, scope-materialize.ts's `.codex/config.toml` is sandbox-only), and
+  Vibe's per-mirror `url`/`headers` fields are static strings materialized
+  once at mirror creation with no runtime env-var expansion outside the
+  auth-token-specific fields (`api_key_env` et al.) — confirmed against
+  Mistral's own docs — so a literal session id embedded there would go
+  stale after the very first spawn on that mirror. `_shared` staying
+  bounded rather than actually narrowed is the accepted outcome for those
+  two CLIs; see the #214 issue comment for the full reasoning and a
+  possible follow-up (rematerializing the per-mirror config synchronously
+  from the sandbox-profile endpoint on every spawn) — the agent never
+  manages any of this cleanup.
   Read tools (`get_node`/`get_context`/`list_files`) and
   `portuni_expand_scope` return that path via `readableMirrorRoot`; a node
   with **no local mirror on this device** has no projection either way — read
@@ -398,6 +742,26 @@ symlink to this file.
   and expands a leading `~` in each value to `$HOME` (reusing lib.rs's
   `expand_tilde`, `pub(crate)` for this) — portable-pty passes values to the
   child verbatim, no shell involved, so `~` is otherwise left literal.
+- **A durable session row learns its PTY died via a server call, not a
+  local signal.** `pty_spawn` exports `PORTUNI_TERMINAL_ID=<terminal id>`
+  (the frontend's `term_<node>_<ts>_<rand>`, i.e. `args.session_id` — no
+  separate id is minted); a Claude Code connection threads it through
+  `X-Portuni-Terminal` (Claude-only env-expansion, same channel as
+  `X-Portuni-Profile`/`X-Portuni-Spawn-Id`) into the session row's
+  `terminal_id` column. On PTY exit — `pty_kill`, the user typing `exit`,
+  or a crash — the reader thread's EOF/error path in `apps/desktop/src/
+  pty.rs` (`report_terminal_exit`) POSTs to the *owning workspace's*
+  sidecar (`ws_id` captured on `PtySession` at spawn time, not re-resolved
+  at exit) at `POST /terminals/:terminal_id/exit`, which moves every
+  `running` session sharing that `terminal_id` to `closed` (#218/#219).
+  Best-effort: failure just leaves the row until the MCP transport's idle
+  GC backstop (`transport.ts`'s `onclose`) closes it, the same backstop
+  that covers Codex/Vibe (no header support) and crashes that never reach
+  the reader thread's exit path. Like `api_request`'s webview proxy, this
+  call carries `X-Portuni-Webview-Proxy` (`lib.rs`'s `webview_proxy_secret`)
+  when the hardened posture (#213) is active for that workspace — it
+  originates from the same trusted Tauri host process, not a spawned
+  terminal.
 
 ## Security rules (from the auth refactor post-mortem)
 

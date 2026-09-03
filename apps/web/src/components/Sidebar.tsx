@@ -7,7 +7,7 @@ import type { Theme } from "../lib/theme";
 import { foldForSearch } from "../lib/normalize";
 import type { TerminalSession, WorkspaceNodeRow } from "../lib/sessions";
 import { isTauri } from "../lib/backend-url";
-import { listWorkspaces, switchWorkspace, type WorkspaceInfo } from "../lib/workspaces";
+import { listWorkspaces, openWorkspaceWindow, type WorkspaceInfo } from "../lib/workspaces";
 import WorkspaceNodeList from "./WorkspaceNodeList";
 
 // Shown on disabled create-node buttons (global scope below POST /nodes).
@@ -278,15 +278,18 @@ function Sidebar({
 
 // Workspace switcher in the brand row. Hidden (renders nothing, current
 // look unchanged) unless running in Tauri AND more than one workspace
-// exists -- a single-workspace install has nothing to switch between. Value
-// change reloads the whole page (see switchWorkspace) since every cached
-// module-level state belongs to the previous workspace's backend.
+// exists -- a single-workspace install has nothing to switch between. A
+// jump target, not a selection (#226, one window per workspace): picking
+// an entry opens or focuses ITS OWN window and the select resets to the
+// placeholder, since there is no longer a single "current" workspace this
+// window's dropdown could reflect.
 function WorkspaceSwitcher() {
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
 
   useEffect(() => {
     if (!isTauri()) return;
     let cancelled = false;
+    let unlisten: (() => void) | null = null;
     const fetchWorkspaces = () => {
       listWorkspaces()
         .then((ws) => {
@@ -295,34 +298,48 @@ function WorkspaceSwitcher() {
         .catch((e) => console.error("listWorkspaces failed:", e));
     };
     fetchWorkspaces();
-    // Live refresh: WorkspacesSection dispatches this after every successful
-    // mutation (create, delete, enable/disable, restart) so a newly created
-    // workspace -- including the 1 -> 2 transition where this switcher first
-    // becomes visible -- appears here without a full page reload.
-    window.addEventListener("portuni:workspaces-changed", fetchWorkspaces);
+    void (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        // Rust broadcasts this after every config mutation (create,
+        // delete, enable/disable) and every window open/close, so a
+        // change made in ANY window -- including the 1 -> 2 transition
+        // where this switcher first becomes visible -- appears here.
+        unlisten = await listen("workspaces-changed", fetchWorkspaces);
+      } catch {
+        /* not running in Tauri */
+      }
+    })();
     return () => {
       cancelled = true;
-      window.removeEventListener("portuni:workspaces-changed", fetchWorkspaces);
+      try {
+        unlisten?.();
+      } catch {
+        /* window already gone */
+      }
     };
   }, []);
 
   if (!isTauri() || workspaces.length <= 1) return null;
 
-  const active = workspaces.find((w) => w.active);
-
   return (
     <select
-      value={active?.id ?? ""}
+      value=""
       onChange={(e) => {
         const id = e.target.value;
-        if (id && id !== active?.id) void switchWorkspace(id);
+        if (id) void openWorkspaceWindow(id);
+        e.target.value = "";
       }}
-      title="Přepnout workspace"
+      title="Otevřít workspace"
       className="mt-0.5 w-full max-w-full truncate rounded-sm border border-transparent bg-transparent text-[11px] text-[var(--color-text-dim)] outline-none transition-colors hover:border-[var(--color-border)] hover:text-[var(--color-text-muted)] focus:border-[var(--color-border)]"
     >
+      <option value="" disabled>
+        Otevřít workspace…
+      </option>
       {workspaces.map((w) => (
         <option key={w.id} value={w.id}>
           {w.label}
+          {w.window_open ? " (otevřeno)" : ""}
           {/* Deferred central agents are not "unavailable" -- in central
               mode the webview talks straight to the server, so a workspace
               can be fully switchable while its local sync agent still waits

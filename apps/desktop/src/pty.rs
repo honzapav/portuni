@@ -107,25 +107,19 @@ pub struct PtyExitEvent {
     pub code: Option<i32>,
 }
 
-#[derive(Serialize, Clone)]
-pub struct ForegroundEvent {
-    pub session_id: String,
-    /// True when a subprocess owns the PTY foreground process group (agent
-    /// is computing); false when the shell is back at its prompt (idle).
-    pub busy: bool,
-}
-
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     // Kept around so dropping the session sends SIGHUP to the child.
     _child: Box<dyn portable_pty::Child + Send + Sync>,
-    // The shell's own PID, captured at spawn. On Unix, an interactive shell
-    // is its own process-group leader, so this equals its pgid. The
-    // foreground-poll thread compares tcgetpgrp(master_fd) against this to
-    // tell "shell at prompt" (same pgrp) from "subprocess running" (different
-    // pgrp). Only consumed on Unix; harmless to store on all platforms.
-    shell_pid: Option<u32>,
+    // Workspace this terminal was spawned for, captured once at spawn time
+    // (#219) rather than re-resolved at exit -- the active workspace can
+    // change while the terminal is alive (pre-phase-1, "active" is global,
+    // not per-window). None when no workspace is configured yet (fresh
+    // install), in which case the exit report below is skipped: there is no
+    // sidecar to tell. Phase 1 (#223) reuses this field for per-window
+    // authorization once pty_spawn itself becomes window-routed.
+    ws_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -225,6 +219,103 @@ fn resolve_profile_env(
         .collect()
 }
 
+// Env var name a Claude Code connection reads via write-scope.ts's
+// X-Portuni-Terminal header (env-expanded at config-load time, same channel
+// PORTUNI_PROFILE_ID already uses) so the server can stamp the resulting
+// session row's `terminal_id` and later correlate it back to this PTY
+// (#219, "Sessions follow PTY exit").
+const TERMINAL_ID_ENV_VAR: &str = "PORTUNI_TERMINAL_ID";
+
+// The frontend's terminal id (`term_<node>_<ts>_<rand>`, `lib/sessions.ts`)
+// IS `args.session_id` -- pty_spawn is invoked with it directly, so there is
+// nothing to mint here. Exported unconditionally (unlike
+// PORTUNI_SPAWN_SESSION_ID, which is optional): the terminal id is always
+// known at spawn time. Pure so the mapping is unit-testable.
+fn terminal_id_env(session_id: &str) -> (&'static str, String) {
+    (TERMINAL_ID_ENV_VAR, session_id.to_string())
+}
+
+// URL + headers for the PTY-exit report (#219): pure so the request shape
+// is unit-testable without a running sidecar. webview_proxy_secret is None
+// when the hardened posture (#213) isn't active for this workspace's
+// sidecar, in which case the header is simply omitted -- the receiving
+// gate's unhardened default already allows the request through.
+fn terminal_exit_request(
+    port: u16,
+    terminal_id: &str,
+    token: &str,
+    webview_proxy_secret: Option<&str>,
+) -> (String, Vec<(String, String)>) {
+    let url = format!("http://127.0.0.1:{port}/terminals/{terminal_id}/exit");
+    let mut headers = vec![
+        ("Authorization".to_string(), format!("Bearer {token}")),
+        ("Origin".to_string(), "tauri://localhost".to_string()),
+    ];
+    if let Some(secret) = webview_proxy_secret {
+        headers.push(("X-Portuni-Webview-Proxy".to_string(), secret.to_string()));
+    }
+    (url, headers)
+}
+
+// Best-effort notification to the owning workspace's sidecar that a PTY
+// exited, so the server can close every `running` session sharing this
+// terminal_id (#219). Called from the reader thread's EOF/error path, so it
+// fires for every exit reason -- pty_kill, the user typing `exit`, a CLI
+// crash -- not just a deliberate close. Failures (no workspace resolved at
+// spawn time, sidecar unreachable, non-2xx) are logged and swallowed: a
+// missed report just leaves the row `running` until the MCP transport's
+// idle GC backstop closes it later; it must never block PTY teardown that
+// has already happened.
+fn report_terminal_exit(app: &AppHandle, ws_id: &str, terminal_id: &str) {
+    let (port, token) = match crate::sidecar_port_and_token(app, ws_id) {
+        Ok(pt) => pt,
+        Err(e) => {
+            warn!("pty exit report for {terminal_id} skipped: {e}");
+            return;
+        }
+    };
+    let secret = crate::webview_proxy_secret(app, ws_id);
+    let (url, headers) = terminal_exit_request(port, terminal_id, &token, secret.as_deref());
+    let terminal_id = terminal_id.to_string();
+    // block_on is safe here: the reader thread is a plain std::thread, not
+    // already inside an async context, same reasoning as
+    // ensure_device_token above.
+    tauri::async_runtime::block_on(async move {
+        let mut req = reqwest::Client::new()
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(5));
+        for (k, v) in headers {
+            req = req.header(k, v);
+        }
+        match req.send().await {
+            Ok(resp) if resp.status().is_success() => {
+                info!("pty exit reported for terminal {terminal_id}");
+            }
+            Ok(resp) => {
+                warn!(
+                    "pty exit report for {terminal_id} returned {}",
+                    resp.status()
+                );
+            }
+            Err(e) => {
+                warn!("pty exit report for {terminal_id} failed: {e}");
+            }
+        }
+    });
+}
+
+// A session (spawned in some window, PtySession.ws_id, #219) may only be
+// written to, resized, or killed by a caller whose OWN window resolves to
+// that same workspace (#223) -- PtyState is process-wide, so without this
+// one workspace's window could otherwise reach into another's PTY. Pure so
+// the same/different/unresolved cases are unit-testable without a real
+// window; unresolved on either side (a session with no workspace captured
+// at spawn time, or a caller whose own window isn't a workspace window)
+// is a deny, not a free pass.
+fn session_owned_by(session_ws_id: Option<&str>, caller_ws_id: Option<&str>) -> bool {
+    matches!((session_ws_id, caller_ws_id), (Some(a), Some(b)) if a == b)
+}
+
 fn pick_shell() -> (String, Vec<String>) {
     // Prefer the user's $SHELL so they get their familiar prompt, history,
     // aliases, etc. Fall back to /bin/zsh on macOS (default since 10.15)
@@ -249,6 +340,7 @@ fn pick_shell() -> (String, Vec<String>) {
 #[tauri::command]
 pub fn pty_spawn(
     app: AppHandle,
+    window: tauri::Window,
     state: State<'_, PtyState>,
     args: SpawnArgs,
 ) -> Result<(), String> {
@@ -284,6 +376,13 @@ pub fn pty_spawn(
             pixel_height: 0,
         })
         .map_err(|e| format!("openpty failed: {e}"))?;
+
+    // Workspace this terminal belongs to: the CALLING WINDOW's own (#223),
+    // captured once here rather than re-resolved at exit time (#219) -- see
+    // the PtySession.ws_id doc comment. None only for a fresh install with
+    // no workspace configured yet, which cannot have a node terminal open
+    // in the first place (every window that can spawn one is ws:<id>).
+    let spawn_ws_id = crate::ws_of(&window).ok();
 
     let (shell, shell_args) = pick_shell();
 
@@ -328,6 +427,10 @@ pub fn pty_spawn(
     // copies the parent env by default, which is what we want here so
     // the user's shell rc files have what they expect.
     cmd.env("TERM", "xterm-256color");
+    {
+        let (k, v) = terminal_id_env(&args.session_id);
+        cmd.env(k, v);
+    }
     // Spawn session id (#208 follow-up: "kernel-level isolation between
     // concurrent sessions on the same node"): the Seatbelt profile's own
     // projection grant is already narrowed to this id (it comes from the
@@ -348,8 +451,9 @@ pub fn pty_spawn(
     // Inject one token env var per enabled workspace, so per-mirror configs
     // (which reference ${PORTUNI_MCP_TOKEN_<ID>:-}) resolve the right
     // credential regardless of which workspace the terminal's cwd belongs
-    // to. PORTUNI_MCP_TOKEN keeps carrying the ACTIVE workspace's token for
-    // backward compatibility with pre-workspace mirror configs.
+    // to. PORTUNI_MCP_TOKEN keeps carrying the CALLING WINDOW's own
+    // workspace token (#223; was the globally-active workspace pre-#222)
+    // for backward compatibility with pre-workspace mirror configs.
     //
     // Both central-mode (agent) and local-mode terminals inject the LOCAL
     // sidecar's per-launch token (the value cached in AuthTokens / Keychain
@@ -358,7 +462,7 @@ pub fn pty_spawn(
     // the central device token would be rejected (401) by the local gate —
     // see workspace::terminal_mcp_token.
     {
-        let active_id = crate::active_workspace(&app).map(|(id, _)| id).ok();
+        let active_id = spawn_ws_id.clone();
         if let Ok(workspaces) = crate::enabled_workspaces(&app) {
             for (ws_id, cfg) in workspaces {
                 let local_token = app
@@ -425,16 +529,11 @@ pub fn pty_spawn(
         .map_err(|e| format!("try_clone_reader failed: {e}"))?;
 
     let session_id = args.session_id.clone();
-    // Capture the shell's PID before moving child into PtySession.
-    // An interactive shell is its own process-group leader, so this PID
-    // equals the shell's pgid. The foreground-poll thread uses it to
-    // distinguish "shell at prompt" from "subprocess in foreground".
-    let shell_pid = child.process_id();
     let session = PtySession {
         master: pair.master,
         writer,
         _child: child,
-        shell_pid,
+        ws_id: spawn_ws_id.clone(),
     };
 
     {
@@ -487,6 +586,13 @@ pub fn pty_spawn(
     // events. Exits when read returns 0 (pty closed) or errors.
     let app_for_reader = app.clone();
     let sid_for_reader = session_id.clone();
+    // Per-window events (#227): pty-data/pty-exit target only the window
+    // that owns this session, not every window (a second workspace's window
+    // must never see another's terminal output). Captured once here, same
+    // as PtySession.ws_id -- None falls back to a broadcast emit, the old
+    // (pre-#227) behavior, for the never-actually-happens case of no
+    // workspace resolved at spawn time.
+    let label_for_reader = spawn_ws_id.clone().map(|id| format!("ws:{id}"));
     let profile_for_cleanup = sandbox_profile_path.clone();
     thread::spawn(move || {
         let mut reader = reader;
@@ -503,13 +609,15 @@ pub fn pty_spawn(
                 }
                 Ok(n) => {
                     let encoded = BASE64_STANDARD.encode(&buf[..n]);
-                    if let Err(e) = app_for_reader.emit(
-                        "pty-data",
-                        PtyDataEvent {
-                            session_id: sid_for_reader.clone(),
-                            data_b64: encoded,
-                        },
-                    ) {
+                    let payload = PtyDataEvent {
+                        session_id: sid_for_reader.clone(),
+                        data_b64: encoded,
+                    };
+                    let sent = match &label_for_reader {
+                        Some(label) => app_for_reader.emit_to(label, "pty-data", payload),
+                        None => app_for_reader.emit("pty-data", payload),
+                    };
+                    if let Err(e) = sent {
                         error!("pty-data emit failed for {sid_for_reader}: {e}");
                         break;
                     }
@@ -521,17 +629,31 @@ pub fn pty_spawn(
             }
         }
         // Tell the webview the session is gone so it can clean up xterm.
-        let _ = app_for_reader.emit(
-            "pty-exit",
-            PtyExitEvent {
-                session_id: sid_for_reader.clone(),
-                code: None,
-            },
-        );
+        let exit_payload = PtyExitEvent {
+            session_id: sid_for_reader.clone(),
+            code: None,
+        };
+        let _ = match &label_for_reader {
+            Some(label) => app_for_reader.emit_to(label, "pty-exit", exit_payload),
+            None => app_for_reader.emit("pty-exit", exit_payload),
+        };
+        // Removing returns the session so its ws_id (captured at spawn,
+        // #219) is available for the exit report below without a second
+        // capture into this closure.
+        let mut removed_ws_id: Option<String> = None;
         if let Some(state) = app_for_reader.try_state::<PtyState>() {
             if let Ok(mut sessions) = state.sessions.lock() {
-                sessions.remove(&sid_for_reader);
+                removed_ws_id = sessions.remove(&sid_for_reader).and_then(|s| s.ws_id);
             }
+        }
+        // Tell the sidecar this PTY is gone so it closes any correlated
+        // `running` session (#219). Fires for every exit reason; see
+        // report_terminal_exit's doc comment.
+        match removed_ws_id.as_deref() {
+            Some(ws_id) => report_terminal_exit(&app_for_reader, ws_id, &sid_for_reader),
+            None => warn!(
+                "pty exit report for {sid_for_reader} skipped: no workspace resolved at spawn time"
+            ),
         }
         // The sandbox profile tempfile is only needed at exec time;
         // remove it once the session is gone.
@@ -539,56 +661,6 @@ pub fn pty_spawn(
             let _ = std::fs::remove_file(p);
         }
     });
-
-    // (Unix only) Foreground-process poll: every 500 ms compare the PTY's
-    // foreground process group against the shell's own pgid. When they
-    // differ a subprocess (the agent or a command) owns the terminal
-    // foreground. Emit `pty-foreground` with the derived busy flag on
-    // every transition; only transitions so the frontend sees at most one
-    // event per state change. The thread exits when the session is removed
-    // from the map (session gone => break), keeping resource usage linear
-    // in the number of live sessions.
-    #[cfg(unix)]
-    {
-        let app_for_poll = app.clone();
-        let sid_for_poll = session_id.clone();
-        thread::spawn(move || {
-            let mut last_busy: Option<bool> = None;
-            loop {
-                thread::sleep(std::time::Duration::from_millis(500));
-                let busy = {
-                    let state = match app_for_poll.try_state::<PtyState>() {
-                        Some(s) => s,
-                        None => break,
-                    };
-                    let sessions = match state.sessions.lock() {
-                        Ok(s) => s,
-                        Err(_) => break,
-                    };
-                    let session = match sessions.get(&sid_for_poll) {
-                        Some(s) => s,
-                        None => break, // session removed; exit poll thread
-                    };
-                    // process_group_leader() calls tcgetpgrp(master_fd) and
-                    // returns None on error (pty closed, session ending).
-                    match (session.shell_pid, session.master.process_group_leader()) {
-                        (Some(spid), Some(fg)) => fg as u32 != spid,
-                        _ => false,
-                    }
-                };
-                if last_busy != Some(busy) {
-                    last_busy = Some(busy);
-                    let _ = app_for_poll.emit(
-                        "pty-foreground",
-                        ForegroundEvent {
-                            session_id: sid_for_poll.clone(),
-                            busy,
-                        },
-                    );
-                }
-            }
-        });
-    }
 
     Ok(())
 }
@@ -600,11 +672,19 @@ pub struct WriteArgs {
 }
 
 #[tauri::command]
-pub fn pty_write(state: State<'_, PtyState>, args: WriteArgs) -> Result<(), String> {
+pub fn pty_write(
+    window: tauri::Window,
+    state: State<'_, PtyState>,
+    args: WriteArgs,
+) -> Result<(), String> {
+    let caller_ws = crate::ws_of(&window).ok();
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions
         .get_mut(&args.session_id)
         .ok_or_else(|| format!("no session {}", args.session_id))?;
+    if !session_owned_by(session.ws_id.as_deref(), caller_ws.as_deref()) {
+        return Err(format!("session {} does not belong to this window", args.session_id));
+    }
     session
         .writer
         .write_all(args.data.as_bytes())
@@ -621,11 +701,19 @@ pub struct ResizeArgs {
 }
 
 #[tauri::command]
-pub fn pty_resize(state: State<'_, PtyState>, args: ResizeArgs) -> Result<(), String> {
+pub fn pty_resize(
+    window: tauri::Window,
+    state: State<'_, PtyState>,
+    args: ResizeArgs,
+) -> Result<(), String> {
+    let caller_ws = crate::ws_of(&window).ok();
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions
         .get(&args.session_id)
         .ok_or_else(|| format!("no session {}", args.session_id))?;
+    if !session_owned_by(session.ws_id.as_deref(), caller_ws.as_deref()) {
+        return Err(format!("session {} does not belong to this window", args.session_id));
+    }
     session
         .master
         .resize(PtySize {
@@ -644,13 +732,99 @@ pub struct KillArgs {
 }
 
 #[tauri::command]
-pub fn pty_kill(state: State<'_, PtyState>, args: KillArgs) -> Result<(), String> {
+pub fn pty_kill(
+    window: tauri::Window,
+    state: State<'_, PtyState>,
+    args: KillArgs,
+) -> Result<(), String> {
+    let caller_ws = crate::ws_of(&window).ok();
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let Some(session) = sessions.get(&args.session_id) else {
+        // Already gone (e.g. the reader thread's own removal raced this
+        // call) -- killing a nonexistent session is a no-op, not an error.
+        return Ok(());
+    };
+    if !session_owned_by(session.ws_id.as_deref(), caller_ws.as_deref()) {
+        return Err(format!("session {} does not belong to this window", args.session_id));
+    }
     // Dropping the PtySession drops the child handle, which sends
     // SIGHUP to the process group. The reader thread sees EOF and
     // exits naturally.
     sessions.remove(&args.session_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod session_owned_by_tests {
+    use super::session_owned_by;
+
+    #[test]
+    fn same_workspace_is_owned() {
+        assert!(session_owned_by(Some("acme"), Some("acme")));
+    }
+
+    #[test]
+    fn different_workspace_is_refused() {
+        assert!(!session_owned_by(Some("acme"), Some("other")));
+    }
+
+    #[test]
+    fn a_session_with_no_captured_workspace_is_refused() {
+        assert!(!session_owned_by(None, Some("acme")));
+    }
+
+    #[test]
+    fn a_caller_with_no_resolved_workspace_is_refused() {
+        assert!(!session_owned_by(Some("acme"), None));
+    }
+
+    #[test]
+    fn both_unresolved_is_refused() {
+        assert!(!session_owned_by(None, None));
+    }
+}
+
+#[cfg(test)]
+mod terminal_exit_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_id_env_exports_the_session_id_verbatim() {
+        let (k, v) = terminal_id_env("term_n1_1758012345_ab12");
+        assert_eq!(k, "PORTUNI_TERMINAL_ID");
+        assert_eq!(v, "term_n1_1758012345_ab12");
+    }
+
+    #[test]
+    fn exit_request_builds_url_and_headers_without_proxy_secret() {
+        let (url, headers) =
+            terminal_exit_request(47011, "term_n1_1_abc", "tok123", None);
+        assert_eq!(url, "http://127.0.0.1:47011/terminals/term_n1_1_abc/exit");
+        assert_eq!(
+            headers,
+            vec![
+                ("Authorization".to_string(), "Bearer tok123".to_string()),
+                ("Origin".to_string(), "tauri://localhost".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn exit_request_includes_webview_proxy_secret_when_present() {
+        let (_, headers) =
+            terminal_exit_request(47011, "term_n1_1_abc", "tok123", Some("secret-xyz"));
+        assert_eq!(
+            headers,
+            vec![
+                ("Authorization".to_string(), "Bearer tok123".to_string()),
+                ("Origin".to_string(), "tauri://localhost".to_string()),
+                (
+                    "X-Portuni-Webview-Proxy".to_string(),
+                    "secret-xyz".to_string()
+                ),
+            ]
+        );
+    }
 }
 
 #[cfg(test)]

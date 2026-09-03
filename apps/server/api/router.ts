@@ -9,6 +9,7 @@ import type { RequestIdentity } from "../auth/request-identity.js";
 import { minScopeForRoute } from "../auth/min-scopes.js";
 import { scopeAtLeast } from "../auth/roles.js";
 import { respondJson } from "../http/middleware.js";
+import { getDb } from "../infra/db.js";
 import {
   handleLogin,
   handleDesktopConfig,
@@ -21,6 +22,10 @@ import {
   handleListAccountUsers,
   handleListUsersAdmin,
   handleInviteUser,
+  handleMintHandoff,
+  handleExchangeHandoff,
+  localNodeAccessible,
+  localNodeName,
 } from "./auth.js";
 import { handleHealth } from "./health.js";
 import { handleGraph } from "./graph.js";
@@ -102,6 +107,7 @@ import {
   handleGetSessionResumeInfo,
   handleListNodeSessions,
   handleRenameSession,
+  handleTerminalExit,
   handleTransitionSessionState,
 } from "./sessions.js";
 
@@ -158,6 +164,18 @@ export async function routeApiRequest(
   // google mode; the rest below need identity.
   if (url.pathname === "/auth/desktop-config" && req.method === "GET") {
     handleDesktopConfig(res);
+    return true;
+  }
+  // Showtime handoff: exchange is public (AUTH_PUBLIC_PATHS) and loopback
+  // only; mint needs the caller's bearer and access to the node.
+  if (url.pathname === "/auth/handoff/exchange" && req.method === "POST") {
+    await handleExchangeHandoff(req, res, (nodeId) => localNodeName(getDb(), nodeId));
+    return true;
+  }
+  if (url.pathname === "/auth/handoff" && req.method === "POST") {
+    await handleMintHandoff(req, res, identity, (nodeId) =>
+      localNodeAccessible(getDb(), identity, nodeId),
+    );
     return true;
   }
   if (url.pathname === "/auth/login" && req.method === "POST") {
@@ -670,10 +688,11 @@ async function routeAccessRequests(
   return false;
 }
 
-// --- Sessions (node-detail sessions list, rename, state transitions).
-// /sessions/:id/state and /sessions/:id/resume-info MUST match before the
-// bare /sessions/:id PATCH handler for the same reason as /responsibilities'
-// assignments precedence -- they're longer paths under the same prefix. ---
+// --- Sessions (node-detail sessions list, rename, state transitions) and
+// terminals (PTY-exit correlation, #218). /sessions/:id/state and
+// /sessions/:id/resume-info MUST match before the bare /sessions/:id PATCH
+// handler for the same reason as /responsibilities' assignments precedence
+// -- they're longer paths under the same prefix. ---
 async function routeSessions(
   req: IncomingMessage,
   res: ServerResponse,
@@ -682,6 +701,11 @@ async function routeSessions(
   identity: RequestIdentity,
 ): Promise<boolean> {
   const { pathname } = url;
+  const terminalExitMatch = pathname.match(/^\/terminals\/([^/]+)\/exit$/);
+  if (terminalExitMatch && method === "POST") {
+    await handleTerminalExit(req, res, identity, decodeURIComponent(terminalExitMatch[1]));
+    return true;
+  }
   const stateMatch = pathname.match(/^\/sessions\/([^/]+)\/state$/);
   if (stateMatch && method === "POST") {
     await handleTransitionSessionState(req, res, identity, decodeURIComponent(stateMatch[1]));

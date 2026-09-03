@@ -12,8 +12,6 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
-use crate::kill_all_sidecars;
-
 #[derive(Default)]
 pub(crate) struct PendingUpdate(Mutex<Option<Update>>);
 
@@ -90,14 +88,17 @@ pub(crate) async fn install_update(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Restart onto the version installed by `install_update`. `AppHandle::restart`
-/// never returns (it re-execs the process), so sidecars must be killed first
-/// — it does not go through `RunEvent::Exit`, unlike the Cmd+Q / window-close
-/// paths that call `kill_all_sidecars` from their own event handlers.
+/// Restart onto the version installed by `install_update`, through the same
+/// sequential-close quit sequence Cmd+Q uses (#229) -- every window gets its
+/// own dirty-editor/unsynced-files/running-terminals guard chance before
+/// anything closes, instead of an unconditional kill_all_sidecars + restart.
+/// `crate::advance_quit`'s Restart branch kills every sidecar (restart
+/// doesn't go through `RunEvent::Exit`, unlike the plain-quit path) and
+/// calls `AppHandle::restart`, which never returns (it re-execs the
+/// process), once the queue empties.
 #[tauri::command]
 pub(crate) fn restart_app(app: AppHandle) {
-    kill_all_sidecars(&app);
-    app.restart();
+    crate::begin_quit(&app, crate::QuitAction::Restart);
 }
 
 #[tauri::command]

@@ -384,6 +384,14 @@ describe("buildClaudeMcpJson", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded by Claude Code, not JS
     assert.equal(portuni.headers?.["X-Portuni-Spawn-Id"], "${PORTUNI_SPAWN_SESSION_ID:-}");
   });
+
+  it("carries the spawning terminal id via env expansion, never a literal (#218)", () => {
+    const j = buildClaudeMcpJson({ url: "http://127.0.0.1:47011/mcp", homeNodeId: "01ABC" });
+    const portuni = (j as { mcpServers: { portuni: { headers?: Record<string, string> } } })
+      .mcpServers.portuni;
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder expanded by Claude Code, not JS
+    assert.equal(portuni.headers?.["X-Portuni-Terminal"], "${PORTUNI_TERMINAL_ID:-}");
+  });
 });
 
 describe("buildCodexMcpServer", () => {

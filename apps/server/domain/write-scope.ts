@@ -307,10 +307,17 @@ export function buildClaudeMcpJson(args: {
         // one -- the disk projector's per-session subdirectory then lines
         // up with the Seatbelt grant already narrowed to it. Same
         // Claude-only, degrades-to-empty-header pattern as X-Portuni-Profile.
+        // X-Portuni-Terminal (#218, phase 0 of the multi-window design):
+        // pty_spawn exports PORTUNI_TERMINAL_ID as the terminal's own id, so
+        // the session row this connection creates records which PTY spawned
+        // it -- POST /terminals/:terminal_id/exit (desktop's PTY exit
+        // handler) uses that correlation to close the session when the PTY
+        // dies. Same Claude-only, degrades-to-empty-header pattern.
         headers: {
           Authorization: `Bearer \${${tokenVar}:-}`,
           "X-Portuni-Profile": `\${PORTUNI_PROFILE_ID:-}`,
           "X-Portuni-Spawn-Id": `\${PORTUNI_SPAWN_SESSION_ID:-}`,
+          "X-Portuni-Terminal": `\${PORTUNI_TERMINAL_ID:-}`,
         },
       },
     },
