@@ -8,17 +8,24 @@
 // <key>"; global user preferences (theme, agentCommand, terminalLaunch)
 // are untouched by this file and stay unscoped.
 
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri } from "./backend-url";
 
 // This window's own workspace id, from its "ws:<id>" label -- synchronous,
-// no IPC round trip (getCurrentWindow() just reads metadata Tauri already
-// injected into the page before any JS ran). null outside Tauri, or for
-// the "bootstrap" window (no workspace exists yet).
+// no IPC round trip: the label is read straight from the metadata Tauri
+// injects into the page before any JS runs (the same field
+// @tauri-apps/api's getCurrentWindow() wraps). Read directly rather than
+// through the package so this module stays importable from the root test
+// suite, where apps/web's dependencies are not installed (every other lib
+// module loads @tauri-apps/api lazily for the same reason). null outside
+// Tauri, or for the "bootstrap" window (no workspace exists yet).
 export function currentWorkspaceId(): string | null {
   if (!isTauri()) return null;
   try {
-    const label = getCurrentWindow().label;
+    const internals = (window as unknown as {
+      __TAURI_INTERNALS__?: { metadata?: { currentWindow?: { label?: unknown } } };
+    }).__TAURI_INTERNALS__;
+    const label = internals?.metadata?.currentWindow?.label;
+    if (typeof label !== "string") return null;
     return label.startsWith("ws:") ? label.slice(3) : null;
   } catch {
     return null;
