@@ -540,3 +540,41 @@ describe("POST /nodes/:id/files/:fileId/resolve (agent mode)", () => {
     );
   });
 });
+
+// Showtime handoff on the agent front door: mint against central's node
+// verdict, exchange answers with the local sidecar's MCP URL, the node name
+// from sync-info and this device's mirror.
+describe("agent router: /auth/handoff", () => {
+  const post = (path: string, body: unknown, token?: string) =>
+    fetch(`${base}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+
+  it("mint -> exchange round trip carries the launch token, MCP URL, name and mirror", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const mint = await post("/auth/handoff", { node_id: NODE_ID }, "launch-token");
+    assert.equal(mint.status, 200);
+    const { code } = (await mint.json()) as { code: string };
+
+    const ex = await post("/auth/handoff/exchange", { code });
+    assert.equal(ex.status, 200);
+    const body = (await ex.json()) as Record<string, unknown>;
+    assert.equal(body.token, "launch-token");
+    assert.equal(body.mcp_url, `${base}/mcp?home_node_id=${NODE_ID}`);
+    assert.equal(body.home_node_id, NODE_ID);
+    assert.equal(body.node_name, "Stan GWS");
+    assert.equal(body.mirror, mirrorRoot);
+
+    assert.equal((await post("/auth/handoff/exchange", { code })).status, 404, "single use");
+  });
+
+  it("mint 404s for a node central does not know, 401s without a bearer", async () => {
+    assert.equal((await post("/auth/handoff", { node_id: "N0000000000000000000000000" }, "t")).status, 404);
+    assert.equal((await post("/auth/handoff", { node_id: NODE_ID })).status, 401);
+  });
+});

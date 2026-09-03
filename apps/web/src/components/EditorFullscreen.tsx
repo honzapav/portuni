@@ -4,7 +4,7 @@
 import { createPortal } from "react-dom";
 import { Minimize2, Save, X } from "lucide-react";
 import type { FileEditor } from "../lib/use-file-editor";
-import { EditorBody, type EditorMode } from "./EditorPane";
+import { EditorBody, isPreviewOnly, type EditorMode } from "./EditorPane";
 
 export default function EditorFullscreen({
   editor,
@@ -39,14 +39,16 @@ export default function EditorFullscreen({
           {ed.dirty && <span className="ml-1 text-[var(--color-node-process)]">●</span>}
         </span>
         <span className="ml-auto flex items-center gap-1">
-          <button
-            onClick={() => ed.save()}
-            disabled={ed.saving || !ed.dirty}
-            title="Uložit (Cmd/Ctrl+S)"
-            className="flex items-center gap-1 rounded border border-[var(--color-border)] px-2.5 py-1 text-[12.5px] text-[var(--color-text)] hover:border-[var(--color-border-strong)] disabled:opacity-50"
-          >
-            <Save size={13} /> {ed.saving ? "Ukládám…" : "Uložit"}
-          </button>
+          {!isPreviewOnly(relPath) && (
+            <button
+              onClick={() => ed.save()}
+              disabled={ed.saving || !ed.dirty}
+              title="Uložit (Cmd/Ctrl+S)"
+              className="flex items-center gap-1 rounded border border-[var(--color-border)] px-2.5 py-1 text-[12.5px] text-[var(--color-text)] hover:border-[var(--color-border-strong)] disabled:opacity-50"
+            >
+              <Save size={13} /> {ed.saving ? "Ukládám…" : "Uložit"}
+            </button>
+          )}
           <button
             onClick={onClose}
             title="Zavřít editor"

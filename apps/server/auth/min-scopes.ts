@@ -88,6 +88,11 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname === "/health") return "read";
   if (pathname === "/mcp/info") return "read";
   if (pathname === "/auth/desktop-config") return "read";
+  // Showtime handoff (spec 2026-09-02-showtime-handoff-design): the
+  // exchange is public (loopback-gated in the handler), the mint is everyday
+  // editing tier -- it hands over nothing the caller's own bearer lacks.
+  if (pathname === "/auth/handoff/exchange" && m === "POST") return "read";
+  if (pathname === "/auth/handoff" && m === "POST") return "write";
   if (pathname === "/auth/login") return "read";
   if (pathname === "/auth/groups" && m === "GET") return "manage";
   if (pathname === "/auth/users" && m === "GET") return "manage";

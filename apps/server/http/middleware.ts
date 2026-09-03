@@ -131,7 +131,15 @@ export const AUTH_ENABLED = AUTH_TOKEN.length > 0;
 // any way to obtain the token. /auth/desktop-config serves only the
 // Google desktop OAuth client (non-confidential by design) so the
 // onboarding wizard works before any token exists.
-const AUTH_PUBLIC_PATHS = new Set(["/health", "/mcp/info", "/auth/desktop-config"]);
+// /auth/handoff/exchange is public because Showtime has no bearer yet --
+// the one-time code it presents is the credential; the handler additionally
+// accepts only loopback peers (domain/handoff.ts).
+const AUTH_PUBLIC_PATHS = new Set([
+  "/health",
+  "/mcp/info",
+  "/auth/desktop-config",
+  "/auth/handoff/exchange",
+]);
 
 export function timingSafeStringEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;

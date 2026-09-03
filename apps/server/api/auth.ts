@@ -21,6 +21,11 @@ import {
 import { listGrantsForUser, revokeGrant } from "../auth/oauth/grants.js";
 import { logAudit } from "../infra/audit.js";
 import { scopeAtLeast } from "../auth/roles.js";
+import { nodeVisibleTo } from "../auth/node-access.js";
+import { exchangeHandoff, isLoopbackAddress, mintHandoff } from "../domain/handoff.js";
+import { appendHomeNodeIdToUrl, resolvePortuniMcpUrl } from "../domain/write-scope.js";
+import { getMirrorPath } from "../domain/sync/mirror-registry.js";
+import type { Client } from "@libsql/client";
 
 const LoginBody = z.object({ id_token: z.string().min(1) });
 
@@ -276,4 +281,92 @@ export function handleDesktopConfig(res: ServerResponse): void {
     return;
   }
   respondJson(res, 200, { google_client_id: id, google_client_secret: secret });
+}
+
+// --- Showtime handoff ------------------------------------------------------
+//
+// POST /auth/handoff mints a one-time code bound to the caller's bearer and a
+// node; POST /auth/handoff/exchange (public, loopback only) trades it for the
+// bearer plus the node's MCP URL and mirror. Spec:
+// docs/superpowers/specs/2026-09-02-showtime-handoff-design.md. The node
+// lookups are injected so the local router (graph db) and the agent router
+// (central client) share the handlers.
+
+const HandoffBody = z.object({ node_id: z.string().min(1) });
+const ExchangeBody = z.object({ code: z.string().min(1) });
+
+export async function handleMintHandoff(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  nodeAccessible: (nodeId: string) => Promise<boolean>,
+): Promise<void> {
+  try {
+    const header = (req.headers.authorization as string | undefined) ?? "";
+    const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
+    if (!token) {
+      respondJson(res, 401, { error: "handoff requires a bearer token" });
+      return;
+    }
+    const body = await parseJsonBody(req, res, HandoffBody);
+    if (!body) return;
+    if (!(await nodeAccessible(body.node_id))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    const minted = mintHandoff({ token, nodeId: body.node_id, userId: identity.userId });
+    respondJson(res, 200, { code: minted.code, expires_in: minted.expiresIn });
+  } catch (err) {
+    respondError(res, "POST /auth/handoff", err);
+  }
+}
+
+export async function handleExchangeHandoff(
+  req: IncomingMessage,
+  res: ServerResponse,
+  nodeName: (nodeId: string) => Promise<string | null>,
+): Promise<void> {
+  try {
+    if (!isLoopbackAddress(req.socket?.remoteAddress)) {
+      respondJson(res, 403, { error: "handoff exchange is loopback only", code: "HANDOFF_NOT_LOOPBACK" });
+      return;
+    }
+    const body = await parseJsonBody(req, res, ExchangeBody);
+    if (!body) return;
+    const entry = exchangeHandoff(body.code);
+    if (!entry) {
+      respondJson(res, 404, { error: "handoff code unknown, expired or already used", code: "HANDOFF_INVALID" });
+      return;
+    }
+    const [name, mirror] = await Promise.all([
+      nodeName(entry.nodeId).catch(() => null),
+      getMirrorPath(entry.userId, entry.nodeId),
+    ]);
+    respondJson(res, 200, {
+      token: entry.token,
+      mcp_url: appendHomeNodeIdToUrl(resolvePortuniMcpUrl(), entry.nodeId),
+      home_node_id: entry.nodeId,
+      node_name: name ?? "",
+      mirror,
+    });
+  } catch (err) {
+    respondError(res, "POST /auth/handoff/exchange", err);
+  }
+}
+
+// Local-mode lookups for the handlers above. A missing node reads as not
+// accessible (nodeVisibleTo treats an unknown id as unrestricted).
+export async function localNodeAccessible(
+  db: Client,
+  identity: RequestIdentity,
+  nodeId: string,
+): Promise<boolean> {
+  const r = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [nodeId] });
+  if (r.rows.length === 0) return false;
+  return nodeVisibleTo(db, identity, nodeId);
+}
+
+export async function localNodeName(db: Client, nodeId: string): Promise<string | null> {
+  const r = await db.execute({ sql: "SELECT name FROM nodes WHERE id = ?", args: [nodeId] });
+  return r.rows.length === 0 ? null : String(r.rows[0].name);
 }

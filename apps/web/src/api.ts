@@ -572,6 +572,14 @@ export async function fetchFileContent(
   const res = await apiFetch(
     `/nodes/${encodeURIComponent(nodeId)}/file?path=${encodeURIComponent(relPath)}`,
   );
+  if (res.status === 422) {
+    // A .showtime bundle without its preview.html (saved by a Showtime older
+    // than the preview). The editor shows this text as-is.
+    const j = (await res.clone().json().catch(() => null)) as { code?: string } | null;
+    if (j?.code === "NO_PREVIEW") {
+      throw new Error("Soubor .showtime neobsahuje náhled. Ulož ho znovu v aktuální verzi Showtime.");
+    }
+  }
   await throwForStatus(res, "file content");
   return res.json();
 }

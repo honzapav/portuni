@@ -237,6 +237,29 @@ export function saveTerminalLaunch(template: string): void {
   window.localStorage.setItem(TERMINAL_LAUNCH_KEY, template);
 }
 
+// Showtime integration (Settings -> Integrace). Off by default: with it on, a
+// `.showtime` deck opens in the rendered preview (the preview.html Showtime
+// packs into the bundle) and the preview offers "Otevřít v Showtime" when
+// the app is installed. Off, the bundle is a binary file like any other.
+const SHOWTIME_KEY = "portuni:showtime";
+
+export function loadShowtimeEnabled(): boolean {
+  try {
+    return window.localStorage.getItem(SHOWTIME_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function saveShowtimeEnabled(enabled: boolean): void {
+  try {
+    if (enabled) window.localStorage.setItem(SHOWTIME_KEY, "1");
+    else window.localStorage.removeItem(SHOWTIME_KEY);
+  } catch {
+    // localStorage unavailable -- the flag stays off for this session.
+  }
+}
+
 // --- Open workspace nodes --------------------------------------------------
 //
 // The set of nodes the user has open in the Práce view, persisted so the

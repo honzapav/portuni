@@ -56,6 +56,7 @@ import {
   AGENT_COMMAND_KEY,
   TERMINAL_LAUNCH_KEY,
 } from "./lib/settings";
+import { isShowtimePath } from "./lib/showtime";
 
 // Files that have a useful rendered preview (MarkdownPreview). These open in
 // Náhled by default; everything else starts in the source editor.
@@ -623,8 +624,12 @@ export default function App() {
     setEditorFullscreen(false);
     // Markdown opens in Náhled (rendered preview) by default; editing is the
     // secondary mode. Other file types have no useful preview, so they start
-    // in the source editor.
-    setEditorMode(isMarkdownPath(relPath) || isHtmlPath(relPath) ? "preview" : "edit");
+    // in the source editor. A Showtime deck has only the preview.
+    setEditorMode(
+      isMarkdownPath(relPath) || isHtmlPath(relPath) || isShowtimePath(relPath)
+        ? "preview"
+        : "edit",
+    );
     setEditorGuard(null);
   }, []);
   const openFileInEditor = useCallback(
