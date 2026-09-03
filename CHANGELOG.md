@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/honzapav/portuni/compare/v0.13.0...v0.13.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **desktop:** copy to clipboard through a native command ([203e90c](https://github.com/honzapav/portuni/commit/203e90c23ccab7e1f437ff5780b715ebe1cd59d2))
+
 ## [0.13.0](https://github.com/honzapav/portuni/compare/v0.12.0...v0.13.0) (2026-09-03)
 
 
