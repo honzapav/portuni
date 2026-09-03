@@ -24,6 +24,7 @@ const CreateSessionInput = z.object({
   cli: z.string().nullable().optional().describe("CLI the session runs under (claude|codex|vibe|...), when known."),
   profile_id: z.string().nullable().optional().describe("Spawn profile used (phase 3 -- CLI profiles registry)."),
   agent_session_id: z.string().nullable().optional().describe("The underlying agent CLI's own conversation id, for --resume."),
+  terminal_id: z.string().nullable().optional().describe("Desktop PTY that spawned this session's CLI (#218, phase 0 of the multi-window design), when known."),
 });
 type CreateSessionInput = z.infer<typeof CreateSessionInput>;
 
@@ -81,8 +82,8 @@ export async function createSession(
   const name = computeDefaultSessionName(nodeName, now);
 
   await db.execute({
-    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, cli, profile_id, agent_session_id, state, name, created_at, last_active_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
+    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, cli, profile_id, agent_session_id, terminal_id, state, name, created_at, last_active_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
     args: [
       id,
       parsed.node_id,
@@ -91,6 +92,7 @@ export async function createSession(
       parsed.cli ?? null,
       parsed.profile_id ?? null,
       parsed.agent_session_id ?? null,
+      parsed.terminal_id ?? null,
       name,
       now,
       now,
@@ -245,6 +247,44 @@ export async function transitionSessionState(
   const row = await loadSession(db, sessionId);
   if (!row) throw new Error(`transitionSessionState: row ${sessionId} disappeared after UPDATE`);
   return row;
+}
+
+// PTY exit (#218, "Sessions follow PTY exit"): closes every 'running'
+// session sharing this terminal_id -- desktop's pty.rs calls this via
+// POST /terminals/:terminal_id/exit whenever the PTY that spawned a CLI
+// exits, for any reason (pty_kill, the user typing `exit`, a crash).
+// Scoped to actorUserId, matching the owner-scoped pattern the rest of this
+// module uses (a session is a personal work record) -- a terminal_id from
+// one user's PTY must never be able to close another user's session.
+// Idempotent: a terminal_id with no running session (already closed, or
+// never bound to one) is a no-op. Returns the number of sessions closed.
+export async function closeSessionsByTerminalId(
+  db: Client,
+  actorUserId: string,
+  terminalId: string,
+): Promise<number> {
+  const res = await db.execute({
+    sql: "SELECT id FROM sessions WHERE terminal_id = ? AND user_id = ? AND state = 'running'",
+    args: [terminalId, actorUserId],
+  });
+  for (const row of res.rows) {
+    await transitionSessionState(db, actorUserId, String(row.id), "closed");
+  }
+  return res.rows.length;
+}
+
+// GC backstop (#218): called from mcp/transport.ts's onclose, for a CLI
+// whose config format cannot carry X-Portuni-Terminal (Codex, Vibe) or a
+// crash that never reaches the exit endpoint above. Closes the session iff
+// it is still 'running' -- deliberately does NOT use transitionSessionState's
+// general state machine here, because that machine also allows
+// suspended -> closed, and a session an agent has explicitly suspended
+// (portuni_session_suspend) must stay resumable even though its MCP
+// connection is gone.
+export async function closeSessionIfRunning(db: Client, sessionId: string): Promise<void> {
+  const row = await loadSession(db, sessionId);
+  if (row?.state !== "running") return;
+  await transitionSessionState(db, row.user_id, sessionId, "closed");
 }
 
 // Auto-archive closed sessions older than the given age -- a view filter

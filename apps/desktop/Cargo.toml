@@ -28,6 +28,15 @@ tauri = { version = "2.11.1", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2.3.5"
 tauri-plugin-updater = "2"
+# A second launch (`open -n`, a Dock re-click) relays to the already-running
+# instance instead of starting a fully separate process -- without this, the
+# second process's own spawn_sidecar_ws/reap_orphan_sidecar kills the first
+# instance's sidecars out from under it (#230, desktop multi-window phase 2).
+tauri-plugin-single-instance = "2"
+# Per-window (by label) size/position persistence -- each ws:<id> window
+# remembers its own geometry across launches (#225, desktop multi-window
+# phase 2).
+tauri-plugin-window-state = "2"
 rand = "0.9"
 # v3 has no default features; pick platform-native stores explicitly. macOS
 # is the only smoke-tested target for this PR but cross-platform features

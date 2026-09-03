@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 mod auth;
@@ -26,34 +26,189 @@ use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
-// Explicit-exit gate (Cmd+Q, menu Quit, app.exit). The first ExitRequested
-// that still has a live main window is prevented and delegated to the
-// webview guards (dirty editor, unsynced files); approve_exit sets this
-// and re-triggers the exit, which then passes. Window-close-driven exits
-// arrive after the window was destroyed and pass without consulting this
-// — the onCloseRequested guard already ran in JS on that path.
-static EXIT_APPROVED: AtomicBool = AtomicBool::new(false);
+// Sequential-close quit (#229). Cmd+Q / menu Quit / an OS-driven exit
+// request no longer broadcasts a single "app-exit-requested" the (one)
+// window answers once; instead Rust closes every open window itself, one
+// at a time, through window.close() -- the SAME tauri://close-requested
+// event each window's own onCloseRequested JS guard already handles for
+// its native close button. There is exactly one close-guard
+// implementation now, not two.
+#[derive(Clone, Debug, PartialEq)]
+enum QuitAction {
+    Exit,
+    Restart,
+}
 
-// If the webview never answers `app-exit-requested` (e.g. its React tree
-// crashed on render before the approve_exit listener in App.tsx's effect
-// ever mounted — see #176), the gate above would block Cmd+Q / Quit
-// forever. schedule_exit_fallback arms a grace-period timer alongside
-// every emit; if still unanswered when it fires, it force-approves and
-// exits itself instead of waiting on a webview that can no longer answer.
+#[derive(Clone, Debug, PartialEq)]
+struct QuitState {
+    // Window labels still waiting their turn; front = next to close.
+    remaining: Vec<String>,
+    action: QuitAction,
+}
+
+// None = no quit in progress; Some = one is, mid-sequence. The single
+// source of truth for "are we quitting" -- persist_open_windows checks
+// is_quitting() to skip a rewrite while this is Some, so the next launch
+// restores the PRE-quit window set rather than whatever's progressively
+// left as each window closes.
+struct QuitQueue(Mutex<Option<QuitState>>);
+
+fn is_quitting(app: &AppHandle) -> bool {
+    app.state::<QuitQueue>().0.lock().is_ok_and(|g| g.is_some())
+}
+
+// Persist_open_windows' pure gate, split out so "a completed quit leaves
+// open_windows exactly as it was before the quit started" is
+// unit-testable without a real AppHandle.
+fn should_persist_open_windows(quitting: bool) -> bool {
+    !quitting
+}
+
+// What advance_quit should actually DO next, decided purely from the
+// current queue -- the sequencing logic itself, without any window I/O.
+// Pure so "closes windows one at a time, in order" and "finishes with the
+// requested action once the queue is empty" are unit-testable.
+#[derive(Debug, PartialEq)]
+enum QuitAdvance {
+    CloseWindow { label: String, next_state: Option<QuitState> },
+    Finished(QuitAction),
+    Idle,
+}
+
+fn quit_advance(current: Option<QuitState>) -> QuitAdvance {
+    match current {
+        None => QuitAdvance::Idle,
+        Some(QuitState { mut remaining, action }) => {
+            if remaining.is_empty() {
+                QuitAdvance::Finished(action)
+            } else {
+                let label = remaining.remove(0);
+                QuitAdvance::CloseWindow {
+                    label,
+                    next_state: Some(QuitState { remaining, action }),
+                }
+            }
+        }
+    }
+}
+
+// decline_exit's pure effect: a declined close always aborts the whole
+// sequence, unconditionally -- windows already closed stay closed, but no
+// further window is asked and the app does not exit. Unit-testable
+// without a real AppHandle; also correct (a harmless no-op) when nothing
+// was in progress, e.g. a plain single-window close outside any quit.
+fn quit_abort(_current: &Option<QuitState>) -> Option<QuitState> {
+    None
+}
+
+fn begin_quit(app: &AppHandle, action: QuitAction) {
+    let state = app.state::<QuitQueue>();
+    {
+        let Ok(mut guard) = state.0.lock() else { return };
+        if guard.is_some() {
+            // Already mid-sequence (e.g. a second Cmd+Q, or the OS and our
+            // own menu item both requesting exit) -- let it run its course.
+            return;
+        }
+        let remaining: Vec<String> = app.webview_windows().keys().cloned().collect();
+        *guard = Some(QuitState { remaining, action });
+    }
+    advance_quit(app);
+}
+
+// Close the next queued window (arming the fallback timer in case it
+// never answers), or run the queue's terminal action once it's empty.
+// Called once to start the sequence (from begin_quit) and again from
+// on_window_event's Destroyed handler each time a window finishes closing
+// while still quitting -- a no-op (QuitAdvance::Idle) otherwise.
+fn advance_quit(app: &AppHandle) {
+    let state = app.state::<QuitQueue>();
+    let Ok(mut guard) = state.0.lock() else { return };
+    let current = guard.take();
+    match quit_advance(current) {
+        QuitAdvance::Idle => {}
+        QuitAdvance::CloseWindow { label, next_state } => {
+            *guard = next_state;
+            drop(guard);
+            match app.get_webview_window(&label) {
+                Some(w) => {
+                    schedule_exit_fallback(app, label);
+                    let _ = w.close();
+                }
+                // Vanished between being queued and now (raced a manual
+                // close elsewhere) -- move straight to the next one.
+                None => advance_quit(app),
+            }
+        }
+        QuitAdvance::Finished(action) => {
+            drop(guard);
+            match action {
+                QuitAction::Exit => app.exit(0),
+                QuitAction::Restart => {
+                    kill_all_sidecars(app);
+                    app.restart();
+                }
+            }
+        }
+    }
+}
+
+// If a window we asked to close (schedule_exit_fallback below) never
+// answers -- a crashed/hung webview -- Portuni must not block Cmd+Q/quit
+// forever. This is a safety net now, not the normal path: a healthy
+// window answers via decline_exit or an actual close well within 5s.
 const EXIT_FALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-fn schedule_exit_fallback(app: &AppHandle) {
+// Generation counter making the fallback timer cancellable (#221): a
+// window that answers promptly (decline_exit, or its own close completing
+// and advance_quit arming a new timer for the NEXT window) invalidates
+// this one before it fires. schedule_exit_fallback captures the
+// generation current at arm time; decline_exit bumps it directly, an
+// overlapping schedule_exit_fallback call bumps it as a side effect of
+// arming its own timer.
+static EXIT_FALLBACK_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+// Pure decision for a fallback timer waking up: is IT still the current
+// one, or has it been superseded (declined, or a later window's timer
+// armed in the meantime)? Pure so both branches are unit-testable without
+// a real AppHandle.
+fn fallback_should_fire(armed_generation: u64, current_generation: u64) -> bool {
+    armed_generation == current_generation
+}
+
+fn schedule_exit_fallback(app: &AppHandle, label: String) {
+    let generation = EXIT_FALLBACK_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         std::thread::sleep(EXIT_FALLBACK_TIMEOUT);
-        if !EXIT_APPROVED.load(Ordering::SeqCst) {
+        let current = EXIT_FALLBACK_GENERATION.load(Ordering::SeqCst);
+        if fallback_should_fire(generation, current) {
             warn!(
-                "webview did not answer app-exit-requested within {EXIT_FALLBACK_TIMEOUT:?} — forcing exit"
+                "window {label} did not answer its close request within {EXIT_FALLBACK_TIMEOUT:?} — forcing it closed"
             );
-            EXIT_APPROVED.store(true, Ordering::SeqCst);
-            app_handle.exit(0);
+            // destroy(), not close(): skip the guard entirely rather than
+            // ask again -- it already had its chance. Its own Destroyed
+            // event fires the same as any other close and advance_quit
+            // continues the sequence from there.
+            if let Some(w) = app_handle.get_webview_window(&label) {
+                let _ = w.destroy();
+            }
         }
     });
+}
+
+// The webview's answer to a close guard (dirty editor, unsynced files, or
+// the running-terminals confirm) when the user declined. Cancels the
+// pending fallback timer, and aborts any quit sequence in progress --
+// windows already closed stay closed, but no further one is asked and the
+// app does not exit. Harmless to call outside any quit (a plain
+// single-window close): both effects are no-ops when nothing was pending.
+#[tauri::command]
+fn decline_exit(app: AppHandle) {
+    EXIT_FALLBACK_GENERATION.fetch_add(1, Ordering::SeqCst);
+    if let Ok(mut guard) = app.state::<QuitQueue>().0.lock() {
+        *guard = quit_abort(&guard);
+    }
 }
 
 // Per-workspace running sidecar children, keyed by workspace id. Concurrent
@@ -74,6 +229,29 @@ struct AuthTokens(Mutex<HashMap<String, String>>);
 // every locally-proxied api_request call. Never persisted, never exported
 // into pty_spawn's shell env -- see api_request and spawn_sidecar_ws.
 struct WebviewProxySecrets(Mutex<HashMap<String, String>>);
+// Serializes every config.json read-modify-write (#224). Every mutating
+// command does load -> modify -> workspace::save through one fixed
+// config.json.tmp with no lock; two concurrent writers (phase 2 adds
+// window open/close events to the set) can otherwise interleave and the
+// loser's edit is silently lost (last rename wins). with_config_mut below
+// is the standard way through this lock.
+struct ConfigLock(Mutex<()>);
+// Ordered focus history of ws:<id> windows (#225), oldest first, most
+// recently focused last. Updated in-memory on WindowEvent::Focused(true);
+// NOT persisted on every focus change -- only its last() entry is written
+// to config.json's active_workspace, together with open_windows, whenever
+// a window opens or closes (persist_open_windows). Also the source for
+// "the most recently focused remaining window" when disabling/deleting the
+// workspace currently recorded as active (reassign_active_workspace).
+struct FocusHistory(Mutex<Vec<String>>);
+// Last backend-error message per workspace, if any (#227). backend-ready/
+// backend-error are per-window events now (emit_to("ws:<id>", ...)), so a
+// window created AFTER its sidecar already failed -- restoring several
+// windows at boot races spawn_all_sidecars -- would otherwise never learn
+// about it; open_window replays this to a newly created window. Cleared
+// whenever that workspace's sidecar reports ready again (a fresh
+// spawn/restart succeeding retires the stale failure).
+struct PendingBackendErrors(Mutex<HashMap<String, String>>);
 
 // Keychain coordinates for secrets we persist across launches. Service is
 // bundle-id-shaped so entries show up under "ooo.workflow.portuni" in
@@ -120,6 +298,12 @@ pub(crate) fn keychain_delete_ws(base: &str, ws_id: &str) {
 /// when the config is still v1 (awaiting migration) or missing (fresh
 /// install) — callers surface that as a command error to the UI rather
 /// than guessing at a workspace that doesn't exist yet.
+///
+/// Every workspace-bound command resolves via ws_of instead, and #225's
+/// startup restore reads the WorkspacesFile's active_workspace FIELD
+/// directly rather than this function -- the one remaining caller is
+/// #230's single-instance fallback ("opens ws:<active_workspace> when no
+/// window is open"), the one use the spec itself calls out for this.
 pub(crate) fn active_workspace(
     app: &AppHandle,
 ) -> Result<(String, workspace::WorkspaceConfig), String> {
@@ -138,15 +322,420 @@ pub(crate) fn active_workspace(
     }
 }
 
+// Window identity (#222, phase 1 of the multi-window design). `app.windows`
+// in tauri.conf.json is now `[]` -- every window is created at runtime with
+// a label that says what it is: "bootstrap" before any workspace exists,
+// "ws:<id>" once one does. ws_of answers "which workspace is THIS window
+// for", the per-window counterpart to active_workspace's "the currently
+// active one" -- #223 routes every workspace-bound command through it
+// instead of active_workspace. Split into a thin AppHandle-resolving
+// wrapper and a pure(-ish, filesystem-reading) core (ws_of_from_dir) so the
+// label parsing and existence check are unit-testable with a temp data_dir
+// instead of a real Tauri window.
+pub(crate) fn ws_of(window: &tauri::Window) -> Result<String, String> {
+    let data_dir = window
+        .app_handle()
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    ws_of_from_dir(window.label(), &data_dir)
+}
+
+fn ws_of_from_dir(label: &str, data_dir: &Path) -> Result<String, String> {
+    let id = label
+        .strip_prefix("ws:")
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| format!("window '{label}' is not a workspace window"))?;
+    match workspace::load(data_dir)? {
+        workspace::LoadedConfig::V2(file) if file.workspaces.contains_key(id) => {
+            Ok(id.to_string())
+        }
+        workspace::LoadedConfig::V2(_) => Err(format!("unknown workspace '{id}'")),
+        workspace::LoadedConfig::V1(_) => Err("config awaiting workspace migration".to_string()),
+        workspace::LoadedConfig::Missing => Err("no config.json (fresh install)".to_string()),
+    }
+}
+
+// Sibling of active_workspace for callers that already have a specific
+// ws_id (from ws_of, #223) instead of wanting "whichever one is active".
+pub(crate) fn workspace_config_for(
+    app: &AppHandle,
+    ws_id: &str,
+) -> Result<workspace::WorkspaceConfig, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(file) => file
+            .workspaces
+            .get(ws_id)
+            .cloned()
+            .ok_or_else(|| format!("workspace '{ws_id}' missing from config")),
+        workspace::LoadedConfig::V1(_) => Err("config awaiting workspace migration".to_string()),
+        workspace::LoadedConfig::Missing => Err("no config.json (fresh install)".to_string()),
+    }
+}
+
+// Config-lock helpers (#224). Split so the interesting part -- serializing
+// load-modify-save against a real Mutex and a real data_dir -- is
+// unit-testable with two threads and a temp dir, without needing a real
+// Tauri AppHandle/managed state.
+//
+// with_config_write_lock: for callers that do their own load/construct/save
+// (onboarding/migration, which may start from V1 or Missing and construct
+// the initial V2 file themselves) but still need to serialize against every
+// other writer.
+fn with_config_write_lock<T>(
+    app: &AppHandle,
+    f: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let state = app.state::<ConfigLock>();
+    let _guard = state.0.lock().map_err(|e| e.to_string())?;
+    let result = f();
+    // Broadcast after every successful config mutation (#226) so every
+    // window's Sidebar/WorkspacesSection can refresh instead of relying on
+    // the old document-local CustomEvent, which only the emitting window
+    // ever heard.
+    if result.is_ok() {
+        let _ = app.emit("workspaces-changed", ());
+    }
+    result
+}
+
+// with_config_mut: the common case for callers that already require an
+// existing V2 config -- load it, let `mutate` apply the change, save.
+fn with_config_mut_at(
+    lock: &Mutex<()>,
+    data_dir: &Path,
+    mutate: impl FnOnce(&mut workspace::WorkspacesFile) -> Result<(), String>,
+) -> Result<(), String> {
+    let _guard = lock.lock().map_err(|e| e.to_string())?;
+    let mut file = match workspace::load(data_dir)? {
+        workspace::LoadedConfig::V2(f) => f,
+        workspace::LoadedConfig::V1(_) => {
+            return Err("config awaiting workspace migration".to_string())
+        }
+        workspace::LoadedConfig::Missing => {
+            return Err("no config.json (fresh install)".to_string())
+        }
+    };
+    mutate(&mut file)?;
+    workspace::save(data_dir, &file)
+}
+
+pub(crate) fn with_config_mut(
+    app: &AppHandle,
+    mutate: impl FnOnce(&mut workspace::WorkspacesFile) -> Result<(), String>,
+) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let result = with_config_mut_at(&app.state::<ConfigLock>().0, &data_dir, mutate);
+    // See with_config_write_lock's comment (#226) -- same broadcast, this
+    // is the common-case wrapper most mutating commands go through.
+    if result.is_ok() {
+        let _ = app.emit("workspaces-changed", ());
+    }
+    result
+}
+
+// Same title/size/min-size/etc. tauri.conf.json's single static window used
+// to declare before app.windows became `[]` -- only the label varies now.
+// Persists open_windows right after a successful "ws:<id>" open (#225,
+// "rewritten on every window open/close") and replays that workspace's last
+// known backend-ready/backend-error (#227) -- its sidecar may already be up
+// or already have failed by the time this window exists. "bootstrap" is not
+// a workspace and gets neither.
+fn open_window(app: &AppHandle, label: &str) -> tauri::Result<()> {
+    tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("index.html".into()))
+        .title("Portuni")
+        .inner_size(1600.0, 1000.0)
+        .min_inner_size(1024.0, 700.0)
+        .maximized(true)
+        .resizable(true)
+        .fullscreen(false)
+        .build()?;
+    if let Some(ws_id) = label.strip_prefix("ws:") {
+        persist_open_windows(app);
+        replay_backend_status(app, ws_id);
+    }
+    Ok(())
+}
+
+// Pure selection of which ws:<id> windows to restore at startup (#225):
+// - each id in open_windows that still names an existing, enabled
+//   workspace gets a window;
+// - an empty or fully invalid open_windows list falls back to a single
+//   window for active_workspace, itself only if it is still valid;
+// - anything else (no workspaces, active_workspace invalid too) returns
+//   empty, which the caller treats as "open bootstrap instead".
+fn startup_window_labels(file: &workspace::WorkspacesFile) -> Vec<String> {
+    let restored: Vec<String> = file
+        .open_windows
+        .iter()
+        .filter(|id| file.workspaces.get(id.as_str()).is_some_and(|c| c.enabled))
+        .map(|id| format!("ws:{id}"))
+        .collect();
+    if !restored.is_empty() {
+        return restored;
+    }
+    if file
+        .workspaces
+        .get(&file.active_workspace)
+        .is_some_and(|c| c.enabled)
+    {
+        return vec![format!("ws:{}", file.active_workspace)];
+    }
+    Vec::new()
+}
+
+// AppHandle-resolving wrapper around startup_window_labels: any read
+// failure (missing config, corrupt v2, v1 still awaiting migration) is
+// treated as "no workspace yet" (empty list -> bootstrap), consistent with
+// every other config-read failure in this file.
+fn resolve_startup_window_labels(app: &AppHandle) -> Vec<String> {
+    let Ok(data_dir) = app.path().app_data_dir() else {
+        return Vec::new();
+    };
+    let Ok(workspace::LoadedConfig::V2(file)) = workspace::load(&data_dir) else {
+        return Vec::new();
+    };
+    startup_window_labels(&file)
+}
+
+// Startup windows: one per id in open_windows that's still there and
+// enabled; falls back to a single window for active_workspace, or
+// "bootstrap" if neither resolves to anything (fresh install, or a v1
+// config still awaiting migration). Called once from .setup().
+fn create_startup_windows(app: &AppHandle) -> tauri::Result<()> {
+    let labels = resolve_startup_window_labels(app);
+    if labels.is_empty() {
+        return open_window(app, "bootstrap");
+    }
+    for label in labels {
+        open_window(app, &label)?;
+    }
+    Ok(())
+}
+
+// Pure decision for focus_or_open_most_recent_window: which window label
+// should get focus (creating it first if it doesn't exist)? Prefers the
+// most recently focused workspace (FocusHistory's last entry, #225, kept
+// accurate by touch_focus/untrack_focus); falls back to active_workspace's
+// result, then finally "bootstrap" if there's no workspace at all yet.
+// Pure so it's unit-testable without a real AppHandle.
+fn single_instance_target(focus_history: &[String], active_workspace_id: Option<&str>) -> String {
+    if let Some(ws_id) = focus_history.last() {
+        return format!("ws:{ws_id}");
+    }
+    match active_workspace_id {
+        Some(id) => format!("ws:{id}"),
+        None => "bootstrap".to_string(),
+    }
+}
+
+// A second launch (`open -n`, a Dock re-click while the app has no
+// frontmost window) relays here instead of running its own .setup() (#230)
+// -- see the single_instance plugin registration in run().
+fn focus_or_open_most_recent_window(app: &AppHandle) {
+    let history = focus_history_snapshot(app);
+    let active = active_workspace(app).ok().map(|(id, _)| id);
+    let label = single_instance_target(&history, active.as_deref());
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.set_focus();
+    } else if let Err(e) = open_window(app, &label) {
+        warn!("single-instance: failed to open {label}: {e}");
+    }
+}
+
+// Bootstrap -> workspace handoff: once save_config / setup_central /
+// migrate_to_workspaces has produced (or confirmed) a real workspace, open
+// its ws:<id> window and close the bootstrap window that made the call --
+// the fresh-install/migration React gates dropped their own
+// window.location.reload() in favor of this (#222). Best-effort: a failure
+// to open the new window is logged rather than left to strand the user with
+// no window at all, and closing "bootstrap" is a no-op if it doesn't exist
+// (e.g. called from tests, or a future caller that isn't actually
+// bootstrap).
+fn handoff_from_bootstrap(app: &AppHandle, ws_id: &str) {
+    let label = format!("ws:{ws_id}");
+    if let Err(e) = open_window(app, &label) {
+        warn!("bootstrap handoff: failed to open {label}: {e}");
+        return;
+    }
+    if let Some(w) = app.get_webview_window("bootstrap") {
+        let _ = w.close();
+    }
+}
+
+// True when `open_labels` contains "ws:<ws_id>" -- the disable/delete
+// refusal check (#225), pulled apart from window_open_for's AppHandle
+// query so it's unit-testable. Pure.
+fn is_window_open_for(open_labels: &[String], ws_id: &str) -> bool {
+    let target = format!("ws:{ws_id}");
+    open_labels.iter().any(|l| l == &target)
+}
+
+// True when a ws:<id> window for this workspace is currently open (#225).
+fn window_open_for(app: &AppHandle, ws_id: &str) -> bool {
+    let labels: Vec<String> = app.webview_windows().keys().cloned().collect();
+    is_window_open_for(&labels, ws_id)
+}
+
+// Move ws_id to the end of the focus history, removing any earlier
+// occurrence first (re-focusing an already-tracked window just moves it,
+// never duplicates). Pure.
+fn touch_focus(history: &mut Vec<String>, ws_id: &str) {
+    history.retain(|id| id != ws_id);
+    history.push(ws_id.to_string());
+}
+
+// Drop ws_id from the focus history (its window closed). Pure.
+fn untrack_focus(history: &mut Vec<String>, ws_id: &str) {
+    history.retain(|id| id != ws_id);
+}
+
+// After disabling/deleting removed_id (only possible once its own window
+// is closed -- window_open_for already guards that), pick the next
+// active_workspace: the most recently focused remaining window, else the
+// first remaining enabled workspace (BTreeMap iteration is sorted, so this
+// is deterministic), else removed_id itself unchanged -- unreachable in
+// the real flows ("cannot delete the last workspace" already guards
+// delete_workspace) but a safe default over a panic. Pure.
+fn reassign_active_workspace(
+    removed_id: &str,
+    focus_history: &[String],
+    workspaces: &std::collections::BTreeMap<String, workspace::WorkspaceConfig>,
+) -> String {
+    focus_history
+        .iter()
+        .rev()
+        .find(|id| id.as_str() != removed_id && workspaces.get(id.as_str()).is_some_and(|c| c.enabled))
+        .cloned()
+        .or_else(|| {
+            workspaces
+                .iter()
+                .find(|(id, c)| id.as_str() != removed_id && c.enabled)
+                .map(|(id, _)| id.clone())
+        })
+        .unwrap_or_else(|| removed_id.to_string())
+}
+
+// Rewrite open_windows (every currently-open ws:<id> window) and, when the
+// focus history has an entry, active_workspace -- together, under the
+// config lock, whenever a window opens or closes (#225; NOT on every focus
+// change, only the open/close events that call this). Skipped entirely
+// while a sequential quit is in progress (#229, should_persist_open_windows)
+// -- the next launch must restore the PRE-quit window set, not whatever's
+// progressively left as each window closes one by one. Best-effort
+// otherwise: a failure to persist is logged, never propagated -- a window
+// has already opened/closed by the time this runs, so there's nothing left
+// to roll back.
+fn persist_open_windows(app: &AppHandle) {
+    if !should_persist_open_windows(is_quitting(app)) {
+        return;
+    }
+    let open: Vec<String> = app
+        .webview_windows()
+        .keys()
+        .filter_map(|label| label.strip_prefix("ws:").map(str::to_string))
+        .collect();
+    let active = app
+        .try_state::<FocusHistory>()
+        .and_then(|s| s.0.lock().ok().and_then(|h| h.last().cloned()));
+    if let Err(e) = with_config_mut(app, |file| {
+        file.open_windows = open.clone();
+        if let Some(a) = &active {
+            file.active_workspace = a.clone();
+        }
+        Ok(())
+    }) {
+        warn!("failed to persist open_windows: {e}");
+    }
+}
+
+// Snapshot of the current focus history for reassign_active_workspace
+// callers -- cloned out from behind the Mutex rather than held, since
+// they need it inside a with_config_mut closure that's already holding
+// ConfigLock (a different lock, but no reason to hold both at once).
+fn focus_history_snapshot(app: &AppHandle) -> Vec<String> {
+    app.try_state::<FocusHistory>()
+        .and_then(|s| s.0.lock().ok().map(|h| h.clone()))
+        .unwrap_or_default()
+}
+
+// Pure core of set_pending_backend_error: record ws_id's latest message,
+// overwriting any earlier one for the same workspace. Unit-testable
+// against a bare HashMap instead of the real Mutex-guarded managed state.
+fn record_pending_backend_error(pending: &mut HashMap<String, String>, ws_id: &str, msg: &str) {
+    pending.insert(ws_id.to_string(), msg.to_string());
+}
+
+// Pure core of clear_pending_backend_error: retire ws_id's entry only,
+// leaving every other workspace's pending error untouched.
+fn retire_pending_backend_error(pending: &mut HashMap<String, String>, ws_id: &str) {
+    pending.remove(ws_id);
+}
+
+// Record ws_id's latest backend-error so a window created later can replay
+// it (#227). See PendingBackendErrors' doc comment.
+fn set_pending_backend_error(app: &AppHandle, ws_id: &str, msg: &str) {
+    if let Some(state) = app.try_state::<PendingBackendErrors>() {
+        if let Ok(mut pending) = state.0.lock() {
+            record_pending_backend_error(&mut pending, ws_id, msg);
+        }
+    }
+}
+
+// Retire ws_id's pending backend-error: its sidecar reported ready again.
+fn clear_pending_backend_error(app: &AppHandle, ws_id: &str) {
+    if let Some(state) = app.try_state::<PendingBackendErrors>() {
+        if let Ok(mut pending) = state.0.lock() {
+            retire_pending_backend_error(&mut pending, ws_id);
+        }
+    }
+}
+
+// Pure core of replay_backend_status: given the current port (if any) and
+// pending error message (if any) recorded for one workspace, what should
+// be replayed to a window of its just now created for it. Both, either, or
+// neither can apply -- CommandEvent::Terminated clears the port but sets
+// the error; a fresh ready clears the error but the port is of course
+// present.
+fn backend_status_replay(
+    port: Option<u16>,
+    pending_error: Option<&str>,
+) -> (Option<u16>, Option<String>) {
+    (port, pending_error.map(str::to_string))
+}
+
+// Replay backend-ready/backend-error to a just-created ws:<id> window
+// (#227): its sidecar may already be up (a restored window at startup) or
+// may have already failed (spawn_all_sidecars racing window restoration),
+// and per-window emit_to only ever reaches a window that already existed
+// at the moment the original event fired.
+fn replay_backend_status(app: &AppHandle, ws_id: &str) {
+    let port = app
+        .try_state::<BackendPorts>()
+        .and_then(|s| s.0.lock().ok().and_then(|ports| ports.get(ws_id).copied()));
+    let pending_error = app
+        .try_state::<PendingBackendErrors>()
+        .and_then(|s| s.0.lock().ok().and_then(|p| p.get(ws_id).cloned()));
+    let (ready_port, error_message) = backend_status_replay(port, pending_error.as_deref());
+    let label = format!("ws:{ws_id}");
+    if let Some(port) = ready_port {
+        let _ = app.emit_to(&label, "backend-ready", port);
+    }
+    if let Some(msg) = error_message {
+        let _ = app.emit_to(&label, "backend-error", msg);
+    }
+}
+
 #[tauri::command]
-fn set_turso_token(app: AppHandle, token: String) -> Result<(), String> {
-    let (ws_id, _) = active_workspace(&app)?;
+fn set_turso_token(window: tauri::Window, token: String) -> Result<(), String> {
+    let ws_id = ws_of(&window)?;
     keychain_set_ws(KEYCHAIN_TURSO_ACCOUNT, &ws_id, &token)
 }
 
 #[tauri::command]
-fn clear_turso_token(app: AppHandle) -> Result<(), String> {
-    let (ws_id, _) = active_workspace(&app)?;
+fn clear_turso_token(window: tauri::Window) -> Result<(), String> {
+    let ws_id = ws_of(&window)?;
     keychain_delete_ws(KEYCHAIN_TURSO_ACCOUNT, &ws_id);
     Ok(())
 }
@@ -162,8 +751,9 @@ fn clear_turso_token(app: AppHandle) -> Result<(), String> {
 // to the central server with the device token itself, so the device token
 // is never the credential a client needs.
 #[tauri::command]
-fn get_mcp_token(app: AppHandle) -> Result<String, String> {
-    let (ws_id, _cfg) = active_workspace(&app)?;
+fn get_mcp_token(window: tauri::Window) -> Result<String, String> {
+    let ws_id = ws_of(&window)?;
+    let app = window.app_handle();
     app.state::<AuthTokens>()
         .0
         .lock()
@@ -181,8 +771,9 @@ fn get_mcp_token(app: AppHandle) -> Result<String, String> {
 // Only ~/.claude.json embeds the literal token and goes stale until the
 // user re-runs "Install Claude (global)".
 #[tauri::command]
-fn regenerate_mcp_token(app: AppHandle) -> Result<String, String> {
-    let (ws_id, _) = active_workspace(&app)?;
+fn regenerate_mcp_token(window: tauri::Window) -> Result<String, String> {
+    let ws_id = ws_of(&window)?;
+    let app = window.app_handle();
     let fresh = random_token();
     keychain_set_ws(KEYCHAIN_MCP_ACCOUNT, &ws_id, &fresh)?;
     app.state::<AuthTokens>()
@@ -416,54 +1007,62 @@ fn migrate_to_workspaces(app: AppHandle, id: String) -> Result<(), String> {
     if !workspace::is_valid_workspace_id(&id) {
         return Err("invalid workspace id (use lowercase letters, digits, dashes)".to_string());
     }
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let v1 = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V1(v) => v,
-        workspace::LoadedConfig::V2(_) => return Ok(()), // already migrated
-        workspace::LoadedConfig::Missing => serde_json::json!({}),
-    };
+    // The whole migration -- not just the final config.json write -- runs
+    // under the config lock (#224): it starts with a load and ends with a
+    // save, and nothing else touching config.json may interleave with the
+    // DB-file/Keychain steps in between either.
+    with_config_write_lock(&app, || {
+        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let v1 = match workspace::load(&data_dir)? {
+            workspace::LoadedConfig::V1(v) => v,
+            workspace::LoadedConfig::V2(_) => return Ok(()), // already migrated
+            workspace::LoadedConfig::Missing => serde_json::json!({}),
+        };
 
-    // 1. DB files into workspaces/<id>/.
-    workspace::apply_migration_files(&data_dir, &id)?;
+        // 1. DB files into workspaces/<id>/.
+        workspace::apply_migration_files(&data_dir, &id)?;
 
-    // 1.5 Any legacy plaintext turso_auth_token still sitting in config.json
-    // needs to land in the (unsuffixed) Keychain account first, so the
-    // per-workspace copy step below finds it there.
-    migrate_turso_token_to_keychain(&data_dir);
+        // 1.5 Any legacy plaintext turso_auth_token still sitting in config.json
+        // needs to land in the (unsuffixed) Keychain account first, so the
+        // per-workspace copy step below finds it there.
+        migrate_turso_token_to_keychain(&data_dir);
 
-    // 2. Keychain: copy unsuffixed accounts to <base>.<id>, delete originals.
-    //    Copy-if-missing keeps re-runs safe after a partial failure.
-    const BASES: [&str; 5] = [
-        "turso_auth_token",
-        "mcp_auth_token",
-        "google_refresh_token",
-        "portuni_session_jwt",
-        "portuni_device_token",
-    ];
-    for base in BASES {
-        let old = keyring::Entry::new(KEYCHAIN_SERVICE, base)
-            .ok()
-            .and_then(|e| e.get_password().ok())
-            .filter(|s| !s.is_empty());
-        if let Some(value) = old {
-            if keychain_get_ws(base, &id).is_none() {
-                keychain_set_ws(base, &id, &value)?;
-            }
-            if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, base) {
-                let _ = entry.delete_credential();
+        // 2. Keychain: copy unsuffixed accounts to <base>.<id>, delete originals.
+        //    Copy-if-missing keeps re-runs safe after a partial failure.
+        const BASES: [&str; 5] = [
+            "turso_auth_token",
+            "mcp_auth_token",
+            "google_refresh_token",
+            "portuni_session_jwt",
+            "portuni_device_token",
+        ];
+        for base in BASES {
+            let old = keyring::Entry::new(KEYCHAIN_SERVICE, base)
+                .ok()
+                .and_then(|e| e.get_password().ok())
+                .filter(|s| !s.is_empty());
+            if let Some(value) = old {
+                if keychain_get_ws(base, &id).is_none() {
+                    keychain_set_ws(base, &id, &value)?;
+                }
+                if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, base) {
+                    let _ = entry.delete_credential();
+                }
             }
         }
-    }
 
-    // 3. config.json v2 — completion marker.
-    let file = workspace::migrate_v1_value(&v1, &id);
-    workspace::save(&data_dir, &file)?;
-    info!("migrated config.json to v2 with workspace '{id}'");
+        // 3. config.json v2 — completion marker.
+        let file = workspace::migrate_v1_value(&v1, &id);
+        workspace::save(&data_dir, &file)?;
+        info!("migrated config.json to v2 with workspace '{id}'");
+        Ok(())
+    })?;
     // .setup()'s spawn_all_sidecars was a no-op on the pre-migration v1/Missing
     // config, so no sidecar is running. Spawn now — the migration gate's reload
     // otherwise polls an empty BackendPorts map for 30 s. Idempotent:
     // spawn_sidecar_ws's contains_key guard skips any already-running child.
     spawn_all_sidecars(&app);
+    handoff_from_bootstrap(&app, &id);
     Ok(())
 }
 
@@ -480,21 +1079,14 @@ fn random_token() -> String {
         .collect()
 }
 
-// The webview's answer to `app-exit-requested`: the user either had nothing
-// to guard or explicitly chose to leave. Marks the exit approved and
-// re-triggers it; the run-handler gate then lets it pass.
 #[tauri::command]
-fn approve_exit(app: AppHandle) {
-    EXIT_APPROVED.store(true, Ordering::SeqCst);
-    app.exit(0);
-}
-
-#[tauri::command]
-fn get_backend_port(app: AppHandle) -> Option<u16> {
-    // Port of the ACTIVE workspace's sidecar. None before the sidecar reports
-    // its port, or while config is still v1/Missing (the migration/onboarding
-    // gate handles that case in the UI).
-    let ws_id = active_workspace(&app).ok()?.0;
+fn get_backend_port(window: tauri::Window) -> Option<u16> {
+    // Port of THIS WINDOW's workspace's sidecar (#223). None before the
+    // sidecar reports its port, or while the window is "bootstrap" (no
+    // workspace yet — the migration/onboarding gate handles that case in
+    // the UI).
+    let ws_id = ws_of(&window).ok()?;
+    let app = window.app_handle();
     let port = app
         .state::<BackendPorts>()
         .0
@@ -644,8 +1236,9 @@ struct DataModeResponse {
 /// Return the current data mode and server URL. Used by the React frontend
 /// to adapt its UI (hide mirror/sync affordances in central mode).
 #[tauri::command]
-fn get_data_mode(app: AppHandle) -> Result<DataModeResponse, String> {
-    let (_, cfg) = active_workspace(&app)?;
+fn get_data_mode(window: tauri::Window) -> Result<DataModeResponse, String> {
+    let ws_id = ws_of(&window)?;
+    let cfg = workspace_config_for(window.app_handle(), &ws_id)?;
     let mode = if workspace::is_central(&cfg) {
         "central"
     } else {
@@ -736,33 +1329,38 @@ fn get_turso_status(app: AppHandle) -> Result<TursoStatus, String> {
 // has chosen local mode and we should stop showing the wizard.
 #[tauri::command]
 fn save_config(app: AppHandle, turso_url: Option<String>) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let turso = turso_url
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let loaded = workspace::load(&data_dir)?;
-    // Fresh install path: .setup()'s spawn_all_sidecars was a no-op (config was
-    // Missing at boot), so nothing is running yet and we must spawn below.
-    let fresh_install = matches!(loaded, workspace::LoadedConfig::Missing);
-    let mut file = match loaded {
-        workspace::LoadedConfig::V2(f) => f,
-        // Fresh install: onboarding commits its first choice here — create a
-        // v2 file with a single `default` workspace so the install is v2 from
-        // the outset (no separate v1->v2 migration step needed).
-        workspace::LoadedConfig::Missing => {
-            workspace::migrate_v1_value(&serde_json::json!({}), "default")
-        }
-        workspace::LoadedConfig::V1(_) => {
-            return Err("config awaiting workspace migration".to_string())
-        }
-    };
-    let active = file.active_workspace.clone();
-    let cfg = file
-        .workspaces
-        .get_mut(&active)
-        .ok_or_else(|| "active workspace missing from config".to_string())?;
-    cfg.turso_url = turso;
-    workspace::save(&data_dir, &file)?;
+    let mut fresh_install = false;
+    let mut active = String::new();
+    with_config_write_lock(&app, || {
+        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let loaded = workspace::load(&data_dir)?;
+        // Fresh install path: .setup()'s spawn_all_sidecars was a no-op
+        // (config was Missing at boot), so nothing is running yet and we
+        // must spawn below.
+        fresh_install = matches!(loaded, workspace::LoadedConfig::Missing);
+        let mut file = match loaded {
+            workspace::LoadedConfig::V2(f) => f,
+            // Fresh install: onboarding commits its first choice here — create a
+            // v2 file with a single `default` workspace so the install is v2 from
+            // the outset (no separate v1->v2 migration step needed).
+            workspace::LoadedConfig::Missing => {
+                workspace::migrate_v1_value(&serde_json::json!({}), "default")
+            }
+            workspace::LoadedConfig::V1(_) => {
+                return Err("config awaiting workspace migration".to_string())
+            }
+        };
+        active = file.active_workspace.clone();
+        let cfg = file
+            .workspaces
+            .get_mut(&active)
+            .ok_or_else(|| "active workspace missing from config".to_string())?;
+        cfg.turso_url = turso;
+        workspace::save(&data_dir, &file)
+    })?;
     // Fresh install: bring the just-created `default` workspace's sidecar up
     // now so the wizard's reload finds a running backend instead of polling an
     // empty BackendPorts map for 30 s. On the "connect to org" path
@@ -772,6 +1370,7 @@ fn save_config(app: AppHandle, turso_url: Option<String>) -> Result<(), String> 
     // the eventual restart's kill+respawn double-call safe.
     if fresh_install {
         spawn_all_sidecars(&app);
+        handoff_from_bootstrap(&app, &active);
     }
     Ok(())
 }
@@ -821,31 +1420,36 @@ async fn setup_central(app: AppHandle, server_url: String) -> Result<(), String>
         return Err("desktop-config response is missing the client id or secret".to_string());
     }
 
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let loaded = workspace::load(&data_dir)?;
-    let fresh_install = matches!(loaded, workspace::LoadedConfig::Missing);
-    let mut file = match loaded {
-        workspace::LoadedConfig::V2(f) => f,
-        workspace::LoadedConfig::Missing => {
-            workspace::migrate_v1_value(&serde_json::json!({}), "default")
-        }
-        workspace::LoadedConfig::V1(_) => {
-            return Err("config awaiting workspace migration".to_string())
-        }
-    };
-    let active = file.active_workspace.clone();
-    let cfg = file
-        .workspaces
-        .get_mut(&active)
-        .ok_or_else(|| "active workspace missing from config".to_string())?;
-    cfg.server_url = Some(server);
-    cfg.google_client_id = Some(client.google_client_id.trim().to_string());
-    cfg.google_client_secret = Some(client.google_client_secret.trim().to_string());
-    cfg.data_mode = Some("central".to_string());
-    cfg.turso_url = None;
-    workspace::save(&data_dir, &file)?;
+    let mut fresh_install = false;
+    let mut active = String::new();
+    with_config_write_lock(&app, || {
+        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let loaded = workspace::load(&data_dir)?;
+        fresh_install = matches!(loaded, workspace::LoadedConfig::Missing);
+        let mut file = match loaded {
+            workspace::LoadedConfig::V2(f) => f,
+            workspace::LoadedConfig::Missing => {
+                workspace::migrate_v1_value(&serde_json::json!({}), "default")
+            }
+            workspace::LoadedConfig::V1(_) => {
+                return Err("config awaiting workspace migration".to_string())
+            }
+        };
+        active = file.active_workspace.clone();
+        let cfg = file
+            .workspaces
+            .get_mut(&active)
+            .ok_or_else(|| "active workspace missing from config".to_string())?;
+        cfg.server_url = Some(server.clone());
+        cfg.google_client_id = Some(client.google_client_id.trim().to_string());
+        cfg.google_client_secret = Some(client.google_client_secret.trim().to_string());
+        cfg.data_mode = Some("central".to_string());
+        cfg.turso_url = None;
+        workspace::save(&data_dir, &file)
+    })?;
     if fresh_install {
         spawn_all_sidecars(&app);
+        handoff_from_bootstrap(&app, &active);
     }
     Ok(())
 }
@@ -967,8 +1571,10 @@ async fn open_in_finder(_path: String, _reveal: bool) -> Result<(), String> {
 // means the system default browser. The path is scope-guarded against the
 // configured workspace root so only files inside the mirror are reachable.
 #[tauri::command]
-fn open_path_external(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    let (_, cfg) = active_workspace(&app)?;
+fn open_path_external(window: tauri::Window, path: String) -> Result<(), String> {
+    let ws_id = ws_of(&window)?;
+    let app = window.app_handle();
+    let cfg = workspace_config_for(app, &ws_id)?;
     let raw_root = cfg.effective_workspace_root();
     // Expand the config's leading ~ to match the sidecar-derived absolute path.
     let root = match app.path().home_dir() {
@@ -1271,14 +1877,16 @@ async fn clipboard_file_path() -> Result<Option<String>, String> {
 
 // Bounce a workspace's Node sidecar so it picks up freshly-changed config
 // (Turso token, server URL, ...). Used by the first-run gate after the user
-// pastes their token (no id — defaults to the active workspace, preserving
-// today's behavior) and by WorkspacesSection for any enabled, non-running
-// workspace. Idempotent: if no sidecar is running, just spawns one.
+// pastes their token (no id — defaults to the calling window's own
+// workspace, #223) and by WorkspacesSection for any enabled, non-running
+// workspace (explicit id, which may differ from the calling window's own).
+// Idempotent: if no sidecar is running, just spawns one.
 #[tauri::command]
-async fn restart_sidecar(app: AppHandle, id: Option<String>) -> Result<(), String> {
+async fn restart_sidecar(window: tauri::Window, id: Option<String>) -> Result<(), String> {
+    let app = window.app_handle().clone();
     let ws = match id {
         Some(i) => i,
-        None => active_workspace(&app)?.0,
+        None => ws_of(&window)?,
     };
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     match workspace::load(&data_dir)? {
@@ -1323,6 +1931,20 @@ pub(crate) fn sidecar_port_and_token(app: &AppHandle, ws_id: &str) -> Result<(u1
     Ok((port, token))
 }
 
+// The per-workspace, per-launch secret proving a request came through this
+// trusted Tauri host process rather than a spawned agent terminal (#213).
+// Shared by api_request's webview proxy and pty.rs's terminal-exit report
+// (#219) -- both originate in Rust code here, not webview JS or a shell's
+// env, so both are entitled to prove it the same way.
+pub(crate) fn webview_proxy_secret(app: &AppHandle, ws_id: &str) -> Option<String> {
+    app.state::<WebviewProxySecrets>()
+        .0
+        .lock()
+        .ok()?
+        .get(ws_id)
+        .cloned()
+}
+
 // Webview-side HTTP proxy. The webview no longer talks to the sidecar
 // directly: it invokes this command, which lives in the same trust
 // domain as the sidecar (the Tauri host that spawned it) and therefore
@@ -1336,13 +1958,16 @@ pub(crate) fn sidecar_port_and_token(app: &AppHandle, ws_id: &str) -> Result<(u1
 #[tauri::command]
 async fn api_request(
     app: AppHandle,
+    window: tauri::Window,
     method: String,
     path: String,
     body: Option<String>,
     headers: Option<HashMap<String, String>>,
 ) -> Result<ApiResponse, String> {
-    // Route by the ACTIVE workspace's config.
-    let (ws_id, cfg) = active_workspace(&app)?;
+    // Route by THIS WINDOW's workspace config (#223), not the globally
+    // "active" one.
+    let ws_id = ws_of(&window)?;
+    let cfg = workspace_config_for(&app, &ws_id)?;
     let is_central = workspace::is_central(&cfg);
 
     // In central mode, LOCAL_ONLY paths (mirror/sync/scope/sandbox) are
@@ -1375,9 +2000,11 @@ async fn api_request(
         .await?;
 
         if resp.status == 401 {
-            // Silent refresh + retry once.
+            // Silent refresh + retry once. Same window, so the same
+            // workspace the request above was actually for (#223) --
+            // auth_refresh no longer re-derives it from "the active one".
             info!("api_request central: got 401, attempting silent refresh");
-            match auth::auth_refresh(app.clone()).await {
+            match auth::auth_refresh(window.clone()).await {
                 Err(e) => {
                     warn!("api_request central: silent refresh failed: {e}");
                     return Ok(ApiResponse {
@@ -1475,14 +2102,6 @@ async fn api_request(
     Ok(ApiResponse { status, body })
 }
 
-// True when `ws_id` is the active workspace at call time. Gates the
-// `backend-ready` / `backend-error` emits: the webview boot contract
-// (apps/web/src/lib/backend-url.ts) resolves/rejects on ANY such event, so
-// events must only describe the workspace the webview is displaying.
-// Non-active workspace state stays visible via list_workspaces (`running`).
-fn is_active_ws(app: &AppHandle, ws_id: &str) -> bool {
-    active_workspace(app).map(|(id, _)| id).ok().as_deref() == Some(ws_id)
-}
 
 // Kill one workspace's sidecar child if we still hold a handle to it, and
 // drop its port entry. Used by the lifecycle commands (disable/delete/
@@ -1661,13 +2280,11 @@ pub(crate) fn spawn_sidecar_ws(
                     .lock()
                     .unwrap()
                     .insert(ws_id.to_string(), 0);
-                // Emit only for the active workspace: the webview boot
-                // resolves on any backend-ready, so another workspace's
-                // sentinel must not complete the active workspace's boot.
-                // Non-active status surfaces via list_workspaces instead.
-                if is_active_ws(app, ws_id) {
-                    let _ = app.emit("backend-ready", 0u16);
-                }
+                // Per-window (#227): only ws:<id>'s own window ever
+                // receives this, so a deferred sentinel for one workspace
+                // can never be mistaken for another's readiness.
+                clear_pending_backend_error(app, ws_id);
+                let _ = app.emit_to(format!("ws:{ws_id}"), "backend-ready", 0u16);
                 return Ok(());
             }
         }
@@ -1811,23 +2428,19 @@ pub(crate) fn spawn_sidecar_ws(
                                 .lock()
                                 .unwrap()
                                 .insert(ws.clone(), port);
-                            // Webview boot contract: it resolves/rejects on
-                            // any backend-ready/-error, so only the ACTIVE
-                            // workspace's sidecar may emit. Non-active status
-                            // surfaces via list_workspaces (`running`).
-                            if is_active_ws(&handle, &ws) {
-                                let _ = handle.emit("backend-ready", port);
-                            }
+                            // Per-window (#227): only ws:<id>'s own window
+                            // ever receives this.
+                            clear_pending_backend_error(&handle, &ws);
+                            let _ = handle.emit_to(format!("ws:{ws}"), "backend-ready", port);
                             info!("sidecar[{ws}] ready on port {port}");
                         }
                     } else if let Some(rest) = line.strip_prefix("PORTUNI_BACKEND_ERROR=") {
                         let msg = rest.trim().to_string();
                         error!("sidecar[{ws}] backend error: {msg}");
-                        // Active-only: a non-active workspace's startup
-                        // failure must not reject the webview boot.
-                        if is_active_ws(&handle, &ws) {
-                            let _ = handle.emit("backend-error", msg);
-                        }
+                        // Per-window (#227), with a replay for a window
+                        // created after this fires -- see PendingBackendErrors.
+                        set_pending_backend_error(&handle, &ws, &msg);
+                        let _ = handle.emit_to(format!("ws:{ws}"), "backend-error", msg);
                     } else {
                         info!("sidecar[{ws}]: {line}");
                     }
@@ -1846,15 +2459,11 @@ pub(crate) fn spawn_sidecar_ws(
                         .lock()
                         .unwrap()
                         .remove(&ws);
-                    // Active-only (webview boot contract): another
-                    // workspace's crash must not take down the UI boot;
-                    // it stays visible via list_workspaces (`running`).
-                    if is_active_ws(&handle, &ws) {
-                        let _ = handle.emit(
-                            "backend-error",
-                            format!("sidecar {ws} terminated (exit code {:?})", payload.code),
-                        );
-                    }
+                    // Per-window (#227), with a replay for a window created
+                    // after this fires -- see PendingBackendErrors.
+                    let msg = format!("sidecar {ws} terminated (exit code {:?})", payload.code);
+                    set_pending_backend_error(&handle, &ws, &msg);
+                    let _ = handle.emit_to(format!("ws:{ws}"), "backend-error", msg);
                 }
                 _ => {}
             }
@@ -1962,6 +2571,11 @@ struct WorkspaceInfo {
     deferred: bool,
     mcp_server_name: String,
     workspace_root: String,
+    // True when a ws:<id> window is currently open for this workspace
+    // (#226) -- read live from app.webview_windows(), not from the
+    // persisted open_windows (which can lag a focus-only change). Drives
+    // the Sidebar switcher's "already open" marking.
+    window_open: bool,
 }
 
 #[tauri::command]
@@ -1992,8 +2606,32 @@ fn list_workspaces(app: AppHandle) -> Result<Vec<WorkspaceInfo>, String> {
             deferred: ports.get(id).is_some_and(|p| *p == 0),
             mcp_server_name: workspace::mcp_server_name(id, cfg),
             workspace_root: cfg.effective_workspace_root(),
+            window_open: window_open_for(&app, id),
         })
         .collect())
+}
+
+// Focus ws:<id> if it already has a window, else create one (#226) -- the
+// switcher's single entry point, replacing set_active_workspace + a full
+// page reload. Validates the workspace exists and is enabled first:
+// open_window itself doesn't check, and a disabled/unknown id would
+// otherwise silently create an unusable window.
+#[tauri::command]
+fn open_workspace_window(app: AppHandle, id: String) -> Result<(), String> {
+    let label = format!("ws:{id}");
+    if let Some(w) = app.get_webview_window(&label) {
+        return w.set_focus().map_err(|e| e.to_string());
+    }
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    match workspace::load(&data_dir)? {
+        workspace::LoadedConfig::V2(file) => match file.workspaces.get(&id) {
+            Some(cfg) if cfg.enabled => {}
+            Some(_) => return Err(format!("workspace '{id}' is disabled")),
+            None => return Err(format!("unknown workspace '{id}'")),
+        },
+        _ => return Err("config not migrated to workspaces yet".to_string()),
+    }
+    open_window(&app, &label).map_err(|e| e.to_string())
 }
 
 #[derive(Deserialize)]
@@ -2013,71 +2651,82 @@ fn create_workspace(app: AppHandle, args: CreateWorkspaceArgs) -> Result<(), Str
     if !workspace::is_valid_workspace_id(&args.id) {
         return Err("invalid workspace id (use lowercase letters, digits, dashes)".to_string());
     }
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Err("config not migrated to workspaces yet".to_string()),
-    };
-    if file.workspaces.contains_key(&args.id) {
-        return Err(format!("workspace '{}' already exists", args.id));
-    }
-    let port = workspace::allocate_port(&file.workspaces);
-    let cfg = workspace::WorkspaceConfig {
-        label: args.label,
-        enabled: true,
-        turso_url: args.turso_url.filter(|s| !s.trim().is_empty()),
-        workspace_root: Some(args.workspace_root),
-        mcp_port: Some(port),
-        server_url: args.server_url.filter(|s| !s.trim().is_empty()),
-        google_client_id: args.google_client_id.filter(|s| !s.trim().is_empty()),
-        google_client_secret: args.google_client_secret.filter(|s| !s.trim().is_empty()),
-        data_mode: if args.data_mode == "central" {
-            Some("central".to_string())
-        } else {
-            None
-        },
-        mcp_server_name: None,
-    };
-    file.workspaces.insert(args.id.clone(), cfg);
-    workspace::save(&data_dir, &file)?;
+    with_config_mut(&app, |file| {
+        if file.workspaces.contains_key(&args.id) {
+            return Err(format!("workspace '{}' already exists", args.id));
+        }
+        let port = workspace::allocate_port(&file.workspaces);
+        let cfg = workspace::WorkspaceConfig {
+            label: args.label.clone(),
+            enabled: true,
+            turso_url: args.turso_url.clone().filter(|s| !s.trim().is_empty()),
+            workspace_root: Some(args.workspace_root.clone()),
+            mcp_port: Some(port),
+            server_url: args.server_url.clone().filter(|s| !s.trim().is_empty()),
+            google_client_id: args.google_client_id.clone().filter(|s| !s.trim().is_empty()),
+            google_client_secret: args
+                .google_client_secret
+                .clone()
+                .filter(|s| !s.trim().is_empty()),
+            data_mode: if args.data_mode == "central" {
+                Some("central".to_string())
+            } else {
+                None
+            },
+            mcp_server_name: None,
+        };
+        file.workspaces.insert(args.id.clone(), cfg);
+        Ok(())
+    })?;
     if let Err(e) = spawn_sidecar_ws(&app, &args.id) {
         warn!("new workspace {} sidecar spawn failed: {e}", args.id);
+    }
+    // Open and focus the new workspace's own window (#225).
+    let label = format!("ws:{}", args.id);
+    if let Err(e) = open_window(&app, &label) {
+        warn!("new workspace {}: window open failed: {e}", args.id);
+    } else if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.set_focus();
     }
     Ok(())
 }
 
 #[tauri::command]
 fn set_active_workspace(app: AppHandle, id: String) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Err("config not migrated to workspaces yet".to_string()),
-    };
-    if !file.workspaces.contains_key(&id) {
-        return Err(format!("unknown workspace '{id}'"));
-    }
-    file.active_workspace = id;
-    workspace::save(&data_dir, &file)
+    with_config_mut(&app, |file| {
+        if !file.workspaces.contains_key(&id) {
+            return Err(format!("unknown workspace '{id}'"));
+        }
+        file.active_workspace = id.clone();
+        Ok(())
+    })
 }
 
 #[tauri::command]
 fn set_workspace_enabled(app: AppHandle, id: String, enabled: bool) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Err("config not migrated to workspaces yet".to_string()),
-    };
-    {
-        let cfg = file
-            .workspaces
-            .get_mut(&id)
-            .ok_or_else(|| format!("unknown workspace '{id}'"))?;
-        cfg.enabled = enabled;
+    if !enabled && window_open_for(&app, &id) {
+        return Err("Nejdřív zavři okno tohoto workspace.".to_string());
     }
-    if !enabled && file.active_workspace == id {
-        return Err("cannot disable the active workspace — switch first".to_string());
-    }
-    workspace::save(&data_dir, &file)?;
+    let history = focus_history_snapshot(&app);
+    with_config_mut(&app, |file| {
+        {
+            let cfg = file
+                .workspaces
+                .get_mut(&id)
+                .ok_or_else(|| format!("unknown workspace '{id}'"))?;
+            cfg.enabled = enabled;
+        }
+        // The window-open guard above already means this workspace's own
+        // window is closed, but the value config.json last recorded as
+        // active_workspace can still be stale-pointing at it (persisted
+        // only on open/close, not on every focus) -- reassign so a later
+        // "empty open_windows -> fall back to active_workspace" startup
+        // never lands on a disabled workspace.
+        if !enabled && file.active_workspace == id {
+            file.active_workspace = reassign_active_workspace(&id, &history, &file.workspaces);
+        }
+        Ok(())
+    })?;
     if enabled {
         if let Err(e) = spawn_sidecar_ws(&app, &id) {
             warn!("enable {id}: sidecar spawn failed: {e}");
@@ -2091,36 +2740,43 @@ fn set_workspace_enabled(app: AppHandle, id: String, enabled: bool) -> Result<()
 
 #[tauri::command]
 fn delete_workspace(app: AppHandle, id: String) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Err("config not migrated to workspaces yet".to_string()),
-    };
-    if file.active_workspace == id {
-        return Err("cannot delete the active workspace — switch first".to_string());
+    if window_open_for(&app, &id) {
+        return Err("Nejdřív zavři okno tohoto workspace.".to_string());
     }
-    if file.workspaces.len() == 1 {
-        return Err("cannot delete the last workspace".to_string());
-    }
-    if !file.workspaces.contains_key(&id) {
-        return Err(format!("unknown workspace '{id}'"));
-    }
-    // Resolve the MCP entry name while the workspace is still in config — the
-    // migrated workspace keeps the historical "portuni" name, which we could
-    // not recover once it's removed below.
-    let mcp_name = file
-        .workspaces
-        .get(&id)
-        .map(|c| workspace::mcp_server_name(&id, c))
-        .unwrap_or_else(|| format!("portuni-{id}"));
-    // Stop the sidecar (a process, no persisted state).
-    kill_sidecar_ws(&app, &id);
-    // COMMIT POINT: drop the workspace from config.json and persist FIRST. If
-    // this save fails we return early having touched no credentials — the
-    // workspace is still fully intact (config lists it, Keychain holds its
-    // secrets) and its sidecar re-spawns on the next launch.
-    file.workspaces.remove(&id);
-    workspace::save(&data_dir, &file)?;
+    let history = focus_history_snapshot(&app);
+    let mut mcp_name = String::new();
+    with_config_mut(&app, |file| {
+        if file.workspaces.len() == 1 {
+            return Err("cannot delete the last workspace".to_string());
+        }
+        if !file.workspaces.contains_key(&id) {
+            return Err(format!("unknown workspace '{id}'"));
+        }
+        // Resolve the MCP entry name while the workspace is still in config
+        // — the migrated workspace keeps the historical "portuni" name,
+        // which we could not recover once it's removed below.
+        mcp_name = file
+            .workspaces
+            .get(&id)
+            .map(|c| workspace::mcp_server_name(&id, c))
+            .unwrap_or_else(|| format!("portuni-{id}"));
+        // Stop the sidecar (a process, no persisted state) before the
+        // commit point below.
+        kill_sidecar_ws(&app, &id);
+        // COMMIT POINT: drop the workspace from config.json; with_config_mut
+        // persists it right after this closure returns. If that save fails
+        // we return early having touched no credentials — the workspace is
+        // still fully intact (config lists it, Keychain holds its secrets)
+        // and its sidecar re-spawns on the next launch.
+        file.workspaces.remove(&id);
+        // See set_workspace_enabled's comment: config.json's active_workspace
+        // can be stale-pointing at the just-deleted id even though its
+        // window (guarded above) is already closed.
+        if file.active_workspace == id {
+            file.active_workspace = reassign_active_workspace(&id, &history, &file.workspaces);
+        }
+        Ok(())
+    })?;
     // Config committed — the workspace is gone. Everything below is best-effort
     // cleanup of now-orphaned state, logged but never propagated, so a Keychain
     // or config-file hiccup cannot leave the workspace half-listed with its
@@ -2231,23 +2887,20 @@ fn create_profile(app: AppHandle, args: CreateProfileArgs) -> Result<(), String>
         return Err("profile label is required".to_string());
     }
     reject_secret_shaped_keys(&args.env)?;
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Err("config not migrated to workspaces yet".to_string()),
-    };
-    if file.profiles.contains_key(&args.id) {
-        return Err(format!("profile '{}' already exists", args.id));
-    }
-    file.profiles.insert(
-        args.id,
-        workspace::ProfileConfig {
-            label: args.label,
-            env: args.env,
-            command: args.command.filter(|s| !s.trim().is_empty()),
-        },
-    );
-    workspace::save(&data_dir, &file)
+    with_config_mut(&app, |file| {
+        if file.profiles.contains_key(&args.id) {
+            return Err(format!("profile '{}' already exists", args.id));
+        }
+        file.profiles.insert(
+            args.id.clone(),
+            workspace::ProfileConfig {
+                label: args.label.clone(),
+                env: args.env.clone(),
+                command: args.command.clone().filter(|s| !s.trim().is_empty()),
+            },
+        );
+        Ok(())
+    })
 }
 
 #[derive(Deserialize)]
@@ -2287,19 +2940,16 @@ fn update_profile(app: AppHandle, args: UpdateProfileArgs) -> Result<(), String>
         return Err("profile label is required".to_string());
     }
     reject_secret_shaped_keys(&args.env)?;
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Err("config not migrated to workspaces yet".to_string()),
-    };
-    let cfg = file
-        .profiles
-        .get_mut(&args.id)
-        .ok_or_else(|| format!("unknown profile '{}'", args.id))?;
-    cfg.label = args.label;
-    cfg.env = merge_profile_env_update(&cfg.env, args.env);
-    cfg.command = args.command.filter(|s| !s.trim().is_empty());
-    workspace::save(&data_dir, &file)
+    with_config_mut(&app, |file| {
+        let cfg = file
+            .profiles
+            .get_mut(&args.id)
+            .ok_or_else(|| format!("unknown profile '{}'", args.id))?;
+        cfg.label = args.label.clone();
+        cfg.env = merge_profile_env_update(&cfg.env, args.env.clone());
+        cfg.command = args.command.clone().filter(|s| !s.trim().is_empty());
+        Ok(())
+    })
 }
 
 // Narrow, purpose-built exception to "list_profiles never returns env
@@ -2323,17 +2973,14 @@ fn profile_config_dir(app: AppHandle, id: String) -> Result<Option<String>, Stri
 
 #[tauri::command]
 fn delete_profile(app: AppHandle, id: String) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Err("config not migrated to workspaces yet".to_string()),
-    };
-    if !file.profiles.contains_key(&id) {
-        return Err(format!("unknown profile '{id}'"));
-    }
-    file.profiles.remove(&id);
-    file.default_profile_by_org.retain(|_, p| p != &id);
-    workspace::save(&data_dir, &file)
+    with_config_mut(&app, |file| {
+        if !file.profiles.contains_key(&id) {
+            return Err(format!("unknown profile '{id}'"));
+        }
+        file.profiles.remove(&id);
+        file.default_profile_by_org.retain(|_, p| p != &id);
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -2342,23 +2989,20 @@ fn set_default_profile_for_org(
     org_id: String,
     profile_id: Option<String>,
 ) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Err("config not migrated to workspaces yet".to_string()),
-    };
-    match profile_id {
-        Some(pid) => {
-            if !file.profiles.contains_key(&pid) {
-                return Err(format!("unknown profile '{pid}'"));
+    with_config_mut(&app, |file| {
+        match &profile_id {
+            Some(pid) => {
+                if !file.profiles.contains_key(pid) {
+                    return Err(format!("unknown profile '{pid}'"));
+                }
+                file.default_profile_by_org.insert(org_id.clone(), pid.clone());
             }
-            file.default_profile_by_org.insert(org_id, pid);
+            None => {
+                file.default_profile_by_org.remove(&org_id);
+            }
         }
-        None => {
-            file.default_profile_by_org.remove(&org_id);
-        }
-    }
-    workspace::save(&data_dir, &file)
+        Ok(())
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2367,8 +3011,20 @@ pub fn run() {
     // spawn_all_sidecars — each spawn_sidecar_ws caches that workspace's
     // MCP token into AuthTokens and its bound port into BackendPorts.
     tauri::Builder::default()
+        // Must be the very first plugin registered (Tauri's own
+        // requirement) -- a second launch (`open -n`, a Dock re-click)
+        // relays its argv/cwd here instead of running its own .setup(),
+        // which would otherwise spawn its own sidecars and kill the first
+        // instance's out from under it (#230; reap_orphan_sidecar kill -9s
+        // any foreign process already holding a workspace's port).
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            focus_or_open_most_recent_window(app);
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Per-window (by label) size/position persistence (#225): each
+        // ws:<id> window remembers its own geometry across launches.
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         // Logger plugin is initialised before spawn_all_sidecars so every line we
         // emit during boot — including the auth-token confirmation and any
         // sidecar stdout/stderr — lands in the file at
@@ -2390,6 +3046,10 @@ pub fn run() {
         .manage(BackendPorts(Mutex::new(HashMap::new())))
         .manage(AuthTokens(Mutex::new(HashMap::new())))
         .manage(WebviewProxySecrets(Mutex::new(HashMap::new())))
+        .manage(ConfigLock(Mutex::new(())))
+        .manage(FocusHistory(Mutex::new(Vec::new())))
+        .manage(PendingBackendErrors(Mutex::new(HashMap::new())))
+        .manage(QuitQueue(Mutex::new(None)))
         .manage(pty::PtyState::default())
         .manage(updater::PendingUpdate::default())
         .register_uri_scheme_protocol("portuni-html", |ctx, request| {
@@ -2407,17 +3067,26 @@ pub fn run() {
                 .to_string();
             let candidate = std::path::PathBuf::from(&decoded);
 
-            // Scope the preview to the ACTIVE workspace's mirror root. Expand
-            // the config's leading ~ (the sidecar does this for the absolute
-            // local_path we compare against); fall back to the raw value if the
-            // home dir is somehow unavailable.
-            let root = active_workspace(app).ok().map(|(_, cfg)| {
-                let raw = cfg.effective_workspace_root();
-                match app.path().home_dir() {
-                    Ok(h) => expand_tilde(&h, &raw),
-                    Err(_) => std::path::PathBuf::from(raw),
-                }
-            });
+            // Scope the preview to THIS WINDOW's workspace mirror root (#223)
+            // -- resolved from the requesting webview's own label, not the
+            // globally-"active" workspace, so a preview in one window can
+            // never read another window's mirror. Expand the config's
+            // leading ~ (the sidecar does this for the absolute local_path
+            // we compare against); fall back to the raw value if the home
+            // dir is somehow unavailable.
+            let root = app
+                .path()
+                .app_data_dir()
+                .ok()
+                .and_then(|data_dir| ws_of_from_dir(ctx.webview_label(), &data_dir).ok())
+                .and_then(|ws_id| workspace_config_for(app, &ws_id).ok())
+                .map(|cfg| {
+                    let raw = cfg.effective_workspace_root();
+                    match app.path().home_dir() {
+                        Ok(h) => expand_tilde(&h, &raw),
+                        Err(_) => std::path::PathBuf::from(raw),
+                    }
+                });
 
             let forbidden = || {
                 Response::builder()
@@ -2469,7 +3138,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            approve_exit,
+            decline_exit,
             get_backend_port,
             get_data_mode,
             open_external,
@@ -2509,6 +3178,7 @@ pub fn run() {
             set_active_workspace,
             set_workspace_enabled,
             delete_workspace,
+            open_workspace_window,
             list_profiles,
             create_profile,
             update_profile,
@@ -2522,6 +3192,10 @@ pub fn run() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            // app.windows in tauri.conf.json is [] (#222): the startup
+            // window(s) are created here instead of automatically, restoring
+            // open_windows (#225) or falling back to a single window / bootstrap.
+            create_startup_windows(&handle)?;
             // Each enabled workspace gets its own sidecar; spawn_sidecar_ws
             // caches the per-workspace MCP token into AuthTokens as it goes.
             // A v1/Missing config is a no-op until migration/onboarding.
@@ -2566,51 +3240,73 @@ pub fn run() {
         })
         .on_menu_event(|app, event| {
             if event.id().as_ref() == "portuni-quit" {
-                // Same contract as the run-handler gate: ask the webview
-                // guards when there is a window to ask; otherwise just exit.
-                if !EXIT_APPROVED.load(Ordering::SeqCst)
-                    && app.get_webview_window("main").is_some()
-                    && app.emit("app-exit-requested", ()).is_ok()
-                {
-                    info!("quit requested (menu/Cmd+Q) — delegated to webview guards");
-                    schedule_exit_fallback(app);
-                } else {
-                    app.exit(0);
-                }
+                info!("quit requested (menu/Cmd+Q) — closing windows in sequence");
+                begin_quit(app, QuitAction::Exit);
             }
         })
         .on_window_event(|window, event| {
             // Only Destroyed, not CloseRequested: the webview registers an
-            // onCloseRequested listener (dirty-editor guard), so a close
-            // request may be cancelled in JS. Killing the sidecars on the
-            // request would leave a live window with dead backends.
-            // Cmd+Q / app exit is covered by ExitRequested/Exit below.
+            // onCloseRequested listener (dirty-editor/unsynced-files/
+            // running-terminals guard), so a close request may be
+            // cancelled in JS. Sidecars are no longer killed here (#229) --
+            // a sidecar is bound to `enabled`, not to a window (external
+            // MCP clients address it on its fixed port regardless of any
+            // window), and killing it on every window close was already
+            // wrong once more than one window could be open. Sidecars die
+            // only in the app-exit ExitRequested/Exit handler below.
             if matches!(event, tauri::WindowEvent::Destroyed) {
-                kill_all_sidecars(window.app_handle());
+                // #225/#227: track window close for open_windows/
+                // active_workspace persistence and focus history.
+                // "bootstrap" is never a workspace and ws_of rejects it, so
+                // this is a no-op for it.
+                if let Ok(ws_id) = ws_of(window) {
+                    let app = window.app_handle();
+                    if let Some(state) = app.try_state::<FocusHistory>() {
+                        if let Ok(mut history) = state.0.lock() {
+                            untrack_focus(&mut history, &ws_id);
+                        }
+                    }
+                    persist_open_windows(app);
+                }
+                // #229: this window's turn in a sequential quit (if one is
+                // running) is done -- close the next queued window, or
+                // finish the sequence. A harmless no-op otherwise.
+                advance_quit(window.app_handle());
+            } else if let tauri::WindowEvent::Focused(true) = event {
+                if let Ok(ws_id) = ws_of(window) {
+                    if let Some(state) = window.app_handle().try_state::<FocusHistory>() {
+                        if let Ok(mut history) = state.0.lock() {
+                            touch_focus(&mut history, &ws_id);
+                        }
+                    }
+                    // Not persisted here -- only in-memory. persist_open_windows
+                    // (called on the next open/close) is what writes it out,
+                    // matching the spec's "not on every focus change".
+                }
             }
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            // Explicit exit: prevent it once and hand the decision to the
-            // webview guards (dirty editor, unsynced files) via
-            // `app-exit-requested`; the webview answers with approve_exit,
-            // whose re-exit passes the EXIT_APPROVED gate. macOS Cmd+Q /
-            // menu Quit arrives via the native `terminate:` selector as
-            // ExitRequested with code None — the same code the
-            // all-windows-closed exit carries — so the branches are told
-            // apart by whether the main window still exists: Cmd+Q fires
-            // with the window alive, the post-close exit fires after it
-            // was destroyed (its JS onCloseRequested guard already ran).
-            // If there is no window to ask — or the emit fails — never
-            // block the exit.
+            // An OS-driven exit request (Dock "Quit", session logout, or
+            // any trigger other than our own "portuni-quit" menu item,
+            // which never reaches this -- it calls begin_quit directly)
+            // while windows remain: defer to the same sequential-close
+            // quit every other trigger uses, rather than letting Tauri
+            // tear everything down unchecked. If one is already running
+            // (is_quitting), just keep deferring to it -- begin_quit's own
+            // is-already-quitting guard makes a second call here a no-op.
+            // Once every window is gone (has_window false -- either our
+            // own sequence finished and called app.exit(0) itself, never
+            // reaching this branch, or the user closed windows one by one
+            // by hand without ever quitting), fall through and let the
+            // exit proceed.
             if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
-                let approved = EXIT_APPROVED.load(Ordering::SeqCst);
-                let has_window = app.get_webview_window("main").is_some();
-                info!("exit requested (code={code:?}, approved={approved}, window={has_window})");
-                if !approved && has_window && app.emit("app-exit-requested", ()).is_ok() {
+                let has_window = !app.webview_windows().is_empty();
+                info!("exit requested (code={code:?}, quitting={}, window={has_window})", is_quitting(app));
+                if has_window {
                     api.prevent_exit();
-                    schedule_exit_fallback(app);
+                    begin_quit(app, QuitAction::Exit);
                     return;
                 }
             }
@@ -2625,6 +3321,508 @@ pub fn run() {
                 kill_all_sidecars(app);
             }
         });
+}
+
+#[cfg(test)]
+mod ws_of_tests {
+    use super::ws_of_from_dir;
+    use std::path::PathBuf;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "portuni-ws-of-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn valid_label_resolves_a_registered_workspace() {
+        let dir = temp_dir("valid");
+        let file = crate::workspace::migrate_v1_value(&serde_json::json!({}), "acme");
+        crate::workspace::save(&dir, &file).unwrap();
+        assert_eq!(ws_of_from_dir("ws:acme", &dir).unwrap(), "acme");
+    }
+
+    #[test]
+    fn unknown_workspace_id_is_an_error() {
+        let dir = temp_dir("unknown");
+        let file = crate::workspace::migrate_v1_value(&serde_json::json!({}), "acme");
+        crate::workspace::save(&dir, &file).unwrap();
+        assert!(ws_of_from_dir("ws:nope", &dir).is_err());
+    }
+
+    #[test]
+    fn bootstrap_label_is_an_error() {
+        let dir = temp_dir("bootstrap");
+        let file = crate::workspace::migrate_v1_value(&serde_json::json!({}), "acme");
+        crate::workspace::save(&dir, &file).unwrap();
+        assert!(ws_of_from_dir("bootstrap", &dir).is_err());
+    }
+
+    #[test]
+    fn garbage_label_is_an_error() {
+        let dir = temp_dir("garbage");
+        assert!(ws_of_from_dir("not-a-real-label", &dir).is_err());
+        assert!(ws_of_from_dir("ws:", &dir).is_err(), "empty id after the prefix");
+        assert!(ws_of_from_dir("", &dir).is_err());
+    }
+}
+
+#[cfg(test)]
+mod config_lock_tests {
+    use super::with_config_mut_at;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Barrier, Mutex};
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "portuni-config-lock-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // The bug #224 fixes: two commands each doing their own load ->
+    // modify -> workspace::save (no lock) can interleave -- thread A loads,
+    // thread B loads the same pre-A-write state, A saves, B saves and
+    // clobbers A's change. Guarding the whole cycle with one Mutex<()>
+    // serializes them so both edits land regardless of interleaving.
+    #[test]
+    fn two_concurrent_mutations_both_land() {
+        let dir = temp_dir("concurrent");
+        let seed = crate::workspace::migrate_v1_value(&serde_json::json!({}), "seed");
+        crate::workspace::save(&dir, &seed).unwrap();
+
+        let lock = Arc::new(Mutex::new(()));
+        // Release both threads at the same instant so a missing lock would
+        // actually race in practice, not just in theory.
+        let barrier = Arc::new(Barrier::new(2));
+
+        let handles: Vec<_> = ["alpha", "beta"]
+            .into_iter()
+            .map(|id| {
+                let lock = lock.clone();
+                let dir = dir.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    with_config_mut_at(&lock, &dir, |file| {
+                        file.workspaces.insert(
+                            id.to_string(),
+                            crate::workspace::WorkspaceConfig::default(),
+                        );
+                        Ok(())
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let file = match crate::workspace::load(&dir).unwrap() {
+            crate::workspace::LoadedConfig::V2(f) => f,
+            _ => panic!("expected V2"),
+        };
+        assert!(file.workspaces.contains_key("seed"));
+        assert!(file.workspaces.contains_key("alpha"), "alpha's write was lost");
+        assert!(file.workspaces.contains_key("beta"), "beta's write was lost");
+    }
+}
+
+#[cfg(test)]
+mod multi_window_phase2_tests {
+    use super::{
+        is_window_open_for, reassign_active_workspace, single_instance_target,
+        startup_window_labels, touch_focus, untrack_focus,
+    };
+    use crate::workspace::{WorkspaceConfig, WorkspacesFile};
+    use std::collections::BTreeMap;
+
+    fn ws(enabled: bool) -> WorkspaceConfig {
+        WorkspaceConfig {
+            enabled,
+            ..Default::default()
+        }
+    }
+
+    fn file(active: &str, open_windows: &[&str], workspaces: &[(&str, bool)]) -> WorkspacesFile {
+        WorkspacesFile {
+            config_version: 2,
+            active_workspace: active.to_string(),
+            workspaces: workspaces
+                .iter()
+                .map(|(id, enabled)| (id.to_string(), ws(*enabled)))
+                .collect(),
+            profiles: BTreeMap::new(),
+            default_profile_by_org: BTreeMap::new(),
+            open_windows: open_windows.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    // --- startup_window_labels: startup selection rules ---
+
+    #[test]
+    fn restores_every_valid_enabled_open_window() {
+        let f = file("acme", &["acme", "beta"], &[("acme", true), ("beta", true)]);
+        let mut labels = startup_window_labels(&f);
+        labels.sort();
+        assert_eq!(labels, vec!["ws:acme".to_string(), "ws:beta".to_string()]);
+    }
+
+    #[test]
+    fn filters_out_disabled_or_unknown_open_window_ids() {
+        // "beta" is disabled, "ghost" no longer exists -- neither gets a window.
+        let f = file("acme", &["acme", "beta", "ghost"], &[("acme", true), ("beta", false)]);
+        assert_eq!(startup_window_labels(&f), vec!["ws:acme".to_string()]);
+    }
+
+    #[test]
+    fn empty_open_windows_falls_back_to_active_workspace() {
+        let f = file("acme", &[], &[("acme", true), ("beta", true)]);
+        assert_eq!(startup_window_labels(&f), vec!["ws:acme".to_string()]);
+    }
+
+    #[test]
+    fn fully_invalid_open_windows_falls_back_to_active_workspace() {
+        let f = file("acme", &["ghost", "beta"], &[("acme", true), ("beta", false)]);
+        assert_eq!(startup_window_labels(&f), vec!["ws:acme".to_string()]);
+    }
+
+    #[test]
+    fn no_valid_fallback_either_returns_empty_for_bootstrap() {
+        // active_workspace itself is disabled, open_windows is empty.
+        let f = file("acme", &[], &[("acme", false)]);
+        assert!(startup_window_labels(&f).is_empty());
+    }
+
+    // --- is_window_open_for: disable/delete refusal ---
+
+    #[test]
+    fn refuses_while_its_window_is_open() {
+        let open = vec!["ws:acme".to_string(), "bootstrap".to_string()];
+        assert!(is_window_open_for(&open, "acme"));
+        assert!(!is_window_open_for(&open, "beta"));
+    }
+
+    // --- reassign_active_workspace: fallback reassignment ---
+
+    #[test]
+    fn reassigns_to_the_most_recently_focused_remaining_window() {
+        let workspaces: BTreeMap<String, WorkspaceConfig> =
+            [("acme", true), ("beta", true), ("gamma", true)]
+                .into_iter()
+                .map(|(id, e)| (id.to_string(), ws(e)))
+                .collect();
+        let history = vec!["gamma".to_string(), "beta".to_string(), "acme".to_string()];
+        // "acme" is being removed; "beta" is the next-most-recently focused.
+        assert_eq!(reassign_active_workspace("acme", &history, &workspaces), "beta");
+    }
+
+    #[test]
+    fn skips_history_entries_that_are_disabled_or_the_removed_id_itself() {
+        let workspaces: BTreeMap<String, WorkspaceConfig> =
+            [("acme", true), ("beta", false), ("gamma", true)]
+                .into_iter()
+                .map(|(id, e)| (id.to_string(), ws(e)))
+                .collect();
+        let history = vec!["gamma".to_string(), "beta".to_string(), "acme".to_string()];
+        assert_eq!(reassign_active_workspace("acme", &history, &workspaces), "gamma");
+    }
+
+    #[test]
+    fn falls_back_to_the_first_remaining_enabled_workspace_with_no_useful_history() {
+        let workspaces: BTreeMap<String, WorkspaceConfig> = [("acme", true), ("beta", true)]
+            .into_iter()
+            .map(|(id, e)| (id.to_string(), ws(e)))
+            .collect();
+        assert_eq!(reassign_active_workspace("acme", &[], &workspaces), "beta");
+    }
+
+    // --- touch_focus / untrack_focus ---
+
+    #[test]
+    fn touch_focus_moves_an_existing_entry_to_the_end_without_duplicating() {
+        let mut history = vec!["acme".to_string(), "beta".to_string()];
+        touch_focus(&mut history, "acme");
+        assert_eq!(history, vec!["beta".to_string(), "acme".to_string()]);
+    }
+
+    #[test]
+    fn untrack_focus_removes_the_entry() {
+        let mut history = vec!["acme".to_string(), "beta".to_string()];
+        untrack_focus(&mut history, "acme");
+        assert_eq!(history, vec!["beta".to_string()]);
+    }
+
+    // --- single_instance_target: #230 second-launch relay ---
+
+    #[test]
+    fn prefers_the_most_recently_focused_window() {
+        let history = vec!["acme".to_string(), "beta".to_string()];
+        assert_eq!(single_instance_target(&history, Some("acme")), "ws:beta");
+    }
+
+    #[test]
+    fn falls_back_to_active_workspace_with_no_focus_history() {
+        assert_eq!(single_instance_target(&[], Some("acme")), "ws:acme");
+    }
+
+    #[test]
+    fn falls_back_to_bootstrap_with_neither() {
+        assert_eq!(single_instance_target(&[], None), "bootstrap");
+    }
+}
+
+#[cfg(test)]
+mod backend_status_replay_tests {
+    use super::{
+        backend_status_replay, record_pending_backend_error, retire_pending_backend_error,
+    };
+    use std::collections::HashMap;
+
+    // --- record/retire_pending_backend_error: the replay-on-create source ---
+
+    #[test]
+    fn recording_overwrites_the_previous_message_for_the_same_workspace() {
+        let mut pending = HashMap::new();
+        record_pending_backend_error(&mut pending, "acme", "first failure");
+        record_pending_backend_error(&mut pending, "acme", "second failure");
+        assert_eq!(pending.get("acme").map(String::as_str), Some("second failure"));
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[test]
+    fn retiring_removes_only_that_workspace() {
+        let mut pending = HashMap::new();
+        record_pending_backend_error(&mut pending, "acme", "boom");
+        record_pending_backend_error(&mut pending, "beta", "also boom");
+        retire_pending_backend_error(&mut pending, "acme");
+        assert!(!pending.contains_key("acme"));
+        assert_eq!(pending.get("beta").map(String::as_str), Some("also boom"));
+    }
+
+    #[test]
+    fn retiring_an_unknown_workspace_is_a_no_op() {
+        let mut pending = HashMap::new();
+        retire_pending_backend_error(&mut pending, "ghost");
+        assert!(pending.is_empty());
+    }
+
+    // --- backend_status_replay: what a just-created window should be sent ---
+
+    #[test]
+    fn a_known_port_replays_ready() {
+        assert_eq!(backend_status_replay(Some(47011), None), (Some(47011), None));
+    }
+
+    #[test]
+    fn a_pending_error_replays_alone_when_the_port_was_cleared() {
+        // CommandEvent::Terminated removes the BackendPorts entry but
+        // records the error -- exactly the race this window-creation
+        // replay exists for.
+        assert_eq!(
+            backend_status_replay(None, Some("sidecar acme terminated")),
+            (None, Some("sidecar acme terminated".to_string()))
+        );
+    }
+
+    #[test]
+    fn neither_known_replays_nothing() {
+        assert_eq!(backend_status_replay(None, None), (None, None));
+    }
+
+    #[test]
+    fn a_stale_pending_error_alongside_a_fresh_port_replays_both() {
+        // Transient: a fresh spawn's PORTUNI_LISTENING_PORT= line lands in
+        // BackendPorts before clear_pending_backend_error runs. Harmless --
+        // both events describe real (if momentarily contradictory) history,
+        // and the webview's own state machine resolves the same way it
+        // would if it had witnessed both events live.
+        assert_eq!(
+            backend_status_replay(Some(47011), Some("old failure")),
+            (Some(47011), Some("old failure".to_string()))
+        );
+    }
+}
+
+#[cfg(test)]
+mod quit_sequence_tests {
+    use super::{
+        quit_abort, quit_advance, should_persist_open_windows, with_config_mut_at, QuitAction,
+        QuitAdvance, QuitState,
+    };
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    fn state(remaining: &[&str], action: QuitAction) -> Option<QuitState> {
+        Some(QuitState {
+            remaining: remaining.iter().map(|s| s.to_string()).collect(),
+            action,
+        })
+    }
+
+    #[test]
+    fn idle_when_nothing_is_queued() {
+        assert_eq!(quit_advance(None), QuitAdvance::Idle);
+    }
+
+    #[test]
+    fn closes_windows_one_at_a_time_in_order() {
+        match quit_advance(state(&["ws:a", "ws:b"], QuitAction::Exit)) {
+            QuitAdvance::CloseWindow { label, next_state } => {
+                assert_eq!(label, "ws:a");
+                assert_eq!(next_state, state(&["ws:b"], QuitAction::Exit));
+            }
+            other => panic!("expected CloseWindow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finishes_with_exit_once_the_queue_is_empty() {
+        assert_eq!(
+            quit_advance(state(&[], QuitAction::Exit)),
+            QuitAdvance::Finished(QuitAction::Exit)
+        );
+    }
+
+    #[test]
+    fn finishes_with_restart_when_that_was_the_requested_action() {
+        assert_eq!(
+            quit_advance(state(&[], QuitAction::Restart)),
+            QuitAdvance::Finished(QuitAction::Restart)
+        );
+    }
+
+    #[test]
+    fn a_declined_window_aborts_the_whole_sequence_and_clears_quitting() {
+        // "quit sequence with one declining window aborts and clears
+        // quitting": mid-sequence (one window already closed, one still
+        // queued), quit_abort clears the state entirely -- the still-queued
+        // window is never asked, and the next quit_advance sees Idle, not a
+        // resumed sequence. is_quitting (the AppHandle-resolving wrapper
+        // around the same Option<QuitState>) would read false right after.
+        let mid_sequence = state(&["ws:b"], QuitAction::Exit);
+        let aborted = quit_abort(&mid_sequence);
+        assert_eq!(aborted, None);
+        assert_eq!(quit_advance(aborted), QuitAdvance::Idle);
+    }
+
+    #[test]
+    fn declining_with_nothing_in_progress_is_a_harmless_no_op() {
+        assert_eq!(quit_abort(&None), None);
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "portuni-quit-persist-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn open_windows_survive_a_completed_quit() {
+        // "open_windows preserved across a completed quit": simulate three
+        // windows closing in sequence -- each would normally call
+        // persist_open_windows and shrink the on-disk list toward empty,
+        // but should_persist_open_windows(quitting) is false throughout
+        // (this IS a quit), so every one of those writes is skipped. What's
+        // on disk at the end is exactly what was there before the quit
+        // started.
+        let dir = temp_dir("completed");
+        let mut file = crate::workspace::migrate_v1_value(&serde_json::json!({}), "a");
+        file.workspaces
+            .insert("b".to_string(), crate::workspace::WorkspaceConfig::default());
+        file.workspaces
+            .insert("c".to_string(), crate::workspace::WorkspaceConfig::default());
+        file.open_windows = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        crate::workspace::save(&dir, &file).unwrap();
+
+        let lock = Mutex::new(());
+        for shrinking_list in [vec!["b", "c"], vec!["c"], Vec::<&str>::new()] {
+            if should_persist_open_windows(/* quitting = */ true) {
+                with_config_mut_at(&lock, &dir, |f| {
+                    f.open_windows = shrinking_list.iter().map(|s| s.to_string()).collect();
+                    Ok(())
+                })
+                .unwrap();
+            }
+        }
+
+        let reloaded = match crate::workspace::load(&dir).unwrap() {
+            crate::workspace::LoadedConfig::V2(f) => f,
+            _ => panic!("expected V2"),
+        };
+        assert_eq!(
+            reloaded.open_windows,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn open_windows_do_update_for_a_plain_close_outside_any_quit() {
+        // Same shape, but should_persist_open_windows(false) -- an ordinary
+        // window close, not a quit -- so the write DOES land.
+        let dir = temp_dir("plain-close");
+        let mut file = crate::workspace::migrate_v1_value(&serde_json::json!({}), "a");
+        file.workspaces
+            .insert("b".to_string(), crate::workspace::WorkspaceConfig::default());
+        file.open_windows = vec!["a".to_string(), "b".to_string()];
+        crate::workspace::save(&dir, &file).unwrap();
+
+        let lock = Mutex::new(());
+        if should_persist_open_windows(/* quitting = */ false) {
+            with_config_mut_at(&lock, &dir, |f| {
+                f.open_windows = vec!["a".to_string()];
+                Ok(())
+            })
+            .unwrap();
+        }
+
+        let reloaded = match crate::workspace::load(&dir).unwrap() {
+            crate::workspace::LoadedConfig::V2(f) => f,
+            _ => panic!("expected V2"),
+        };
+        assert_eq!(reloaded.open_windows, vec!["a".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod fallback_should_fire_tests {
+    use super::fallback_should_fire;
+
+    #[test]
+    fn armed_and_unanswered_still_fires() {
+        // Same generation the timer was armed with: the window genuinely
+        // never answered its close request -- must still force it closed.
+        assert!(fallback_should_fire(1, 1));
+    }
+
+    #[test]
+    fn armed_then_declined_does_not_fire() {
+        // decline_exit bumped the generation past what this timer was
+        // armed with while it was sleeping.
+        assert!(!fallback_should_fire(1, 2));
+    }
+
+    #[test]
+    fn a_superseded_older_timer_does_not_fire() {
+        // A second schedule_exit_fallback call (advance_quit arming the
+        // NEXT window's timer once this one's window closed normally, or a
+        // fresh Cmd+Q while an older, now-orphaned timer is still
+        // sleeping) bumps the generation too -- the older timer must defer
+        // to the newer one, not fire on its own stale view.
+        assert!(!fallback_should_fire(1, 3));
+    }
 }
 
 #[cfg(test)]

@@ -148,6 +148,7 @@ export const SessionRow = z.object({
   cli: z.union([z.string(), z.null()]),
   profile_id: z.union([z.string(), z.null()]),
   agent_session_id: z.union([z.string(), z.null()]),
+  terminal_id: z.union([z.string(), z.null()]),
   state: z.enum(SESSION_STATES),
   handoff_path: z.union([z.string(), z.null()]),
   handoff_hash: z.union([z.string(), z.null()]),

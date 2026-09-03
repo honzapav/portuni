@@ -56,7 +56,9 @@ export default function WorkspaceMigrationGate({
     setError(null);
     try {
       await invoke("migrate_to_workspaces", { id });
-      window.location.reload();
+      // No reload: the Rust host opens the new ws:<id> window and closes
+      // this bootstrap one itself (#222, "Bootstrap -> workspace handoff").
+      // Nothing left to do here -- this window is about to disappear.
     } catch (e) {
       setError(String(e));
       setBusy(false);

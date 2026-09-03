@@ -142,6 +142,15 @@ export const INDEX_OAUTH_CODES_HASH = `CREATE UNIQUE INDEX IF NOT EXISTS idx_oau
 // record and its session_scope audit outlive the anchor node's deletion --
 // CASCADE here would silently destroy the audit trail the spec calls
 // "durable core outlives every CLI's transcript retention by design".
+// terminal_id (#218, phase 0 of docs/superpowers/specs/
+// 2026-09-01-desktop-multi-window-design.md, "Sessions follow PTY exit"):
+// correlates a durable session row with the desktop PTY that spawned its
+// CLI (PORTUNI_TERMINAL_ID -> X-Portuni-Terminal header, Claude only for
+// now -- see buildClaudeMcpJson). NULL for every non-Claude/non-desktop
+// connection. POST /terminals/:terminal_id/exit closes every 'running'
+// session sharing a terminal_id when that PTY exits, closing the "rows
+// stuck in running" gap the 30-minute idle GC used to be the only backstop
+// for.
 export const DDL_SESSIONS = `CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY CHECK(length(id) = 26),
     node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
@@ -150,6 +159,7 @@ export const DDL_SESSIONS = `CREATE TABLE IF NOT EXISTS sessions (
     cli TEXT,
     profile_id TEXT,
     agent_session_id TEXT,
+    terminal_id TEXT,
     state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived')),
     handoff_path TEXT,
     handoff_hash TEXT,
@@ -163,6 +173,7 @@ export const DDL_SESSIONS = `CREATE TABLE IF NOT EXISTS sessions (
 export const INDEX_SESSIONS_NODE = `CREATE INDEX IF NOT EXISTS idx_sessions_node ON sessions(node_id)`;
 export const INDEX_SESSIONS_USER = `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`;
 export const INDEX_SESSIONS_STATE = `CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state)`;
+export const INDEX_SESSIONS_TERMINAL = `CREATE INDEX IF NOT EXISTS idx_sessions_terminal ON sessions(terminal_id)`;
 
 // One row per (session, node) currently in the session's read-scope set --
 // membership, not an append-only event log (an expansion that re-adds an
@@ -206,6 +217,7 @@ export const DDL = [
   INDEX_SESSIONS_NODE,
   INDEX_SESSIONS_USER,
   INDEX_SESSIONS_STATE,
+  INDEX_SESSIONS_TERMINAL,
   DDL_SESSION_SCOPE,
   INDEX_SESSION_SCOPE_SESSION,
   `CREATE TABLE IF NOT EXISTS nodes (

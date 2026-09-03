@@ -14,7 +14,6 @@ import {
   fetchNodeMirror,
   createNodeMirror,
   fetchSandboxProfile,
-  fetchSyncPending,
   fetchMe,
 } from "./api";
 import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
@@ -22,11 +21,15 @@ import { useFileEditor } from "./lib/use-file-editor";
 import { buildAgentCommand } from "./lib/prompt";
 import { useDataMode } from "./lib/central";
 import {
+  suspendableTerminalIds,
+  fetchCorrelatedSessions,
+  suspendTerminalsAndPoll,
+} from "./lib/session-suspend";
+import {
   type TerminalSession,
   createSession,
   removeSession,
   markActivity,
-  markForegroundBusy,
   renameSession,
   deriveWorkspaceNodeRows,
 } from "./lib/sessions";
@@ -42,7 +45,7 @@ import SyncOverview from "./components/SyncOverview";
 const GraphView = lazy(() => import("./components/GraphView"));
 import type { GraphPayload, NodeDetail } from "./types";
 import type { Theme } from "./lib/theme";
-import { loadTheme, saveTheme } from "./lib/theme";
+import { loadTheme, saveTheme, THEME_STORAGE_KEY } from "./lib/theme";
 import {
   loadAgentCommand,
   saveAgentCommand,
@@ -50,6 +53,8 @@ import {
   saveTerminalLaunch,
   loadOpenNodes,
   saveOpenNodes,
+  AGENT_COMMAND_KEY,
+  TERMINAL_LAUNCH_KEY,
 } from "./lib/settings";
 import { isShowtimePath } from "./lib/showtime";
 
@@ -62,6 +67,49 @@ function isMarkdownPath(relPath: string): boolean {
 export function isHtmlPath(relPath: string): boolean {
   const lower = relPath.toLowerCase();
   return lower.endsWith(".html") || lower.endsWith(".htm");
+}
+
+// Cancels a pending window close (#229): tells the Rust host this window's
+// close-guard chain (dirty editor / unsynced files / running terminals)
+// said no. Cancels the 5s fallback timer Rust armed alongside window.close()
+// (without this, cancelling force-closed anyway once the timer fired,
+// #221) and, if this close was part of a Cmd+Q/restart sequential quit,
+// aborts the whole sequence -- no further window is asked and the app does
+// not exit. A no-op outside Tauri, or when nothing was actually pending
+// (a plain single-window close outside any quit).
+async function declineExit(): Promise<void> {
+  if (!isTauri()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("decline_exit").catch(() => undefined);
+}
+
+// Proceeds with a window close the guard chain approved (#229): destroys
+// this window directly, bypassing any further guard (there is nothing left
+// to check). Whether this was a plain close or one step of a sequential
+// quit, Rust's on_window_event(Destroyed) handler takes it from there.
+async function destroyCurrentWindow(): Promise<void> {
+  if (!isTauri()) return;
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().destroy().catch(() => undefined);
+}
+
+// pty_kill every given terminal (best-effort, #231's "Ukončit" -- and the
+// terminal step of "Pozastavit", whether the poll actually succeeded or
+// timed out), then proceed with the window close. Without the kill step, a
+// destroyed window's own PTYs kept running invisibly in the background
+// until the whole app quit (the master fd -- and so the child's controlling
+// terminal -- only closes then); pty_kill's explicit removal SIGHUPs them
+// immediately.
+async function killTerminalsAndCloseWindow(
+  terminals: readonly Pick<TerminalSession, "id">[],
+): Promise<void> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    for (const t of terminals) {
+      await invoke("pty_kill", { args: { session_id: t.id } }).catch(() => undefined);
+    }
+  }
+  await destroyCurrentWindow();
 }
 
 export default function App() {
@@ -98,6 +146,27 @@ export default function App() {
   const setTerminalLaunch = useCallback((value: string) => {
     setTerminalLaunchRaw(value);
     saveTerminalLaunch(value);
+  }, []);
+
+  // theme/agentCommand/terminalLaunch are global preferences (#228, unlike
+  // the workspace-scoped keys elsewhere), so a change made in one window
+  // must apply live in every other one too -- all windows share the same
+  // localStorage origin, but each only ever reads its own copy into React
+  // state once, at mount. The native `storage` event fires in every OTHER
+  // window when one of them writes, so re-reading here on that event is
+  // what keeps them in sync without a reload.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === THEME_STORAGE_KEY) {
+        setTheme(loadTheme());
+      } else if (e.key === AGENT_COMMAND_KEY) {
+        setAgentCommandRaw(loadAgentCommand());
+      } else if (e.key === TERMINAL_LAUNCH_KEY) {
+        setTerminalLaunchRaw(loadTerminalLaunch());
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   const [view, setView] = useState<AppView>(() => {
@@ -507,10 +576,6 @@ export default function App() {
     | { kind: "open"; nodeId: string; relPath: string }
     | { kind: "quit" }
   >(null);
-  // Set only while `confirmExit()` has a promise pending on the "quit" editor
-  // guard or the sync-quit guard, so the dialogs' resolution can answer that
-  // promise instead of (or as well as) doing their legacy direct action.
-  const confirmExitResolverRef = useRef<((ok: boolean) => void) | null>(null);
 
   // One shared editor instance, owned here and handed to BOTH the pane and
   // the fullscreen shell. Hooks must run unconditionally, so we call it with
@@ -535,36 +600,21 @@ export default function App() {
     syncPendingRef.current = syncPending.total;
   }, [syncPending.total]);
   const [syncQuitGuard, setSyncQuitGuard] = useState<{ count: number } | null>(null);
+  const sessionsRef = useRef(sessions);
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+  // Third onCloseRequested guard (#229/#231), after dirty editor and
+  // unsynced files: this window's running terminals. "confirm" offers
+  // Ukončit / Pozastavit (only when at least one terminal is suspendable,
+  // #231) / Zrušit; "suspending" is the Pozastavit poll in progress.
+  const [terminalsCloseGuard, setTerminalsCloseGuard] = useState<
+    | null
+    | { kind: "confirm"; terminals: TerminalSession[]; suspendableIds: string[] }
+    | { kind: "suspending"; terminals: TerminalSession[]; suspendableIds: string[]; timedOut: boolean }
+  >(null);
 
-  // Shared by the Cmd+Q-equivalent exit path (app-exit-requested) and the
-  // updater's "Restartovat": same guards (dirty editor, unsynced files), only
-  // the action taken on approval differs (approve_exit vs. restart_app).
-  // Resolves once the user answers whichever dialog it raised (or
-  // immediately if neither guard applies).
-  const confirmExit = useCallback((): Promise<boolean> => {
-    return new Promise<boolean>((resolve) => {
-      void (async () => {
-        if (editorDirtyRef.current) {
-          confirmExitResolverRef.current = resolve;
-          setEditorGuard({ kind: "quit" });
-          return;
-        }
-        const fresh = await Promise.race([
-          fetchSyncPending().catch(() => null),
-          new Promise<null>((r) => setTimeout(() => r(null), 2000)),
-        ]);
-        const count = fresh ? fresh.total : syncPendingRef.current;
-        if (count > 0) {
-          confirmExitResolverRef.current = resolve;
-          setSyncQuitGuard({ count });
-        } else {
-          resolve(true);
-        }
-      })();
-    });
-  }, []);
-
-  const appUpdate = useAppUpdate(confirmExit);
+  const appUpdate = useAppUpdate();
 
   const reallyOpenFile = useCallback((nodeId: string, relPath: string) => {
     // Always open in the right-side pane first (replacing the detail pane in
@@ -609,9 +659,9 @@ export default function App() {
   }, [reallyCloseEditor]);
 
   // Resolve the guarded action: either after saving or after an explicit
-  // discard. Quit either answers a pending confirmExit() promise (the
-  // app-exit-requested / restart paths decide the actual action) or, for a
-  // plain window close request, destroys the Tauri window directly.
+  // discard. "quit" (raised by onCloseRequested, #229) destroys the window
+  // directly -- Rust's on_window_event(Destroyed) handler takes it from
+  // there, whether this was a plain close or one step of a sequential quit.
   const resolveEditorGuard = useCallback(
     async (how: "save" | "discard") => {
       const guard = editorGuard;
@@ -626,32 +676,26 @@ export default function App() {
         reallyCloseEditor();
       } else {
         setEditorGuard(null);
-        const resolveExit = confirmExitResolverRef.current;
-        if (resolveExit) {
-          confirmExitResolverRef.current = null;
-          resolveExit(true);
-        } else if (isTauri()) {
-          const { getCurrentWindow } = await import("@tauri-apps/api/window");
-          await getCurrentWindow().destroy().catch(() => undefined);
-        }
+        await destroyCurrentWindow();
       }
     },
     [editorGuard, fileEditor, reallyOpenFile, reallyCloseEditor],
   );
 
   // Browser: warn before unload while dirty. Tauri: intercept the window
-  // close request and route it through the same inline confirm. Cmd+Q /
-  // menu Quit never becomes a close request — the Rust host prevents that
-  // exit and emits `app-exit-requested` instead, so both paths end in the
-  // same guards. The exit path re-fetches the pending aggregate (bounded)
-  // because the 30s-poll ref can be stale right after focusing the app.
+  // close request and route it through the same inline confirms -- the
+  // ONLY close-guard chain now (#229): Cmd+Q, menu Quit, the updater's
+  // restart, and a plain click on this window's own close button all reach
+  // it the same way, since Rust closes windows via window.close(), which
+  // raises this same event, rather than a separate app-exit-requested
+  // broadcast + confirm dance. Order: dirty editor -> unsynced files ->
+  // running terminals.
   useEffect(() => {
     const beforeUnload = (e: BeforeUnloadEvent) => {
       if (editorDirtyRef.current) e.preventDefault();
     };
     window.addEventListener("beforeunload", beforeUnload);
     let unlisten: (() => void) | null = null;
-    let unlistenExit: (() => void) | null = null;
     if (isTauri()) {
       void (async () => {
         try {
@@ -663,17 +707,17 @@ export default function App() {
             } else if (syncPendingRef.current > 0) {
               event.preventDefault();
               setSyncQuitGuard({ count: syncPendingRef.current });
+            } else if (sessionsRef.current.length > 0) {
+              event.preventDefault();
+              const terminals = sessionsRef.current;
+              void fetchCorrelatedSessions(terminals).then((correlated) => {
+                setTerminalsCloseGuard({
+                  kind: "confirm",
+                  terminals,
+                  suspendableIds: suspendableTerminalIds(terminals, correlated),
+                });
+              });
             }
-          });
-          const { listen } = await import("@tauri-apps/api/event");
-          const { invoke } = await import("@tauri-apps/api/core");
-          unlistenExit = await listen("app-exit-requested", () => {
-            void (async () => {
-              const proceed = await confirmExit();
-              if (proceed) {
-                await invoke("approve_exit").catch(() => undefined);
-              }
-            })();
           });
         } catch {
           /* not running in Tauri */
@@ -684,12 +728,34 @@ export default function App() {
       window.removeEventListener("beforeunload", beforeUnload);
       try {
         unlisten?.();
-        unlistenExit?.();
       } catch {
         /* window already gone */
       }
     };
-  }, [confirmExit]);
+  }, []);
+
+  // "Pozastavit" (#231): write the suspend instruction into every
+  // suspendable terminal, then poll their correlated sessions (re-fetched
+  // fresh each tick, since a session's own state can change from the
+  // agent's own action) until none is "running" or 30s pass. Either way,
+  // every terminal in the dialog -- suspendable or not -- gets killed and
+  // the window closes; a timeout just means the dialog says so first
+  // (briefly, before the same close happens) rather than pretending
+  // everything suspended cleanly.
+  const handleSuspendAndClose = useCallback(
+    async (terminals: TerminalSession[], suspendableIds: string[]) => {
+      setTerminalsCloseGuard({ kind: "suspending", terminals, suspendableIds, timedOut: false });
+      const { timedOut } = await suspendTerminalsAndPoll(suspendableIds, terminals);
+      if (timedOut) {
+        setTerminalsCloseGuard({ kind: "suspending", terminals, suspendableIds, timedOut: true });
+        // Give the user a moment to actually read "časový limit vypršel"
+        // before the window disappears out from under the dialog.
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      await killTerminalsAndCloseWindow(terminals);
+    },
+    [],
+  );
 
   // Refetch on focus AND tab-visible. Covers BOTH the graph selection and
   // the workspace selection so files registered elsewhere (MCP / another
@@ -745,7 +811,6 @@ export default function App() {
   useEffect(() => {
     let unlistenData: (() => void) | null = null;
     let unlistenExit: (() => void) | null = null;
-    let unlistenForeground: (() => void) | null = null;
     let cancelled = false;
     (async () => {
       if (typeof window === "undefined") return;
@@ -754,7 +819,6 @@ export default function App() {
         const { listen } = await import("@tauri-apps/api/event");
         type PtyData = { session_id: string };
         type PtyExit = { session_id: string; code: number | null };
-        type PtyForeground = { session_id: string; busy: boolean };
         unlistenData = await listen<PtyData>("pty-data", (e) => {
           if (cancelled) return;
           const id = e.payload.session_id;
@@ -776,15 +840,6 @@ export default function App() {
           // remains valid -- the workspace just shows the node's detail
           // center-stage instead of a terminal. Nothing to clear here.
         });
-        // Rust foreground-poll signal (Unix only, ~500 ms cadence).
-        // Authoritative "agent computing" indicator: green while a
-        // subprocess owns the PTY foreground, amber when the shell is
-        // idle at its prompt.
-        unlistenForeground = await listen<PtyForeground>("pty-foreground", (e) => {
-          if (cancelled) return;
-          const { session_id, busy } = e.payload;
-          setSessions((prev) => markForegroundBusy(prev, session_id, busy));
-        });
       } catch {
         // Not running in Tauri -- fine.
       }
@@ -793,7 +848,6 @@ export default function App() {
       cancelled = true;
       try { unlistenData?.(); } catch { /* unlisten can throw if Tauri is gone */ }
       try { unlistenExit?.(); } catch { /* same */ }
-      try { unlistenForeground?.(); } catch { /* same */ }
     };
   }, []);
 
@@ -1159,6 +1213,7 @@ export default function App() {
             terminalLaunch={terminalLaunch}
             onOpenTerminal={openSessionForNodeId}
             onOpenFile={openFileInEditor}
+            terminalSessions={sessions}
           />
         ))}
 
@@ -1234,12 +1289,9 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
+                  const wasQuit = editorGuard?.kind === "quit";
                   setEditorGuard(null);
-                  const resolveExit = confirmExitResolverRef.current;
-                  if (resolveExit) {
-                    confirmExitResolverRef.current = null;
-                    resolveExit(false);
-                  }
+                  if (wasQuit) void declineExit();
                 }}
                 className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
               >
@@ -1292,11 +1344,7 @@ export default function App() {
                 type="button"
                 onClick={() => {
                   setSyncQuitGuard(null);
-                  const resolveExit = confirmExitResolverRef.current;
-                  if (resolveExit) {
-                    confirmExitResolverRef.current = null;
-                    resolveExit(false);
-                  }
+                  void declineExit();
                 }}
                 className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
               >
@@ -1307,11 +1355,7 @@ export default function App() {
                 onClick={() => {
                   setSyncQuitGuard(null);
                   setSyncOverviewOpen(true);
-                  const resolveExit = confirmExitResolverRef.current;
-                  if (resolveExit) {
-                    confirmExitResolverRef.current = null;
-                    resolveExit(false);
-                  }
+                  void declineExit();
                 }}
                 className="rounded-md border border-[var(--color-accent-dim)] px-3 py-1.5 text-[12.5px] text-[var(--color-accent)] hover:bg-[var(--color-surface)]"
               >
@@ -1321,20 +1365,86 @@ export default function App() {
                 type="button"
                 onClick={async () => {
                   setSyncQuitGuard(null);
-                  const resolveExit = confirmExitResolverRef.current;
-                  if (resolveExit) {
-                    confirmExitResolverRef.current = null;
-                    resolveExit(true);
-                    return;
-                  }
-                  const { getCurrentWindow } = await import("@tauri-apps/api/window");
-                  await getCurrentWindow().destroy().catch(() => undefined);
+                  await destroyCurrentWindow();
                 }}
                 className="rounded-md border border-[var(--color-danger-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-danger)] hover:bg-[var(--color-surface)]"
               >
                 Zavřít bez synchronizace
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {terminalsCloseGuard && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
+          <div className="w-[440px] rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-5 shadow-xl">
+            {terminalsCloseGuard.kind === "confirm" ? (
+              <>
+                <div className="mb-2 text-[14.5px] font-semibold text-[var(--color-text)]">
+                  Zavřít okno?
+                </div>
+                <p className="mb-4 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
+                  Běží {terminalsCloseGuard.terminals.length}{" "}
+                  {terminalsCloseGuard.terminals.length === 1
+                    ? "terminál"
+                    : terminalsCloseGuard.terminals.length < 5
+                      ? "terminály"
+                      : "terminálů"}
+                  .{" "}
+                  {terminalsCloseGuard.suspendableIds.length > 0
+                    ? "Agenty lze před zavřením pozastavit, nebo terminály rovnou ukončit."
+                    : "Budou ukončeny."}
+                </p>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTerminalsCloseGuard(null);
+                      void declineExit();
+                    }}
+                    className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
+                  >
+                    Zrušit
+                  </button>
+                  {terminalsCloseGuard.suspendableIds.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void handleSuspendAndClose(
+                          terminalsCloseGuard.terminals,
+                          terminalsCloseGuard.suspendableIds,
+                        )
+                      }
+                      className="rounded-md border border-[var(--color-accent-dim)] px-3 py-1.5 text-[12.5px] text-[var(--color-accent)] hover:bg-[var(--color-surface)]"
+                    >
+                      Pozastavit
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const terminals = terminalsCloseGuard.terminals;
+                      setTerminalsCloseGuard(null);
+                      await killTerminalsAndCloseWindow(terminals);
+                    }}
+                    className="rounded-md border border-[var(--color-danger-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-danger)] hover:bg-[var(--color-surface)]"
+                  >
+                    Ukončit
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="mb-2 text-[14.5px] font-semibold text-[var(--color-text)]">
+                  {terminalsCloseGuard.timedOut ? "Časový limit vypršel" : "Pozastavuji…"}
+                </div>
+                <p className="mb-4 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
+                  {terminalsCloseGuard.timedOut
+                    ? "Relace se nestihly pozastavit včas, terminály se zavřou."
+                    : `Čekám, až ${terminalsCloseGuard.suspendableIds.length === 1 ? "agent uloží" : "agenti uloží"} rozdělanou práci…`}
+                </p>
+              </>
+            )}
           </div>
         </div>
       )}

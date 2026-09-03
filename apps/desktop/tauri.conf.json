@@ -10,18 +10,7 @@
     "beforeBuildCommand": "npm --prefix web run build && node ../scripts/build-sidecar.mjs"
   },
   "app": {
-    "windows": [
-      {
-        "title": "Portuni",
-        "width": 1600,
-        "height": 1000,
-        "minWidth": 1024,
-        "minHeight": 700,
-        "maximized": true,
-        "resizable": true,
-        "fullscreen": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: asset: http://asset.localhost; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; frame-src 'self' portuni-html: http://portuni-html.localhost"
     },

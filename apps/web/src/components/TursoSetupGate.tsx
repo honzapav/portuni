@@ -106,9 +106,10 @@ export default function TursoSetupGate({ children }: Props) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("setup_central", { serverUrl: trimmed });
-      // Reload: CentralLoginGate now sees data_mode=central + configured
-      // and takes over with the Google login screen.
-      window.location.reload();
+      // No reload: the Rust host opens the new ws:<id> window itself and
+      // closes this bootstrap one (#222). CentralLoginGate sees
+      // data_mode=central + configured in the new window and takes over
+      // with the Google login screen there.
     } catch (e) {
       setError(String(e));
       setSaving(false);
@@ -121,10 +122,10 @@ export default function TursoSetupGate({ children }: Props) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("save_config", { tursoUrl: null });
-      // No restart needed — sidecar is already running in local fallback
-      // mode (that's what happens when config.json is missing). Just
-      // commit the marker so the wizard stops showing.
-      window.location.reload();
+      // No restart, no reload: the sidecar is already running in local
+      // fallback mode (that's what happens when config.json is missing),
+      // and the Rust host opens the new ws:<id> window itself and closes
+      // this bootstrap one (#222).
     } catch (e) {
       setError(String(e));
       setSaving(false);

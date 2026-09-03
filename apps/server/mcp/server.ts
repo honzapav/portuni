@@ -152,12 +152,19 @@ function registerSetupDriveRemotePrompt(server: McpServer): void {
 // never race to create/attach the same connection's session row twice.
 // `spawnSessionId` is the X-Portuni-Spawn-Id header (transport.ts) -- see
 // bindSessionPersistence for what it threads through and why.
+//
+// `terminalId` is the X-Portuni-Terminal header (transport.ts, #218) -- the
+// desktop PTY that spawned this connection's CLI, when known. Threaded
+// through to bindSessionPersistence so the session row records it; a resume
+// keeps whatever terminal_id the original session row already had (it is
+// not part of resumeSessionPersistence's rehydration).
 export function createMcpServer(
   identity: RequestIdentity,
   homeNodeId: string | null = null,
   profileId: string | null = null,
   resumeSessionId: string | null = null,
   spawnSessionId: string | null = null,
+  terminalId: string | null = null,
 ): { server: McpServer; scope: SessionScope } {
   const scope = new SessionScope(deriveSessionType(identity, homeNodeId));
   // #211: resolved synchronously, before any tool call can race it (unlike
@@ -171,7 +178,7 @@ export function createMcpServer(
   const projector = createDiskProjector({ userId: identity.userId, scope });
   scope.onAdd((nodeId) => projector.schedule(nodeId));
   if (!resumeSessionId) {
-    bindSessionPersistence(getDb(), scope, identity, profileId, homeNodeId, spawnSessionId);
+    bindSessionPersistence(getDb(), scope, identity, profileId, homeNodeId, spawnSessionId, terminalId);
   }
   const server = new McpServer(
     { name: "portuni", version: "0.1.0" },

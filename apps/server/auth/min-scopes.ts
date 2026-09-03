@@ -228,6 +228,11 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (/^\/sessions\/[^/]+$/.test(pathname) && m === "PATCH") return "write";
   if (/^\/sessions\/[^/]+\/state$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/resume-info$/.test(pathname) && m === "GET") return "read";
+  // Terminal PTY-exit correlation (#218): pty.rs calls this whenever a
+  // spawned CLI's terminal exits. Same tier as the state-transition route
+  // above -- closing a session is a write, and the handler itself scopes
+  // the close to the caller's own sessions (identity.userId).
+  if (/^\/terminals\/[^/]+\/exit$/.test(pathname) && m === "POST") return "write";
 
   // --- Fail-closed: unknown future routes require admin ---
   return "admin";
