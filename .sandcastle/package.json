@@ -4,6 +4,6 @@
   "type": "module",
   "description": "Sandcastle loop for Portuni. Launch from the repo root: ./.sandcastle/node_modules/.bin/sandcastle-loop start",
   "dependencies": {
-    "@honzapav/sandcastle-harness": "git+https://github.com/honzapav/sandcastle-harness.git#v0.1.2"
+    "@honzapav/sandcastle-harness": "git+https://github.com/honzapav/sandcastle-harness.git#v0.2.0"
   }
 }
