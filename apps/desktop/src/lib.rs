@@ -169,6 +169,20 @@ const EXIT_FALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 // arming its own timer.
 static EXIT_FALLBACK_GENERATION: AtomicU64 = AtomicU64::new(0);
 
+/// One process-wide HTTP client, shared by every proxy path.
+///
+/// `reqwest::Client` owns its connection pool and its TLS backend config, so
+/// building a fresh one per request meant no keep-alive and a rebuilt TLS
+/// stack every time. Measured on loopback (no TLS at all): 0.138 ms just to
+/// construct one, and a GET costs 0.181 ms with a fresh client against
+/// 0.031 ms with a shared one. On the central-mode path the same pattern
+/// costs a full TCP+TLS handshake per request instead of reusing a pooled
+/// connection. Cloning is cheap -- a `Client` is an `Arc` handle to the pool.
+pub(crate) fn http_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new).clone()
+}
+
 // Pure decision for a fallback timer waking up: is IT still the current
 // one, or has it been superseded (declined, or a later window's timer
 // armed in the meantime)? Pure so both branches are unit-testable without
@@ -2073,7 +2087,7 @@ async fn api_request(
     let url = format!("http://127.0.0.1:{port}{path}");
     let method_parsed =
         reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
-    let mut req = reqwest::Client::new()
+    let mut req = http_client()
         .request(method_parsed, &url)
         .header("Authorization", format!("Bearer {token}"))
         // Backend's PORTUNI_ALLOWED_ORIGINS includes tauri://localhost

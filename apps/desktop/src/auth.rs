@@ -471,7 +471,7 @@ pub async fn google_login(window: tauri::Window) -> Result<Value, String> {
         return Err("CSRF: state parameter mismatch".to_string());
     }
 
-    let client = Client::new();
+    let client = crate::http_client();
     let google_tokens = exchange_code(
         &client,
         &config.google_client_id,
@@ -559,7 +559,7 @@ pub async fn google_drive_connect(window: tauri::Window) -> Result<Value, String
         return Err("CSRF: state parameter mismatch".to_string());
     }
 
-    let client = Client::new();
+    let client = crate::http_client();
     let tokens = exchange_code(&client, &client_id, &client_secret, &redirect_uri, &code, &verifier).await?;
     let refresh = tokens.refresh_token
         .ok_or_else(|| "Google did not return a refresh token — remove the app's prior consent and retry".to_string())?;
@@ -607,7 +607,7 @@ pub async fn auth_refresh(window: tauri::Window) -> Result<Value, String> {
     let refresh_token = keychain_get_ws(KEYCHAIN_GOOGLE_REFRESH, &ws_id)
         .ok_or_else(|| "not logged in: no refresh token in Keychain".to_string())?;
 
-    let client = Client::new();
+    let client = crate::http_client();
     let id_token = refresh_google_token(
         &client,
         &config.google_client_id,
@@ -708,7 +708,7 @@ async fn do_central_request(
     );
     let method_parsed =
         reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
-    let client = Client::new();
+    let client = crate::http_client();
     let mut req = client
         .request(method_parsed, &url)
         .header("Authorization", format!("Bearer {jwt}"));

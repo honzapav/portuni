@@ -281,7 +281,7 @@ fn report_terminal_exit(app: &AppHandle, ws_id: &str, terminal_id: &str) {
     // already inside an async context, same reasoning as
     // ensure_device_token above.
     tauri::async_runtime::block_on(async move {
-        let mut req = reqwest::Client::new()
+        let mut req = crate::http_client()
             .post(&url)
             .timeout(std::time::Duration::from_secs(5));
         for (k, v) in headers {
