@@ -51,6 +51,19 @@ async function getDataModeCached(): Promise<DataMode> {
   return dataModePending;
 }
 
+// Cached, non-hook predicate for module-level code that needs the mode but
+// cannot use the hook (api.ts). Shares the same one-fetch-per-lifetime cache,
+// so this is an IPC call only on the very first use. A rejection (config
+// awaiting workspace migration, non-Tauri host) reads as local mode -- the
+// same optimistic default useDataMode leaves the UI in.
+export async function isCentralMode(): Promise<boolean> {
+  try {
+    return (await getDataModeCached()).mode === "central";
+  } catch {
+    return false;
+  }
+}
+
 // Hook: resolves data mode once on mount and caches the result.
 // Returns null while loading (central mode features should be optimistically
 // hidden during loading to avoid flicker on initial render).
