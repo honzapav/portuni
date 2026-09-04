@@ -18,23 +18,73 @@ export async function loadNodeDetail(
   void listUserMirrors;
   void unregisterMirror;
 
-  const nodeRes = await db.execute({
-    sql: "SELECT * FROM nodes WHERE id = ?",
-    args: [nodeId],
-  });
+  // Wave 1: everything keyed only by nodeId. These used to run as eight
+  // sequential awaits; the server has no embedded replica, so on Turso that
+  // was eight round trips deep for one detail load -- and App.tsx polls this
+  // endpoint every 5 s per open window. Nothing here reads another query's
+  // result, so they go out together and the whole wave costs one round trip.
+  // The node-missing case now pays for the rest of the wave too; a 404 on a
+  // detail load is rare enough that trading it for the common path is right.
+  const [nodeRes, edgeRes, orgRes, fileRes, eventRes, respRes, dsRes, toolsRes, mirror] =
+    await Promise.all([
+      db.execute({
+        sql: "SELECT * FROM nodes WHERE id = ?",
+        args: [nodeId],
+      }),
+      db.execute({
+        sql: `SELECT e.id, e.source_id, e.target_id, e.relation,
+                     ns.name as source_name, ns.type as source_type,
+                     nt.name as target_name, nt.type as target_type
+              FROM edges e
+              JOIN nodes ns ON ns.id = e.source_id
+              JOIN nodes nt ON nt.id = e.target_id
+              WHERE e.source_id = ? OR e.target_id = ?`,
+        args: [nodeId, nodeId],
+      }),
+      // Resolve the org_sync_key once for this node so per-file derivation can
+      // reuse it. Organizations themselves have no parent org -- buildNodeRoot
+      // falls back to the node's own sync_key, and the result of this query is
+      // discarded for them (issuing it unconditionally keeps the wave flat
+      // instead of waiting on row.type to decide).
+      db.execute({
+        sql: `SELECT org.sync_key FROM edges e
+                JOIN nodes org ON org.id = e.target_id
+               WHERE e.source_id = ? AND e.relation = 'belongs_to' AND org.type = 'organization'
+               LIMIT 1`,
+        args: [nodeId],
+      }),
+      db.execute({
+        sql: `SELECT id, filename, status, remote_path, mime_type
+              FROM files WHERE node_id = ? ORDER BY created_at DESC`,
+        args: [nodeId],
+      }),
+      // Show active and resolved events; resolved render de-emphasized in the
+      // UI. superseded (replaced by a newer event) and archived (soft-deleted)
+      // stay hidden so the timeline isn't cluttered with stale/removed entries.
+      db.execute({
+        sql: `SELECT id, type, content, meta, status, refs, task_ref, created_at
+              FROM events WHERE node_id = ? AND status IN ('active', 'resolved')
+              ORDER BY created_at DESC LIMIT 20`,
+        args: [nodeId],
+      }),
+      db.execute({
+        sql: "SELECT id, title, description, sort_order FROM responsibilities WHERE node_id = ? ORDER BY sort_order, title",
+        args: [nodeId],
+      }),
+      db.execute({
+        sql: "SELECT id, name, description, external_link FROM data_sources WHERE node_id = ? ORDER BY name",
+        args: [nodeId],
+      }),
+      db.execute({
+        sql: "SELECT id, name, description, external_link FROM tools WHERE node_id = ? ORDER BY name",
+        args: [nodeId],
+      }),
+      // Per-device sync.db, not the shared graph DB -- independent either way.
+      getLocalMirror(userId, nodeId),
+    ]);
+
   if (nodeRes.rows.length === 0) return null;
   const row = NodeRow.parse(nodeRes.rows[0]);
-
-  const edgeRes = await db.execute({
-    sql: `SELECT e.id, e.source_id, e.target_id, e.relation,
-                 ns.name as source_name, ns.type as source_type,
-                 nt.name as target_name, nt.type as target_type
-          FROM edges e
-          JOIN nodes ns ON ns.id = e.source_id
-          JOIN nodes nt ON nt.id = e.target_id
-          WHERE e.source_id = ? OR e.target_id = ?`,
-    args: [row.id, row.id],
-  });
 
   const rawEdges = edgeRes.rows.map((edge) => {
     const sourceId = edge.source_id as string;
@@ -67,7 +117,31 @@ export async function loadNodeDetail(
   // what the caller can read. (The MCP projection in mcp/tools/context.ts
   // still blanks both -- agents have no request flow.)
   const peerIds = [...new Set(rawEdges.map((e) => e.peer_id))];
-  const classification = await classifyNodeVisibility(db, identity, peerIds);
+  const respIds = respRes.rows.map((r) => r.id as string);
+
+  // Wave 2: the three queries that genuinely need a wave-1 result (the edge
+  // peer set, the node's owner_id, the responsibility ids). One more round
+  // trip, not three.
+  const [classification, ownerRes, assigneeRes] = await Promise.all([
+    classifyNodeVisibility(db, identity, peerIds),
+    row.owner_id
+      ? db.execute({ sql: "SELECT id, name FROM actors WHERE id = ?", args: [row.owner_id] })
+      : null,
+    respIds.length > 0
+      ? db.execute({
+          // Responsibilities with assignees: one JOIN that returns every
+          // assignee for those responsibilities, bucketed by responsibility
+          // id in JS. Avoiding N+1 keeps detail loads cheap on Turso/cloud.
+          sql: `SELECT ra.responsibility_id AS rid, a.id, a.name, a.type
+                FROM actors a
+                JOIN responsibility_assignments ra ON ra.actor_id = a.id
+                WHERE ra.responsibility_id IN (${respIds.map(() => "?").join(",")})
+                ORDER BY a.name`,
+          args: respIds,
+        })
+      : null,
+  ]);
+
   const edges = rawEdges
     .filter((e) => classification.get(e.peer_id) !== "hidden")
     .map((e) =>
@@ -76,43 +150,30 @@ export async function loadNodeDetail(
         : e,
     );
 
-  const mirror = await getLocalMirror(userId, row.id);
   const mirrorPath = mirror?.local_path ?? null;
   const local_mirror = mirror
     ? { local_path: mirror.local_path, registered_at: mirror.registered_at }
     : null;
 
-  // Resolve the org_sync_key once for this node so per-file derivation can
-  // reuse it. Organizations themselves have no parent org -- buildNodeRoot
-  // falls back to the node's own sync_key in that case.
-  let orgSyncKey: string | null = null;
-  if (row.type !== "organization") {
-    const orgRes = await db.execute({
-      sql: `SELECT org.sync_key FROM edges e
-              JOIN nodes org ON org.id = e.target_id
-             WHERE e.source_id = ? AND e.relation = 'belongs_to' AND org.type = 'organization'
-             LIMIT 1`,
-      args: [row.id],
-    });
-    orgSyncKey = orgRes.rows.length > 0 ? (orgRes.rows[0].sync_key as string | null) ?? null : null;
-  } else {
-    orgSyncKey = row.sync_key;
-  }
+  const orgSyncKey =
+    row.type === "organization"
+      ? row.sync_key
+      : orgRes.rows.length > 0
+        ? ((orgRes.rows[0].sync_key as string | null) ?? null)
+        : null;
 
-  const fileRes = await db.execute({
-    sql: `SELECT id, filename, status, remote_path, mime_type
-          FROM files WHERE node_id = ? ORDER BY created_at DESC`,
-    args: [row.id],
+  // Hoisted out of the per-file map below: it is derived from the node's own
+  // identity, so recomputing it once per file was pure repeat work.
+  const nodeRoot = buildNodeRoot({
+    orgSyncKey,
+    nodeType: row.type,
+    nodeSyncKey: row.sync_key,
   });
+
   const files = fileRes.rows.map((f) => {
     const remotePath = (f.remote_path as string | null) ?? null;
     let derivedLocal: string | null = null;
     if (mirrorPath && remotePath) {
-      const nodeRoot = buildNodeRoot({
-        orgSyncKey,
-        nodeType: row.type,
-        nodeSyncKey: row.sync_key,
-      });
       try {
         derivedLocal = deriveLocalPath({ mirrorRoot: mirrorPath, nodeRoot, remotePath });
       } catch {
@@ -133,15 +194,6 @@ export async function loadNodeDetail(
     };
   });
 
-  // Show active and resolved events; resolved render de-emphasized in the UI.
-  // superseded (replaced by a newer event) and archived (soft-deleted) stay
-  // hidden so the timeline isn't cluttered with stale/removed entries.
-  const eventRes = await db.execute({
-    sql: `SELECT id, type, content, meta, status, refs, task_ref, created_at
-          FROM events WHERE node_id = ? AND status IN ('active', 'resolved')
-          ORDER BY created_at DESC LIMIT 20`,
-    args: [row.id],
-  });
   const events = eventRes.rows.map((e) => ({
     id: e.id as string,
     type: e.type as string,
@@ -153,46 +205,23 @@ export async function loadNodeDetail(
     created_at: e.created_at as string,
   }));
 
-  // Owner
-  const ownerRow = row.owner_id
-    ? (await db.execute({ sql: "SELECT id, name FROM actors WHERE id = ?", args: [row.owner_id] })).rows[0]
-    : null;
+  const ownerRow = ownerRes?.rows[0] ?? null;
   const owner = ownerRow ? { id: ownerRow.id as string, name: ownerRow.name as string } : null;
 
-  // Responsibilities with assignees: fetch in two queries (one for the
-  // responsibilities, one JOIN that returns every assignee for those
-  // responsibilities) and bucket assignees by responsibility id in JS.
-  // Avoiding N+1 keeps detail loads cheap on Turso/cloud.
-  const respRes = await db.execute({
-    sql: "SELECT id, title, description, sort_order FROM responsibilities WHERE node_id = ? ORDER BY sort_order, title",
-    args: [row.id],
-  });
   type AssigneeBucket = Array<{ id: string; name: string; type: string }>;
   const assigneesByResp = new Map<string, AssigneeBucket>();
-  if (respRes.rows.length > 0) {
-    const ids = respRes.rows.map((r) => r.id as string);
-    const placeholders = ids.map(() => "?").join(",");
-    const assigneeRes = await db.execute({
-      sql: `SELECT ra.responsibility_id AS rid, a.id, a.name, a.type
-            FROM actors a
-            JOIN responsibility_assignments ra ON ra.actor_id = a.id
-            WHERE ra.responsibility_id IN (${placeholders})
-            ORDER BY a.name`,
-      args: ids,
-    });
-    for (const x of assigneeRes.rows) {
-      const rid = x.rid as string;
-      let bucket = assigneesByResp.get(rid);
-      if (!bucket) {
-        bucket = [];
-        assigneesByResp.set(rid, bucket);
-      }
-      bucket.push({
-        id: x.id as string,
-        name: x.name as string,
-        type: x.type as string,
-      });
+  for (const x of assigneeRes?.rows ?? []) {
+    const rid = x.rid as string;
+    let bucket = assigneesByResp.get(rid);
+    if (!bucket) {
+      bucket = [];
+      assigneesByResp.set(rid, bucket);
     }
+    bucket.push({
+      id: x.id as string,
+      name: x.name as string,
+      type: x.type as string,
+    });
   }
   const responsibilities = respRes.rows.map((r) => ({
     id: r.id as string,
@@ -202,10 +231,6 @@ export async function loadNodeDetail(
     assignees: assigneesByResp.get(r.id as string) ?? [],
   }));
 
-  const dsRes = await db.execute({
-    sql: "SELECT id, name, description, external_link FROM data_sources WHERE node_id = ? ORDER BY name",
-    args: [row.id],
-  });
   const data_sources = dsRes.rows.map((r) => ({
     id: r.id as string,
     name: r.name as string,
@@ -213,10 +238,6 @@ export async function loadNodeDetail(
     external_link: (r.external_link as string | null) ?? null,
   }));
 
-  const toolsRes = await db.execute({
-    sql: "SELECT id, name, description, external_link FROM tools WHERE node_id = ? ORDER BY name",
-    args: [row.id],
-  });
   const tools = toolsRes.rows.map((r) => ({
     id: r.id as string,
     name: r.name as string,
