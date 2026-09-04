@@ -103,6 +103,25 @@ export async function replaceRules(db: Client, rules: RoutingRule[]): Promise<vo
 // by ascending priority (then insertion order). A non-null filter on the rule
 // must match a non-null call argument; null in the call argument cannot match
 // a non-null filter.
+// In-memory counterpart of resolveRemote, for callers that already hold the
+// rule list (listRules returns it in the same priority ASC, id ASC order the
+// query uses). Same algorithm: a non-null filter on the rule must match a
+// non-null call argument, NULL on the rule is a wildcard, first match wins.
+// Bulk paths read the routing table once instead of running one resolveRemote
+// query per node.
+export function resolveRemoteFromRules(
+  rules: RoutingRule[],
+  nodeType: string,
+  orgSlug: string | null,
+): string | null {
+  for (const rule of rules) {
+    if (rule.node_type !== null && rule.node_type !== nodeType) continue;
+    if (rule.org_slug !== null && rule.org_slug !== orgSlug) continue;
+    return rule.remote_name;
+  }
+  return null;
+}
+
 export async function resolveRemote(
   db: Client,
   nodeType: string,
