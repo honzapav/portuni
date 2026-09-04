@@ -7,6 +7,15 @@
  * (regular) is enough for terminal text; 700 covers bold ANSI styling. */
 @import "@fontsource/jetbrains-mono/400.css";
 @import "@fontsource/jetbrains-mono/700.css";
+/* Inter, same treatment. It used to come from fonts.googleapis.com via a
+ * render-blocking <link> in index.html — a cross-origin request on the
+ * startup path of a local-first desktop app, which on a cold launch with no
+ * network blocks first paint until it fails. The same <link> also fetched
+ * JetBrains Mono a second time, on top of the bundled copy above. */
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
 
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
