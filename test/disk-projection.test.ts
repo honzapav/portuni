@@ -325,9 +325,7 @@ describe("disposeSessionProjection", () => {
     const result = await projector.projectNode("ADHOC");
     assert.ok(result);
 
-    disposeSessionProjection(scope, "u", db);
-    // Fire-and-forget cleanup -- give the microtask queue a turn.
-    await new Promise((r) => setTimeout(r, 20));
+    await disposeSessionProjection(scope, "u", db);
     await assert.rejects(() => stat(result.dir));
   });
 
@@ -351,8 +349,7 @@ describe("disposeSessionProjection", () => {
     const result = await projector.projectNode("ADHOC");
     assert.ok(result);
 
-    disposeSessionProjection(scope, "u", db);
-    await new Promise((r) => setTimeout(r, 20));
+    await disposeSessionProjection(scope, "u", db);
     const linked = await readFile(join(result.dir, "wip", "method.md"), "utf8");
     assert.equal(linked, "hello\n");
   });
@@ -380,8 +377,7 @@ describe("disposeSessionProjection", () => {
     const result = await projector.projectNode("ADHOC");
     assert.ok(result);
 
-    disposeSessionProjection(scope, "u", db);
-    await new Promise((r) => setTimeout(r, 20));
+    await disposeSessionProjection(scope, "u", db);
     await assert.rejects(() => stat(join(dir, ".portuni-sessions", HOME_NODE_ID, UNNARROWED_PROJECTION_ID)));
   });
 });

@@ -137,10 +137,18 @@ async function sweepSharedProjectionIfIdle(
 
 // Session end (spec: "the agent never manages the directory" -- cleanup is
 // the system's job): drop this session's registry entries and remove its
-// projection directory from disk. Fire-and-forget by design (called from
-// transport.onclose, which cannot await); best-effort, matching the rest of
-// this module.
-export function disposeSessionProjection(scope: SessionScope, userId: string, db: Client): void {
+// projection directory from disk. Best-effort, matching the rest of this
+// module: every failure is swallowed.
+//
+// Callers fire and forget -- transport.onclose cannot await. The returned
+// promise exists so a caller that CAN wait (tests) has something to wait on
+// instead of guessing at a sleep; the real call site keeps discarding it
+// with `void`.
+export function disposeSessionProjection(
+  scope: SessionScope,
+  userId: string,
+  db: Client,
+): Promise<void> {
   const projectionSessionId = scope.projectionSessionId;
   const homeNodeId = scope.homeNodeId;
   // The shared bucket (#211) is never torn down purely because THIS
@@ -148,17 +156,23 @@ export function disposeSessionProjection(scope: SessionScope, userId: string, db
   // non-relaying sessions on the same node may still be reading it. Its own
   // lifetime is handled below, unconditionally, based on node-level running
   // state rather than this one session's identity.
+  const pending: Array<Promise<unknown>> = [];
   if (projectionSessionId && projectionSessionId !== UNNARROWED_PROJECTION_ID) {
     unregisterSessionProjections(projectionSessionId);
     if (homeNodeId) {
-      void resolveProjectionRootForNode(userId, homeNodeId)
-        .then((root) =>
-          root ? cleanupSessionProjection(root.projectionRoot, projectionSessionId) : undefined,
-        )
-        .catch(() => undefined);
+      pending.push(
+        resolveProjectionRootForNode(userId, homeNodeId)
+          .then((root) =>
+            root ? cleanupSessionProjection(root.projectionRoot, projectionSessionId) : undefined,
+          )
+          .catch(() => undefined),
+      );
     }
   }
   if (homeNodeId) {
-    void sweepSharedProjectionIfIdle(db, homeNodeId, userId, scope.sessionId).catch(() => undefined);
+    pending.push(
+      sweepSharedProjectionIfIdle(db, homeNodeId, userId, scope.sessionId).catch(() => undefined),
+    );
   }
+  return Promise.all(pending).then(() => undefined);
 }
