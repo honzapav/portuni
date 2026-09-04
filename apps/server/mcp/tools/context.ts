@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getDb } from "../../infra/db.js";
-import { listUserMirrors, unregisterMirror, getMirrorPath } from "../../domain/sync/mirror-registry.js";
+import { listUserMirrors, getMirrorPath } from "../../domain/sync/mirror-registry.js";
 import { readableMirrorRoot } from "../disk-projection.js";
 import type { Client, InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -293,24 +293,23 @@ export async function buildContextPayload(
     }
   }
 
-  // 4. Fetch local mirrors from the per-device sync.db. Tolerate stale rows
-  //    (mirror exists for a node that was purged from the shared DB) by
-  //    skipping them and firing fire-and-forget cleanup.
+  // 4. Fetch local mirrors from the per-device sync.db, keeping only the ones
+  //    for nodes the walk actually returned.
+  //
+  //    This used to issue a `SELECT 1 FROM nodes WHERE id = ?` per mirror to
+  //    guard against a mirror row whose node was purged from the shared DB --
+  //    one Turso round trip per mirrored node in scope, on the tool an agent
+  //    calls at the start of every session (measured: 11 + N queries for N
+  //    mirrored neighbours). The guard could never fire: `nodeIds` comes out
+  //    of the graph walk's own `JOIN nodes n ON n.id = gw.node_id`, so every
+  //    id in `wanted` provably exists in `nodes`. A mirror for a purged node
+  //    fails the `wanted` check and is skipped either way -- exactly as
+  //    before, minus the round trips.
   const mirrorMap = new Map<string, string>();
   if (nodeIds.length > 0) {
     const wanted = new Set(nodeIds);
-    const allMirrors = await listUserMirrors(userId);
-    for (const m of allMirrors) {
-      if (!wanted.has(m.node_id)) continue;
-      const e = await db.execute({
-        sql: "SELECT 1 FROM nodes WHERE id = ? LIMIT 1",
-        args: [m.node_id],
-      });
-      if (e.rows.length > 0) {
-        mirrorMap.set(m.node_id, m.local_path);
-      } else {
-        void unregisterMirror(userId, m.node_id).catch(() => undefined);
-      }
+    for (const m of await listUserMirrors(userId)) {
+      if (wanted.has(m.node_id)) mirrorMap.set(m.node_id, m.local_path);
     }
   }
 
