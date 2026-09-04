@@ -1382,6 +1382,32 @@ const MIGRATIONS: Migration[] = [
       );
     },
   },
+  // Index the node id that every file-tombstone lookup filters on. It lives
+  // inside the JSON `detail` blob, so it needs a generated column to be
+  // indexable at all. VIRTUAL: no stored bytes, computed on read, and the
+  // index is what makes the lookup a seek instead of a scan of every file
+  // tombstone ever written.
+  {
+    id: "033_audit_node_id_index",
+    // table_xinfo, not table_info: PRAGMA table_info omits generated columns
+    // entirely, so on a fresh install (where DDL already created the column)
+    // this would report "not applied" and the ALTER below would fail with
+    // "duplicate column name".
+    isApplied: async (db) => {
+      const info = await db.execute("PRAGMA table_xinfo(audit_log)");
+      return info.rows.some((r) => r.name === "audit_node_id");
+    },
+    up: async (db) => {
+      await db.execute(
+        `ALTER TABLE audit_log ADD COLUMN audit_node_id TEXT
+           GENERATED ALWAYS AS (json_extract(detail, '$.node_id')) VIRTUAL`,
+      );
+      await db.execute(
+        `CREATE INDEX IF NOT EXISTS idx_audit_file_node_ts
+           ON audit_log(audit_node_id, timestamp DESC) WHERE target_type = 'file'`,
+      );
+    },
+  },
 ];
 
 export async function runMigration024(db: Client): Promise<void> {

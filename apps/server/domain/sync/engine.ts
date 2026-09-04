@@ -1036,6 +1036,38 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
 // true (the files row is still alive, just at a new path) and is skipped
 // outright if the record has since moved back to the tombstoned path --
 // cleanupDeletedRemote uses record_alive to keep that row's file_state.
+// Index untracked entries by their NFC-normalized local path.
+//
+// Both tombstone matchers used to scan the whole entry list per tombstone,
+// normalizing every candidate path on every comparison -- O(T*U) with a
+// non-trivial constant. The worst case is exactly the moment they matter:
+// a folder deleted or renamed on the remote produces many tombstones AND
+// leaves many untracked local files behind at once. A node can carry up to
+// 20 000 tombstones.
+//
+// Buckets preserve input order, and callers take the first entry that is not
+// already matched -- identical semantics to the `.find` they replace.
+export function indexEntriesByLocalPath<E extends { local_path: string }>(
+  entries: E[],
+): Map<string, E[]> {
+  const byPath = new Map<string, E[]>();
+  for (const e of entries) {
+    const key = e.local_path.normalize("NFC");
+    const bucket = byPath.get(key);
+    if (bucket) bucket.push(e);
+    else byPath.set(key, [e]);
+  }
+  return byPath;
+}
+
+export function takeUnmatched<E extends { local_path: string }>(
+  byPath: Map<string, E[]>,
+  normalizedPath: string,
+  matchedPaths: Set<string>,
+): E | undefined {
+  return byPath.get(normalizedPath)?.find((e) => !matchedPaths.has(e.local_path));
+}
+
 export async function matchDeleteTombstones<
   T extends { node_id: string; local_path: string; filename: string; hash?: string },
 >(
@@ -1077,6 +1109,7 @@ export async function matchDeleteTombstones<
       expectedRemotePaths.add(remotePath.normalize("NFC"));
     }
     if (expectedRemotePaths.size === 0) continue;
+    const entriesByLocalPath = indexEntriesByLocalPath(nodeEntries);
     const tombRows: Awaited<ReturnType<Client["execute"]>>["rows"] = [];
     // Chunked so a folder-sized candidate set stays well under any SQL
     // variable limit.
@@ -1091,7 +1124,7 @@ export async function matchDeleteTombstones<
               FROM audit_log
               WHERE target_type = 'file'
                 AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename')
-                AND json_extract(detail, '$.node_id') = ?
+                AND audit_node_id = ?
                 AND COALESCE(json_extract(detail, '$.remote_path'),
                              json_extract(detail, '$.old_remote_path')) IN (${placeholders})
               ORDER BY timestamp DESC`,
@@ -1110,9 +1143,7 @@ export async function matchDeleteTombstones<
       } catch {
         continue;
       }
-      const entry = nodeEntries.find(
-        (e) => e.local_path.normalize("NFC") === expectedLocal && !matchedPaths.has(e.local_path),
-      );
+      const entry = takeUnmatched(entriesByLocalPath, expectedLocal, matchedPaths);
       if (!entry) continue;
       const st = await getFileState(t.target_id as string);
       if (!st || st.last_synced_hash === null) continue;

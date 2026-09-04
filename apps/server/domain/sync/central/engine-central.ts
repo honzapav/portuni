@@ -17,7 +17,15 @@ import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
 import type { CentralClient } from "./client.js";
 import { CentralHttpError } from "./client.js";
-import { localHashFor, cleanupDeletedRemote, diskHashMatching, PullDirtyLocalError, ROUTING_GUIDANCE } from "../engine.js";
+import {
+  localHashFor,
+  cleanupDeletedRemote,
+  diskHashMatching,
+  indexEntriesByLocalPath,
+  takeUnmatched,
+  PullDirtyLocalError,
+  ROUTING_GUIDANCE,
+} from "../engine.js";
 import type {
   StatusResult,
   StatusFileEntry,
@@ -297,6 +305,10 @@ async function matchTombstonesForContext(
   }
   const deleted: DeletedRemoteEntry[] = [];
   const matchedPaths = new Set<string>();
+  const entriesByLocalPath = indexEntriesByLocalPath(entries);
+  // Same reason as the entry index: `ctx.si.files.find` per tombstone made
+  // the record-alive check O(T*F) on top.
+  const remotePathByFileId = new Map(ctx.si.files.map((f) => [f.id, f.remote_path]));
   for (const t of tombstones) {
     let expectedLocal: string;
     try {
@@ -308,15 +320,13 @@ async function matchTombstonesForContext(
     } catch {
       continue;
     }
-    const entry = entries.find(
-      (e) => e.local_path.normalize("NFC") === expectedLocal && !matchedPaths.has(e.local_path),
-    );
+    const entry = takeUnmatched(entriesByLocalPath, expectedLocal, matchedPaths);
     if (!entry) continue;
     const st = await getFileState(t.file_id);
     if (!st || st.last_synced_hash === null) continue;
     const hash = await diskHashMatching(st.last_synced_hash, entry.local_path, entry.hash);
     if (hash === null || hash !== st.last_synced_hash) continue;
-    if (t.record_alive && ctx.si.files.find((f) => f.id === t.file_id)?.remote_path === t.remote_path) {
+    if (t.record_alive && remotePathByFileId.get(t.file_id) === t.remote_path) {
       // The file's record moved right back to this exact path (the move
       // was undone) -- skip so a live file doesn't lose its file_state.
       continue;

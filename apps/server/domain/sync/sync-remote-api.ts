@@ -129,18 +129,18 @@ export async function getNodeSyncInfos(
       // a single global LIMIT would let one busy node starve the others.
       db.execute({
         sql: `SELECT node_id, target_id, action, remote_path FROM (
-                SELECT json_extract(detail, '$.node_id') AS node_id,
+                SELECT audit_node_id AS node_id,
                        target_id, action,
                        COALESCE(json_extract(detail, '$.remote_path'),
                                 json_extract(detail, '$.old_remote_path')) AS remote_path,
                        ROW_NUMBER() OVER (
-                         PARTITION BY json_extract(detail, '$.node_id')
+                         PARTITION BY audit_node_id
                          ORDER BY timestamp DESC
                        ) AS rn
                   FROM audit_log
                  WHERE target_type = 'file'
                    AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename')
-                   AND json_extract(detail, '$.node_id') IN (${ph})
+                   AND audit_node_id IN (${ph})
                    AND timestamp >= ?
               ) WHERE rn <= 20000
               ORDER BY node_id, rn`,
@@ -261,7 +261,7 @@ export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeS
           FROM audit_log
           WHERE target_type = 'file'
             AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename')
-            AND json_extract(detail, '$.node_id') = ?
+            AND audit_node_id = ?
             AND timestamp >= ?
           ORDER BY timestamp DESC LIMIT 20000`,
     args: [nodeId, cutoff],
