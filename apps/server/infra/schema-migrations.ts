@@ -1389,19 +1389,35 @@ const MIGRATIONS: Migration[] = [
   // tombstone ever written.
   {
     id: "033_audit_node_id_index",
-    // table_xinfo, not table_info: PRAGMA table_info omits generated columns
-    // entirely, so on a fresh install (where DDL already created the column)
-    // this would report "not applied" and the ALTER below would fail with
-    // "duplicate column name".
+    // Every file-tombstone lookup filters on the node id buried in
+    // audit_log's JSON `detail`, and no index can cover a json_extract() in
+    // a WHERE clause. `audit_node_id` is a VIRTUAL generated column (no
+    // stored bytes) over that value, with a partial index on
+    // (audit_node_id, timestamp DESC) WHERE target_type = 'file'.
+    //
+    // Keyed on the INDEX, not the column: a fresh install already carries
+    // the column from the DDL CREATE TABLE, and the index is the only part
+    // still missing there. The index cannot live in DDL at all — on an
+    // existing database CREATE TABLE IF NOT EXISTS is a no-op, so the column
+    // is absent until the ALTER below runs and the DDL loop would die on
+    // "no such column: audit_node_id" before ever reaching this migration.
     isApplied: async (db) => {
-      const info = await db.execute("PRAGMA table_xinfo(audit_log)");
-      return info.rows.some((r) => r.name === "audit_node_id");
+      const res = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_audit_file_node_ts'",
+      );
+      return res.rows.length > 0;
     },
     up: async (db) => {
-      await db.execute(
-        `ALTER TABLE audit_log ADD COLUMN audit_node_id TEXT
-           GENERATED ALWAYS AS (json_extract(detail, '$.node_id')) VIRTUAL`,
-      );
+      // table_xinfo, not table_info: PRAGMA table_info omits generated
+      // columns entirely, so on a fresh install this would report the column
+      // missing and the ALTER would fail with "duplicate column name".
+      const info = await db.execute("PRAGMA table_xinfo(audit_log)");
+      if (!info.rows.some((r) => r.name === "audit_node_id")) {
+        await db.execute(
+          `ALTER TABLE audit_log ADD COLUMN audit_node_id TEXT
+             GENERATED ALWAYS AS (json_extract(detail, '$.node_id')) VIRTUAL`,
+        );
+      }
       await db.execute(
         `CREATE INDEX IF NOT EXISTS idx_audit_file_node_ts
            ON audit_log(audit_node_id, timestamp DESC) WHERE target_type = 'file'`,
