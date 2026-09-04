@@ -116,7 +116,7 @@ export function createMcpTransport(): McpTransport {
         }
         // Disk contract: the agent never manages its projection directory
         // (spec: "Disk contract") -- clean it up here, at session end.
-        disposeSessionProjection(scope, identity.userId, getDb());
+        void disposeSessionProjection(scope, identity.userId, getDb());
       };
 
       // Parsed here (before createMcpServer) because session_type
