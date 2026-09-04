@@ -11,7 +11,6 @@ import CreateNodeModal from "./components/CreateNodeModal";
 import {
   fetchGraph,
   fetchNode,
-  fetchNodeMirror,
   createNodeMirror,
   fetchSandboxProfile,
   fetchMe,
@@ -19,7 +18,6 @@ import {
 import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
 import { useFileEditor } from "./lib/use-file-editor";
 import { buildAgentCommand } from "./lib/prompt";
-import { useDataMode } from "./lib/central";
 import {
   suspendableTerminalIds,
   fetchCorrelatedSessions,
@@ -125,9 +123,6 @@ export default function App() {
     if (sessionErrorTimer.current) clearTimeout(sessionErrorTimer.current);
     sessionErrorTimer.current = setTimeout(() => setSessionError(null), 8000);
   }, []);
-
-  const dataMode = useDataMode();
-  const isCentral = dataMode?.mode === "central";
 
   const [theme, setTheme] = useState<Theme>(() => loadTheme());
   const [agentCommand, setAgentCommandRaw] = useState<string>(() =>
@@ -312,18 +307,10 @@ export default function App() {
   // the mirror. Overlay it from the local sync agent (GET /nodes/:id/mirror).
   // Local mode already carries local_mirror in node-detail, so skip the extra
   // call there; orgs never have a mirror.
-  const hydrateLocalMirror = useCallback(
-    async (node: NodeDetail): Promise<NodeDetail> => {
-      if (!isCentral || node.local_mirror || node.type === "organization") return node;
-      try {
-        const { local_mirror } = await fetchNodeMirror(node.id);
-        return local_mirror ? { ...node, local_mirror } : node;
-      } catch {
-        return node;
-      }
-    },
-    [isCentral],
-  );
+  // The local_mirror overlay lives in fetchNode (api.ts) — the single fetch
+  // point every consumer already goes through. App used to run it a second
+  // time on top, re-requesting /nodes/:id/mirror after fetchNode had already
+  // asked and legitimately got null.
 
   useEffect(() => {
     if (!selectedId) {
@@ -335,7 +322,6 @@ export default function App() {
     setDetailLoading(true);
     setDetailError(null);
     fetchNode(selectedId)
-      .then((n) => hydrateLocalMirror(n))
       .then((n) => {
         if (cancelled) return;
         setNodeDetail(n);
@@ -349,7 +335,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedId, hydrateLocalMirror]);
+  }, [selectedId]);
 
   // Refetch both the graph and the current node. Called by the DetailPane
   // after any mutation so the viz and the detail stay in sync.
@@ -360,8 +346,8 @@ export default function App() {
     ]);
     setGraph(graphRes);
     setGraphError(null);
-    if (nodeRes) setNodeDetail(await hydrateLocalMirror(nodeRes));
-  }, [selectedId, hydrateLocalMirror]);
+    if (nodeRes) setNodeDetail(nodeRes);
+  }, [selectedId]);
 
   const setSelectedId = useCallback(
     (id: string | null) => {
@@ -791,17 +777,25 @@ export default function App() {
       } else if (selectedId) {
         const requestId = selectedId;
         fetchNode(requestId)
-          .then((n) => hydrateLocalMirror(n))
           // Drop responses that arrive after the selection moved on --
           // otherwise a slow poll paints the previous node's detail.
           .then((n) => {
-            if (selectedIdRef.current === requestId) setNodeDetail(n);
+            if (selectedIdRef.current !== requestId) return;
+            // Returning the previous object when nothing changed makes React
+            // bail out of the render entirely. The poll fires every 5 s
+            // whether or not the node moved, and it used to hand DetailPane a
+            // fresh object each time, re-rendering the whole subtree —
+            // files, timeline and all — for identical data. Comparing a
+            // ~13 kB detail payload costs ~24 us; the render never does.
+            setNodeDetail((prev) =>
+              prev && JSON.stringify(prev) === JSON.stringify(n) ? prev : n,
+            );
           })
           .catch(() => undefined);
       }
     }, 5000);
     return () => clearInterval(id);
-  }, [view, selectedWorkspaceNodeId, selectedId, refetchWorkspaceDetail, hydrateLocalMirror]);
+  }, [view, selectedWorkspaceNodeId, selectedId, refetchWorkspaceDetail]);
 
   // The 1s activity-dot clock lives in WorkspaceNodeList (useNowTick) --
   // ticking here re-rendered the whole tree every second forever.

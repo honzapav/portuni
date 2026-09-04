@@ -19,7 +19,7 @@
 import type { Client } from "@libsql/client";
 import { ulid } from "ulid";
 import { resolveNodeInfo } from "./node-info.js";
-import { resolveRemote } from "./routing.js";
+import { resolveRemote, listRules, resolveRemoteFromRules } from "./routing.js";
 import { mimeFor } from "./engine.js";
 import { parseRelPath, buildRemotePathOrThrow } from "./file-content-remote.js";
 
@@ -70,6 +70,138 @@ export interface NodeSyncInfo {
 // was away gets that copy back as new_local (a human decision), which is the
 // safe direction: nothing is destroyed, the file is just offered for adopt.
 const TOMBSTONE_WINDOW_DAYS = 180;
+
+// Upper bound on node ids per statement. The request schema allows 500 node
+// ids, which fits in one chunk of every query below on any sqlite build.
+const SYNC_INFO_BATCH = 500;
+
+// Bulk projection behind both the single-node and the batch endpoint.
+//
+// POST /sync/info-batch used to loop over node ids and call getNodeSyncInfo
+// per node: five serial queries each (visibility, node+org, routing, files,
+// tombstones), so 185 round trips for 37 mirrors and a 2500-query ceiling at
+// the schema's 500-node limit. The agent polls it on mount and every 30 s.
+// This does the same work in four queries regardless of node count.
+//
+// Callers filter visibility themselves (filterVisibleNodeIds, one chain
+// query for the whole set) -- this function has no identity and reports on
+// exactly the ids it is given. Ids with no nodes row are omitted from the
+// result map, matching the single-node endpoint's 404 semantics without
+// failing the whole batch.
+export async function getNodeSyncInfos(
+  db: Client,
+  nodeIds: string[],
+): Promise<Map<string, NodeSyncInfo>> {
+  const out = new Map<string, NodeSyncInfo>();
+  const distinct = [...new Set(nodeIds)];
+  if (distinct.length === 0) return out;
+
+  const cutoff = new Date(Date.now() - TOMBSTONE_WINDOW_DAYS * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+
+  for (let i = 0; i < distinct.length; i += SYNC_INFO_BATCH) {
+    const chunk = distinct.slice(i, i + SYNC_INFO_BATCH);
+    const ph = chunk.map(() => "?").join(",");
+
+    // The routing table is a handful of rules; read it once and resolve every
+    // node against it in memory instead of one resolveRemote query per node.
+    const [nodesRes, rulesList, filesRes, tombRes] = await Promise.all([
+      db.execute({
+        sql: `SELECT n.id, n.name, n.type, n.sync_key,
+                     (SELECT o.sync_key FROM edges e
+                      JOIN nodes o ON o.id = e.target_id AND o.type = 'organization'
+                      WHERE e.source_id = n.id AND e.relation = 'belongs_to'
+                      LIMIT 1) AS org_sync_key
+              FROM nodes n WHERE n.id IN (${ph})`,
+        args: chunk,
+      }),
+      listRules(db),
+      db.execute({
+        sql: `SELECT node_id, id, filename, status, remote_path,
+                     current_remote_hash, is_native_format, mime_type
+              FROM files WHERE node_id IN (${ph})`,
+        args: chunk,
+      }),
+      // Same predicate and window as the per-node query, plus the node id in
+      // the projection so rows can be bucketed. ROW_NUMBER partitioned by
+      // node keeps the per-node LIMIT 20000 payload guard exactly as it was:
+      // a single global LIMIT would let one busy node starve the others.
+      db.execute({
+        sql: `SELECT node_id, target_id, action, remote_path FROM (
+                SELECT audit_node_id AS node_id,
+                       target_id, action,
+                       COALESCE(json_extract(detail, '$.remote_path'),
+                                json_extract(detail, '$.old_remote_path')) AS remote_path,
+                       ROW_NUMBER() OVER (
+                         PARTITION BY audit_node_id
+                         ORDER BY timestamp DESC
+                       ) AS rn
+                  FROM audit_log
+                 WHERE target_type = 'file'
+                   AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename')
+                   AND audit_node_id IN (${ph})
+                   AND timestamp >= ?
+              ) WHERE rn <= 20000
+              ORDER BY node_id, rn`,
+        args: [...chunk, cutoff],
+      }),
+    ]);
+
+    const filesByNode = new Map<string, SyncInfoFile[]>();
+    for (const r of filesRes.rows) {
+      const nodeId = r.node_id as string;
+      let bucket = filesByNode.get(nodeId);
+      if (!bucket) {
+        bucket = [];
+        filesByNode.set(nodeId, bucket);
+      }
+      bucket.push({
+        id: r.id as string,
+        filename: r.filename as string,
+        status: r.status as string,
+        remote_path: (r.remote_path as string | null) ?? null,
+        current_remote_hash: (r.current_remote_hash as string | null) ?? null,
+        is_native_format: Number(r.is_native_format) === 1,
+        mime_type: (r.mime_type as string | null) ?? null,
+      });
+    }
+
+    const tombsByNode = new Map<string, Array<Record<string, unknown>>>();
+    for (const r of tombRes.rows) {
+      const nodeId = r.node_id as string;
+      let bucket = tombsByNode.get(nodeId);
+      if (!bucket) {
+        bucket = [];
+        tombsByNode.set(nodeId, bucket);
+      }
+      bucket.push(r as unknown as Record<string, unknown>);
+    }
+
+    for (const row of nodesRes.rows) {
+      const id = row.id as string;
+      const nodeType = row.type as string;
+      const nodeSyncKey = row.sync_key as string;
+      const orgSyncKey =
+        nodeType === "organization"
+          ? nodeSyncKey
+          : ((row.org_sync_key as string | null) ?? null);
+      out.set(id, {
+        node: {
+          id,
+          name: (row.name as string | null) ?? id,
+          type: nodeType,
+          sync_key: nodeSyncKey,
+          org_sync_key: orgSyncKey,
+        },
+        remote_name: resolveRemoteFromRules(rulesList, nodeType, orgSyncKey),
+        files: filesByNode.get(id) ?? [],
+        deleted: dedupeByRemotePath(tombsByNode.get(id) ?? []),
+      });
+    }
+  }
+  return out;
+}
 
 export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeSyncInfo> {
   // One JOIN gets the node row AND its belongs_to organization sync_key --
@@ -129,7 +261,7 @@ export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeS
           FROM audit_log
           WHERE target_type = 'file'
             AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename')
-            AND json_extract(detail, '$.node_id') = ?
+            AND audit_node_id = ?
             AND timestamp >= ?
           ORDER BY timestamp DESC LIMIT 20000`,
     args: [nodeId, cutoff],

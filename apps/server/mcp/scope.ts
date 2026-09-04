@@ -501,15 +501,19 @@ export async function guardNodeRead(
   identity?: GroupIdentityView,
   elicitor?: Elicitor,
 ): Promise<ReadGuardOutcome> {
-  const meta = await loadNodeScopeMeta(db, nodeId);
+  // Both reads are keyed only by nodeId and neither feeds the other, so they
+  // go out together: this guard sits in front of every scoped MCP read, and
+  // the server has no embedded replica. A node that does not exist costs one
+  // wasted chain query -- cheaper than a serial hop on every real read.
+  const [meta, visible] = await Promise.all([
+    loadNodeScopeMeta(db, nodeId),
+    identity !== undefined ? nodeVisibleTo(db, identity, nodeId) : Promise.resolve(true),
+  ]);
   if (!meta.exists) return { kind: "not_found" };
 
-  // Group-visibility gate: runs before scope so non-members cannot probe
+  // Group-visibility gate: decided before scope so non-members cannot probe
   // existence via the scope-expansion elicit.
-  if (identity !== undefined) {
-    const visible = await nodeVisibleTo(db, identity, nodeId);
-    if (!visible) return { kind: "not_found" };
-  }
+  if (!visible) return { kind: "not_found" };
 
   const alreadyInScope = scope.has(nodeId);
   // interactive_chat never consults reachability (see decideRead) -- skip

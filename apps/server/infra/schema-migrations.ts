@@ -1382,6 +1382,32 @@ const MIGRATIONS: Migration[] = [
       );
     },
   },
+  // Index the node id that every file-tombstone lookup filters on. It lives
+  // inside the JSON `detail` blob, so it needs a generated column to be
+  // indexable at all. VIRTUAL: no stored bytes, computed on read, and the
+  // index is what makes the lookup a seek instead of a scan of every file
+  // tombstone ever written.
+  {
+    id: "033_audit_node_id_index",
+    // table_xinfo, not table_info: PRAGMA table_info omits generated columns
+    // entirely, so on a fresh install (where DDL already created the column)
+    // this would report "not applied" and the ALTER below would fail with
+    // "duplicate column name".
+    isApplied: async (db) => {
+      const info = await db.execute("PRAGMA table_xinfo(audit_log)");
+      return info.rows.some((r) => r.name === "audit_node_id");
+    },
+    up: async (db) => {
+      await db.execute(
+        `ALTER TABLE audit_log ADD COLUMN audit_node_id TEXT
+           GENERATED ALWAYS AS (json_extract(detail, '$.node_id')) VIRTUAL`,
+      );
+      await db.execute(
+        `CREATE INDEX IF NOT EXISTS idx_audit_file_node_ts
+           ON audit_log(audit_node_id, timestamp DESC) WHERE target_type = 'file'`,
+      );
+    },
+  },
 ];
 
 export async function runMigration024(db: Client): Promise<void> {
@@ -1498,6 +1524,23 @@ export async function runMigration030(db: Client): Promise<void> {
   }
 }
 
+// The ids of every migration this build knows about, in declaration order.
+// ensureSchemaOn compares the applied set against this to decide whether a
+// database is already at the current schema version.
+export const MIGRATION_IDS: readonly string[] = MIGRATIONS.map((m) => m.id);
+
+// Applied migration ids, or null when the migrations table does not exist yet
+// (a database created before it did). Null means "cannot tell" -- callers
+// must take the full path.
+export async function appliedMigrationIds(db: Client): Promise<Set<string> | null> {
+  try {
+    const r = await db.execute("SELECT id FROM migrations");
+    return new Set(r.rows.map((row) => String(row.id)));
+  } catch {
+    return null;
+  }
+}
+
 export async function runMigrations(db: Client): Promise<void> {
   // Ensure the migrations table exists (DDL already has it for fresh
   // installs, but this covers databases created before the table existed).
@@ -1508,12 +1551,13 @@ export async function runMigrations(db: Client): Promise<void> {
     )`,
   );
 
+  // One read of the applied set instead of one SELECT per migration. The
+  // server has no embedded replica, so that loop was 32 sequential round
+  // trips on every boot and grew by one with every migration added.
+  const applied = (await appliedMigrationIds(db)) ?? new Set<string>();
+
   for (const migration of MIGRATIONS) {
-    const tracked = await db.execute({
-      sql: "SELECT id FROM migrations WHERE id = ?",
-      args: [migration.id],
-    });
-    if (tracked.rows.length > 0) continue;
+    if (applied.has(migration.id)) continue;
 
     if (migration.isApplied) {
       const applied = await migration.isApplied(db);

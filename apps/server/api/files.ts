@@ -28,6 +28,7 @@ import {
 } from "../domain/sync/file-content-remote.js";
 import {
   getNodeSyncInfo,
+  getNodeSyncInfos,
   registerFileRecordRemote,
   registerFileRecordsRemote,
 } from "../domain/sync/sync-remote-api.js";
@@ -42,7 +43,7 @@ const FILE_BODY_MAX_BYTES = Number(
 );
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { renameFile, deleteFile, moveFile } from "../domain/sync/engine-mutations.js";
-import { nodeVisibleTo } from "../auth/node-access.js";
+import { nodeVisibleTo, filterVisibleNodeIds } from "../auth/node-access.js";
 import { guardRestNodeWrite, guardHeadlessFileWrite } from "./write-gate.js";
 import type { FileContentResponse } from "../shared/api-types.js";
 
@@ -345,15 +346,20 @@ export async function handleSyncInfoBatch(
   if (!body) return;
   try {
     const db = getDb();
-    const infos = [];
-    for (const nodeId of body.node_ids) {
-      if (!(await nodeVisibleTo(db, identity, nodeId))) continue;
-      try {
-        infos.push(await getNodeSyncInfo(db, nodeId));
-      } catch {
-        /* node vanished between visibility check and read -- omit */
-      }
-    }
+    // One chain query resolves visibility for the whole set, then one bulk
+    // projection covers every remaining node. This used to be a serial loop
+    // of five queries per node: 185 round trips for 37 mirrors, and the
+    // schema allows 500. A node that is hidden, or that vanished between the
+    // visibility resolution and the read, is simply absent from the map --
+    // the same silent-omission contract the loop had.
+    const visible = await filterVisibleNodeIds(db, identity, body.node_ids);
+    const infoByNode = await getNodeSyncInfos(
+      db,
+      body.node_ids.filter((id) => visible.has(id)),
+    );
+    const infos = body.node_ids
+      .map((id) => infoByNode.get(id))
+      .filter((info) => info !== undefined);
     respondJson(res, 200, { infos });
   } catch (err) {
     respondError(res, "POST /sync/info-batch", err);

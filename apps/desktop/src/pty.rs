@@ -281,7 +281,7 @@ fn report_terminal_exit(app: &AppHandle, ws_id: &str, terminal_id: &str) {
     // already inside an async context, same reasoning as
     // ensure_device_token above.
     tauri::async_runtime::block_on(async move {
-        let mut req = reqwest::Client::new()
+        let mut req = crate::http_client()
             .post(&url)
             .timeout(std::time::Duration::from_secs(5));
         for (k, v) in headers {
@@ -677,7 +677,7 @@ pub fn pty_write(
     state: State<'_, PtyState>,
     args: WriteArgs,
 ) -> Result<(), String> {
-    let caller_ws = crate::ws_of(&window).ok();
+    let caller_ws = crate::ws_label_id(&window);
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions
         .get_mut(&args.session_id)
@@ -706,7 +706,7 @@ pub fn pty_resize(
     state: State<'_, PtyState>,
     args: ResizeArgs,
 ) -> Result<(), String> {
-    let caller_ws = crate::ws_of(&window).ok();
+    let caller_ws = crate::ws_label_id(&window);
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions
         .get(&args.session_id)
@@ -737,7 +737,7 @@ pub fn pty_kill(
     state: State<'_, PtyState>,
     args: KillArgs,
 ) -> Result<(), String> {
-    let caller_ws = crate::ws_of(&window).ok();
+    let caller_ws = crate::ws_label_id(&window);
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let Some(session) = sessions.get(&args.session_id) else {
         // Already gone (e.g. the reader thread's own removal raced this

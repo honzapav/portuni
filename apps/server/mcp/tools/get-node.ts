@@ -124,11 +124,26 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
       //    this tool returns that the context payload does not: files,
       //    visibility, created_by/at, updated_at, meta, local_mirror
       //    (registered_at).
-      const { root } = await buildContextPayload(db, row.id, 0, ctx.identity.userId, ctx.identity);
+      //    The node row is already in hand from step 1, so hand it over
+      //    rather than let the context builder read it a third time (step 1,
+      //    the read guard, and this call all used to load it separately).
+      const { root } = await buildContextPayload(
+        db,
+        row.id,
+        0,
+        ctx.identity.userId,
+        ctx.identity,
+        result.rows[0] as unknown as Record<string, unknown>,
+      );
 
       // 3. Fetch local mirror from per-device sync.db (the context payload
       //    only exposes local_path; this tool returns the richer pair).
-      const mirror = await getLocalMirror(ctx.identity.userId, row.id);
+      const [mirror, homeMirrorRow] = await Promise.all([
+        getLocalMirror(ctx.identity.userId, row.id),
+        scope.homeNodeId
+          ? getLocalMirror(ctx.identity.userId, scope.homeNodeId)
+          : Promise.resolve(null),
+      ]);
       const mirrorPath = mirror?.local_path ?? null;
       const localMirror = mirror
         ? { local_path: mirror.local_path, registered_at: mirror.registered_at }
@@ -139,9 +154,7 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
       // paths from there and ensure it is fresh first. local_mirror keeps
       // pointing at the real mirror (it is metadata about registration, not
       // a read path).
-      const homeMirror = scope.homeNodeId
-        ? (await getLocalMirror(ctx.identity.userId, scope.homeNodeId))?.local_path ?? null
-        : null;
+      const homeMirror = homeMirrorRow?.local_path ?? null;
       let projectionDir: string | null = null;
       if (row.id !== scope.homeNodeId && scope.has(row.id)) {
         const r = await ctx.projector.projectNode(row.id);
@@ -155,31 +168,35 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
         projectionDir,
       });
 
-      // 4. Resolve the org_sync_key once for the per-file derivation below.
-      let orgSyncKey: string | null = null;
-      if (row.type !== "organization") {
-        const orgRes = await db.execute({
+      // 4. + 5. The org_sync_key (for the per-file path derivation) and the
+      //    file rows are both keyed only by this node and neither reads the
+      //    other, so they go out together. The org query is issued even for an
+      //    organization node, where its result is discarded in favour of the
+      //    node's own sync_key -- keeping the pair flat is worth one query
+      //    that resolves to nothing. Files are kept here because
+      //    buildContextPayload does not include them; local_path is a DERIVED
+      //    response field built from the per-device mirror + remote_path +
+      //    sync_key, the column no longer exists on the files table.
+      const [orgRes, fileResult] = await Promise.all([
+        db.execute({
           sql: `SELECT org.sync_key FROM edges e
                   JOIN nodes org ON org.id = e.target_id
                  WHERE e.source_id = ? AND e.relation = 'belongs_to' AND org.type = 'organization'
                  LIMIT 1`,
           args: [row.id],
-        });
-        orgSyncKey =
-          orgRes.rows.length > 0 ? (orgRes.rows[0].sync_key as string | null) ?? null : null;
-      } else {
-        orgSyncKey = row.sync_key;
-      }
-
-      // 5. Fetch files for this node (kept here -- buildContextPayload does
-      //    not include files). local_path is a DERIVED response field built
-      //    from the per-device mirror + remote_path + sync_key; the column
-      //    no longer exists on the files table.
-      const fileResult = await db.execute({
-        sql: `SELECT id, filename, status, remote_path, mime_type
-              FROM files WHERE node_id = ? ORDER BY created_at DESC`,
-        args: [row.id],
-      });
+        }),
+        db.execute({
+          sql: `SELECT id, filename, status, remote_path, mime_type
+                FROM files WHERE node_id = ? ORDER BY created_at DESC`,
+          args: [row.id],
+        }),
+      ]);
+      const orgSyncKey: string | null =
+        row.type === "organization"
+          ? row.sync_key
+          : orgRes.rows.length > 0
+            ? ((orgRes.rows[0].sync_key as string | null) ?? null)
+            : null;
 
       const files = fileResult.rows.map((f) => {
         const remotePath = (f.remote_path as string | null) ?? null;

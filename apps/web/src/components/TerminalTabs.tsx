@@ -12,8 +12,16 @@
 // remount only ever saw new output — the user saw the terminal "go
 // blank" when bouncing between nodes. Keeping every pane mounted means
 // the xterm buffer survives node switches too.
-import { memo } from "react";
-import TerminalPane from "./TerminalPane";
+import { lazy, memo, Suspense } from "react";
+
+// xterm is ~474 kB of the bundle (123 kB gzipped) and is dead weight until a
+// terminal actually exists. Loading it on demand keeps it out of the chunk
+// every window parses at startup. The module resolves once, so only the very
+// first pane ever suspends; every later one renders straight from cache, and
+// the per-pane boundary means a suspending pane can never unmount its
+// already-live siblings (which would dispose their xterm buffers -- the exact
+// bug the always-mounted design above exists to prevent).
+const TerminalPane = lazy(() => import("./TerminalPane"));
 import type { TerminalSession } from "../lib/sessions";
 import type { Theme } from "../lib/theme";
 
@@ -64,18 +72,20 @@ function TerminalTabs({
             className="absolute inset-0"
             style={{ display: visible ? "block" : "none" }}
           >
-            <TerminalPane
-              sessionId={s.id}
-              cwd={s.cwd}
-              command={s.command}
-              sandboxProfile={s.sandboxProfile}
-              spawnProfileId={s.profileId ?? null}
-              spawnSessionId={s.spawnSessionId ?? null}
-              spawnRequestedAt={s.spawnRequestedAt}
-              active={visible}
-              theme={theme}
-              onExit={() => onCloseSession(s.id)}
-            />
+            <Suspense fallback={null}>
+              <TerminalPane
+                sessionId={s.id}
+                cwd={s.cwd}
+                command={s.command}
+                sandboxProfile={s.sandboxProfile}
+                spawnProfileId={s.profileId ?? null}
+                spawnSessionId={s.spawnSessionId ?? null}
+                spawnRequestedAt={s.spawnRequestedAt}
+                active={visible}
+                theme={theme}
+                onExit={() => onCloseSession(s.id)}
+              />
+            </Suspense>
           </div>
         );
       })}

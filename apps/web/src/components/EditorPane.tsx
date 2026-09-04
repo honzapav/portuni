@@ -5,8 +5,14 @@ import type { FileEditor } from "../lib/use-file-editor";
 import { isHtmlPath } from "../App";
 import { isShowtimePath } from "../lib/showtime";
 import HtmlPreview from "./HtmlPreview";
-import MarkdownEditor from "./MarkdownEditor";
-import MarkdownPreview from "./MarkdownPreview";
+import { lazy, Suspense } from "react";
+
+// The two heaviest leaves in the app, and neither is on the startup path:
+// CodeMirror is ~624 kB of the bundle (213 kB gzipped) and react-markdown +
+// remark ~154 kB (45 kB), but nothing renders either until a file is actually
+// open. Eagerly imported they were parsed by every window at launch.
+const MarkdownEditor = lazy(() => import("./MarkdownEditor"));
+const MarkdownPreview = lazy(() => import("./MarkdownPreview"));
 
 export type EditorMode = "edit" | "preview";
 
@@ -150,20 +156,28 @@ export function EditorBody({
             capWidth && !(fullWidthPreview && effectiveMode === "preview") ? " max-w-4xl" : ""
           }`}
         >
-          {effectiveMode === "edit" ? (
-            <MarkdownEditor value={ed.content} onChange={ed.onChange} onSave={(v) => ed.save(v)} />
-          ) : isShowtimePath(relPath) ? (
-            <HtmlPreview
-              content={ed.content}
-              localPath={ed.localPath}
-              kind="showtime"
-              nodeId={ed.nodeId}
-            />
-          ) : isHtmlPath(relPath) ? (
-            <HtmlPreview content={ed.content} localPath={ed.localPath} />
-          ) : (
-            <MarkdownPreview value={ed.content} />
-          )}
+          <Suspense
+            fallback={
+              <div className="flex h-full items-center justify-center text-[13px] text-[var(--color-text-dim)]">
+                Načítám…
+              </div>
+            }
+          >
+            {effectiveMode === "edit" ? (
+              <MarkdownEditor value={ed.content} onChange={ed.onChange} onSave={(v) => ed.save(v)} />
+            ) : isShowtimePath(relPath) ? (
+              <HtmlPreview
+                content={ed.content}
+                localPath={ed.localPath}
+                kind="showtime"
+                nodeId={ed.nodeId}
+              />
+            ) : isHtmlPath(relPath) ? (
+              <HtmlPreview content={ed.content} localPath={ed.localPath} />
+            ) : (
+              <MarkdownPreview value={ed.content} />
+            )}
+          </Suspense>
         </div>
       </div>
     </div>

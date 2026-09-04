@@ -24,6 +24,7 @@ import type {
   OverviewPayload,
 } from "./types";
 import { apiFetch } from "./lib/backend-url";
+import { isCentralMode } from "./lib/data-mode";
 
 // User shape returned by GET /users. Used by the Actors page to pick a
 // user_id when creating/editing a real (non-placeholder) person actor.
@@ -73,10 +74,14 @@ export async function fetchNode(id: string): Promise<NodeDetail> {
   // has no device state). Overlay it from the device here, in the single fetch
   // point, so EVERY consumer -- graph view, workspace ("Práce") view, the 5s
   // detail poll -- gets the real path without each having to remember to
-  // hydrate. Local mode already carries local_mirror, so this only fires for a
-  // genuinely unmirrored node, where the endpoint returns null (or 404 in local
-  // mode) and we leave it as-is. Orgs never have a mirror.
-  if (!node.local_mirror && node.type !== "organization") {
+  // hydrate. Orgs never have a mirror.
+  //
+  // Local mode is skipped outright: loadNodeDetail already read the device's
+  // mirror registry, so local_mirror:null there means the node genuinely has
+  // none and the extra request can only ever return null again. It fired on
+  // every 5 s poll of an unmirrored node -- 12 wasted requests a minute, each
+  // its own connection through the desktop proxy.
+  if (!node.local_mirror && node.type !== "organization" && (await isCentralMode())) {
     try {
       const { local_mirror } = await fetchNodeMirror(id);
       if (local_mirror) return { ...node, local_mirror };

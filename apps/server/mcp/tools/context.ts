@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getDb } from "../../infra/db.js";
-import { listUserMirrors, unregisterMirror, getMirrorPath } from "../../domain/sync/mirror-registry.js";
+import { listUserMirrors, getMirrorPath } from "../../domain/sync/mirror-registry.js";
 import { readableMirrorRoot } from "../disk-projection.js";
 import type { Client, InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -209,22 +209,41 @@ export async function buildContextPayload(
   depth: number,
   userId: string,
   identity?: GroupIdentityView,
+  // Callers that already hold the node row (portuni_get_node loads it to
+  // resolve node_id/name and to run the read guard) can hand it over instead
+  // of paying for a third read of the same row. Must carry at least the
+  // columns the query below selects; a `SELECT *` row satisfies that.
+  preloadedRoot?: Record<string, unknown>,
 ): Promise<ContextPayload> {
   // 1. Load the root node row. owner_id / goal / lifecycle_state columns are
   //    added by migration 006; fall back to nulls if not present (shouldn't
   //    happen in production, but keeps us robust against older test schemas).
-  const rootRes = await db.execute({
-    sql: `SELECT id, type, name, description, status, owner_id, goal, lifecycle_state, health
-            FROM nodes WHERE id = ?`,
-    args: [nodeId],
-  });
-  if (rootRes.rows.length === 0) {
-    throw new Error(`node ${nodeId} not found`);
+  let rootRow: Record<string, unknown>;
+  if (preloadedRoot !== undefined) {
+    rootRow = preloadedRoot;
+  } else {
+    const rootRes = await db.execute({
+      sql: `SELECT id, type, name, description, status, owner_id, goal, lifecycle_state, health
+              FROM nodes WHERE id = ?`,
+      args: [nodeId],
+    });
+    if (rootRes.rows.length === 0) {
+      throw new Error(`node ${nodeId} not found`);
+    }
+    rootRow = rootRes.rows[0] as unknown as Record<string, unknown>;
   }
-  const rootRow = rootRes.rows[0];
 
   // 2. Walk the graph up to `depth` levels (bidirectional edge traversal).
-  const walkResult = await db.execute({
+  // At depth 0 the recursive branch is bounded away (`WHERE gw.d < 0` never
+  // fires), so the walk degenerates to re-reading the root row we already
+  // have. portuni_get_node is exactly that call. Skip the round trip and
+  // synthesise the one row the code below needs: nodeIds becomes [nodeId] and
+  // connectedRows filters to empty, same as the query would have produced.
+  let walkRows: Array<Record<string, unknown>>;
+  if (depth <= 0) {
+    walkRows = [{ node_id: nodeId }];
+  } else {
+    const walkResult = await db.execute({
     sql: `WITH RECURSIVE graph_walk(node_id, d) AS (
             SELECT ?, 0
             UNION
@@ -242,10 +261,12 @@ export async function buildContextPayload(
           JOIN nodes n ON n.id = gw.node_id
           GROUP BY gw.node_id
           ORDER BY d, n.name`,
-    args: [nodeId, depth],
-  });
+      args: [nodeId, depth],
+    });
+    walkRows = walkResult.rows as unknown as Array<Record<string, unknown>>;
+  }
 
-  const nodeIds = walkResult.rows.map((row) => row.node_id as string);
+  const nodeIds = walkRows.map((row) => row.node_id as string);
 
   // 3. Fetch all edges between traversed nodes (with peer names/types) so
   //    each node's per-direction edge list can be built.
@@ -293,24 +314,23 @@ export async function buildContextPayload(
     }
   }
 
-  // 4. Fetch local mirrors from the per-device sync.db. Tolerate stale rows
-  //    (mirror exists for a node that was purged from the shared DB) by
-  //    skipping them and firing fire-and-forget cleanup.
+  // 4. Fetch local mirrors from the per-device sync.db, keeping only the ones
+  //    for nodes the walk actually returned.
+  //
+  //    This used to issue a `SELECT 1 FROM nodes WHERE id = ?` per mirror to
+  //    guard against a mirror row whose node was purged from the shared DB --
+  //    one Turso round trip per mirrored node in scope, on the tool an agent
+  //    calls at the start of every session (measured: 11 + N queries for N
+  //    mirrored neighbours). The guard could never fire: `nodeIds` comes out
+  //    of the graph walk's own `JOIN nodes n ON n.id = gw.node_id`, so every
+  //    id in `wanted` provably exists in `nodes`. A mirror for a purged node
+  //    fails the `wanted` check and is skipped either way -- exactly as
+  //    before, minus the round trips.
   const mirrorMap = new Map<string, string>();
   if (nodeIds.length > 0) {
     const wanted = new Set(nodeIds);
-    const allMirrors = await listUserMirrors(userId);
-    for (const m of allMirrors) {
-      if (!wanted.has(m.node_id)) continue;
-      const e = await db.execute({
-        sql: "SELECT 1 FROM nodes WHERE id = ? LIMIT 1",
-        args: [m.node_id],
-      });
-      if (e.rows.length > 0) {
-        mirrorMap.set(m.node_id, m.local_path);
-      } else {
-        void unregisterMirror(userId, m.node_id).catch(() => undefined);
-      }
+    for (const m of await listUserMirrors(userId)) {
+      if (wanted.has(m.node_id)) mirrorMap.set(m.node_id, m.local_path);
     }
   }
 
@@ -363,7 +383,7 @@ export async function buildContextPayload(
   // Batched: the previous per-node loop ran up to 4 sequential queries per
   // connected node -- 100+ Turso round trips for a well-connected node on
   // the hot "start work" path. Three IN() queries replace all of them.
-  const connectedRows = walkResult.rows.filter((row) => (row.node_id as string) !== nodeId);
+  const connectedRows = walkRows.filter((row) => (row.node_id as string) !== nodeId);
   const depth1Ids = connectedRows
     .filter((row) => (row.d as number) === 1)
     .map((row) => row.node_id as string);
