@@ -277,14 +277,12 @@ export const DDL = [
   // order by timestamp. Without this they are a full table scan of a log
   // that only grows.
   `CREATE INDEX IF NOT EXISTS idx_audit_file_action_ts ON audit_log(target_type, action, timestamp)`,
-  // ...and every one of them also filters by node. Without the node in the
-  // index, that filter is applied row by row over every file tombstone ever
-  // written, so the cost grows with the whole log rather than with the node's
-  // own history: measured at 0.8 / 3.8 / 17.3 ms for 1k / 10k / 50k rows, on
-  // every discovery scan of every node. Partial on target_type so it stays
-  // small (scope/auth/node audit rows are the bulk of the table).
-  `CREATE INDEX IF NOT EXISTS idx_audit_file_node_ts
-     ON audit_log(audit_node_id, timestamp DESC) WHERE target_type = 'file'`,
+  // NOTE: the companion index on audit_node_id (idx_audit_file_node_ts) is
+  // deliberately NOT here — it references the generated column above, which
+  // on an existing pre-033 database does not exist when the DDL loop runs
+  // (CREATE TABLE IF NOT EXISTS is a no-op there, so it adds no column).
+  // Migration 033 creates the column and the index together. Same reason the
+  // 013 sync_key triggers are not in the DDL loop; see schema.ts.
   // Task 6: intents for the remote+local+DB mutations (moveFile, renameFile,
   // renameFolder, deleteFile, deleteFileRemote). A row is written before the
   // first side effect and cleared on success; leftovers are retried
