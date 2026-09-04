@@ -1498,6 +1498,23 @@ export async function runMigration030(db: Client): Promise<void> {
   }
 }
 
+// The ids of every migration this build knows about, in declaration order.
+// ensureSchemaOn compares the applied set against this to decide whether a
+// database is already at the current schema version.
+export const MIGRATION_IDS: readonly string[] = MIGRATIONS.map((m) => m.id);
+
+// Applied migration ids, or null when the migrations table does not exist yet
+// (a database created before it did). Null means "cannot tell" -- callers
+// must take the full path.
+export async function appliedMigrationIds(db: Client): Promise<Set<string> | null> {
+  try {
+    const r = await db.execute("SELECT id FROM migrations");
+    return new Set(r.rows.map((row) => String(row.id)));
+  } catch {
+    return null;
+  }
+}
+
 export async function runMigrations(db: Client): Promise<void> {
   // Ensure the migrations table exists (DDL already has it for fresh
   // installs, but this covers databases created before the table existed).
@@ -1508,12 +1525,13 @@ export async function runMigrations(db: Client): Promise<void> {
     )`,
   );
 
+  // One read of the applied set instead of one SELECT per migration. The
+  // server has no embedded replica, so that loop was 32 sequential round
+  // trips on every boot and grew by one with every migration added.
+  const applied = (await appliedMigrationIds(db)) ?? new Set<string>();
+
   for (const migration of MIGRATIONS) {
-    const tracked = await db.execute({
-      sql: "SELECT id FROM migrations WHERE id = ?",
-      args: [migration.id],
-    });
-    if (tracked.rows.length > 0) continue;
+    if (applied.has(migration.id)) continue;
 
     if (migration.isApplied) {
       const applied = await migration.isApplied(db);
