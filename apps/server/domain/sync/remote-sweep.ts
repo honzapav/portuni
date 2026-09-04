@@ -14,8 +14,19 @@ import { resolveNodeInfo } from "./node-info.js";
 import { buildNodeRoot } from "./remote-path.js";
 import { adoptFiles } from "./engine-mutations.js";
 import { sha256Buffer } from "./hash.js";
+import { mapWithConcurrency } from "./engine.js";
 import type { FileRef } from "./types.js";
 import { retryPendingFileOps, type RetryResult } from "./pending-ops.js";
+
+// Bounded fan-out for the per-file remote calls a sweep still has to make:
+// the confirmation stats for candidates the listing did not return, and the
+// content fetches that backfill a hash for backends whose stat reports none.
+// Same shape and default as statusScan's own limit -- enough to hide network
+// latency, low enough not to trip a provider's rate limit.
+const SWEEP_STAT_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.PORTUNI_SWEEP_CONCURRENCY ?? 8),
+);
 
 export interface RemoteSweepArgs { userId: string; nodeId: string }
 export interface RemoteSweepFile { file_id: string; filename: string; remote_path: string }
@@ -27,7 +38,8 @@ export interface RemoteSweepResult {
   pending_repairs: RetryResult["pending_repairs"];
 }
 
-const SECTIONS = new Set(["wip", "outputs", "resources"]);
+const SECTION_NAMES = ["wip", "outputs", "resources"] as const;
+const SECTIONS = new Set<string>(SECTION_NAMES);
 
 // Files at any depth under <nodeRoot>/<section>/ qualify for adoption; a
 // path segment starting with "." is skipped.
@@ -68,15 +80,24 @@ export async function remoteSweep(db: Client, a: RemoteSweepArgs): Promise<Remot
   // the root itself adds nothing -- and for an organization the root spans
   // every child project/process/area beneath it, which turns one sync into a
   // crawl of the whole org tree.
+  // The three sections are independent subtrees; on Drive each list is a
+  // paged HTTPS walk, so waiting for one before starting the next tripled the
+  // wall clock for nothing. Failure handling is unchanged: the first failing
+  // section in SECTION_NAMES order is reported and the sweep gives up, because a
+  // partial listing cannot be told apart from "these files are gone".
+  const sectionResults = await Promise.allSettled(
+    SECTION_NAMES.map((section) => adapter.list(`${nodeRoot}/${section}`)),
+  );
   const listing: FileRef[] = [];
-  for (const section of SECTIONS) {
-    const prefix = `${nodeRoot}/${section}`;
-    try {
-      listing.push(...(await adapter.list(prefix)));
-    } catch (e) {
-      out.errors.push({ remote_path: prefix, error: `list failed: ${(e as Error).message}` });
+  for (const [i, r] of sectionResults.entries()) {
+    if (r.status === "rejected") {
+      out.errors.push({
+        remote_path: `${nodeRoot}/${SECTION_NAMES[i]}`,
+        error: `list failed: ${(r.reason as Error).message}`,
+      });
       return out;
     }
+    listing.push(...r.value);
   }
   const present = new Map<string, FileRef>();
   for (const f of listing) present.set(f.path.normalize("NFC"), f);
@@ -112,15 +133,28 @@ export async function remoteSweep(db: Client, a: RemoteSweepArgs): Promise<Remot
     }
   }
 
-  for (const r of missingCandidates) {
+  // A listing can lag a fresh upload, so each candidate is confirmed gone
+  // with its own stat before the record is destroyed. That guard stays --
+  // it is what makes the deletion safe -- but the stats no longer run one
+  // after another: on Drive a folder-sized deletion meant one serial HTTPS
+  // round trip per file. The writes below stay sequential.
+  const confirmations = await mapWithConcurrency(
+    missingCandidates,
+    SWEEP_STAT_CONCURRENCY,
+    async (r) => {
+      try {
+        return { stat: await adapter.stat(r.remote_path as string), error: null as string | null };
+      } catch (e) {
+        return { stat: null, error: (e as Error).message };
+      }
+    },
+  );
+
+  for (const [i, r] of missingCandidates.entries()) {
     const remotePath = r.remote_path as string;
-    // A listing can lag a fresh upload; confirm the object is really gone
-    // before destroying the record.
-    let stat: FileRef | null;
-    try {
-      stat = await adapter.stat(remotePath);
-    } catch (e) {
-      out.errors.push({ remote_path: remotePath, error: `stat failed: ${(e as Error).message}` });
+    const { stat, error } = confirmations[i];
+    if (error !== null) {
+      out.errors.push({ remote_path: remotePath, error: `stat failed: ${error}` });
       continue;
     }
     if (stat !== null) continue;
@@ -173,7 +207,16 @@ export async function remoteSweep(db: Client, a: RemoteSweepArgs): Promise<Remot
     refsByPath.set(ref.path, ref);
   }
   for (const [status, paths] of bySection) {
-    const res = await adoptFiles(db, { userId: a.userId, nodeId: a.nodeId, paths, status });
+    // refsByPath carries the hash and native flag the listing already
+    // reported, so adoptFiles does not stat each path again.
+    const res = await adoptFiles(db, {
+      userId: a.userId,
+      nodeId: a.nodeId,
+      paths,
+      status,
+      refs: refsByPath,
+    });
+    const needsBackfill: typeof res.adopted = [];
     for (const f of res.adopted) {
       out.adopted.push({ file_id: f.file_id, filename: f.filename, remote_path: f.remote_path });
       // adoptFiles records whatever hash the backend's stat() reports, which
@@ -188,17 +231,30 @@ export async function remoteSweep(db: Client, a: RemoteSweepArgs): Promise<Remot
       // the listing's FileRef back up by path instead of guessing from the
       // hash alone.
       const isNative = refsByPath.get(f.remote_path)?.is_native_format === true;
-      if (!f.hash && !isNative) {
+      if (!f.hash && !isNative) needsBackfill.push(f);
+    }
+    // Downloading these one after another made a bulk adoption as slow as the
+    // slowest sequence of fetches; they are independent.
+    const backfilled = await mapWithConcurrency(
+      needsBackfill,
+      SWEEP_STAT_CONCURRENCY,
+      async (f) => {
         try {
-          const content = await adapter.get(f.remote_path);
-          await db.execute({
-            sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
-            args: [sha256Buffer(content), f.file_id],
-          });
+          return { f, hash: sha256Buffer(await adapter.get(f.remote_path)), error: null as string | null };
         } catch (e) {
-          out.errors.push({ remote_path: f.remote_path, error: `hash backfill failed: ${(e as Error).message}` });
+          return { f, hash: null, error: (e as Error).message };
         }
+      },
+    );
+    for (const b of backfilled) {
+      if (b.error !== null) {
+        out.errors.push({ remote_path: b.f.remote_path, error: `hash backfill failed: ${b.error}` });
+        continue;
       }
+      await db.execute({
+        sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
+        args: [b.hash, b.f.file_id],
+      });
     }
     for (const s of res.skipped) {
       if (s.reason !== "already tracked") out.errors.push({ remote_path: s.remote_path, error: s.reason });

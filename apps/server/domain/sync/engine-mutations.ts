@@ -11,7 +11,8 @@
 
 import { mkdir, rename as fsRename } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { Client } from "@libsql/client";
+import type { Client, InStatement } from "@libsql/client";
+import type { FileRef } from "./types.js";
 import { ulid } from "ulid";
 import { getAdapter } from "./adapter-cache.js";
 import { resolveRemote } from "./routing.js";
@@ -576,6 +577,13 @@ export interface AdoptFilesArgs {
   nodeId: string;
   paths: string[];
   status?: "wip" | "output";
+  // Remote metadata the caller already has, keyed by remote path. remoteSweep
+  // holds a full FileRef for every path it passes here -- it just came out of
+  // the listing -- and without this adoptFiles re-fetched the same hash and
+  // native flag with one adapter.stat() per file. On Drive that is an HTTPS
+  // round trip each. A path absent from the map still gets stat()ed, so
+  // callers with only paths (portuni_adopt_files) are unaffected.
+  refs?: ReadonlyMap<string, FileRef>;
 }
 
 export interface AdoptFilesResult {
@@ -600,6 +608,7 @@ export async function adoptFiles(
   const nodeRootPrefix = `${nodeRoot}/`;
   const adopted: AdoptFilesResult["adopted"] = [];
   const skipped: AdoptFilesResult["skipped"] = [];
+  const auditRows: InStatement[] = [];
   for (const p of a.paths) {
     // Reject paths that would point outside the node's own subtree, or
     // that contain "../" / absolute / control segments. Without this an
@@ -618,15 +627,14 @@ export async function adoptFiles(
       });
       continue;
     }
-    const existing = await db.execute({
-      sql: "SELECT id FROM files WHERE node_id = ? AND remote_name = ? AND remote_path = ? LIMIT 1",
-      args: [a.nodeId, remoteName, p],
-    });
-    if (existing.rows.length > 0) {
-      skipped.push({ remote_path: p, reason: "already tracked" });
-      continue;
-    }
-    const stat = await adapter.stat(p);
+    // No pre-check SELECT: the INSERT below is ON CONFLICT DO NOTHING
+    // RETURNING, so an already-tracked path comes back with zero rows and
+    // takes the same "already tracked" skip. The pre-check was one query per
+    // file that could only ever agree with the insert -- and it keyed on
+    // (node_id, remote_name, remote_path) while the unique index is on
+    // (node_id, remote_path), so it actually missed a same-path row adopted
+    // under a different remote and let the insert catch it anyway.
+    const stat = a.refs?.get(p) ?? (await adapter.stat(p));
     if (!stat) {
       skipped.push({ remote_path: p, reason: "remote file not found" });
       continue;
@@ -663,7 +671,7 @@ export async function adoptFiles(
       skipped.push({ remote_path: p, reason: "already tracked" });
       continue;
     }
-    await db.execute({
+    auditRows.push({
       sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
             VALUES (?, ?, 'sync_adopt', 'file', ?, ?, ?)`,
       args: [
@@ -675,6 +683,13 @@ export async function adoptFiles(
       ],
     });
     adopted.push({ file_id: id, remote_path: p, filename, hash: stat.hash });
+  }
+  // One batch instead of one round trip per adopted file. Written after the
+  // inserts, so an audit row can only exist for a file row that landed.
+  if (auditRows.length > 0) {
+    for (let i = 0; i < auditRows.length; i += 100) {
+      await db.batch(auditRows.slice(i, i + 100), "write");
+    }
   }
   return { adopted, skipped };
 }

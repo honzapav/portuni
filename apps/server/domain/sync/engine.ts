@@ -4,6 +4,7 @@ import type { Client } from "@libsql/client";
 import { ulid } from "ulid";
 import { md5Buffer, sha256Buffer, sha256File, statForCache } from "./hash.js";
 import { getAdapter } from "./adapter-cache.js";
+import type { FileRef } from "./types.js";
 import { resolveRemote } from "./routing.js";
 import {
   upsertFileState,
@@ -721,7 +722,16 @@ async function cachedRemoteStat(
   remoteName: string,
   remotePath: string,
   prefetchedStat?: RemoteStatRow | null,
+  // Positive-only view of one listing of the node's sections. A path found
+  // here is known present with a known hash, and needs no per-file call. A
+  // path NOT found here falls through to stat() below -- never to "gone".
+  // A listing that failed, lagged or paged short would otherwise mass-
+  // classify live files as remote_missing, which is the destructive
+  // direction; the same reasoning remoteSweep's confirmation stats rest on.
+  listed?: ReadonlyMap<string, FileRef>,
 ): Promise<{ hash: string | null; exists: boolean } | null> {
+  const fromListing = listed?.get(remotePath.normalize("NFC"));
+  if (fromListing) return { hash: fromListing.hash, exists: true };
   const cached = prefetchedStat !== undefined ? prefetchedStat : await getRemoteStat(fileId);
   if (cached && Date.now() - new Date(cached.fetched_at).getTime() < REMOTE_STAT_TTL_MS) {
     return {
@@ -774,6 +784,7 @@ async function scanRow(
   mirrorCache: Map<string, string | null>,
   fileStates: Map<string, FileStateRow>,
   remoteStats: Map<string, RemoteStatRow>,
+  listings: Map<string, ReadonlyMap<string, FileRef>>,
 ): Promise<ScanRowResult> {
   const fileId = row.id as string;
   const nodeId = row.node_id as string;
@@ -856,7 +867,14 @@ async function scanRow(
 
   const rs = a.fast
     ? { hash: currentRemoteHash, exists: currentRemoteHash !== null }
-    : await cachedRemoteStat(db, fileId, remoteName, remotePath, remoteStats.get(fileId) ?? null);
+    : await cachedRemoteStat(
+        db,
+        fileId,
+        remoteName,
+        remotePath,
+        remoteStats.get(fileId) ?? null,
+        listings.get(`${remoteName}\u0000${nodeId}`),
+      );
   if (rs === null) return { bucket: "remote_error", entry: { ...base, class: "remote_error" } };
   base.remote_hash = rs.hash;
   if (!rs.exists) {
@@ -911,7 +929,7 @@ async function scanRow(
 // Bounded-concurrency map. Workers pull from a shared index; results land in
 // the same positions as the inputs. Used by statusScan to fan out the
 // per-file local-hash / remote-stat work without serialising on each row.
-async function mapWithConcurrency<T, R>(
+export async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,
   fn: (item: T) => Promise<R>,
@@ -929,6 +947,10 @@ async function mapWithConcurrency<T, R>(
   await Promise.all(workers);
   return results;
 }
+
+// The sections a tracked file can live under; the same three remoteSweep
+// lists. A registered file's remote_path always starts with one of them.
+const SCAN_SECTIONS = ["wip", "outputs", "resources"] as const;
 
 const STATUS_SCAN_CONCURRENCY = Math.max(
   1,
@@ -1001,10 +1023,54 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
     a.fast ? Promise.resolve(new Map<string, RemoteStatRow>()) : getRemoteStats(scanFileIds),
   ]);
 
+  // One listing per (remote, node) instead of one stat() per file. On a
+  // network backend that is the difference between O(files) round trips and
+  // O(files/200) -- the Drive adapter pages at 200 and reports md5Checksum
+  // in the listing, which is exactly what the comparison below needs. Used
+  // as a positive cache only: anything the listing does not cover still
+  // gets its own stat(), so a failed or short listing can never be read as
+  // "the file is gone". Skipped in fast mode, which touches no remote at all.
+  const listings = new Map<string, ReadonlyMap<string, FileRef>>();
+  if (!a.fast) {
+    const pairs = new Map<string, { remoteName: string; nodeId: string }>();
+    for (const r of rowsRes.rows) {
+      const remoteName = (r.remote_name as string | null) ?? null;
+      if (!remoteName) continue;
+      const nodeId = r.node_id as string;
+      if (nodeInfoCache.get(nodeId) == null) continue;
+      pairs.set(`${remoteName}\u0000${nodeId}`, { remoteName, nodeId });
+    }
+    await Promise.all(
+      [...pairs].map(async ([key, { remoteName, nodeId }]) => {
+        const info = nodeInfoCache.get(nodeId);
+        if (!info) return;
+        try {
+          const adapter = await getAdapter(db, remoteName);
+          const nodeRoot = buildNodeRoot(info);
+          const found = new Map<string, FileRef>();
+          const sections = await Promise.all(
+            SCAN_SECTIONS.map((section) =>
+              adapter.list(`${nodeRoot}/${section}`).catch(() => null),
+            ),
+          );
+          // A section that failed to list contributes nothing; its files
+          // fall through to their own stat(), same as before.
+          for (const refs of sections) {
+            if (!refs) continue;
+            for (const ref of refs) found.set(ref.path.normalize("NFC"), ref);
+          }
+          if (found.size > 0) listings.set(key, found);
+        } catch {
+          /* no adapter / unreachable remote -- per-file stat() decides */
+        }
+      }),
+    );
+  }
+
   const rowResults = await mapWithConcurrency(
     rowsRes.rows as unknown as Record<string, unknown>[],
     STATUS_SCAN_CONCURRENCY,
-    (row) => scanRow(db, a, row, nodeInfoCache, mirrorCache, fileStates, remoteStats),
+    (row) => scanRow(db, a, row, nodeInfoCache, mirrorCache, fileStates, remoteStats, listings),
   );
   for (const r of rowResults) out[r.bucket].push(r.entry);
 
