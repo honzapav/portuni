@@ -8,9 +8,13 @@ import { resolveRemote } from "./routing.js";
 import {
   upsertFileState,
   getFileState,
+  getFileStates,
   deleteFileState,
   getRemoteStat,
+  getRemoteStats,
   upsertRemoteStat,
+  type FileStateRow,
+  type RemoteStatRow,
 } from "./local-db.js";
 import { getMirrorPath, listUserMirrors, unregisterMirror } from "./mirror-registry.js";
 import {
@@ -670,9 +674,14 @@ export async function localHashFor(
   path: string,
   fileId: string,
   remoteHashRef: string | null = null,
+  // `undefined` = look the row up (the watcher/reconcile path, one file at a
+  // time). statusScan passes the row it already batch-loaded -- including an
+  // explicit `null` for "no row exists" -- so a scan does not re-query
+  // file_state once per file.
+  prefetchedState?: FileStateRow | null,
 ): Promise<string | null> {
   if (!(await fileExistsAt(path))) return null;
-  const cached = await getFileState(fileId);
+  const cached = prefetchedState !== undefined ? prefetchedState : await getFileState(fileId);
   const now = await statForCache(path);
   if (
     cached &&
@@ -711,8 +720,9 @@ async function cachedRemoteStat(
   fileId: string,
   remoteName: string,
   remotePath: string,
+  prefetchedStat?: RemoteStatRow | null,
 ): Promise<{ hash: string | null; exists: boolean } | null> {
-  const cached = await getRemoteStat(fileId);
+  const cached = prefetchedStat !== undefined ? prefetchedStat : await getRemoteStat(fileId);
   if (cached && Date.now() - new Date(cached.fetched_at).getTime() < REMOTE_STAT_TTL_MS) {
     return {
       hash: cached.remote_hash,
@@ -762,6 +772,8 @@ async function scanRow(
   row: Record<string, unknown>,
   nodeInfoCache: Map<string, NodeInfo | null>,
   mirrorCache: Map<string, string | null>,
+  fileStates: Map<string, FileStateRow>,
+  remoteStats: Map<string, RemoteStatRow>,
 ): Promise<ScanRowResult> {
   const fileId = row.id as string;
   const nodeId = row.node_id as string;
@@ -821,13 +833,13 @@ async function scanRow(
   // (#201) and handled below, not an error.
   if (!remotePath) return { bucket: "remote_error", entry: { ...base, class: "remote_error" } };
 
-  const state = await getFileState(fileId);
+  const state = fileStates.get(fileId) ?? null;
   base.last_synced_hash = state?.last_synced_hash ?? null;
   const currentRemoteHash = (row.current_remote_hash as string | null) ?? null;
   const localHash = a.fast
     ? (state?.cached_local_hash ?? null)
     : localPath
-      ? await localHashFor(localPath, fileId, currentRemoteHash)
+      ? await localHashFor(localPath, fileId, currentRemoteHash, state)
       : null;
   base.local_hash = localHash;
 
@@ -844,7 +856,7 @@ async function scanRow(
 
   const rs = a.fast
     ? { hash: currentRemoteHash, exists: currentRemoteHash !== null }
-    : await cachedRemoteStat(db, fileId, remoteName, remotePath);
+    : await cachedRemoteStat(db, fileId, remoteName, remotePath, remoteStats.get(fileId) ?? null);
   if (rs === null) return { bucket: "remote_error", entry: { ...base, class: "remote_error" } };
   base.remote_hash = rs.hash;
   if (!rs.exists) {
@@ -978,10 +990,21 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
     }),
   );
 
+  // Batch-load the per-device state both scanRow and localHashFor need. This
+  // used to be three single-row sync.db lookups per file (plus a write on a
+  // cache miss); on a 3000-file mirror that was 12001 queries and 949 ms for
+  // a full scan. Two chunked queries answer all of it up front; the per-file
+  // writes still happen, but only for files that actually changed.
+  const scanFileIds = rowsRes.rows.map((r) => r.id as string);
+  const [fileStates, remoteStats] = await Promise.all([
+    getFileStates(scanFileIds),
+    a.fast ? Promise.resolve(new Map<string, RemoteStatRow>()) : getRemoteStats(scanFileIds),
+  ]);
+
   const rowResults = await mapWithConcurrency(
     rowsRes.rows as unknown as Record<string, unknown>[],
     STATUS_SCAN_CONCURRENCY,
-    (row) => scanRow(db, a, row, nodeInfoCache, mirrorCache),
+    (row) => scanRow(db, a, row, nodeInfoCache, mirrorCache, fileStates, remoteStats),
   );
   for (const r of rowResults) out[r.bucket].push(r.entry);
 

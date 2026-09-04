@@ -202,6 +202,58 @@ function mapFileStateRow(row: Record<string, unknown>): FileStateRow {
 // All rows whose cached local copy had this inode identity. Several rows can
 // share it only transiently (inode reuse after a delete) -- the caller
 // disambiguates via the content hash before acting on a match.
+// Batch counterparts of getFileState / getRemoteStat.
+//
+// statusScan looked both up one file at a time -- three single-row SELECTs
+// per file (scanRow's own getFileState, localHashFor's second one, and
+// cachedRemoteStat's) plus a write. Measured on a 3000-file mirror: 12001
+// sync.db queries and 949 ms for a full scan. Single-row lookups cost ~16 us
+// each against this file-backed sqlite; the same rows fetched in chunks cost
+// ~1.7 us each. Chunked because sqlite caps host parameters per statement.
+const IN_CHUNK = 500;
+
+export async function getFileStates(fileIds: string[]): Promise<Map<string, FileStateRow>> {
+  const out = new Map<string, FileStateRow>();
+  if (fileIds.length === 0) return out;
+  const db = await getLocalDb();
+  const distinct = [...new Set(fileIds)];
+  for (let i = 0; i < distinct.length; i += IN_CHUNK) {
+    const chunk = distinct.slice(i, i + IN_CHUNK);
+    const r = await db.execute({
+      sql: `SELECT * FROM file_state WHERE file_id IN (${chunk.map(() => "?").join(",")})`,
+      args: chunk,
+    });
+    for (const row of r.rows) {
+      const mapped = mapFileStateRow(row as unknown as Record<string, unknown>);
+      out.set(mapped.file_id, mapped);
+    }
+  }
+  return out;
+}
+
+export async function getRemoteStats(fileIds: string[]): Promise<Map<string, RemoteStatRow>> {
+  const out = new Map<string, RemoteStatRow>();
+  if (fileIds.length === 0) return out;
+  const db = await getLocalDb();
+  const distinct = [...new Set(fileIds)];
+  for (let i = 0; i < distinct.length; i += IN_CHUNK) {
+    const chunk = distinct.slice(i, i + IN_CHUNK);
+    const r = await db.execute({
+      sql: `SELECT * FROM remote_stat_cache WHERE file_id IN (${chunk.map(() => "?").join(",")})`,
+      args: chunk,
+    });
+    for (const row of r.rows) {
+      out.set(row.file_id as string, {
+        file_id: row.file_id as string,
+        remote_hash: (row.remote_hash as string | null) ?? null,
+        remote_modified_at: (row.remote_modified_at as string | null) ?? null,
+        fetched_at: row.fetched_at as string,
+      });
+    }
+  }
+  return out;
+}
+
 export async function findFileStateByInode(
   ino: number,
   dev: number,
