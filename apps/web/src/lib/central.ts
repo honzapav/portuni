@@ -12,57 +12,11 @@ import { isTauri } from "./backend-url";
 
 export { isTauri };
 
-// Shape returned by the get_data_mode Tauri command.
-export type DataMode = {
-  mode: "local" | "central";
-  server_url: string | null;
-};
-
-// Invoke get_data_mode; non-Tauri environments always return local mode.
-export async function getDataMode(): Promise<DataMode> {
-  if (!isTauri()) return { mode: "local", server_url: null };
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<DataMode>("get_data_mode");
-}
-
-// Module-level cache so all callers share one fetch per app lifetime.
-// Resets on HMR in dev (module reload), which is fine.
-let dataModeCache: DataMode | null = null;
-let dataModePending: Promise<DataMode> | null = null;
-
-async function getDataModeCached(): Promise<DataMode> {
-  if (dataModeCache) return dataModeCache;
-  if (!dataModePending) {
-    // On rejection, clear the pending slot so a later caller retries instead
-    // of every future call resolving to the same cached rejection (e.g.
-    // "config awaiting workspace migration" thrown before the migration
-    // gate has run).
-    dataModePending = getDataMode().then(
-      (m) => {
-        dataModeCache = m;
-        return m;
-      },
-      (e) => {
-        dataModePending = null;
-        throw e;
-      },
-    );
-  }
-  return dataModePending;
-}
-
-// Cached, non-hook predicate for module-level code that needs the mode but
-// cannot use the hook (api.ts). Shares the same one-fetch-per-lifetime cache,
-// so this is an IPC call only on the very first use. A rejection (config
-// awaiting workspace migration, non-Tauri host) reads as local mode -- the
-// same optimistic default useDataMode leaves the UI in.
-export async function isCentralMode(): Promise<boolean> {
-  try {
-    return (await getDataModeCached()).mode === "central";
-  } catch {
-    return false;
-  }
-}
+// Data mode lives in ./data-mode (React-free, so non-React callers like
+// api.ts can import it without pulling React in). Re-exported here because
+// this module is where the rest of the app already looks for it.
+export { getDataMode, isCentralMode, type DataMode } from "./data-mode";
+import { getDataModeCached, type DataMode } from "./data-mode";
 
 // Hook: resolves data mode once on mount and caches the result.
 // Returns null while loading (central mode features should be optimistically

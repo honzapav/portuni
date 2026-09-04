@@ -24,7 +24,7 @@ import type {
   OverviewPayload,
 } from "./types";
 import { apiFetch } from "./lib/backend-url";
-import { isCentralMode } from "./lib/central";
+import { isCentralMode } from "./lib/data-mode";
 
 // User shape returned by GET /users. Used by the Actors page to pick a
 // user_id when creating/editing a real (non-placeholder) person actor.
