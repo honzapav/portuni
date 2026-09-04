@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.13.2](https://github.com/honzapav/portuni/compare/v0.13.1...v0.13.2) (2026-09-04)
+
+
+### Bug Fixes
+
+* **web:** keep the API client free of React imports ([9d74421](https://github.com/honzapav/portuni/commit/9d744212ef94063554cc8d9e17a8a3c0757622a9))
+
+
+### Performance Improvements
+
+* **desktop:** share one reqwest client across the proxy paths ([9f481e0](https://github.com/honzapav/portuni/commit/9f481e02084b54e486e0ee5822639de85aa5c001))
+* **mcp:** drop the per-mirror existence query from get_context ([cdfb61e](https://github.com/honzapav/portuni/commit/cdfb61e666c62ded48cf7ae830db366b8065eed8))
+* **mcp:** stop re-reading the same node row on the guarded read path ([bc83f78](https://github.com/honzapav/portuni/commit/bc83f7854c12e6474f7b48a36bc3383f2e61e81b))
+* measured wins across server, sync, desktop and web ([970ab8c](https://github.com/honzapav/portuni/commit/970ab8c41f60be42e93d5ad8dfaa5d63102328e5))
+* **server:** load node detail in two query waves instead of eight ([8c84b64](https://github.com/honzapav/portuni/commit/8c84b649498680712e921316070f0551671861e9))
+* **server:** take a schema-version fast path on warm boot ([29eb2f6](https://github.com/honzapav/portuni/commit/29eb2f67275deb686c1a1ebca8fe1e8fd9b8a890))
+* stop repeating work that cannot change the answer ([7c956de](https://github.com/honzapav/portuni/commit/7c956dea841867cc7feea7c2b446804850a01c45))
+* **sync:** batch file_state and remote_stat lookups in statusScan ([9914031](https://github.com/honzapav/portuni/commit/9914031b63a8d9835cdc158befbd711f4eee36a8))
+* **sync:** index the node id every tombstone lookup filters on ([b787705](https://github.com/honzapav/portuni/commit/b78770570b82c202c2b1bc81efc0cff1f27cb6ac))
+* **sync:** list the remote once per node instead of stat-ing every file ([a4593dd](https://github.com/honzapav/portuni/commit/a4593dd787b55120f268ba20135cb71bb485a005))
+* **sync:** make POST /sync/info-batch set-based instead of a 5N loop ([59ebfe1](https://github.com/honzapav/portuni/commit/59ebfe1c33cbc71e209ceec63e90693148f4568f))
+* **web:** lazy-load the terminal, editor and markdown stacks ([d82a4ae](https://github.com/honzapav/portuni/commit/d82a4ae16ee62a1a8111588e09be922001ab00a5))
+* **web:** self-host Inter and drop the Google Fonts link ([d66bbba](https://github.com/honzapav/portuni/commit/d66bbba3f65fdb407fd71a1d34be9c400c93c21a))
+
 ## [0.13.1](https://github.com/honzapav/portuni/compare/v0.13.0...v0.13.1) (2026-09-03)
 
 
