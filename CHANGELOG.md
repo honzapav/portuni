@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.3](https://github.com/honzapav/portuni/compare/v0.13.2...v0.13.3) (2026-09-04)
+
+
+### Bug Fixes
+
+* **schema:** keep idx_audit_file_node_ts out of the DDL replay ([66b0eb0](https://github.com/honzapav/portuni/commit/66b0eb0f8cb44a1d8d4d1ba3336480337cf9e3b8))
+* **schema:** keep idx_audit_file_node_ts out of the DDL replay ([db420db](https://github.com/honzapav/portuni/commit/db420dbcc959cefdbbdc74dcb32e5af48d3e821a))
+
 ## [0.13.2](https://github.com/honzapav/portuni/compare/v0.13.1...v0.13.2) (2026-09-04)
 
 
