@@ -2,10 +2,12 @@ name: Release
 
 # Tag-triggered: pushing a `v*` tag (e.g. `v0.1.1`) kicks off a build on
 # an Apple Silicon macOS runner and attaches the DMG and updater artefacts
-# to the GitHub Release release-please created for that tag. That release
-# is a pre-release: `releases/latest` (the updater endpoint) skips
-# pre-releases, so nothing reaches installed apps until a maintainer
-# unchecks "Set as a pre-release" on the release page.
+# to the GitHub Release release-please created for that tag. That release is
+# a pre-release and is not the repository's "Latest" -- the final step below
+# fails the job if either is untrue. Nothing reaches installed apps or the
+# website's download link until `scripts/release-rollout.sh promote <tag>`
+# moves BOTH flags; clearing the pre-release flag alone leaves the "Latest"
+# pin where it was and ships nothing. See docs/release-process.md.
 #
 # Builds are Developer ID signed and notarized. The certificate is
 # imported into a build keychain as an explicit step BEFORE tauri-action:
@@ -190,3 +192,34 @@ jobs:
             exit 1
           fi
           echo "ok: latest.json version $actual_version, darwin-aarch64 present"
+
+      # The rollout gate, checked rather than assumed. A release carries two
+      # independent flags and only the second one ships anything: `prerelease`
+      # decides eligibility, `make_latest` is the pin `releases/latest`
+      # resolves to -- and both the updater endpoint and the website's
+      # download link go through that. A build must leave BOTH closed, so
+      # that reaching users stays a deliberate act
+      # (scripts/release-rollout.sh promote <tag>) and can never be a side
+      # effect of tagging.
+      - name: Verify the rollout gate is closed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ github.ref_name }}"
+          repo="${{ github.repository }}"
+
+          prerelease="$(gh api "repos/$repo/releases/tags/$tag" --jq '.prerelease')"
+          if [[ "$prerelease" != "true" ]]; then
+            echo "$tag is not a pre-release: this build is eligible to ship to every installed app without anyone promoting it" >&2
+            exit 1
+          fi
+
+          # 404s while the repository has no full release at all; that is a
+          # closed gate too, not an error.
+          latest="$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null || true)"
+          if [[ "$latest" == "$tag" ]]; then
+            echo "$tag is already the repository's latest release: installed apps and the website are being served an unpromoted build" >&2
+            exit 1
+          fi
+
+          echo "ok: $tag is a pre-release, latest is still ${latest:-<none>}"

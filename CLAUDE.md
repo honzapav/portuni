@@ -128,10 +128,15 @@ symlink to this file.
 - **Don't manually tag `v*` or cut releases.** Merging to `main` makes
   release-please open a `chore: release X.Y.Z` PR; merging *that* tags the
   version and fires `release.yml` (signed DMG + updater artefacts) on a
-  **pre-release**. Installed apps see nothing until a maintainer unchecks
-  "Set as a pre-release" on the release — that click is the rollout; ticking
-  it again is the rollback. Full flow + one-time PAT setup:
-  `CONTRIBUTING.md`, `docs/release-process.md`.
+  **pre-release** that is also not the repository's "Latest" (`release.yml`
+  fails the build if either is untrue). The rollout is
+  `scripts/release-rollout.sh promote vX.Y.Z`, the rollback
+  `scripts/release-rollout.sh rollback vX.Y.Z v<previous>`. **Never promote
+  by clearing the pre-release flag alone** — that is two independent flags,
+  and `releases/latest` (which both the updater and the website's download
+  link resolve through) follows the *other* one, the `make_latest` pin;
+  `gh release edit --prerelease=false` never sends it. Full flow + one-time
+  PAT setup: `CONTRIBUTING.md`, `docs/release-process.md`.
 - **Update the public docs site (`sites/docs/`) in the SAME branch as any
   behaviour/tool/API change.** release-please only bumps the version and
   CHANGELOG — it never touches `sites/docs/`, so a change shipped without a
