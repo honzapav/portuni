@@ -149,6 +149,21 @@ jobs:
           fi
           scripts/verify-app-bundle.sh "${dmgs[0]}"
 
+      # Stable-name copy of the same DMG, so portuni.com can link straight at
+      # the file (.../releases/latest/download/Portuni-macos-aarch64.dmg)
+      # instead of at the releases page. The versioned DMG stays the canonical
+      # artefact; this is an alias uploaded alongside it.
+      - name: Upload stable-name DMG
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s nullglob
+          dmgs=(apps/desktop/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
+          cp "${dmgs[0]}" "$RUNNER_TEMP/Portuni-macos-aarch64.dmg"
+          gh release upload "${{ github.ref_name }}" \
+            "$RUNNER_TEMP/Portuni-macos-aarch64.dmg" \
+            --repo "${{ github.repository }}" --clobber
+
       # Updater artefacts: --config tauri.release.conf.json turns on
       # createUpdaterArtifacts, which produces Portuni.app.tar.gz + .sig next
       # to the .app in bundle/macos (the DMG build no longer deletes the
