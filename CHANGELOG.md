@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.5](https://github.com/honzapav/portuni/compare/v0.13.4...v0.13.5) (2026-09-05)
+
+
+### Bug Fixes
+
+* **web:** don't overlay the graph loader on views without a graph ([#262](https://github.com/honzapav/portuni/issues/262)) ([2170ed3](https://github.com/honzapav/portuni/commit/2170ed37fd8770aa6bcafa164a10d0beb0c79c0d))
+
 ## [0.13.4](https://github.com/honzapav/portuni/compare/v0.13.3...v0.13.4) (2026-09-05)
 
 
