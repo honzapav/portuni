@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.4](https://github.com/honzapav/portuni/compare/v0.13.3...v0.13.4) (2026-09-05)
+
+
+### Bug Fixes
+
+* **release:** promote through both flags, and check the gate holds ([4eac1e7](https://github.com/honzapav/portuni/commit/4eac1e7ab43625ab1b7a57d703e8f642a31ce261))
+* **release:** promote through both flags, and check the gate holds ([41fac32](https://github.com/honzapav/portuni/commit/41fac32ed9f25885c82104ace5b8c52399181735))
+
 ## [0.13.3](https://github.com/honzapav/portuni/compare/v0.13.2...v0.13.3) (2026-09-04)
 
 
