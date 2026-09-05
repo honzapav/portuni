@@ -36,9 +36,15 @@ steps are done by hand (Verification → Human), not filed as issues.
   `releases/latest` skips drafts and pre-releases. release-please creates
   every release as a pre-release (`prerelease: true` in
   `release-please-config.json`; a draft would not create the tag, so
-  `release.yml` would never run before publishing). Rollout = uncheck
-  "Set as a pre-release" on the release; rollback = mark it a pre-release
-  again or delete it.
+  `release.yml` would never run before publishing).
+  **Correction (2026-09-04):** this section originally read "rollout =
+  uncheck 'Set as a pre-release'; rollback = mark it a pre-release again".
+  That is wrong. `releases/latest` resolves to the `make_latest` pin, a flag
+  independent of `prerelease`, and clearing the pre-release flag does not
+  move it — `gh release edit --prerelease=false` never sends `make_latest`
+  at all. Rollout is `scripts/release-rollout.sh promote <tag>`, rollback
+  `scripts/release-rollout.sh rollback <bad> <good>`; both set the two flags
+  explicitly. See `docs/release-process.md`, "Rollout: two flags, not one".
 - Updater artefacts (`Portuni.app.tar.gz`, `.sig`, `latest.json`) are built
   only in CI: `apps/desktop/tauri.release.conf.json` sets
   `bundle.createUpdaterArtifacts: true` and `release.yml` passes it via
@@ -146,4 +152,5 @@ Feature: Desktop auto-update
     When release.yml finishes
     Then the pre-release has the DMG, Portuni.app.tar.gz, its .sig and latest.json
     And latest.json version equals the tag
+    And the release is still a pre-release and not the repository's "Latest"
 ```
