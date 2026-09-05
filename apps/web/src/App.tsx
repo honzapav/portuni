@@ -1086,7 +1086,13 @@ export default function App() {
             </div>
           </div>
         )}
-        {!graph && !graphError && (
+        {/*
+          Jen pohledy, které graph skutečně konzumují. Overview i Nastavení
+          se renderují bez něj (a Overview nese vlastní loading stav), takže
+          jinak by se tenhle absolutně pozicovaný overlay při startu
+          překrýval s jejich obsahem ve stejném místě.
+        */}
+        {!graph && !graphError && (view === "graph" || view === "workspace") && (
           <div className="absolute inset-0 flex items-center justify-center text-[14px] text-[var(--color-text-dim)]">
             Načítám graf...
           </div>
