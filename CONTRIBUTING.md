@@ -58,9 +58,13 @@ The release flow is automated:
 4. The tag triggers `release.yml`, which builds the signed, notarized macOS
    DMG plus the updater artefacts and attaches them to that release.
 5. A maintainer installs and checks the DMG, edits the release notes, then
-   **unchecks "Set as a pre-release"**. That is the rollout: the updater
-   endpoint (`releases/latest`) ignores pre-releases, so installed apps offer
-   the update only from this point.
+   runs **`scripts/release-rollout.sh promote vX.Y.Z`**. That is the rollout.
+   Use the script rather than the release page: reaching users takes two
+   flags, not one — clearing "Set as a pre-release" without also moving the
+   "Latest" pin ships nothing, and both the updater and the website's
+   download link resolve through that pin. `scripts/release-rollout.sh
+   rollback vX.Y.Z v<previous>` reverses it. See `docs/release-process.md`,
+   "Rollout: two flags, not one".
 
 The tag is pushed by a fine-grained PAT (`RELEASE_PLEASE_TOKEN`), not the
 default `GITHUB_TOKEN` — otherwise it would not trigger the DMG build. See

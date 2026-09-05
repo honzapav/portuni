@@ -11,7 +11,9 @@ the discovery that produced it.
   2026-07-04, no Intel users), uses `tauri-apps/tauri-action@v1` (`releaseDraft: false`, so it
   attaches to the non-draft pre-release release-please made) to
   build and attach the DMG to the GitHub Release release-please created
-  for the tag (a pre-release until a maintainer promotes it).
+  for the tag (a pre-release, and not the repository's "Latest", until a
+  maintainer promotes it with `scripts/release-rollout.sh promote` — see
+  "Rollout: two flags, not one" below).
   Builds are Developer ID signed and notarized (see below).
 - **Auto-updater artefacts.** Shipped (2026-08-28). `release.yml` builds with
   `--bundles app,dmg --config apps/desktop/tauri.release.conf.json`
@@ -138,13 +140,53 @@ feat/foo branch → PR "feat(scope): summary"
     releases/latest/download/latest.json skips pre-releases, so installed
     apps see nothing yet)
   → maintainer installs the DMG, checks it, edits the release notes
-  → rollout: release page → Edit → uncheck "Set as a pre-release" → Update
-    release (or `gh release edit vX.Y.Z --prerelease=false`); the release
-    becomes "latest" and installed apps offer the update on their next check
-  → rollback: mark it a pre-release again (or delete it) — latest.json then
-    points to the previous release
+  → rollout: scripts/release-rollout.sh promote vX.Y.Z
+  → rollback: scripts/release-rollout.sh rollback vX.Y.Z v<previous>
+
   → new users download the DMG from /releases
 ```
+
+### Rollout: two flags, not one
+
+A GitHub release carries two independent flags, and only the second one
+delivers anything:
+
+| flag | meaning |
+|---|---|
+| `prerelease` | eligibility. A pre-release can never be "Latest". |
+| `make_latest` | the pin. `releases/latest` resolves to whatever this points at. |
+
+Everything a user receives resolves through `releases/latest`:
+
+- the updater — `releases/latest/download/latest.json`
+  (`apps/desktop/tauri.conf.json`)
+- the website's Download button — `releases/latest/download/Portuni-macos-aarch64.dmg`
+  (`sites/marketing/src/pages/index.astro`)
+
+**`gh release edit <tag> --prerelease=false` does not move the pin.** It sends
+no `make_latest` at all — the flag reaches the PATCH body only when `--latest`
+is passed explicitly (`cli/cli`, `pkg/cmd/release/edit/edit.go`). The release
+page then reads as published while `releases/latest` still points at the
+previous version and nobody gets anything. Observed on v0.13.3.
+
+What GitHub does with the pin when the release it points at is turned back
+into a pre-release is not documented anywhere — not in the REST reference, the
+OpenAPI description, or the changelog. So the rollback sets the previous
+release as "Latest" explicitly instead of relying on a fallback.
+
+Use `scripts/release-rollout.sh`, which sets both flags and then verifies the
+result against the URL users actually read, rather than trusting the API
+response:
+
+```
+scripts/release-rollout.sh status                       # what is pinned, what is served
+scripts/release-rollout.sh promote  v0.13.3
+scripts/release-rollout.sh rollback v0.13.3 v0.13.2
+```
+
+`release.yml` fails the build if a freshly tagged release is not a
+pre-release, or is already the repository's "Latest" — the gate is checked,
+not assumed.
 
 **Before merging the release PR — review the published docs site.**
 release-please only bumps the version and regenerates `CHANGELOG.md`; it does
