@@ -38,7 +38,7 @@ tauri-plugin-single-instance = "2"
 # remembers its own geometry across launches (#225, desktop multi-window
 # phase 2).
 tauri-plugin-window-state = "2"
-rand = "0.9"
+rand = "0.10"
 # v3 has no default features; pick platform-native stores explicitly. macOS
 # is the only smoke-tested target for this PR but cross-platform features
 # stay enabled so cargo builds on Linux/Windows without code changes.
