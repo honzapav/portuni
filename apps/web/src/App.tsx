@@ -1018,6 +1018,13 @@ export default function App() {
     setSessions((prev) => renameSession(prev, sessionId, label));
   }, []);
 
+  // Does the current view actually consume `graph`? Přehled a Nastavení se
+  // renderují bez něj a nesou vlastní loading/error stav, takže obě
+  // absolutně pozicované hlášky o grafu (loader i chybová karta) se v nich
+  // jinak zobrazí přes cizí obsah -- oba stavy jedné a téže věci, takže
+  // jedna podmínka pro oba, ať se zase nerozejdou.
+  const viewNeedsGraph = view === "graph" || view === "workspace";
+
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden">
       <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -1073,7 +1080,7 @@ export default function App() {
             </button>
           </div>
         )}
-        {graphError && (
+        {graphError && viewNeedsGraph && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="rounded-md border border-red-900 bg-red-950/30 px-6 py-4 text-[13.5px] text-red-300">
               <div className="mb-2 font-semibold">Nepodařilo se načíst graf</div>
@@ -1086,13 +1093,7 @@ export default function App() {
             </div>
           </div>
         )}
-        {/*
-          Jen pohledy, které graph skutečně konzumují. Overview i Nastavení
-          se renderují bez něj (a Overview nese vlastní loading stav), takže
-          jinak by se tenhle absolutně pozicovaný overlay při startu
-          překrýval s jejich obsahem ve stejném místě.
-        */}
-        {!graph && !graphError && (view === "graph" || view === "workspace") && (
+        {!graph && !graphError && viewNeedsGraph && (
           <div className="absolute inset-0 flex items-center justify-center text-[14px] text-[var(--color-text-dim)]">
             Načítám graf...
           </div>
@@ -1130,9 +1131,13 @@ export default function App() {
           would SIGHUP the running shell — breaks the "sessions přežijí
           přepnutí pohledu" contract from the sidebar hint). When no sessions
           exist, we only mount on demand so the picker's autoFocus doesn't
-          steal focus from the graph view.
+          steal focus from the graph view. Until the graph lands there is
+          nothing to pick from either -- mounting WorkspaceEmpty anyway
+          paints an empty search list straight over the "Načítám graf..."
+          overlay above. A session can only exist once the graph has loaded,
+          so the sessions branch never hides the loader.
         */}
-        {(view === "workspace" || sessions.length > 0) && (
+        {(sessions.length > 0 || (view === "workspace" && graph != null)) && (
           <div
             className={
               view === "workspace"
