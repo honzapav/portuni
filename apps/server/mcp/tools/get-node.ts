@@ -14,7 +14,7 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
   const { scope } = ctx;
   server.tool(
     "portuni_get_node",
-    "Get a single node from the Portuni knowledge graph by ID or name. Use when the user names a specific node or you need rich single-node detail (files, visibility, timestamps, mirror metadata) that portuni_get_context's depth-0 root does not include. For neighbourhood / traversal use portuni_get_context with depth>=1. Returns the node's core fields plus owner, responsibilities (with assignees), data_sources, tools, goal, lifecycle_state, direct edges (both directions), files, events, and local mirror path. Subject to the session's read scope: if the target is outside scope and not user-confirmed, the call returns scope_expansion_required and the agent must call portuni_expand_scope first. Name-based lookups are filtered to in-scope candidates so unscoped name probing cannot surface neighbouring node metadata.",
+    "Get a single node from the Portuni knowledge graph by ID or name. Use when the user names a specific node or you need rich single-node detail (files, visibility, timestamps, mirror metadata) that portuni_get_context's depth-0 root does not include. For neighbourhood / traversal use portuni_get_context with depth>=1. Returns the node's core fields plus owner, responsibilities (with assignees), data_sources, tools, goal, lifecycle_state, direct edges (both directions), files, events, and local mirror path. Subject to the session's read scope: if the target is outside scope and not user-confirmed, the call returns scope_expansion_required and the agent must call portuni_expand_scope first. Name-based lookups are filtered to in-scope candidates so unscoped name probing cannot surface neighbouring node metadata. Read files from readable_path (this session's actual readable disk path for the node), not local_mirror (registration metadata only, may not be readable under the sandbox) -- readable_path is null when the node has no local mirror on this device; use portuni_read_file for those.",
     {
       node_id: z.string().optional().describe("Node ID (ULID)"),
       name: z.string().optional().describe("Node name (case-insensitive match)"),
@@ -157,8 +157,8 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
       const homeMirror = homeMirrorRow?.local_path ?? null;
       let projectionDir: string | null = null;
       if (row.id !== scope.homeNodeId && scope.has(row.id)) {
-        const r = await ctx.projector.projectNode(row.id);
-        projectionDir = r?.dir ?? null;
+        const outcome = await ctx.projector.projectNode(row.id);
+        projectionDir = outcome.kind === "projected" ? outcome.dir : null;
       }
       const effectiveMirrorRoot = readableMirrorRoot({
         scope,
@@ -248,6 +248,13 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
         files,
         events: root.events,
         local_mirror: localMirror,
+        // Where to actually Read/Grep this node's files from, if anywhere:
+        // the real mirror for the home node, this session's hardlink
+        // projection for any other in-scope node, null when neither applies
+        // (no local mirror on this device, or the node is out of scope).
+        // local_mirror above is registration metadata, not a read path --
+        // use readable_path.
+        readable_path: effectiveMirrorRoot,
       };
 
       return {

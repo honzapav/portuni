@@ -14,7 +14,6 @@ import { join } from "node:path";
 import type { Client } from "@libsql/client";
 import { listLocalMirrors, type LocalMirrorRow } from "./local-db.js";
 import { listUntrackedLocal } from "./discover-local.js";
-import { registerLocalFile } from "./engine.js";
 import { onMirrorRegistryChange } from "./mirror-registry.js";
 import { reconcilePath, type ReconcileResult } from "./reconcile.js";
 import { relinkProjectedFile } from "../session-projection.js";
@@ -156,10 +155,16 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
   // Register anything already on disk but untracked, so files created while
   // the watcher was down (or before its watch attached) do not stay
   // invisible. Local-only (no remote calls); upload still waits for a
-  // deliberate sync. Each file is registered independently (#202): one
-  // unreadable/misbehaving file must not abort backfill for the rest of the
-  // mirror, and its failure is recorded with its own path instead of only
-  // the outer per-mirror catch in reconcileMirrors seeing it.
+  // deliberate sync. Routed through reconcile (#253), not a raw register:
+  // a live watcher pairs an on-disk mv by inode via reconcilePath's
+  // tryApplyDiskMove, but that never runs for a mv that happened while the
+  // watcher was down (or missed a directory-level event) -- this backfill
+  // sweep is the catch-up path for exactly that case, and a raw register
+  // would instead split it into a fresh duplicate record, leaving the old
+  // one stuck deleted_local. Each file is reconciled independently (#202):
+  // one unreadable/misbehaving file must not abort backfill for the rest of
+  // the mirror, and its failure is recorded with its own path instead of
+  // only the outer per-mirror catch in reconcileMirrors seeing it.
   async function dbBackfillMirror(m: LocalMirrorRow): Promise<void> {
     if (!db) return; // agent mode: the caller runs its own central backfill
     const untracked = await listUntrackedLocal(db, {
@@ -168,11 +173,7 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
     });
     for (const u of untracked) {
       try {
-        await registerLocalFile(db, {
-          userId: deps.userId,
-          nodeId: u.node_id,
-          localPath: u.local_path,
-        });
+        await reconcile({ userId: deps.userId, nodeId: u.node_id, absPath: u.local_path });
         clearWatcherError(u.node_id, u.local_path);
       } catch (e) {
         recordWatcherError(u.node_id, u.local_path, e);

@@ -16,6 +16,7 @@ import {
   unregisterSessionProjections,
   projectedEntriesForNode,
   relinkProjectedFile,
+  unregisterSessionProjectionsUnder,
   clearProjectionRegistryForTests,
   linkOrCopy,
   sweepStaleSessionProjections,
@@ -105,6 +106,17 @@ describe("registry", () => {
     );
   });
 
+  it("unregisterSessionProjectionsUnder drops only the shared entries under one projection root", () => {
+    registerProjectedNode("NODE_A", { sessionId: "_shared", mirrorPath: mirror, targetDir: "/roots/homeA/_shared/NODE_A" });
+    registerProjectedNode("NODE_B", { sessionId: "_shared", mirrorPath: mirror, targetDir: "/roots/homeB/_shared/NODE_B" });
+    registerProjectedNode("NODE_A", { sessionId: "S1", mirrorPath: mirror, targetDir: "/roots/homeA/S1/NODE_A" });
+
+    unregisterSessionProjectionsUnder("_shared", "/roots/homeA");
+
+    assert.deepEqual(projectedEntriesForNode("NODE_A").map((e) => e.sessionId), ["S1"]);
+    assert.deepEqual(projectedEntriesForNode("NODE_B").map((e) => e.sessionId), ["_shared"]);
+  });
+
   it("unregisterSessionProjections drops only that session, across all nodes", () => {
     registerProjectedNode("NODE_A", { sessionId: "S1", mirrorPath: mirror, targetDir: "/t1" });
     registerProjectedNode("NODE_B", { sessionId: "S1", mirrorPath: mirror, targetDir: "/t2" });
@@ -119,7 +131,68 @@ describe("registry", () => {
   });
 });
 
+describe("projection path guards", () => {
+  it("sessionProjectionDir refuses a session id that is not a single path segment", async () => {
+    const { sessionProjectionDir, spawnSessionIdFromHeader } = await import(
+      "../apps/server/domain/session-projection.js"
+    );
+    for (const bad of ["..", ".", "", "a/b", "../..", "x\\y"]) {
+      assert.throws(() => sessionProjectionDir(projectionRoot, bad), `accepted ${JSON.stringify(bad)}`);
+    }
+    assert.equal(sessionProjectionDir(projectionRoot, "SESS"), join(projectionRoot, "SESS"));
+    // Header parsing: only a ULID-shaped value is trusted as a directory key.
+    assert.equal(spawnSessionIdFromHeader("01ARZ3NDEKTSV4RRFFQ69G5FAV"), "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    assert.equal(spawnSessionIdFromHeader(["01ARZ3NDEKTSV4RRFFQ69G5FAV"]), "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    assert.equal(spawnSessionIdFromHeader("../../.."), null);
+    assert.equal(spawnSessionIdFromHeader("SESS"), null);
+    assert.equal(spawnSessionIdFromHeader(""), null);
+    assert.equal(spawnSessionIdFromHeader(undefined), null);
+  });
+});
+
 describe("relinkProjectedFile", () => {
+  it("relinks every file under a directory that was moved into place (#253)", async () => {
+    const target = nodeProjectionDir(projectionRoot, "SESS", "NODE");
+    registerProjectedNode("NODE", { sessionId: "SESS", mirrorPath: mirror, targetDir: target });
+
+    const { mkdir, rename } = await import("node:fs/promises");
+    await mkdir(join(mirror, "wip", "old", "deep"), { recursive: true });
+    await writeFile(join(mirror, "wip", "old", "a.md"), "a\n");
+    await writeFile(join(mirror, "wip", "old", "deep", "b.md"), "b\n");
+    await relinkProjectedFile("NODE", join(mirror, "wip", "old", "a.md"));
+    await relinkProjectedFile("NODE", join(mirror, "wip", "old", "deep", "b.md"));
+    assert.equal(await readFile(join(target, "wip", "old", "a.md"), "utf8"), "a\n");
+
+    // A directory mv fires one event for the old path and one for the new.
+    await rename(join(mirror, "wip", "old"), join(mirror, "wip", "new"));
+    await relinkProjectedFile("NODE", join(mirror, "wip", "old"));
+    await relinkProjectedFile("NODE", join(mirror, "wip", "new"));
+
+    assert.equal(await readFile(join(target, "wip", "new", "a.md"), "utf8"), "a\n");
+    assert.equal(await readFile(join(target, "wip", "new", "deep", "b.md"), "utf8"), "b\n");
+    await assert.rejects(() => stat(join(target, "wip", "old")), "stale subtree must be gone");
+  });
+
+  it("keeps and relinks two _shared projections of the same node under different home roots", async () => {
+    const targetA = nodeProjectionDir(join(projectionRoot, "homeA"), "_shared", "NODE");
+    const targetB = nodeProjectionDir(join(projectionRoot, "homeB"), "_shared", "NODE");
+    registerProjectedNode("NODE", { sessionId: "_shared", mirrorPath: mirror, targetDir: targetA });
+    registerProjectedNode("NODE", { sessionId: "_shared", mirrorPath: mirror, targetDir: targetB });
+    assert.equal(projectedEntriesForNode("NODE").length, 2, "both roots stay registered");
+
+    const src = join(mirror, "wip", "both.md");
+    await writeFile(src, "x\n");
+    await relinkProjectedFile("NODE", src);
+    assert.equal(await readFile(join(targetA, "wip", "both.md"), "utf8"), "x\n");
+    assert.equal(await readFile(join(targetB, "wip", "both.md"), "utf8"), "x\n");
+
+    unregisterSessionProjectionsUnder("_shared", join(projectionRoot, "homeA"));
+    assert.deepEqual(
+      projectedEntriesForNode("NODE").map((e) => e.targetDir),
+      [targetB],
+    );
+  });
+
   it("does nothing when no session projects the node", async () => {
     await writeFile(join(mirror, "wip", "a.md"), "a\n");
     // no registerProjectedNode call -- must not throw or create anything.

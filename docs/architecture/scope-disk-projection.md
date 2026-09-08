@@ -159,6 +159,87 @@ covered by tests (`test/sandbox-profile.test.ts`,
 `test/scope-projection-session-id.test.ts`), but the live macOS
 verification itself is not.
 
+## Seed/grant skew and central-mode projection (#252)
+
+Two gaps left ad-hoc-adjacent nodes unreadable in practice, both fixed the
+same way: **project unconditionally, and prefer the projection over the
+"should already be granted" real path.**
+
+**Seed/grant skew (local mode).** `readableMirrorRoot` used to return the
+real mirror path outright for any node `scope.isSeed()` marked seed, trusting
+that the Seatbelt profile's `readMirrors` (frozen at the `GET
+/nodes/:id/sandbox-profile` call, *before* the CLI process exists) already
+granted it. But the in-memory seed set is recomputed at MCP *connect* time
+(`seedScopeFromHome`), which happens *after* spawn — a mirror registered or
+an edge created in between makes a node "seed" in memory without the kernel
+ever having granted its real path. `apps/server/mcp/disk-projection.ts`'s
+`DiskProjector.projectNode` now attempts to hardlink EVERY non-home in-scope
+node, seed or ad-hoc (only the home node itself is skipped, reason
+`seed_granted` — it is the process's own spawn anchor, no race possible), and
+`readableMirrorRoot` prefers that projection directory over the real mirror
+for a seed node too, falling back to the real path only when no projection
+exists yet. The projection parent (`<projectionRoot>/<sessionId>/` or the
+shared bucket) is granted unconditionally by the Seatbelt profile regardless
+of the neighbour set at spawn time, so this closes the race instead of
+depending on it never happening. Cost is a hardlink — nil.
+
+**Central/agent mode never projected at all.** `portuni_expand_scope`,
+`portuni_get_node` and `portuni_get_context` are proxied to central from the
+local sidecar's agent front door (`apps/server/mcp/agent-transport.ts`), and
+central itself has no device filesystem, so its own `projected` map (and any
+`readable_path`/`local_path` it could compute) was always empty/null. The
+front door now builds its own tiny `ProjectorScope` per local MCP session
+(`homeNodeId` from the connection's `?home_node_id=`, `has` always true since
+by the time a node id reaches this layer it already passed central's own
+`guardNodeRead`, `projectionSessionId` the spawn id relayed in
+`X-Portuni-Spawn-Id` — the same header the local-mode transport reads — or
+the `_shared` bucket for a CLI that cannot relay one; never the transport's
+own random MCP session id, because the Seatbelt profile was frozen at spawn
+around exactly `<projectionRoot>/<spawn id>/` and `_shared/`, and any other
+key would be a directory the kernel never granted) and a real `DiskProjector`
+over it, then:
+- overlays `projected`/`not_projected` onto `portuni_expand_scope`'s response
+  in place of central's own (structurally useless) ones;
+- overlays `readable_path` (get_node) / `local_path` (get_context) using the
+  same projector, for ANY node with a local mirror on this device, not just
+  the seatbelt's depth-1 seed set.
+The per-session projection directory is torn down in the local transport's
+own `onclose` (`disposeAgentProjection`): a spawn-id-keyed directory goes
+with its session; the `_shared` bucket is removed only once no other live
+session in this process's session map keys off it for the same home node —
+the device has no durable `sessions` table, so the in-memory map is what
+stands in for `disposeSessionProjection`'s running-session check.
+
+## portuni_get_node's `readable_path` and the read_file 1 MB cap (#252)
+
+`local_mirror` on `portuni_get_node` is registration metadata (may not be
+readable under the sandbox); `readable_path` is the actual disk path this
+session may read the node's files from — `readableMirrorRoot`'s result,
+`null` when there is none (no local mirror on this device, or the node is
+out of scope). Tool descriptions point agents at `readable_path`, not
+`local_mirror`, for reads.
+
+`portuni_read_file`'s 1 MB inline cap (`MAX_READ_BYTES`,
+`domain/read-node-file.ts`) stays — a tool result is model input, and an
+uncapped read would just move the failure from a clean refusal to a blown
+context window. What changed is what happens past the cap: no chunked reads
+(`offset`/`length`) — there is no server-side grep, so the agent would page
+blindly through a file looking for one thing. Instead
+(`apps/server/mcp/read-file-spill.ts`) a file over the cap, or any call with
+`as_path: true`, is **spilled to a path inside the session's projection
+directory** and the tool returns `{ path, bytes, mime }` instead of content,
+so the agent reads it with its own Read/Grep (offsets, search, whatever it
+needs) or hands the path to a PDF/deck-reading skill. Two sources, chosen by
+whether the node has a local mirror on this device: a mirror hardlinks the
+whole node via the same `DiskProjector.projectNode` ad-hoc expansion uses (no
+copy, always current); no mirror downloads the bytes once (`getFileRaw` over
+REST in agent mode, since that front door has no graph db to read a remote
+adapter through directly) and writes a real copy into the same directory.
+Cleanup rides on the existing projection-directory teardown above — the
+spilled file is not tracked separately. The refusal text past the cap now
+names both real options (`as_path: true`, or `portuni_expand_scope` then
+`readable_path`) instead of the old "bring the node into your working set".
+
 ## Restart consolidation
 
 A resumed session (spec: "Lifecycle" — suspend/resume, #190) can pass its

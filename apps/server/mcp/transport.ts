@@ -11,6 +11,7 @@ import type { RequestIdentity } from "../auth/request-identity.js";
 import { autoSeedFromHome, parseHomeNodeIdFromUrl, parseResumeSessionIdFromUrl } from "./auto-seed.js";
 import { resumeSessionPersistence } from "./session-persistence.js";
 import { disposeSessionProjection } from "./disk-projection.js";
+import { spawnSessionIdFromHeader } from "../domain/session-projection.js";
 import { logAudit } from "../infra/audit.js";
 import { getDb } from "../infra/db.js";
 import { closeSessionIfRunning } from "../domain/sessions.js";
@@ -143,9 +144,10 @@ export function createMcpTransport(): McpTransport {
       // same way X-Portuni-Profile is -- see bindSessionPersistence. Only
       // meaningful for a fresh (non-resume) connection; a resume already
       // reuses its own known id via resumeSessionPersistence below.
-      const spawnIdHeader = req.headers["x-portuni-spawn-id"];
-      const spawnSessionId =
-        (Array.isArray(spawnIdHeader) ? spawnIdHeader[0] : spawnIdHeader)?.trim() || null;
+      // Validated as a ULID (spawnSessionIdFromHeader): the value ends up
+      // as a path segment under the projection root that is rm -rf'd on
+      // close, so a malformed header is dropped, not trusted.
+      const spawnSessionId = spawnSessionIdFromHeader(req.headers["x-portuni-spawn-id"]);
 
       // X-Portuni-Terminal (#218): the desktop PTY that spawned this
       // connection's CLI (PORTUNI_TERMINAL_ID), sent only by Claude Code

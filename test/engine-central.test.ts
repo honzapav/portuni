@@ -172,8 +172,14 @@ class FakeCentral implements CentralClient {
     return { status: "ok", file_id: fileId, new_remote_path: newRemotePath, moved_at: "now" };
   }
 
+  // When set, central could not confirm the remote side and KEPT the
+  // record: 200 with status "repair_needed".
+  deleteRepairNeeded = false;
   async deleteFileRecord(nodeId: string, fileId: string): Promise<Record<string, unknown>> {
     if (nodeId !== NODE_ID) throw new CentralHttpError("not found", 404, "NOT_FOUND");
+    if (this.deleteRepairNeeded) {
+      return { status: "repair_needed", file_id: fileId, mode: "complete" };
+    }
     const entry = [...this.records.entries()].find(([, r]) => r.id === fileId);
     if (entry) {
       this.records.delete(entry[0]);
@@ -300,13 +306,24 @@ describe("statusScanCentral", () => {
     assert.equal(scan.push_candidates[0].filename, "new.md");
   });
 
-  it("finds untracked files as new_local", async () => {
+  it("finds untracked files as new_local, with a real hash, not a placeholder (#253)", async () => {
     const c = new FakeCentral();
     await setupMirror();
     await writeFile(join(mirrorRoot, "wip", "loose.txt"), "x");
     const scan = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID });
     assert.equal(scan.new_local.length, 1);
     assert.equal(scan.new_local[0].filename, "loose.txt");
+    assert.equal(scan.new_local[0].hash, sha(Buffer.from("x")));
+  });
+
+  it("a fast scan lists untracked files without hashing them", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    await writeFile(join(mirrorRoot, "wip", "loose.txt"), "x");
+    const scan = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID, fast: true });
+    assert.equal(scan.new_local.length, 1);
+    assert.equal(scan.new_local[0].filename, "loose.txt");
+    assert.equal(scan.new_local[0].hash, "");
   });
 
   it("clean after a full sync roundtrip", async () => {
@@ -379,6 +396,36 @@ describe("statusScanCentral", () => {
     assert.equal(c.records.size, 1);
   });
 
+  it("directory mv: only the directory-level event fires, files inside are still paired by inode (#253)", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const oldDir = join(mirrorRoot, "wip", "prezentace");
+    await mkdir(oldDir, { recursive: true });
+    const oldAbs1 = join(oldDir, "slide1.html");
+    const oldAbs2 = join(oldDir, "slide2.html");
+    await writeFile(oldAbs1, "slide-one");
+    await writeFile(oldAbs2, "slide-two");
+    await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(c.records.size, 2);
+
+    const newDir = join(mirrorRoot, "outputs", "prezentace");
+    await mkdir(join(mirrorRoot, "outputs"), { recursive: true });
+    const { rename } = await import("node:fs/promises");
+    await rename(oldDir, newDir);
+    // What fs.watch/FSEvents actually delivers for a directory rename: one
+    // event for the old directory path, one for the new -- never events for
+    // the (unchanged) files inside it.
+    const r1 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: oldDir });
+    const r2 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: newDir });
+    assert.equal(r1.action, "noop"); // the old directory path itself is gone
+    assert.equal(r2.action, "walked");
+    assert.equal(c.moveCalls.length, 2, "both files paired via the central move, not re-registered");
+    assert.ok(c.moveCalls.every((m) => /outputs\/prezentace\//.test(m.newRemotePath)));
+    assert.equal(c.records.size, 2, "no duplicate records");
+    const filenames = [...c.records.values()].map((r) => r.filename).sort();
+    assert.deepEqual(filenames, ["slide1.html", "slide2.html"]);
+  });
+
   it("watcher-observed mv of a never-pushed file unregisters and re-registers (one record)", async () => {
     const c = new FakeCentral();
     await setupMirror();
@@ -398,6 +445,31 @@ describe("statusScanCentral", () => {
     assert.equal(c.records.size, 1);
     assert.equal([...c.records.values()][0].filename, "b.md");
     assert.equal(c.bytes.size, 0); // nothing was ever uploaded
+  });
+
+  it("never-pushed mv does not re-register while central answers repair_needed (no duplicate record)", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const oldAbs = join(mirrorRoot, "wip", "a.md");
+    const newAbs = join(mirrorRoot, "wip", "b.md");
+    await writeFile(oldAbs, "never pushed");
+    const reg = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: oldAbs });
+    assert.equal(reg.action, "registered");
+    const { rename } = await import("node:fs/promises");
+    await rename(oldAbs, newAbs);
+
+    c.deleteRepairNeeded = true;
+    const r1 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: newAbs });
+    assert.equal(r1.action, "noop");
+    assert.equal(c.records.size, 1, "old record kept, no duplicate registered");
+    assert.equal([...c.records.values()][0].filename, "a.md");
+
+    // Once central can complete the delete, the same event pairs cleanly.
+    c.deleteRepairNeeded = false;
+    const r2 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: newAbs });
+    assert.equal(r2.action, "moved");
+    assert.equal(c.records.size, 1);
+    assert.equal([...c.records.values()][0].filename, "b.md");
   });
 
   it("tombstoned local copy classifies deleted_remote and the sync run cleans it up", async () => {

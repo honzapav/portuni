@@ -169,6 +169,38 @@ export async function resolveRestWriteContext(
   return { sessionType: "interactive_task", homeNodeId: null, writableNodes: new Set() };
 }
 
+// Agent-mode (central data mode) counterpart of guardRestNodeWrite for the
+// local sync agent's own REST mutations (api/agent-router.ts: file create/
+// delete/resolve, PUT file content, sync run, mirror create). The sidecar
+// has no graph db and no session table there, so a spawn id cannot be
+// resolved to a write set -- the only proof it can check is the webview-
+// proxy marker. Hardened posture (PORTUNI_WEBVIEW_PROXY_SECRET set, always
+// the case in the packaged app): a request must carry a proven
+// X-Portuni-Webview-Proxy header, otherwise it is a spawned terminal holding
+// the same bearer and is refused -- those mutate through the MCP tools,
+// which central write-gates against the session's own scope. Unset (dev
+// loop, tests): legacy behavior, every write allowed.
+export function guardAgentRestWrite(
+  req: Pick<IncomingMessage, "headers">,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  nodeId: string,
+): boolean {
+  const webviewProxySecret = configuredWebviewProxySecret();
+  if (!webviewProxySecret) return true;
+  if (identity.via === "env" && webviewProxyProven(req, webviewProxySecret)) return true;
+  respondJson(
+    res,
+    403,
+    writeGuardError(
+      nodeId,
+      "refused",
+      "REST writes on the sync agent are reserved for the desktop app; mutate through the Portuni MCP tools from a terminal.",
+    ),
+  );
+  return false;
+}
+
 // Gate a REST mutation targeting nodeId. Returns true when the caller may
 // proceed. On refusal, writes the 403 response itself (same JSON shape as
 // the MCP write gate's structured refusal) and returns false.

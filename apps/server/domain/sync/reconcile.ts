@@ -6,7 +6,15 @@
 //   created   (no files row, file present, tracked section) -> registerLocalFile
 //   modified  (files row, file present)                     -> re-hash cache
 //   deleted   (files row, file gone)                        -> clear cache
+//   directory (no files row, path is a directory)           -> walk + reconcile each file (#253)
 //   ignored   (mirror-ignore match, or outside sections)    -> no-op
+//
+// A directory event needs the walk because fs.watch fires exactly one event
+// for a directory created or moved into place, never one per (unchanged)
+// child -- so a directory mv, unlike a file mv, is never seen as a per-file
+// event at all. Reconciling each child individually at its current path lets
+// tryApplyDiskMove pair it against the record left behind at the old path,
+// the same way a single file's own mv event would.
 //
 // Modify re-hashes via localHashFor, which refreshes
 // file_state.cached_local_hash (preserving the synced baseline) so fast-mode
@@ -16,7 +24,8 @@
 // Scope matches discover-local.ts: only files inside the wip / outputs /
 // resources sections, minus mirror-ignore, are eligible.
 
-import { stat as fsStat, readFile } from "node:fs/promises";
+import { stat as fsStat, readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import type { Client } from "@libsql/client";
 import { getMirrorPath } from "./mirror-registry.js";
 import { resolveNodeInfo } from "./node-info.js";
@@ -47,7 +56,8 @@ export type ReconcileAction =
   | "rehashed"
   | "deleted"
   | "unregistered"
-  | "moved";
+  | "moved"
+  | "walked";
 
 export interface ReconcileResult {
   action: ReconcileAction;
@@ -99,10 +109,18 @@ export async function reconcilePath(
   const { exists, isFile } = await statKind(a.absPath);
 
   if (!fileId) {
-    // Register only an actual file that is present. A directory event (fs.watch
-    // fires for new subdirs) or a create whose temp file already vanished is a
-    // no-op. Upload is left to a deliberate sync.
-    if (!exists || !isFile) return { action: "noop" };
+    // A create whose temp file already vanished is a no-op. Upload is left
+    // to a deliberate sync.
+    if (!exists) return { action: "noop" };
+    // A directory event -- fs.watch fires one event for a directory that was
+    // created OR moved here, never a separate event per (unchanged) child
+    // (#253). Reconciling a directory path used to be a flat no-op, so a
+    // directory mv's contents were never individually re-paired: the
+    // watcher never saw the children move, only the parent. Walk the
+    // subtree and reconcile every file inside instead, so each one goes
+    // through the exact same tryApplyDiskMove pairing below on its own
+    // (now current) absolute path.
+    if (!isFile) return reconcileDirectory(db, a, mirrorRoot, isIgnored);
     // On-disk mv detection MUST run here, at registration time: rename(2)
     // keeps the inode on the same volume, and the watcher registers the new
     // path immediately -- so pairing after the fact (the old
@@ -167,6 +185,38 @@ export async function reconcilePath(
     cached_dev: existing?.cached_dev ?? null,
   });
   return { action: "deleted", file_id: fileId };
+}
+
+// Recursively reconcile every file under a directory that was just created
+// or moved here (#253). Mirrors the ignore/section scoping reconcilePath
+// itself applies per file (via its own isIgnored/subpathFromMirror checks),
+// so this only needs to skip ignored subtrees before recursing -- a file
+// outside a tracked section is filtered out by reconcilePath's own
+// subpathFromMirror check when reached. Best-effort: an unreadable
+// subdirectory (raced delete, permissions) is skipped rather than aborting
+// the whole walk.
+async function reconcileDirectory(
+  db: Client,
+  a: { userId: string; nodeId: string; absPath: string },
+  mirrorRoot: string,
+  isIgnored: (p: string) => boolean,
+): Promise<ReconcileResult> {
+  let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }> = [];
+  try {
+    entries = await readdir(a.absPath, { withFileTypes: true });
+  } catch {
+    return { action: "noop" };
+  }
+  for (const ent of entries) {
+    const p = join(a.absPath, ent.name);
+    if (isIgnored(p)) continue;
+    if (ent.isDirectory()) {
+      await reconcileDirectory(db, { ...a, absPath: p }, mirrorRoot, isIgnored);
+    } else if (ent.isFile()) {
+      await reconcilePath(db, { ...a, absPath: p });
+    }
+  }
+  return { action: "walked" };
 }
 
 // Pair a to-be-registered path with a tracked record whose local copy has the

@@ -224,46 +224,57 @@ export function NewFileForm({
 }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const submit = async () => {
     const trimmed = name.trim();
     if (!trimmed || busy) return;
+    setError(null);
     setBusy(true);
     try {
       await onSubmit(trimmed);
-    } catch {
-      /* error surfaced by the caller's error line; keep the form open */
+    } catch (e) {
+      // Stays with the form (#267), not a tab-level box: this is the
+      // create action's own error, not a row's or the sync run's.
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
   };
   return (
-    <div className="mb-3 flex items-center gap-2">
-      <input
-        autoFocus
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") void submit();
-          if (e.key === "Escape") onCancel();
-        }}
-        placeholder="Název nového souboru (např. poznamky.md)"
-        className="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-border-strong)]"
-      />
-      <button
-        type="button"
-        disabled={!name.trim() || busy}
-        onClick={() => void submit()}
-        className="shrink-0 rounded-md border border-[var(--color-accent-dim)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-accent)] hover:border-[var(--color-accent)] disabled:opacity-50"
-      >
-        {busy ? "Vytvářím…" : "Vytvořit"}
-      </button>
-      <button
-        type="button"
-        onClick={onCancel}
-        className="shrink-0 rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
-      >
-        Zrušit
-      </button>
+    <div className="mb-3">
+      <div className="flex items-center gap-2">
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void submit();
+            if (e.key === "Escape") onCancel();
+          }}
+          placeholder="Název nového souboru (např. poznamky.md)"
+          className="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-border-strong)]"
+        />
+        <button
+          type="button"
+          disabled={!name.trim() || busy}
+          onClick={() => void submit()}
+          className="shrink-0 rounded-md border border-[var(--color-accent-dim)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-accent)] hover:border-[var(--color-accent)] disabled:opacity-50"
+        >
+          {busy ? "Vytvářím…" : "Vytvořit"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="shrink-0 rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
+        >
+          Zrušit
+        </button>
+      </div>
+      {error && (
+        <div className="mt-1 text-[11px]" style={{ color: "var(--color-danger)" }}>
+          {error}
+        </div>
+      )}
     </div>
   );
 }
@@ -280,6 +291,7 @@ export function FileTree({
   onDelete,
   onResolve,
   readOnly,
+  runErrors,
 }: {
   files: DetailFile[];
   untracked: UntrackedFile[];
@@ -295,6 +307,10 @@ export function FileTree({
   onResolve: (fileId: string, action: ResolveAction) => Promise<void>;
   // When true, hide rename/delete actions (e.g. central mode).
   readOnly?: boolean;
+  // Per-file outcome of the last sync run (#267): a failed push/pull or a
+  // still-pending repair is shown on the affected row, where the transient
+  // toolbar line only carries a count. Cleared by the next run.
+  runErrors?: Map<string, string>;
 }) {
   const treeFiles = useMemo(
     () => toTreeFiles(files, untracked, syncStatus, mirrorPath),
@@ -332,6 +348,7 @@ export function FileTree({
           onDelete={onDelete}
           onResolve={onResolve}
           readOnly={readOnly}
+          runErrors={runErrors}
         />
       ))}
     </div>
@@ -351,6 +368,7 @@ function FileTreeNode({
   onDelete,
   onResolve,
   readOnly,
+  runErrors,
 }: {
   node: TreeNode;
   depth: number;
@@ -364,6 +382,7 @@ function FileTreeNode({
   onDelete: (fileId: string) => Promise<void>;
   onResolve: (fileId: string, action: ResolveAction) => Promise<void>;
   readOnly?: boolean;
+  runErrors?: Map<string, string>;
 }) {
   const indent = depth * 14;
   if (node.file) {
@@ -378,6 +397,7 @@ function FileTreeNode({
         onDelete={onDelete}
         onResolve={onResolve}
         readOnly={readOnly}
+        runError={node.file.fileId ? (runErrors?.get(node.file.fileId) ?? null) : null}
       />
     );
   }
@@ -432,6 +452,7 @@ function FileTreeNode({
               onDelete={onDelete}
               onResolve={onResolve}
               readOnly={readOnly}
+              runErrors={runErrors}
             />
           ))}
         </div>
@@ -513,6 +534,7 @@ function FileRow({
   onDelete,
   onResolve,
   readOnly,
+  runError,
 }: {
   file: TreeFile;
   indent: number;
@@ -523,18 +545,31 @@ function FileRow({
   onDelete: (fileId: string) => Promise<void>;
   onResolve: (fileId: string, action: ResolveAction) => Promise<void>;
   readOnly?: boolean;
+  // This file's error from the last sync run, if any (see FileTree.runErrors).
+  runError?: string | null;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(f.filename);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Row-scoped action error (#267): rename/delete/resolve failures show
+  // here, under the filename, instead of a tab-level box -- dismissed by
+  // the next action on this row or, failing that, a timeout.
+  const [rowError, setRowError] = useState<string | null>(null);
   const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rowErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
       if (confirmTimer.current) clearTimeout(confirmTimer.current);
+      if (rowErrorTimer.current) clearTimeout(rowErrorTimer.current);
     },
     [],
   );
+  const showRowError = (e: unknown) => {
+    setRowError(e instanceof Error ? e.message : String(e));
+    if (rowErrorTimer.current) clearTimeout(rowErrorTimer.current);
+    rowErrorTimer.current = setTimeout(() => setRowError(null), 6000);
+  };
 
   const sync = f.fileId ? syncStatus.get(f.fileId) : undefined;
   // A Showtime deck is binary, but with the integration on it opens in the
@@ -549,12 +584,13 @@ function FileRow({
       setDraft(f.filename);
       return;
     }
+    setRowError(null);
     setBusy(true);
     try {
       await onRename(f.fileId!, name);
       setRenaming(false);
-    } catch {
-      /* error surfaced by the pane's error line; keep editing */
+    } catch (e) {
+      showRowError(e); // keep editing so the user can retry the name
     } finally {
       setBusy(false);
     }
@@ -568,13 +604,19 @@ function FileRow({
     }
     if (confirmTimer.current) clearTimeout(confirmTimer.current);
     setConfirmingDelete(false);
+    setRowError(null);
     setBusy(true);
-    void onDelete(f.fileId!).finally(() => setBusy(false));
+    onDelete(f.fileId!)
+      .catch(showRowError)
+      .finally(() => setBusy(false));
   };
 
   const act = (action: ResolveAction) => {
+    setRowError(null);
     setBusy(true);
-    void onResolve(f.fileId!, action).finally(() => setBusy(false));
+    onResolve(f.fileId!, action)
+      .catch(showRowError)
+      .finally(() => setBusy(false));
   };
 
   return (
@@ -735,6 +777,15 @@ function FileRow({
             </span>
           )}
         </div>
+        {(rowError ?? runError) && (
+          <div
+            className="mt-0.5 truncate text-[11px]"
+            title={rowError ?? runError ?? undefined}
+            style={{ color: "var(--color-danger)" }}
+          >
+            {rowError ?? runError}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -808,6 +859,60 @@ export function WatcherErrorBanner({ errors }: { errors: WatcherErrorEntry[] }) 
   );
 }
 
+// Compact one-line outcome of a sync run for SyncBar's transient inline
+// status (#267) -- deliberately short (counts only, no filename lists):
+// this fades after a few seconds, it is not the place for a full report.
+// Persistent state (conflicts, deleted_local) already has its own pill next
+// to the button, so it is not repeated here as a permanent element -- only
+// as part of this transient line, which is fine since it disappears too.
+function summarizeSyncRun(result: SyncRunResponse): {
+  text: string;
+  hasError: boolean;
+  detail: string | null;
+} {
+  const parts: string[] = [];
+  if (result.pushed.length > 0) parts.push(`Push ${result.pushed.length}`);
+  if (result.pulled.length > 0) parts.push(`Pull ${result.pulled.length}`);
+  if (result.adopted.length > 0) parts.push(`Zaregistrováno ${result.adopted.length}`);
+  if (result.adopted_remote.length > 0) parts.push(`Nové z remote ${result.adopted_remote.length}`);
+  if (result.conflicts.length > 0) {
+    parts.push(`${result.conflicts.length} konflikt${result.conflicts.length === 1 ? "" : "y"}`);
+  }
+  if (result.deleted_local.length > 0) parts.push(`smazáno lokálně ${result.deleted_local.length}`);
+  if (result.deleted_remote.length > 0) parts.push(`uklizeno ${result.deleted_remote.length}`);
+  if (result.deleted_on_remote.length > 0) {
+    parts.push(`smazáno na remote ${result.deleted_on_remote.length}`);
+  }
+  if (result.repaired.length > 0) parts.push(`opraveno ${result.repaired.length}`);
+  const hasError =
+    result.errors.length > 0 || result.sweep_errors.length > 0 || result.pending_repairs.length > 0;
+  if (result.pending_repairs.length > 0) parts.push(`nedokončeno ${result.pending_repairs.length}`);
+  if (result.sweep_errors.length > 0) parts.push(`kontrola remote selhala (${result.sweep_errors.length})`);
+  if (result.errors.length > 0) parts.push(`chyby ${result.errors.length}`);
+  // Full per-item detail for the title tooltip: the line above is counts
+  // only, and the sync-run errors that have no row of their own (sweep
+  // errors are keyed by remote path) would otherwise be lost.
+  const detail = [
+    ...result.errors.map((e) => `${e.filename}: ${e.error}`),
+    ...result.pending_repairs.map((p) => `${p.op} (${p.attempts}x): ${p.last_error ?? "?"}`),
+    ...result.sweep_errors.map((e) => `${e.remote_path}: ${e.error}`),
+  ];
+  if (parts.length === 0) return { text: "Vše synchronizováno", hasError: false, detail: null };
+  return { text: parts.join(" · "), hasError, detail: detail.length > 0 ? detail.join("\n") : null };
+}
+
+// Per-file errors of a sync run, keyed by file id, for the rows themselves
+// (FileTree.runErrors). Exported for the DetailPane wiring and tests.
+export function syncRunErrorsByFile(result: SyncRunResponse | null): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!result) return out;
+  for (const e of result.errors) out.set(e.file_id, e.error);
+  for (const p of result.pending_repairs) {
+    if (!out.has(p.file_id)) out.set(p.file_id, `Nedokončeno (${p.op}): ${p.last_error ?? "?"}`);
+  }
+  return out;
+}
+
 export function SyncBar({
   running,
   result,
@@ -851,6 +956,36 @@ export function SyncBar({
     : pending > 0
     ? `Synchronizovat (${syncPendingLabel(pending)})`
     : "Synchronizovat soubory";
+
+  // Transient outcome line (#267): a run's result/error used to render as a
+  // detached, permanent box under the toolbar. It now shows briefly inline,
+  // next to the button, then fades -- driven off `result`/`error` reference
+  // changes rather than their mere presence (the parent keeps the last run
+  // around, this component decides how long it stays visible).
+  const [showOutcome, setShowOutcome] = useState(false);
+  const outcomeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const outcome = error
+    ? { text: `Chyba: ${error}`, hasError: true, detail: null }
+    : result
+      ? summarizeSyncRun(result)
+      : null;
+  useEffect(() => {
+    if (!result && !error) return;
+    setShowOutcome(true);
+    if (outcomeTimer.current) clearTimeout(outcomeTimer.current);
+    // A clean outcome fades; one with errors stays until the next run
+    // starts (the parent resets result/error then), so what failed is not
+    // gone from the screen after five seconds.
+    if (!outcome?.hasError) {
+      outcomeTimer.current = setTimeout(() => setShowOutcome(false), 5000);
+    }
+  }, [result, error]);
+  useEffect(
+    () => () => {
+      if (outcomeTimer.current) clearTimeout(outcomeTimer.current);
+    },
+    [],
+  );
 
   return (
     <div className="mb-3">
@@ -896,85 +1031,16 @@ export function SyncBar({
             {deletedLocal} smazáno lokálně
           </span>
         )}
+        {showOutcome && outcome && (
+          <span
+            className="truncate text-[11.5px] transition-opacity duration-300"
+            title={outcome.detail ?? undefined}
+            style={{ color: outcome.hasError ? "var(--color-danger)" : "var(--color-text-dim)" }}
+          >
+            {outcome.text}
+          </span>
+        )}
       </div>
-      {result && <SyncRunSummary result={result} />}
-      {error && (
-        <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px]">
-          <span style={{ color: "var(--color-danger)" }}>Chyba: {error}</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Outcome of one sync run, shared by SyncBar and DownloadMirrorButton.
-function SyncRunSummary({ result }: { result: SyncRunResponse }) {
-  return (
-    <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px] text-[var(--color-text-dim)]">
-      {result.pushed.length > 0 && (
-        <div>Push: {result.pushed.length} souborů</div>
-      )}
-      {result.pulled.length > 0 && (
-        <div>Pull: {result.pulled.length} souborů</div>
-      )}
-      {result.adopted.length > 0 && (
-        <div>Zaregistrováno: {result.adopted.length} souborů</div>
-      )}
-      {result.conflicts.length > 0 && (
-        <div style={{ color: "var(--color-danger)" }}>
-          Konflikty (přeskočeno): {result.conflicts.length}
-        </div>
-      )}
-      {(result.deleted_local?.length ?? 0) > 0 && (
-        <div>
-          Smazáno lokálně (neobnovuje se):{" "}
-          {result.deleted_local.map((f) => f.filename).join(", ")}
-        </div>
-      )}
-      {(result.deleted_remote?.length ?? 0) > 0 && (
-        <div>
-          Uklizeno po smazání jinde:{" "}
-          {result.deleted_remote.map((f) => f.filename).join(", ")}
-        </div>
-      )}
-      {(result.adopted_remote?.length ?? 0) > 0 && (
-        <div>
-          Nové z remote: {result.adopted_remote.map((f) => f.filename).join(", ")}
-        </div>
-      )}
-      {(result.deleted_on_remote?.length ?? 0) > 0 && (
-        <div>
-          Smazáno na remote: {result.deleted_on_remote.map((f) => f.filename).join(", ")}
-        </div>
-      )}
-      {(result.sweep_errors?.length ?? 0) > 0 && (
-        <div style={{ color: "var(--color-danger)" }}>
-          Kontrola remote selhala:{" "}
-          {result.sweep_errors.map((e) => e.remote_path).join(", ")}
-        </div>
-      )}
-      {(result.repaired?.length ?? 0) > 0 && (
-        <div>Opraveno: {result.repaired.map((f) => f.filename).join(", ")}</div>
-      )}
-      {(result.pending_repairs?.length ?? 0) > 0 && (
-        <div style={{ color: "var(--color-danger)" }}>
-          Nedokončené operace: {result.pending_repairs.length} (poslední chyba:{" "}
-          {result.pending_repairs[0].last_error})
-        </div>
-      )}
-      {result.errors.length > 0 && (
-        <div style={{ color: "var(--color-danger)" }}>
-          Chyby: {result.errors.length} (
-          {result.errors.map((e) => e.filename).join(", ")})
-        </div>
-      )}
-      {result.pushed.length === 0 &&
-        result.pulled.length === 0 &&
-        result.adopted.length === 0 &&
-        result.conflicts.length === 0 &&
-        (result.deleted_local?.length ?? 0) === 0 &&
-        (result.deleted_remote?.length ?? 0) === 0 &&
-        result.errors.length === 0 && <div>Nic k synchronizaci.</div>}
     </div>
   );
 }

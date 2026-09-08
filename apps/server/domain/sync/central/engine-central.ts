@@ -49,7 +49,7 @@ import {
   type Section,
 } from "../remote-path.js";
 import { loadMirrorIgnore, type MirrorIgnore } from "../mirror-ignore.js";
-import { md5Buffer, sha256Buffer, statForCache } from "../hash.js";
+import { md5Buffer, sha256Buffer, sha256File, statForCache } from "../hash.js";
 import type { NodeSyncInfo, SyncInfoFile } from "../sync-remote-api.js";
 import type { RemoteSweepResult } from "../remote-sweep.js";
 import type {
@@ -271,7 +271,6 @@ async function statusScanForContext(
     new_remote: [],
     deleted_local: [],
     deleted_remote: [],
-    moved: [],
   };
   // Bounded fan-out: slow scans hash changed files (CPU+disk); fast scans
   // are sync.db reads. Order of buckets stays deterministic via mapConcurrent.
@@ -282,7 +281,15 @@ async function statusScanForContext(
     (out[r.bucket] as StatusFileEntry[]).push(r.entry);
   }
   if (a.includeDiscovery !== false) {
-    const m = await matchTombstonesForContext(ctx, await untrackedForContext(ctx));
+    // Hash untracked files only on a slow scan: the fast scan is what the
+    // UI's sync-status and the 30s footer poll run across EVERY mirror, and
+    // hashing every loose file there is I/O the caller never asked for --
+    // discover-local.ts is hash-free for the same reason. Tombstone matching
+    // below rehashes on demand (diskHashMatching) when the entry carries none.
+    const m = await matchTombstonesForContext(
+      ctx,
+      await untrackedForContext(ctx, { hash: !(a.fast ?? false) }),
+    );
     out.new_local = m.remaining;
     out.deleted_remote = m.deleted_remote;
   }
@@ -349,7 +356,14 @@ async function matchTombstonesForContext(
 // Local discovery (untracked files in the mirror)
 // ---------------------------------------------------------------------------
 
-async function untrackedForContext(ctx: NodeContext): Promise<NewLocalEntry[]> {
+// `hash: true` computes each untracked file's sha256 (slow scans /
+// portuni_status, where the entry's hash is part of the reported state);
+// `hash: false` leaves "" so a fast scan or a path-only listing does not
+// read every loose file in the mirror.
+async function untrackedForContext(
+  ctx: NodeContext,
+  opts: { hash: boolean },
+): Promise<NewLocalEntry[]> {
   if (!ctx.mirrorRoot) return [];
   const known = new Set<string>();
   for (const rec of ctx.si.files) {
@@ -369,7 +383,7 @@ async function untrackedForContext(ctx: NodeContext): Promise<NewLocalEntry[]> {
   const out: NewLocalEntry[] = [];
   const isIgnored = await loadMirrorIgnore(ctx.mirrorRoot);
   for (const section of ["wip", "outputs", "resources"] as Section[]) {
-    await walkUntracked(join(ctx.mirrorRoot, section), ctx, known, isIgnored, out);
+    await walkUntracked(join(ctx.mirrorRoot, section), ctx, known, isIgnored, out, opts.hash);
   }
   return out;
 }
@@ -380,6 +394,7 @@ async function walkUntracked(
   known: Set<string>,
   isIgnored: MirrorIgnore,
   out: NewLocalEntry[],
+  withHash: boolean,
 ): Promise<void> {
   let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }> = [];
   try {
@@ -391,19 +406,29 @@ async function walkUntracked(
     const p = join(dir, ent.name);
     if (isIgnored(p)) continue;
     if (ent.isDirectory()) {
-      await walkUntracked(p, ctx, known, isIgnored, out);
+      await walkUntracked(p, ctx, known, isIgnored, out, withHash);
     } else if (ent.isFile()) {
       if (known.has(p.normalize("NFC"))) continue;
       const sub = subpathFromMirror(ctx.mirrorRoot as string, p);
       if (!sub) continue;
-      out.push({
-        node_id: ctx.si.node.id,
-        local_path: p,
-        section: sub.section,
-        subpath: sub.subpath,
-        filename: sub.filename,
-        hash: "",
-      });
+      // Real hash on a slow scan (#253): status output should be truthful,
+      // and a real hash also makes a hash-based fallback pairing possible
+      // for a moved-but-unpaired file surfaced here as "new". Matches the
+      // local engine's walkMirror. A fast scan keeps the "" placeholder
+      // instead of reading every loose file on each UI poll.
+      try {
+        const hash = withHash ? await sha256File(p) : "";
+        out.push({
+          node_id: ctx.si.node.id,
+          local_path: p,
+          section: sub.section,
+          subpath: sub.subpath,
+          filename: sub.filename,
+          hash,
+        });
+      } catch {
+        /* unreadable -- skip, matching walkMirror's behavior */
+      }
     }
   }
 }
@@ -413,7 +438,9 @@ export async function listUntrackedLocalCentral(
   a: { userId: string; nodeId: string },
 ): Promise<NewLocalEntry[]> {
   const ctx = await loadNodeContext(client, a.userId, a.nodeId);
-  return untrackedForContext(ctx);
+  // Path-only listing (UI untracked list, sync-run adopt): hash-free, same
+  // as discover-local.ts -- storeFile rehashes at adopt time anyway.
+  return untrackedForContext(ctx, { hash: false });
 }
 
 // ---------------------------------------------------------------------------
@@ -620,6 +647,13 @@ export async function storeFileCentral(
 
   const state = await getFileState(reg.file_id);
   const baseline = state?.last_synced_hash ?? null;
+  // Stat BEFORE reading: the cached (mtime, size) must describe the bytes
+  // that actually get pushed. Stat'ing after the upload would pair the
+  // pushed hash with the mtime/size of whatever the file is by then -- an
+  // edit landing mid-upload (e.g. the editor saving into a file the
+  // create handler is still pushing in the background) would read as
+  // clean and never be pushed.
+  const fsInfo = await statForCache(localPath);
   const bytes = await readFile(localPath);
 
   let put: { version: string; canonicalHash: string };
@@ -656,16 +690,29 @@ export async function storeFileCentral(
     }
   }
 
-  const fsInfo = await statForCache(localPath);
+  // Fast status trusts cached_local_hash outright (no mtime check), so the
+  // cache written here must describe the file as it is NOW, not as it was
+  // when read: an edit that landed while the upload was in flight (the
+  // editor saving into a file the create handler is still pushing in the
+  // background) must surface as push, never be masked as clean by the
+  // pushed hash. Re-stat after the upload; if the identity moved, rehash.
+  const after = await statForCache(localPath);
+  const changedMidPush =
+    after.mtime !== fsInfo.mtime || after.size !== fsInfo.size || after.ino !== fsInfo.ino;
+  const cachedLocalHash = changedMidPush
+    ? put.canonicalHash.length === 32
+      ? md5Buffer(await readFile(localPath))
+      : await sha256File(localPath)
+    : put.canonicalHash;
   await upsertFileState({
     file_id: reg.file_id,
     last_synced_hash: put.canonicalHash,
     last_synced_at: new Date().toISOString(),
-    cached_local_hash: put.canonicalHash,
-    cached_mtime: fsInfo.mtime,
-    cached_size: fsInfo.size,
-    cached_ino: fsInfo.ino,
-    cached_dev: fsInfo.dev,
+    cached_local_hash: cachedLocalHash,
+    cached_mtime: after.mtime,
+    cached_size: after.size,
+    cached_ino: after.ino,
+    cached_dev: after.dev,
   });
 
   return {
@@ -748,7 +795,15 @@ export async function pullFileCentral(
 // ---------------------------------------------------------------------------
 
 export type ReconcileCentralResult = {
-  action: "ignored" | "noop" | "registered" | "rehashed" | "deleted" | "unregistered" | "moved";
+  action:
+    | "ignored"
+    | "noop"
+    | "registered"
+    | "rehashed"
+    | "deleted"
+    | "unregistered"
+    | "moved"
+    | "walked";
   file_id?: string;
 };
 
@@ -797,7 +852,13 @@ export async function reconcilePathCentral(
   );
 
   if (!rec) {
-    if (!st.exists || !st.isFile) return { action: "noop" };
+    if (!st.exists) return { action: "noop" };
+    // A directory event (created, or moved here) -- fs.watch fires one
+    // event for the directory itself, never one per unchanged child, so a
+    // directory mv is otherwise invisible at the per-file level this
+    // reconcile operates on (#253). Walk it and reconcile each file inside
+    // at its own current path, same as the local engine's reconcileDirectory.
+    if (!st.isFile) return reconcileDirectoryCentral(client, a, mirrorRoot, isIgnored);
     // On-disk mv pairing, central flavour (same contract as the local
     // tryApplyDiskMove; candidates limited to this node's records --
     // a cross-mirror mv falls back to plain registration).
@@ -840,6 +901,34 @@ export async function reconcilePathCentral(
     cached_dev: existing?.cached_dev ?? null,
   });
   return { action: "deleted", file_id: rec.id };
+}
+
+// Recursively reconcile every file under a directory that was just created
+// or moved here (#253), central flavour of reconcile.ts's reconcileDirectory.
+// Best-effort: an unreadable subdirectory (raced delete, permissions) is
+// skipped rather than aborting the whole walk.
+async function reconcileDirectoryCentral(
+  client: CentralClient,
+  a: { userId: string; nodeId: string; absPath: string },
+  mirrorRoot: string,
+  isIgnored: (p: string) => boolean,
+): Promise<ReconcileCentralResult> {
+  let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }> = [];
+  try {
+    entries = await readdir(a.absPath, { withFileTypes: true });
+  } catch {
+    return { action: "noop" };
+  }
+  for (const ent of entries) {
+    const p = join(a.absPath, ent.name);
+    if (isIgnored(p)) continue;
+    if (ent.isDirectory()) {
+      await reconcileDirectoryCentral(client, { ...a, absPath: p }, mirrorRoot, isIgnored);
+    } else if (ent.isFile()) {
+      await reconcilePathCentral(client, { ...a, absPath: p });
+    }
+  }
+  return { action: "walked" };
 }
 
 // Pair a to-be-registered path with a tracked record whose cached local copy
@@ -890,7 +979,19 @@ async function tryApplyDiskMoveCentral(
     const sub = subpathFromMirror(ctx.mirrorRoot, a.absPath);
     if (!sub) continue;
     if (rec.current_remote_hash === null) {
-      await client.deleteFileRecord(a.nodeId, c.file_id).catch(() => null);
+      // Record-only delete on central. A repair_needed answer (central
+      // could not confirm the remote side, e.g. Drive unreachable) means it
+      // deliberately KEPT the old record -- re-registering the new path
+      // then would be exactly the duplicate pair #253 is about. Leave both
+      // sides alone; the next watcher event or backfill sweep pairs it
+      // again once the delete can complete. An already-gone record (404)
+      // counts as deleted.
+      const del = await client
+        .deleteFileRecord(a.nodeId, c.file_id)
+        .catch((e: unknown) =>
+          e instanceof CentralHttpError && e.code === "NOT_FOUND" ? { status: "ok" } : null,
+        );
+      if (!del || (del as { status?: unknown }).status !== "ok") return { action: "noop" };
       await deleteFileState(c.file_id).catch(() => undefined);
       const r = await registerLocalFileCentral(client, {
         userId: a.userId,

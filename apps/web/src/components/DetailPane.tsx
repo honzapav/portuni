@@ -95,6 +95,7 @@ import {
   NoMirrorBanner,
   TerminalSplitButton,
   WatcherErrorBanner,
+  syncRunErrorsByFile,
 } from "./DetailPane.files";
 import { AccessSection } from "./DetailPane.access";
 import { SessionsSection } from "./DetailPane.sessions";
@@ -334,11 +335,13 @@ function DetailPaneBody({
   const [watcherErrors, setWatcherErrors] = useState<WatcherErrorEntry[]>(
     () => SYNC_WATCHER_ERRORS_CACHE.get(node.id) ?? [],
   );
-  // Inline new-file form + shared error line for file create/rename/delete.
-  // window.prompt/confirm/alert are silent no-ops in the Tauri macOS
-  // webview (commit d229d84), so all file operations use inline UI.
+  // Inline new-file form. window.prompt/confirm/alert are silent no-ops in
+  // the Tauri macOS webview (commit d229d84), so all file operations use
+  // inline UI. Create/rename/delete/resolve errors are NOT tracked here
+  // (#267) -- each surfaces contextually where the action happened (the
+  // create form itself, or the affected file's own row), via the handlers
+  // below rethrowing instead of setting shared pane state.
   const [creatingFile, setCreatingFile] = useState(false);
-  const [fileOpError, setFileOpError] = useState<string | null>(null);
   // Opening a terminal does two sequential round-trips (fetch node +
   // create mirror) before the view switches, so guard the button with a
   // visible pending state -- otherwise the click looks like a no-op.
@@ -374,7 +377,6 @@ function DetailPaneBody({
       // wrong-node path (404 in the editor).
       setUntracked([]);
       setCreatingFile(false);
-      setFileOpError(null);
       setCreatingMirror(false);
       setMirrorError(null);
     }
@@ -629,67 +631,62 @@ function DetailPaneBody({
     }
   };
 
+  // Each handler below rethrows on failure instead of setting shared pane
+  // state (#267): the caller renders the error contextually -- NewFileForm
+  // for create, the affected FileRow for rename/delete/resolve -- never a
+  // detached tab-level box.
   const handleCreateFile = async (name: string) => {
-    setFileOpError(null);
     try {
       const f = await createFile(node.id, { filename: name, section: "wip" });
       await Promise.all([onMutate(), loadSyncStatus()]);
       setCreatingFile(false);
       if (onOpenFile && f.relative_path) onOpenFile(node.id, f.relative_path);
     } catch (e) {
-      setFileOpError(`Soubor se nepodařilo vytvořit: ${String(e)}`);
-      throw e;
+      throw new Error(`Soubor se nepodařilo vytvořit: ${String(e)}`);
     }
   };
 
   const handleRenameFile = async (fileId: string, name: string) => {
-    setFileOpError(null);
     try {
       await renameFile(node.id, fileId, name);
       await Promise.all([onMutate(), loadSyncStatus()]);
     } catch (e) {
-      setFileOpError(`Přejmenování selhalo: ${String(e)}`);
-      throw e;
+      throw new Error(`Přejmenování selhalo: ${String(e)}`);
     }
   };
 
   const handleDeleteFile = async (fileId: string) => {
-    setFileOpError(null);
+    // deleteFile returns 200 even when the remote delete failed; in that
+    // case the body is { status: "repair_needed", repair_hint } and the
+    // DB row + local copy are intentionally kept. Surface that so the user
+    // knows the file was NOT fully removed.
+    let res: unknown;
     try {
-      // deleteFile returns 200 even when the remote delete failed; in that
-      // case the body is { status: "repair_needed", repair_hint } and the
-      // DB row + local copy are intentionally kept. Surface that so the user
-      // knows the file was NOT fully removed.
-      const res: unknown = await deleteFile(node.id, fileId);
-      await Promise.all([onMutate(), loadSyncStatus()]);
-      if (
-        typeof res === "object" &&
-        res !== null &&
-        (res as { status?: unknown }).status === "repair_needed"
-      ) {
-        const hint = (res as { repair_hint?: unknown }).repair_hint;
-        setFileOpError(
-          typeof hint === "string" && hint
-            ? hint
-            : "Soubor se nepodařilo smazat z remote úložiště. Lokální kopie i záznam zůstaly zachovány.",
-        );
-      }
+      res = await deleteFile(node.id, fileId);
     } catch (e) {
-      setFileOpError(`Smazání selhalo: ${String(e)}`);
+      throw new Error(`Smazání selhalo: ${String(e)}`);
+    }
+    await Promise.all([onMutate(), loadSyncStatus()]);
+    if (
+      typeof res === "object" &&
+      res !== null &&
+      (res as { status?: unknown }).status === "repair_needed"
+    ) {
+      const hint = (res as { repair_hint?: unknown }).repair_hint;
+      throw new Error(
+        typeof hint === "string" && hint
+          ? hint
+          : "Soubor se nepodařilo smazat z remote úložiště. Lokální kopie i záznam zůstaly zachovány.",
+      );
     }
   };
 
   // Human decision on a conflict or deleted_local file (see resolveFileSync).
-  // The 409 case carries a human-readable message from the server -- surface
-  // it as-is rather than wrapping it in a generic failure line.
+  // The 409 case carries a human-readable message from the server -- let it
+  // propagate as-is rather than wrapping it in a generic failure line.
   const handleResolveFile = async (fileId: string, action: ResolveAction) => {
-    setFileOpError(null);
-    try {
-      await resolveFileSync(node.id, fileId, action);
-      await Promise.all([onMutate(), loadSyncStatus()]);
-    } catch (e) {
-      setFileOpError(e instanceof Error ? e.message : String(e));
-    }
+    await resolveFileSync(node.id, fileId, action);
+    await Promise.all([onMutate(), loadSyncStatus()]);
   };
 
   const grouped = new Map<string, DetailEdge[]>();
@@ -1096,10 +1093,7 @@ function DetailPaneBody({
                   )}
                   <button
                     type="button"
-                    onClick={() => {
-                      setFileOpError(null);
-                      setCreatingFile((v) => !v);
-                    }}
+                    onClick={() => setCreatingFile((v) => !v)}
                     className="ml-2 shrink-0 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text)] hover:border-[var(--color-border-strong)]"
                   >
                     + Nový soubor
@@ -1108,16 +1102,8 @@ function DetailPaneBody({
                 {creatingFile && (
                   <NewFileForm
                     onSubmit={handleCreateFile}
-                    onCancel={() => {
-                      setCreatingFile(false);
-                      setFileOpError(null);
-                    }}
+                    onCancel={() => setCreatingFile(false)}
                   />
-                )}
-                {fileOpError && (
-                  <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px]">
-                    <span style={{ color: "var(--color-danger)" }}>{fileOpError}</span>
-                  </div>
                 )}
                 {node.files.length > 0 || untracked.length > 0 ? (
                   <FileTree
@@ -1131,6 +1117,7 @@ function DetailPaneBody({
                     onRename={handleRenameFile}
                     onDelete={handleDeleteFile}
                     onResolve={handleResolveFile}
+                    runErrors={syncRunErrorsByFile(syncRunResult)}
                   />
                 ) : (
                   <div className="text-[14px] text-[var(--color-text-dim)]">

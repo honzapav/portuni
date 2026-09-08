@@ -1202,14 +1202,49 @@ fn open_external(url: String) -> Result<(), String> {
 ///                                 files open in the editor, and falls back to
 ///                                 central itself when there is no mirror or
 ///                                 the file is pull-pending
+///   DELETE /nodes/:id/files/:fileId — file delete (#254): the record+remote
+///                                 half is still adapter-direct on the
+///                                 server, but the device's own local sync
+///                                 agent needs to run the disk-cleanup step
+///                                 (rm the mirror copy + drop file_state) the
+///                                 central server has no way to do itself, so
+///                                 this one sub-path routes to the sidecar
+///                                 instead of straight to central.
+///   POST /nodes/:id/files/:fileId/resolve — conflict resolution (#264): the
+///                                 agent-router already implements this
+///                                 correctly (findEntryByFileId +
+///                                 storeFileCentral/pullFileCentral against
+///                                 the device's own mirror), but nothing
+///                                 routed the desktop UI's REST call there --
+///                                 it went straight to central, which has no
+///                                 mirror to resolve against at all
+///                                 (409 on keep_local, 500 on take_remote/
+///                                 restore).
+///   POST /nodes/:id/files       — create (#266): a device with a mirror
+///                                 writes the file there and registers the
+///                                 record without waiting on the Drive
+///                                 upload, pushing in the background --
+///                                 central's own create does the Drive PUT
+///                                 before answering, which left the device
+///                                 with no sync baseline once the editor's
+///                                 own local-only save landed, permanently
+///                                 misclassified as a conflict. A device
+///                                 with no mirror for the node still
+///                                 forwards to central via the agent-router
+///                                 handler's own fallback (CentralClient
+///                                 .createFile), so this is safe to route
+///                                 here unconditionally.
+///   POST /nodes/:id/files/:fileId/rename — rename: central still does the
+///                                 record + remote step (the agent-router
+///                                 handler calls it), but only the device
+///                                 can rename the mirror copy; forwarding
+///                                 straight to central left the local file
+///                                 under its old name (missing locally +
+///                                 a new untracked file on the next scan).
 ///
-/// NOT local-only (served from the central server): the file lifecycle
-/// (POST /nodes/:id/files, POST /nodes/:id/files/:fileId/rename,
-/// DELETE /nodes/:id/files/:fileId) is adapter-direct on the server, so it
-/// forwards in central mode.
-/// /nodes/:id/folder-url and /nodes/:id/file-url also stay central (Drive URL
-/// lookups on the server). All graph, actor, responsibility, etc. routes are
-/// central.
+/// NOT local-only (served from the central server): /nodes/:id/folder-url
+/// and /nodes/:id/file-url (Drive URL lookups on the server). All graph,
+/// actor, responsibility, etc. routes are central.
 pub(crate) fn is_local_only_path(path: &str) -> bool {
     // Strip query string for matching.
     let p = path.split('?').next().unwrap_or(path);
@@ -1226,10 +1261,14 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
 
     // Node sub-paths that are local-only.
     // Matches: /nodes/<id>/mirror, /nodes/<id>/sync-status, /nodes/<id>/sync,
-    //          /nodes/<id>/sandbox-profile, /nodes/<id>/file (content)
+    //          /nodes/<id>/sandbox-profile, /nodes/<id>/file (content),
+    //          /nodes/<id>/files (create, #266), /nodes/<id>/files/<fileId>
+    //          (delete, #254 -- exactly one segment after "files/"),
+    //          /nodes/<id>/files/<fileId>/resolve (#264) and
+    //          /nodes/<id>/files/<fileId>/rename (the device renames its
+    //          mirror copy after central confirms).
     //
-    // NOT matched (served centrally): /nodes/<id>/files and
-    // /nodes/<id>/files/* (B3 lifecycle), /nodes/<id>/file-url,
+    // NOT matched (served centrally): /nodes/<id>/file-url,
     // /nodes/<id>/folder-url.
     if let Some(rest) = p.strip_prefix("/nodes/") {
         // rest = "<id>/<sub>" or "<id>/<sub>/..."
@@ -1237,11 +1276,20 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
             let sub = &rest[slash + 1..];
             if sub == "mirror"
                 || sub == "sync-status"
+                || sub == "files"
                 || sub == "sync"
                 || sub == "sandbox-profile"
                 || sub == "file"
             {
                 return true;
+            }
+            if let Some(file_seg) = sub.strip_prefix("files/") {
+                if (!file_seg.is_empty() && !file_seg.contains('/'))
+                    || file_seg.ends_with("/resolve")
+                    || file_seg.ends_with("/rename")
+                {
+                    return true;
+                }
             }
         }
     }
@@ -3925,17 +3973,36 @@ mod local_only_path_tests {
     }
 
     #[test]
-    fn node_files_create_is_central_phase_b() {
-        // File lifecycle (create) is served adapter-direct by
-        // the central server, so /nodes/:id/files must NOT be gated local-only.
-        assert!(!is_local_only_path("/nodes/abc123/files"));
+    fn node_files_create_is_local_only() {
+        // Create (#266): the device writes the file into its own mirror
+        // and registers it without waiting on the Drive upload; a device
+        // with no mirror for the node still forwards to central via the
+        // agent-router handler's own fallback.
+        assert!(is_local_only_path("/nodes/abc123/files"));
     }
 
     #[test]
-    fn node_files_sub_path_is_central_phase_b() {
-        // Rename + delete also forward to the central server.
-        assert!(!is_local_only_path("/nodes/abc123/files/somefile.md/rename"));
-        assert!(!is_local_only_path("/nodes/abc123/files/somefileid"));
+    fn node_files_rename_is_local_only() {
+        // POST /nodes/:id/files/:fileId/rename: central keeps the record +
+        // remote step, but the device has to rename its own mirror copy.
+        assert!(is_local_only_path("/nodes/abc123/files/somefileid/rename"));
+        assert!(is_local_only_path("/nodes/abc123/files/somefileid/rename?x=1"));
+    }
+
+    #[test]
+    fn node_files_delete_is_local_only() {
+        // DELETE /nodes/:id/files/:fileId (#254): the device runs the local
+        // disk-cleanup step the central server cannot do itself.
+        assert!(is_local_only_path("/nodes/abc123/files/somefileid"));
+    }
+
+    #[test]
+    fn node_files_resolve_is_local_only() {
+        // POST /nodes/:id/files/:fileId/resolve (#264): the agent-router
+        // already resolves conflicts against the device's own mirror
+        // correctly; this route just never reached it before.
+        assert!(is_local_only_path("/nodes/abc123/files/somefileid/resolve"));
+        assert!(is_local_only_path("/nodes/abc123/files/somefileid/resolve?x=1"));
     }
 
     #[test]
@@ -4017,6 +4084,7 @@ mod local_only_path_tests {
         assert!(!is_local_only_path("/graph?filter=all"));
         // file-url stays central even though it shares the /file prefix.
         assert!(!is_local_only_path("/nodes/abc/file-url?file_id=xyz"));
+        assert!(is_local_only_path("/nodes/abc/files/fileid?confirmed=true"));
     }
 }
 

@@ -223,6 +223,51 @@ describe("watcher-observed mv (inode pairing)", () => {
     await assert.rejects(() => stat(join(remoteRoot, rows[0].remote_path)));
   });
 
+  it("directory mv: only the directory-level event fires, files inside are still paired by inode (#253)", async () => {
+    const { db, nodeId, remoteRoot } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const oldDir = join(mirrorRoot, "wip", "prezentace");
+    await mkdir(oldDir, { recursive: true });
+    const oldAbs1 = join(oldDir, "slide1.html");
+    const oldAbs2 = join(oldDir, "slide2.html");
+    await writeFile(oldAbs1, "slide-one");
+    await writeFile(oldAbs2, "slide-two");
+    const stored1 = await storeFile(db, { userId: "U1", nodeId, localPath: oldAbs1 });
+    const stored2 = await storeFile(db, { userId: "U1", nodeId, localPath: oldAbs2 });
+
+    const w = manualWatch();
+    const watcher = await startWatcher(db, w.factory);
+
+    await mkdir(join(mirrorRoot, "outputs"), { recursive: true });
+    const newDir = join(mirrorRoot, "outputs", "prezentace");
+    await fsRename(oldDir, newDir);
+    // What fs.watch/FSEvents actually delivers for a directory rename: one
+    // event for the old directory path, one for the new -- never events for
+    // the (unchanged) files inside it.
+    w.fire(oldDir);
+    w.fire(newDir);
+    await settle();
+    watcher.stop();
+
+    const rows = await fileRows(db, nodeId);
+    assert.equal(rows.length, 2, `expected two rows (paired, not duplicated), got ${JSON.stringify(rows)}`);
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    assert.equal(byId.get(stored1.file_id)?.filename, "slide1.html");
+    assert.match(byId.get(stored1.file_id)?.remote_path ?? "", /outputs\/prezentace\/slide1\.html$/);
+    assert.equal(byId.get(stored2.file_id)?.filename, "slide2.html");
+    assert.match(byId.get(stored2.file_id)?.remote_path ?? "", /outputs\/prezentace\/slide2\.html$/);
+    // Remote objects physically moved too, one each -- not left behind AND duplicated.
+    await assert.rejects(() => stat(join(remoteRoot, stored1.remote_path)));
+    await assert.rejects(() => stat(join(remoteRoot, stored2.remote_path)));
+    await stat(join(remoteRoot, byId.get(stored1.file_id)!.remote_path));
+    await stat(join(remoteRoot, byId.get(stored2.file_id)!.remote_path));
+
+    const scan = await statusScan(db, { userId: "U1", nodeId, includeDiscovery: true });
+    assert.equal(scan.new_local.length, 0);
+    assert.equal(scan.deleted_local.length, 0);
+  });
+
   it("mv of a never-pushed file, new-path event first: record is retargeted in place", async () => {
     const { db, nodeId, remoteRoot } = await makeSharedDb();
     const mirrorRoot = join(workspace, "mirror");

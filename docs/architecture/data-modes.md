@@ -97,18 +97,62 @@ to `501 {error:"local_only", detail:"sync agent not running"}` in central mode
 /scope, /sandbox-profile
 /nodes/:id/mirror, /nodes/:id/sync-status, /nodes/:id/sync, /nodes/:id/sandbox-profile
 /nodes/:id/file
+POST /nodes/:id/files
+DELETE /nodes/:id/files/:fileId
+POST /nodes/:id/files/:fileId/resolve
 ```
 
 So `local_only` now means exactly **"the local sync agent isn't up — sign
 in"**, not "this feature is unbuilt." `/nodes/:id/file` (GET/PUT) is on the
 list because the agent serves a device mirror from disk and proxies to central
-itself when there is no mirror. The file lifecycle is **not** on that list:
-`POST /nodes/:id/files`, `.../files/:id/rename`, `DELETE .../files/:id`, plus
-`/nodes/:id/file-url` and `/nodes/:id/folder-url` all forward to the central
-server, which serves them mirror-less and Drive-direct
-(`file-content-remote.ts`). The old "available only in local mode" frontend
-string has been removed; the 501 is caught as `LocalOnlyError`
-(`apps/web/src/api.ts`) and now reads as "not signed in."
+itself when there is no mirror. `DELETE /nodes/:id/files/:fileId` is on the
+list too (#254): the record + remote object are still adapter-direct on the
+central server (`agent-router.ts` calls `CentralClient.deleteFileRecord`,
+the exact same endpoint a non-agent-mode delete hits), but the device has to
+run its own disk-cleanup step (`rm` the mirror copy, drop the `file_state`
+row) afterward — the central server has no mirror to clean up, so without
+this the local copy survived every delete and the next backfill sweep
+re-registered it. `POST /nodes/:id/files/:fileId/resolve` (conflict
+resolution — "Ponechat lokální" / "Vzít z remote" / "Obnovit") is on the
+list for the same reason (#264): `agent-router.ts` already implemented it
+correctly against the device's own mirror (`findEntryByFileId` +
+`storeFileCentral`/`pullFileCentral`), but nothing routed the desktop UI's
+REST call there before this fix — it went straight to central, which has no
+mirror to resolve against at all (409 on `keep_local`, 500 on
+`take_remote`/`restore`).
+
+`POST /nodes/:id/files` (create) is on the list too, for a different reason
+(#266): central's own create is adapter-direct — it does the Drive `PUT`
+before answering — so a device with a mirror never got a sync baseline for
+the new file before the editor's own local-only save landed, which the
+watcher then classified as a **permanent conflict** (a local hash with no
+`last_synced_hash` against a remote hash of `md5("")`, indistinguishable
+from a real conflict once it happens). With a mirror on this device,
+`agent-router.ts` instead writes the file into the mirror and registers the
+record **without waiting on the Drive upload** — the response comes back as
+soon as the record exists, not after a round trip to Drive — and pushes in
+the background; until that background push lands, the file reads as an
+ordinary `push` classification (registered, no `current_remote_hash` yet,
+local hash cached), exactly like any other freshly-created local file, then
+`clean` once the push completes. A device with **no** mirror for the node
+still forwards to central via the handler's own fallback
+(`CentralClient.createFile`, a new method wrapping the same
+`POST /nodes/:id/files` central already serves) — this route is unconditional
+in `is_local_only_path`, so the agent-router handler itself decides per node
+whether to serve it locally or forward it, the same shape as the `/file`
+GET/PUT fallback above.
+
+`POST /nodes/:id/files/:fileId/rename` is on the list too: central keeps the
+record + remote step (`CentralClient.renameFile`, the same POST it already
+serves mirror-less), and the agent-router handler renames the device's mirror
+copy afterwards — forwarded straight to central, the local file kept its old
+name and the next scan reported the record missing locally plus a new
+untracked file. Only `/nodes/:id/file-url` and `/nodes/:id/folder-url` still
+forward straight to the central server, which serves them Drive-direct
+(`file-content-remote.ts`). The old
+"available only in local mode" frontend string has been removed; the 501 is
+caught as `LocalOnlyError` (`apps/web/src/api.ts`) and now reads as "not
+signed in."
 
 ### Agent-mode MCP: how terminals work in central mode
 

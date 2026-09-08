@@ -101,14 +101,19 @@ describe("reconcilePath", () => {
     );
   });
 
-  it("is a no-op for a newly created directory (not a file)", async () => {
+  it("walks (and registers nothing for) a newly created, empty directory", async () => {
     const { db, nodeId } = await makeSharedDb();
     await registerMirror("U1", nodeId, mirrorRoot);
     const dirPath = join(mirrorRoot, "wip", "subdir");
     await mkdir(dirPath, { recursive: true });
 
+    // #253: a directory path is no longer a flat no-op -- it is walked so
+    // any files inside get reconciled (and paired as a move when
+    // applicable). An empty directory has nothing to walk into, so the net
+    // effect is still nothing registered, but the reported action reflects
+    // that a walk happened.
     const res = await reconcilePath(db, { userId: "U1", nodeId, absPath: dirPath });
-    assert.equal(res.action, "noop");
+    assert.equal(res.action, "walked");
 
     const rows = await db.execute({
       sql: "SELECT COUNT(*) AS c FROM files WHERE node_id = ?",

@@ -21,7 +21,6 @@ import {
   reconcilePathCentral,
   type ReconcileCentralResult,
 } from "./domain/sync/central/engine-central.js";
-import { localHashFor } from "./domain/sync/engine.js";
 import { createMirrorWatcher, type MirrorWatcher } from "./domain/sync/mirror-watcher.js";
 import { listUserMirrors } from "./domain/sync/mirror-registry.js";
 import { createAgentRouter } from "./api/agent-router.js";
@@ -109,11 +108,23 @@ async function bindAndAnnounce(
   process.stdout.write(`PORTUNI_LISTENING_PORT=${address.port}\n`);
 }
 
-// Register anything on disk in one mirror that the central records don't
-// know yet: ONE batch registration per mirror, then cache local hashes so
-// fast status classifies the files push (same contract as the single-file
-// registration path). Used for the boot backfill sweep and, via the
-// watcher's backfillMirror seam, for mirrors registered while running.
+// Reconcile anything on disk in one mirror that the central records don't
+// know yet. Used for the boot backfill sweep and, via the watcher's
+// backfillMirror seam, for mirrors registered while running.
+//
+// Routed through reconcilePathCentral per file (#253), not a batch
+// client.registerFiles call: a live watcher pairs an on-disk mv by inode via
+// tryApplyDiskMoveCentral, but that never runs for a mv that happened while
+// the agent was down (or missed a directory-level watcher event, which only
+// fires once for the directory itself -- see reconcileDirectoryCentral) --
+// this backfill sweep is the catch-up path for exactly that case. A raw
+// batch register would instead split a moved file into a fresh duplicate
+// record, leaving the old one stuck deleted_local with its Drive copy
+// orphaned. Sequential, matching the local engine's dbBackfillMirror: one
+// unreadable/misbehaving file must not abort backfill for the rest of the
+// mirror. reconcilePathCentral's own registration/move paths already cache
+// the local hash (registerLocalFileCentral / tryApplyDiskMoveCentral both
+// call localHashFor), so there is no separate hash-caching pass needed here.
 async function centralBackfillMirror(
   client: CentralClient,
   m: { node_id: string },
@@ -122,14 +133,16 @@ async function centralBackfillMirror(
     userId: SOLO_USER,
     nodeId: m.node_id,
   });
-  if (untracked.length === 0) return;
-  const relPaths = untracked.map((u) => {
-    const sub = u.subpath ? `${u.subpath.normalize("NFC")}/` : "";
-    return `${u.section}/${sub}${u.filename.normalize("NFC")}`;
-  });
-  const regs = await client.registerFiles(m.node_id, relPaths);
-  for (let i = 0; i < regs.length; i += 1) {
-    await localHashFor(untracked[i].local_path, regs[i].id, null).catch(() => null);
+  for (const u of untracked) {
+    try {
+      await reconcilePathCentral(client, {
+        userId: SOLO_USER,
+        nodeId: u.node_id,
+        absPath: u.local_path,
+      });
+    } catch (e) {
+      console.error(`[portuni:watch] central backfill reconcile failed for ${u.local_path}:`, e);
+    }
   }
 }
 

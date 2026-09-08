@@ -7,7 +7,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, readFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -451,5 +451,45 @@ describe("createMirrorWatcher backfill", () => {
     }
     watcher.stop();
     assert.deepEqual(filenames, ["late.md"]);
+  });
+
+  // #253: a live watcher pairs an on-disk mv by inode; backfill (start() /
+  // refresh()) is the catch-up path for a mv that happened while the
+  // watcher was NOT running (server down, or a missed directory-level
+  // event) -- it must not treat the file at its new path as brand new.
+  it("backfill pairs a directory mv that happened while the watcher was down (no duplicate)", async () => {
+    const { storeFile } = await import("../apps/server/domain/sync/engine.js");
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const oldDir = join(mirrorRoot, "wip", "prezentace");
+    await mkdir(oldDir, { recursive: true });
+    const oldAbs = join(oldDir, "slide.md");
+    await writeFile(oldAbs, "obsah");
+    const stored = await storeFile(db, { userId: "U1", nodeId, localPath: oldAbs });
+
+    // The mv happens with no watcher running at all.
+    await mkdir(join(mirrorRoot, "outputs"), { recursive: true });
+    const newDir = join(mirrorRoot, "outputs", "prezentace");
+    await rename(oldDir, newDir);
+
+    const watcher = createMirrorWatcher({
+      db,
+      userId: "U1",
+      watchFactory: () => ({ close() {
+        /* no real fs.watch in tests -- only the start()-time backfill sweep is under test */
+      } }),
+    });
+    await watcher.start();
+    watcher.stop();
+
+    const rows = await db.execute({
+      sql: "SELECT id, filename, remote_path FROM files WHERE node_id = ?",
+      args: [nodeId],
+    });
+    assert.equal(rows.rows.length, 1, `expected one paired row, got ${JSON.stringify(rows.rows)}`);
+    assert.equal(rows.rows[0].id, stored.file_id);
+    assert.equal(rows.rows[0].filename, "slide.md");
+    assert.match(rows.rows[0].remote_path as string, /outputs\/prezentace\/slide\.md$/);
   });
 });

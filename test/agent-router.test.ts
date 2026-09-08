@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
 import { join, posix, sep } from "node:path";
@@ -24,6 +24,39 @@ class FakeCentral implements CentralClient {
   records = new Map<string, { id: string; filename: string; status: string }>();
   bytes = new Map<string, Buffer>();
   nextId = 1;
+  // Settable by a test to make putFileRaw (the background push after a
+  // create, #266) resolve only once released -- proves the create response
+  // does not wait for it.
+  putDelay: Promise<void> | null = null;
+
+  // Mirror-less create (#266's "no mirror on this device" fallback path):
+  // same shape as the central server's own createFileRemote.
+  async createFile(
+    nodeId: string,
+    args: { filename: string; section?: string; subpath?: string | null; content?: string },
+  ) {
+    if (nodeId !== NODE_ID) throw new CentralHttpError("not found", 404, "NOT_FOUND");
+    const section = args.section ?? "wip";
+    const sub = args.subpath ? `${args.subpath}/` : "";
+    const relPath = `${section}/${sub}${args.filename}`;
+    const remotePath = posix.join(NODE_ROOT, relPath);
+    if (this.records.has(remotePath)) {
+      throw new CentralHttpError("exists", 409, "EXISTS");
+    }
+    const bytes = Buffer.from(args.content ?? "", "utf8");
+    this.bytes.set(remotePath, bytes);
+    const id = `F${this.nextId++}`;
+    const status = section === "outputs" ? "output" : "wip";
+    this.records.set(remotePath, { id, filename: args.filename, status });
+    return {
+      id,
+      filename: args.filename,
+      status,
+      local_path: null,
+      relative_path: relPath,
+      mime_type: null,
+    };
+  }
 
   async syncInfo(nodeId: string): Promise<NodeSyncInfo> {
     if (nodeId !== NODE_ID) throw new CentralHttpError("not found", 404, "NOT_FOUND");
@@ -79,6 +112,7 @@ class FakeCentral implements CentralClient {
     bytes: Buffer,
     opts?: { baseCanonicalHash?: string; ifAbsent?: boolean; force?: boolean },
   ) {
+    if (this.putDelay) await this.putDelay;
     const remotePath = posix.join(NODE_ROOT, relPath);
     const cur = this.bytes.get(remotePath);
     if (opts?.ifAbsent && !opts.force && cur) {
@@ -129,6 +163,54 @@ class FakeCentral implements CentralClient {
 
   async remoteSweep() {
     return { adopted: [], deleted_on_remote: [], errors: [], repaired: [], pending_repairs: [] };
+  }
+
+  // Record + remote rename (the central half of POST .../rename).
+  renameCalls: Array<{ fileId: string; newRemotePath: string }> = [];
+  async renameFile(nodeId: string, fileId: string, newFilename: string) {
+    if (nodeId !== NODE_ID) throw new CentralHttpError("not found", 404, "NOT_FOUND");
+    const entry = [...this.records.entries()].find(([, r]) => r.id === fileId);
+    if (!entry) throw new CentralHttpError("not found", 404, "NOT_FOUND");
+    const [oldRemotePath, r] = entry;
+    const newRemotePath = posix.join(posix.dirname(oldRemotePath), newFilename);
+    this.records.delete(oldRemotePath);
+    this.records.set(newRemotePath, { ...r, filename: newFilename });
+    const bytes = this.bytes.get(oldRemotePath);
+    if (bytes) {
+      this.bytes.delete(oldRemotePath);
+      this.bytes.set(newRemotePath, bytes);
+    }
+    this.renameCalls.push({ fileId, newRemotePath });
+    return {
+      file_id: fileId,
+      old_filename: r.filename,
+      new_filename: newFilename,
+      new_remote_path: newRemotePath,
+      status: "ok",
+    };
+  }
+
+  // Record + remote deletion (the central half of DELETE /nodes/:id/files/:fileId).
+  deleted: Array<{ fileId: string; remotePath: string }> = [];
+  // When set, central reports the remote delete as failed: 200 with
+  // status "repair_needed" and the record deliberately kept.
+  deleteRepairNeeded = false;
+  async deleteFileRecord(_nodeId: string, fileId: string) {
+    const entry = [...this.records.entries()].find(([, r]) => r.id === fileId);
+    if (!entry) throw new CentralHttpError("not found", 404, "NOT_FOUND");
+    if (this.deleteRepairNeeded) {
+      return {
+        file_id: fileId,
+        mode: "complete",
+        status: "repair_needed",
+        repair_hint: "Remote delete failed; DB row and local file kept intact.",
+      };
+    }
+    const [remotePath] = entry;
+    this.records.delete(remotePath);
+    this.bytes.delete(remotePath);
+    this.deleted.push({ fileId, remotePath });
+    return { file_id: fileId, mode: "complete", deleted_at: new Date().toISOString(), status: "ok" };
   }
 }
 
@@ -541,9 +623,456 @@ describe("POST /nodes/:id/files/:fileId/resolve (agent mode)", () => {
   });
 });
 
+describe("DELETE /nodes/:id/files/:fileId (agent mode, #254)", () => {
+  it("removes the record, the remote object, AND the local mirror copy", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const abs = join(mirrorRoot, "wip", "gone.md");
+    await writeFile(abs, "obsah");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    const fileId = synced1.adopted[0].file_id;
+    assert.ok(fake.bytes.has(posix.join(NODE_ROOT, "wip/gone.md")), "precondition: pushed to remote");
+
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+      method: "DELETE",
+    });
+    assert.equal(r.status, 200);
+    const body = (await r.json()) as { file_id: string; status: string };
+    assert.equal(body.file_id, fileId);
+    assert.equal(body.status, "ok");
+
+    assert.deepEqual(fake.deleted, [{ fileId, remotePath: posix.join(NODE_ROOT, "wip/gone.md") }]);
+    await assert.rejects(() => readFile(abs), "local mirror copy must be removed");
+  });
+
+  it("keeps the local copy and file_state when central answers repair_needed", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const abs = join(mirrorRoot, "wip", "kept.md");
+    await writeFile(abs, "obsah");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    const fileId = synced1.adopted[0].file_id;
+    await writeFile(abs, "unsynced local edit");
+
+    fake.deleteRepairNeeded = true;
+    try {
+      const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+        method: "DELETE",
+      });
+      assert.equal(r.status, 200);
+      const body = (await r.json()) as { status: string };
+      assert.equal(body.status, "repair_needed");
+    } finally {
+      fake.deleteRepairNeeded = false;
+    }
+    assert.equal(await readFile(abs, "utf8"), "unsynced local edit");
+    const st = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+    const s = (await st.json()) as { files: Array<{ local_path: string | null; sync_class: string }> };
+    // Fast status trusts the cached hash (no watcher in this harness), so
+    // only the record's survival is asserted here, not its classification.
+    assert.ok(
+      s.files.some((f) => f.local_path === abs),
+      "file_state / record still tracked",
+    );
+  });
+
+  it("rejects a delete without confirmed=true", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await writeFile(join(mirrorRoot, "wip", "keep.md"), "obsah");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    const fileId = synced1.adopted[0].file_id;
+
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}`, { method: "DELETE" });
+    assert.equal(r.status, 400);
+    assert.equal(fake.deleted.length, 0);
+    await readFile(join(mirrorRoot, "wip", "keep.md"), "utf8"); // still there
+  });
+
+  it("forwards to central's own delete when this device has no mirror for the node", async () => {
+    // No POST .../mirror first: findEntryByFileId cannot see the file, but
+    // the route is local-only for every node, so the record + remote half
+    // must still happen on central exactly as a non-agent-mode delete would.
+    const reg = await fake.registerFile(NODE_ID, "wip/remote-only.md");
+    fake.bytes.set(posix.join(NODE_ROOT, "wip/remote-only.md"), Buffer.from("obsah"));
+
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${reg.id}?confirmed=true`, {
+      method: "DELETE",
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(fake.deleted, [
+      { fileId: reg.id, remotePath: posix.join(NODE_ROOT, "wip/remote-only.md") },
+    ]);
+  });
+
+  it("404s when the file belongs to a different node than the URL (IDOR)", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await writeFile(join(mirrorRoot, "wip", "j.md"), "obsah");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    const fileId = synced1.adopted[0].file_id;
+
+    const OTHER_NODE_ID = "N0000000000000000000OTHER";
+    const r = await fetch(`${base}/nodes/${OTHER_NODE_ID}/files/${fileId}?confirmed=true`, {
+      method: "DELETE",
+    });
+    assert.equal(r.status, 404);
+    assert.equal(fake.deleted.length, 0);
+    await readFile(join(mirrorRoot, "wip", "j.md"), "utf8"); // still there
+  });
+});
+
+describe("POST /nodes/:id/files/:fileId/rename (agent mode)", () => {
+  it("renames the central record AND the local mirror copy, leaving the file clean", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const oldAbs = join(mirrorRoot, "wip", "before.md");
+    await writeFile(oldAbs, "obsah");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    const fileId = synced1.adopted[0].file_id;
+
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_filename: "after.md" }),
+    });
+    assert.equal(r.status, 200);
+    const body = (await r.json()) as { status: string; new_filename: string };
+    assert.equal(body.status, "ok");
+    assert.equal(body.new_filename, "after.md");
+    assert.deepEqual(fake.renameCalls, [{ fileId, newRemotePath: posix.join(NODE_ROOT, "wip/after.md") }]);
+    await assert.rejects(() => readFile(oldAbs), "old local name must be gone");
+    assert.equal(await readFile(join(mirrorRoot, "wip", "after.md"), "utf8"), "obsah");
+
+    const st = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+    const s = (await st.json()) as {
+      files: Array<{ local_path: string | null; sync_class: string }>;
+      untracked: unknown[];
+    };
+    assert.equal(s.untracked.length, 0, "no stray untracked copy under the old name");
+    const row = s.files.find((f) => f.local_path === join(mirrorRoot, "wip", "after.md"));
+    assert.ok(row, `renamed record resolves to the new local path: ${JSON.stringify(s)}`);
+    assert.equal(row.sync_class, "clean");
+  });
+
+  it("waits for a create's in-flight background push before renaming", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    let releasePush: (() => void) | undefined;
+    fake.putDelay = new Promise<void>((r) => {
+      releasePush = r;
+    });
+    const created = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "draft.md", content: "v1" }),
+    });
+    const { id: fileId } = (await created.json()) as { id: string };
+    let renameDone = false;
+    const ren = fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_filename: "final.md" }),
+    }).then((res) => {
+      renameDone = true;
+      return res;
+    });
+    await new Promise((res) => setTimeout(res, 100));
+    assert.equal(renameDone, false, "rename must wait for the in-flight push");
+    releasePush?.();
+    fake.putDelay = null;
+    const res = await ren;
+    assert.equal(res.status, 200);
+    assert.equal(fake.bytes.has(posix.join(NODE_ROOT, "wip/draft.md")), false, "no object left at the old path");
+    assert.equal(fake.bytes.get(posix.join(NODE_ROOT, "wip/final.md"))?.toString("utf8"), "v1");
+    assert.equal(await readFile(join(mirrorRoot, "wip", "final.md"), "utf8"), "v1");
+  });
+
+  it("forwards to central's own rename when this device has no mirror for the node", async () => {
+    const reg = await fake.registerFile(NODE_ID, "wip/remote-only.md");
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${reg.id}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_filename: "remote-renamed.md" }),
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(fake.renameCalls, [
+      { fileId: reg.id, newRemotePath: posix.join(NODE_ROOT, "wip/remote-renamed.md") },
+    ]);
+  });
+
+  it("rejects a filename with a path separator", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/F1/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_filename: "../escape.md" }),
+    });
+    assert.equal(r.status, 400);
+  });
+});
+
+describe("POST /nodes/:id/files (agent mode, #266)", () => {
+  it("writes the file into the mirror and registers it, without waiting for the background push", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+
+    let releasePush: (() => void) | undefined;
+    fake.putDelay = new Promise<void>((r) => {
+      releasePush = r;
+    });
+
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "new.md", content: "obsah" }),
+    });
+    assert.equal(r.status, 201);
+    const body = (await r.json()) as {
+      id: string;
+      filename: string;
+      status: string;
+      local_path: string | null;
+      relative_path: string | null;
+      mime_type: string | null;
+    };
+    assert.equal(body.filename, "new.md");
+    assert.equal(body.status, "wip");
+    assert.equal(body.local_path, join(mirrorRoot, "wip", "new.md"));
+    assert.equal(body.relative_path, "wip/new.md");
+
+    // The response already came back (fetch resolved above) even though
+    // fake.putDelay is still unresolved -- the background push has not
+    // reached putFileRaw's precondition/byte-store step yet.
+    assert.equal(
+      fake.bytes.has(posix.join(NODE_ROOT, "wip/new.md")),
+      false,
+      "the push must not have landed yet -- the response must not have waited for it",
+    );
+    // But the record already exists (record-only register, no Drive call).
+    assert.ok(fake.records.has(posix.join(NODE_ROOT, "wip/new.md")));
+    assert.equal(
+      await readFile(join(mirrorRoot, "wip", "new.md"), "utf8"),
+      "obsah",
+      "the file is already on disk",
+    );
+
+    releasePush?.();
+    // The background push is fire-and-forget from the handler's point of
+    // view; poll briefly for it to land.
+    for (let i = 0; i < 50; i += 1) {
+      if (fake.bytes.has(posix.join(NODE_ROOT, "wip/new.md"))) break;
+      await new Promise((res) => setTimeout(res, 10));
+    }
+    assert.equal(
+      fake.bytes.get(posix.join(NODE_ROOT, "wip/new.md"))?.toString("utf8"),
+      "obsah",
+      "the background push eventually lands",
+    );
+  });
+
+  it("a delete right after create waits for the background push instead of racing it", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    let releasePush: (() => void) | undefined;
+    fake.putDelay = new Promise<void>((r) => {
+      releasePush = r;
+    });
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "gone-fast.md", content: "v1" }),
+    });
+    assert.equal(r.status, 201);
+    const { id: fileId } = (await r.json()) as { id: string };
+    const remotePath = posix.join(NODE_ROOT, "wip/gone-fast.md");
+
+    // Delete while the upload is still blocked: it must not resolve before
+    // the push has landed, and the end state must be "deleted", not an
+    // orphaned remote object recreated by a late put.
+    let deleteDone = false;
+    const del = fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+      method: "DELETE",
+    }).then((res) => {
+      deleteDone = true;
+      return res;
+    });
+    await new Promise((res) => setTimeout(res, 100));
+    assert.equal(deleteDone, false, "delete must wait for the in-flight push");
+    releasePush?.();
+    fake.putDelay = null;
+    const res = await del;
+    assert.equal(res.status, 200);
+    assert.equal(fake.bytes.has(remotePath), false, "no orphaned remote object");
+    assert.equal(fake.records.has(remotePath), false, "record gone");
+    assert.ok(fake.deleted.some((d) => d.fileId === fileId));
+  });
+
+  it("an edit landing while the background push is in flight stays push, not clean", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    let releasePush: (() => void) | undefined;
+    fake.putDelay = new Promise<void>((r) => {
+      releasePush = r;
+    });
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "edited.md", content: "v1" }),
+    });
+    assert.equal(r.status, 201);
+    const abs = join(mirrorRoot, "wip", "edited.md");
+    // The push has read "v1" and is blocked on the upload; the editor saves
+    // over it in the meantime (different size + newer mtime).
+    await new Promise((res) => setTimeout(res, 20));
+    await writeFile(abs, "v2 -- edited while the background push was in flight");
+    releasePush?.();
+    fake.putDelay = null;
+    const deadline = Date.now() + 2000;
+    while (!fake.bytes.has(posix.join(NODE_ROOT, "wip/edited.md")) && Date.now() < deadline) {
+      await new Promise((res) => setTimeout(res, 20));
+    }
+    assert.equal(fake.bytes.get(posix.join(NODE_ROOT, "wip/edited.md"))?.toString("utf8"), "v1");
+
+    const st = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+    const s = (await st.json()) as { files: Array<{ local_path: string | null; sync_class: string }> };
+    const row = s.files.find((f) => f.local_path?.endsWith("/wip/edited.md"));
+    assert.ok(row, `record exists: ${JSON.stringify(s)}`);
+    assert.equal(row.sync_class, "push", "the mid-push edit must not be masked as clean");
+  });
+
+  it("routes section/subpath into the mirror layout", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "report.md", section: "outputs", subpath: "q3" }),
+    });
+    assert.equal(r.status, 201);
+    const body = (await r.json()) as { status: string; relative_path: string | null };
+    assert.equal(body.status, "output");
+    assert.equal(body.relative_path, "outputs/q3/report.md");
+    await readFile(join(mirrorRoot, "outputs", "q3", "report.md"), "utf8");
+    // Drain the background push before the test (and its afterEach, which
+    // tears down PORTUNI_WORKSPACE_ROOT) ends, so it doesn't run against a
+    // workspace root that's already been reset by the next test.
+    for (let i = 0; i < 50; i += 1) {
+      if (fake.bytes.has(posix.join(NODE_ROOT, "outputs/q3/report.md"))) break;
+      await new Promise((res) => setTimeout(res, 10));
+    }
+  });
+
+  it("409s when the file already exists in the mirror", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await mkdir(join(mirrorRoot, "wip"), { recursive: true });
+    await writeFile(join(mirrorRoot, "wip", "dup.md"), "already here");
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "dup.md" }),
+    });
+    assert.equal(r.status, 409);
+    assert.equal(await readFile(join(mirrorRoot, "wip", "dup.md"), "utf8"), "already here");
+  });
+
+  it("400s for an invalid filename", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "../escape.md" }),
+    });
+    assert.equal(r.status, 400);
+  });
+
+  it("falls back to central's mirror-less create when this device has no mirror for the node", async () => {
+    // No POST .../mirror first -- getMirrorPath resolves null.
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "remote-only.md", content: "central bytes" }),
+    });
+    assert.equal(r.status, 201);
+    const body = (await r.json()) as { local_path: string | null };
+    assert.equal(body.local_path, null);
+    // Central's own createFile ran synchronously (no mirror to defer to).
+    assert.equal(
+      fake.bytes.get(posix.join(NODE_ROOT, "wip/remote-only.md"))?.toString("utf8"),
+      "central bytes",
+    );
+  });
+});
+
 // Showtime handoff on the agent front door: mint against central's node
 // verdict, exchange answers with the local sidecar's MCP URL, the node name
 // from sync-info and this device's mirror.
+describe("agent-mode REST write gate (hardened posture)", () => {
+  let originalSecret: string | undefined;
+  before(() => {
+    originalSecret = process.env.PORTUNI_WEBVIEW_PROXY_SECRET;
+    process.env.PORTUNI_WEBVIEW_PROXY_SECRET = "test-webview-secret";
+  });
+  after(() => {
+    if (originalSecret === undefined) delete process.env.PORTUNI_WEBVIEW_PROXY_SECRET;
+    else process.env.PORTUNI_WEBVIEW_PROXY_SECRET = originalSecret;
+  });
+
+  it("refuses file lifecycle mutations without the webview-proxy marker, allows them with it", async () => {
+    const proven = { "X-Portuni-Webview-Proxy": "test-webview-secret" };
+    // Mirror create is gated too.
+    const bare = await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    assert.equal(bare.status, 403);
+    const ok = await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST", headers: proven });
+    assert.ok(ok.status === 201 || ok.status === 200);
+
+    const bareCreate = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "gated.md", content: "x" }),
+    });
+    assert.equal(bareCreate.status, 403);
+    const body = (await bareCreate.json()) as { error: string };
+    assert.equal(body.error, "write_refused");
+    const created = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...proven },
+      body: JSON.stringify({ filename: "gated.md", content: "x" }),
+    });
+    assert.equal(created.status, 201);
+    const { id: fileId } = (await created.json()) as { id: string };
+
+    const bareRename = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_filename: "nope.md" }),
+    });
+    assert.equal(bareRename.status, 403);
+    const bareResolve = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "keep_local" }),
+    });
+    assert.equal(bareResolve.status, 403);
+    const barePut = await fetch(`${base}/nodes/${NODE_ID}/file?path=wip/gated.md`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "y" }),
+    });
+    assert.equal(barePut.status, 403);
+    const bareSync = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    assert.equal(bareSync.status, 403);
+    const bareDelete = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+      method: "DELETE",
+    });
+    assert.equal(bareDelete.status, 403);
+    assert.equal(fake.deleted.length, 0);
+    // Reads stay open.
+    const status = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+    assert.equal(status.status, 200);
+    const provenDelete = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+      method: "DELETE",
+      headers: proven,
+    });
+    assert.equal(provenDelete.status, 200);
+  });
+});
+
 describe("agent router: /auth/handoff", () => {
   const post = (path: string, body: unknown, token?: string) =>
     fetch(`${base}${path}`, {

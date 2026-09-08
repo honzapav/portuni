@@ -114,11 +114,13 @@ List files across all nodes with optional filtering. Each row includes a
 **derived** `local_path` (from the current mirror + `remote_path` +
 `sync_key`); it is `null` when the node has no mirror on this device.
 
-`local_path` is the node's **real** mirror for the home node and its
-depth-1 neighbours (the seatbelt grants read on those real paths). For an
-ad-hoc in-scope node (deeper than depth-1) it is `null` — the files are
-not on disk; read their content with `portuni_read_file` (below). See
-[disk read scope](/concepts/scope-enforcement/).
+`local_path` is the node's **real** mirror for the home node. For any
+other in-scope node with a local mirror on this device — including a
+depth-1 neighbour — it is that node's session-local hardlink projection
+directory instead (preferred over the real mirror even for a depth-1
+neighbour, see [disk read scope](/concepts/scope-enforcement/)). A node
+with no local mirror on this device has `local_path: null` either way —
+read their content with `portuni_read_file` (below).
 
 Scope gating: with `node_id` the node must be in session scope (out of
 scope returns `scope_expansion_required`). Without `node_id` results are
@@ -162,14 +164,20 @@ its own mirror first and proxies the call to central when it has none.
 |-----------|------|----------|-------------|
 | `node_id` | string | yes | Node the file belongs to |
 | `path` | string | yes | File path within the node, e.g. `wip/notes.md` |
+| `as_path` | boolean | no | Return `{ path, bytes, mime }` (a disk path) instead of inline content, even under the 1 MB limit — useful for PDFs/binaries or when you'd rather Read/Grep the file natively. |
 
 Returns the file content as UTF-8 text, or `[binary file, N bytes, base64]`
-followed by base64 for non-text files. Scope-gated exactly like
-`portuni_get_node`: reading a node not yet in scope returns
+followed by base64 for non-text files, up to the 1 MB inline limit. A file
+over that limit — or any call with `as_path: true` — is instead **spilled to
+a disk path**: `{ path, bytes, mime }`, a location inside this session's disk
+projection (see [disk read scope](/concepts/scope-enforcement/)) that your
+own Read/Grep tools can use directly. There is no chunked-read parameter
+(`offset`/`length`) — read the returned path yourself. Scope-gated exactly
+like `portuni_get_node`: reading a node not yet in scope returns
 `scope_expansion_required` (call `portuni_expand_scope` first). Errors when
-the file does not exist, the file exceeds the 1 MB inline limit, the file is
-a native Google format (Doc/Sheet/Slides — no byte content), or the node has
-neither a mirror on this device nor a routed remote.
+the file does not exist, the file is a native Google format (Doc/Sheet/Slides
+— no byte content), or the node has neither a mirror on this device nor a
+routed remote.
 
 ## portuni_search_files
 
@@ -211,7 +219,9 @@ migrations, or whenever the user asks about sync state.
 
 Returns: classified buckets (`clean`, `push_candidates`, `pull_candidates`,
 `conflicts`, `remote_missing`, `remote_error`, `native`, `new_local`,
-`new_remote`, `deleted_local`, `deleted_remote`, `moved`).
+`new_remote`, `deleted_local`, `deleted_remote`). There is no `moved`
+bucket — an on-disk move is paired as it happens (see below), not
+reported as a scan finding.
 
 :::note[Deletions and moves propagate deterministically]
 - **`deleted_remote`** — an untracked disk copy whose record was removed
@@ -222,11 +232,15 @@ Returns: classified buckets (`clean`, `push_candidates`, `pull_candidates`,
   last synced state — and the next sync run removes the local copy instead
   of re-uploading it. A file **modified after** the delete fails the hash
   check and stays `new_local`; local data is never destroyed.
-- **On-disk `mv`** is paired by inode identity at watcher registration
-  time and applied through the real move (remote rename, Drive file ID
-  preserved) — one record, no duplicate. A cross-volume move (inode
-  changes) falls back to plain registration. The `moved` bucket is kept
-  for API compatibility and is always empty.
+- **On-disk `mv`** is paired by inode identity when the watcher (or a
+  backfill sweep) reconciles the path — applied through the real move
+  (remote rename, Drive file ID preserved), one record, no duplicate. A
+  cross-volume move (inode changes) falls back to plain registration. A
+  directory `mv` is paired the same way: the watcher only ever receives one
+  event for the moved directory itself (its unchanged children generate no
+  events of their own), so reconciling a path that turns out to be a
+  directory walks its file tree and pairs each file individually instead of
+  treating the directory event as a no-op.
 - **Deleting a never-pushed file on disk unregisters it** from Portuni
   entirely (it was metadata-only). Deleting a pushed file keeps the
   record and the remote copy (`deleted_local`) for an explicit decision —

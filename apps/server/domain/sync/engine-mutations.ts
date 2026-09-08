@@ -855,14 +855,20 @@ export async function deleteFile(
           "Remote delete failed; DB row and local file kept intact. Verify the remote is reachable / authorized, then retry portuni_delete_file.",
       };
     }
-    if (localPath) {
-      const { rm } = await import("node:fs/promises");
-      // Local rm is best-effort: the file is just a cached copy. If this
-      // fails after the remote already accepted the delete, the DB row is
-      // still removed below (the source of truth is the remote, which is
-      // gone). The user can manually rm the orphan local file.
-      await rm(localPath, { force: true }).catch(() => undefined);
-    }
+  }
+  // Local rm runs whenever there is a mirror copy to remove, independent of
+  // remoteName/remotePath (#254): a row registered while routing had not
+  // resolved (remote_name NULL) never had anything to delete remotely, but
+  // still has a local copy sitting in the mirror -- gating this on
+  // `remoteName && remotePath` left that copy on disk, where the watcher's
+  // backfill sweep re-registered it right after the DB row was removed.
+  // Best-effort: the file is just a cached copy. If this fails after the
+  // remote already accepted the delete above, the DB row is still removed
+  // below (the source of truth is the remote, which is gone). The user can
+  // manually rm the orphan local file.
+  if (mode === "complete" && localPath) {
+    const { rm } = await import("node:fs/promises");
+    await rm(localPath, { force: true }).catch(() => undefined);
   }
 
   await db.execute({ sql: "DELETE FROM files WHERE id = ?", args: [a.fileId] });

@@ -166,6 +166,10 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
     }
   }
 
+  // Stat BEFORE reading, so the cached (mtime, size) describes exactly the
+  // bytes pushed below -- an edit landing mid-push must invalidate the
+  // cache on the next scan instead of being masked as clean.
+  const fsInfo = await statForCache(mirroredAbs);
   const content = await readFile(mirroredAbs);
 
   // Remote path.
@@ -256,16 +260,26 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
     ],
   });
 
-  // Local sync.db file_state.
-  const fsInfo = await statForCache(mirroredAbs);
+  // Local sync.db file_state. Fast status trusts cached_local_hash outright,
+  // so the cache must describe the file as it is NOW: if it changed while
+  // the upload was in flight, rehash instead of caching the pushed hash --
+  // otherwise the mid-push edit would read as clean and never be pushed.
+  const after = await statForCache(mirroredAbs);
+  const changedMidPush =
+    after.mtime !== fsInfo.mtime || after.size !== fsInfo.size || after.ino !== fsInfo.ino;
+  const cachedLocalHash = changedMidPush
+    ? hash.length === 32
+      ? md5Buffer(await readFile(mirroredAbs))
+      : await sha256File(mirroredAbs)
+    : hash;
   await upsertFileState({
     file_id: fileId,
     last_synced_hash: hash,
-    cached_local_hash: hash,
-    cached_mtime: fsInfo.mtime,
-    cached_size: fsInfo.size,
-    cached_ino: fsInfo.ino,
-    cached_dev: fsInfo.dev,
+    cached_local_hash: cachedLocalHash,
+    cached_mtime: after.mtime,
+    cached_size: after.size,
+    cached_ino: after.ino,
+    cached_dev: after.dev,
   });
 
   return {
@@ -620,13 +634,6 @@ export interface NewRemoteEntry {
   hash: string | null;
 }
 
-export interface MoveProposal {
-  file_id: string;
-  old_local_path: string;
-  new_local_path: string;
-  hash: string;
-}
-
 // An untracked disk file whose record was deliberately deleted elsewhere
 // (matched against a delete tombstone -- see matchDeleteTombstones). The
 // sync run removes the local copy and the dangling file_state row instead
@@ -656,7 +663,6 @@ export interface StatusResult {
   new_remote: NewRemoteEntry[];
   deleted_local: StatusFileEntry[];
   deleted_remote: DeletedRemoteEntry[];
-  moved: MoveProposal[];
 }
 
 async function fileExistsAt(path: string): Promise<boolean> {
@@ -970,7 +976,6 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
     new_remote: [],
     deleted_local: [],
     deleted_remote: [],
-    moved: [],
   };
 
   // Select files to scan.
@@ -1079,12 +1084,14 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
     const m = await matchDeleteTombstones(db, a.userId, out.new_local);
     out.new_local = m.remaining;
     out.deleted_remote = m.deleted_remote;
-    // NOTE: on-disk move detection lives in reconcile.ts (tryApplyDiskMove),
-    // keyed on inode identity at watcher registration time. The old
-    // moveDetectionPhase here paired deleted_local x new_local -- but with
-    // the watcher running, a moved file's new path is registered before any
-    // scan sees it as new_local, so the phase was dead code. The `moved`
-    // bucket stays in StatusResult for API compatibility (always empty).
+    // NOTE: on-disk move detection lives in reconcile.ts (tryApplyDiskMove)
+    // and its directory-subtree counterpart, keyed on inode identity at
+    // watcher/backfill reconcile time -- never here. The old
+    // moveDetectionPhase here paired deleted_local x new_local, but with the
+    // watcher running a moved file's new path is registered (or paired)
+    // before any scan sees it as new_local, so the phase was dead code; the
+    // always-empty `moved` StatusResult field it fed was removed with it
+    // (#253) rather than kept as a field nothing ever populates.
   }
 
   return out;

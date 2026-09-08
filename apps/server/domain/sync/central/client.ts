@@ -40,6 +40,22 @@ export interface CentralClient {
   syncInfoBatch(nodeIds: string[]): Promise<NodeSyncInfo[]>;
   registerFile(nodeId: string, relPath: string): Promise<RegisterFileRecordResult>;
   registerFiles(nodeId: string, relPaths: string[]): Promise<RegisterFileRecordResult[]>;
+  // Mirror-less create (POST /nodes/:id/files), adapter-direct on the
+  // central server -- used only when THIS device has no mirror for the
+  // node (#266); a device with a mirror creates locally instead (writes
+  // the file into the mirror, registers record-only, pushes in the
+  // background) rather than routing through this call.
+  createFile(
+    nodeId: string,
+    args: { filename: string; section?: string; subpath?: string | null; content?: string },
+  ): Promise<{
+    id: string;
+    filename: string;
+    status: string;
+    local_path: string | null;
+    relative_path: string | null;
+    mime_type: string | null;
+  }>;
   getFileRaw(
     nodeId: string,
     relPath: string,
@@ -50,6 +66,10 @@ export interface CentralClient {
     bytes: Buffer,
     opts?: PutFileOpts,
   ): Promise<{ version: string; canonicalHash: string }>;
+  // Record+remote rename on central (POST /nodes/:id/files/:id/rename):
+  // basename swap in place. The caller owns the local disk side (the agent
+  // router renames the device copy after central confirms).
+  renameFile(nodeId: string, fileId: string, newFilename: string): Promise<Record<string, unknown>>;
   // Record+remote move on central (POST /nodes/:id/files/:id/move). The
   // caller owns the local disk side; central's own local step no-ops.
   moveFileRecord(
@@ -236,6 +256,21 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       return (r.json as { files: RegisterFileRecordResult[] }).files;
     },
 
+    async createFile(nodeId, args) {
+      const p = `/nodes/${encodeURIComponent(nodeId)}/files`;
+      const r = await request("POST", p, args);
+      invalidate(nodeId);
+      if (r.status !== 201) throwFor(r.status, p, r.json);
+      return r.json as {
+        id: string;
+        filename: string;
+        status: string;
+        local_path: string | null;
+        relative_path: string | null;
+        mime_type: string | null;
+      };
+    },
+
     async getFileRaw(nodeId, relPath) {
       const p = `/nodes/${encodeURIComponent(nodeId)}/file?path=${encodeURIComponent(relPath)}&encoding=base64`;
       const r = await request("GET", p);
@@ -261,6 +296,14 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       if (r.status !== 200) throwFor(r.status, p, r.json);
       const j = r.json as { version: string; canonical_hash: string };
       return { version: j.version, canonicalHash: j.canonical_hash };
+    },
+
+    async renameFile(nodeId, fileId, newFilename) {
+      const p = `/nodes/${encodeURIComponent(nodeId)}/files/${encodeURIComponent(fileId)}/rename`;
+      const r = await request("POST", p, { new_filename: newFilename });
+      invalidate(nodeId);
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      return r.json as Record<string, unknown>;
     },
 
     async moveFileRecord(nodeId, fileId, body) {

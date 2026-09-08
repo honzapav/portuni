@@ -5,10 +5,11 @@ import { constants } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
-import { storeFile, deleteFile } from "../apps/server/domain/sync/engine.js";
+import { storeFile, deleteFile, registerLocalFile } from "../apps/server/domain/sync/engine.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
 import { resetLocalDbForTests, getFileState } from "../apps/server/domain/sync/local-db.js";
+import { replaceRules } from "../apps/server/domain/sync/routing.js";
 
 let workspace: string;
 let originalEnv: string | undefined;
@@ -68,6 +69,40 @@ describe("deleteFile", () => {
     const rr = await db.execute({ sql: "SELECT id FROM files WHERE id = ?", args: [file_id] });
     assert.equal(rr.rows.length, 0);
     assert.equal(await getFileState(file_id), null);
+  });
+
+  it("complete mode removes the local copy for a row with no routed remote (#254)", async () => {
+    // registerLocalFile always computes remote_path deterministically from
+    // node identity, but remote_name stays null while routing does not
+    // resolve (#201) -- exactly the row shape that used to skip the local
+    // rm entirely, since it was gated on remoteName && remotePath together.
+    const { db, nodeId } = await makeSharedDb();
+    await replaceRules(db, []);
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(join(mirrorRoot, "wip"), { recursive: true });
+    const src = join(mirrorRoot, "wip", "no-route.txt");
+    await writeFile(src, "no route");
+    const reg = await registerLocalFile(db, { userId: "U1", nodeId, localPath: src });
+
+    const row = await db.execute({
+      sql: "SELECT remote_name, remote_path FROM files WHERE id = ?",
+      args: [reg.file_id],
+    });
+    assert.equal(row.rows[0].remote_name, null, "precondition: routing unresolved");
+    assert.ok(row.rows[0].remote_path, "precondition: remote_path still computed");
+
+    await deleteFile(db, {
+      userId: "U1",
+      fileId: reg.file_id,
+      mode: "complete",
+      confirmed: true,
+    });
+    assert.equal(await exists(src), false, "local copy must be removed");
+    const rr = await db.execute({ sql: "SELECT id FROM files WHERE id = ?", args: [reg.file_id] });
+    assert.equal(rr.rows.length, 0);
+    assert.equal(await getFileState(reg.file_id), null);
   });
 
   it("unregister_only keeps local + remote", async () => {

@@ -195,6 +195,103 @@ symlink to this file.
   or the equivalent `portuni_store`/`portuni_pull` calls. Model:
   `docs/archive/specs/2026-06-28-deterministic-file-state-design.md`,
   `docs/superpowers/specs/2026-08-28-deterministic-file-reconciliation-design.md`.
+  **A directory `mv` is walked, not no-op'd (#253).** `fs.watch` fires
+  exactly one event for a directory that was created or moved into place —
+  never a separate event per (unchanged) child — so a single-file `mv`'s
+  inode pairing (`reconcile.ts`'s `tryApplyDiskMove` /
+  `tryApplyDiskMoveCentral`, matched by `file_state.cached_ino/cached_dev`)
+  never used to run for a directory `mv` at all: `reconcilePath`/
+  `reconcilePathCentral` treated any directory path as a flat no-op. Both
+  now recurse into a directory that exists on disk (`reconcileDirectory` /
+  `reconcileDirectoryCentral`) and reconcile every file inside at its own
+  current path, so each one gets paired exactly as if it had fired its own
+  mv event. The backfill sweeps (`dbBackfillMirror`,
+  `centralBackfillMirror` in `apps/server/desktop.ts`) are the catch-up path
+  for a `mv` that happened while nothing was watching (server down, or a
+  missed directory event) — both are now routed through
+  `reconcilePath`/`reconcilePathCentral` per untracked file instead of a raw
+  batch register, so the same pairing applies there too instead of always
+  producing a fresh duplicate record. `StatusResult.moved` (a bucket nothing
+  ever populated, by design — pairing happens at reconcile time, not scan
+  time) was removed rather than kept as a permanently-empty field. The
+  watcher's projection relink (`relinkProjectedFile`) walks a directory
+  event the same way (`relinkTree`), so a moved subtree shows up in every
+  live session projection too. A push (`storeFile`/`storeFileCentral`)
+  stats the file before reading the bytes it uploads and re-stats after;
+  if the identity moved mid-upload it caches the CURRENT content hash, not
+  the pushed one — fast status trusts `cached_local_hash` outright, so an
+  edit landing during the background push after create must read as `push`.
+  **Deleting a file removes the local mirror copy too, in every data mode
+  (#254).** `deleteFile`'s local `rm` used to be nested inside the
+  `remoteName && remotePath` gate that guards the remote-object delete, so a
+  row registered while routing had not resolved (`remote_name` NULL, but
+  `remote_path` is always computed regardless — #201) skipped the local
+  delete entirely: the DB row and `file_state` vanished but the file
+  survived on disk, and the next backfill sweep re-registered it. The local
+  `rm` now runs whenever `mode === "complete"` and a local path resolved,
+  independent of whether there was anything to delete remotely. Central/
+  agent mode had the same gap for a completely different reason: the file
+  lifecycle (`POST /nodes/:id/files`, rename, delete) is adapter-direct on
+  the central server by design (it has no device mirror to clean up), so
+  `DELETE /nodes/:id/files/:fileId` deleted the record + remote object with
+  no local step and no `deleteFileState` call at all. `is_local_only_path`
+  (`apps/desktop/src/lib.rs`) now routes that sub-path (single segment
+  after `files/`) to the local sync agent instead of straight to
+  central; `agent-router.ts`'s new handler calls the same
+  `CentralClient.deleteFileRecord` a non-agent-mode delete would hit for the
+  record + remote half, then runs the local `rm` + `deleteFileState` itself
+  afterward — the same shape as the GH #78 fix already gave the MCP
+  `portuni_delete_file`/`portuni_move_file` tools
+  (`agent-tools.ts`'s `isProxiedDiskMutation`/`applyLocalAfterProxiedMutation`),
+  just for the REST path the web UI's "Smazat" button actually uses. The
+  `/files` POST routing gap is the same class of bug but belongs to #266,
+  not this fix. **`POST /files/:fileId/resolve` had the identical gap
+  (#264)**: `agent-router.ts` already resolved conflicts correctly against
+  the device's own mirror (`findEntryByFileId` +
+  `storeFileCentral`/`pullFileCentral`), but `is_local_only_path` never
+  routed the desktop UI's REST call there — it went straight to central,
+  which has no mirror at all (409 `keep_local`, 500 `take_remote`/
+  `restore`). Fixed the same way as the delete route: one more sub-path
+  match (`files/<fileId>/resolve`, alongside the existing bare
+  `files/<fileId>` for delete); `files/<fileId>/rename` followed for the
+  same reason (see the #266 paragraph).
+  **`POST /nodes/:id/files` (create) got the same routing fix, for a
+  different reason (#266).** Central's own create is adapter-direct — it
+  does the Drive `PUT` before answering — so a device with a mirror never
+  got a sync baseline for the new file before the editor's own local-only
+  save landed; the watcher then classified it a permanent conflict (local
+  hash, no `last_synced_hash`, remote hash `md5("")`) instead of an
+  ordinary unpushed file — `classifyRecord`'s "no baseline → conflict" rule
+  is correct given those inputs, the inputs were just wrong. `is_local_only_path`
+  now routes `POST /nodes/:id/files` (bare, `sub == "files"`) to the
+  sidecar unconditionally; `agent-router.ts`'s handler itself decides per
+  node: with a mirror, it writes the file into the mirror and calls
+  `registerLocalFileCentral` (record-only, no Drive call) so the response
+  comes back **without waiting on the Drive upload** — the addendum on the
+  issue was explicit that this must stay instant, since central's own
+  ~2s-to-answer create was itself part of the UX problem — then fires
+  `storeFileCentral` in the background (not awaited; a failure is logged,
+  not surfaced, same as any other watcher-adjacent best-effort push). Until
+  that lands the row reads as an ordinary `push` classification (registered,
+  `current_remote_hash` null, local hash cached), then `clean` once the
+  background push's `upsertFileState` writes `last_synced_hash` — exactly
+  the same lifecycle a file created directly in the mirror already has.
+  That upload is tracked per mirror path (`pendingPushes`); a delete or
+  resolve on the same file awaits it (`awaitPendingPush`) so the
+  `adapter.put` cannot land after the record is gone and resurrect the
+  remote object. `POST /nodes/:id/files/:fileId/rename` is routed to the
+  sync agent too: central keeps the record + remote step
+  (`CentralClient.renameFile`), the handler waits for a pending upload on
+  that path, then renames the device's mirror copy and refreshes its hash
+  cache — forwarding straight to central used to leave the local file
+  under its old name (missing locally + a new untracked file on the next
+  scan).
+  Without a mirror on this device, the handler falls back to a new
+  `CentralClient.createFile` method wrapping the same `POST
+  /nodes/:id/files` central already serves (mirror-less, adapter-direct) —
+  central is reached this way, not by the desktop proxy, since the route is
+  now local-only for every node regardless of whether THIS device happens
+  to mirror it.
 - **Drive sync has two auth paths sharing one adapter.** Desktop local
   workspaces connect via per-user OAuth: Settings → Synchronizace →
   `google_drive_connect` (`apps/desktop/src/auth.rs`, PKCE loopback) hands the
@@ -592,7 +689,14 @@ symlink to this file.
   env-mode REST write allowed, unchanged. The packaged desktop app's Tauri
   host always sets this itself (fresh per launch, never on disk, never
   exported into a spawned terminal) — the hardened posture is always on
-  there. Doesn't affect MCP tool calls either way — those keep `env`'s
+  there. The central-mode sync agent (`api/agent-router.ts`) applies the
+  same posture through `guardAgentRestWrite` on every mutating REST route
+  it serves (file create/delete/resolve, `PUT /nodes/:id/file`, sync run,
+  mirror create): it has no graph db or session table to resolve a spawn
+  id against, so a proven `X-Portuni-Webview-Proxy` header is the only
+  accepted proof once the secret is set — a spawned terminal mutates
+  through the MCP tools, which central write-gates. Doesn't affect MCP
+  tool calls either way — those keep `env`'s
   existing unscoped-write behavior, out of scope for this gate. See
   `docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md` and
   the scope-enforcement docs page.
@@ -686,6 +790,65 @@ symlink to this file.
   covered by tests, that live check is not. Model:
   `docs/architecture/scope-disk-projection.md`; plan:
   `docs/superpowers/plans/2026-07-06-scope-real-paths.md`.
+  **Seed/grant skew and central-mode projection (#252).** `readableMirrorRoot`
+  used to trust `scope.isSeed()` outright and return the real depth-1 mirror
+  path -- but that in-memory seed set is recomputed at MCP *connect* (after
+  the Seatbelt profile is already frozen at spawn), so a mirror registered or
+  an edge created in that gap could make a node look seed-granted without the
+  kernel ever having granted its real path. `DiskProjector.projectNode` now
+  hardlinks EVERY non-home in-scope node, seed or ad-hoc (only the home node
+  is skipped, reason `seed_granted`), and `readableMirrorRoot` prefers that
+  projection over the real mirror for a seed node too (falling back to the
+  real path only when nothing was projected yet) -- cost is a hardlink, nil.
+  `projectNode` returns a `ProjectOutcome` (`{kind:"projected",dir,files}` or
+  `{kind:"not_projected",reason}`, reasons `seed_granted | no_mirror |
+  out_of_scope | no_projection_root | central`) instead of a bare nullable object; every
+  caller (`get-node.ts`, `context.ts`, `files.ts`'s `list_files`,
+  `expand_scope`) unwraps it, and `expand_scope` surfaces the reason map as
+  `not_projected` alongside `projected`. **Central/agent mode now projects
+  too**: `agent-transport.ts` builds its own tiny `ProjectorScope` per local
+  MCP session (home node id from `?home_node_id=`, `has` always true since
+  central's own `guardNodeRead` already ran, `projectionSessionId` the spawn
+  id relayed in `X-Portuni-Spawn-Id` -- the same header `transport.ts` reads
+  in local mode; both accept it only as a well-formed ULID
+  (`spawnSessionIdFromHeader`), since the value becomes a path segment that
+  is `rm -rf`'d on close, and `sessionProjectionDir`/`nodeProjectionDir`
+  refuse any non-single-segment key outright -- or `_shared` when the CLI
+  cannot relay one; NEVER the
+  transport's own random MCP session id, since the Seatbelt profile was
+  frozen at spawn around exactly `<projectionRoot>/<spawn id>/` and
+  `_shared/`, so any other key would be a directory the kernel never granted)
+  and a real `DiskProjector` over it: `portuni_expand_scope`'s
+  `projected`/`not_projected` are overlaid with this device's own result
+  (central's own is structurally useless, no device filesystem), and
+  `enrichGetNodeResult`/`enrichGetContextResult` (`agent-tools.ts`) fill
+  `readable_path`/`local_path` the same way for ANY node with a local mirror
+  here, not just the depth-1 seed set (`files[].local_path` is derived under
+  that same readable root, and `get_context`'s wire shape is the flat
+  `[root, ...connected]` array, not `{root, connected}`). Cleanup rides on the local transport's
+  own `onclose` (`disposeAgentProjection`): a projection directory is
+  removed only once no other live session in this process's session map
+  keys off the same id under the same home node — true for `_shared`, and
+  for a spawn id too, since a CLI reconnect inside one terminal carries the
+  same `X-Portuni-Spawn-Id` (the device has no durable `sessions` table to
+  consult the way `disposeSessionProjection` does). The projection registry
+  (`session-projection.ts`) is keyed by target directory, not session id:
+  two `_shared` sessions under different home roots projecting the same
+  node are two live projections, and both keep receiving watcher relinks. **`portuni_get_node` gained
+  `readable_path`** (the same value as `local_path`'s per-file derivation,
+  promoted to the top level) -- `local_mirror` stays registration metadata,
+  not a read path. **`portuni_read_file` gained `as_path`**: past the 1 MB
+  cap (`MAX_READ_BYTES`, unchanged and still enforced) or on request, it
+  spills to a path inside the session's projection directory instead of
+  inline content -- `{path, bytes, mime}` (`mcp/read-file-spill.ts`; the
+  spill path is validated with `ensureUnderRoot` like the inline read, so a
+  traversal `path` is `not_found`, never a stat of a host file) -- no
+  chunked-read (`offset`/`length`) parameter, since there is no server-side
+  grep and the agent would just page blindly through a large file; read the
+  path with your own Read/Grep instead. A node WITH a local mirror here
+  reuses the same hardlink projection (no copy); one with none downloads the
+  bytes once (`CentralClient.getFileRaw` over REST in agent mode, since that
+  front door has no graph db) and writes a real copy into the same directory.
 
 - **No automatic first prompt on spawn.** A terminal opened from a node
   detail (`buildAgentCommand`, `apps/web/src/lib/prompt.ts`) starts empty

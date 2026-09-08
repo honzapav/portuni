@@ -69,7 +69,7 @@ describe("readableMirrorRoot", () => {
     assert.equal(p, "/h");
   });
 
-  it("returns the real mirror for a seed-set (depth-1) node", () => {
+  it("falls back to the real mirror for a seed-set (depth-1) node with no projection yet", () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.addSeed("NEIGHBOR");
@@ -80,6 +80,20 @@ describe("readableMirrorRoot", () => {
       realMirror: "/real/neighbor",
     });
     assert.equal(p, "/real/neighbor");
+  });
+
+  it("prefers the projection dir over the real mirror for a seed-set (depth-1) node once projected (#252)", () => {
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = "HOME";
+    scope.addSeed("NEIGHBOR");
+    const p = readableMirrorRoot({
+      scope,
+      nodeId: "NEIGHBOR",
+      homeMirror: "/h",
+      realMirror: "/real/neighbor",
+      projectionDir: "/proj/sess/NEIGHBOR",
+    });
+    assert.equal(p, "/proj/sess/NEIGHBOR");
   });
 
   it("returns the projection dir for a non-seed in-scope (ad-hoc) node when one is given", () => {
@@ -123,7 +137,7 @@ describe("readableMirrorRoot", () => {
 });
 
 describe("createDiskProjector", () => {
-  it("returns null for the home node", async () => {
+  it("does not project the home node -- it is already real-mirror readable", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.sessionId = "SESS";
@@ -133,10 +147,18 @@ describe("createDiskProjector", () => {
       scope,
       resolveMirror: fakeResolver({ HOME: home }),
     });
-    assert.equal(await projector.projectNode("HOME"), null);
+    assert.deepEqual(await projector.projectNode("HOME"), {
+      kind: "not_projected",
+      reason: "seed_granted",
+    });
   });
 
-  it("returns null for a seed node", async () => {
+  // #252: a seed (depth-1) node is now ALSO projected, not just ad-hoc ones --
+  // the projection directory is unconditionally granted by the Seatbelt
+  // profile, while the depth-1 real-mirror grant is frozen at spawn and can
+  // skew from the in-memory seed set recomputed at connect.
+  it("projects a seed node too, not only ad-hoc ones (#252)", async () => {
+    await writeFile(join(neighbor, "wip", "method.md"), "hello\n");
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.sessionId = "SESS";
@@ -147,10 +169,15 @@ describe("createDiskProjector", () => {
       scope,
       resolveMirror: fakeResolver({ NEIGHBOR: neighbor }),
     });
-    assert.equal(await projector.projectNode("NEIGHBOR"), null);
+    const result = await projector.projectNode("NEIGHBOR");
+    assert.equal(result.kind, "projected");
+    assert.equal(
+      await readFile(join((result as { dir: string }).dir, "wip", "method.md"), "utf8"),
+      "hello\n",
+    );
   });
 
-  it("returns null for a node outside scope", async () => {
+  it("returns not_projected/out_of_scope for a node outside scope", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.sessionId = "SESS";
@@ -160,10 +187,13 @@ describe("createDiskProjector", () => {
       scope,
       resolveMirror: fakeResolver({ NEIGHBOR: neighbor }),
     });
-    assert.equal(await projector.projectNode("NEIGHBOR"), null);
+    assert.deepEqual(await projector.projectNode("NEIGHBOR"), {
+      kind: "not_projected",
+      reason: "out_of_scope",
+    });
   });
 
-  it("returns null when the scope was never bound to a projection directory (no createMcpServer)", async () => {
+  it("returns not_projected/no_projection_root when the scope was never bound to a projection directory (no createMcpServer)", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.add("ADHOC");
@@ -172,7 +202,24 @@ describe("createDiskProjector", () => {
       scope,
       resolveMirror: fakeResolver({ ADHOC: neighbor }),
     });
-    assert.equal(await projector.projectNode("ADHOC"), null);
+    assert.deepEqual(await projector.projectNode("ADHOC"), {
+      kind: "not_projected",
+      reason: "no_projection_root",
+    });
+  });
+
+  it("returns not_projected/central when the scope has no home node at all (connector session)", async () => {
+    const scope = new SessionScope("interactive_task");
+    scope.add("ADHOC");
+    const projector = createDiskProjector({
+      userId: "u",
+      scope,
+      resolveMirror: fakeResolver({ ADHOC: neighbor }),
+    });
+    assert.deepEqual(await projector.projectNode("ADHOC"), {
+      kind: "not_projected",
+      reason: "central",
+    });
   });
 
   // #211: a CLI whose config format cannot relay the spawn-minted session id
@@ -195,13 +242,14 @@ describe("createDiskProjector", () => {
     });
 
     const result = await projector.projectNode("ADHOC");
-    assert.ok(result);
-    assert.equal(result.dir, join(dir, ".portuni-sessions", "HOME", UNNARROWED_PROJECTION_ID, "ADHOC"));
-    const linked = await readFile(join(result.dir, "wip", "method.md"), "utf8");
+    assert.equal(result.kind, "projected");
+    const dirPath = (result as { dir: string }).dir;
+    assert.equal(dirPath, join(dir, ".portuni-sessions", "HOME", UNNARROWED_PROJECTION_ID, "ADHOC"));
+    const linked = await readFile(join(dirPath, "wip", "method.md"), "utf8");
     assert.equal(linked, "hello\n");
   });
 
-  it("returns null when the ad-hoc node has no local mirror on this device", async () => {
+  it("returns not_projected/no_mirror when the ad-hoc node has no local mirror on this device", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.sessionId = "SESS";
@@ -212,7 +260,10 @@ describe("createDiskProjector", () => {
       scope,
       resolveMirror: fakeResolver({}), // ADHOC has no mirror
     });
-    assert.equal(await projector.projectNode("ADHOC"), null);
+    assert.deepEqual(await projector.projectNode("ADHOC"), {
+      kind: "not_projected",
+      reason: "no_mirror",
+    });
   });
 
   it("hardlinks the ad-hoc node's mirror files into the session projection dir", async () => {
@@ -235,21 +286,22 @@ describe("createDiskProjector", () => {
     });
 
     const result = await projector.projectNode("ADHOC");
-    assert.ok(result);
-    assert.equal(result.files, 2);
-    assert.equal(result.dir, join(dir, ".portuni-sessions", "HOME", "SESS", "ADHOC"));
+    assert.equal(result.kind, "projected");
+    const { dir: resultDir, files } = result as { dir: string; files: number };
+    assert.equal(files, 2);
+    assert.equal(resultDir, join(dir, ".portuni-sessions", "HOME", "SESS", "ADHOC"));
 
-    const linked = await readFile(join(result.dir, "wip", "method.md"), "utf8");
+    const linked = await readFile(join(resultDir, "wip", "method.md"), "utf8");
     assert.equal(linked, "hello\n");
-    const linkedOut = await readFile(join(result.dir, "outputs", "report.md"), "utf8");
+    const linkedOut = await readFile(join(resultDir, "outputs", "report.md"), "utf8");
     assert.equal(linkedOut, "world\n");
 
     // Genuine hardlink: same inode as the source.
     const srcStat = await stat(join(neighbor, "wip", "method.md"));
-    const dstStat = await stat(join(result.dir, "wip", "method.md"));
+    const dstStat = await stat(join(resultDir, "wip", "method.md"));
     assert.equal(srcStat.ino, dstStat.ino);
 
-    await assert.rejects(() => stat(join(result.dir, "wip", ".obsidian", "workspace.json")));
+    await assert.rejects(() => stat(join(resultDir, "wip", ".obsidian", "workspace.json")));
   });
 
   it("is idempotent: re-projecting an already-linked node is a no-op, not an error", async () => {
@@ -267,8 +319,8 @@ describe("createDiskProjector", () => {
 
     const first = await projector.projectNode("ADHOC");
     const second = await projector.projectNode("ADHOC");
-    assert.equal(first?.files, 1);
-    assert.equal(second?.files, 1);
+    assert.equal(first.kind === "projected" && first.files, 1);
+    assert.equal(second.kind === "projected" && second.files, 1);
   });
 
   it("dedups concurrent calls for the same node", async () => {
@@ -323,10 +375,11 @@ describe("disposeSessionProjection", () => {
       resolveMirror: fakeResolver({ ADHOC: neighbor }),
     });
     const result = await projector.projectNode("ADHOC");
-    assert.ok(result);
+    assert.equal(result.kind, "projected");
+    const resultDir = (result as { dir: string }).dir;
 
     await disposeSessionProjection(scope, "u", db);
-    await assert.rejects(() => stat(result.dir));
+    await assert.rejects(() => stat(resultDir));
   });
 
   // #211: the shared bucket may still be in use by another concurrent
@@ -347,10 +400,11 @@ describe("disposeSessionProjection", () => {
       resolveMirror: fakeResolver({ ADHOC: neighbor }),
     });
     const result = await projector.projectNode("ADHOC");
-    assert.ok(result);
+    assert.equal(result.kind, "projected");
+    const resultDir = (result as { dir: string }).dir;
 
     await disposeSessionProjection(scope, "u", db);
-    const linked = await readFile(join(result.dir, "wip", "method.md"), "utf8");
+    const linked = await readFile(join(resultDir, "wip", "method.md"), "utf8");
     assert.equal(linked, "hello\n");
   });
 
@@ -375,7 +429,7 @@ describe("disposeSessionProjection", () => {
       resolveMirror: fakeResolver({ ADHOC: neighbor }),
     });
     const result = await projector.projectNode("ADHOC");
-    assert.ok(result);
+    assert.equal(result.kind, "projected");
 
     await disposeSessionProjection(scope, "u", db);
     await assert.rejects(() => stat(join(dir, ".portuni-sessions", HOME_NODE_ID, UNNARROWED_PROJECTION_ID)));
