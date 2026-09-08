@@ -713,17 +713,41 @@ export async function applyLocalAfterProxiedMutation(
       nodeRoot: targetNodeRoot,
       remotePath: newRemotePath,
     });
-    let localDone = false;
-    if (oldLocal && newLocal && oldLocal !== newLocal) {
-      localDone = await renameLocalBestEffort(oldLocal, newLocal);
-      if (localDone) await localHashFor(newLocal, snapshot.fileId, null).catch(() => null);
-    }
-    client.invalidateSyncInfo(snapshot.nodeId);
-    if (targetNodeId !== snapshot.nodeId) client.invalidateSyncInfo(targetNodeId);
     const detail =
       parsed.detail && typeof parsed.detail === "object"
         ? (parsed.detail as Record<string, unknown>)
         : {};
+    // #279 finding 13: central already committed the record + remote move
+    // (the `parsed.status !== "ok"` gate above already returned). A local
+    // rename failure here (permission error, destination collision -- ENOENT
+    // is handled inside renameLocalBestEffort as "nothing to do") must not
+    // be swallowed into central's unmodified "ok" by the caller's outer
+    // catch -- that told the agent the move fully succeeded while the
+    // device's own mirror copy was actually stranded at the old path. Caught
+    // here and rewritten into the same repair_needed shape the REST move
+    // handler (agent-router.ts) already reports for this exact scenario.
+    let localDone = false;
+    let localError: string | null = null;
+    if (oldLocal && newLocal && oldLocal !== newLocal) {
+      try {
+        localDone = await renameLocalBestEffort(oldLocal, newLocal);
+        if (localDone) await localHashFor(newLocal, snapshot.fileId, null).catch(() => null);
+      } catch (e) {
+        localError = e instanceof Error ? e.message : String(e);
+      }
+    }
+    client.invalidateSyncInfo(snapshot.nodeId);
+    if (targetNodeId !== snapshot.nodeId) client.invalidateSyncInfo(targetNodeId);
+    if (localError !== null) {
+      return JSON.stringify({
+        ...parsed,
+        status: "repair_needed",
+        new_local_path: null,
+        detail: { ...detail, local_done: false, local_error: localError },
+        repair_hint:
+          "Remote already moved; the local copy could not be relocated. Move or copy it manually, or run portuni_pull to re-download.",
+      });
+    }
     return JSON.stringify({
       ...parsed,
       new_local_path: newLocal,
@@ -733,6 +757,7 @@ export async function applyLocalAfterProxiedMutation(
 
   if (snapshot.tool === "portuni_rename_folder") {
     if (parsed.type !== "applied" || !Array.isArray(parsed.files)) return null;
+    let anyLocalError = false;
     for (const f of parsed.files as Array<Record<string, unknown>>) {
       if (f.status !== "ok") continue;
       const oldLocal = deriveOrNull({
@@ -746,10 +771,26 @@ export async function applyLocalAfterProxiedMutation(
         remotePath: f.new_remote_path as string,
       });
       if (oldLocal && newLocal && oldLocal !== newLocal) {
-        await renameLocalBestEffort(oldLocal, newLocal);
+        // Per-file, like the move branch above: central already committed
+        // this file's remote rename, so a local failure here downgrades
+        // just this entry to repair_needed instead of throwing and losing
+        // the whole batch's outcome to the caller's outer swallow-to-null.
+        try {
+          await renameLocalBestEffort(oldLocal, newLocal);
+        } catch (e) {
+          f.status = "repair_needed";
+          f.error = e instanceof Error ? e.message : String(e);
+          anyLocalError = true;
+        }
       }
     }
     client.invalidateSyncInfo(snapshot.nodeId);
+    if (!anyLocalError) return null;
+    const renamed = (parsed.files as Array<Record<string, unknown>>).filter(
+      (f) => f.status === "ok",
+    ).length;
+    const failed = (parsed.files as Array<Record<string, unknown>>).length - renamed;
+    return JSON.stringify({ ...parsed, renamed, failed });
   }
   return null;
 }

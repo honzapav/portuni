@@ -1268,6 +1268,80 @@ symlink to this file.
   destination may be a completely different node's mirror (or none at all
   on this device, in which case it reports `repair_needed` with a hint
   instead of silently stranding the old copy with no signal).
+- **`renameFileRemote` is durable and destination-safe; a local after-step
+  failure always surfaces as `repair_needed`, never a raw 500 or a silently
+  swallowed success; a confirmed delete retry after the response was lost
+  reports success instead of a false failure (#279).** Three related gaps
+  from a second-opinion audit, one fix shape each:
+  - **`renameFileRemote`** (the mirror-less central-adapter-direct
+    single-file rename) called `adapter.rename` unconditionally with no
+    destination check and no `pending_file_ops` entry at all -- unlike
+    `renameFile`/`moveFile`/`deleteFileRemote`, which already had both. It
+    now goes through the same `relocateRemoteObject`/`writeRelocatedRecord`
+    helpers and enqueues/completes a `"move"`-shaped pending op exactly like
+    `renameFile` does, wrapped in `withPathLock` (#277) keyed by
+    `remote_name:remote_path`. Fixing this surfaced a latent bug in
+    `relocateRemoteObject` itself, shared by every caller (`moveFile`,
+    `renameFolder`, `pending-ops.ts`'s `runMove`): a no-op relocation whose
+    source and destination are the SAME path (a retry landing after the
+    row's own state already matches the target) used to stat the same
+    object twice and throw a false "both exist" ambiguity error instead of
+    a trivial no-op success -- now short-circuited before either stat call.
+    `sync-remote-api.ts`'s tombstone action list gained `sync_rename_remote`
+    (it wrote this action on every successful rename all along, but the
+    qualifying-action list only recognized `sync_delete`/`sync_delete_remote`/
+    `sync_move`/`sync_rename` -- a stale local copy left behind by this
+    specific rename path got no automatic tombstone cleanup at all).
+  - **Local after-step failures now normalize to `repair_needed`.** Central
+    already committed the record + remote step by the time either code path
+    below runs a local disk step -- a failure there must never read as "the
+    whole operation failed" (implying nothing happened) or "it fully
+    succeeded" (hiding a stranded local copy). REST: `agent-router.ts`'s
+    rename handler used to `throw` a non-ENOENT local failure straight into
+    a raw 500; it now returns 200 with `status: "repair_needed"` and a hint,
+    matching the move handler's existing contract. MCP:
+    `applyLocalAfterProxiedMutation` (`agent-tools.ts`) used to let a local
+    failure propagate out of the function entirely, where the caller's
+    outer `.catch()` in `agent-transport.ts` swallowed it to `null` and left
+    central's unmodified "ok" response standing -- telling the agent a move
+    fully succeeded while the device's own mirror copy was stranded at the
+    old path. The move branch now catches the local failure itself and
+    rewrites the response to `repair_needed`; the `rename_folder` branch
+    does the same per-file (downgrading just the failed entry's `status`
+    and recomputing `renamed`/`failed`) instead of losing the WHOLE batch's
+    outcome to one file's local failure.
+  - **A confirmed delete retry that finds nothing to delete is treated as
+    idempotent success, not a failure**, in `deleteFileRemote` only (the
+    function the central client's own retry-on-ambiguous-network-failure
+    reaches, `client.ts`'s `request()`) -- a delete whose first attempt
+    landed but whose response was lost used to hit the "not found" branch on
+    replay and throw, so the agent skipped its local cleanup and reported
+    failure for a delete that had, in fact, fully succeeded. Verified
+    against THIS file_id's own `sync_delete`/`sync_delete_remote` audit
+    history before returning success (`already_deleted: true`) -- a
+    genuinely unknown id (typo, never existed) still throws. Only applies
+    when `confirmed: true` (an actual delete attempt); an unconfirmed
+    preview call for a bad id still throws too, since there is no
+    meaningful preview to return.
+  - **Deliberately deferred, with reasoning**: `createFileRemote`'s
+    remote-first-with-no-journal gap (the audit's "reserve create identity
+    before the remote put" ask) was NOT implemented -- reserving a DB row
+    before the upload only pays off paired with genuine idempotent-resume
+    logic (detecting and completing a half-finished create on retry); doing
+    the reserve alone would trade an invisible orphan blob (current
+    behavior) for a visible-but-broken phantom row with no way to complete
+    or clean it up, which is arguably a worse failure mode, not a better
+    one. `writeFileContentRemote`/`writeFileBytesRemote`'s remote-before-DB
+    ordering (the audit's "save" sub-case) is not new-code-fixed here either
+    -- an ALREADY-tracked file's DB update failing after a successful write
+    only leaves a stale `current_remote_hash`, which #276's remote-sweep
+    hash-refresh (landed earlier in this same backlog) already self-heals
+    on the next sync run. A general idempotency-key-based replay mechanism
+    for the central client's mutation retries (the audit's finding 10 ask
+    beyond the specific delete case above) remains unimplemented -- the
+    delete-replay fix above is the one concretely-reachable failure mode
+    from the audit that was fixed; a fully general mechanism is a larger
+    structural project than one backlog item.
 
 ## Security rules (from the auth refactor post-mortem)
 

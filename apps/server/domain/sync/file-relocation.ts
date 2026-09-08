@@ -31,6 +31,15 @@ export async function relocateRemoteObject(
   p: RelocateParams,
   onPhase?: (phase: "copy" | "delete_source") => void,
 ): Promise<{ status: RelocateStatus }> {
+  // A no-op target (retrying a call whose desired end state already equals
+  // its start state -- e.g. a rename retry landing after the row's own
+  // remote_path already reads as the target) must never reach the stat
+  // check below: source and destination would resolve to the SAME object,
+  // so "both present" would fire as a false ambiguity error instead of the
+  // trivially-safe no-op it actually is (#279 finding 9 follow-up).
+  if (p.fromRemoteName === p.toRemoteName && p.fromRemotePath === p.toRemotePath) {
+    return { status: "already_at_target" };
+  }
   const src = await getAdapter(db, p.fromRemoteName);
   const dst = p.toRemoteName === p.fromRemoteName ? src : await getAdapter(db, p.toRemoteName);
   const [atFrom, atTo] = await Promise.all([src.stat(p.fromRemotePath), dst.stat(p.toRemotePath)]);

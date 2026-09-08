@@ -241,6 +241,30 @@ describe("getNodeSyncInfo", () => {
     const info = await getNodeSyncInfo(db, nodeId);
     assert.deepEqual(info.deleted, []);
   });
+
+  // renameFileRemote (the mirror-less adapter-direct single-file rename,
+  // #279 finding 13) writes sync_rename_remote -- this used to be missing
+  // from the qualifying action list entirely, so a stale local copy left at
+  // the old path after this kind of rename never got automatic tombstone
+  // cleanup at all.
+  it("exposes a sync_rename_remote tombstone with record_alive true", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    await db.execute({
+      sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+            VALUES (?, 'U1', 'sync_rename_remote', 'file', ?, ?, ?)`,
+      args: [
+        ulid(),
+        "F1",
+        JSON.stringify({ node_id: nodeId, old_remote_path: "p/old.md" }),
+        new Date().toISOString(),
+      ],
+    });
+    const info = await getNodeSyncInfo(db, nodeId);
+    const tomb = info.deleted.find((d) => d.file_id === "F1");
+    assert.ok(tomb, `expected a tombstone for F1: ${JSON.stringify(info.deleted)}`);
+    assert.equal(tomb.remote_path, "p/old.md");
+    assert.equal(tomb.record_alive, true);
+  });
 });
 
 describe("byte-plane read/write (binary-safe sync transfer)", () => {

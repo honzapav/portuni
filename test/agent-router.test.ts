@@ -929,6 +929,34 @@ describe("POST /nodes/:id/files/:fileId/rename (agent mode)", () => {
     assert.equal(await readFile(join(mirrorRoot, "wip", "final.md"), "utf8"), "v1");
   });
 
+  it("reports repair_needed instead of a raw 500 when the local rename fails (#279 finding 13)", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const oldAbs = join(mirrorRoot, "wip", "old.md");
+    await writeFile(oldAbs, "obsah");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    const fileId = synced1.adopted[0].file_id;
+
+    // Block the rename target with a non-empty directory, forcing a
+    // non-ENOENT local rename failure (ENOTEMPTY/EISDIR) after central has
+    // already committed the record + remote rename.
+    await mkdir(join(mirrorRoot, "wip", "new.md", "child"), { recursive: true });
+
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_filename: "new.md" }),
+    });
+    assert.equal(r.status, 200, "never a raw 500 -- central already committed");
+    const body = (await r.json()) as { status: string; repair_hint?: string };
+    assert.equal(body.status, "repair_needed");
+    assert.ok(body.repair_hint && body.repair_hint.length > 0);
+    // The remote/record side is already committed on central.
+    assert.deepEqual(fake.renameCalls, [
+      { fileId, newRemotePath: posix.join(NODE_ROOT, "wip/new.md") },
+    ]);
+  });
+
   it("forwards to central's own rename when this device has no mirror for the node", async () => {
     const reg = await fake.registerFile(NODE_ID, "wip/remote-only.md");
     const r = await fetch(`${base}/nodes/${NODE_ID}/files/${reg.id}/rename`, {

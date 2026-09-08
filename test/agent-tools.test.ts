@@ -851,6 +851,97 @@ describe("proxied disk mutations (GH #78)", () => {
     assert.equal(await readFile(join(mirrorRoot, "wip", "new", "b.md"), "utf8"), "B");
     await assert.rejects(() => readFile(absA));
   });
+
+  it("reports repair_needed instead of silently passing through central's ok when the local move fails (#279 finding 13)", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "a.md");
+    await writeFile(abs, "obsah");
+    const fileId = fake.seedRemote("wip/a.md", "obsah");
+    const args = { file_id: fileId, new_section: "outputs", confirmed: true };
+    const snapshot = await snapshotForDiskMutation(fake, "U1", "portuni_move_file", args);
+    const newRemote = posix.join(NODE_ROOT, "outputs/a.md");
+    // Block the destination with a non-empty directory, forcing a
+    // non-ENOENT local rename failure after central already committed the
+    // record + remote move.
+    await mkdir(join(mirrorRoot, "outputs", "a.md", "child"), { recursive: true });
+
+    const out = await applyLocalAfterProxiedMutation(
+      fake,
+      "U1",
+      snapshot!,
+      JSON.stringify({
+        status: "ok",
+        file_id: fileId,
+        new_remote_name: "test-fs",
+        new_remote_path: newRemote,
+        new_local_path: null,
+        moved_at: "now",
+      }),
+    );
+    assert.ok(out, "must rewrite the result instead of letting the caller swallow it to null");
+    const parsed = JSON.parse(out!);
+    assert.equal(parsed.status, "repair_needed");
+    assert.ok(parsed.repair_hint && parsed.repair_hint.length > 0);
+    assert.equal(parsed.detail.local_done, false);
+    // The old copy is still there -- nothing was destroyed by the failure.
+    assert.equal(await readFile(abs, "utf8"), "obsah");
+  });
+
+  it("downgrades just the failed file to repair_needed after an applied rename_folder, not the whole batch", async () => {
+    const fake = new FakeCentral();
+    await setupMirror();
+    await mkdir(join(mirrorRoot, "wip", "old"), { recursive: true });
+    const absA = join(mirrorRoot, "wip", "old", "a.md");
+    const absB = join(mirrorRoot, "wip", "old", "b.md");
+    await writeFile(absA, "A");
+    await writeFile(absB, "B");
+    fake.seedRemote("wip/old/a.md", "A");
+    fake.seedRemote("wip/old/b.md", "B");
+    // Block only b.md's destination.
+    await mkdir(join(mirrorRoot, "wip", "new", "b.md", "child"), { recursive: true });
+
+    const args = { node_id: NODE_ID, old_prefix: "wip/old", new_prefix: "wip/new", dry_run: false };
+    const snapshot = await snapshotForDiskMutation(fake, "U1", "portuni_rename_folder", args);
+    const out = await applyLocalAfterProxiedMutation(
+      fake,
+      "U1",
+      snapshot!,
+      JSON.stringify({
+        type: "applied",
+        renamed: 2,
+        failed: 0,
+        files: [
+          {
+            file_id: "F1",
+            status: "ok",
+            old_remote_path: posix.join(NODE_ROOT, "wip/old/a.md"),
+            new_remote_path: posix.join(NODE_ROOT, "wip/new/a.md"),
+          },
+          {
+            file_id: "F2",
+            status: "ok",
+            old_remote_path: posix.join(NODE_ROOT, "wip/old/b.md"),
+            new_remote_path: posix.join(NODE_ROOT, "wip/new/b.md"),
+          },
+        ],
+      }),
+    );
+    assert.equal(await readFile(join(mirrorRoot, "wip", "new", "a.md"), "utf8"), "A");
+    await assert.rejects(() => readFile(absA));
+    // b.md's local rename failed -- its remote/record side is still
+    // committed on central, so it must not be silently reported as if it
+    // fully succeeded, but a.md's real success must not be lost either.
+    assert.ok(out, "must rewrite the result, not let the whole batch fall through unmodified");
+    const parsed = JSON.parse(out!);
+    assert.equal(parsed.renamed, 1);
+    assert.equal(parsed.failed, 1);
+    const fileB = parsed.files.find((f: { file_id: string }) => f.file_id === "F2");
+    assert.equal(fileB.status, "repair_needed");
+    assert.ok(fileB.error);
+    const fileA = parsed.files.find((f: { file_id: string }) => f.file_id === "F1");
+    assert.equal(fileA.status, "ok");
+  });
 });
 
 describe("proxied portuni_snapshot", () => {

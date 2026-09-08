@@ -589,8 +589,23 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
               await fsRename(oldLocal, newLocal);
               await localHashFor(newLocal, fileId, null).catch(() => null);
             } catch (e) {
-              // No local copy (pull-pending) -- nothing to rename here.
-              if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+              if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+                // No local copy (pull-pending) -- nothing to rename here.
+              } else {
+                // #279 finding 13: central already committed the record +
+                // remote rename -- a local failure past this point (a
+                // permission error, a destination collision) must report
+                // repair_needed like the move handler above, not a raw 500
+                // that implies nothing happened.
+                respondJson(res, 200, {
+                  ...(r as Record<string, unknown>),
+                  status: "repair_needed",
+                  detail: { local_error: (e as Error).message },
+                  repair_hint:
+                    "Remote already renamed; the local copy could not be renamed. Rename it manually, or delete the local copy and pull.",
+                });
+                return true;
+              }
             }
           }
         }
