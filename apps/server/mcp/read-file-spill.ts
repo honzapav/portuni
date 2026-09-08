@@ -29,6 +29,7 @@
 
 import { join } from "node:path";
 import { stat } from "node:fs/promises";
+import { ensureUnderRoot } from "../shared/safe-path.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { resolveProjectionRootForNode } from "../domain/sandbox-profile.js";
 import { nodeProjectionDir } from "../domain/session-projection.js";
@@ -79,25 +80,34 @@ export async function readFileOrSpill(args: ReadFileOrSpillArgs): Promise<ToolRe
   const mirrorPath = await getMirrorPath(userId, nodeId);
 
   if (mirrorPath) {
+    // Read once: a too_large outcome is kept so the fall-through below can
+    // report it without reading the (oversized) file a second time.
+    let inline: NodeFileContent | null = null;
     if (!asPath) {
-      const r = await readNodeFileFromMirror(userId, nodeId, relPath);
-      if (r.kind !== "too_large") return formatNodeFileContent(r, relPath);
+      inline = await readNodeFileFromMirror(userId, nodeId, relPath);
+      if (inline.kind !== "too_large") return formatNodeFileContent(inline, relPath);
     }
     const dir =
       nodeId === homeNodeId
         ? mirrorPath
         : await projector.projectNode(nodeId).then((o) => (o.kind === "projected" ? o.dir : null));
     if (dir) {
-      const spillPath = join(dir, relPath);
       try {
+        // The inline path validates relPath against the mirror root
+        // (rawFromMirror -> ensureUnderRoot); this one must too, or a
+        // traversal relPath would stat -- and disclose the existence and
+        // size of -- any file on the host the server can see.
+        const spillPath = ensureUnderRoot(dir, join(dir, relPath));
         const st = await stat(spillPath);
-        return spilledResult(spillPath, st.size, relPath);
+        if (st.isFile()) return spilledResult(spillPath, st.size, relPath);
       } catch {
-        /* file missing at the projected/real path -- fall through to inline below */
+        /* traversal, or file missing at the projected/real path -- fall through to inline below */
       }
     }
-    const r = await readNodeFileFromMirror(userId, nodeId, relPath);
-    return formatNodeFileContent(r, relPath);
+    return formatNodeFileContent(
+      inline ?? (await readNodeFileFromMirror(userId, nodeId, relPath)),
+      relPath,
+    );
   }
 
   // No local mirror on this device: fetch the raw bytes (uncapped) and

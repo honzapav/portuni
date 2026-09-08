@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
 import type { AddressInfo } from "node:net";
 import { z } from "zod";
@@ -355,6 +355,64 @@ describe("agent MCP front door", () => {
     };
     assert.ok(payload.projected[mirrored], "mirrored node got a device-local projection");
     assert.equal(payload.not_projected[noMirror], "no_mirror");
+    // No X-Portuni-Spawn-Id on this connection: the projection must land in
+    // the shared bucket the Seatbelt profile grants unconditionally, never
+    // under this transport's own (never-granted) MCP session id.
+    assert.ok(
+      payload.projected[mirrored].includes(`${sep}_shared${sep}`),
+      `expected the _shared bucket, got ${payload.projected[mirrored]}`,
+    );
+  });
+
+  it("keys the projection by the relayed X-Portuni-Spawn-Id, the directory the Seatbelt profile granted (#252)", async () => {
+    const { registerMirror } = await import("../apps/server/domain/sync/mirror-registry.js");
+    const { mkdir: mkdirp, writeFile, stat } = await import("node:fs/promises");
+    const mirrored = "01SPAWNMIRROR000000000000";
+    const mirrorDir = join(workspace, "org", "projects", "spawn-target");
+    await mkdirp(join(mirrorDir, "wip"), { recursive: true });
+    await writeFile(join(mirrorDir, "wip", "n.md"), "hi\n");
+    const { SOLO_USER } = await import("../apps/server/infra/schema.js");
+    await registerMirror(SOLO_USER, mirrored, mirrorDir);
+
+    const spawnId = "01SPAWNSESSION00000000000";
+    const client = new Client({ name: "agent-transport-spawn", version: "0.0.0" });
+    const clientTransport = new StreamableHTTPClientTransport(
+      new URL(`${agentBase}/mcp?home_node_id=01TESTNODE0000000000000000`),
+      { requestInit: { headers: { "X-Portuni-Spawn-Id": spawnId } } },
+    );
+    await client.connect(clientTransport);
+    try {
+      const r = (await client.callTool({
+        name: "portuni_expand_scope",
+        arguments: { node_ids: [mirrored], reason: "user-requested: test" },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.notEqual(r.isError, true, r.content[0]?.text);
+      const payload = JSON.parse(r.content[0].text) as { projected: Record<string, string> };
+      const projectedDir = payload.projected[mirrored];
+      assert.ok(projectedDir, "mirrored node got a device-local projection");
+      assert.ok(
+        projectedDir.includes(`${sep}${spawnId}${sep}`),
+        `expected the spawn-id directory, got ${projectedDir}`,
+      );
+      await stat(join(projectedDir, "wip", "n.md"));
+      // Ending the session (DELETE -> server transport onclose) drops its
+      // own narrow directory. A bare client.close() only tears down the
+      // client side; the server would learn of it via the idle GC instead.
+      await clientTransport.terminateSession();
+      await client.close();
+      const deadline = Date.now() + 2000;
+      let gone = false;
+      while (!gone && Date.now() < deadline) {
+        gone = await stat(projectedDir).then(
+          () => false,
+          () => true,
+        );
+        if (!gone) await new Promise((r) => setTimeout(r, 25));
+      }
+      assert.ok(gone, `projection directory still present after close: ${projectedDir}`);
+    } finally {
+      await client.close().catch(() => undefined);
+    }
   });
 
   it("portuni_snapshot proxies to central and reports local_path null without a device mirror", async () => {

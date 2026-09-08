@@ -75,13 +75,13 @@ describe("readNodeFileFromMirror", () => {
     assert.equal(r.kind, "not_found");
   });
 
-  it("carries the raw bytes on a too_large result, so a caller can spill without re-reading", async () => {
+  it("reports only the size on a too_large result, never the bytes", async () => {
     const big = Buffer.alloc(MAX_READ_BYTES + 1, "z");
     await writeFile(join(mirror, "wip", "big.txt"), big);
     const r = await readNodeFileFromMirror(USER, NODE, "wip/big.txt");
     assert.equal(r.kind, "too_large");
     assert.equal((r as { bytes: number }).bytes, big.length);
-    assert.ok((r as { raw: Buffer }).raw.equals(big));
+    assert.ok(!("raw" in r), "too_large must not carry the oversized buffer");
   });
 });
 

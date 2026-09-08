@@ -66,7 +66,11 @@ import { createElicitorFromServer, AGENT_RELAY_ELICIT_TIMEOUT_MS } from "./elici
 import { CentralHttpError, type CentralClient } from "../domain/sync/central/client.js";
 import { createDiskProjector, type ProjectorScope } from "./disk-projection.js";
 import { resolveProjectionRootForNode } from "../domain/sandbox-profile.js";
-import { cleanupSessionProjection, unregisterSessionProjections } from "../domain/session-projection.js";
+import {
+  cleanupSessionProjection,
+  unregisterSessionProjections,
+  UNNARROWED_PROJECTION_ID,
+} from "../domain/session-projection.js";
 import { readFileOrSpill, type RemoteRawFetch } from "./read-file-spill.js";
 
 const MAX_SESSIONS = Number(process.env.PORTUNI_MAX_SESSIONS ?? 100);
@@ -80,6 +84,13 @@ interface AgentSessionEntry {
   upstream: Client;
   lastUsedAt: number;
   userId: string;
+  // Projection bookkeeping (#252): which home node this session's hardlink
+  // projection lives under, and its directory key -- the spawn id relayed by
+  // the CLI (Claude's X-Portuni-Spawn-Id) or the shared bucket. Read by
+  // disposeAgentProjection to decide whether the shared bucket is still in
+  // use by another live session on the same home node.
+  homeNodeId: string | null;
+  projectionSessionId: string;
 }
 
 export interface AgentTransportOpts {
@@ -199,6 +210,50 @@ function fetchRemoteRawViaCentral(client: CentralClient): RemoteRawFetch {
   };
 }
 
+// Directory key for this session's disk projection (#252). The Seatbelt
+// profile the desktop computed at spawn grants read on exactly two
+// subdirectories of the home node's projection root: <spawn id>/ (the id
+// GET /nodes/:id/sandbox-profile minted, exported as PORTUNI_SPAWN_SESSION_ID
+// and relayed back by Claude's .mcp.json as X-Portuni-Spawn-Id -- same
+// channel transport.ts reads for local mode) and the fixed _shared/ bucket
+// for CLIs that cannot relay it (Codex, Vibe). Anything else -- notably this
+// transport's own randomly generated MCP session id -- would be a directory
+// the kernel never granted, so the projection would exist but be unreadable.
+function resolveProjectionSessionId(req: IncomingMessage): string {
+  const h = req.headers["x-portuni-spawn-id"];
+  const spawnSessionId = (Array.isArray(h) ? h[0] : h)?.trim() || null;
+  return spawnSessionId ?? UNNARROWED_PROJECTION_ID;
+}
+
+// Agent-mode counterpart of disk-projection.ts's disposeSessionProjection.
+// A narrow (spawn-id-keyed) directory belongs to this session alone and goes
+// with it; the shared bucket is torn down only when no other live session on
+// the same home node still keys off it -- there is no durable `sessions`
+// table on the device, so "live" means this process's own session map.
+// Best-effort: every failure is swallowed, same as the local-mode version.
+async function disposeAgentProjection(
+  userId: string,
+  homeNodeId: string,
+  projectionSessionId: string,
+  live: Map<string, AgentSessionEntry>,
+): Promise<void> {
+  try {
+    if (projectionSessionId !== UNNARROWED_PROJECTION_ID) {
+      unregisterSessionProjections(projectionSessionId);
+    } else {
+      for (const s of live.values()) {
+        if (s.homeNodeId === homeNodeId && s.projectionSessionId === UNNARROWED_PROJECTION_ID) {
+          return;
+        }
+      }
+    }
+    const root = await resolveProjectionRootForNode(userId, homeNodeId);
+    if (root) await cleanupSessionProjection(root.projectionRoot, projectionSessionId);
+  } catch {
+    /* best-effort */
+  }
+}
+
 // Low-level server wired to proxy tools/list + resources/* upstream and to
 // route tools/call by LOCAL_TOOLS membership. tools/call must convert any
 // uncaught throw from callLocalTool (e.g. "no local mirror" from
@@ -210,7 +265,7 @@ function buildAgentServer(
   identity: RequestIdentity,
   homeNodeId: string | null,
   downstreamCapabilities: ClientCapabilities | undefined,
-  transport: StreamableHTTPServerTransport,
+  projectionSessionId: string,
 ): Server {
   const server = new Server(
     { name: "portuni-agent", version: "0.1.0" },
@@ -225,10 +280,12 @@ function buildAgentServer(
   // so this is the minimal ProjectorScope shape createDiskProjector needs:
   // `has` always true because by the time a node id reaches this front door
   // it has already passed central's own scope gate (see the tools/call
-  // handler below); the projection directory key is this local transport's
-  // own session id (not central's session, and not a durable `sessions` row
-  // -- the device has none), read live since it is only assigned once
-  // initialize completes.
+  // handler below); the projection directory key is the spawn id the CLI
+  // relayed (or the shared bucket) -- see resolveProjectionSessionId. It is
+  // NOT this local transport's own MCP session id: the Seatbelt profile was
+  // frozen at spawn around <projectionRoot>/<spawn id>/ and _shared/, so a
+  // directory keyed by anything else would be unreadable to the sandboxed
+  // CLI even though it exists.
   const projectorScope: ProjectorScope = {
     homeNodeId,
     has: () => true,
@@ -236,9 +293,7 @@ function buildAgentServer(
     // is a local-mode-only concept -- this module inlines the equivalent
     // home/projected logic itself, see enrichGetNodeResult/enrichGetContextResult).
     isSeed: () => false,
-    get projectionSessionId() {
-      return transport.sessionId ?? null;
-    },
+    projectionSessionId,
   };
   const projector = createDiskProjector({ userId: identity.userId, scope: projectorScope });
 
@@ -398,7 +453,7 @@ function buildAgentServer(
       return readFileOrSpill({
         userId: identity.userId,
         homeNodeId,
-        projectionSessionId: transport.sessionId ?? null,
+        projectionSessionId,
         projector,
         nodeId: args.node_id as string,
         relPath: args.path as string,
@@ -547,6 +602,7 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
       // upstream is a 503 with the underlying reason (same contract as the
       // auto-seed 503 in transport.ts) rather than an empty-scope session.
       const homeNodeId = parseHomeNodeIdFromUrl(req.url);
+      const projectionSessionId = resolveProjectionSessionId(req);
       const downstreamCapabilities = extractDownstreamCapabilities(body);
       try {
         upstream = await openUpstream(opts, homeNodeId, downstreamCapabilities);
@@ -573,6 +629,8 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
             upstream: up,
             lastUsedAt: Date.now(),
             userId: identity.userId,
+            homeNodeId,
+            projectionSessionId,
           });
         },
       });
@@ -585,23 +643,23 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
         const closedSessionId = transport.sessionId;
         if (closedSessionId) sessions.delete(closedSessionId);
         up.close().catch(() => undefined);
-        // Drop this session's own hardlink projection directory (#252) --
-        // mirrors disposeSessionProjection's local-mode cleanup, but simpler:
-        // this front door never uses the shared UNNARROWED_PROJECTION_ID
-        // bucket (every agent-mode session always has a real transport
-        // session id once initialized), so there is no "other session still
-        // reading the shared bucket" case to account for.
-        if (closedSessionId && homeNodeId) {
-          resolveProjectionRootForNode(identity.userId, homeNodeId)
-            .then((root) =>
-              root ? cleanupSessionProjection(root.projectionRoot, closedSessionId) : undefined,
-            )
-            .then(() => unregisterSessionProjections(closedSessionId))
-            .catch(() => undefined);
+        // Drop this session's hardlink projection directory (#252) -- the
+        // agent-mode counterpart of disposeSessionProjection. Runs after the
+        // sessions.delete above so the shared-bucket check below only sees
+        // OTHER live sessions.
+        if (homeNodeId) {
+          void disposeAgentProjection(identity.userId, homeNodeId, projectionSessionId, sessions);
         }
       };
 
-      const server = buildAgentServer(opts, up, identity, homeNodeId, downstreamCapabilities, transport);
+      const server = buildAgentServer(
+        opts,
+        up,
+        identity,
+        homeNodeId,
+        downstreamCapabilities,
+        projectionSessionId,
+      );
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
 

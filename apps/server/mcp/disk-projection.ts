@@ -44,13 +44,21 @@ export interface ProjectorScope {
 //                       real-mirror readable (rw, granted at spawn), never
 //                       needs a projection.
 //   no_mirror        - this device has no local mirror for the node.
+//   out_of_scope     - the node is not in this session's read scope
+//                       (guardNodeRead has not admitted it), so nothing may
+//                       be projected for it regardless of mirrors.
 //   no_projection_root - PORTUNI_ROOT (or the projection session id) could
 //                       not be resolved -- nowhere to put the hardlink.
 //   central          - this session has no home node at all (e.g.
 //                       interactive_chat/connector sessions with no
 //                       anchor): there is no per-node projection root to
 //                       compute without one.
-export type NotProjectedReason = "seed_granted" | "no_mirror" | "no_projection_root" | "central";
+export type NotProjectedReason =
+  | "seed_granted"
+  | "no_mirror"
+  | "out_of_scope"
+  | "no_projection_root"
+  | "central";
 
 export type ProjectOutcome =
   | { kind: "projected"; dir: string; files: number }
@@ -118,7 +126,7 @@ export function createDiskProjector(args: {
     const homeNodeId = scope.homeNodeId;
     if (!homeNodeId) return notProjected("central");
     if (nodeId === homeNodeId) return notProjected("seed_granted");
-    if (!scope.has(nodeId)) return notProjected("no_mirror");
+    if (!scope.has(nodeId)) return notProjected("out_of_scope");
     // #211: the directory key is projectionSessionId, not sessionId -- see
     // mcp/scope.ts's doc comment. It is set synchronously by createMcpServer,
     // so (unlike the old sessionId-keyed guard this replaces) there is no

@@ -778,29 +778,37 @@ symlink to this file.
   real path only when nothing was projected yet) -- cost is a hardlink, nil.
   `projectNode` returns a `ProjectOutcome` (`{kind:"projected",dir,files}` or
   `{kind:"not_projected",reason}`, reasons `seed_granted | no_mirror |
-  no_projection_root | central`) instead of a bare nullable object; every
+  out_of_scope | no_projection_root | central`) instead of a bare nullable object; every
   caller (`get-node.ts`, `context.ts`, `files.ts`'s `list_files`,
   `expand_scope`) unwraps it, and `expand_scope` surfaces the reason map as
   `not_projected` alongside `projected`. **Central/agent mode now projects
   too**: `agent-transport.ts` builds its own tiny `ProjectorScope` per local
   MCP session (home node id from `?home_node_id=`, `has` always true since
-  central's own `guardNodeRead` already ran, `projectionSessionId` the LOCAL
-  transport's own session id -- there is no durable `session_scope` row on
-  the device) and a real `DiskProjector` over it: `portuni_expand_scope`'s
+  central's own `guardNodeRead` already ran, `projectionSessionId` the spawn
+  id relayed in `X-Portuni-Spawn-Id` -- the same header `transport.ts` reads
+  in local mode -- or `_shared` when the CLI cannot relay one; NEVER the
+  transport's own random MCP session id, since the Seatbelt profile was
+  frozen at spawn around exactly `<projectionRoot>/<spawn id>/` and
+  `_shared/`, so any other key would be a directory the kernel never granted)
+  and a real `DiskProjector` over it: `portuni_expand_scope`'s
   `projected`/`not_projected` are overlaid with this device's own result
   (central's own is structurally useless, no device filesystem), and
   `enrichGetNodeResult`/`enrichGetContextResult` (`agent-tools.ts`) fill
   `readable_path`/`local_path` the same way for ANY node with a local mirror
   here, not just the depth-1 seed set. Cleanup rides on the local transport's
-  own `onclose` (`cleanupSessionProjection` + `unregisterSessionProjections`)
-  -- simpler than local mode's `disposeSessionProjection` since this front
-  door never uses the shared `_shared` bucket. **`portuni_get_node` gained
+  own `onclose` (`disposeAgentProjection`): a spawn-id-keyed directory goes
+  with its session, the `_shared` bucket only once no other live session in
+  this process's session map keys off it for the same home node (the device
+  has no durable `sessions` table to consult the way
+  `disposeSessionProjection` does). **`portuni_get_node` gained
   `readable_path`** (the same value as `local_path`'s per-file derivation,
   promoted to the top level) -- `local_mirror` stays registration metadata,
   not a read path. **`portuni_read_file` gained `as_path`**: past the 1 MB
   cap (`MAX_READ_BYTES`, unchanged and still enforced) or on request, it
   spills to a path inside the session's projection directory instead of
-  inline content -- `{path, bytes, mime}` (`mcp/read-file-spill.ts`) -- no
+  inline content -- `{path, bytes, mime}` (`mcp/read-file-spill.ts`; the
+  spill path is validated with `ensureUnderRoot` like the inline read, so a
+  traversal `path` is `not_found`, never a stat of a host file) -- no
   chunked-read (`offset`/`length`) parameter, since there is no server-side
   grep and the agent would just page blindly through a large file; read the
   path with your own Read/Grep instead. A node WITH a local mirror here

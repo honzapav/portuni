@@ -35,10 +35,11 @@ export const MAX_READ_BYTES = 1_000_000;
 export type NodeFileContent =
   | { kind: "text"; text: string }
   | { kind: "binary"; base64: string; bytes: number }
-  // raw carries the full bytes (already read once to classify) so a caller
-  // that needs to spill an oversized file to disk (mcp/read-file-spill.ts)
-  // does not have to re-fetch it a second time.
-  | { kind: "too_large"; bytes: number; raw: Buffer }
+  // Deliberately carries only the size, never the bytes: this shape is what
+  // a tool result is built from, and an oversized buffer must not ride along
+  // on it. The spill path (mcp/read-file-spill.ts) works from the mirror
+  // hardlink or its own uncapped raw fetch instead.
+  | { kind: "too_large"; bytes: number }
   | { kind: "no_mirror" }
   | { kind: "no_remote" }
   | { kind: "native_format" }
@@ -48,7 +49,7 @@ export type NodeFileContent =
 // db-backed read in local mode, or CentralClient.getFileRaw in agent mode)
 // and classifies them locally rather than through readNodeFile*.
 export function classifyBytes(bytes: Buffer): NodeFileContent {
-  if (bytes.length > MAX_READ_BYTES) return { kind: "too_large", bytes: bytes.length, raw: bytes };
+  if (bytes.length > MAX_READ_BYTES) return { kind: "too_large", bytes: bytes.length };
   // NUL byte => treat as binary and hand back base64.
   if (bytes.includes(0)) {
     return { kind: "binary", base64: bytes.toString("base64"), bytes: bytes.length };

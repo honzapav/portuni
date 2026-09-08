@@ -6,7 +6,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readFileOrSpill, type RemoteRawFetch } from "../apps/server/mcp/read-file-spill.js";
@@ -42,7 +42,9 @@ const NEVER_CALLED: RemoteRawFetch = async () => {
 };
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "portuni-readfilespill-"));
+  // realpath: the projection root is resolved through realpath (macOS's
+  // /var -> /private/var), so expected paths must be built from the same.
+  dir = await realpath(await mkdtemp(join(tmpdir(), "portuni-readfilespill-")));
   homeMirror = join(dir, "home");
   adhocMirror = join(dir, "adhoc");
   await mkdir(join(homeMirror, "wip"), { recursive: true });
@@ -134,6 +136,41 @@ describe("readFileOrSpill: local mirror present", () => {
     const payload = JSON.parse(out.content[0].text) as { path: string; bytes: number };
     assert.equal(payload.path, join(dir, ".portuni-sessions", HOME, "SESS", ADHOC, "wip", "small.md"));
     assert.equal(await readFile(payload.path, "utf8"), "tiny\n");
+  });
+
+  it("as_path never resolves a traversal relPath outside the mirror (no host path disclosure)", async () => {
+    await writeFile(join(dir, "secret.txt"), "top secret");
+    for (const nodeId of [HOME, ADHOC]) {
+      const out = await readFileOrSpill({
+        userId: "U1",
+        homeNodeId: HOME,
+        projectionSessionId: "SESS",
+        projector: projectorFor(HOME),
+        nodeId,
+        relPath: "../secret.txt",
+        asPath: true,
+        remote: NEVER_CALLED,
+      });
+      assert.equal(out.isError, true, out.content[0].text);
+      // Neither a spill payload nor the host path may come back.
+      assert.ok(!out.content[0].text.includes(dir), out.content[0].text);
+      assert.ok(!out.content[0].text.includes('"path"'), out.content[0].text);
+    }
+  });
+
+  it("as_path on a directory path is not a spill", async () => {
+    await writeFile(join(homeMirror, "wip", "x.md"), "x\n");
+    const out = await readFileOrSpill({
+      userId: "U1",
+      homeNodeId: HOME,
+      projectionSessionId: "SESS",
+      projector: projectorFor(HOME),
+      nodeId: HOME,
+      relPath: "wip",
+      asPath: true,
+      remote: NEVER_CALLED,
+    });
+    assert.equal(out.isError, true, out.content[0].text);
   });
 
   it("passes a not_found error through unchanged", async () => {

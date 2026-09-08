@@ -13,7 +13,7 @@
 // engine makes carries the user's device token.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Client } from "@libsql/client";
 import { z } from "zod";
@@ -378,7 +378,7 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
           return true;
         }
         try {
-          await readFile(abs);
+          await stat(abs);
           respondJson(res, 409, { error: `file already exists: ${filename}`, code: "EXISTS" });
           return true;
         } catch (e) {
@@ -491,21 +491,27 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
         return true;
       }
       try {
-        // Same IDOR guard as /resolve: the file must actually belong to
-        // THIS node before anything is touched.
+        // Same IDOR guard as /resolve: a file this device DOES mirror must
+        // actually belong to THIS node before anything is touched. A file on
+        // a node this device has no mirror for is not found here at all --
+        // that is not an error: the route is local-only for every node
+        // (is_local_only_path), so it forwards to central's own delete
+        // exactly as a non-agent-mode delete would, with no local step.
         const found = await findEntryByFileId(client, identity.userId, fileId);
-        if (!found || found.nodeId !== nodeId) {
+        if (found && found.nodeId !== nodeId) {
           respondJson(res, 404, { error: "file not found on this device" });
           return true;
         }
         // Record + remote object first (the source of truth); only clean up
         // the local copy once that has actually succeeded.
         const r = await client.deleteFileRecord(nodeId, fileId);
-        if (found.entry.local_path) {
-          const { rm } = await import("node:fs/promises");
-          await rm(found.entry.local_path, { force: true }).catch(() => undefined);
+        if (found) {
+          if (found.entry.local_path) {
+            const { rm } = await import("node:fs/promises");
+            await rm(found.entry.local_path, { force: true }).catch(() => undefined);
+          }
+          await deleteFileState(fileId).catch(() => undefined);
         }
-        await deleteFileState(fileId).catch(() => undefined);
         respondJson(res, 200, r);
       } catch (err) {
         if (respondCentral404(res, err)) return true;

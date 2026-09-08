@@ -622,6 +622,22 @@ describe("DELETE /nodes/:id/files/:fileId (agent mode, #254)", () => {
     await readFile(join(mirrorRoot, "wip", "keep.md"), "utf8"); // still there
   });
 
+  it("forwards to central's own delete when this device has no mirror for the node", async () => {
+    // No POST .../mirror first: findEntryByFileId cannot see the file, but
+    // the route is local-only for every node, so the record + remote half
+    // must still happen on central exactly as a non-agent-mode delete would.
+    const reg = await fake.registerFile(NODE_ID, "wip/remote-only.md");
+    fake.bytes.set(posix.join(NODE_ROOT, "wip/remote-only.md"), Buffer.from("obsah"));
+
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${reg.id}?confirmed=true`, {
+      method: "DELETE",
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(fake.deleted, [
+      { fileId: reg.id, remotePath: posix.join(NODE_ROOT, "wip/remote-only.md") },
+    ]);
+  });
+
   it("404s when the file belongs to a different node than the URL (IDOR)", async () => {
     await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     await writeFile(join(mirrorRoot, "wip", "j.md"), "obsah");

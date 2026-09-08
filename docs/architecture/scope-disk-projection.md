@@ -191,20 +191,24 @@ central itself has no device filesystem, so its own `projected` map (and any
 front door now builds its own tiny `ProjectorScope` per local MCP session
 (`homeNodeId` from the connection's `?home_node_id=`, `has` always true since
 by the time a node id reaches this layer it already passed central's own
-`guardNodeRead`, `projectionSessionId` the LOCAL transport's own session id —
-there is no durable `session_scope` row on the device to key off instead) and
-a real `DiskProjector` over it, then:
+`guardNodeRead`, `projectionSessionId` the spawn id relayed in
+`X-Portuni-Spawn-Id` — the same header the local-mode transport reads — or
+the `_shared` bucket for a CLI that cannot relay one; never the transport's
+own random MCP session id, because the Seatbelt profile was frozen at spawn
+around exactly `<projectionRoot>/<spawn id>/` and `_shared/`, and any other
+key would be a directory the kernel never granted) and a real `DiskProjector`
+over it, then:
 - overlays `projected`/`not_projected` onto `portuni_expand_scope`'s response
   in place of central's own (structurally useless) ones;
 - overlays `readable_path` (get_node) / `local_path` (get_context) using the
   same projector, for ANY node with a local mirror on this device, not just
   the seatbelt's depth-1 seed set.
 The per-session projection directory is torn down in the local transport's
-own `onclose` (`cleanupSessionProjection` + `unregisterSessionProjections`)
-— simpler than local mode's `disposeSessionProjection`, since this front
-door never uses the shared `_shared` bucket (a real transport session id is
-always available once initialized, so there is no "other concurrent
-non-relaying session" case to account for).
+own `onclose` (`disposeAgentProjection`): a spawn-id-keyed directory goes
+with its session; the `_shared` bucket is removed only once no other live
+session in this process's session map keys off it for the same home node —
+the device has no durable `sessions` table, so the in-memory map is what
+stands in for `disposeSessionProjection`'s running-session check.
 
 ## portuni_get_node's `readable_path` and the read_file 1 MB cap (#252)
 

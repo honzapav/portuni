@@ -177,7 +177,7 @@ describe("createDiskProjector", () => {
     );
   });
 
-  it("returns not_projected/no_mirror for a node outside scope", async () => {
+  it("returns not_projected/out_of_scope for a node outside scope", async () => {
     const scope = new SessionScope("interactive_task");
     scope.homeNodeId = "HOME";
     scope.sessionId = "SESS";
@@ -189,7 +189,7 @@ describe("createDiskProjector", () => {
     });
     assert.deepEqual(await projector.projectNode("NEIGHBOR"), {
       kind: "not_projected",
-      reason: "no_mirror",
+      reason: "out_of_scope",
     });
   });
 
