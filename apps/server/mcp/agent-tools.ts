@@ -30,6 +30,7 @@ import { getLocalMirror } from "../domain/sync/local-db.js";
 import { buildNodeRoot, deriveLocalPath } from "../domain/sync/remote-path.js";
 import type { StatusFileEntry, StatusResult, NewLocalEntry } from "../domain/sync/engine.js";
 import type { NodeSyncInfo } from "../domain/sync/sync-remote-api.js";
+import { type StatusClass, filterStatusResult } from "../domain/sync/status-filter.js";
 
 export const LOCAL_TOOLS: ReadonlySet<string> = new Set([
   "portuni_mirror",
@@ -167,8 +168,15 @@ const HANDLERS: Record<string, LocalHandler> = {
     // the caller explicitly opts out.
     const includeDiscovery = args.include_discovery !== false;
     const nodeId = args.node_id as string | undefined;
+    const filterOpts = {
+      classes: args.classes as StatusClass[] | undefined,
+      pathPrefix: args.path_prefix as string | undefined,
+      limit: args.limit as number | undefined,
+      offset: args.offset as number | undefined,
+    };
     if (nodeId) {
-      return statusScanCentral(client, { userId, nodeId, includeDiscovery, fast: false });
+      const r = await statusScanCentral(client, { userId, nodeId, includeDiscovery, fast: false });
+      return filterStatusResult(r, filterOpts);
     }
     // No node_id: scan across every mirror this user has and aggregate the
     // buckets -- the central-mode analog of local statusScan's cross-mirror
@@ -207,7 +215,7 @@ const HANDLERS: Record<string, LocalHandler> = {
       agg.deleted_local.push(...r.deleted_local);
       agg.deleted_remote.push(...r.deleted_remote);
     }
-    return agg;
+    return filterStatusResult(agg, filterOpts);
   },
 
   async portuni_store(client, userId, args) {
@@ -500,7 +508,11 @@ export async function callLocalTool(
   if (!handler) throw new Error(`not a local tool: ${name}`);
   try {
     const result = await handler(client, userId, args);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    // No pretty-print indent: portuni_status on a large node can serialize
+    // to hundreds of KB, and the indentation alone is a large fraction of
+    // that. The other LOCAL_TOOLS payloads are small enough that this is
+    // just a minor win, not a behavior change either way.
+    return { content: [{ type: "text", text: JSON.stringify(result) }] };
   } catch (e) {
     if (e instanceof MirrorCreateError || e instanceof CentralHttpError) {
       return {

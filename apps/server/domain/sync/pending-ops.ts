@@ -16,6 +16,7 @@ import type { Client } from "@libsql/client";
 import { ulid } from "ulid";
 import { getAdapter } from "./adapter-cache.js";
 import { deleteFileState } from "./local-db.js";
+import { relocateRemoteObject, writeRelocatedRecord } from "./file-relocation.js";
 
 export type PendingOp =
   | {
@@ -150,28 +151,19 @@ async function runMove(
     { remote_name: p.from_remote_name, remote_path: p.from_remote_path },
     { remote_name: p.to_remote_name, remote_path: p.to_remote_path },
   ]);
-  const src = await getAdapter(db, p.from_remote_name);
-  const dst = p.to_remote_name === p.from_remote_name ? src : await getAdapter(db, p.to_remote_name);
-  const atFrom = await src.stat(p.from_remote_path);
-  const atTo = await dst.stat(p.to_remote_path);
-  if (atFrom && atTo) {
-    throw new Error(`both ${p.from_remote_path} and ${p.to_remote_path} exist on the remote`);
-  }
-  if (!atFrom && !atTo) {
-    throw new Error(`neither ${p.from_remote_path} nor ${p.to_remote_path} exists on the remote`);
-  }
-  if (atFrom && !atTo) {
-    if (src === dst) {
-      await src.rename(p.from_remote_path, p.to_remote_path);
-    } else {
-      await dst.put(p.to_remote_path, await src.get(p.from_remote_path));
-      await src.delete(p.from_remote_path);
-    }
-  }
+  await relocateRemoteObject(db, {
+    fromRemoteName: p.from_remote_name,
+    fromRemotePath: p.from_remote_path,
+    toRemoteName: p.to_remote_name,
+    toRemotePath: p.to_remote_path,
+  });
   const now = new Date().toISOString();
-  await db.execute({
-    sql: `UPDATE files SET remote_name = ?, remote_path = ?, node_id = ?, filename = ?, updated_at = ? WHERE id = ?`,
-    args: [p.to_remote_name, p.to_remote_path, p.to_node_id, p.filename, now, row.file_id],
+  await writeRelocatedRecord(db, {
+    fileId: row.file_id,
+    nodeId: p.to_node_id,
+    newRemotePath: p.to_remote_path,
+    updateSql: `UPDATE files SET remote_name = ?, remote_path = ?, node_id = ?, filename = ?, updated_at = ? WHERE id = ?`,
+    updateArgs: [p.to_remote_name, p.to_remote_path, p.to_node_id, p.filename, now],
   });
   await db.execute({
     sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)

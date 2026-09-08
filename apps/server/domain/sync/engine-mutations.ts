@@ -19,6 +19,7 @@ import { resolveRemote } from "./routing.js";
 import { deleteFileState } from "./local-db.js";
 import { getMirrorPath } from "./mirror-registry.js";
 import { enqueuePendingOp, completePendingOp, failPendingOp } from "./pending-ops.js";
+import { relocateRemoteObject, writeRelocatedRecord } from "./file-relocation.js";
 import {
   buildNodeRoot,
   buildRemotePath,
@@ -228,23 +229,34 @@ export async function moveFile(
   // 1. Remote move. Track which sub-step failed: in the cross-remote copy
   // the destination put can succeed before the source delete fails, and
   // then "No state changed" would be a lie -- the file exists on BOTH
-  // remotes and the user must clean up the source copy.
-  let remoteSubStep: "copy" | "delete_source" = "copy";
+  // remotes and the user must clean up the source copy. Stat both sides
+  // first (relocateRemoteObject) so a retry after a previous partial
+  // success -- the object already sitting at newRemotePath -- is recognized
+  // as done instead of failing on a source that no longer exists.
+  // Object property, not a bare `let`: the mutation happens inside the
+  // callback passed to relocateRemoteObject, and TS's control-flow
+  // narrowing does not follow closure writes back to a plain outer `let`
+  // (it would otherwise "remember" the initializer literal at the read
+  // below and refuse to compile the delete_source comparison).
+  const remoteProgress: { subStep: "copy" | "delete_source" } = { subStep: "copy" };
+  let alreadyAtTarget = false;
   try {
-    if (!crossRemote) {
-      const adapter = await getAdapter(db, oldRemoteName);
-      await adapter.rename(oldRemotePath, newRemotePath);
-    } else {
-      const src = await getAdapter(db, oldRemoteName);
-      const dst = await getAdapter(db, newRemoteName);
-      const bytes = await src.get(oldRemotePath);
-      await dst.put(newRemotePath, bytes);
-      remoteSubStep = "delete_source";
-      await src.delete(oldRemotePath);
-    }
+    const outcome = await relocateRemoteObject(
+      db,
+      {
+        fromRemoteName: oldRemoteName,
+        fromRemotePath: oldRemotePath,
+        toRemoteName: newRemoteName,
+        toRemotePath: newRemotePath,
+      },
+      (phase) => {
+        remoteProgress.subStep = phase;
+      },
+    );
+    alreadyAtTarget = outcome.status === "already_at_target";
   } catch (e) {
     await failPendingOp(db, pendingOpId, (e as Error).message);
-    const copied = remoteSubStep === "delete_source";
+    const copied = remoteProgress.subStep === "delete_source";
     return {
       status: "repair_needed",
       file_id: a.fileId,
@@ -254,7 +266,7 @@ export async function moveFile(
       moved_at: new Date().toISOString(),
       detail: {
         phase: "remote",
-        sub_step: remoteSubStep,
+        sub_step: remoteProgress.subStep,
         error: (e as Error).message,
         old_remote_path: oldRemotePath,
         new_remote_path: newRemotePath,
@@ -279,9 +291,12 @@ export async function moveFile(
         localDone = false;
       } else {
         const now = new Date().toISOString();
-        await db.execute({
-          sql: `UPDATE files SET remote_name = ?, remote_path = ?, node_id = ?, filename = ?, updated_at = ? WHERE id = ?`,
-          args: [newRemoteName, newRemotePath, targetNodeId, filename, now, a.fileId],
+        await writeRelocatedRecord(db, {
+          fileId: a.fileId,
+          nodeId: targetNodeId,
+          newRemotePath,
+          updateSql: `UPDATE files SET remote_name = ?, remote_path = ?, node_id = ?, filename = ?, updated_at = ? WHERE id = ?`,
+          updateArgs: [newRemoteName, newRemotePath, targetNodeId, filename, now],
         });
         await db.execute({
           sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
@@ -316,6 +331,7 @@ export async function moveFile(
           detail: {
             phase: "local",
             remote_already_moved: true,
+            already_at_target: alreadyAtTarget,
             error: (e as Error).message,
             old_local_path: oldLocalPath,
             new_local_path: newLocalPath,
@@ -329,9 +345,12 @@ export async function moveFile(
 
   // 3. DB update.
   const now = new Date().toISOString();
-  await db.execute({
-    sql: `UPDATE files SET remote_name = ?, remote_path = ?, node_id = ?, filename = ?, updated_at = ? WHERE id = ?`,
-    args: [newRemoteName, newRemotePath, targetNodeId, filename, now, a.fileId],
+  await writeRelocatedRecord(db, {
+    fileId: a.fileId,
+    nodeId: targetNodeId,
+    newRemotePath,
+    updateSql: `UPDATE files SET remote_name = ?, remote_path = ?, node_id = ?, filename = ?, updated_at = ? WHERE id = ?`,
+    updateArgs: [newRemoteName, newRemotePath, targetNodeId, filename, now],
   });
 
   await writeMoveTombstone(now);
@@ -344,7 +363,7 @@ export async function moveFile(
     new_remote_path: newRemotePath,
     new_local_path: newLocalPath,
     moved_at: now,
-    detail: { remote_done: true, local_done: localDone },
+    detail: { remote_done: true, local_done: localDone, already_at_target: alreadyAtTarget },
   };
 }
 
@@ -356,6 +375,13 @@ export interface RenameFolderArgs {
   oldPrefix: string;
   newPrefix: string;
   dryRun?: boolean;
+  // Bound how many files one apply call actually touches on the remote
+  // (default DEFAULT_RENAME_FOLDER_LIMIT). Re-running the same call with
+  // the same old_prefix/new_prefix picks up where it left off for free:
+  // an already-renamed file's remote_path no longer matches old_prefix, so
+  // the next call's SELECT simply does not see it again. Preview
+  // (dry_run) is unbounded -- it is one DB query, no remote work.
+  limit?: number;
 }
 
 export type RenameFolderResult =
@@ -380,8 +406,15 @@ export type RenameFolderResult =
         old_remote_path: string;
         new_remote_path: string;
         error?: string;
+        already_at_target?: boolean;
       }>;
+      // Files matched by old_prefix beyond this call's limit, still to be
+      // renamed by a follow-up call.
+      remaining: number;
+      next_call?: string;
     };
+
+const DEFAULT_RENAME_FOLDER_LIMIT = 20;
 
 export async function renameFolder(
   db: Client,
@@ -403,7 +436,7 @@ export async function renameFolder(
   // wip/myXnotes/... and "rename" those rows to themselves.
   const likePrefix = oldAbs.replace(/[\\%_]/g, (ch) => `\\${ch}`);
   const rows = await db.execute({
-    sql: "SELECT id, filename, remote_name, remote_path FROM files WHERE node_id = ? AND remote_path LIKE ? ESCAPE '\\'",
+    sql: "SELECT id, filename, remote_name, remote_path FROM files WHERE node_id = ? AND remote_path LIKE ? ESCAPE '\\' ORDER BY remote_path",
     args: [a.nodeId, `${likePrefix}/%`],
   });
   const affected = rows.rows.map((r) => {
@@ -458,8 +491,12 @@ export async function renameFolder(
     old_remote_path: string;
     new_remote_path: string;
     error?: string;
+    already_at_target?: boolean;
   }> = [];
   const now = new Date().toISOString();
+  const limit = Math.max(0, a.limit ?? DEFAULT_RENAME_FOLDER_LIMIT);
+  const toProcess = affected.slice(0, limit);
+  const remaining = affected.length - toProcess.length;
 
   // The remote object has already moved once adapter.rename succeeds, local
   // outcome notwithstanding -- another device (or this one, on a missed
@@ -485,7 +522,7 @@ export async function renameFolder(
     });
   }
 
-  for (const f of affected) {
+  for (const f of toProcess) {
     const pendingOpId = await enqueuePendingOp(db, {
       userId: a.userId,
       nodeId: a.nodeId,
@@ -501,17 +538,28 @@ export async function renameFolder(
       },
     });
     try {
-      const adapter = await getAdapter(db, f.remote_name);
-      await adapter.rename(f.old_remote_path, f.new_remote_path);
+      // Stat both sides first: an object already at new_remote_path (a
+      // previous call that timed out client-side but landed server-side)
+      // is done, not a failure to retry.
+      const outcome = await relocateRemoteObject(db, {
+        fromRemoteName: f.remote_name,
+        fromRemotePath: f.old_remote_path,
+        toRemoteName: f.remote_name,
+        toRemotePath: f.new_remote_path,
+      });
+      const alreadyAtTarget = outcome.status === "already_at_target";
       if (f.old_local_path && f.new_local_path) {
         try {
           await mkdir(dirname(f.new_local_path), { recursive: true });
           await fsRename(f.old_local_path, f.new_local_path);
         } catch (e) {
           if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
-            await db.execute({
-              sql: "UPDATE files SET remote_path = ?, updated_at = ? WHERE id = ?",
-              args: [f.new_remote_path, now, f.file_id],
+            await writeRelocatedRecord(db, {
+              fileId: f.file_id,
+              nodeId: a.nodeId,
+              newRemotePath: f.new_remote_path,
+              updateSql: "UPDATE files SET remote_path = ?, updated_at = ? WHERE id = ?",
+              updateArgs: [f.new_remote_path, now],
             });
             await writeRenameTombstone(f);
             await completePendingOp(db, pendingOpId);
@@ -521,14 +569,18 @@ export async function renameFolder(
               old_remote_path: f.old_remote_path,
               new_remote_path: f.new_remote_path,
               error: `local: ${(e as Error).message}`,
+              already_at_target: alreadyAtTarget,
             });
             continue;
           }
         }
       }
-      await db.execute({
-        sql: "UPDATE files SET remote_path = ?, updated_at = ? WHERE id = ?",
-        args: [f.new_remote_path, now, f.file_id],
+      await writeRelocatedRecord(db, {
+        fileId: f.file_id,
+        nodeId: a.nodeId,
+        newRemotePath: f.new_remote_path,
+        updateSql: "UPDATE files SET remote_path = ?, updated_at = ? WHERE id = ?",
+        updateArgs: [f.new_remote_path, now],
       });
       await writeRenameTombstone(f);
       await completePendingOp(db, pendingOpId);
@@ -537,6 +589,7 @@ export async function renameFolder(
         status: "ok",
         old_remote_path: f.old_remote_path,
         new_remote_path: f.new_remote_path,
+        already_at_target: alreadyAtTarget,
       });
     } catch (e) {
       await failPendingOp(db, pendingOpId, (e as Error).message);
@@ -557,7 +610,7 @@ export async function renameFolder(
       ulid(),
       a.userId,
       a.nodeId,
-      JSON.stringify({ old_prefix: a.oldPrefix, new_prefix: a.newPrefix, results }),
+      JSON.stringify({ old_prefix: a.oldPrefix, new_prefix: a.newPrefix, remaining, results }),
       now,
     ],
   });
@@ -567,6 +620,13 @@ export async function renameFolder(
     renamed: results.filter((r) => r.status === "ok").length,
     failed: results.filter((r) => r.status === "repair_needed").length,
     files: results,
+    remaining,
+    ...(remaining > 0
+      ? {
+          next_call:
+            "Call portuni_rename_folder again with the same node_id/old_prefix/new_prefix (dry_run: false): already-renamed files no longer match old_prefix and are skipped automatically.",
+        }
+      : {}),
   };
 }
 

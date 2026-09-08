@@ -292,6 +292,44 @@ symlink to this file.
   central is reached this way, not by the desktop proxy, since the route is
   now local-only for every node regardless of whether THIS device happens
   to mirror it.
+  **`moveFile`/`renameFolder` are retry-safe and collision-safe (#271).**
+  Both used to call the adapter unconditionally on the remote step
+  (`adapter.rename`, or copy+delete for a cross-remote move) — a retry
+  after a client-side timeout whose server-side move had actually landed
+  then failed on a source that no longer existed. `relocateRemoteObject`
+  (`file-relocation.ts`) stats both the source and destination first, same
+  rule `pending-ops.ts`'s `runMove` already used for the background
+  retry queue: both present is an ambiguity error (never guessed away),
+  neither present is a real failure, and only-destination-present is
+  reported `already_at_target: true` rather than re-attempted — `runMove`
+  itself now calls this shared helper instead of duplicating the logic.
+  Separately, the DB-row update after a successful remote step
+  (`UPDATE files SET remote_path = ...`) could hit
+  `idx_files_unique_remote` head-on when the watcher had already
+  registered a row at the destination path (e.g. a plain on-disk `mv`
+  followed by an explicit `portuni_move_file` to fix the record) — that
+  surfaced as a raw `SQLITE_CONSTRAINT` error instead of a `repair_needed`
+  result. `writeRelocatedRecord` (same module) checks for a colliding row
+  first and, if found, folds it into the survivor (the row being
+  moved/renamed keeps its id; the shadow row is deleted; its
+  `file_state` cache fields — fresher, since it was registered AFTER the
+  on-disk change — replace the survivor's own, while the survivor's own
+  `last_synced_hash`/`last_synced_at` baseline is kept) inside the same
+  `db.batch` as the UPDATE, atomically. `moveFile`, `renameFolder`, and
+  `runMove` all route through both helpers now. `portuni_rename_folder`
+  also gained `limit` (default 20 files per apply call, dry-run
+  unbounded): a call only processes the first `limit` matches and reports
+  `remaining` + `next_call` — re-running with the SAME old_prefix/
+  new_prefix needs no separate resume state, since an already-renamed
+  file's `remote_path` no longer matches `old_prefix` and simply drops out
+  of the next call's `SELECT`. `portuni_status` gained `classes`/
+  `path_prefix`/`limit`/`offset` (`status-filter.ts`'s
+  `filterStatusResult`, shared between the local MCP tool and the
+  central/agent-mode handler) plus an always-present `counts` object (true
+  per-bucket sizes regardless of filtering) and a `truncated` flag, and
+  dropped its pretty-print indent — a large node's full status used to
+  serialize past the MCP response size limit with no way to ask for just
+  what needs attention.
 - **Drive sync has two auth paths sharing one adapter.** Desktop local
   workspaces connect via per-user OAuth: Settings → Synchronizace →
   `google_drive_connect` (`apps/desktop/src/auth.rs`, PKCE loopback) hands the

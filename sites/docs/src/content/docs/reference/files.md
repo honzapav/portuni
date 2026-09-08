@@ -216,11 +216,20 @@ migrations, or whenever the user asks about sync state.
 | `node_id` | string | no | Restrict to one node |
 | `remote_name` | string | no | Restrict to one remote |
 | `include_discovery` | boolean | no | Walk the mirror + list the remote for new files (default: true) |
+| `classes` | string[] | no | Only return entries for these classes: `clean`, `push`, `pull`, `conflict`, `remote_missing`, `remote_error`, `native`, `deleted_local`, `new_local`, `new_remote` |
+| `path_prefix` | string | no | Only return entries whose path starts with this prefix |
+| `limit` | number | no | Max entries per class |
+| `offset` | number | no | Skip this many entries per class first |
 
 Returns: classified buckets (`clean`, `push_candidates`, `pull_candidates`,
 `conflicts`, `remote_missing`, `remote_error`, `native`, `new_local`,
-`new_remote`, `deleted_local`, `deleted_remote`). There is no `moved`
-bucket — an on-disk move is paired as it happens (see below), not
+`new_remote`, `deleted_local`, `deleted_remote`), plus `counts` (the true
+size of every bucket, even ones excluded by `classes` or thinned by
+`path_prefix`/`limit`/`offset`) and `truncated` (true when any bucket had
+entries left out). On a large node, `classes`/`path_prefix`/`limit`/
+`offset` keep the response from blowing past the MCP response size limit
+while `counts` still answers "how much is left" in one call. There is no
+`moved` bucket — an on-disk move is paired as it happens (see below), not
 reported as a scan finding.
 
 :::note[Deletions and moves propagate deterministically]

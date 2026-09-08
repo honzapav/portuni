@@ -142,7 +142,11 @@ is "first call previews, second call applies":
   with `confirmed: true` executes.
 - `portuni_rename_folder` -- defaults to `dry_run: true`. Show the
   affected file list to the user; second call with `dry_run: false`
-  applies.
+  applies. An apply call is bounded (`limit`, default 20 files); when the
+  result's `remaining` is > 0, call again with the SAME node_id/old_prefix/
+  new_prefix to continue -- already-renamed files no longer match
+  old_prefix and are skipped automatically, so there is no separate resume
+  state to track.
 - `portuni_adopt_files` -- non-destructive. Safe to run after
   `portuni_status` surfaces `new_remote` entries.
 

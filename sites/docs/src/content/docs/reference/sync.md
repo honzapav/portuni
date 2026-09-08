@@ -118,7 +118,7 @@ Returns either a preview (when `confirmed` is omitted or `false`) or the execute
 
 ### portuni_rename_folder
 
-Rename a subpath within a node's sync layout. Updates `remote_path` for every file under the prefix atomically.
+Rename a subpath within a node's sync layout. Updates `remote_path` for every file under the prefix, one remote operation per file.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -126,6 +126,9 @@ Rename a subpath within a node's sync layout. Updates `remote_path` for every fi
 | `old_prefix` | string | yes | Existing subpath prefix (relative to the node's section root) |
 | `new_prefix` | string | yes | New subpath prefix |
 | `dry_run` | boolean | no | Defaults to `true` — returns a preview of affected files. Call again with `dry_run: false` to apply |
+| `limit` | number | no | Max files to rename in this apply call (default 20). Ignored for `dry_run` |
+
+An apply call is bounded by `limit` so a large folder can't time out the caller mid-run. When the result's `remaining` is greater than 0, call again with the **same** `node_id`/`old_prefix`/`new_prefix` — already-renamed files no longer match `old_prefix`, so the next call picks up exactly where the previous one left off, with no extra state to track. Each file's remote step stats both the source and destination first, so a retry that finds the object already at the destination reports it `ok` with `already_at_target: true` instead of failing.
 
 `sync_key` itself is immutable — this tool only changes the visible subpath. The underlying identifier the system uses for routing does not change.
 
