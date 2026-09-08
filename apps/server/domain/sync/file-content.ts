@@ -3,16 +3,23 @@
 // path to disk; registration is a separate concern).
 // writeFileContent is local-only: it writes the mirror file and never pushes
 // -- the sync run / statusScan picks up the change as a push candidate.
-// createFile registers + pushes immediately via storeFile (a new tracked
-// file needs a remote binding). Conflict detection on writeFileContent
-// compares the on-disk sha256 against the caller's baseVersion so a
-// concurrent terminal-agent edit is never silently clobbered.
+// createFile registers + pushes immediately via storeFile when a remote is
+// routed (a new tracked file needs a remote binding to push). A local-only
+// workspace (no remote configured at all, #201/#280) has nowhere to push to
+// -- createFile falls back to registerLocalFile there instead of failing
+// after the bytes are already on disk; the deliberate push stays available
+// later via portuni_store/a sync run, same as any other registered-only
+// file. Conflict detection on writeFileContent compares the on-disk sha256
+// against the caller's baseVersion so a concurrent terminal-agent edit is
+// never silently clobbered.
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import type { Client } from "@libsql/client";
 import { getMirrorPath } from "./mirror-registry.js";
-import { mimeFor, storeFile } from "./engine.js";
+import { mimeFor, storeFile, registerLocalFile } from "./engine.js";
+import { resolveNodeInfo } from "./node-info.js";
+import { resolveRemote } from "./routing.js";
 import { sha256Buffer } from "./hash.js";
 import { safeMirrorJoin, type Section } from "./remote-path.js";
 import { withPathLock } from "./path-lock.js";
@@ -191,14 +198,29 @@ export async function createFile(
   await mkdir(dirname(abs), { recursive: true });
   await writeFile(abs, Buffer.from(a.content ?? "", "utf8"));
 
-  // Register + push. storeFile detects the file is already inside the mirror
-  // (subpathFromMirror) and skips the copy, uploads, and upserts the row.
-  const stored = await storeFile(db, {
-    userId: a.userId,
-    nodeId: a.nodeId,
-    localPath: abs,
-    status: section === "outputs" ? "output" : "wip",
-  });
+  // Register + push when a remote is routed -- storeFile detects the file is
+  // already inside the mirror (subpathFromMirror) and skips the copy,
+  // uploads, and upserts the row. A local-only workspace (no remote routed
+  // at all) has nothing to push to: storeFile would throw ROUTING_GUIDANCE
+  // AFTER the bytes above are already on disk, so this checks first and
+  // falls back to registerLocalFile (record-only, matching the watcher's own
+  // auto-registration) instead of reporting a failure for a create that, on
+  // disk, already succeeded (#280 finding 12).
+  const info = await resolveNodeInfo(db, a.nodeId);
+  const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
+  const stored = remoteName
+    ? await storeFile(db, {
+        userId: a.userId,
+        nodeId: a.nodeId,
+        localPath: abs,
+        status: section === "outputs" ? "output" : "wip",
+      })
+    : await registerLocalFile(db, {
+        userId: a.userId,
+        nodeId: a.nodeId,
+        localPath: abs,
+        status: section === "outputs" ? "output" : "wip",
+      });
 
   const relative_path = abs.startsWith(mirrorRoot + "/")
     ? abs.slice(mirrorRoot.length + 1)

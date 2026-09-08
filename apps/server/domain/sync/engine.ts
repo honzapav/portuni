@@ -631,7 +631,15 @@ export interface StatusFileEntry {
   local_hash: string | null;
   remote_hash: string | null;
   last_synced_hash: string | null;
-  class: "clean" | "push" | "pull" | "conflict" | "remote_missing" | "remote_error" | "native";
+  class:
+    | "clean"
+    | "push"
+    | "pull"
+    | "conflict"
+    | "remote_missing"
+    | "remote_error"
+    | "native"
+    | "deleted_local";
 }
 
 export interface NewLocalEntry {
@@ -913,7 +921,7 @@ async function scanRow(
 
   if (localHash === null) {
     if (base.last_synced_hash) {
-      return { bucket: "deleted_local", entry: { ...base, class: "clean" } };
+      return { bucket: "deleted_local", entry: { ...base, class: "deleted_local" } };
     }
     // Remote content exists but this device never synced it -> fetchable.
     return { bucket: "pull_candidates", entry: { ...base, class: "pull" } };

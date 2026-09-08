@@ -58,6 +58,12 @@ local. Each tracked file is classified:
   skipped by the sync run
 - **native** -- non-byte-stream remote (e.g. Google Doc) where hash
   comparison doesn't apply
+- **deleted_local** -- was synced, the local copy is now gone, the remote
+  object still exists. Needs a decision (restore via `portuni_pull`, or
+  remove via `portuni_delete_file`) -- never auto-restored. Each entry's own
+  `class` field says `deleted_local`, not `clean`, so a caller that trusts
+  `entry.class` directly (rather than which top-level bucket array it came
+  from) still sees it correctly (#280)
 
 ## Deliberate sync run
 

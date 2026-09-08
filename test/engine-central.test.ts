@@ -414,6 +414,10 @@ describe("statusScanCentral", () => {
     await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: abs });
     const scan = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID, fast: true });
     assert.equal(scan.deleted_local.length, 1);
+    // #280 finding 14: the entry's own class must say deleted_local, not
+    // clean -- an MCP consumer trusting entry.class directly would
+    // otherwise treat a deleted file as needing no decision.
+    assert.equal(scan.deleted_local[0].class, "deleted_local");
   });
 
   it("watcher-observed mv of a pushed file pairs by inode and calls the central move", async () => {
@@ -706,6 +710,46 @@ describe("reconcilePathCentral", () => {
     assert.equal(r3.action, "unregistered");
     assert.equal(await getFileState(r3.file_id as string), null);
     assert.equal(c.records.size, 0);
+  });
+
+  it("a never-pushed file's delete that central could not confirm (repair_needed) is NOT treated as unregistered (#280 finding 11)", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "w.md");
+    await writeFile(abs, "v1");
+    const r1 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: abs });
+    assert.equal(r1.action, "registered");
+    const fileId = r1.file_id as string;
+
+    c.deleteRepairNeeded = true;
+    await rm(abs);
+    const r2 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: abs });
+    assert.equal(r2.action, "noop", "must not falsely report unregistered");
+    // The record and this device's own identity proof must both survive --
+    // central deliberately kept the record, so erasing file_state here would
+    // leave the record a zombie with no way for a later sync to recover it.
+    assert.equal(c.records.size, 1);
+    assert.ok(await getFileState(fileId), "file_state must survive an unconfirmed delete");
+  });
+
+  it("a never-pushed file's delete that fails outright (thrown) is NOT treated as unregistered", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "w.md");
+    await writeFile(abs, "v1");
+    const r1 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: abs });
+    const fileId = r1.file_id as string;
+
+    const origDelete = c.deleteFileRecord.bind(c);
+    c.deleteFileRecord = async () => {
+      throw new CentralHttpError("unreachable", 503, "UNAVAILABLE");
+    };
+    await rm(abs);
+    const r2 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: abs });
+    assert.equal(r2.action, "noop");
+    assert.equal(c.records.size, 1);
+    assert.ok(await getFileState(fileId));
+    c.deleteFileRecord = origDelete;
   });
 
   it("deletion of a PUSHED file keeps the record and clears the cache (deleted)", async () => {

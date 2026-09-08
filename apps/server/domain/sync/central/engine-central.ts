@@ -223,7 +223,7 @@ async function classifyRecord(
 
   if (localHash === null) {
     if (base.last_synced_hash) {
-      return { bucket: "deleted_local", entry: { ...base, class: "clean" } };
+      return { bucket: "deleted_local", entry: { ...base, class: "deleted_local" } };
     }
     // Remote content exists but this device never synced it -> fetchable.
     return { bucket: "pull_candidates", entry: { ...base, class: "pull" } };
@@ -923,7 +923,22 @@ export async function reconcilePathCentral(
   const neverPushed =
     rec.current_remote_hash === null && (existing?.last_synced_hash ?? null) === null;
   if (neverPushed) {
-    await client.deleteFileRecord(a.nodeId, rec.id).catch(() => null);
+    // #280 finding 11: a bare `.catch(() => null)` swallowed both a thrown
+    // failure AND a fulfilled `{status:"repair_needed"}` -- central keeping
+    // the record deliberately because it could not confirm the delete --
+    // and proceeded to erase file_state and report "unregistered" either
+    // way. That contradicts the "one-shot watcher event must not silently
+    // degrade" rule the comment above `loadNodeContext` already states, and
+    // the sibling move-pairing branch (tryApplyDiskMoveCentral) already gets
+    // this right: only actually-confirmed success clears local state; any
+    // other outcome leaves file_state alone and reports a non-destructive
+    // action so the next watcher event or backfill sweep tries again instead
+    // of the record turning into a remote-missing zombie with no local
+    // identity to recover it.
+    const del = await client.deleteFileRecord(a.nodeId, rec.id).catch(() => null);
+    if (!del || (del as { status?: unknown }).status !== "ok") {
+      return { action: "noop", file_id: rec.id };
+    }
     await deleteFileState(rec.id).catch(() => undefined);
     return { action: "unregistered", file_id: rec.id };
   }

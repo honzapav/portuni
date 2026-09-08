@@ -1342,6 +1342,66 @@ symlink to this file.
     delete-replay fix above is the one concretely-reachable failure mode
     from the audit that was fixed; a fully general mechanism is a larger
     structural project than one backlog item.
+- **A central watcher delete for a never-pushed file only unregisters on a
+  CONFIRMED success; a `StatusFileEntry` in the `deleted_local` bucket
+  carries `class: "deleted_local"`, not `"clean"`; `createFile` falls back
+  to local-only registration instead of failing after the bytes are already
+  on disk (#280).** Three independent, smaller defects from the same
+  second-opinion audit:
+  - **`reconcilePathCentral`'s never-pushed-delete branch** used to
+    `.catch(() => null)` the central delete call and then unconditionally
+    erase `file_state` and report `"unregistered"` regardless of the
+    outcome -- a THROWN failure (network/Drive down) and a FULFILLED
+    `{status:"repair_needed"}` (central deliberately kept the record) were
+    both treated as success. This contradicted the "a one-shot watcher
+    event must not silently degrade" rule already documented above
+    `loadNodeContext`, and the sibling move-pairing branch
+    (`tryApplyDiskMoveCentral`) already got this right. Now mirrors that
+    branch exactly: only an actually-confirmed `status: "ok"` clears
+    `file_state`; anything else leaves it alone and reports `{action:
+    "noop"}` so the record doesn't turn into a `remote_missing` zombie with
+    no local identity to recover it -- the next watcher event or backfill
+    sweep retries.
+  - **`StatusFileEntry.class`** never had a `"deleted_local"` member --
+    both classifiers (`engine.ts`, `engine-central.ts`) bucketed a
+    deleted-but-previously-synced file under `deleted_local` while setting
+    its own `class` field to `"clean"`. REST (`nodes.ts`/`agent-router.ts`)
+    was never affected -- it derives `sync_class` from which bucket ARRAY
+    an entry came from, ignoring the entry's own `class` property entirely
+    -- but `portuni_status` (MCP) serializes the raw `StatusResult`
+    verbatim, so a consumer trusting `entry.class` directly (rather than
+    which bucket it's in) would treat a deleted file as needing no
+    decision. Both classifiers now set `class: "deleted_local"` to match
+    the bucket.
+  - **`createFile`** (the local-mirror REST create, `file-content.ts`)
+    wrote the bytes to disk unconditionally, then called `storeFile` --
+    which throws `ROUTING_GUIDANCE` before registering anything when no
+    remote is routed for the node at all (a legitimate local-only-workspace
+    configuration, #201's own "registration never requires a remote"
+    contract). The request failed even though a real file now existed on
+    disk, and a retry then hit `EXISTS` instead of completing. It now
+    checks whether a remote resolves first: `storeFile` (register + push)
+    when one does, `registerLocalFile` (record-only, same as the mirror
+    watcher's own auto-registration) when none does -- the deliberate push
+    stays available later via `portuni_store`/a sync run once routing
+    exists, same as any other registered-only file.
+  - **Deliberately deferred**: the audit's broader ask for finding 12 --
+    making `moveFile`/`renameFile`/`renameFolder` actually WORK for a
+    local-only (never-routed) file, rather than refusing it -- was NOT
+    implemented. `moveFile`/`renameFile` already refuse with a clear thrown
+    error (`"File X has no remote binding"`) rather than attempting
+    anything unsafe; `renameFolder`'s per-file loop already catches a
+    resulting `getAdapter(db, null)` failure into a per-file
+    `repair_needed` without crashing the batch or touching that file's
+    local/DB state (confirmed: `getAdapter` throws a clean `Error` for an
+    unresolvable remote name, not a crash). Making this actually work would
+    mean widening `MoveFilePreview`/`MoveFileSuccess`/`RenameFileResult`'s
+    public `remote_name` fields to nullable and adding a no-remote branch
+    to each function's pending-op/tombstone logic -- a larger, riskier
+    change to already-heavily-tested critical paths than fits this pass,
+    for a narrow scenario (a workspace with literally zero remote routing
+    configured). The current behavior is a safe, clear rejection, not
+    silent corruption or a crash.
 
 ## Security rules (from the auth refactor post-mortem)
 

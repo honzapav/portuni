@@ -211,4 +211,49 @@ describe("createFile", () => {
       (e: unknown) => e instanceof FileContentError && e.code === "EXISTS",
     );
   });
+
+  // #280 finding 12: in a workspace with no remote routed at all, createFile
+  // used to write the bytes to disk and then call storeFile, which throws
+  // ROUTING_GUIDANCE before registering anything -- the request failed even
+  // though a real file now existed on disk, and a retry then hit EXISTS
+  // instead. It now falls back to registerLocalFile (record-only, same as
+  // the watcher's own auto-registration) instead of failing after the fact.
+  it("falls back to local-only registration when no remote is routed, instead of failing after writing the bytes", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const { replaceRules } = await import("../apps/server/domain/sync/routing.js");
+    await replaceRules(db, []);
+    const { resetAdapterCacheForTests } = await import(
+      "../apps/server/domain/sync/adapter-cache.js"
+    );
+    resetAdapterCacheForTests();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const { createFile } = await import("../apps/server/domain/sync/file-content.js");
+
+    const f = await createFile(db, {
+      userId: "U1",
+      nodeId,
+      filename: "notes.md",
+      content: "# Notes\n",
+    });
+    assert.equal(f.filename, "notes.md");
+    assert.ok(f.id.length > 0);
+    assert.equal(await readFile(join(mirrorRoot, "wip", "notes.md"), "utf8"), "# Notes\n");
+
+    const row = await db.execute({
+      sql: "SELECT remote_name, current_remote_hash FROM files WHERE id = ?",
+      args: [f.id],
+    });
+    assert.equal(row.rows.length, 1);
+    assert.equal(row.rows[0].remote_name, null);
+    assert.equal(row.rows[0].current_remote_hash, null, "registered, not pushed");
+
+    // A retry against the SAME path must not hit EXISTS the way a raw
+    // adopt-nothing failure used to leave it -- the file is legitimately
+    // already tracked now.
+    await assert.rejects(
+      () => createFile(db, { userId: "U1", nodeId, filename: "notes.md", content: "again" }),
+      (e: unknown) => e instanceof FileContentError && e.code === "EXISTS",
+    );
+  });
 });
