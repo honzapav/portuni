@@ -10,7 +10,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   readNodeFileFromMirror,
+  readNodeFileRaw,
+  writeBytesToPath,
+  mimeFromExtension,
   formatNodeFileContent,
+  MAX_READ_BYTES,
 } from "../apps/server/domain/read-node-file.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
@@ -69,6 +73,56 @@ describe("readNodeFileFromMirror", () => {
     await writeFile(join(workspace, "secret.txt"), "top secret");
     const r = await readNodeFileFromMirror(USER, NODE, "../../../secret.txt");
     assert.equal(r.kind, "not_found");
+  });
+
+  it("carries the raw bytes on a too_large result, so a caller can spill without re-reading", async () => {
+    const big = Buffer.alloc(MAX_READ_BYTES + 1, "z");
+    await writeFile(join(mirror, "wip", "big.txt"), big);
+    const r = await readNodeFileFromMirror(USER, NODE, "wip/big.txt");
+    assert.equal(r.kind, "too_large");
+    assert.equal((r as { bytes: number }).bytes, big.length);
+    assert.ok((r as { raw: Buffer }).raw.equals(big));
+  });
+});
+
+describe("readNodeFileRaw", () => {
+  // The node has a local mirror, so the db parameter is never touched --
+  // rawFromMirror short-circuits before rawFromRemote would need it.
+  const NO_DB = null as unknown as Parameters<typeof readNodeFileRaw>[0];
+
+  it("returns raw bytes from the mirror, uncapped by MAX_READ_BYTES", async () => {
+    const big = Buffer.alloc(MAX_READ_BYTES + 1024, "y");
+    await writeFile(join(mirror, "wip", "big.bin"), big);
+    const r = await readNodeFileRaw(NO_DB, USER, NODE, "wip/big.bin");
+    assert.equal(r.kind, "ok");
+    assert.ok((r as { bytes: Buffer }).bytes.equals(big));
+  });
+
+  it("not_found for a missing file when the node has a mirror", async () => {
+    const r = await readNodeFileRaw(NO_DB, USER, NODE, "wip/absent.md");
+    assert.equal(r.kind, "not_found");
+  });
+});
+
+describe("writeBytesToPath", () => {
+  it("creates missing parent directories and writes the bytes", async () => {
+    const dest = join(workspace, "spill", "nested", "out.bin");
+    const bytes = Buffer.from([1, 2, 3, 4]);
+    await writeBytesToPath(dest, bytes);
+    const written = await import("node:fs/promises").then((m) => m.readFile(dest));
+    assert.ok(written.equals(bytes));
+  });
+});
+
+describe("mimeFromExtension", () => {
+  it("maps known extensions", () => {
+    assert.equal(mimeFromExtension("wip/deck.html"), "text/html");
+    assert.equal(mimeFromExtension("outputs/report.pdf"), "application/pdf");
+    assert.equal(mimeFromExtension("wip/notes.MD"), "text/markdown");
+  });
+
+  it("defaults to application/octet-stream for an unknown extension", () => {
+    assert.equal(mimeFromExtension("wip/mystery.xyz"), "application/octet-stream");
   });
 });
 

@@ -61,10 +61,13 @@ import {
   applyLocalAfterSnapshot,
   applyLocalAfterProxiedMutation,
 } from "./agent-tools.js";
-import { readNodeFileFromMirror, formatNodeFileContent } from "../domain/read-node-file.js";
 import { guardWrite, writeGuardError, type WriteContext } from "../domain/write-gate.js";
 import { createElicitorFromServer, AGENT_RELAY_ELICIT_TIMEOUT_MS } from "./elicit.js";
-import type { CentralClient } from "../domain/sync/central/client.js";
+import { CentralHttpError, type CentralClient } from "../domain/sync/central/client.js";
+import { createDiskProjector, type ProjectorScope } from "./disk-projection.js";
+import { resolveProjectionRootForNode } from "../domain/sandbox-profile.js";
+import { cleanupSessionProjection, unregisterSessionProjections } from "../domain/session-projection.js";
+import { readFileOrSpill, type RemoteRawFetch } from "./read-file-spill.js";
 
 const MAX_SESSIONS = Number(process.env.PORTUNI_MAX_SESSIONS ?? 100);
 const SESSION_TTL_MS = Number(process.env.PORTUNI_SESSION_TTL_MS ?? 30 * 60 * 1000);
@@ -167,6 +170,35 @@ function deriveAgentSessionType(identity: RequestIdentity): SessionType {
   return "interactive_task";
 }
 
+// Raw-byte fetch for read-file-spill.ts's no-local-mirror branch, backed by
+// CentralClient's REST endpoint (GET /nodes/:id/file?encoding=base64) rather
+// than a graph db -- this front door has none. Maps the same
+// FileContentErrorCode central's REST layer surfaces onto the RemoteRawFetch
+// error shape.
+function fetchRemoteRawViaCentral(client: CentralClient): RemoteRawFetch {
+  return async (nodeId, relPath) => {
+    try {
+      const r = await client.getFileRaw(nodeId, relPath);
+      return { kind: "ok", bytes: r.bytes };
+    } catch (e) {
+      if (e instanceof CentralHttpError) {
+        switch (e.code) {
+          case "NOT_FOUND":
+          case "INVALID_PATH":
+            return { kind: "not_found" };
+          case "NO_REMOTE":
+            return { kind: "no_remote" };
+          case "NOT_EDITABLE":
+            return { kind: "native_format" };
+          default:
+            break;
+        }
+      }
+      throw e;
+    }
+  };
+}
+
 // Low-level server wired to proxy tools/list + resources/* upstream and to
 // route tools/call by LOCAL_TOOLS membership. tools/call must convert any
 // uncaught throw from callLocalTool (e.g. "no local mirror" from
@@ -178,12 +210,37 @@ function buildAgentServer(
   identity: RequestIdentity,
   homeNodeId: string | null,
   downstreamCapabilities: ClientCapabilities | undefined,
+  transport: StreamableHTTPServerTransport,
 ): Server {
   const server = new Server(
     { name: "portuni-agent", version: "0.1.0" },
     { capabilities: { tools: {}, resources: {} }, instructions: INSTRUCTIONS },
   );
   const elicitor = createElicitorFromServer(server);
+
+  // Device-local disk projector for this agent session (#252: central mode
+  // never projected ad-hoc/seed nodes onto disk, leaving them unreadable by
+  // the sandboxed CLI even though the device has a mirror). There is no real
+  // SessionScope here -- the sidecar has no graph DB, no expansion history --
+  // so this is the minimal ProjectorScope shape createDiskProjector needs:
+  // `has` always true because by the time a node id reaches this front door
+  // it has already passed central's own scope gate (see the tools/call
+  // handler below); the projection directory key is this local transport's
+  // own session id (not central's session, and not a durable `sessions` row
+  // -- the device has none), read live since it is only assigned once
+  // initialize completes.
+  const projectorScope: ProjectorScope = {
+    homeNodeId,
+    has: () => true,
+    // No seed-vs-ad-hoc distinction on this front door (readableMirrorRoot
+    // is a local-mode-only concept -- this module inlines the equivalent
+    // home/projected logic itself, see enrichGetNodeResult/enrichGetContextResult).
+    isSeed: () => false,
+    get projectionSessionId() {
+      return transport.sessionId ?? null;
+    },
+  };
+  const projector = createDiskProjector({ userId: identity.userId, scope: projectorScope });
 
   // Reverse path for server-initiated elicitation: central (reached via
   // `upstream`, a Client from this process's point of view) sends an
@@ -326,33 +383,73 @@ function buildAgentServer(
     // alone is NOT sufficient -- the device mirrors a superset of the session
     // scope, so gating on it would let an agent read out-of-scope nodes and
     // bypass the seatbelt boundary.
-    // When the device holds no mirror of the node, the read is proxied
-    // upstream verbatim: central has no mirrors either and serves it
-    // Drive-direct (readNodeFile's remote fallback), under its own guard.
+    // When the device holds no mirror of the node, the raw bytes are fetched
+    // straight from central over REST (CentralClient.getFileRaw, uncapped --
+    // unlike an MCP tool result) instead of proxying the tools/call: that lets
+    // an oversized/as_path file be spilled to this device's own session
+    // projection directory (#252), which a plain proxy could never do since
+    // central has no device filesystem of its own to spill into.
     if (name === "portuni_read_file") {
       const gate = (await upstream.callTool({
         name: "portuni_get_node",
         arguments: { node_id: args.node_id },
       })) as { content: Array<{ type: string; text?: string }>; isError?: boolean };
       if (gate.isError) return gate;
-      const r = await readNodeFileFromMirror(
-        identity.userId,
-        args.node_id as string,
-        args.path as string,
-      );
-      if (r.kind === "no_mirror") return upstream.callTool({ name, arguments: args });
-      return formatNodeFileContent(r, args.path as string);
+      return readFileOrSpill({
+        userId: identity.userId,
+        homeNodeId,
+        projectionSessionId: transport.sessionId ?? null,
+        projector,
+        nodeId: args.node_id as string,
+        relPath: args.path as string,
+        asPath: args.as_path === true,
+        remote: fetchRemoteRawViaCentral(opts.client),
+      });
+    }
+    // #252: expand_scope is otherwise proxied verbatim (falls to the generic
+    // upstream.callTool below), but central has no device filesystem, so its
+    // own `projected`/`not_projected` fields are structurally useless in
+    // agent mode -- overlay this device's own projection of each accepted
+    // node instead.
+    if (name === "portuni_expand_scope") {
+      const result = (await upstream.callTool({ name, arguments: args })) as {
+        content?: Array<{ type: string; text?: string }>;
+        isError?: boolean;
+      };
+      if (result.isError) return result;
+      const textPart = result.content?.find((c) => c.type === "text");
+      if (textPart?.text) {
+        try {
+          const payload = JSON.parse(textPart.text) as Record<string, unknown>;
+          const added = Array.isArray(payload.added) ? (payload.added as string[]) : [];
+          const projectedHere: Record<string, string> = {};
+          const notProjectedHere: Record<string, string> = {};
+          await Promise.all(
+            added.map(async (id) => {
+              const outcome = await projector.projectNode(id);
+              if (outcome.kind === "projected") projectedHere[id] = outcome.dir;
+              else notProjectedHere[id] = outcome.reason;
+            }),
+          );
+          payload.projected = projectedHere;
+          payload.not_projected = notProjectedHere;
+          textPart.text = JSON.stringify(payload);
+        } catch {
+          /* unexpected shape -- pass through unchanged */
+        }
+      }
+      return result;
     }
     if (name === "portuni_get_node") {
       const result = await upstream.callTool({ name, arguments: args });
-      return enrichGetNodeResult(opts.client, identity.userId, homeNodeId, result as {
+      return enrichGetNodeResult(opts.client, identity.userId, homeNodeId, projector, result as {
         content: Array<{ type: string; text?: string }>;
         isError?: boolean;
       });
     }
     if (name === "portuni_get_context") {
       const result = await upstream.callTool({ name, arguments: args });
-      return enrichGetContextResult(opts.client, identity.userId, homeNodeId, result as {
+      return enrichGetContextResult(identity.userId, homeNodeId, projector, result as {
         content: Array<{ type: string; text?: string }>;
         isError?: boolean;
       });
@@ -485,11 +582,26 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
       // session goes with it. close() is idempotent, so overlap with the
       // explicit orphan cleanup below is harmless.
       transport.onclose = () => {
-        if (transport.sessionId) sessions.delete(transport.sessionId);
+        const closedSessionId = transport.sessionId;
+        if (closedSessionId) sessions.delete(closedSessionId);
         up.close().catch(() => undefined);
+        // Drop this session's own hardlink projection directory (#252) --
+        // mirrors disposeSessionProjection's local-mode cleanup, but simpler:
+        // this front door never uses the shared UNNARROWED_PROJECTION_ID
+        // bucket (every agent-mode session always has a real transport
+        // session id once initialized), so there is no "other session still
+        // reading the shared bucket" case to account for.
+        if (closedSessionId && homeNodeId) {
+          resolveProjectionRootForNode(identity.userId, homeNodeId)
+            .then((root) =>
+              root ? cleanupSessionProjection(root.projectionRoot, closedSessionId) : undefined,
+            )
+            .then(() => unregisterSessionProjections(closedSessionId))
+            .catch(() => undefined);
+        }
       };
 
-      const server = buildAgentServer(opts, up, identity, homeNodeId, downstreamCapabilities);
+      const server = buildAgentServer(opts, up, identity, homeNodeId, downstreamCapabilities, transport);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
 

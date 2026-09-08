@@ -686,6 +686,47 @@ symlink to this file.
   covered by tests, that live check is not. Model:
   `docs/architecture/scope-disk-projection.md`; plan:
   `docs/superpowers/plans/2026-07-06-scope-real-paths.md`.
+  **Seed/grant skew and central-mode projection (#252).** `readableMirrorRoot`
+  used to trust `scope.isSeed()` outright and return the real depth-1 mirror
+  path -- but that in-memory seed set is recomputed at MCP *connect* (after
+  the Seatbelt profile is already frozen at spawn), so a mirror registered or
+  an edge created in that gap could make a node look seed-granted without the
+  kernel ever having granted its real path. `DiskProjector.projectNode` now
+  hardlinks EVERY non-home in-scope node, seed or ad-hoc (only the home node
+  is skipped, reason `seed_granted`), and `readableMirrorRoot` prefers that
+  projection over the real mirror for a seed node too (falling back to the
+  real path only when nothing was projected yet) -- cost is a hardlink, nil.
+  `projectNode` returns a `ProjectOutcome` (`{kind:"projected",dir,files}` or
+  `{kind:"not_projected",reason}`, reasons `seed_granted | no_mirror |
+  no_projection_root | central`) instead of a bare nullable object; every
+  caller (`get-node.ts`, `context.ts`, `files.ts`'s `list_files`,
+  `expand_scope`) unwraps it, and `expand_scope` surfaces the reason map as
+  `not_projected` alongside `projected`. **Central/agent mode now projects
+  too**: `agent-transport.ts` builds its own tiny `ProjectorScope` per local
+  MCP session (home node id from `?home_node_id=`, `has` always true since
+  central's own `guardNodeRead` already ran, `projectionSessionId` the LOCAL
+  transport's own session id -- there is no durable `session_scope` row on
+  the device) and a real `DiskProjector` over it: `portuni_expand_scope`'s
+  `projected`/`not_projected` are overlaid with this device's own result
+  (central's own is structurally useless, no device filesystem), and
+  `enrichGetNodeResult`/`enrichGetContextResult` (`agent-tools.ts`) fill
+  `readable_path`/`local_path` the same way for ANY node with a local mirror
+  here, not just the depth-1 seed set. Cleanup rides on the local transport's
+  own `onclose` (`cleanupSessionProjection` + `unregisterSessionProjections`)
+  -- simpler than local mode's `disposeSessionProjection` since this front
+  door never uses the shared `_shared` bucket. **`portuni_get_node` gained
+  `readable_path`** (the same value as `local_path`'s per-file derivation,
+  promoted to the top level) -- `local_mirror` stays registration metadata,
+  not a read path. **`portuni_read_file` gained `as_path`**: past the 1 MB
+  cap (`MAX_READ_BYTES`, unchanged and still enforced) or on request, it
+  spills to a path inside the session's projection directory instead of
+  inline content -- `{path, bytes, mime}` (`mcp/read-file-spill.ts`) -- no
+  chunked-read (`offset`/`length`) parameter, since there is no server-side
+  grep and the agent would just page blindly through a large file; read the
+  path with your own Read/Grep instead. A node WITH a local mirror here
+  reuses the same hardlink projection (no copy); one with none downloads the
+  bytes once (`CentralClient.getFileRaw` over REST in agent mode, since that
+  front door has no graph db) and writes a real copy into the same directory.
 
 - **No automatic first prompt on spawn.** A terminal opened from a node
   detail (`buildAgentCommand`, `apps/web/src/lib/prompt.ts`) starts empty

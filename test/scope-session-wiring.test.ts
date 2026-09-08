@@ -51,9 +51,9 @@ describe("scope.onAdd -> disk projector wiring", () => {
     scope.add("ADHOC");
     // schedule() is fire-and-forget; await the deterministic projection.
     const result = await projector.projectNode("ADHOC");
-    assert.ok(result);
+    assert.equal(result.kind, "projected");
     assert.equal(
-      await readFile(join(result.dir, "wip", "x.md"), "utf8"),
+      await readFile(join((result as { dir: string }).dir, "wip", "x.md"), "utf8"),
       "content\n",
     );
   });
@@ -72,6 +72,9 @@ describe("scope.onAdd -> disk projector wiring", () => {
     scope.onAdd((id) => projector.schedule(id));
 
     scope.addSeed("HOME");
-    assert.equal(await projector.projectNode("HOME"), null);
+    assert.deepEqual(await projector.projectNode("HOME"), {
+      kind: "not_projected",
+      reason: "seed_granted",
+    });
   });
 });

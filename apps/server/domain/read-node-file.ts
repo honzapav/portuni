@@ -18,7 +18,8 @@
 // which rejects any traversal that would escape the mirror; the remote path
 // goes through the same validation buildRemotePath applies.
 
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
+import { dirname, extname } from "node:path";
 import type { Client } from "@libsql/client";
 import { getMirrorPath } from "./sync/mirror-registry.js";
 import { readFileBytesRemote } from "./sync/file-content-remote.js";
@@ -26,22 +27,28 @@ import { FileContentError } from "./sync/file-content.js";
 import { ensureUnderRoot } from "../shared/safe-path.js";
 
 // Guardrail: portuni_read_file returns whole-file content inline. Very large
-// files belong to the native-FS path (bring the node into the working set),
-// not this tool -- cap the inline payload so a huge file can't blow the
-// context window.
+// files belong to the disk-path path (as_path, or the too_large refusal
+// pointing at it -- see mcp/read-file-spill.ts), not this tool -- cap the
+// inline payload so a huge file can't blow the context window.
 export const MAX_READ_BYTES = 1_000_000;
 
 export type NodeFileContent =
   | { kind: "text"; text: string }
   | { kind: "binary"; base64: string; bytes: number }
-  | { kind: "too_large"; bytes: number }
+  // raw carries the full bytes (already read once to classify) so a caller
+  // that needs to spill an oversized file to disk (mcp/read-file-spill.ts)
+  // does not have to re-fetch it a second time.
+  | { kind: "too_large"; bytes: number; raw: Buffer }
   | { kind: "no_mirror" }
   | { kind: "no_remote" }
   | { kind: "native_format" }
   | { kind: "not_found" };
 
-function classifyBytes(bytes: Buffer): NodeFileContent {
-  if (bytes.length > MAX_READ_BYTES) return { kind: "too_large", bytes: bytes.length };
+// Exported for mcp/read-file-spill.ts, which fetches raw bytes itself (via a
+// db-backed read in local mode, or CentralClient.getFileRaw in agent mode)
+// and classifies them locally rather than through readNodeFile*.
+export function classifyBytes(bytes: Buffer): NodeFileContent {
+  if (bytes.length > MAX_READ_BYTES) return { kind: "too_large", bytes: bytes.length, raw: bytes };
   // NUL byte => treat as binary and hand back base64.
   if (bytes.includes(0)) {
     return { kind: "binary", base64: bytes.toString("base64"), bytes: bytes.length };
@@ -49,11 +56,18 @@ function classifyBytes(bytes: Buffer): NodeFileContent {
   return { kind: "text", text: bytes.toString("utf8") };
 }
 
-export async function readNodeFileFromMirror(
+type RawResult =
+  | { kind: "ok"; bytes: Buffer }
+  | { kind: "no_mirror" }
+  | { kind: "no_remote" }
+  | { kind: "native_format" }
+  | { kind: "not_found" };
+
+async function rawFromMirror(
   userId: string,
   nodeId: string,
   relPath: string,
-): Promise<NodeFileContent> {
+): Promise<Exclude<RawResult, { kind: "no_remote" } | { kind: "native_format" }>> {
   const mirror = await getMirrorPath(userId, nodeId);
   if (!mirror) return { kind: "no_mirror" };
   let abs: string;
@@ -62,27 +76,24 @@ export async function readNodeFileFromMirror(
   } catch {
     return { kind: "not_found" };
   }
-  let bytes: Buffer;
   try {
-    bytes = await readFile(abs);
+    return { kind: "ok", bytes: await readFile(abs) };
   } catch {
     return { kind: "not_found" };
   }
-  return classifyBytes(bytes);
 }
 
-// Drive-direct read against the node's routed remote, for a server with no
-// mirror of the node. Adapter/transport failures propagate (the tool then
-// reports them as an error result); only the "expected" outcomes are mapped
-// onto NodeFileContent.
-export async function readNodeFileFromRemote(
+// Drive-direct fetch against the node's routed remote, for a server with no
+// mirror of the node. Adapter/transport failures propagate; only the
+// "expected" outcomes are mapped onto RawResult.
+async function rawFromRemote(
   db: Client,
   nodeId: string,
   relPath: string,
-): Promise<NodeFileContent> {
-  let r: Awaited<ReturnType<typeof readFileBytesRemote>>;
+): Promise<Exclude<RawResult, { kind: "no_mirror" }>> {
   try {
-    r = await readFileBytesRemote(db, { nodeId, relPath });
+    const r = await readFileBytesRemote(db, { nodeId, relPath });
+    return { kind: "ok", bytes: r.bytes };
   } catch (e) {
     if (e instanceof FileContentError) {
       switch (e.code) {
@@ -99,7 +110,28 @@ export async function readNodeFileFromRemote(
     }
     throw e;
   }
-  return classifyBytes(r.bytes);
+}
+
+export async function readNodeFileFromMirror(
+  userId: string,
+  nodeId: string,
+  relPath: string,
+): Promise<NodeFileContent> {
+  const r = await rawFromMirror(userId, nodeId, relPath);
+  return r.kind === "ok" ? classifyBytes(r.bytes) : r;
+}
+
+// Drive-direct read against the node's routed remote, for a server with no
+// mirror of the node. Adapter/transport failures propagate (the tool then
+// reports them as an error result); only the "expected" outcomes are mapped
+// onto NodeFileContent.
+export async function readNodeFileFromRemote(
+  db: Client,
+  nodeId: string,
+  relPath: string,
+): Promise<NodeFileContent> {
+  const r = await rawFromRemote(db, nodeId, relPath);
+  return r.kind === "ok" ? classifyBytes(r.bytes) : r;
 }
 
 // Mirror first, remote when this machine holds no mirror of the node.
@@ -112,6 +144,57 @@ export async function readNodeFile(
   const local = await readNodeFileFromMirror(userId, nodeId, relPath);
   if (local.kind !== "no_mirror") return local;
   return readNodeFileFromRemote(db, nodeId, relPath);
+}
+
+// Raw bytes, no size cap and no text/binary classification: mirror first,
+// remote fallback when this machine holds no mirror of the node. Used by the
+// read-file spill path (mcp/read-file-spill.ts) to write a node's file to
+// disk when it has no local mirror to hardlink from.
+export async function readNodeFileRaw(
+  db: Client,
+  userId: string,
+  nodeId: string,
+  relPath: string,
+): Promise<Exclude<RawResult, { kind: "no_mirror" }>> {
+  const local = await rawFromMirror(userId, nodeId, relPath);
+  if (local.kind !== "no_mirror") return local;
+  return rawFromRemote(db, nodeId, relPath);
+}
+
+// Write bytes to a path inside a session's projection directory, creating
+// any missing parent directories. Used to spill a node's content there
+// when it has no local mirror to hardlink from instead.
+export async function writeBytesToPath(destPath: string, bytes: Buffer): Promise<void> {
+  await mkdir(dirname(destPath), { recursive: true });
+  await writeFile(destPath, bytes);
+}
+
+// Coarse extension-based MIME guess for a spilled file. Good enough for the
+// agent to decide how to open the path (e.g. treat .pdf/.html specially);
+// exact accuracy is not load-bearing since the agent reads the file itself.
+const MIME_BY_EXT: Record<string, string> = {
+  ".pdf": "application/pdf",
+  ".html": "text/html",
+  ".htm": "text/html",
+  ".md": "text/markdown",
+  ".txt": "text/plain",
+  ".json": "application/json",
+  ".csv": "text/csv",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".svg": "image/svg+xml",
+  ".zip": "application/zip",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".mp4": "video/mp4",
+  ".mp3": "audio/mpeg",
+};
+
+export function mimeFromExtension(path: string): string {
+  return MIME_BY_EXT[extname(path).toLowerCase()] ?? "application/octet-stream";
 }
 
 // Render a NodeFileContent as an MCP tool result. Shared by the local tool
@@ -133,7 +216,7 @@ export function formatNodeFileContent(
         content: [
           {
             type: "text",
-            text: `File is ${r.bytes} bytes, over the ${MAX_READ_BYTES}-byte inline limit. Bring the node into your working set to read it natively.`,
+            text: `File is ${r.bytes} bytes, over the ${MAX_READ_BYTES}-byte inline limit. Call again with as_path: true to get a disk path you can Read/Grep natively, or portuni_expand_scope this node and read its readable_path from portuni_get_node.`,
           },
         ],
         isError: true,

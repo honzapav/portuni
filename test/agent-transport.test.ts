@@ -44,8 +44,16 @@ const fakeCentral: CentralClient = {
   async registerFiles() {
     return [];
   },
-  async getFileRaw() {
-    throw new Error("not implemented");
+  // Stands in for central's Drive-direct GET /nodes/:id/file?encoding=base64
+  // -- the read-file spill path (#252) calls this directly instead of
+  // proxying the portuni_read_file tool call, so it needs real content for
+  // the "device holds no mirror" test below rather than throwing.
+  async getFileRaw(nodeId: string, relPath: string) {
+    return {
+      bytes: Buffer.from(`central-file:${nodeId}:${relPath}`),
+      version: "v1",
+      canonicalHash: "h1",
+    };
   },
   async putFileRaw() {
     throw new Error("not implemented");
@@ -177,6 +185,21 @@ function startStubCentral(): Promise<StubCentral> {
           content: [{ type: "text" as const, text: "CENTRAL SHOULD NOT SERVE THIS" }],
         }),
       );
+      // Central's own answer always has an empty/useless projected map (it
+      // has no device filesystem) -- the agent-transport overlay (#252)
+      // replaces it with this device's own projection.
+      mcp.tool(
+        "portuni_expand_scope",
+        { node_ids: z.array(z.string()), reason: z.string() },
+        async (a) => ({
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ added: a.node_ids, added_via: {}, projected: {}, not_projected: {} }),
+            },
+          ],
+        }),
+      );
       // Exists only to drive the capability-filtering test below: reports
       // what capabilities central actually saw from the agent-transport's
       // upstream Client at initialize, so the test can assert the front
@@ -296,16 +319,42 @@ describe("agent MCP front door", () => {
     assert.doesNotMatch(JSON.stringify(r.content), /CENTRAL SHOULD NOT SERVE THIS/);
   });
 
-  it("portuni_read_file proxies upstream when the device holds no mirror of the node", async () => {
-    // No mirror registered for this node on the device: central has the
-    // Drive-direct fallback, so the read goes upstream verbatim (after the
-    // get_node gate, which the stub answers for any node).
+  it("portuni_read_file fetches raw bytes from central when the device holds no mirror of the node", async () => {
+    // No mirror registered for this node on the device: after the get_node
+    // gate (which the stub answers for any node), the content is fetched via
+    // CentralClient.getFileRaw (#252 -- not proxied through central's own
+    // portuni_read_file tool call, so an oversized/as_path result could be
+    // spilled to this device's disk instead).
     const r = (await localClient.callTool({
       name: "portuni_read_file",
       arguments: { node_id: "01NOMIRROR000000000000000", path: "wip/n.md" },
     })) as { content: Array<{ text: string }>; isError?: boolean };
     assert.notEqual(r.isError, true, r.content[0]?.text);
     assert.equal(r.content[0].text, "central-file:01NOMIRROR000000000000000:wip/n.md");
+  });
+
+  it("portuni_expand_scope overlays this device's own projection (#252)", async () => {
+    const { registerMirror } = await import("../apps/server/domain/sync/mirror-registry.js");
+    const { mkdir: mkdirp, writeFile } = await import("node:fs/promises");
+    const mirrored = "01EXPANDMIRROR00000000000";
+    const noMirror = "01EXPANDNOMIRROR000000000";
+    const mirrorDir = join(workspace, "org", "projects", "expand-target");
+    await mkdirp(join(mirrorDir, "wip"), { recursive: true });
+    await writeFile(join(mirrorDir, "wip", "n.md"), "hi\n");
+    const { SOLO_USER } = await import("../apps/server/infra/schema.js");
+    await registerMirror(SOLO_USER, mirrored, mirrorDir);
+
+    const r = (await localClient.callTool({
+      name: "portuni_expand_scope",
+      arguments: { node_ids: [mirrored, noMirror], reason: "user-requested: test" },
+    })) as { content: Array<{ text: string }>; isError?: boolean };
+    assert.notEqual(r.isError, true, r.content[0]?.text);
+    const payload = JSON.parse(r.content[0].text) as {
+      projected: Record<string, string>;
+      not_projected: Record<string, string>;
+    };
+    assert.ok(payload.projected[mirrored], "mirrored node got a device-local projection");
+    assert.equal(payload.not_projected[noMirror], "no_mirror");
   });
 
   it("portuni_snapshot proxies to central and reports local_path null without a device mirror", async () => {

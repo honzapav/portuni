@@ -622,8 +622,8 @@ export function registerContextTools(server: McpServer, ctx: SessionCtx): void {
           allPayloadNodes
             .filter((n) => n.id !== scope.homeNodeId && scope.has(n.id))
             .map(async (n) => {
-              const r = await ctx.projector.projectNode(n.id);
-              projectionByNode.set(n.id, r?.dir ?? null);
+              const outcome = await ctx.projector.projectNode(n.id);
+              projectionByNode.set(n.id, outcome.kind === "projected" ? outcome.dir : null);
             }),
         );
         const homeMirror = scope.homeNodeId

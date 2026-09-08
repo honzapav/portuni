@@ -22,42 +22,87 @@ import {
 } from "../domain/session-projection.js";
 import type { SessionScope } from "./scope.js";
 
+// Narrow shape DiskProjector/readableMirrorRoot actually need from a scope --
+// satisfied structurally by SessionScope, but also by the lightweight
+// stand-in agent-transport.ts builds for a central-mode session (which has
+// no real SessionScope: no graph DB, no expansion history, nothing beyond a
+// home node id and a projection directory key).
+export interface ProjectorScope {
+  homeNodeId: string | null;
+  has(nodeId: string): boolean;
+  // True for a node granted its real mirror at spawn (home's depth-1
+  // neighbours). Only consulted by readableMirrorRoot's fallback below, not
+  // by DiskProjector itself (which always attempts to project every non-home
+  // node, seed or not -- see doProject). Callers with no such concept (the
+  // central-mode agent front door's shim) can return false unconditionally.
+  isSeed(nodeId: string): boolean;
+  projectionSessionId: string | null;
+}
+
+// Why a node was NOT hardlinked into the session's projection directory:
+//   seed_granted     - it is this session's own home node: already
+//                       real-mirror readable (rw, granted at spawn), never
+//                       needs a projection.
+//   no_mirror        - this device has no local mirror for the node.
+//   no_projection_root - PORTUNI_ROOT (or the projection session id) could
+//                       not be resolved -- nowhere to put the hardlink.
+//   central          - this session has no home node at all (e.g.
+//                       interactive_chat/connector sessions with no
+//                       anchor): there is no per-node projection root to
+//                       compute without one.
+export type NotProjectedReason = "seed_granted" | "no_mirror" | "no_projection_root" | "central";
+
+export type ProjectOutcome =
+  | { kind: "projected"; dir: string; files: number }
+  | { kind: "not_projected"; reason: NotProjectedReason };
+
 // The readable disk path (if any) for a node's files in a tool response:
-// - home / seed (depth-1) nodes: their real mirror (granted rw/ro at spawn).
-// - ad-hoc in-scope nodes: their projection directory, once created by
-//   DiskProjector.projectNode (passed in by the caller, which awaits that
-//   before building the response).
+// - home node: its real mirror (granted rw at spawn).
+// - seed (depth-1) node: its projection directory once created (preferred
+//   over the real mirror path even though it is USUALLY also granted,
+//   because the projection is unconditionally granted by the Seatbelt
+//   profile while the depth-1 real-mirror grant is frozen at spawn and can
+//   skew from the in-memory seed set recomputed at connect, #252) -- falls
+//   back to the real mirror when no projection was made yet (e.g. no
+//   PORTUNI_ROOT resolvable), matching the pre-#252 behavior for that case.
+// - ad-hoc in-scope node: its projection directory ONLY -- unlike a seed
+//   node, its real mirror was never granted by the Seatbelt profile in the
+//   first place, so falling back to it here would return an unreadable path.
 // - out-of-scope nodes: null (guardNodeRead already refused the read).
 export function readableMirrorRoot(args: {
-  scope: SessionScope;
+  scope: ProjectorScope;
   nodeId: string;
   homeMirror: string | null;
   realMirror: string | null;
   projectionDir?: string | null;
 }): string | null {
   const { scope, nodeId, realMirror, projectionDir } = args;
-  if (nodeId === scope.homeNodeId || scope.isSeed(nodeId)) return realMirror;
+  if (nodeId === scope.homeNodeId) return realMirror;
+  if (scope.isSeed(nodeId)) return projectionDir ?? realMirror ?? null;
   if (scope.has(nodeId)) return projectionDir ?? null;
   return null;
 }
 
 export interface DiskProjector {
-  // Ensure an ad-hoc node's local mirror (if this device has one) is
-  // hardlinked into this session's projection directory, and return where
-  // + how many files landed. Null when there is nothing to project: a
-  // home/seed node (already real-path granted), a node not in scope, no
-  // session id yet (persistence race), no PORTUNI_ROOT, or no local mirror
-  // for the node on this device (portuni_read_file still works for those).
-  projectNode(nodeId: string): Promise<{ dir: string; files: number } | null>;
+  // Ensure a non-home in-scope node's local mirror (if this device has one)
+  // is hardlinked into this session's projection directory, and return
+  // where + how many files landed, or why not (see NotProjectedReason).
+  // Always attempted for seed (depth-1) nodes too, not just ad-hoc ones --
+  // cheap (a hardlink) and closes the seed/grant skew #252 describes.
+  projectNode(nodeId: string): Promise<ProjectOutcome>;
   // Fire-and-forget variant for the scope.onAdd hook.
   schedule(nodeId: string): void;
 }
 
 type MirrorResolver = (userId: string, nodeId: string) => Promise<string | null>;
 
+function notProjected(reason: NotProjectedReason): ProjectOutcome {
+  return { kind: "not_projected", reason };
+}
+
 export function createDiskProjector(args: {
   userId: string;
-  scope: SessionScope;
+  scope: ProjectorScope;
   // Injectable for tests; defaults to the per-device mirror registry.
   resolveMirror?: MirrorResolver;
 }): DiskProjector {
@@ -66,33 +111,34 @@ export function createDiskProjector(args: {
   // Per-node in-flight dedup, same reasoning as the retired reconciler: an
   // awaited projectNode from a tool call and a fire-and-forget schedule()
   // from onAdd must not race and double-link/interleave the same node.
-  const inFlight = new Map<string, Promise<{ dir: string; files: number } | null>>();
+  const inFlight = new Map<string, Promise<ProjectOutcome>>();
 
-  async function doProject(nodeId: string): Promise<{ dir: string; files: number } | null> {
+  async function doProject(nodeId: string): Promise<ProjectOutcome> {
     const { scope, userId } = args;
-    if (nodeId === scope.homeNodeId || scope.isSeed(nodeId)) return null;
-    if (!scope.has(nodeId)) return null;
+    const homeNodeId = scope.homeNodeId;
+    if (!homeNodeId) return notProjected("central");
+    if (nodeId === homeNodeId) return notProjected("seed_granted");
+    if (!scope.has(nodeId)) return notProjected("no_mirror");
     // #211: the directory key is projectionSessionId, not sessionId -- see
     // mcp/scope.ts's doc comment. It is set synchronously by createMcpServer,
     // so (unlike the old sessionId-keyed guard this replaces) there is no
     // persistence race to wait out here.
     const projectionSessionId = scope.projectionSessionId;
-    const homeNodeId = scope.homeNodeId;
-    if (!projectionSessionId || !homeNodeId) return null;
+    if (!projectionSessionId) return notProjected("no_projection_root");
 
     const mirrorPath = await resolveMirror(userId, nodeId);
-    if (!mirrorPath) return null; // no local mirror to link from
+    if (!mirrorPath) return notProjected("no_mirror"); // no local mirror to link from
 
     const root = await resolveProjectionRootForNode(userId, homeNodeId);
-    if (!root) return null;
+    if (!root) return notProjected("no_projection_root");
 
     const dir = nodeProjectionDir(root.projectionRoot, projectionSessionId, nodeId);
     const files = await hardlinkNode(mirrorPath, dir);
     registerProjectedNode(nodeId, { sessionId: projectionSessionId, mirrorPath, targetDir: dir });
-    return { dir, files };
+    return { kind: "projected", dir, files };
   }
 
-  function projectNode(nodeId: string): Promise<{ dir: string; files: number } | null> {
+  function projectNode(nodeId: string): Promise<ProjectOutcome> {
     const running = inFlight.get(nodeId);
     if (running) return running;
     const p = doProject(nodeId).finally(() => inFlight.delete(nodeId));

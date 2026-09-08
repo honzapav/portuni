@@ -14,6 +14,7 @@
 // served the call.
 
 import type { CentralClient } from "../domain/sync/central/client.js";
+import type { DiskProjector } from "./disk-projection.js";
 import { CentralHttpError } from "../domain/sync/central/client.js";
 import {
   createMirrorForNodeCentral,
@@ -359,6 +360,12 @@ async function seedNodeIds(
 // an agent in central mode sees the same paths a local session would.
 //
 // - local_mirror: from getLocalMirror (registration metadata for any node).
+// - readable_path: the real mirror for the home node, this session's
+//   hardlink projection directory (projector, #252) for any other node with
+//   a local mirror here, null otherwise. By the time this runs, `id` has
+//   already passed central's own guardNodeRead (a scope refusal is an error
+//   result, returned above before this point), so no scope re-check is
+//   needed here -- only "is there a local mirror to read it from".
 // - files[].local_path: derived real paths for nodes in the seatbelt read set
 //   (home + depth-1 neighbours). Deeper ad-hoc nodes are not readable under
 //   the sandbox, so their files stay null rather than pointing at a denied
@@ -371,6 +378,7 @@ export async function enrichGetNodeResult<T extends ToolTextResult>(
   client: CentralClient,
   userId: string,
   homeNodeId: string | null,
+  projector: DiskProjector,
   result: T,
 ): Promise<T> {
   if (result.isError) return result;
@@ -396,6 +404,18 @@ export async function enrichGetNodeResult<T extends ToolTextResult>(
 
   const mirrorPath =
     (node.local_mirror as { local_path?: string } | null)?.local_path ?? null;
+  if (!node.readable_path) {
+    let readablePath: string | null = null;
+    if (mirrorPath) {
+      readablePath =
+        id === homeNodeId
+          ? mirrorPath
+          : await projector
+              .projectNode(id)
+              .then((o) => (o.kind === "projected" ? o.dir : null));
+    }
+    node.readable_path = readablePath;
+  }
   const seed = await seedNodeIds(client, homeNodeId);
   if (seed.has(id) && mirrorPath && Array.isArray(node.files)) {
     try {
@@ -432,14 +452,15 @@ export async function enrichGetNodeResult<T extends ToolTextResult>(
 
 // Overlay device-local `local_path` (each node's readable mirror root) onto a
 // proxied portuni_get_context result. Central serves every node's local_path
-// null; the seatbelt makes the seed set (home + depth-1 neighbours) readable
-// on their real mirrors, so fill local_path for those nodes (root or connected)
-// with their OWN real mirror. Deeper ad-hoc nodes stay null (not readable).
-// Any shape it does not recognise passes through unchanged.
+// null; fill it with the home node's own real mirror, or (#252) this
+// session's hardlink projection directory for any other node that has a
+// local mirror here -- every node in the payload already passed central's
+// own guardNodeRead to get there, so no scope re-check is needed here. Any
+// shape it does not recognise passes through unchanged.
 export async function enrichGetContextResult<T extends ToolTextResult>(
-  client: CentralClient,
   userId: string,
   homeNodeId: string | null,
+  projector: DiskProjector,
   result: T,
 ): Promise<T> {
   if (result.isError || !homeNodeId) return result;
@@ -453,17 +474,23 @@ export async function enrichGetContextResult<T extends ToolTextResult>(
   } catch {
     return result;
   }
-  const seed = await seedNodeIds(client, homeNodeId);
-  const fillIfSeed = async (n: unknown): Promise<void> => {
+  const fill = async (n: unknown): Promise<void> => {
     if (!n || typeof n !== "object") return;
     const node = n as Record<string, unknown>;
-    if (typeof node.id !== "string" || node.local_path || !seed.has(node.id)) return;
-    const p = await getMirrorPath(userId, node.id);
-    if (p) node.local_path = p;
+    if (typeof node.id !== "string" || node.local_path) return;
+    if (node.id === homeNodeId) {
+      const p = await getMirrorPath(userId, node.id);
+      if (p) node.local_path = p;
+      return;
+    }
+    const mirrorPath = await getMirrorPath(userId, node.id);
+    if (!mirrorPath) return;
+    const outcome = await projector.projectNode(node.id);
+    if (outcome.kind === "projected") node.local_path = outcome.dir;
   };
-  await fillIfSeed(payload.root);
+  await fill(payload.root);
   if (Array.isArray(payload.connected)) {
-    for (const n of payload.connected) await fillIfSeed(n);
+    for (const n of payload.connected) await fill(n);
   }
   const text = JSON.stringify(payload, null, 2);
   return {
