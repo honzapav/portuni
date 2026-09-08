@@ -15,8 +15,11 @@
 import type { Client } from "@libsql/client";
 import { ulid } from "ulid";
 import { getAdapter } from "./adapter-cache.js";
-import { deleteFileState } from "./local-db.js";
 import { relocateRemoteObject, writeRelocatedRecord } from "./file-relocation.js";
+import { removeLocalCopyAndState } from "./local-cleanup.js";
+import { getMirrorPath } from "./mirror-registry.js";
+import { resolveNodeInfo } from "./node-info.js";
+import { buildNodeRoot, deriveLocalPath } from "./remote-path.js";
 
 export type PendingOp =
   | {
@@ -224,7 +227,31 @@ async function runDelete(
     await adapter.delete(p.remote_path);
   }
   await db.execute({ sql: "DELETE FROM files WHERE id = ?", args: [row.file_id] });
-  await deleteFileState(row.file_id).catch(() => undefined);
+  // Resolve this device's own mirror copy, if any, and only clear
+  // file_state once it is actually confirmed gone (#275) -- destroying
+  // file_state.last_synced_hash before the local file is really gone
+  // erases the only proof the next sync's tombstone cleanup needs to
+  // recognize a leftover copy as this exact confirmed deletion; without it
+  // the file reads as new_local and gets adopted and pushed back,
+  // resurrecting the deletion this retry just confirmed. A local rm
+  // failure (or no mirror on this device at all) is not re-thrown here --
+  // the tombstone this function writes below already gives the next sync's
+  // discovery/cleanup pass everything it needs to finish the job later.
+  let localPath: string | null = null;
+  const mirrorRoot = await getMirrorPath(row.user_id, row.node_id);
+  if (mirrorRoot) {
+    try {
+      const info = await resolveNodeInfo(db, row.node_id);
+      localPath = deriveLocalPath({
+        mirrorRoot,
+        nodeRoot: buildNodeRoot(info),
+        remotePath: p.remote_path,
+      });
+    } catch {
+      localPath = null;
+    }
+  }
+  await removeLocalCopyAndState(localPath, row.file_id);
   await db.execute({
     sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
           VALUES (?, ?, 'sync_delete', 'file', ?, ?, ?)`,

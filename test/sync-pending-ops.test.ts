@@ -8,7 +8,7 @@ import { storeFile, registerLocalFile } from "../apps/server/domain/sync/engine.
 import { sha256Buffer } from "../apps/server/domain/sync/hash.js";
 import { moveFile, deleteFile } from "../apps/server/domain/sync/engine-mutations.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
-import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { resetLocalDbForTests, getFileState } from "../apps/server/domain/sync/local-db.js";
 import {
   resetAdapterCacheForTests,
   setAdapterForTests,
@@ -19,6 +19,14 @@ import {
   listPendingOps,
   retryPendingFileOps,
 } from "../apps/server/domain/sync/pending-ops.js";
+import { runNodeSync } from "../apps/server/domain/sync/sync-run.js";
+
+async function exists(p: string): Promise<boolean> {
+  return stat(p).then(
+    () => true,
+    () => false,
+  );
+}
 
 let workspace: string;
 let originalEnv: string | undefined;
@@ -119,7 +127,7 @@ describe("pending file ops", () => {
     assert.equal(row.rows[0].remote_path, to);
   });
 
-  it("a delete whose remote step fails is completed by the retry and leaves a tombstone", async () => {
+  it("a delete whose remote step fails is completed by the retry, leaves a tombstone, and removes the local copy + file_state", async () => {
     const { db, nodeId } = await makeSharedDb();
     const mirrorRoot = join(workspace, "mirror");
     await registerMirror("U1", nodeId, mirrorRoot);
@@ -146,6 +154,92 @@ describe("pending file ops", () => {
       args: [r.file_id],
     });
     assert.equal(tomb.rows.length, 1);
+    // #275: a successful local removal must also clear file_state -- the
+    // local mirror copy is confirmed gone here, so there is nothing left
+    // for a later tombstone cleanup to protect.
+    assert.equal(await exists(join(mirrorRoot, "wip", "a.md")), false);
+    assert.equal(await getFileState(r.file_id), null);
+  });
+
+  // #275: the retry executor used to delete file_state unconditionally,
+  // regardless of whether the local mirror copy was actually removed. When
+  // the local removal itself fails (permissions, a transient fs error, or
+  // -- as simulated here -- something else occupying the path), that
+  // destroyed the ONLY proof (file_state.last_synced_hash) the next sync's
+  // tombstone cleanup needs to recognize the leftover copy as this exact
+  // confirmed deletion rather than brand-new content -- so the file got
+  // silently re-adopted and pushed back, undoing the deletion.
+  it("a retry whose local removal fails preserves file_state so a later sync's tombstone cleanup can still finish the job, instead of resurrecting the file", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const r = await pushed(db, nodeId, mirrorRoot, "a.md");
+    const localPath = join(mirrorRoot, "wip", "a.md");
+    const originalHash = sha256Buffer(await readFile(localPath));
+
+    const real = await getAdapter(db, "test-fs");
+    let fail = true;
+    setAdapterForTests("test-fs", {
+      ...real,
+      delete: async (p: string) => {
+        if (fail) throw new Error("boom");
+        return real.delete(p);
+      },
+    });
+    const d = await deleteFile(db, { userId: "U1", fileId: r.file_id, confirmed: true });
+    assert.equal(d.status, "repair_needed");
+    fail = false;
+
+    // Simulate the local removal itself failing during the retry: replace
+    // the file at that exact path with a directory. rm(path, {force:true})
+    // (no recursive) throws EISDIR for a directory, the same "something
+    // went wrong locally" shape a permission error would produce.
+    await rm(localPath);
+    await mkdir(localPath);
+
+    const retry = await retryPendingFileOps(db, { userId: "U1", nodeId });
+    assert.deepEqual(retry.repaired, [{ file_id: r.file_id, op: "delete", filename: "a.md" }]);
+    const row = await db.execute({ sql: "SELECT id FROM files WHERE id = ?", args: [r.file_id] });
+    assert.equal(row.rows.length, 0, "remote + record deletion still completed");
+    const tomb = await db.execute({
+      sql: "SELECT id FROM audit_log WHERE action = 'sync_delete' AND target_id = ?",
+      args: [r.file_id],
+    });
+    assert.equal(tomb.rows.length, 1, "the tombstone is written regardless of the local outcome");
+
+    // The critical assertion: file_state survives the failed local removal
+    // with its synced baseline intact.
+    const state = await getFileState(r.file_id);
+    assert.ok(state, "file_state must survive a failed local removal");
+    assert.equal(state!.last_synced_hash, originalHash);
+
+    // Now simulate the fs issue resolving itself and the SAME content
+    // ending up back at that path (the realistic case: the blocking
+    // directory is removed and the retry's rm simply hadn't run yet, so
+    // the original bytes are still sitting right there).
+    await rm(localPath, { recursive: true, force: true });
+    await writeFile(localPath, `obsah a.md`); // identical to pushed()'s content
+
+    // A full sync run's discovery + tombstone-cleanup phase must now
+    // recognize this as the already-confirmed deletion and remove it --
+    // NOT adopt and push it back as new content.
+    const result = await runNodeSync(db, { userId: "U1", nodeId });
+    assert.deepEqual(
+      result.adopted.map((f) => f.filename),
+      [],
+      "the leftover copy must never be adopted/pushed back",
+    );
+    assert.ok(
+      result.deleted_remote.some((f) => f.file_id === r.file_id),
+      "tombstone cleanup must report removing the leftover copy",
+    );
+    assert.equal(await exists(localPath), false, "the leftover local copy is finally removed");
+    assert.equal(await getFileState(r.file_id), null, "file_state is cleaned up once the tombstone match completes");
+    const resurrected = await db.execute({
+      sql: "SELECT id FROM files WHERE node_id = ? AND filename = 'a.md'",
+      args: [nodeId],
+    });
+    assert.equal(resurrected.rows.length, 0, "no new files row was created for the leftover copy");
   });
 
   it("an op targeting an already-gone record and remote object completes as a no-op delete (idempotent)", async () => {

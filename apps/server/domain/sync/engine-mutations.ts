@@ -16,7 +16,7 @@ import type { FileRef } from "./types.js";
 import { ulid } from "ulid";
 import { getAdapter } from "./adapter-cache.js";
 import { resolveRemote } from "./routing.js";
-import { deleteFileState } from "./local-db.js";
+import { removeLocalCopyAndState } from "./local-cleanup.js";
 import { getMirrorPath } from "./mirror-registry.js";
 import { enqueuePendingOp, completePendingOp, failPendingOp } from "./pending-ops.js";
 import { relocateRemoteObject, writeRelocatedRecord } from "./file-relocation.js";
@@ -924,15 +924,13 @@ export async function deleteFile(
   // backfill sweep re-registered it right after the DB row was removed.
   // Best-effort: the file is just a cached copy. If this fails after the
   // remote already accepted the delete above, the DB row is still removed
-  // below (the source of truth is the remote, which is gone). The user can
-  // manually rm the orphan local file.
-  if (mode === "complete" && localPath) {
-    const { rm } = await import("node:fs/promises");
-    await rm(localPath, { force: true }).catch(() => undefined);
-  }
-
+  // below (the source of truth is the remote, which is gone) -- but
+  // file_state stays intact when the rm did not actually succeed (#275),
+  // so the next sync's tombstone cleanup can still recognize and remove
+  // the orphan later instead of it being silently re-adopted and pushed
+  // back as new content.
   await db.execute({ sql: "DELETE FROM files WHERE id = ?", args: [a.fileId] });
-  await deleteFileState(a.fileId).catch(() => undefined);
+  await removeLocalCopyAndState(mode === "complete" ? localPath : null, a.fileId);
 
   await db.execute({
     sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)

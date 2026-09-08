@@ -51,7 +51,8 @@ import { startSyncJob, getSyncJob, getCurrentSyncJob } from "../domain/sync/sync
 import { mimeFor, localHashFor, PullDirtyLocalError } from "../domain/sync/engine.js";
 import { safeMirrorJoin, type Section } from "../domain/sync/remote-path.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
-import { getLocalMirror, deleteFileState } from "../domain/sync/local-db.js";
+import { getLocalMirror } from "../domain/sync/local-db.js";
+import { removeLocalCopyAndState } from "../domain/sync/local-cleanup.js";
 import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
 import { MirrorCreateError } from "../domain/sync/mirror-create.js";
 import {
@@ -642,11 +643,14 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
         // edit would be lost for a delete that never happened.
         const r = await client.deleteFileRecord(nodeId, fileId);
         if (found && (r as { status?: unknown }).status === "ok") {
-          if (found.entry.local_path) {
-            const { rm } = await import("node:fs/promises");
-            await rm(found.entry.local_path, { force: true }).catch(() => undefined);
-          }
-          await deleteFileState(fileId).catch(() => undefined);
+          // file_state is only cleared once the local copy is actually
+          // confirmed gone (#275) -- otherwise a failed rm here left an
+          // orphan with no identity proof, which the next sync's discovery
+          // scan read as new content and adopted/pushed back, resurrecting
+          // a confirmed deletion. central.deleteFileRecord already wrote
+          // the tombstone, so a leftover copy is still cleaned up by that
+          // sync's tombstone cleanup even when this rm fails here.
+          await removeLocalCopyAndState(found.entry.local_path, fileId);
         }
         respondJson(res, 200, r);
       } catch (err) {

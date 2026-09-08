@@ -11,7 +11,7 @@ import type { CentralClient } from "../apps/server/domain/sync/central/client.js
 import { CentralHttpError } from "../apps/server/domain/sync/central/client.js";
 import type { NodeSyncInfo } from "../apps/server/domain/sync/sync-remote-api.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
-import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { resetLocalDbForTests, getFileState } from "../apps/server/domain/sync/local-db.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
 import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
 
@@ -714,6 +714,44 @@ describe("DELETE /nodes/:id/files/:fileId (agent mode, #254)", () => {
       s.files.some((f) => f.local_path === abs),
       "file_state / record still tracked",
     );
+  });
+
+  // #275: file_state used to be deleted unconditionally after a best-effort
+  // (swallowed) local rm, even when that rm actually failed -- destroying
+  // the only proof (last_synced_hash) a later sync's tombstone cleanup
+  // needs to recognize a leftover local copy as this exact confirmed
+  // deletion rather than new content to re-adopt and push back.
+  it("preserves file_state when the local removal itself fails, so the leftover copy is never resurrected", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const abs = join(mirrorRoot, "wip", "blocked.md");
+    await writeFile(abs, "obsah");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    const fileId = synced1.adopted[0].file_id;
+
+    // Simulate the local removal failing: replace the mirrored file with a
+    // directory at the same path. rm(path, {force:true}) (no recursive)
+    // throws EISDIR for a directory, the same "something went wrong
+    // locally" shape a permission error would produce.
+    await rm(abs);
+    await mkdir(abs);
+
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+      method: "DELETE",
+    });
+    assert.equal(r.status, 200);
+    const body = (await r.json()) as { status: string };
+    assert.equal(body.status, "ok", "the remote + record deletion itself still succeeds");
+    assert.deepEqual(fake.deleted, [{ fileId, remotePath: posix.join(NODE_ROOT, "wip/blocked.md") }]);
+
+    const state = await getFileState(fileId);
+    assert.ok(state, "file_state must survive a failed local removal");
+    assert.ok(state!.last_synced_hash, "synced baseline stays intact for a later tombstone match");
+    // The full resurrection-prevention cycle (a later sync's tombstone
+    // cleanup actually removing the leftover copy instead of re-adopting
+    // it) is proven at the shared domain layer in
+    // test/sync-pending-ops.test.ts -- FakeCentral here has no tombstone
+    // concept to exercise that same second half through this REST route.
   });
 
   it("rejects a delete without confirmed=true", async () => {

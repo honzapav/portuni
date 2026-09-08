@@ -1143,6 +1143,42 @@ symlink to this file.
   Obecné → Aktualizace as „naposledy zkontrolováno“ -- makes a silently
   broken schedule visible instead of indistinguishable from "checked, up
   to date."
+- **`file_state` is only ever cleared once a file's local removal is
+  actually confirmed, never as a "best-effort, who cares" side effect of a
+  swallowed `rm` (#275).** `file_state.last_synced_hash` is the ONLY proof
+  a later sync's tombstone cleanup (`matchDeleteTombstones` +
+  `cleanupDeletedRemote`, engine.ts -- same mechanism in central mode)
+  needs to recognize a leftover local copy as an already-confirmed
+  deletion rather than brand-new content to adopt and push back. Four
+  independent call sites shared the identical bug shape: best-effort
+  `rm(path, {force:true}).catch(() => undefined)` (or, for
+  `pending-ops.ts`'s retry executor, no local `rm` attempt AT ALL) followed
+  by an *unconditional* `deleteFileState` regardless of whether the local
+  file was actually gone. A remote delete that first failed, got queued as
+  a `pending_file_ops` row, and later succeeded on retry
+  (`pending-ops.ts`'s `runDelete`) was the worst case: the row and
+  `file_state` both vanished while the local mirror file sat untouched on
+  disk (`runDelete` had no local-cleanup step whatsoever before this fix) --
+  the very next sync's discovery scan read it as untracked new content,
+  adopted it, and pushed it back, **silently undoing a confirmed
+  deletion**. `engine-mutations.ts`'s `deleteFile` (the normal, non-retry
+  path), and the central-mode counterparts in `agent-router.ts`'s `DELETE
+  /nodes/:id/files/:fileId` and `agent-tools.ts`'s
+  `applyLocalAfterProxiedMutation` had the narrower version (an rm that
+  actually ran but failed -- permissions, a transient fs error -- still
+  got its failure swallowed and file_state destroyed anyway). All four
+  now go through `local-cleanup.ts`'s `removeLocalCopyAndState(localPath,
+  fileId)`: attempts the rm (ENOENT still counts as success, matching
+  `force:true`'s own semantics), and clears `file_state` **only** when
+  that succeeded. On any other failure, `file_state` -- and the tombstone
+  audit row every one of these paths already writes regardless of the
+  local outcome -- are enough on their own for the next deliberate sync's
+  tombstone-cleanup pass to finish the job; no separate retry queue was
+  needed for this. `runDelete` additionally now resolves this device's own
+  mirror path for the file it is retrying (`getMirrorPath` +
+  `resolveNodeInfo` + `deriveLocalPath`, the same resolution `deleteFile`
+  already did) -- previously it never even looked for a local copy to
+  clean up.
 
 ## Security rules (from the auth refactor post-mortem)
 

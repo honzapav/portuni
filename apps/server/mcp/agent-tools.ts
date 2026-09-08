@@ -668,8 +668,7 @@ export async function applyLocalAfterProxiedMutation(
   } catch {
     return null;
   }
-  const { rm } = await import("node:fs/promises");
-  const { deleteFileState } = await import("../domain/sync/local-db.js");
+  const { removeLocalCopyAndState } = await import("../domain/sync/local-cleanup.js");
   const { localHashFor } = await import("../domain/sync/engine.js");
 
   if (snapshot.tool === "portuni_delete_file") {
@@ -680,8 +679,11 @@ export async function applyLocalAfterProxiedMutation(
       nodeRoot: snapshot.nodeRoot,
       remotePath: snapshot.oldRemotePath,
     });
-    if (localPath) await rm(localPath, { force: true }).catch(() => undefined);
-    await deleteFileState(snapshot.fileId).catch(() => undefined);
+    // file_state is only cleared once the local copy is actually confirmed
+    // gone (#275) -- central already wrote the tombstone for this delete,
+    // so a leftover copy from a failed rm here is still cleaned up by the
+    // next sync's tombstone cleanup instead of being silently re-adopted.
+    await removeLocalCopyAndState(localPath, snapshot.fileId);
     client.invalidateSyncInfo(snapshot.nodeId);
     return null;
   }
