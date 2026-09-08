@@ -3,7 +3,7 @@
   "version": "0.13.4",
   "type": "module",
   "scripts": {
-    "build": "tsc && node -e \"const fs=require('node:fs'),path=require('node:path');const src='apps/server/mcp/resources',dst='dist/mcp/resources';fs.mkdirSync(dst,{recursive:true});for(const f of fs.readdirSync(src))if(f.endsWith('.md'))fs.copyFileSync(path.join(src,f),path.join(dst,f));\"",
+    "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx apps/server/index.ts",
     "test": "node --import tsx --test test/*.test.ts",
@@ -12,6 +12,7 @@
     "lint:fix": "biome check --write",
     "format": "biome format --write",
     "typecheck": "tsc --noEmit",
+    "gen:resources": "node scripts/gen-mcp-resources.mjs",
     "qa": "npm run lint:strict && npm run typecheck && npm test && npm run build",
     "backup": "varlock run -- node --import tsx scripts/backup-turso.ts",
     "build:sidecar": "node scripts/build-sidecar.mjs",
