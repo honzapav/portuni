@@ -130,6 +130,18 @@ class FakeCentral implements CentralClient {
   async remoteSweep() {
     return { adopted: [], deleted_on_remote: [], errors: [], repaired: [], pending_repairs: [] };
   }
+
+  // Record + remote deletion (the central half of DELETE /nodes/:id/files/:fileId).
+  deleted: Array<{ fileId: string; remotePath: string }> = [];
+  async deleteFileRecord(_nodeId: string, fileId: string) {
+    const entry = [...this.records.entries()].find(([, r]) => r.id === fileId);
+    if (!entry) throw new CentralHttpError("not found", 404, "NOT_FOUND");
+    const [remotePath] = entry;
+    this.records.delete(remotePath);
+    this.bytes.delete(remotePath);
+    this.deleted.push({ fileId, remotePath });
+    return { file_id: fileId, mode: "complete", deleted_at: new Date().toISOString(), status: "ok" };
+  }
 }
 
 let workspace: string;
@@ -538,6 +550,58 @@ describe("POST /nodes/:id/files/:fileId/resolve (agent mode)", () => {
       "unpushed local edit",
       "local copy must be untouched",
     );
+  });
+});
+
+describe("DELETE /nodes/:id/files/:fileId (agent mode, #254)", () => {
+  it("removes the record, the remote object, AND the local mirror copy", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const abs = join(mirrorRoot, "wip", "gone.md");
+    await writeFile(abs, "obsah");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    const fileId = synced1.adopted[0].file_id;
+    assert.ok(fake.bytes.has(posix.join(NODE_ROOT, "wip/gone.md")), "precondition: pushed to remote");
+
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+      method: "DELETE",
+    });
+    assert.equal(r.status, 200);
+    const body = (await r.json()) as { file_id: string; status: string };
+    assert.equal(body.file_id, fileId);
+    assert.equal(body.status, "ok");
+
+    assert.deepEqual(fake.deleted, [{ fileId, remotePath: posix.join(NODE_ROOT, "wip/gone.md") }]);
+    await assert.rejects(() => readFile(abs), "local mirror copy must be removed");
+  });
+
+  it("rejects a delete without confirmed=true", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await writeFile(join(mirrorRoot, "wip", "keep.md"), "obsah");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    const fileId = synced1.adopted[0].file_id;
+
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}`, { method: "DELETE" });
+    assert.equal(r.status, 400);
+    assert.equal(fake.deleted.length, 0);
+    await readFile(join(mirrorRoot, "wip", "keep.md"), "utf8"); // still there
+  });
+
+  it("404s when the file belongs to a different node than the URL (IDOR)", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await writeFile(join(mirrorRoot, "wip", "j.md"), "obsah");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    const fileId = synced1.adopted[0].file_id;
+
+    const OTHER_NODE_ID = "N0000000000000000000OTHER";
+    const r = await fetch(`${base}/nodes/${OTHER_NODE_ID}/files/${fileId}?confirmed=true`, {
+      method: "DELETE",
+    });
+    assert.equal(r.status, 404);
+    assert.equal(fake.deleted.length, 0);
+    await readFile(join(mirrorRoot, "wip", "j.md"), "utf8"); // still there
   });
 });
 

@@ -97,18 +97,26 @@ to `501 {error:"local_only", detail:"sync agent not running"}` in central mode
 /scope, /sandbox-profile
 /nodes/:id/mirror, /nodes/:id/sync-status, /nodes/:id/sync, /nodes/:id/sandbox-profile
 /nodes/:id/file
+DELETE /nodes/:id/files/:fileId
 ```
 
 So `local_only` now means exactly **"the local sync agent isn't up — sign
 in"**, not "this feature is unbuilt." `/nodes/:id/file` (GET/PUT) is on the
 list because the agent serves a device mirror from disk and proxies to central
-itself when there is no mirror. The file lifecycle is **not** on that list:
-`POST /nodes/:id/files`, `.../files/:id/rename`, `DELETE .../files/:id`, plus
-`/nodes/:id/file-url` and `/nodes/:id/folder-url` all forward to the central
-server, which serves them mirror-less and Drive-direct
-(`file-content-remote.ts`). The old "available only in local mode" frontend
-string has been removed; the 501 is caught as `LocalOnlyError`
-(`apps/web/src/api.ts`) and now reads as "not signed in."
+itself when there is no mirror. `DELETE /nodes/:id/files/:fileId` is on the
+list too (#254): the record + remote object are still adapter-direct on the
+central server (`agent-router.ts` calls `CentralClient.deleteFileRecord`,
+the exact same endpoint a non-agent-mode delete hits), but the device has to
+run its own disk-cleanup step (`rm` the mirror copy, drop the `file_state`
+row) afterward — the central server has no mirror to clean up, so without
+this the local copy survived every delete and the next backfill sweep
+re-registered it. The rest of the file lifecycle is **not** on that list:
+`POST /nodes/:id/files` and `.../files/:id/rename`, plus `/nodes/:id/file-url`
+and `/nodes/:id/folder-url`, all forward straight to the central server, which
+serves them mirror-less and Drive-direct (`file-content-remote.ts`). The old
+"available only in local mode" frontend string has been removed; the 501 is
+caught as `LocalOnlyError` (`apps/web/src/api.ts`) and now reads as "not
+signed in."
 
 ### Agent-mode MCP: how terminals work in central mode
 

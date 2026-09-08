@@ -44,7 +44,7 @@ import {
 } from "../domain/sync/central/engine-central.js";
 import { findEntryByFileId } from "../mcp/agent-tools.js";
 import { mimeFor, PullDirtyLocalError } from "../domain/sync/engine.js";
-import { getLocalMirror } from "../domain/sync/local-db.js";
+import { getLocalMirror, deleteFileState } from "../domain/sync/local-db.js";
 import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
 import { MirrorCreateError } from "../domain/sync/mirror-create.js";
 import {
@@ -363,6 +363,46 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
         }
         if (respondCentral404(res, err)) return true;
         respondError(res, `POST /nodes/${nodeId}/files/${fileId}/resolve`, err);
+      }
+      return true;
+    }
+
+    // Delete (#254): the record + remote step is adapter-direct on the
+    // central server (deleteFileRecord), same as a non-agent-mode delete --
+    // but the server has no device mirror to clean up, so without this
+    // handler the local copy stayed on disk and the mirror-watcher's
+    // backfill sweep re-registered it right after the DB row was removed.
+    // Confirm-first is enforced here rather than round-tripped through a
+    // preview: the only caller (the web UI's deleteFile()) always confirms
+    // client-side first and sends confirmed=true directly.
+    const deleteFileMatch = pathname.match(/^\/nodes\/([^/]+)\/files\/([^/]+)$/);
+    if (deleteFileMatch && method === "DELETE") {
+      const nodeId = decodeURIComponent(deleteFileMatch[1]);
+      const fileId = decodeURIComponent(deleteFileMatch[2]);
+      if (url.searchParams.get("confirmed") !== "true") {
+        respondJson(res, 400, { error: "confirmed=true required" });
+        return true;
+      }
+      try {
+        // Same IDOR guard as /resolve: the file must actually belong to
+        // THIS node before anything is touched.
+        const found = await findEntryByFileId(client, identity.userId, fileId);
+        if (!found || found.nodeId !== nodeId) {
+          respondJson(res, 404, { error: "file not found on this device" });
+          return true;
+        }
+        // Record + remote object first (the source of truth); only clean up
+        // the local copy once that has actually succeeded.
+        const r = await client.deleteFileRecord(nodeId, fileId);
+        if (found.entry.local_path) {
+          const { rm } = await import("node:fs/promises");
+          await rm(found.entry.local_path, { force: true }).catch(() => undefined);
+        }
+        await deleteFileState(fileId).catch(() => undefined);
+        respondJson(res, 200, r);
+      } catch (err) {
+        if (respondCentral404(res, err)) return true;
+        respondError(res, `DELETE /nodes/${nodeId}/files/${fileId}`, err);
       }
       return true;
     }

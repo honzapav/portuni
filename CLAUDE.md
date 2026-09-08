@@ -214,6 +214,32 @@ symlink to this file.
   producing a fresh duplicate record. `StatusResult.moved` (a bucket nothing
   ever populated, by design — pairing happens at reconcile time, not scan
   time) was removed rather than kept as a permanently-empty field.
+  **Deleting a file removes the local mirror copy too, in every data mode
+  (#254).** `deleteFile`'s local `rm` used to be nested inside the
+  `remoteName && remotePath` gate that guards the remote-object delete, so a
+  row registered while routing had not resolved (`remote_name` NULL, but
+  `remote_path` is always computed regardless — #201) skipped the local
+  delete entirely: the DB row and `file_state` vanished but the file
+  survived on disk, and the next backfill sweep re-registered it. The local
+  `rm` now runs whenever `mode === "complete"` and a local path resolved,
+  independent of whether there was anything to delete remotely. Central/
+  agent mode had the same gap for a completely different reason: the file
+  lifecycle (`POST /nodes/:id/files`, rename, delete) is adapter-direct on
+  the central server by design (it has no device mirror to clean up), so
+  `DELETE /nodes/:id/files/:fileId` deleted the record + remote object with
+  no local step and no `deleteFileState` call at all. `is_local_only_path`
+  (`apps/desktop/src/lib.rs`) now routes exactly that one sub-path (single
+  segment after `files/`, so it does not also catch `POST /files` or
+  `.../files/:id/rename`) to the local sync agent instead of straight to
+  central; `agent-router.ts`'s new handler calls the same
+  `CentralClient.deleteFileRecord` a non-agent-mode delete would hit for the
+  record + remote half, then runs the local `rm` + `deleteFileState` itself
+  afterward — the same shape as the GH #78 fix already gave the MCP
+  `portuni_delete_file`/`portuni_move_file` tools
+  (`agent-tools.ts`'s `isProxiedDiskMutation`/`applyLocalAfterProxiedMutation`),
+  just for the REST path the web UI's "Smazat" button actually uses. The
+  `/files/:fileId/resolve` and `/files` POST routing gaps are the same class
+  of bug but belong to #264/#266, not this fix.
 - **Drive sync has two auth paths sharing one adapter.** Desktop local
   workspaces connect via per-user OAuth: Settings → Synchronizace →
   `google_drive_connect` (`apps/desktop/src/auth.rs`, PKCE loopback) hands the

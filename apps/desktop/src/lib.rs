@@ -1202,11 +1202,18 @@ fn open_external(url: String) -> Result<(), String> {
 ///                                 files open in the editor, and falls back to
 ///                                 central itself when there is no mirror or
 ///                                 the file is pull-pending
+///   DELETE /nodes/:id/files/:fileId — file delete (#254): the record+remote
+///                                 half is still adapter-direct on the
+///                                 server, but the device's own local sync
+///                                 agent needs to run the disk-cleanup step
+///                                 (rm the mirror copy + drop file_state) the
+///                                 central server has no way to do itself, so
+///                                 this one sub-path routes to the sidecar
+///                                 instead of straight to central.
 ///
-/// NOT local-only (served from the central server): the file lifecycle
-/// (POST /nodes/:id/files, POST /nodes/:id/files/:fileId/rename,
-/// DELETE /nodes/:id/files/:fileId) is adapter-direct on the server, so it
-/// forwards in central mode.
+/// NOT local-only (served from the central server): the rest of the file
+/// lifecycle (POST /nodes/:id/files, POST /nodes/:id/files/:fileId/rename)
+/// is adapter-direct on the server, so it forwards in central mode.
 /// /nodes/:id/folder-url and /nodes/:id/file-url also stay central (Drive URL
 /// lookups on the server). All graph, actor, responsibility, etc. routes are
 /// central.
@@ -1226,10 +1233,15 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
 
     // Node sub-paths that are local-only.
     // Matches: /nodes/<id>/mirror, /nodes/<id>/sync-status, /nodes/<id>/sync,
-    //          /nodes/<id>/sandbox-profile, /nodes/<id>/file (content)
+    //          /nodes/<id>/sandbox-profile, /nodes/<id>/file (content),
+    //          /nodes/<id>/files/<fileId> (delete, #254 -- exactly one
+    //          segment after "files/", so this does NOT also match
+    //          /nodes/<id>/files (create, POST) or
+    //          /nodes/<id>/files/<fileId>/rename or .../resolve, which stay
+    //          central/local-tool-served as they are today).
     //
-    // NOT matched (served centrally): /nodes/<id>/files and
-    // /nodes/<id>/files/* (B3 lifecycle), /nodes/<id>/file-url,
+    // NOT matched (served centrally): /nodes/<id>/files (create),
+    // /nodes/<id>/files/<fileId>/rename, /nodes/<id>/file-url,
     // /nodes/<id>/folder-url.
     if let Some(rest) = p.strip_prefix("/nodes/") {
         // rest = "<id>/<sub>" or "<id>/<sub>/..."
@@ -1242,6 +1254,11 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
                 || sub == "file"
             {
                 return true;
+            }
+            if let Some(file_seg) = sub.strip_prefix("files/") {
+                if !file_seg.is_empty() && !file_seg.contains('/') {
+                    return true;
+                }
             }
         }
     }
@@ -3932,10 +3949,23 @@ mod local_only_path_tests {
     }
 
     #[test]
-    fn node_files_sub_path_is_central_phase_b() {
-        // Rename + delete also forward to the central server.
+    fn node_files_rename_is_central_phase_b() {
+        // Rename still forwards to the central server (record + remote step
+        // only, no device-local cleanup needed).
         assert!(!is_local_only_path("/nodes/abc123/files/somefile.md/rename"));
-        assert!(!is_local_only_path("/nodes/abc123/files/somefileid"));
+    }
+
+    #[test]
+    fn node_files_delete_is_local_only() {
+        // DELETE /nodes/:id/files/:fileId (#254): the device runs the local
+        // disk-cleanup step the central server cannot do itself.
+        assert!(is_local_only_path("/nodes/abc123/files/somefileid"));
+    }
+
+    #[test]
+    fn node_files_resolve_is_still_central_phase_b() {
+        // Not covered by #254 -- the /resolve routing gap belongs to #264.
+        assert!(!is_local_only_path("/nodes/abc123/files/somefileid/resolve"));
     }
 
     #[test]
@@ -4017,6 +4047,7 @@ mod local_only_path_tests {
         assert!(!is_local_only_path("/graph?filter=all"));
         // file-url stays central even though it shares the /file prefix.
         assert!(!is_local_only_path("/nodes/abc/file-url?file_id=xyz"));
+        assert!(is_local_only_path("/nodes/abc/files/fileid?confirmed=true"));
     }
 }
 

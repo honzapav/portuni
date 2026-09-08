@@ -119,6 +119,14 @@ The watcher also understands the two everyday shell operations:
   the record and the remote copy and shows as "deleted locally" for an
   explicit decision.
 
+A deliberate delete — the Files tab's "Smazat" button, or `portuni_delete_file`
+— is a different action from the on-disk `rm` above: it removes the record,
+the remote object, **and** the local mirror copy, in every data mode. A
+central-mode/agent workspace routes the disk-cleanup half through the local
+sync agent (`DELETE /nodes/:id/files/:fileId` is served by the device, not
+proxied straight to the central server, precisely so the mirror copy does
+not survive the delete and get re-registered by the next backfill sweep).
+
 Deletions made elsewhere (web UI, MCP tool, another device, or straight in
 Drive) propagate back to every device through delete tombstones: an
 untracked disk copy that matches a tombstone — same path, same file
