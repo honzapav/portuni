@@ -37,6 +37,7 @@ import {
 } from "./remote-path.js";
 import { FileContentError } from "./file-content.js";
 import { enqueuePendingOp, completePendingOp, failPendingOp } from "./pending-ops.js";
+import { withPathLock } from "./path-lock.js";
 
 const SECTIONS = ["wip", "outputs", "resources"] as const;
 
@@ -250,48 +251,56 @@ export async function writeFileContentRemote(
 
   const adapter = await getAdapter(db, remoteName);
 
-  // Conflict check against the current REMOTE bytes. stat-gated so a genuine
-  // adapter.get() failure is never silently treated as "no current bytes".
-  if (a.baseVersion && !a.force) {
-    const stat = await adapter.stat(remotePath);
-    if (stat) {
-      if (stat.is_native_format) {
-        throw new FileContentError(`file is a native format, not editable text: ${a.relPath}`, "NOT_EDITABLE");
-      }
-      const current = await adapter.get(remotePath);
-      const currentVersion = sha256Buffer(current);
-      if (currentVersion !== a.baseVersion) {
-        throw new FileContentError(
-          "file changed on the remote since it was opened",
-          "CONFLICT",
-          currentVersion,
-        );
+  // Serialized per remote path (#277 finding 3's coordinator, mirror-less
+  // half): this is only an in-process lock, not a real storage-level
+  // precondition -- it closes the race between two writes going through
+  // THIS server, not a genuinely concurrent write to the same Drive object
+  // from another process/device. A real fix needs adapter-level conditional
+  // writes (Drive ETag/If-Match); tracked as a known gap.
+  return withPathLock(`${remoteName}:${remotePath}`, async () => {
+    // Conflict check against the current REMOTE bytes. stat-gated so a genuine
+    // adapter.get() failure is never silently treated as "no current bytes".
+    if (a.baseVersion && !a.force) {
+      const stat = await adapter.stat(remotePath);
+      if (stat) {
+        if (stat.is_native_format) {
+          throw new FileContentError(`file is a native format, not editable text: ${a.relPath}`, "NOT_EDITABLE");
+        }
+        const current = await adapter.get(remotePath);
+        const currentVersion = sha256Buffer(current);
+        if (currentVersion !== a.baseVersion) {
+          throw new FileContentError(
+            "file changed on the remote since it was opened",
+            "CONFLICT",
+            currentVersion,
+          );
+        }
       }
     }
-  }
 
-  const bytes = Buffer.from(a.content, "utf8");
-  const ref = await adapter.put(remotePath, bytes, mime ? { mimeType: mime } : undefined);
+    const bytes = Buffer.from(a.content, "utf8");
+    const ref = await adapter.put(remotePath, bytes, mime ? { mimeType: mime } : undefined);
 
-  // Refresh the canonical hash on the file record so the graph plane matches
-  // the bytes now on the remote. Use whatever the backend reports as its
-  // canonical hash (Drive: md5, fs: sha256), falling back to sha256 of the
-  // bytes -- the same selection storeFile makes. remote_name is also
-  // (re)written here (#201): getFileRecord's lookup no longer filters on it,
-  // so `record` may be a row registered locally before this remote existed
-  // (remote_name NULL) -- this backfills it, same as storeFile's upsert.
-  if (record) {
-    const canonicalHash = ref.hash ? ref.hash.toLowerCase() : sha256Buffer(bytes);
-    const now = new Date().toISOString();
-    await db.execute({
-      sql: `UPDATE files
-            SET remote_name = ?, current_remote_hash = ?, last_pushed_by = ?, last_pushed_at = ?, updated_at = ?
-            WHERE id = ?`,
-      args: [remoteName, canonicalHash, a.userId, now, now, record.id],
-    });
-  }
+    // Refresh the canonical hash on the file record so the graph plane matches
+    // the bytes now on the remote. Use whatever the backend reports as its
+    // canonical hash (Drive: md5, fs: sha256), falling back to sha256 of the
+    // bytes -- the same selection storeFile makes. remote_name is also
+    // (re)written here (#201): getFileRecord's lookup no longer filters on it,
+    // so `record` may be a row registered locally before this remote existed
+    // (remote_name NULL) -- this backfills it, same as storeFile's upsert.
+    if (record) {
+      const canonicalHash = ref.hash ? ref.hash.toLowerCase() : sha256Buffer(bytes);
+      const now = new Date().toISOString();
+      await db.execute({
+        sql: `UPDATE files
+              SET remote_name = ?, current_remote_hash = ?, last_pushed_by = ?, last_pushed_at = ?, updated_at = ?
+              WHERE id = ?`,
+        args: [remoteName, canonicalHash, a.userId, now, now, record.id],
+      });
+    }
 
-  return { version: sha256Buffer(bytes) };
+    return { version: sha256Buffer(bytes) };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -400,81 +409,86 @@ export async function writeFileBytesRemote(
   }
   const adapter = await getAdapter(db, remoteName);
 
-  // Stat-only preconditions (sync agent path): no byte download needed.
-  if ((a.ifAbsent || a.baseCanonicalHash) && !a.force) {
-    const stat = await adapter.stat(remotePath);
-    if (stat?.is_native_format) {
-      throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
-    }
-    if (a.ifAbsent && stat) {
-      // The object's presence -- and, when the backend reports one on
-      // stat, its hash -- is proven right here; persist it before throwing
-      // so this record does not stay stuck as remote_missing forever (#273).
-      await backfillRemoteHash(db, record, stat.hash?.toLowerCase() ?? null);
-      throw new FileContentError(`file already exists on the remote: ${a.relPath}`, "EXISTS");
-    }
-    if (a.baseCanonicalHash && stat) {
-      let current = stat.hash?.toLowerCase() ?? null;
-      if (current === null) {
-        // Backend reports no hash on stat (e.g. the fs adapter): fall back
-        // to hashing the current bytes with the algorithm the base hash
-        // implies. Drive reports md5 on stat, so its hot path stays
-        // metadata-only.
-        const bytes = await adapter.get(remotePath);
-        current =
-          a.baseCanonicalHash.length === 32 ? md5Buffer(bytes) : sha256Buffer(bytes);
-      }
-      // Persist the freshly observed hash regardless of whether it matches
-      // the precondition below -- either way this device just proved what
-      // the remote's canonical hash actually is right now (#273).
-      await backfillRemoteHash(db, record, current);
-      if (current !== a.baseCanonicalHash.toLowerCase()) {
-        throw new FileContentError(
-          "file changed on the remote since the last sync",
-          "CONFLICT",
-          current,
-        );
-      }
-    }
-  }
-
-  // Same conflict contract as the text write: baseVersion is the sha256 of
-  // the remote bytes the writer last saw; stat-gated so an adapter failure
-  // is never treated as "no current bytes".
-  if (a.baseVersion && !a.force) {
-    const stat = await adapter.stat(remotePath);
-    if (stat) {
-      if (stat.is_native_format) {
+  // Serialized per remote path (#277 finding 3's coordinator, same in-process
+  // caveat as writeFileContentRemote) -- every precondition check and the
+  // eventual put must be atomic against another writer of this same object.
+  return withPathLock(`${remoteName}:${remotePath}`, async () => {
+    // Stat-only preconditions (sync agent path): no byte download needed.
+    if ((a.ifAbsent || a.baseCanonicalHash) && !a.force) {
+      const stat = await adapter.stat(remotePath);
+      if (stat?.is_native_format) {
         throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
       }
-      const current = await adapter.get(remotePath);
-      const currentVersion = sha256Buffer(current);
-      if (currentVersion !== a.baseVersion) {
-        throw new FileContentError(
-          "file changed on the remote since it was opened",
-          "CONFLICT",
-          currentVersion,
-        );
+      if (a.ifAbsent && stat) {
+        // The object's presence -- and, when the backend reports one on
+        // stat, its hash -- is proven right here; persist it before throwing
+        // so this record does not stay stuck as remote_missing forever (#273).
+        await backfillRemoteHash(db, record, stat.hash?.toLowerCase() ?? null);
+        throw new FileContentError(`file already exists on the remote: ${a.relPath}`, "EXISTS");
+      }
+      if (a.baseCanonicalHash && stat) {
+        let current = stat.hash?.toLowerCase() ?? null;
+        if (current === null) {
+          // Backend reports no hash on stat (e.g. the fs adapter): fall back
+          // to hashing the current bytes with the algorithm the base hash
+          // implies. Drive reports md5 on stat, so its hot path stays
+          // metadata-only.
+          const bytes = await adapter.get(remotePath);
+          current =
+            a.baseCanonicalHash.length === 32 ? md5Buffer(bytes) : sha256Buffer(bytes);
+        }
+        // Persist the freshly observed hash regardless of whether it matches
+        // the precondition below -- either way this device just proved what
+        // the remote's canonical hash actually is right now (#273).
+        await backfillRemoteHash(db, record, current);
+        if (current !== a.baseCanonicalHash.toLowerCase()) {
+          throw new FileContentError(
+            "file changed on the remote since the last sync",
+            "CONFLICT",
+            current,
+          );
+        }
       }
     }
-  }
 
-  const mime = mimeFor(filename);
-  const ref = await adapter.put(remotePath, a.bytes, mime ? { mimeType: mime } : undefined);
-  const canonicalHash = ref.hash ? ref.hash.toLowerCase() : sha256Buffer(a.bytes);
+    // Same conflict contract as the text write: baseVersion is the sha256 of
+    // the remote bytes the writer last saw; stat-gated so an adapter failure
+    // is never treated as "no current bytes".
+    if (a.baseVersion && !a.force) {
+      const stat = await adapter.stat(remotePath);
+      if (stat) {
+        if (stat.is_native_format) {
+          throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
+        }
+        const current = await adapter.get(remotePath);
+        const currentVersion = sha256Buffer(current);
+        if (currentVersion !== a.baseVersion) {
+          throw new FileContentError(
+            "file changed on the remote since it was opened",
+            "CONFLICT",
+            currentVersion,
+          );
+        }
+      }
+    }
 
-  if (record) {
-    const now = new Date().toISOString();
-    // remote_name backfill: see writeFileContentRemote's identical comment.
-    await db.execute({
-      sql: `UPDATE files
-            SET remote_name = ?, current_remote_hash = ?, last_pushed_by = ?, last_pushed_at = ?, updated_at = ?
-            WHERE id = ?`,
-      args: [remoteName, canonicalHash, a.userId, now, now, record.id],
-    });
-  }
+    const mime = mimeFor(filename);
+    const ref = await adapter.put(remotePath, a.bytes, mime ? { mimeType: mime } : undefined);
+    const canonicalHash = ref.hash ? ref.hash.toLowerCase() : sha256Buffer(a.bytes);
 
-  return { version: sha256Buffer(a.bytes), canonical_hash: canonicalHash };
+    if (record) {
+      const now = new Date().toISOString();
+      // remote_name backfill: see writeFileContentRemote's identical comment.
+      await db.execute({
+        sql: `UPDATE files
+              SET remote_name = ?, current_remote_hash = ?, last_pushed_by = ?, last_pushed_at = ?, updated_at = ?
+              WHERE id = ?`,
+        args: [remoteName, canonicalHash, a.userId, now, now, record.id],
+      });
+    }
+
+    return { version: sha256Buffer(a.bytes), canonical_hash: canonicalHash };
+  });
 }
 
 // ---------------------------------------------------------------------------

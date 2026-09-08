@@ -77,7 +77,11 @@ tombstones. Order:
 3. Status scan.
 4. Push `push` candidates, pull `pull` candidates. `deleted_local` is
    reported, not auto-pulled -- restoring a locally deleted file is an
-   explicit decision.
+   explicit decision. Every push/pull of a given local path is serialized
+   against any other push or pull of that same path on this device, so a
+   mid-push edit is rehashed instead of masked as clean, and a pull's
+   dirty-local check can't be raced by a write landing after the check but
+   before the overwrite.
 5. Tombstone cleanup of untracked local copies that match a delete or
    move/rename tombstone.
 6. Adopt any remaining untracked local file (including an edited copy

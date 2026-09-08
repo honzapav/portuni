@@ -1201,6 +1201,39 @@ symlink to this file.
   local-vs-last-synced instead of ever proving the remote changed) -- not
   a new gap this fix introduces, a pre-existing structural limit it does
   not attempt to lift.
+- **Push/pull is serialized per local path; a central sync-run push now
+  rehashes a mid-upload edit too (#277).** Every read-check-write sequence
+  that touches a mirrored file used to run with no coordination against any
+  OTHER mutation of that same path -- a pull's dirty-local check and its
+  overwrite were not atomic against a concurrent push (or another pull), so
+  an edit landing in the gap could be silently destroyed; and
+  `pushEntryCentral` (the sync-run bulk-push path, `engine-central.ts`) had
+  no pre/post-stat guard at all, unlike `storeFileCentral`'s
+  `portuni_store`-equivalent single push -- a mid-upload edit there read as
+  clean and was never pushed. `path-lock.ts`'s `withPathLock(key, fn)` is a
+  generic per-key async mutex (chains promises per key, cleans up its own
+  map entry once nothing is queued behind it) now wrapping the whole
+  check-then-write critical section of `engine.ts`'s `pullFile`/`storeFile`,
+  `engine-central.ts`'s `pullFileCentral`/`storeFileCentral`/
+  `pushEntryCentral`, and `file-content.ts`'s `writeFileContent` (all keyed
+  by local absolute path), plus `file-content-remote.ts`'s
+  `writeFileContentRemote`/`writeFileBytesRemote` (the mirror-less
+  central-editor path, keyed by `remote_name:remote_path` instead --
+  there's no local path to key on). `pushEntryCentral` also gained the same
+  pre-stat-before-read + post-stat-after-put rehash `storeFileCentral`
+  already had (#266), so a sync-run's bulk push no longer masks a
+  concurrent edit as clean either. The lock is in-process only -- it
+  serializes calls going through THIS server, not a genuinely concurrent
+  write to the same Drive object from another device or process; real
+  storage-level preconditions (Drive ETag/If-Match) remain a known gap,
+  called out where `writeFileContentRemote`/`writeFileBytesRemote` take the
+  lock. `pending-pushes.ts` (#266's background-push tracker, previously
+  private to `agent-router.ts`) moved to `domain/sync/pending-pushes.ts` so
+  `agent-transport.ts`'s MCP proxied-mutation dispatch
+  (`portuni_delete_file`/`portuni_move_file`) can await the same in-flight
+  background push agent-router.ts's REST handlers already did -- the MCP
+  path had the identical race #266 fixed on the REST side, just never
+  wired to the same tracker.
 
 ## Security rules (from the auth refactor post-mortem)
 

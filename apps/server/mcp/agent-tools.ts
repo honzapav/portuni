@@ -620,7 +620,7 @@ export async function snapshotForDiskMutation(
   };
 }
 
-function deriveOrNull(a: {
+export function deriveOrNull(a: {
   mirrorRoot: string;
   nodeRoot: string;
   remotePath: string;

@@ -38,6 +38,9 @@ class FakeCentral implements CentralClient {
     { id: string; filename: string; status: string; is_native_format: boolean }
   >();
   bytes = new Map<string, Buffer>();
+  // When set, putFileRaw awaits this before reading/writing bytes -- lets a
+  // test simulate an edit landing while an upload is in flight.
+  putDelay: Promise<void> | null = null;
   // Delete tombstones the server would derive from audit_log (GH #79).
   deleted: Array<{ file_id: string; remote_path: string }> = [];
   nextId = 1;
@@ -132,6 +135,7 @@ class FakeCentral implements CentralClient {
     bytes: Buffer,
     opts?: { baseVersion?: string; force?: boolean },
   ) {
+    if (this.putDelay) await this.putDelay;
     const remotePath = posix.join(NODE_ROOT, relPath);
     const cur = this.bytes.get(remotePath);
     if (opts?.baseVersion && !opts.force && cur && sha(cur) !== opts.baseVersion) {
@@ -360,6 +364,43 @@ describe("statusScanCentral", () => {
     await writeFile(abs, "v3-local");
     scan = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID });
     assert.equal(scan.conflicts.length, 1);
+  });
+
+  it("an edit landing while a sync-run push is in flight stays push, not clean (#277 finding 7)", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "raced.md");
+    await writeFile(abs, "v1");
+    await registerLocalFileCentral(c, { userId: "U1", nodeId: NODE_ID, localPath: abs });
+
+    let release: (() => void) | undefined;
+    c.putDelay = new Promise<void>((r) => {
+      release = r;
+    });
+    const runPromise = syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+    // Let the push read "v1" and call putFileRaw, which is now blocked.
+    await new Promise((res) => setTimeout(res, 20));
+    await writeFile(abs, "v2 -- edited while the sync run's push was in flight");
+    release?.();
+    c.putDelay = null;
+    const run = await runPromise;
+    assert.equal(run.errors.length, 0, JSON.stringify(run.errors));
+
+    // The remote now holds "v1" (what was read before the edit), but the
+    // local file is "v2" -- a fast scan (cached_local_hash, no rehash) must
+    // not report this as clean, or the edit would silently never get pushed.
+    const scan = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID, fast: true });
+    assert.equal(
+      scan.push_candidates.some((f) => f.filename === "raced.md"),
+      true,
+      `expected raced.md to still be a push candidate: ${JSON.stringify(scan)}`,
+    );
+    assert.equal(scan.clean.some((f) => f.filename === "raced.md"), false);
+    assert.equal(
+      c.bytes.get(posix.join(NODE_ROOT, "wip/raced.md"))?.toString("utf8"),
+      "v1",
+      "the remote only ever saw the bytes read before the edit",
+    );
   });
 
   it("deleted local file (after sync) reports deleted_local", async () => {

@@ -15,6 +15,7 @@ import { getMirrorPath } from "./mirror-registry.js";
 import { mimeFor, storeFile } from "./engine.js";
 import { sha256Buffer } from "./hash.js";
 import { safeMirrorJoin, type Section } from "./remote-path.js";
+import { withPathLock } from "./path-lock.js";
 
 export type FileContentErrorCode =
   | "NO_MIRROR"
@@ -112,29 +113,36 @@ export async function writeFileContent(
   if (!mirrorRoot) throw new FileContentError("node has no local mirror", "NO_MIRROR");
   const abs = resolveMirrorAbs(mirrorRoot, a.relPath);
 
-  if (a.baseVersion && !a.force) {
-    let current: Buffer | null = null;
-    try {
-      current = await readFile(abs);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    }
-    if (current) {
-      const currentVersion = sha256Buffer(current);
-      if (currentVersion !== a.baseVersion) {
-        throw new FileContentError(
-          "file changed on disk since it was opened",
-          "CONFLICT",
-          currentVersion,
-        );
+  // Serialized per local path (#277 finding 3/4's shared coordinator): the
+  // conflict check above and the write below must be atomic against any
+  // other writer of this same path (a concurrent save, a pull, a push) or
+  // an edit landing in the gap is either silently lost or silently
+  // clobbers a change the CONFLICT check was meant to catch.
+  return withPathLock(abs, async () => {
+    if (a.baseVersion && !a.force) {
+      let current: Buffer | null = null;
+      try {
+        current = await readFile(abs);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      }
+      if (current) {
+        const currentVersion = sha256Buffer(current);
+        if (currentVersion !== a.baseVersion) {
+          throw new FileContentError(
+            "file changed on disk since it was opened",
+            "CONFLICT",
+            currentVersion,
+          );
+        }
       }
     }
-  }
 
-  await mkdir(dirname(abs), { recursive: true });
-  const bytes = Buffer.from(a.content, "utf8");
-  await writeFile(abs, bytes);
-  return { version: sha256Buffer(bytes) };
+    await mkdir(dirname(abs), { recursive: true });
+    const bytes = Buffer.from(a.content, "utf8");
+    await writeFile(abs, bytes);
+    return { version: sha256Buffer(bytes) };
+  });
 }
 
 export async function createFile(

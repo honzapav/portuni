@@ -53,6 +53,7 @@ import { safeMirrorJoin, type Section } from "../domain/sync/remote-path.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { getLocalMirror } from "../domain/sync/local-db.js";
 import { removeLocalCopyAndState } from "../domain/sync/local-cleanup.js";
+import { trackPendingPush, clearPendingPushIfCurrent, awaitPendingPush } from "../domain/sync/pending-pushes.js";
 import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
 import { MirrorCreateError } from "../domain/sync/mirror-create.js";
 import {
@@ -180,18 +181,6 @@ export type AgentRouteFn = (
   url: URL,
   identity: RequestIdentity,
 ) => Promise<boolean>;
-
-// Background uploads started by POST /nodes/:id/files (#266), keyed by the
-// mirror path they push. Delete/resolve on the same path await the entry
-// (awaitPendingPush) so the upload cannot land after the record is gone.
-// Rename is routed here as well, so every file mutation on this device
-// waits for it.
-const pendingPushes = new Map<string, Promise<void>>();
-
-async function awaitPendingPush(localPath: string): Promise<void> {
-  const p = pendingPushes.get(localPath);
-  if (p) await p;
-}
 
 export function createAgentRouter(client: CentralClient): AgentRouteFn {
   return async (req, res, url, identity) => {
@@ -472,19 +461,21 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
         // the bytes with an ifAbsent precondition (no last_synced_hash yet
         // on a brand-new record), then writes the last_synced_hash baseline
         // that flips the row from "push" to "clean".
-        // Tracked per path so a later delete/resolve on the same file waits
-        // for it (awaitPendingPush) instead of racing the upload -- an
-        // adapter.put landing after the record was deleted would recreate
-        // the remote object as an orphan and undo the confirmed delete.
+        // Tracked per path (pending-pushes.ts, shared with agent-transport.ts's
+        // MCP dispatch, #277) so a later delete/resolve/move on the same
+        // file -- through EITHER entry point -- waits for it
+        // (awaitPendingPush) instead of racing the upload: an adapter.put
+        // landing after the record was deleted would recreate the remote
+        // object as an orphan and undo the confirmed delete.
         const push = storeFileCentral(client, { userId: identity.userId, nodeId, localPath: abs })
           .then(() => undefined)
           .catch((e) => {
             console.error(`[portuni:agent] background push after create failed for ${abs}:`, e);
           })
           .finally(() => {
-            if (pendingPushes.get(abs) === push) pendingPushes.delete(abs);
+            clearPendingPushIfCurrent(abs, push);
           });
-        pendingPushes.set(abs, push);
+        trackPendingPush(abs, push);
       } catch (err) {
         if (respondCentral404(res, err)) return true;
         respondError(res, `POST /nodes/${nodeId}/files`, err);

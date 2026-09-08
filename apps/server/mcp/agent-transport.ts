@@ -61,7 +61,9 @@ import {
   snapshotForDiskMutation,
   applyLocalAfterSnapshot,
   applyLocalAfterProxiedMutation,
+  deriveOrNull,
 } from "./agent-tools.js";
+import { awaitPendingPush } from "../domain/sync/pending-pushes.js";
 import { guardWrite, writeGuardError, type WriteContext } from "../domain/write-gate.js";
 import { createElicitorFromServer, AGENT_RELAY_ELICIT_TIMEOUT_MS } from "./elicit.js";
 import { CentralHttpError, type CentralClient } from "../domain/sync/central/client.js";
@@ -406,6 +408,25 @@ function buildAgentServer(
         name,
         args,
       ).catch(() => null);
+      // #277 finding 8: a create's background push (agent-router.ts's
+      // POST /nodes/:id/files, #266) answers before its adapter.put lands,
+      // tracked per local path so a later mutation on the same file waits
+      // for it first. That tracking used to be visible only to
+      // agent-router.ts's OWN REST handlers -- an MCP portuni_delete_file/
+      // portuni_move_file call reaching this proxied-mutation path had no
+      // way to see it, so the exact same race (a delayed put landing after
+      // the record is already gone/moved, resurrecting it as an orphan)
+      // was reachable through the MCP tool path even though the REST path
+      // already guarded against it. pending-pushes.ts is now shared by
+      // both dispatchers.
+      if (snapshot?.oldRemotePath) {
+        const localPath = deriveOrNull({
+          mirrorRoot: snapshot.mirrorRoot,
+          nodeRoot: snapshot.nodeRoot,
+          remotePath: snapshot.oldRemotePath,
+        });
+        if (localPath) await awaitPendingPush(localPath);
+      }
       const result = (await upstream.callTool({ name, arguments: args })) as {
         content?: Array<{ type: string; text?: string }>;
         isError?: boolean;
