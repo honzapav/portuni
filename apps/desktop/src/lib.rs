@@ -1220,13 +1220,26 @@ fn open_external(url: String) -> Result<(), String> {
 ///                                 mirror to resolve against at all
 ///                                 (409 on keep_local, 500 on take_remote/
 ///                                 restore).
+///   POST /nodes/:id/files       — create (#266): a device with a mirror
+///                                 writes the file there and registers the
+///                                 record without waiting on the Drive
+///                                 upload, pushing in the background --
+///                                 central's own create does the Drive PUT
+///                                 before answering, which left the device
+///                                 with no sync baseline once the editor's
+///                                 own local-only save landed, permanently
+///                                 misclassified as a conflict. A device
+///                                 with no mirror for the node still
+///                                 forwards to central via the agent-router
+///                                 handler's own fallback (CentralClient
+///                                 .createFile), so this is safe to route
+///                                 here unconditionally.
 ///
 /// NOT local-only (served from the central server): the rest of the file
-/// lifecycle (POST /nodes/:id/files, POST /nodes/:id/files/:fileId/rename)
-/// is adapter-direct on the server, so it forwards in central mode.
-/// /nodes/:id/folder-url and /nodes/:id/file-url also stay central (Drive URL
-/// lookups on the server). All graph, actor, responsibility, etc. routes are
-/// central.
+/// lifecycle (POST /nodes/:id/files/:fileId/rename) is adapter-direct on
+/// the server, so it forwards in central mode. /nodes/:id/folder-url and
+/// /nodes/:id/file-url also stay central (Drive URL lookups on the
+/// server). All graph, actor, responsibility, etc. routes are central.
 pub(crate) fn is_local_only_path(path: &str) -> bool {
     // Strip query string for matching.
     let p = path.split('?').next().unwrap_or(path);
@@ -1244,22 +1257,21 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
     // Node sub-paths that are local-only.
     // Matches: /nodes/<id>/mirror, /nodes/<id>/sync-status, /nodes/<id>/sync,
     //          /nodes/<id>/sandbox-profile, /nodes/<id>/file (content),
-    //          /nodes/<id>/files/<fileId> (delete, #254 -- exactly one
-    //          segment after "files/") and
-    //          /nodes/<id>/files/<fileId>/resolve (#264) -- neither of
-    //          which also matches /nodes/<id>/files (create, POST) or
-    //          /nodes/<id>/files/<fileId>/rename, which stay central as
-    //          they are today.
+    //          /nodes/<id>/files (create, #266), /nodes/<id>/files/<fileId>
+    //          (delete, #254 -- exactly one segment after "files/") and
+    //          /nodes/<id>/files/<fileId>/resolve (#264). None of these
+    //          also matches /nodes/<id>/files/<fileId>/rename, which stays
+    //          central as it is today.
     //
-    // NOT matched (served centrally): /nodes/<id>/files (create),
-    // /nodes/<id>/files/<fileId>/rename, /nodes/<id>/file-url,
-    // /nodes/<id>/folder-url.
+    // NOT matched (served centrally): /nodes/<id>/files/<fileId>/rename,
+    // /nodes/<id>/file-url, /nodes/<id>/folder-url.
     if let Some(rest) = p.strip_prefix("/nodes/") {
         // rest = "<id>/<sub>" or "<id>/<sub>/..."
         if let Some(slash) = rest.find('/') {
             let sub = &rest[slash + 1..];
             if sub == "mirror"
                 || sub == "sync-status"
+                || sub == "files"
                 || sub == "sync"
                 || sub == "sandbox-profile"
                 || sub == "file"
@@ -3955,10 +3967,12 @@ mod local_only_path_tests {
     }
 
     #[test]
-    fn node_files_create_is_central_phase_b() {
-        // File lifecycle (create) is served adapter-direct by
-        // the central server, so /nodes/:id/files must NOT be gated local-only.
-        assert!(!is_local_only_path("/nodes/abc123/files"));
+    fn node_files_create_is_local_only() {
+        // Create (#266): the device writes the file into its own mirror
+        // and registers it without waiting on the Drive upload; a device
+        // with no mirror for the node still forwards to central via the
+        // agent-router handler's own fallback.
+        assert!(is_local_only_path("/nodes/abc123/files"));
     }
 
     #[test]

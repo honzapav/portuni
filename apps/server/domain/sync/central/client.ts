@@ -40,6 +40,22 @@ export interface CentralClient {
   syncInfoBatch(nodeIds: string[]): Promise<NodeSyncInfo[]>;
   registerFile(nodeId: string, relPath: string): Promise<RegisterFileRecordResult>;
   registerFiles(nodeId: string, relPaths: string[]): Promise<RegisterFileRecordResult[]>;
+  // Mirror-less create (POST /nodes/:id/files), adapter-direct on the
+  // central server -- used only when THIS device has no mirror for the
+  // node (#266); a device with a mirror creates locally instead (writes
+  // the file into the mirror, registers record-only, pushes in the
+  // background) rather than routing through this call.
+  createFile(
+    nodeId: string,
+    args: { filename: string; section?: string; subpath?: string | null; content?: string },
+  ): Promise<{
+    id: string;
+    filename: string;
+    status: string;
+    local_path: string | null;
+    relative_path: string | null;
+    mime_type: string | null;
+  }>;
   getFileRaw(
     nodeId: string,
     relPath: string,
@@ -234,6 +250,21 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       invalidate(nodeId);
       if (r.status !== 201) throwFor(r.status, p, r.json);
       return (r.json as { files: RegisterFileRecordResult[] }).files;
+    },
+
+    async createFile(nodeId, args) {
+      const p = `/nodes/${encodeURIComponent(nodeId)}/files`;
+      const r = await request("POST", p, args);
+      invalidate(nodeId);
+      if (r.status !== 201) throwFor(r.status, p, r.json);
+      return r.json as {
+        id: string;
+        filename: string;
+        status: string;
+        local_path: string | null;
+        relative_path: string | null;
+        mime_type: string | null;
+      };
     },
 
     async getFileRaw(nodeId, relPath) {

@@ -97,6 +97,7 @@ to `501 {error:"local_only", detail:"sync agent not running"}` in central mode
 /scope, /sandbox-profile
 /nodes/:id/mirror, /nodes/:id/sync-status, /nodes/:id/sync, /nodes/:id/sandbox-profile
 /nodes/:id/file
+POST /nodes/:id/files
 DELETE /nodes/:id/files/:fileId
 POST /nodes/:id/files/:fileId/resolve
 ```
@@ -118,12 +119,34 @@ correctly against the device's own mirror (`findEntryByFileId` +
 `storeFileCentral`/`pullFileCentral`), but nothing routed the desktop UI's
 REST call there before this fix — it went straight to central, which has no
 mirror to resolve against at all (409 on `keep_local`, 500 on
-`take_remote`/`restore`). The rest of the file lifecycle is **not** on that
-list: `POST /nodes/:id/files` and `.../files/:id/rename`, plus
-`/nodes/:id/file-url` and `/nodes/:id/folder-url`, all forward straight to
-the central server, which serves them mirror-less and Drive-direct
-(`file-content-remote.ts`). The old "available only in local mode" frontend
-string has been removed; the 501 is
+`take_remote`/`restore`).
+
+`POST /nodes/:id/files` (create) is on the list too, for a different reason
+(#266): central's own create is adapter-direct — it does the Drive `PUT`
+before answering — so a device with a mirror never got a sync baseline for
+the new file before the editor's own local-only save landed, which the
+watcher then classified as a **permanent conflict** (a local hash with no
+`last_synced_hash` against a remote hash of `md5("")`, indistinguishable
+from a real conflict once it happens). With a mirror on this device,
+`agent-router.ts` instead writes the file into the mirror and registers the
+record **without waiting on the Drive upload** — the response comes back as
+soon as the record exists, not after a round trip to Drive — and pushes in
+the background; until that background push lands, the file reads as an
+ordinary `push` classification (registered, no `current_remote_hash` yet,
+local hash cached), exactly like any other freshly-created local file, then
+`clean` once the push completes. A device with **no** mirror for the node
+still forwards to central via the handler's own fallback
+(`CentralClient.createFile`, a new method wrapping the same
+`POST /nodes/:id/files` central already serves) — this route is unconditional
+in `is_local_only_path`, so the agent-router handler itself decides per node
+whether to serve it locally or forward it, the same shape as the `/file`
+GET/PUT fallback above.
+
+The rest of the file lifecycle is **not** on that list: `POST
+/nodes/:id/files/:fileId/rename`, plus `/nodes/:id/file-url` and
+`/nodes/:id/folder-url`, all forward straight to the central server, which
+serves them mirror-less and Drive-direct (`file-content-remote.ts`). The old
+"available only in local mode" frontend string has been removed; the 501 is
 caught as `LocalOnlyError` (`apps/web/src/api.ts`) and now reads as "not
 signed in."
 

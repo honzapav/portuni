@@ -13,6 +13,8 @@
 // engine makes carries the user's device token.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { Client } from "@libsql/client";
 import { z } from "zod";
 import type { RequestIdentity } from "../auth/request-identity.js";
@@ -41,9 +43,12 @@ import {
   storeFileCentral,
   pullFileCentral,
   syncRunCentral,
+  registerLocalFileCentral,
 } from "../domain/sync/central/engine-central.js";
 import { findEntryByFileId } from "../mcp/agent-tools.js";
 import { mimeFor, PullDirtyLocalError } from "../domain/sync/engine.js";
+import { safeMirrorJoin, type Section } from "../domain/sync/remote-path.js";
+import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { getLocalMirror, deleteFileState } from "../domain/sync/local-db.js";
 import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
 import { MirrorCreateError } from "../domain/sync/mirror-create.js";
@@ -153,6 +158,14 @@ const agentPutFileSchema = z.object({
   content: z.string(),
   baseVersion: z.string().optional(),
   force: z.boolean().optional(),
+});
+
+// Same shape as api/files.ts's createSchema -- kept in sync deliberately.
+const agentCreateFileSchema = z.object({
+  filename: z.string().min(1),
+  section: z.enum(["wip", "outputs", "resources"]).optional(),
+  subpath: z.string().nullish(),
+  content: z.string().optional(),
 });
 
 export type AgentRouteFn = (
@@ -308,6 +321,100 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
       } catch (err) {
         if (respondCentral404(res, err)) return true;
         respondError(res, `POST /nodes/${nodeId}/sync`, err);
+      }
+      return true;
+    }
+
+    // Create (#266): a device with a mirror owns the bytes, same as local
+    // mode's createFile -- write into the mirror, register the record
+    // WITHOUT waiting on the Drive upload, and push in the background.
+    // Central's own create (adapter-direct) does adapter.put before
+    // answering, taking ~2s and leaving the device with no baseline at all
+    // once the editor's own local-only save lands -- reconcile then sees a
+    // local hash with no last_synced_hash and a remote hash of md5(""),
+    // which is a genuine (if permanent) conflict from its point of view.
+    // Skipping straight to the mirror avoids ever creating that state:
+    // the record starts in the ordinary "push" classification (registered,
+    // current_remote_hash null, local hash cached) and only becomes clean
+    // once the background push lands, exactly like any other new local file.
+    const createFileMatch = pathname.match(/^\/nodes\/([^/]+)\/files$/);
+    if (createFileMatch && method === "POST") {
+      const nodeId = decodeURIComponent(createFileMatch[1]);
+      const body = await parseJsonBody(req, res, agentCreateFileSchema);
+      if (!body) return true;
+      const filename = body.filename;
+      if (
+        filename.includes("/") ||
+        filename.includes("\\") ||
+        filename.includes("\0") ||
+        filename === "." ||
+        filename === ".."
+      ) {
+        respondJson(res, 400, { error: `invalid filename: ${filename}`, code: "INVALID_PATH" });
+        return true;
+      }
+      const section: Section = body.section ?? "wip";
+      try {
+        const mirrorRoot = await getMirrorPath(identity.userId, nodeId);
+        if (!mirrorRoot) {
+          // No mirror on this device: central creates it directly
+          // (mirror-less, adapter-direct) exactly as a non-agent-mode
+          // create would.
+          const f = await client.createFile(nodeId, {
+            filename,
+            section,
+            subpath: body.subpath ?? null,
+            content: body.content,
+          });
+          respondJson(res, 201, f);
+          return true;
+        }
+        const subSegs = body.subpath ? body.subpath.split("/").filter((s) => s.length > 0) : [];
+        let abs: string;
+        try {
+          abs = safeMirrorJoin(mirrorRoot, section, ...subSegs, filename);
+        } catch {
+          respondJson(res, 400, { error: "invalid path", code: "INVALID_PATH" });
+          return true;
+        }
+        try {
+          await readFile(abs);
+          respondJson(res, 409, { error: `file already exists: ${filename}`, code: "EXISTS" });
+          return true;
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+        }
+        await mkdir(dirname(abs), { recursive: true });
+        await writeFile(abs, Buffer.from(body.content ?? "", "utf8"));
+
+        // Record-only register -- no Drive call, so this answers fast.
+        const reg = await registerLocalFileCentral(client, {
+          userId: identity.userId,
+          nodeId,
+          localPath: abs,
+        });
+        const relative_path = abs.startsWith(`${mirrorRoot}/`)
+          ? abs.slice(mirrorRoot.length + 1)
+          : [section, ...subSegs, filename].join("/");
+        respondJson(res, 201, {
+          id: reg.file_id,
+          filename,
+          status: section === "outputs" ? "output" : "wip",
+          local_path: abs,
+          relative_path,
+          mime_type: mimeFor(filename),
+        });
+        // Push to Drive in the background -- the response above must not
+        // wait on it. storeFileCentral re-registers (idempotent) and PUTs
+        // the bytes with an ifAbsent precondition (no last_synced_hash yet
+        // on a brand-new record), then writes the last_synced_hash baseline
+        // that flips the row from "push" to "clean".
+        storeFileCentral(client, { userId: identity.userId, nodeId, localPath: abs }).catch((e) => {
+          console.error(`[portuni:agent] background push after create failed for ${abs}:`, e);
+        });
+      } catch (err) {
+        if (respondCentral404(res, err)) return true;
+        respondError(res, `POST /nodes/${nodeId}/files`, err);
       }
       return true;
     }

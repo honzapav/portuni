@@ -127,6 +127,20 @@ sync agent (`DELETE /nodes/:id/files/:fileId` is served by the device, not
 proxied straight to the central server, precisely so the mirror copy does
 not survive the delete and get re-registered by the next backfill sweep).
 
+Creating a file — the Files tab's "+ Nový soubor" button — is served the
+same way in a central-mode/agent workspace: `POST /nodes/:id/files` writes
+the file into the device's own mirror and registers it centrally **without
+waiting on the Drive upload**, so the new file appears and opens instantly
+either way. Central's own create (used only when this device has no mirror
+for the node) uploads to Drive before answering, which used to leave a
+device with a mirror no sync baseline at all for the file it had just
+created — the editor's own save landed locally with no `last_synced_hash`
+to compare against, so the very next sync run misclassified it as a
+permanent conflict instead of an ordinary unpushed file. The new file shows
+as an ordinary unpushed ("push") file until the background upload lands,
+then clean — the same lifecycle as any other file you create directly in
+the mirror.
+
 Deletions made elsewhere (web UI, MCP tool, another device, or straight in
 Drive) propagate back to every device through delete tombstones: an
 untracked disk copy that matches a tombstone — same path, same file

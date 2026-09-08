@@ -248,6 +248,33 @@ symlink to this file.
   `restore`). Fixed the same way as the delete route: one more sub-path
   match (`files/<fileId>/resolve`, alongside the existing bare
   `files/<fileId>` for delete).
+  **`POST /nodes/:id/files` (create) got the same routing fix, for a
+  different reason (#266).** Central's own create is adapter-direct — it
+  does the Drive `PUT` before answering — so a device with a mirror never
+  got a sync baseline for the new file before the editor's own local-only
+  save landed; the watcher then classified it a permanent conflict (local
+  hash, no `last_synced_hash`, remote hash `md5("")`) instead of an
+  ordinary unpushed file — `classifyRecord`'s "no baseline → conflict" rule
+  is correct given those inputs, the inputs were just wrong. `is_local_only_path`
+  now routes `POST /nodes/:id/files` (bare, `sub == "files"`) to the
+  sidecar unconditionally; `agent-router.ts`'s handler itself decides per
+  node: with a mirror, it writes the file into the mirror and calls
+  `registerLocalFileCentral` (record-only, no Drive call) so the response
+  comes back **without waiting on the Drive upload** — the addendum on the
+  issue was explicit that this must stay instant, since central's own
+  ~2s-to-answer create was itself part of the UX problem — then fires
+  `storeFileCentral` in the background (not awaited; a failure is logged,
+  not surfaced, same as any other watcher-adjacent best-effort push). Until
+  that lands the row reads as an ordinary `push` classification (registered,
+  `current_remote_hash` null, local hash cached), then `clean` once the
+  background push's `upsertFileState` writes `last_synced_hash` — exactly
+  the same lifecycle a file created directly in the mirror already has.
+  Without a mirror on this device, the handler falls back to a new
+  `CentralClient.createFile` method wrapping the same `POST
+  /nodes/:id/files` central already serves (mirror-less, adapter-direct) —
+  central is reached this way, not by the desktop proxy, since the route is
+  now local-only for every node regardless of whether THIS device happens
+  to mirror it.
 - **Drive sync has two auth paths sharing one adapter.** Desktop local
   workspaces connect via per-user OAuth: Settings → Synchronizace →
   `google_drive_connect` (`apps/desktop/src/auth.rs`, PKCE loopback) hands the
