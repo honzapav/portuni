@@ -18,6 +18,7 @@ import {
   projectNode as hardlinkNode,
   registerProjectedNode,
   unregisterSessionProjections,
+  unregisterSessionProjectionsUnder,
   UNNARROWED_PROJECTION_ID,
 } from "../domain/session-projection.js";
 import type { SessionScope } from "./scope.js";
@@ -184,12 +185,13 @@ async function sweepSharedProjectionIfIdle(
     args: excludeSessionId ? [homeNodeId, excludeSessionId] : [homeNodeId],
   });
   if (other.rows.length > 0) return;
-  // Registry entries go together with the directory: a stale _shared entry
-  // would make the next watcher relink recreate the removed bucket (mkdir +
-  // hardlink) for a scope no running session holds anymore.
-  unregisterSessionProjections(UNNARROWED_PROJECTION_ID);
   const root = await resolveProjectionRootForNode(userId, homeNodeId);
   if (!root) return;
+  // Registry entries go together with the directory: a stale _shared entry
+  // would make the next watcher relink recreate the removed bucket (mkdir +
+  // hardlink) for a scope no running session holds anymore. Scoped to THIS
+  // home node's root -- other home nodes' shared buckets stay registered.
+  unregisterSessionProjectionsUnder(UNNARROWED_PROJECTION_ID, root.projectionRoot);
   await rm(join(root.projectionRoot, UNNARROWED_PROJECTION_ID), { recursive: true, force: true });
 }
 

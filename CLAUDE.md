@@ -276,6 +276,11 @@ symlink to this file.
   `current_remote_hash` null, local hash cached), then `clean` once the
   background push's `upsertFileState` writes `last_synced_hash` — exactly
   the same lifecycle a file created directly in the mirror already has.
+  That upload is tracked per mirror path (`pendingPushes`); a delete or
+  resolve on the same file awaits it (`awaitPendingPush`) so the
+  `adapter.put` cannot land after the record is gone and resurrect the
+  remote object. Rename stays central-routed and is not coordinated — a
+  rename inside that window leaves a stray object the next sweep adopts.
   Without a mirror on this device, the handler falls back to a new
   `CentralClient.createFile` method wrapping the same `POST
   /nodes/:id/files` central already serves (mirror-less, adapter-direct) —
@@ -679,7 +684,14 @@ symlink to this file.
   env-mode REST write allowed, unchanged. The packaged desktop app's Tauri
   host always sets this itself (fresh per launch, never on disk, never
   exported into a spawned terminal) — the hardened posture is always on
-  there. Doesn't affect MCP tool calls either way — those keep `env`'s
+  there. The central-mode sync agent (`api/agent-router.ts`) applies the
+  same posture through `guardAgentRestWrite` on every mutating REST route
+  it serves (file create/delete/resolve, `PUT /nodes/:id/file`, sync run,
+  mirror create): it has no graph db or session table to resolve a spawn
+  id against, so a proven `X-Portuni-Webview-Proxy` header is the only
+  accepted proof once the secret is set — a spawned terminal mutates
+  through the MCP tools, which central write-gates. Doesn't affect MCP
+  tool calls either way — those keep `env`'s
   existing unscoped-write behavior, out of scope for this gate. See
   `docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md` and
   the scope-enforcement docs page.

@@ -359,6 +359,20 @@ export function unregisterSessionProjections(sessionId: string): void {
   }
 }
 
+// Same, but only the entries whose target lives under projectionRoot --
+// for the shared bucket, which is keyed by one fixed id (_shared) across
+// EVERY home node's projection root: tearing down home A's bucket must not
+// drop home B's still-live registrations, or B's watcher relinks stop
+// (creates go missing, deleted sources stay readable through stale links).
+export function unregisterSessionProjectionsUnder(sessionId: string, projectionRoot: string): void {
+  const prefix = projectionRoot.endsWith(sep) ? projectionRoot : projectionRoot + sep;
+  for (const [nodeId, bySession] of registry) {
+    const entry = bySession.get(sessionId);
+    if (entry?.targetDir.startsWith(prefix)) bySession.delete(sessionId);
+    if (bySession.size === 0) registry.delete(nodeId);
+  }
+}
+
 export function projectedEntriesForNode(nodeId: string): ProjectedEntry[] {
   const bySession = registry.get(nodeId);
   return bySession ? [...bySession.values()] : [];

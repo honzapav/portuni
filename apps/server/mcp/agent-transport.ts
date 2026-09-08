@@ -69,6 +69,7 @@ import { resolveProjectionRootForNode } from "../domain/sandbox-profile.js";
 import {
   cleanupSessionProjection,
   unregisterSessionProjections,
+  unregisterSessionProjectionsUnder,
   spawnSessionIdFromHeader,
   UNNARROWED_PROJECTION_ID,
 } from "../domain/session-projection.js";
@@ -249,9 +250,15 @@ async function disposeAgentProjection(
     }
     // Registry entries go together with the directory -- a stale entry
     // would make the next watcher relink recreate the removed directory
-    // (mkdir + hardlink) for a scope nobody holds anymore.
-    unregisterSessionProjections(projectionSessionId);
+    // (mkdir + hardlink) for a scope nobody holds anymore. The shared
+    // bucket's id is the same under every home node's root, so that one is
+    // unregistered per root only; a spawn id is unique to this session.
     const root = await resolveProjectionRootForNode(userId, homeNodeId);
+    if (projectionSessionId === UNNARROWED_PROJECTION_ID) {
+      if (root) unregisterSessionProjectionsUnder(projectionSessionId, root.projectionRoot);
+    } else {
+      unregisterSessionProjections(projectionSessionId);
+    }
     if (root) await cleanupSessionProjection(root.projectionRoot, projectionSessionId);
   } catch {
     /* best-effort */

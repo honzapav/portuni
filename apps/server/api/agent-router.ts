@@ -46,6 +46,7 @@ import {
   registerLocalFileCentral,
 } from "../domain/sync/central/engine-central.js";
 import { findEntryByFileId } from "../mcp/agent-tools.js";
+import { guardAgentRestWrite } from "./write-gate.js";
 import { mimeFor, PullDirtyLocalError } from "../domain/sync/engine.js";
 import { safeMirrorJoin, type Section } from "../domain/sync/remote-path.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
@@ -174,6 +175,19 @@ export type AgentRouteFn = (
   url: URL,
   identity: RequestIdentity,
 ) => Promise<boolean>;
+
+// Background uploads started by POST /nodes/:id/files (#266), keyed by the
+// mirror path they push. Delete/resolve on the same path await the entry
+// (awaitPendingPush) so the upload cannot land after the record is gone.
+// Rename in central mode goes straight to central (not routed here), so a
+// rename inside that window is not coordinated -- the sync run's remote
+// sweep adopts the stray object as a new file rather than losing it.
+const pendingPushes = new Map<string, Promise<void>>();
+
+async function awaitPendingPush(localPath: string): Promise<void> {
+  const p = pendingPushes.get(localPath);
+  if (p) await p;
+}
 
 export function createAgentRouter(client: CentralClient): AgentRouteFn {
   return async (req, res, url, identity) => {
@@ -316,6 +330,7 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
     const syncRunMatch = pathname.match(/^\/nodes\/([^/]+)\/sync$/);
     if (syncRunMatch && method === "POST") {
       const nodeId = decodeURIComponent(syncRunMatch[1]);
+      if (!guardAgentRestWrite(req, res, identity, nodeId)) return true;
       try {
         respondJson(res, 200, await syncRunCentral(client, { userId: identity.userId, nodeId }));
       } catch (err) {
@@ -340,6 +355,7 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
     const createFileMatch = pathname.match(/^\/nodes\/([^/]+)\/files$/);
     if (createFileMatch && method === "POST") {
       const nodeId = decodeURIComponent(createFileMatch[1]);
+      if (!guardAgentRestWrite(req, res, identity, nodeId)) return true;
       const body = await parseJsonBody(req, res, agentCreateFileSchema);
       if (!body) return true;
       const filename = body.filename;
@@ -409,9 +425,19 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
         // the bytes with an ifAbsent precondition (no last_synced_hash yet
         // on a brand-new record), then writes the last_synced_hash baseline
         // that flips the row from "push" to "clean".
-        storeFileCentral(client, { userId: identity.userId, nodeId, localPath: abs }).catch((e) => {
-          console.error(`[portuni:agent] background push after create failed for ${abs}:`, e);
-        });
+        // Tracked per path so a later delete/resolve on the same file waits
+        // for it (awaitPendingPush) instead of racing the upload -- an
+        // adapter.put landing after the record was deleted would recreate
+        // the remote object as an orphan and undo the confirmed delete.
+        const push = storeFileCentral(client, { userId: identity.userId, nodeId, localPath: abs })
+          .then(() => undefined)
+          .catch((e) => {
+            console.error(`[portuni:agent] background push after create failed for ${abs}:`, e);
+          })
+          .finally(() => {
+            if (pendingPushes.get(abs) === push) pendingPushes.delete(abs);
+          });
+        pendingPushes.set(abs, push);
       } catch (err) {
         if (respondCentral404(res, err)) return true;
         respondError(res, `POST /nodes/${nodeId}/files`, err);
@@ -428,6 +454,7 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
     const resolveMatch = pathname.match(/^\/nodes\/([^/]+)\/files\/([^/]+)\/resolve$/);
     if (resolveMatch && method === "POST") {
       const nodeId = decodeURIComponent(resolveMatch[1]);
+      if (!guardAgentRestWrite(req, res, identity, nodeId)) return true;
       const fileId = decodeURIComponent(resolveMatch[2]);
       try {
         const body = (await parseBody(req)) as { action?: string } | undefined;
@@ -447,6 +474,7 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
           respondJson(res, 404, { error: "file not found on this device" });
           return true;
         }
+        await awaitPendingPush(found.entry.local_path);
         if (action === "keep_local") {
           await storeFileCentral(client, {
             userId: identity.userId,
@@ -486,6 +514,7 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
     if (deleteFileMatch && method === "DELETE") {
       const nodeId = decodeURIComponent(deleteFileMatch[1]);
       const fileId = decodeURIComponent(deleteFileMatch[2]);
+      if (!guardAgentRestWrite(req, res, identity, nodeId)) return true;
       if (url.searchParams.get("confirmed") !== "true") {
         respondJson(res, 400, { error: "confirmed=true required" });
         return true;
@@ -502,6 +531,10 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
           respondJson(res, 404, { error: "file not found on this device" });
           return true;
         }
+        // A create's background upload still in flight for this path must
+        // finish first, or its adapter.put would land after the record is
+        // gone and resurrect the remote object as an orphan.
+        if (found?.entry.local_path) await awaitPendingPush(found.entry.local_path);
         // Record + remote object first (the source of truth); only clean up
         // the local copy once that has actually succeeded. Central answers
         // 200 with { status: "repair_needed" } when the remote delete
@@ -528,6 +561,7 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
     const fileContentMatch = pathname.match(/^\/nodes\/([^/]+)\/file$/);
     if (fileContentMatch && (method === "GET" || method === "PUT")) {
       const nodeId = decodeURIComponent(fileContentMatch[1]);
+      if (method === "PUT" && !guardAgentRestWrite(req, res, identity, nodeId)) return true;
       const relPath = url.searchParams.get("path");
       if (!relPath) {
         respondJson(res, 400, { error: "path query param required" });
@@ -673,6 +707,7 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
     const mirrorMatch = pathname.match(/^\/nodes\/([^/]+)\/mirror$/);
     if (mirrorMatch && method === "POST") {
       const nodeId = decodeURIComponent(mirrorMatch[1]);
+      if (!guardAgentRestWrite(req, res, identity, nodeId)) return true;
       try {
         const result = await createMirrorForNodeCentral(client, identity.userId, { nodeId });
         respondJson(res, result.created ? 201 : 200, {

@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
 import { join, posix, sep } from "node:path";
@@ -755,6 +755,42 @@ describe("POST /nodes/:id/files (agent mode, #266)", () => {
     );
   });
 
+  it("a delete right after create waits for the background push instead of racing it", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    let releasePush: (() => void) | undefined;
+    fake.putDelay = new Promise<void>((r) => {
+      releasePush = r;
+    });
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "gone-fast.md", content: "v1" }),
+    });
+    assert.equal(r.status, 201);
+    const { id: fileId } = (await r.json()) as { id: string };
+    const remotePath = posix.join(NODE_ROOT, "wip/gone-fast.md");
+
+    // Delete while the upload is still blocked: it must not resolve before
+    // the push has landed, and the end state must be "deleted", not an
+    // orphaned remote object recreated by a late put.
+    let deleteDone = false;
+    const del = fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+      method: "DELETE",
+    }).then((res) => {
+      deleteDone = true;
+      return res;
+    });
+    await new Promise((res) => setTimeout(res, 100));
+    assert.equal(deleteDone, false, "delete must wait for the in-flight push");
+    releasePush?.();
+    fake.putDelay = null;
+    const res = await del;
+    assert.equal(res.status, 200);
+    assert.equal(fake.bytes.has(remotePath), false, "no orphaned remote object");
+    assert.equal(fake.records.has(remotePath), false, "record gone");
+    assert.ok(fake.deleted.some((d) => d.fileId === fileId));
+  });
+
   it("an edit landing while the background push is in flight stays push, not clean", async () => {
     await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     let releasePush: (() => void) | undefined;
@@ -852,6 +888,71 @@ describe("POST /nodes/:id/files (agent mode, #266)", () => {
 // Showtime handoff on the agent front door: mint against central's node
 // verdict, exchange answers with the local sidecar's MCP URL, the node name
 // from sync-info and this device's mirror.
+describe("agent-mode REST write gate (hardened posture)", () => {
+  let originalSecret: string | undefined;
+  before(() => {
+    originalSecret = process.env.PORTUNI_WEBVIEW_PROXY_SECRET;
+    process.env.PORTUNI_WEBVIEW_PROXY_SECRET = "test-webview-secret";
+  });
+  after(() => {
+    if (originalSecret === undefined) delete process.env.PORTUNI_WEBVIEW_PROXY_SECRET;
+    else process.env.PORTUNI_WEBVIEW_PROXY_SECRET = originalSecret;
+  });
+
+  it("refuses file lifecycle mutations without the webview-proxy marker, allows them with it", async () => {
+    const proven = { "X-Portuni-Webview-Proxy": "test-webview-secret" };
+    // Mirror create is gated too.
+    const bare = await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    assert.equal(bare.status, 403);
+    const ok = await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST", headers: proven });
+    assert.ok(ok.status === 201 || ok.status === 200);
+
+    const bareCreate = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "gated.md", content: "x" }),
+    });
+    assert.equal(bareCreate.status, 403);
+    const body = (await bareCreate.json()) as { error: string };
+    assert.equal(body.error, "write_refused");
+    const created = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...proven },
+      body: JSON.stringify({ filename: "gated.md", content: "x" }),
+    });
+    assert.equal(created.status, 201);
+    const { id: fileId } = (await created.json()) as { id: string };
+
+    const bareResolve = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "keep_local" }),
+    });
+    assert.equal(bareResolve.status, 403);
+    const barePut = await fetch(`${base}/nodes/${NODE_ID}/file?path=wip/gated.md`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "y" }),
+    });
+    assert.equal(barePut.status, 403);
+    const bareSync = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    assert.equal(bareSync.status, 403);
+    const bareDelete = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+      method: "DELETE",
+    });
+    assert.equal(bareDelete.status, 403);
+    assert.equal(fake.deleted.length, 0);
+    // Reads stay open.
+    const status = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+    assert.equal(status.status, 200);
+    const provenDelete = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+      method: "DELETE",
+      headers: proven,
+    });
+    assert.equal(provenDelete.status, 200);
+  });
+});
+
 describe("agent router: /auth/handoff", () => {
   const post = (path: string, body: unknown, token?: string) =>
     fetch(`${base}${path}`, {

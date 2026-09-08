@@ -16,6 +16,7 @@ import {
   unregisterSessionProjections,
   projectedEntriesForNode,
   relinkProjectedFile,
+  unregisterSessionProjectionsUnder,
   clearProjectionRegistryForTests,
   linkOrCopy,
   sweepStaleSessionProjections,
@@ -103,6 +104,17 @@ describe("registry", () => {
       entries.map((e) => e.sessionId).sort(),
       ["S1", "S2"],
     );
+  });
+
+  it("unregisterSessionProjectionsUnder drops only the shared entries under one projection root", () => {
+    registerProjectedNode("NODE_A", { sessionId: "_shared", mirrorPath: mirror, targetDir: "/roots/homeA/_shared/NODE_A" });
+    registerProjectedNode("NODE_B", { sessionId: "_shared", mirrorPath: mirror, targetDir: "/roots/homeB/_shared/NODE_B" });
+    registerProjectedNode("NODE_A", { sessionId: "S1", mirrorPath: mirror, targetDir: "/roots/homeA/S1/NODE_A" });
+
+    unregisterSessionProjectionsUnder("_shared", "/roots/homeA");
+
+    assert.deepEqual(projectedEntriesForNode("NODE_A").map((e) => e.sessionId), ["S1"]);
+    assert.deepEqual(projectedEntriesForNode("NODE_B").map((e) => e.sessionId), ["_shared"]);
   });
 
   it("unregisterSessionProjections drops only that session, across all nodes", () => {
