@@ -95,6 +95,7 @@ import {
   NoMirrorBanner,
   TerminalSplitButton,
   WatcherErrorBanner,
+  syncRunErrorsByFile,
 } from "./DetailPane.files";
 import { AccessSection } from "./DetailPane.access";
 import { SessionsSection } from "./DetailPane.sessions";
@@ -1116,6 +1117,7 @@ function DetailPaneBody({
                     onRename={handleRenameFile}
                     onDelete={handleDeleteFile}
                     onResolve={handleResolveFile}
+                    runErrors={syncRunErrorsByFile(syncRunResult)}
                   />
                 ) : (
                   <div className="text-[14px] text-[var(--color-text-dim)]">

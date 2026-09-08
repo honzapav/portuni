@@ -281,7 +281,15 @@ async function statusScanForContext(
     (out[r.bucket] as StatusFileEntry[]).push(r.entry);
   }
   if (a.includeDiscovery !== false) {
-    const m = await matchTombstonesForContext(ctx, await untrackedForContext(ctx));
+    // Hash untracked files only on a slow scan: the fast scan is what the
+    // UI's sync-status and the 30s footer poll run across EVERY mirror, and
+    // hashing every loose file there is I/O the caller never asked for --
+    // discover-local.ts is hash-free for the same reason. Tombstone matching
+    // below rehashes on demand (diskHashMatching) when the entry carries none.
+    const m = await matchTombstonesForContext(
+      ctx,
+      await untrackedForContext(ctx, { hash: !(a.fast ?? false) }),
+    );
     out.new_local = m.remaining;
     out.deleted_remote = m.deleted_remote;
   }
@@ -348,7 +356,14 @@ async function matchTombstonesForContext(
 // Local discovery (untracked files in the mirror)
 // ---------------------------------------------------------------------------
 
-async function untrackedForContext(ctx: NodeContext): Promise<NewLocalEntry[]> {
+// `hash: true` computes each untracked file's sha256 (slow scans /
+// portuni_status, where the entry's hash is part of the reported state);
+// `hash: false` leaves "" so a fast scan or a path-only listing does not
+// read every loose file in the mirror.
+async function untrackedForContext(
+  ctx: NodeContext,
+  opts: { hash: boolean },
+): Promise<NewLocalEntry[]> {
   if (!ctx.mirrorRoot) return [];
   const known = new Set<string>();
   for (const rec of ctx.si.files) {
@@ -368,7 +383,7 @@ async function untrackedForContext(ctx: NodeContext): Promise<NewLocalEntry[]> {
   const out: NewLocalEntry[] = [];
   const isIgnored = await loadMirrorIgnore(ctx.mirrorRoot);
   for (const section of ["wip", "outputs", "resources"] as Section[]) {
-    await walkUntracked(join(ctx.mirrorRoot, section), ctx, known, isIgnored, out);
+    await walkUntracked(join(ctx.mirrorRoot, section), ctx, known, isIgnored, out, opts.hash);
   }
   return out;
 }
@@ -379,6 +394,7 @@ async function walkUntracked(
   known: Set<string>,
   isIgnored: MirrorIgnore,
   out: NewLocalEntry[],
+  withHash: boolean,
 ): Promise<void> {
   let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }> = [];
   try {
@@ -390,18 +406,18 @@ async function walkUntracked(
     const p = join(dir, ent.name);
     if (isIgnored(p)) continue;
     if (ent.isDirectory()) {
-      await walkUntracked(p, ctx, known, isIgnored, out);
+      await walkUntracked(p, ctx, known, isIgnored, out, withHash);
     } else if (ent.isFile()) {
       if (known.has(p.normalize("NFC"))) continue;
       const sub = subpathFromMirror(ctx.mirrorRoot as string, p);
       if (!sub) continue;
-      // Real hash, not a placeholder (#253): status output should be
-      // truthful, and a real hash also makes a hash-based fallback pairing
-      // possible for a moved-but-unpaired file surfaced here as "new".
-      // Matches the local engine's walkMirror, which hashes for the same
-      // NewLocalEntry.hash field.
+      // Real hash on a slow scan (#253): status output should be truthful,
+      // and a real hash also makes a hash-based fallback pairing possible
+      // for a moved-but-unpaired file surfaced here as "new". Matches the
+      // local engine's walkMirror. A fast scan keeps the "" placeholder
+      // instead of reading every loose file on each UI poll.
       try {
-        const hash = await sha256File(p);
+        const hash = withHash ? await sha256File(p) : "";
         out.push({
           node_id: ctx.si.node.id,
           local_path: p,
@@ -422,7 +438,9 @@ export async function listUntrackedLocalCentral(
   a: { userId: string; nodeId: string },
 ): Promise<NewLocalEntry[]> {
   const ctx = await loadNodeContext(client, a.userId, a.nodeId);
-  return untrackedForContext(ctx);
+  // Path-only listing (UI untracked list, sync-run adopt): hash-free, same
+  // as discover-local.ts -- storeFile rehashes at adopt time anyway.
+  return untrackedForContext(ctx, { hash: false });
 }
 
 // ---------------------------------------------------------------------------

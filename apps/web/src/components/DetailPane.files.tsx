@@ -291,6 +291,7 @@ export function FileTree({
   onDelete,
   onResolve,
   readOnly,
+  runErrors,
 }: {
   files: DetailFile[];
   untracked: UntrackedFile[];
@@ -306,6 +307,10 @@ export function FileTree({
   onResolve: (fileId: string, action: ResolveAction) => Promise<void>;
   // When true, hide rename/delete actions (e.g. central mode).
   readOnly?: boolean;
+  // Per-file outcome of the last sync run (#267): a failed push/pull or a
+  // still-pending repair is shown on the affected row, where the transient
+  // toolbar line only carries a count. Cleared by the next run.
+  runErrors?: Map<string, string>;
 }) {
   const treeFiles = useMemo(
     () => toTreeFiles(files, untracked, syncStatus, mirrorPath),
@@ -343,6 +348,7 @@ export function FileTree({
           onDelete={onDelete}
           onResolve={onResolve}
           readOnly={readOnly}
+          runErrors={runErrors}
         />
       ))}
     </div>
@@ -362,6 +368,7 @@ function FileTreeNode({
   onDelete,
   onResolve,
   readOnly,
+  runErrors,
 }: {
   node: TreeNode;
   depth: number;
@@ -375,6 +382,7 @@ function FileTreeNode({
   onDelete: (fileId: string) => Promise<void>;
   onResolve: (fileId: string, action: ResolveAction) => Promise<void>;
   readOnly?: boolean;
+  runErrors?: Map<string, string>;
 }) {
   const indent = depth * 14;
   if (node.file) {
@@ -389,6 +397,7 @@ function FileTreeNode({
         onDelete={onDelete}
         onResolve={onResolve}
         readOnly={readOnly}
+        runError={node.file.fileId ? (runErrors?.get(node.file.fileId) ?? null) : null}
       />
     );
   }
@@ -443,6 +452,7 @@ function FileTreeNode({
               onDelete={onDelete}
               onResolve={onResolve}
               readOnly={readOnly}
+              runErrors={runErrors}
             />
           ))}
         </div>
@@ -524,6 +534,7 @@ function FileRow({
   onDelete,
   onResolve,
   readOnly,
+  runError,
 }: {
   file: TreeFile;
   indent: number;
@@ -534,6 +545,8 @@ function FileRow({
   onDelete: (fileId: string) => Promise<void>;
   onResolve: (fileId: string, action: ResolveAction) => Promise<void>;
   readOnly?: boolean;
+  // This file's error from the last sync run, if any (see FileTree.runErrors).
+  runError?: string | null;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(f.filename);
@@ -764,9 +777,13 @@ function FileRow({
             </span>
           )}
         </div>
-        {rowError && (
-          <div className="mt-0.5 truncate text-[11px]" title={rowError} style={{ color: "var(--color-danger)" }}>
-            {rowError}
+        {(rowError ?? runError) && (
+          <div
+            className="mt-0.5 truncate text-[11px]"
+            title={rowError ?? runError ?? undefined}
+            style={{ color: "var(--color-danger)" }}
+          >
+            {rowError ?? runError}
           </div>
         )}
       </div>
@@ -848,7 +865,11 @@ export function WatcherErrorBanner({ errors }: { errors: WatcherErrorEntry[] }) 
 // Persistent state (conflicts, deleted_local) already has its own pill next
 // to the button, so it is not repeated here as a permanent element -- only
 // as part of this transient line, which is fine since it disappears too.
-function summarizeSyncRun(result: SyncRunResponse): { text: string; hasError: boolean } {
+function summarizeSyncRun(result: SyncRunResponse): {
+  text: string;
+  hasError: boolean;
+  detail: string | null;
+} {
   const parts: string[] = [];
   if (result.pushed.length > 0) parts.push(`Push ${result.pushed.length}`);
   if (result.pulled.length > 0) parts.push(`Pull ${result.pulled.length}`);
@@ -868,8 +889,28 @@ function summarizeSyncRun(result: SyncRunResponse): { text: string; hasError: bo
   if (result.pending_repairs.length > 0) parts.push(`nedokončeno ${result.pending_repairs.length}`);
   if (result.sweep_errors.length > 0) parts.push(`kontrola remote selhala (${result.sweep_errors.length})`);
   if (result.errors.length > 0) parts.push(`chyby ${result.errors.length}`);
-  if (parts.length === 0) return { text: "Vše synchronizováno", hasError: false };
-  return { text: parts.join(" · "), hasError };
+  // Full per-item detail for the title tooltip: the line above is counts
+  // only, and the sync-run errors that have no row of their own (sweep
+  // errors are keyed by remote path) would otherwise be lost.
+  const detail = [
+    ...result.errors.map((e) => `${e.filename}: ${e.error}`),
+    ...result.pending_repairs.map((p) => `${p.op} (${p.attempts}x): ${p.last_error ?? "?"}`),
+    ...result.sweep_errors.map((e) => `${e.remote_path}: ${e.error}`),
+  ];
+  if (parts.length === 0) return { text: "Vše synchronizováno", hasError: false, detail: null };
+  return { text: parts.join(" · "), hasError, detail: detail.length > 0 ? detail.join("\n") : null };
+}
+
+// Per-file errors of a sync run, keyed by file id, for the rows themselves
+// (FileTree.runErrors). Exported for the DetailPane wiring and tests.
+export function syncRunErrorsByFile(result: SyncRunResponse | null): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!result) return out;
+  for (const e of result.errors) out.set(e.file_id, e.error);
+  for (const p of result.pending_repairs) {
+    if (!out.has(p.file_id)) out.set(p.file_id, `Nedokončeno (${p.op}): ${p.last_error ?? "?"}`);
+  }
+  return out;
 }
 
 export function SyncBar({
@@ -923,11 +964,21 @@ export function SyncBar({
   // around, this component decides how long it stays visible).
   const [showOutcome, setShowOutcome] = useState(false);
   const outcomeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const outcome = error
+    ? { text: `Chyba: ${error}`, hasError: true, detail: null }
+    : result
+      ? summarizeSyncRun(result)
+      : null;
   useEffect(() => {
     if (!result && !error) return;
     setShowOutcome(true);
     if (outcomeTimer.current) clearTimeout(outcomeTimer.current);
-    outcomeTimer.current = setTimeout(() => setShowOutcome(false), 5000);
+    // A clean outcome fades; one with errors stays until the next run
+    // starts (the parent resets result/error then), so what failed is not
+    // gone from the screen after five seconds.
+    if (!outcome?.hasError) {
+      outcomeTimer.current = setTimeout(() => setShowOutcome(false), 5000);
+    }
   }, [result, error]);
   useEffect(
     () => () => {
@@ -935,11 +986,6 @@ export function SyncBar({
     },
     [],
   );
-  const outcome = error
-    ? { text: `Chyba: ${error}`, hasError: true }
-    : result
-      ? summarizeSyncRun(result)
-      : null;
 
   return (
     <div className="mb-3">
@@ -988,6 +1034,7 @@ export function SyncBar({
         {showOutcome && outcome && (
           <span
             className="truncate text-[11.5px] transition-opacity duration-300"
+            title={outcome.detail ?? undefined}
             style={{ color: outcome.hasError ? "var(--color-danger)" : "var(--color-text-dim)" }}
           >
             {outcome.text}

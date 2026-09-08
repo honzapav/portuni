@@ -310,6 +310,16 @@ describe("statusScanCentral", () => {
     assert.equal(scan.new_local[0].hash, sha(Buffer.from("x")));
   });
 
+  it("a fast scan lists untracked files without hashing them", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    await writeFile(join(mirrorRoot, "wip", "loose.txt"), "x");
+    const scan = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID, fast: true });
+    assert.equal(scan.new_local.length, 1);
+    assert.equal(scan.new_local[0].filename, "loose.txt");
+    assert.equal(scan.new_local[0].hash, "");
+  });
+
   it("clean after a full sync roundtrip", async () => {
     const c = new FakeCentral();
     await setupMirror();
