@@ -91,12 +91,31 @@ function syncWritable(db: Client, sessionId: string, scope: SessionScope, nodeId
 // already in scope (catch-up) and wire onAdd/onWritable so every future
 // scope change mirrors into session_scope. Split out so resumeSessionPersistence
 // can reuse it without duplicating the listener wiring.
-function wireOngoingSync(db: Client, scope: SessionScope, sessionId: string): void {
+//
+// homeNodeId is persisted writable unconditionally (#272): guardWrite
+// (domain/write-gate.ts) allows the home node implicitly
+// (nodeId === ctx.homeNodeId), without ever calling scope.addWritable() for
+// it -- so the persisted mirror used to disagree with actual enforcement,
+// and getSessionWriteCount (which only counts writable=1 rows) read 0 for a
+// perfectly normal session that had only ever written to its own home node.
+// syncWritable's upsert-then-mark-writable sequence is safe to call even
+// before the node has otherwise been added to scope (the common case for a
+// fresh session, since auto-seed races this call -- see
+// bindSessionPersistence's own doc).
+function wireOngoingSync(
+  db: Client,
+  scope: SessionScope,
+  sessionId: string,
+  homeNodeId: string | null,
+): void {
   for (const nodeId of scope.list()) {
     syncRead(db, sessionId, scope, nodeId);
   }
   for (const nodeId of scope.writableNodes()) {
     syncWritable(db, sessionId, scope, nodeId);
+  }
+  if (homeNodeId) {
+    syncWritable(db, sessionId, scope, homeNodeId);
   }
 
   scope.onAdd((nodeId) => {
@@ -142,6 +161,11 @@ function wireOngoingSync(db: Client, scope: SessionScope, sessionId: string): vo
 // desktop PTY that spawned this connection's CLI, when known -- stored on
 // the session row so POST /terminals/:terminal_id/exit can close it when
 // that PTY exits.
+// cli (#272) is the short name derived from the MCP handshake's own
+// `initialize` params.clientInfo.name (transport.ts's extractClientName /
+// stdio-entry.ts's getClientVersion) -- read from the protocol itself
+// rather than a custom header, since Codex and Vibe have no way to relay
+// one at all.
 export function bindSessionPersistence(
   db: Client,
   scope: SessionScope,
@@ -150,17 +174,20 @@ export function bindSessionPersistence(
   homeNodeId?: string | null,
   spawnSessionId?: string | null,
   terminalId?: string | null,
+  cli?: string | null,
 ): void {
+  const resolvedHomeNodeId = (homeNodeId !== undefined ? homeNodeId : scope.homeNodeId) ?? null;
   safe(
     (async () => {
       const row = await createSession(
         db,
         identity.userId,
         {
-          node_id: homeNodeId !== undefined ? homeNodeId : scope.homeNodeId,
+          node_id: resolvedHomeNodeId,
           session_type: scope.sessionType,
           profile_id: profileId,
           terminal_id: terminalId ?? null,
+          cli: cli ?? null,
         },
         spawnSessionId,
       );
@@ -170,7 +197,7 @@ export function bindSessionPersistence(
       // whatever is already in scope before wiring the listeners below.
       // Deferred for the same reason as syncRead/syncWritable -- a seed
       // batch's recordExpansion call may not have run yet either.
-      wireOngoingSync(db, scope, row.id);
+      wireOngoingSync(db, scope, row.id, resolvedHomeNodeId);
     })(),
     "createSession",
   );
@@ -233,6 +260,6 @@ export async function resumeSessionPersistence(
     });
   }
 
-  wireOngoingSync(db, scope, row.id);
+  wireOngoingSync(db, scope, row.id, homeNodeId);
   return row.id;
 }

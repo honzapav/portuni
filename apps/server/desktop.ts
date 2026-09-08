@@ -26,6 +26,7 @@ import { listUserMirrors } from "./domain/sync/mirror-registry.js";
 import { createAgentRouter } from "./api/agent-router.js";
 import { createAgentMcpTransport } from "./mcp/agent-transport.js";
 import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
+import { sweepStaleRunningSessionsOnBoot } from "./boot/session-sweep.js";
 
 // Reads a required env var, trimmed. Used for the two central-mode
 // connection settings: both are already validated non-empty by
@@ -307,6 +308,7 @@ async function main(): Promise<void> {
   const watcher = startMirrorWatcher(process.env.PORTUNI_WATCH_MIRRORS !== "0");
 
   void sweepStaleSessionProjectionsOnBoot();
+  void sweepStaleRunningSessionsOnBoot();
 
   // Refresh every registered mirror's harness configs so any .mcp.json
   // pointing at an older random port / rotated token picks up the

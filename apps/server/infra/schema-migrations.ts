@@ -1265,8 +1265,16 @@ const MIGRATIONS: Migration[] = [
   // specs/2026-08-31-scope-sessions-redesign-design.md, "Naming & UI"). name
   // is NOT NULL -- every session always has a display name -- so existing
   // rows need a backfill matching domain/sessions.ts's
-  // computeDefaultSessionName exactly (node name + ' · ' + created_at's date
-  // part; 'Chat' for the anchor-less interactive_chat rows). name_is_custom
+  // computeDefaultSessionName as it looked at the time (node name + ' · ' +
+  // created_at's date part; 'Chat' for the anchor-less interactive_chat
+  // rows). computeDefaultSessionName itself later grew a time-of-day
+  // component (#272, "two sessions on the same node/day look identical") --
+  // this backfill is intentionally left alone rather than reformatted to
+  // match, since it only ever runs once against rows that already existed
+  // before the name column did; a row created after #272 gets a time
+  // component from computeDefaultSessionName directly, an old backfilled row
+  // does not, and both are valid default-shaped names for their era.
+  // name_is_custom
   // tracks whether a human has renamed the session: 0 means suspend-time
   // handoff-title enrichment (session-handoff.ts) is still allowed to
   // overwrite name; a REST rename (domain/sessions.ts's renameSession) sets

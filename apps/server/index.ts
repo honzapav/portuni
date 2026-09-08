@@ -7,6 +7,7 @@ import { ensureSchema } from "./infra/schema.js";
 import { startHttpServer } from "./http/server.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
 import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
+import { sweepStaleRunningSessionsOnBoot } from "./boot/session-sweep.js";
 
 async function main() {
   await ensureSchema();
@@ -17,6 +18,7 @@ async function main() {
   const watcher = startMirrorWatcher(process.env.PORTUNI_WATCH_MIRRORS === "1");
   if (watcher) process.on("SIGINT", () => watcher.stop());
   void sweepStaleSessionProjectionsOnBoot();
+  void sweepStaleRunningSessionsOnBoot();
 }
 
 main().catch((err) => {

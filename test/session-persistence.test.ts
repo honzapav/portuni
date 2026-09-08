@@ -17,6 +17,7 @@ import {
   createSession,
   getSession,
   getSessionScope,
+  getSessionWriteCount,
   transitionSessionState,
   upsertSessionScopeRead,
   setSessionScopeWritable,
@@ -191,7 +192,23 @@ describe("bindSessionPersistence: SessionScope as a cache over session_scope", (
 
     const rows = await getSessionScope(shared.db, sessionId);
     const writableNodeIds = new Set(rows.filter((r) => r.writable === 1).map((r) => r.node_id));
-    assert.deepEqual(writableNodeIds, new Set(scope.writableNodes()));
+    // The persisted writable set also carries the home node (#272) --
+    // guardWrite allows it implicitly, without ever calling
+    // scope.addWritable() for it in-memory, so it is not itself part of
+    // scope.writableNodes().
+    assert.deepEqual(writableNodeIds, new Set([...scope.writableNodes(), shared.nodeId]));
+  });
+
+  it("a fresh interactive_task session's write count is 1 (its home node), not 0 (#272)", async () => {
+    const shared = await makeSharedDb();
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = shared.nodeId;
+    bindSessionPersistence(shared.db, scope, { userId: "U1" }, null, shared.nodeId);
+    scope.addSeed(shared.nodeId);
+    await waitUntil(() => scope.sessionId !== null);
+    const sessionId = scope.sessionId!;
+    await waitUntil(async () => (await getSessionWriteCount(shared.db, sessionId)) === 1);
+    assert.equal(await getSessionWriteCount(shared.db, sessionId), 1);
   });
 
   it("a session_type=env SessionScope still gets a persisted row (not exempt from persistence, only from the scope gate)", async () => {

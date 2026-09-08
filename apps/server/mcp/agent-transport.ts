@@ -42,6 +42,7 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
   ElicitRequestSchema,
+  isInitializeRequest,
   type ClientCapabilities,
 } from "@modelcontextprotocol/sdk/types.js";
 import { parseBody, RequestBodyTooLargeError } from "../http/middleware.js";
@@ -109,14 +110,14 @@ function upstreamUrl(centralUrl: string, homeNodeId: string | null): URL {
   return url;
 }
 
-// The first request on a brand-new session is always `initialize` (the SDK
-// rejects anything else -- see the 400 path in handle() below), and its
-// params carry the real downstream client's declared capabilities. Peeking
-// at the already-parsed body here -- before opening the upstream connection
-// -- is what lets that upstream connection advertise the SAME capabilities
-// (elicitation in particular) instead of the historical `capabilities: {}`,
-// so central knows it can send the agent-mode session an elicitation
-// request at all.
+// The first request on a brand-new session is required to be `initialize`
+// (refused otherwise -- see the isInitializeRequest guard in handle(),
+// BEFORE this is called), and its params carry the real downstream client's
+// declared capabilities. Peeking at the already-parsed body here -- before
+// opening the upstream connection -- is what lets that upstream connection
+// advertise the SAME capabilities (elicitation in particular) instead of
+// the historical `capabilities: {}`, so central knows it can send the
+// agent-mode session an elicitation request at all.
 function extractDownstreamCapabilities(body: unknown): ClientCapabilities | undefined {
   const msg = Array.isArray(body) ? body[0] : body;
   if (
@@ -141,17 +142,33 @@ function relayableCapabilities(caps: ClientCapabilities | undefined): ClientCapa
   return caps?.elicitation ? { elicitation: caps.elicitation } : {};
 }
 
+// The downstream headers a direct connection's transport.ts already reads
+// for its own session row (terminal id, spawn id, profile id) -- forwarded
+// upstream unchanged so central's own session row for this connection
+// carries them too (#272 finding 5). Without this, every agent-mode session
+// central sees has terminal_id/profile_id NULL regardless of what the
+// desktop terminal actually set, since openUpstream previously sent only
+// Authorization.
+interface UpstreamHeaders {
+  terminalId: string | null;
+  spawnSessionId: string | null;
+  profileId: string | null;
+}
+
 async function openUpstream(
   opts: AgentTransportOpts,
   homeNodeId: string | null,
   downstreamCapabilities: ClientCapabilities | undefined,
+  forward: UpstreamHeaders,
 ): Promise<Client> {
+  const headers: Record<string, string> = { Authorization: `Bearer ${opts.centralToken}` };
+  if (forward.terminalId) headers["X-Portuni-Terminal"] = forward.terminalId;
+  if (forward.spawnSessionId) headers["X-Portuni-Spawn-Id"] = forward.spawnSessionId;
+  if (forward.profileId) headers["X-Portuni-Profile"] = forward.profileId;
   const transport = new StreamableHTTPClientTransport(
     upstreamUrl(opts.centralUrl, homeNodeId),
     {
-      requestInit: {
-        headers: { Authorization: `Bearer ${opts.centralToken}` },
-      },
+      requestInit: { headers },
     },
   );
   const client = new Client(
@@ -607,6 +624,28 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
         return;
       }
 
+      // #272: refuse a non-initialize first request BEFORE opening the
+      // upstream connection. openUpstream()'s client.connect() always
+      // issues its own genuine initialize handshake to central, regardless
+      // of what the downstream request actually was -- so without this
+      // check, a protocol/version probe or any other non-initialize first
+      // request from the local terminal (which the downstream SDK would
+      // reject anyway, but only after the upstream is already open) burned
+      // a real session row on central for traffic that never became a
+      // session on this side. Same JSON-RPC error shape the downstream
+      // transport itself uses for this case ("Server not initialized").
+      if (!isInitializeRequest(Array.isArray(body) ? body[0] : body)) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            error: { code: -32000, message: "Bad Request: Server not initialized" },
+            id: null,
+          }),
+        );
+        return;
+      }
+
       // Lazily open the upstream client for this new session. Forward the
       // connection's home_node_id so central auto-seeds scope. A dead
       // upstream is a 503 with the underlying reason (same contract as the
@@ -614,8 +653,22 @@ export function createAgentMcpTransport(opts: AgentTransportOpts): McpTransport 
       const homeNodeId = parseHomeNodeIdFromUrl(req.url);
       const projectionSessionId = resolveProjectionSessionId(req);
       const downstreamCapabilities = extractDownstreamCapabilities(body);
+      // Same headers transport.ts reads for its own (direct-connection)
+      // session row -- forwarded upstream so central's row for this
+      // connection carries them too (#272 finding 5).
+      const terminalIdHeader = req.headers["x-portuni-terminal"];
+      const terminalId =
+        (Array.isArray(terminalIdHeader) ? terminalIdHeader[0] : terminalIdHeader)?.trim() || null;
+      const profileIdHeader = req.headers["x-portuni-profile"];
+      const profileId =
+        (Array.isArray(profileIdHeader) ? profileIdHeader[0] : profileIdHeader)?.trim() || null;
+      const spawnSessionIdHeader = spawnSessionIdFromHeader(req.headers["x-portuni-spawn-id"]);
       try {
-        upstream = await openUpstream(opts, homeNodeId, downstreamCapabilities);
+        upstream = await openUpstream(opts, homeNodeId, downstreamCapabilities, {
+          terminalId,
+          spawnSessionId: spawnSessionIdHeader,
+          profileId,
+        });
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         console.error("Agent MCP upstream connect failed:", err);

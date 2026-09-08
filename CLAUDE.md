@@ -968,6 +968,66 @@ symlink to this file.
   when the hardened posture (#213) is active for that workspace — it
   originates from the same trusted Tauri host process, not a spawned
   terminal.
+- **A `sessions` row is created on a completed handshake, never on mere
+  connection setup (#272).** `createMcpServer` used to call
+  `bindSessionPersistence` (the `INSERT INTO sessions ... state 'running'`)
+  synchronously, before `server.connect(transport)` — so ANY request
+  reaching `/mcp` with no session id, including a client's protocol/version
+  probe or any other non-`initialize` first request, minted a permanent
+  `running` row that nothing would ever close (the only thing that closes a
+  row, `transport.onclose`, only fires for a transport that made it into
+  the session map via a genuine `onsessioninitialized`). `createMcpServer`
+  now returns `bindSession: (cli?) => void` instead of calling it itself;
+  callers invoke it exactly at their own "handshake genuinely completed"
+  signal — `transport.ts`'s `onsessioninitialized` (fires when a real
+  `initialize` request lands, matching that transport's own session-map
+  entry) and `stdio-entry.ts`'s `server.server.oninitialized` (the
+  low-level SDK's own post-handshake hook, since stdio has no analogous
+  transport-level callback). A resumed connection's `bindSession` is a
+  no-op (its row already exists via `resumeSessionPersistence`, awaited
+  separately). **`cli`** (previously always NULL) is threaded through the
+  same call: `client-name.ts`'s `extractClientNameFromInitializeBody` peeks
+  the already-parsed request body for `initialize`'s own
+  `params.clientInfo.name` (transport.ts) or `getClientVersion()`
+  (stdio-entry.ts, read at the low-level hook since it needs the completed
+  handshake), normalized to `claude|codex|vibe` by substring match
+  (`normalizeCliName`) — read from the protocol itself, not a header,
+  since Codex and Vibe have no per-mirror config mechanism that could carry
+  one. **The write count fix rides the same session-persistence path**:
+  `session-persistence.ts`'s `wireOngoingSync` now unconditionally persists
+  the session's home node as `writable=1` — `guardWrite`
+  (`domain/write-gate.ts`) allows it implicitly
+  (`nodeId === ctx.homeNodeId`) without ever calling `scope.addWritable()`
+  for it, so `getSessionWriteCount` (which only counts persisted
+  `writable=1` rows) used to read 0 for a perfectly ordinary session that
+  had only ever written to its own home node. **The central/agent-mode
+  front door had the identical leak one layer up**: `agent-transport.ts`'s
+  `openUpstream()` opens a REAL upstream `Client` connection to central
+  (its own `client.connect()` always issues a genuine `initialize`
+  regardless of what the downstream request was) BEFORE the downstream
+  transport's own `onsessioninitialized` could ever refuse a bad first
+  request — so a probe reaching the local agent-mode front door still
+  burned a session row on central. Fixed by checking
+  `isInitializeRequest` on the peeked downstream body and refusing with
+  the same 400 shape the SDK itself would use, before `openUpstream` is
+  ever called. Separately (not a leak, a data-completeness gap in the same
+  finding): `openUpstream` now forwards the downstream's own
+  `X-Portuni-Terminal`/`X-Portuni-Spawn-Id`/`X-Portuni-Profile` headers
+  upstream — previously it sent only `Authorization`, so central's own
+  session row for an agent-mode connection always had `terminal_id`/
+  `profile_id` NULL regardless of what the desktop terminal actually set.
+  **A boot sweep closes stale `running` rows** (`boot/session-sweep.ts`'s
+  `sweepStaleRunningSessionsOnBoot`, called from both `index.ts` and
+  `desktop.ts`, same shape as the pre-existing session-projection sweep):
+  at process start there is no live transport that could possibly own any
+  `running` row left over from a previous life (crash, restart, redeploy),
+  so every one is closed; `suspended` rows are untouched (still resumable
+  by design). **Default session name gained a time component** (#272,
+  `computeDefaultSessionName`): `<node> · <date> <time>` instead of
+  `<node> · <date>` — same-day sessions on the same node were otherwise
+  literally indistinguishable in the Relace list. Migration 028's backfill
+  for pre-existing rows is intentionally left date-only (never rewrite
+  existing rows); both shapes are valid default names for their era.
 
 ## Security rules (from the auth refactor post-mortem)
 
