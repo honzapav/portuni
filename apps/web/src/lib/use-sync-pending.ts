@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchSyncPending } from "../api";
-import type { SyncPendingResponse } from "../types";
+import {
+  applyOverrides,
+  applyPendingNode,
+  pruneOverrides,
+  residualPendingNode,
+  type PendingOverride,
+} from "./sync-pending-residual";
+import type { SyncPendingResponse, SyncRunResponse } from "../types";
 
 const EMPTY: SyncPendingResponse = { nodes: [], total: 0 };
 
@@ -23,19 +30,46 @@ export function useSyncPending() {
   const reqRef = useRef(0);
   const lastFetchAtRef = useRef(0);
   const failureCountRef = useRef(0);
+  // Latest value, readable synchronously by applyRun (which needs the node's
+  // current row to build its residual).
+  const pendingRef = useRef<SyncPendingResponse>(EMPTY);
+  // Per-node results applied ahead of the next scan, so a scan that was
+  // already in flight when a sync finished cannot resurrect a cleared node.
+  const overridesRef = useRef<Map<string, PendingOverride>>(new Map());
+
+  const store = useCallback((next: SyncPendingResponse) => {
+    pendingRef.current = next;
+    setPending(next);
+  }, []);
 
   const refresh = useCallback(() => {
     const myId = ++reqRef.current;
-    lastFetchAtRef.current = Date.now();
+    const startedAt = Date.now();
+    lastFetchAtRef.current = startedAt;
     fetchSyncPending()
       .then((r) => {
         failureCountRef.current = 0;
-        if (myId === reqRef.current) setPending(r);
+        if (myId !== reqRef.current) return;
+        const kept = pruneOverrides(overridesRef.current, startedAt);
+        overridesRef.current = kept;
+        store(applyOverrides(r, kept));
       })
       .catch(() => {
         failureCountRef.current += 1;
       });
-  }, []);
+  }, [store]);
+
+  // A finished sync run updates its node immediately; the aggregate scan it
+  // triggers takes seconds and only reconciles.
+  const applyRun = useCallback(
+    (nodeId: string, run: SyncRunResponse) => {
+      const prev = pendingRef.current.nodes.find((n) => n.node_id === nodeId);
+      const residual = prev ? residualPendingNode(prev, run) : null;
+      overridesRef.current.set(nodeId, { node: residual, since: Date.now() });
+      store(applyPendingNode(pendingRef.current, nodeId, residual));
+    },
+    [store],
+  );
 
   useEffect(() => {
     refresh();
@@ -58,5 +92,5 @@ export function useSyncPending() {
     };
   }, [refresh]);
 
-  return { pending, refresh };
+  return { pending, refresh, applyRun };
 }
