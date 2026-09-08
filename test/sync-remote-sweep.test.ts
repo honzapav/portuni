@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, mkdir, rename } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, rename, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
@@ -9,8 +9,13 @@ import { remoteSweep } from "../apps/server/domain/sync/remote-sweep.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { registerLocalFile } from "../apps/server/domain/sync/engine.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
-import { resetAdapterCacheForTests, setAdapterForTests } from "../apps/server/domain/sync/adapter-cache.js";
+import {
+  resetAdapterCacheForTests,
+  setAdapterForTests,
+  getAdapter,
+} from "../apps/server/domain/sync/adapter-cache.js";
 import { enqueuePendingOp } from "../apps/server/domain/sync/pending-ops.js";
+import { sha256Buffer } from "../apps/server/domain/sync/hash.js";
 import type { FileAdapter, FileRef } from "../apps/server/domain/sync/types.js";
 
 let workspace: string;
@@ -283,6 +288,80 @@ describe("remoteSweep", () => {
     assert.equal(getCalls, 0, "a native record's bytes are never fetched -- alt=media rejects them");
     const row = await db.execute({ sql: "SELECT current_remote_hash FROM files WHERE id = 'F-NATIVE'" });
     assert.equal(row.rows[0].current_remote_hash, null);
+  });
+
+  // #276: the other half of #273's hash-tracking bug. central-mode
+  // classification treats files.current_remote_hash as live remote truth
+  // with no other path to verify it -- a record whose hash WAS once
+  // correct but the object was since edited out of band (a teammate
+  // editing directly in Drive) used to read as permanently clean forever,
+  // since nothing ever re-checked an already-known hash. The sweep's own
+  // listing already proves the CURRENT hash for a backend that reports one
+  // on list (Drive: md5Checksum), so refreshing it costs no extra remote
+  // call.
+  it("refreshes a stale current_remote_hash for a tracked, present record edited out of band", async () => {
+    const { db, nodeId, remoteRoot } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const r = await pushed(db, nodeId, mirrorRoot, "a.md");
+
+    // The fs test adapter reports no hash on stat/list by default (like
+    // OpenDAL); wrap it the way Drive's list()/stat() actually behave
+    // (md5Checksum included) so the sweep's listing has a hash to compare
+    // against -- without a download.
+    const real = await getAdapter(db, "test-fs");
+    setAdapterForTests("test-fs", {
+      ...real,
+      async list(prefix) {
+        const refs = await real.list(prefix);
+        return Promise.all(
+          refs.map(async (ref) => ({ ...ref, hash: sha256Buffer(await real.get(ref.path)) })),
+        );
+      },
+    });
+
+    // Out-of-band edit directly on the remote -- bypasses storeFile, so
+    // files.current_remote_hash still holds the OLD hash.
+    await writeFile(join(remoteRoot, r.remote_path), "edited directly on the remote");
+    const newHash = sha256Buffer(await readFile(join(remoteRoot, r.remote_path)));
+    assert.notEqual(newHash, r.hash, "precondition: the edit actually changed the content hash");
+
+    const out = await remoteSweep(db, { userId: "U1", nodeId });
+    assert.equal(out.errors.length, 0);
+    const row = await db.execute({
+      sql: "SELECT current_remote_hash FROM files WHERE id = ?",
+      args: [r.file_id],
+    });
+    assert.equal(row.rows[0].current_remote_hash, newHash);
+  });
+
+  it("leaves an already-non-null hash alone when the backend reports none on listing (no forced re-download)", async () => {
+    const { db, nodeId, remoteRoot } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const r = await pushed(db, nodeId, mirrorRoot, "a.md");
+
+    let getCalls = 0;
+    const real = await getAdapter(db, "test-fs");
+    setAdapterForTests("test-fs", {
+      ...real,
+      async get(p) {
+        getCalls++;
+        return real.get(p);
+      },
+    });
+    // Out-of-band edit, but the plain fs adapter's list()/stat() report no
+    // hash (like OpenDAL) -- there is no free signal that anything changed.
+    await writeFile(join(remoteRoot, r.remote_path), "edited directly on the remote");
+
+    const out = await remoteSweep(db, { userId: "U1", nodeId });
+    assert.equal(out.errors.length, 0);
+    assert.equal(getCalls, 0, "an already-known hash is never re-downloaded speculatively");
+    const row = await db.execute({
+      sql: "SELECT current_remote_hash FROM files WHERE id = ?",
+      args: [r.file_id],
+    });
+    assert.equal(row.rows[0].current_remote_hash, r.hash, "the stale hash is left as-is for this backend");
   });
 
   it("retries a leftover pending file op first and reports it as repaired", async () => {

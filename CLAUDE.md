@@ -1086,10 +1086,10 @@ symlink to this file.
     hash is NULL, using the listing's own hash or (backends that report
     none on stat, e.g. fs/OpenDAL) downloading and hashing, same pattern
     the adopt path's own backfill already used. Native-format records are
-    excluded (no bytes to hash, by design). This is the NULL-hash half of
-    the hash-tracking problem; a STALE-but-non-null hash (an out-of-band
-    Drive edit to an already-tracked file) is a separate, still-open issue
-    (#276) -- land any fix there in the same sweep step.
+    excluded (no bytes to hash, by design). This was the NULL-hash half of
+    the hash-tracking problem; the STALE-but-non-null-hash half (an
+    out-of-band Drive edit to an already-tracked file) is #276, landed in
+    the same sweep step -- see its own entry below.
   - **Watcher chain**: `mirror-watcher.ts`'s reconcile serialization used
     to be ONE global `Promise` chain shared by every mirror on the machine
     (needed for same-mirror event ordering, e.g. an `mv`'s old+new path
@@ -1179,6 +1179,28 @@ symlink to this file.
   `resolveNodeInfo` + `deriveLocalPath`, the same resolution `deleteFile`
   already did) -- previously it never even looked for a local copy to
   clean up.
+- **The remote sweep also refreshes a STALE `current_remote_hash`, not
+  just a NULL one (#276).** `files.current_remote_hash` is the ONLY source
+  of remote truth central-mode classification ever reads -- no other code
+  path re-verifies it once set, unlike local mode's slow scan, which stats
+  the remote live on every non-fast scan. So a record whose hash WAS once
+  correct but the object was since edited out of band (a teammate editing
+  directly in Drive) used to read as permanently clean on every device
+  forever -- the edit was never pulled anywhere. `remote-sweep.ts`'s "1.5.
+  Hash refresh" step (added for #273's NULL-hash case) now also catches
+  this: for a backend that reports a content hash on listing (Drive:
+  md5Checksum), the sweep already paid for the listing call, so comparing
+  it against the cached hash and updating on ANY mismatch (not just
+  null-to-known) costs nothing extra. For a backend that reports no hash
+  on listing (the fs/OpenDAL test adapter) an already-non-null hash is
+  deliberately left alone -- there is no free staleness signal there, and
+  forcing a full content download of every tracked file on every sync run
+  to find out would be the same unbounded cost local mode's own slow scan
+  already avoids for exactly this class of backend (its `cachedRemoteStat`
+  also gets `hash: null` from such a backend and falls back to comparing
+  local-vs-last-synced instead of ever proving the remote changed) -- not
+  a new gap this fix introduces, a pre-existing structural limit it does
+  not attempt to lift.
 
 ## Security rules (from the auth refactor post-mortem)
 
