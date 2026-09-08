@@ -13,8 +13,8 @@
 // engine makes carries the user's device token.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, rename as fsRename, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { Client } from "@libsql/client";
 import { z } from "zod";
 import type { RequestIdentity } from "../auth/request-identity.js";
@@ -47,7 +47,7 @@ import {
 } from "../domain/sync/central/engine-central.js";
 import { findEntryByFileId } from "../mcp/agent-tools.js";
 import { guardAgentRestWrite } from "./write-gate.js";
-import { mimeFor, PullDirtyLocalError } from "../domain/sync/engine.js";
+import { mimeFor, localHashFor, PullDirtyLocalError } from "../domain/sync/engine.js";
 import { safeMirrorJoin, type Section } from "../domain/sync/remote-path.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { getLocalMirror, deleteFileState } from "../domain/sync/local-db.js";
@@ -161,6 +161,9 @@ const agentPutFileSchema = z.object({
   force: z.boolean().optional(),
 });
 
+// Same shape as api/files.ts's renameSchema.
+const agentRenameFileSchema = z.object({ new_filename: z.string().min(1) });
+
 // Same shape as api/files.ts's createSchema -- kept in sync deliberately.
 const agentCreateFileSchema = z.object({
   filename: z.string().min(1),
@@ -179,9 +182,8 @@ export type AgentRouteFn = (
 // Background uploads started by POST /nodes/:id/files (#266), keyed by the
 // mirror path they push. Delete/resolve on the same path await the entry
 // (awaitPendingPush) so the upload cannot land after the record is gone.
-// Rename in central mode goes straight to central (not routed here), so a
-// rename inside that window is not coordinated -- the sync run's remote
-// sweep adopts the stray object as a new file rather than losing it.
+// Rename is routed here as well, so every file mutation on this device
+// waits for it.
 const pendingPushes = new Map<string, Promise<void>>();
 
 async function awaitPendingPush(localPath: string): Promise<void> {
@@ -498,6 +500,58 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
         }
         if (respondCentral404(res, err)) return true;
         respondError(res, `POST /nodes/${nodeId}/files/${fileId}/resolve`, err);
+      }
+      return true;
+    }
+
+    // Rename: central owns the record + remote step (CentralClient.renameFile,
+    // the same POST a non-agent-mode rename hits), but only THIS device can
+    // rename the mirror copy -- without that step the local file kept its
+    // old name, so the next scan reported the renamed record as missing
+    // locally AND the old name as a new untracked file. Same shape as the
+    // MCP portuni_move_file after-step (applyLocalAfterProxiedMutation).
+    // Also waits for a create's in-flight background upload on this path,
+    // so the upload cannot land at the old remote path after the rename.
+    const renameFileMatch = pathname.match(/^\/nodes\/([^/]+)\/files\/([^/]+)\/rename$/);
+    if (renameFileMatch && method === "POST") {
+      const nodeId = decodeURIComponent(renameFileMatch[1]);
+      const fileId = decodeURIComponent(renameFileMatch[2]);
+      if (!guardAgentRestWrite(req, res, identity, nodeId)) return true;
+      const body = await parseJsonBody(req, res, agentRenameFileSchema);
+      if (!body) return true;
+      const fn = body.new_filename;
+      if (fn.includes("/") || fn.includes("\\") || fn.includes("\0") || fn === "." || fn === "..") {
+        respondJson(res, 400, { error: `invalid filename: ${fn}`, code: "INVALID_PATH" });
+        return true;
+      }
+      try {
+        // Same IDOR guard as delete/resolve: a file this device mirrors must
+        // belong to THIS node; one it does not mirror is simply not found
+        // here and forwards to central with no local step.
+        const found = await findEntryByFileId(client, identity.userId, fileId);
+        if (found && found.nodeId !== nodeId) {
+          respondJson(res, 404, { error: "file not found on this device" });
+          return true;
+        }
+        const oldLocal = found?.entry.local_path ?? null;
+        if (oldLocal) await awaitPendingPush(oldLocal);
+        const r = await client.renameFile(nodeId, fileId, fn);
+        if (oldLocal && (r as { status?: unknown }).status === "ok") {
+          const newLocal = join(dirname(oldLocal), fn);
+          if (newLocal !== oldLocal) {
+            try {
+              await fsRename(oldLocal, newLocal);
+              await localHashFor(newLocal, fileId, null).catch(() => null);
+            } catch (e) {
+              // No local copy (pull-pending) -- nothing to rename here.
+              if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+            }
+          }
+        }
+        respondJson(res, 200, r);
+      } catch (err) {
+        if (respondCentral404(res, err)) return true;
+        respondError(res, `POST /nodes/${nodeId}/files/${fileId}/rename`, err);
       }
       return true;
     }

@@ -165,6 +165,31 @@ class FakeCentral implements CentralClient {
     return { adopted: [], deleted_on_remote: [], errors: [], repaired: [], pending_repairs: [] };
   }
 
+  // Record + remote rename (the central half of POST .../rename).
+  renameCalls: Array<{ fileId: string; newRemotePath: string }> = [];
+  async renameFile(nodeId: string, fileId: string, newFilename: string) {
+    if (nodeId !== NODE_ID) throw new CentralHttpError("not found", 404, "NOT_FOUND");
+    const entry = [...this.records.entries()].find(([, r]) => r.id === fileId);
+    if (!entry) throw new CentralHttpError("not found", 404, "NOT_FOUND");
+    const [oldRemotePath, r] = entry;
+    const newRemotePath = posix.join(posix.dirname(oldRemotePath), newFilename);
+    this.records.delete(oldRemotePath);
+    this.records.set(newRemotePath, { ...r, filename: newFilename });
+    const bytes = this.bytes.get(oldRemotePath);
+    if (bytes) {
+      this.bytes.delete(oldRemotePath);
+      this.bytes.set(newRemotePath, bytes);
+    }
+    this.renameCalls.push({ fileId, newRemotePath });
+    return {
+      file_id: fileId,
+      old_filename: r.filename,
+      new_filename: newFilename,
+      new_remote_path: newRemotePath,
+      status: "ok",
+    };
+  }
+
   // Record + remote deletion (the central half of DELETE /nodes/:id/files/:fileId).
   deleted: Array<{ fileId: string; remotePath: string }> = [];
   // When set, central reports the remote delete as failed: 200 with
@@ -697,6 +722,95 @@ describe("DELETE /nodes/:id/files/:fileId (agent mode, #254)", () => {
   });
 });
 
+describe("POST /nodes/:id/files/:fileId/rename (agent mode)", () => {
+  it("renames the central record AND the local mirror copy, leaving the file clean", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const oldAbs = join(mirrorRoot, "wip", "before.md");
+    await writeFile(oldAbs, "obsah");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    const fileId = synced1.adopted[0].file_id;
+
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_filename: "after.md" }),
+    });
+    assert.equal(r.status, 200);
+    const body = (await r.json()) as { status: string; new_filename: string };
+    assert.equal(body.status, "ok");
+    assert.equal(body.new_filename, "after.md");
+    assert.deepEqual(fake.renameCalls, [{ fileId, newRemotePath: posix.join(NODE_ROOT, "wip/after.md") }]);
+    await assert.rejects(() => readFile(oldAbs), "old local name must be gone");
+    assert.equal(await readFile(join(mirrorRoot, "wip", "after.md"), "utf8"), "obsah");
+
+    const st = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+    const s = (await st.json()) as {
+      files: Array<{ local_path: string | null; sync_class: string }>;
+      untracked: unknown[];
+    };
+    assert.equal(s.untracked.length, 0, "no stray untracked copy under the old name");
+    const row = s.files.find((f) => f.local_path === join(mirrorRoot, "wip", "after.md"));
+    assert.ok(row, `renamed record resolves to the new local path: ${JSON.stringify(s)}`);
+    assert.equal(row.sync_class, "clean");
+  });
+
+  it("waits for a create's in-flight background push before renaming", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    let releasePush: (() => void) | undefined;
+    fake.putDelay = new Promise<void>((r) => {
+      releasePush = r;
+    });
+    const created = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "draft.md", content: "v1" }),
+    });
+    const { id: fileId } = (await created.json()) as { id: string };
+    let renameDone = false;
+    const ren = fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_filename: "final.md" }),
+    }).then((res) => {
+      renameDone = true;
+      return res;
+    });
+    await new Promise((res) => setTimeout(res, 100));
+    assert.equal(renameDone, false, "rename must wait for the in-flight push");
+    releasePush?.();
+    fake.putDelay = null;
+    const res = await ren;
+    assert.equal(res.status, 200);
+    assert.equal(fake.bytes.has(posix.join(NODE_ROOT, "wip/draft.md")), false, "no object left at the old path");
+    assert.equal(fake.bytes.get(posix.join(NODE_ROOT, "wip/final.md"))?.toString("utf8"), "v1");
+    assert.equal(await readFile(join(mirrorRoot, "wip", "final.md"), "utf8"), "v1");
+  });
+
+  it("forwards to central's own rename when this device has no mirror for the node", async () => {
+    const reg = await fake.registerFile(NODE_ID, "wip/remote-only.md");
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/${reg.id}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_filename: "remote-renamed.md" }),
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(fake.renameCalls, [
+      { fileId: reg.id, newRemotePath: posix.join(NODE_ROOT, "wip/remote-renamed.md") },
+    ]);
+  });
+
+  it("rejects a filename with a path separator", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files/F1/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_filename: "../escape.md" }),
+    });
+    assert.equal(r.status, 400);
+  });
+});
+
 describe("POST /nodes/:id/files (agent mode, #266)", () => {
   it("writes the file into the mirror and registers it, without waiting for the background push", async () => {
     await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
@@ -923,6 +1037,12 @@ describe("agent-mode REST write gate (hardened posture)", () => {
     assert.equal(created.status, 201);
     const { id: fileId } = (await created.json()) as { id: string };
 
+    const bareRename = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_filename: "nope.md" }),
+    });
+    assert.equal(bareRename.status, 403);
     const bareResolve = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

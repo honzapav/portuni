@@ -142,10 +142,14 @@ in `is_local_only_path`, so the agent-router handler itself decides per node
 whether to serve it locally or forward it, the same shape as the `/file`
 GET/PUT fallback above.
 
-The rest of the file lifecycle is **not** on that list: `POST
-/nodes/:id/files/:fileId/rename`, plus `/nodes/:id/file-url` and
-`/nodes/:id/folder-url`, all forward straight to the central server, which
-serves them mirror-less and Drive-direct (`file-content-remote.ts`). The old
+`POST /nodes/:id/files/:fileId/rename` is on the list too: central keeps the
+record + remote step (`CentralClient.renameFile`, the same POST it already
+serves mirror-less), and the agent-router handler renames the device's mirror
+copy afterwards — forwarded straight to central, the local file kept its old
+name and the next scan reported the record missing locally plus a new
+untracked file. Only `/nodes/:id/file-url` and `/nodes/:id/folder-url` still
+forward straight to the central server, which serves them Drive-direct
+(`file-content-remote.ts`). The old
 "available only in local mode" frontend string has been removed; the 501 is
 caught as `LocalOnlyError` (`apps/web/src/api.ts`) and now reads as "not
 signed in."

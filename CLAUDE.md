@@ -235,9 +235,8 @@ symlink to this file.
   the central server by design (it has no device mirror to clean up), so
   `DELETE /nodes/:id/files/:fileId` deleted the record + remote object with
   no local step and no `deleteFileState` call at all. `is_local_only_path`
-  (`apps/desktop/src/lib.rs`) now routes exactly that one sub-path (single
-  segment after `files/`, so it does not also catch `POST /files` or
-  `.../files/:id/rename`) to the local sync agent instead of straight to
+  (`apps/desktop/src/lib.rs`) now routes that sub-path (single segment
+  after `files/`) to the local sync agent instead of straight to
   central; `agent-router.ts`'s new handler calls the same
   `CentralClient.deleteFileRecord` a non-agent-mode delete would hit for the
   record + remote half, then runs the local `rm` + `deleteFileState` itself
@@ -254,7 +253,8 @@ symlink to this file.
   which has no mirror at all (409 `keep_local`, 500 `take_remote`/
   `restore`). Fixed the same way as the delete route: one more sub-path
   match (`files/<fileId>/resolve`, alongside the existing bare
-  `files/<fileId>` for delete).
+  `files/<fileId>` for delete); `files/<fileId>/rename` followed for the
+  same reason (see the #266 paragraph).
   **`POST /nodes/:id/files` (create) got the same routing fix, for a
   different reason (#266).** Central's own create is adapter-direct — it
   does the Drive `PUT` before answering — so a device with a mirror never
@@ -279,8 +279,13 @@ symlink to this file.
   That upload is tracked per mirror path (`pendingPushes`); a delete or
   resolve on the same file awaits it (`awaitPendingPush`) so the
   `adapter.put` cannot land after the record is gone and resurrect the
-  remote object. Rename stays central-routed and is not coordinated — a
-  rename inside that window leaves a stray object the next sweep adopts.
+  remote object. `POST /nodes/:id/files/:fileId/rename` is routed to the
+  sync agent too: central keeps the record + remote step
+  (`CentralClient.renameFile`), the handler waits for a pending upload on
+  that path, then renames the device's mirror copy and refreshes its hash
+  cache — forwarding straight to central used to leave the local file
+  under its old name (missing locally + a new untracked file on the next
+  scan).
   Without a mirror on this device, the handler falls back to a new
   `CentralClient.createFile` method wrapping the same `POST
   /nodes/:id/files` central already serves (mirror-less, adapter-direct) —

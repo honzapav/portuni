@@ -1234,12 +1234,17 @@ fn open_external(url: String) -> Result<(), String> {
 ///                                 handler's own fallback (CentralClient
 ///                                 .createFile), so this is safe to route
 ///                                 here unconditionally.
+///   POST /nodes/:id/files/:fileId/rename — rename: central still does the
+///                                 record + remote step (the agent-router
+///                                 handler calls it), but only the device
+///                                 can rename the mirror copy; forwarding
+///                                 straight to central left the local file
+///                                 under its old name (missing locally +
+///                                 a new untracked file on the next scan).
 ///
-/// NOT local-only (served from the central server): the rest of the file
-/// lifecycle (POST /nodes/:id/files/:fileId/rename) is adapter-direct on
-/// the server, so it forwards in central mode. /nodes/:id/folder-url and
-/// /nodes/:id/file-url also stay central (Drive URL lookups on the
-/// server). All graph, actor, responsibility, etc. routes are central.
+/// NOT local-only (served from the central server): /nodes/:id/folder-url
+/// and /nodes/:id/file-url (Drive URL lookups on the server). All graph,
+/// actor, responsibility, etc. routes are central.
 pub(crate) fn is_local_only_path(path: &str) -> bool {
     // Strip query string for matching.
     let p = path.split('?').next().unwrap_or(path);
@@ -1258,13 +1263,13 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
     // Matches: /nodes/<id>/mirror, /nodes/<id>/sync-status, /nodes/<id>/sync,
     //          /nodes/<id>/sandbox-profile, /nodes/<id>/file (content),
     //          /nodes/<id>/files (create, #266), /nodes/<id>/files/<fileId>
-    //          (delete, #254 -- exactly one segment after "files/") and
-    //          /nodes/<id>/files/<fileId>/resolve (#264). None of these
-    //          also matches /nodes/<id>/files/<fileId>/rename, which stays
-    //          central as it is today.
+    //          (delete, #254 -- exactly one segment after "files/"),
+    //          /nodes/<id>/files/<fileId>/resolve (#264) and
+    //          /nodes/<id>/files/<fileId>/rename (the device renames its
+    //          mirror copy after central confirms).
     //
-    // NOT matched (served centrally): /nodes/<id>/files/<fileId>/rename,
-    // /nodes/<id>/file-url, /nodes/<id>/folder-url.
+    // NOT matched (served centrally): /nodes/<id>/file-url,
+    // /nodes/<id>/folder-url.
     if let Some(rest) = p.strip_prefix("/nodes/") {
         // rest = "<id>/<sub>" or "<id>/<sub>/..."
         if let Some(slash) = rest.find('/') {
@@ -1281,6 +1286,7 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
             if let Some(file_seg) = sub.strip_prefix("files/") {
                 if (!file_seg.is_empty() && !file_seg.contains('/'))
                     || file_seg.ends_with("/resolve")
+                    || file_seg.ends_with("/rename")
                 {
                     return true;
                 }
@@ -3976,10 +3982,11 @@ mod local_only_path_tests {
     }
 
     #[test]
-    fn node_files_rename_is_central_phase_b() {
-        // Rename still forwards to the central server (record + remote step
-        // only, no device-local cleanup needed).
-        assert!(!is_local_only_path("/nodes/abc123/files/somefile.md/rename"));
+    fn node_files_rename_is_local_only() {
+        // POST /nodes/:id/files/:fileId/rename: central keeps the record +
+        // remote step, but the device has to rename its own mirror copy.
+        assert!(is_local_only_path("/nodes/abc123/files/somefileid/rename"));
+        assert!(is_local_only_path("/nodes/abc123/files/somefileid/rename?x=1"));
     }
 
     #[test]

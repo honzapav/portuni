@@ -66,6 +66,10 @@ export interface CentralClient {
     bytes: Buffer,
     opts?: PutFileOpts,
   ): Promise<{ version: string; canonicalHash: string }>;
+  // Record+remote rename on central (POST /nodes/:id/files/:id/rename):
+  // basename swap in place. The caller owns the local disk side (the agent
+  // router renames the device copy after central confirms).
+  renameFile(nodeId: string, fileId: string, newFilename: string): Promise<Record<string, unknown>>;
   // Record+remote move on central (POST /nodes/:id/files/:id/move). The
   // caller owns the local disk side; central's own local step no-ops.
   moveFileRecord(
@@ -292,6 +296,14 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       if (r.status !== 200) throwFor(r.status, p, r.json);
       const j = r.json as { version: string; canonical_hash: string };
       return { version: j.version, canonicalHash: j.canonical_hash };
+    },
+
+    async renameFile(nodeId, fileId, newFilename) {
+      const p = `/nodes/${encodeURIComponent(nodeId)}/files/${encodeURIComponent(fileId)}/rename`;
+      const r = await request("POST", p, { new_filename: newFilename });
+      invalidate(nodeId);
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      return r.json as Record<string, unknown>;
     },
 
     async moveFileRecord(nodeId, fileId, body) {
