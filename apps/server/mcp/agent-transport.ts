@@ -69,6 +69,7 @@ import { resolveProjectionRootForNode } from "../domain/sandbox-profile.js";
 import {
   cleanupSessionProjection,
   unregisterSessionProjections,
+  spawnSessionIdFromHeader,
   UNNARROWED_PROJECTION_ID,
 } from "../domain/session-projection.js";
 import { readFileOrSpill, type RemoteRawFetch } from "./read-file-spill.js";
@@ -219,10 +220,11 @@ function fetchRemoteRawViaCentral(client: CentralClient): RemoteRawFetch {
 // for CLIs that cannot relay it (Codex, Vibe). Anything else -- notably this
 // transport's own randomly generated MCP session id -- would be a directory
 // the kernel never granted, so the projection would exist but be unreadable.
+// The header is client-supplied and becomes a path segment that is rm -rf'd
+// on close, so only a well-formed ULID is accepted (spawnSessionIdFromHeader);
+// anything else falls back to the shared bucket.
 function resolveProjectionSessionId(req: IncomingMessage): string {
-  const h = req.headers["x-portuni-spawn-id"];
-  const spawnSessionId = (Array.isArray(h) ? h[0] : h)?.trim() || null;
-  return spawnSessionId ?? UNNARROWED_PROJECTION_ID;
+  return spawnSessionIdFromHeader(req.headers["x-portuni-spawn-id"]) ?? UNNARROWED_PROJECTION_ID;
 }
 
 // Agent-mode counterpart of disk-projection.ts's disposeSessionProjection.

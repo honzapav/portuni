@@ -119,7 +119,48 @@ describe("registry", () => {
   });
 });
 
+describe("projection path guards", () => {
+  it("sessionProjectionDir refuses a session id that is not a single path segment", async () => {
+    const { sessionProjectionDir, spawnSessionIdFromHeader } = await import(
+      "../apps/server/domain/session-projection.js"
+    );
+    for (const bad of ["..", ".", "", "a/b", "../..", "x\\y"]) {
+      assert.throws(() => sessionProjectionDir(projectionRoot, bad), `accepted ${JSON.stringify(bad)}`);
+    }
+    assert.equal(sessionProjectionDir(projectionRoot, "SESS"), join(projectionRoot, "SESS"));
+    // Header parsing: only a ULID-shaped value is trusted as a directory key.
+    assert.equal(spawnSessionIdFromHeader("01ARZ3NDEKTSV4RRFFQ69G5FAV"), "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    assert.equal(spawnSessionIdFromHeader(["01ARZ3NDEKTSV4RRFFQ69G5FAV"]), "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    assert.equal(spawnSessionIdFromHeader("../../.."), null);
+    assert.equal(spawnSessionIdFromHeader("SESS"), null);
+    assert.equal(spawnSessionIdFromHeader(""), null);
+    assert.equal(spawnSessionIdFromHeader(undefined), null);
+  });
+});
+
 describe("relinkProjectedFile", () => {
+  it("relinks every file under a directory that was moved into place (#253)", async () => {
+    const target = nodeProjectionDir(projectionRoot, "SESS", "NODE");
+    registerProjectedNode("NODE", { sessionId: "SESS", mirrorPath: mirror, targetDir: target });
+
+    const { mkdir, rename } = await import("node:fs/promises");
+    await mkdir(join(mirror, "wip", "old", "deep"), { recursive: true });
+    await writeFile(join(mirror, "wip", "old", "a.md"), "a\n");
+    await writeFile(join(mirror, "wip", "old", "deep", "b.md"), "b\n");
+    await relinkProjectedFile("NODE", join(mirror, "wip", "old", "a.md"));
+    await relinkProjectedFile("NODE", join(mirror, "wip", "old", "deep", "b.md"));
+    assert.equal(await readFile(join(target, "wip", "old", "a.md"), "utf8"), "a\n");
+
+    // A directory mv fires one event for the old path and one for the new.
+    await rename(join(mirror, "wip", "old"), join(mirror, "wip", "new"));
+    await relinkProjectedFile("NODE", join(mirror, "wip", "old"));
+    await relinkProjectedFile("NODE", join(mirror, "wip", "new"));
+
+    assert.equal(await readFile(join(target, "wip", "new", "a.md"), "utf8"), "a\n");
+    assert.equal(await readFile(join(target, "wip", "new", "deep", "b.md"), "utf8"), "b\n");
+    await assert.rejects(() => stat(join(target, "wip", "old")), "stale subtree must be gone");
+  });
+
   it("does nothing when no session projects the node", async () => {
     await writeFile(join(mirror, "wip", "a.md"), "a\n");
     // no registerProjectedNode call -- must not throw or create anything.

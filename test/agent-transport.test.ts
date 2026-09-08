@@ -364,6 +364,39 @@ describe("agent MCP front door", () => {
     );
   });
 
+  it("drops a malformed X-Portuni-Spawn-Id and falls back to the shared bucket", async () => {
+    const { registerMirror } = await import("../apps/server/domain/sync/mirror-registry.js");
+    const { mkdir: mkdirp, writeFile } = await import("node:fs/promises");
+    const mirrored = "01BADSPAWNMIRROR000000000";
+    const mirrorDir = join(workspace, "org", "projects", "bad-spawn-target");
+    await mkdirp(join(mirrorDir, "wip"), { recursive: true });
+    await writeFile(join(mirrorDir, "wip", "n.md"), "hi\n");
+    const { SOLO_USER } = await import("../apps/server/infra/schema.js");
+    await registerMirror(SOLO_USER, mirrored, mirrorDir);
+
+    const client = new Client({ name: "agent-transport-badspawn", version: "0.0.0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(
+        new URL(`${agentBase}/mcp?home_node_id=01TESTNODE0000000000000000`),
+        { requestInit: { headers: { "X-Portuni-Spawn-Id": "../../.." } } },
+      ),
+    );
+    try {
+      const r = (await client.callTool({
+        name: "portuni_expand_scope",
+        arguments: { node_ids: [mirrored], reason: "user-requested: test" },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.notEqual(r.isError, true, r.content[0]?.text);
+      const payload = JSON.parse(r.content[0].text) as { projected: Record<string, string> };
+      assert.ok(
+        payload.projected[mirrored]?.includes(`${sep}_shared${sep}`),
+        `expected the _shared bucket, got ${payload.projected[mirrored]}`,
+      );
+    } finally {
+      await client.close().catch(() => undefined);
+    }
+  });
+
   it("keys the projection by the relayed X-Portuni-Spawn-Id, the directory the Seatbelt profile granted (#252)", async () => {
     const { registerMirror } = await import("../apps/server/domain/sync/mirror-registry.js");
     const { mkdir: mkdirp, writeFile, stat } = await import("node:fs/promises");
@@ -374,7 +407,7 @@ describe("agent MCP front door", () => {
     const { SOLO_USER } = await import("../apps/server/infra/schema.js");
     await registerMirror(SOLO_USER, mirrored, mirrorDir);
 
-    const spawnId = "01SPAWNSESSION00000000000";
+    const spawnId = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     const client = new Client({ name: "agent-transport-spawn", version: "0.0.0" });
     const clientTransport = new StreamableHTTPClientTransport(
       new URL(`${agentBase}/mcp?home_node_id=01TESTNODE0000000000000000`),

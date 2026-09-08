@@ -213,7 +213,14 @@ symlink to this file.
   batch register, so the same pairing applies there too instead of always
   producing a fresh duplicate record. `StatusResult.moved` (a bucket nothing
   ever populated, by design — pairing happens at reconcile time, not scan
-  time) was removed rather than kept as a permanently-empty field.
+  time) was removed rather than kept as a permanently-empty field. The
+  watcher's projection relink (`relinkProjectedFile`) walks a directory
+  event the same way (`relinkTree`), so a moved subtree shows up in every
+  live session projection too. A push (`storeFile`/`storeFileCentral`)
+  stats the file before reading the bytes it uploads and re-stats after;
+  if the identity moved mid-upload it caches the CURRENT content hash, not
+  the pushed one — fast status trusts `cached_local_hash` outright, so an
+  edit landing during the background push after create must read as `push`.
   **Deleting a file removes the local mirror copy too, in every data mode
   (#254).** `deleteFile`'s local `rm` used to be nested inside the
   `remoteName && remotePath` gate that guards the remote-object delete, so a
@@ -786,7 +793,11 @@ symlink to this file.
   MCP session (home node id from `?home_node_id=`, `has` always true since
   central's own `guardNodeRead` already ran, `projectionSessionId` the spawn
   id relayed in `X-Portuni-Spawn-Id` -- the same header `transport.ts` reads
-  in local mode -- or `_shared` when the CLI cannot relay one; NEVER the
+  in local mode; both accept it only as a well-formed ULID
+  (`spawnSessionIdFromHeader`), since the value becomes a path segment that
+  is `rm -rf`'d on close, and `sessionProjectionDir`/`nodeProjectionDir`
+  refuse any non-single-segment key outright -- or `_shared` when the CLI
+  cannot relay one; NEVER the
   transport's own random MCP session id, since the Seatbelt profile was
   frozen at spawn around exactly `<projectionRoot>/<spawn id>/` and
   `_shared/`, so any other key would be a directory the kernel never granted)

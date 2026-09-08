@@ -72,7 +72,44 @@ const SECTIONS = ["wip", "outputs", "resources"] as const;
 // is Crockford base32 and never contains "_".
 export const UNNARROWED_PROJECTION_ID = "_shared";
 
+// A spawn/session id as minted by ulid(): 26 chars of Crockford base32.
+// The X-Portuni-Spawn-Id header is client-supplied (any process holding the
+// terminal token can send one), and the value becomes a path component under
+// the projection root that is later rm -rf'd on session close -- so it is
+// accepted ONLY in this exact shape, never as an arbitrary string.
+const SPAWN_SESSION_ID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+export function isSpawnSessionId(value: string): boolean {
+  return SPAWN_SESSION_ID_RE.test(value);
+}
+
+// Parse the X-Portuni-Spawn-Id request header: the relayed spawn id when it
+// is well-formed, null otherwise (absent, empty, or not a ULID -- a
+// malformed value is dropped rather than trusted as a directory name).
+export function spawnSessionIdFromHeader(header: string | string[] | undefined): string | null {
+  const raw = (Array.isArray(header) ? header[0] : header)?.trim() || null;
+  return raw && isSpawnSessionId(raw) ? raw : null;
+}
+
+// Defence in depth for every projection path builder: a session key must be
+// exactly one path segment. Anything that could climb out of projectionRoot
+// (empty, ".", "..", a separator) is refused here regardless of what the
+// caller validated, because sessionProjectionDir feeds a recursive rm.
+function assertProjectionSegment(value: string, what: string): void {
+  if (
+    value.length === 0 ||
+    value === "." ||
+    value === ".." ||
+    value.includes("/") ||
+    value.includes("\\") ||
+    value.includes("\0")
+  ) {
+    throw new Error(`invalid projection ${what}: ${JSON.stringify(value)}`);
+  }
+}
+
 export function sessionProjectionDir(projectionRoot: string, sessionId: string): string {
+  assertProjectionSegment(sessionId, "session id");
   return join(projectionRoot, sessionId);
 }
 
@@ -81,6 +118,7 @@ export function nodeProjectionDir(
   sessionId: string,
   nodeId: string,
 ): string {
+  assertProjectionSegment(nodeId, "node id");
   return join(sessionProjectionDir(projectionRoot, sessionId), nodeId);
 }
 
@@ -344,6 +382,35 @@ export async function relinkProjectedFile(nodeId: string, absPath: string): Prom
   await Promise.all(entries.map((entry) => relinkOne(entry, absPath)));
 }
 
+async function relinkTree(
+  entry: ProjectedEntry,
+  dirPath: string,
+  isIgnored: (p: string) => boolean,
+): Promise<void> {
+  let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>;
+  try {
+    entries = await readdir(dirPath, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const ent of entries) {
+    const p = join(dirPath, ent.name);
+    if (isIgnored(p)) continue;
+    if (ent.isDirectory()) {
+      await relinkTree(entry, p, isIgnored);
+    } else if (ent.isFile()) {
+      const dest = join(entry.targetDir, relative(entry.mirrorPath, p));
+      try {
+        await mkdir(dirname(dest), { recursive: true });
+        await rm(dest, { force: true });
+        await linkOrCopy(p, dest);
+      } catch {
+        /* best-effort, same as relinkOne */
+      }
+    }
+  }
+}
+
 async function relinkOne(entry: ProjectedEntry, absPath: string): Promise<void> {
   const rel = relative(entry.mirrorPath, absPath);
   if (rel.startsWith("..")) return; // outside this entry's mirror
@@ -354,7 +421,15 @@ async function relinkOne(entry: ProjectedEntry, absPath: string): Promise<void> 
     if (isIgnored(absPath)) return;
     const dest = join(entry.targetDir, rel);
     const st = await stat(absPath);
-    if (st.isDirectory()) return; // directories are created lazily via mkdir below
+    if (st.isDirectory()) {
+      // A directory created or moved into place fires ONE watcher event for
+      // itself, never one per (unchanged) child -- same reason
+      // reconcile.ts walks it (#253). Relink every file under it so the
+      // projection picks up the moved subtree; the old location's event
+      // lands in the ENOENT branch below and drops the stale links.
+      await relinkTree(entry, absPath, isIgnored);
+      return;
+    }
     await mkdir(dirname(dest), { recursive: true });
     await rm(dest, { force: true });
     await linkOrCopy(absPath, dest);

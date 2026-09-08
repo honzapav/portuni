@@ -629,6 +629,13 @@ export async function storeFileCentral(
 
   const state = await getFileState(reg.file_id);
   const baseline = state?.last_synced_hash ?? null;
+  // Stat BEFORE reading: the cached (mtime, size) must describe the bytes
+  // that actually get pushed. Stat'ing after the upload would pair the
+  // pushed hash with the mtime/size of whatever the file is by then -- an
+  // edit landing mid-upload (e.g. the editor saving into a file the
+  // create handler is still pushing in the background) would read as
+  // clean and never be pushed.
+  const fsInfo = await statForCache(localPath);
   const bytes = await readFile(localPath);
 
   let put: { version: string; canonicalHash: string };
@@ -665,16 +672,29 @@ export async function storeFileCentral(
     }
   }
 
-  const fsInfo = await statForCache(localPath);
+  // Fast status trusts cached_local_hash outright (no mtime check), so the
+  // cache written here must describe the file as it is NOW, not as it was
+  // when read: an edit that landed while the upload was in flight (the
+  // editor saving into a file the create handler is still pushing in the
+  // background) must surface as push, never be masked as clean by the
+  // pushed hash. Re-stat after the upload; if the identity moved, rehash.
+  const after = await statForCache(localPath);
+  const changedMidPush =
+    after.mtime !== fsInfo.mtime || after.size !== fsInfo.size || after.ino !== fsInfo.ino;
+  const cachedLocalHash = changedMidPush
+    ? put.canonicalHash.length === 32
+      ? md5Buffer(await readFile(localPath))
+      : await sha256File(localPath)
+    : put.canonicalHash;
   await upsertFileState({
     file_id: reg.file_id,
     last_synced_hash: put.canonicalHash,
     last_synced_at: new Date().toISOString(),
-    cached_local_hash: put.canonicalHash,
-    cached_mtime: fsInfo.mtime,
-    cached_size: fsInfo.size,
-    cached_ino: fsInfo.ino,
-    cached_dev: fsInfo.dev,
+    cached_local_hash: cachedLocalHash,
+    cached_mtime: after.mtime,
+    cached_size: after.size,
+    cached_ino: after.ino,
+    cached_dev: after.dev,
   });
 
   return {

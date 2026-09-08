@@ -713,6 +713,38 @@ describe("POST /nodes/:id/files (agent mode, #266)", () => {
     );
   });
 
+  it("an edit landing while the background push is in flight stays push, not clean", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    let releasePush: (() => void) | undefined;
+    fake.putDelay = new Promise<void>((r) => {
+      releasePush = r;
+    });
+    const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "edited.md", content: "v1" }),
+    });
+    assert.equal(r.status, 201);
+    const abs = join(mirrorRoot, "wip", "edited.md");
+    // The push has read "v1" and is blocked on the upload; the editor saves
+    // over it in the meantime (different size + newer mtime).
+    await new Promise((res) => setTimeout(res, 20));
+    await writeFile(abs, "v2 -- edited while the background push was in flight");
+    releasePush?.();
+    fake.putDelay = null;
+    const deadline = Date.now() + 2000;
+    while (!fake.bytes.has(posix.join(NODE_ROOT, "wip/edited.md")) && Date.now() < deadline) {
+      await new Promise((res) => setTimeout(res, 20));
+    }
+    assert.equal(fake.bytes.get(posix.join(NODE_ROOT, "wip/edited.md"))?.toString("utf8"), "v1");
+
+    const st = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+    const s = (await st.json()) as { files: Array<{ local_path: string | null; sync_class: string }> };
+    const row = s.files.find((f) => f.local_path?.endsWith("/wip/edited.md"));
+    assert.ok(row, `record exists: ${JSON.stringify(s)}`);
+    assert.equal(row.sync_class, "push", "the mid-push edit must not be masked as clean");
+  });
+
   it("routes section/subpath into the mirror layout", async () => {
     await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
     const r = await fetch(`${base}/nodes/${NODE_ID}/files`, {
