@@ -238,8 +238,16 @@ symlink to this file.
   `portuni_delete_file`/`portuni_move_file` tools
   (`agent-tools.ts`'s `isProxiedDiskMutation`/`applyLocalAfterProxiedMutation`),
   just for the REST path the web UI's "Smazat" button actually uses. The
-  `/files/:fileId/resolve` and `/files` POST routing gaps are the same class
-  of bug but belong to #264/#266, not this fix.
+  `/files` POST routing gap is the same class of bug but belongs to #266,
+  not this fix. **`POST /files/:fileId/resolve` had the identical gap
+  (#264)**: `agent-router.ts` already resolved conflicts correctly against
+  the device's own mirror (`findEntryByFileId` +
+  `storeFileCentral`/`pullFileCentral`), but `is_local_only_path` never
+  routed the desktop UI's REST call there — it went straight to central,
+  which has no mirror at all (409 `keep_local`, 500 `take_remote`/
+  `restore`). Fixed the same way as the delete route: one more sub-path
+  match (`files/<fileId>/resolve`, alongside the existing bare
+  `files/<fileId>` for delete).
 - **Drive sync has two auth paths sharing one adapter.** Desktop local
   workspaces connect via per-user OAuth: Settings → Synchronizace →
   `google_drive_connect` (`apps/desktop/src/auth.rs`, PKCE loopback) hands the

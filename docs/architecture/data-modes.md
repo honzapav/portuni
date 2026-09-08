@@ -98,6 +98,7 @@ to `501 {error:"local_only", detail:"sync agent not running"}` in central mode
 /nodes/:id/mirror, /nodes/:id/sync-status, /nodes/:id/sync, /nodes/:id/sandbox-profile
 /nodes/:id/file
 DELETE /nodes/:id/files/:fileId
+POST /nodes/:id/files/:fileId/resolve
 ```
 
 So `local_only` now means exactly **"the local sync agent isn't up — sign
@@ -110,11 +111,19 @@ the exact same endpoint a non-agent-mode delete hits), but the device has to
 run its own disk-cleanup step (`rm` the mirror copy, drop the `file_state`
 row) afterward — the central server has no mirror to clean up, so without
 this the local copy survived every delete and the next backfill sweep
-re-registered it. The rest of the file lifecycle is **not** on that list:
-`POST /nodes/:id/files` and `.../files/:id/rename`, plus `/nodes/:id/file-url`
-and `/nodes/:id/folder-url`, all forward straight to the central server, which
-serves them mirror-less and Drive-direct (`file-content-remote.ts`). The old
-"available only in local mode" frontend string has been removed; the 501 is
+re-registered it. `POST /nodes/:id/files/:fileId/resolve` (conflict
+resolution — "Ponechat lokální" / "Vzít z remote" / "Obnovit") is on the
+list for the same reason (#264): `agent-router.ts` already implemented it
+correctly against the device's own mirror (`findEntryByFileId` +
+`storeFileCentral`/`pullFileCentral`), but nothing routed the desktop UI's
+REST call there before this fix — it went straight to central, which has no
+mirror to resolve against at all (409 on `keep_local`, 500 on
+`take_remote`/`restore`). The rest of the file lifecycle is **not** on that
+list: `POST /nodes/:id/files` and `.../files/:id/rename`, plus
+`/nodes/:id/file-url` and `/nodes/:id/folder-url`, all forward straight to
+the central server, which serves them mirror-less and Drive-direct
+(`file-content-remote.ts`). The old "available only in local mode" frontend
+string has been removed; the 501 is
 caught as `LocalOnlyError` (`apps/web/src/api.ts`) and now reads as "not
 signed in."
 

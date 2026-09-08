@@ -1210,6 +1210,16 @@ fn open_external(url: String) -> Result<(), String> {
 ///                                 central server has no way to do itself, so
 ///                                 this one sub-path routes to the sidecar
 ///                                 instead of straight to central.
+///   POST /nodes/:id/files/:fileId/resolve — conflict resolution (#264): the
+///                                 agent-router already implements this
+///                                 correctly (findEntryByFileId +
+///                                 storeFileCentral/pullFileCentral against
+///                                 the device's own mirror), but nothing
+///                                 routed the desktop UI's REST call there --
+///                                 it went straight to central, which has no
+///                                 mirror to resolve against at all
+///                                 (409 on keep_local, 500 on take_remote/
+///                                 restore).
 ///
 /// NOT local-only (served from the central server): the rest of the file
 /// lifecycle (POST /nodes/:id/files, POST /nodes/:id/files/:fileId/rename)
@@ -1235,10 +1245,11 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
     // Matches: /nodes/<id>/mirror, /nodes/<id>/sync-status, /nodes/<id>/sync,
     //          /nodes/<id>/sandbox-profile, /nodes/<id>/file (content),
     //          /nodes/<id>/files/<fileId> (delete, #254 -- exactly one
-    //          segment after "files/", so this does NOT also match
-    //          /nodes/<id>/files (create, POST) or
-    //          /nodes/<id>/files/<fileId>/rename or .../resolve, which stay
-    //          central/local-tool-served as they are today).
+    //          segment after "files/") and
+    //          /nodes/<id>/files/<fileId>/resolve (#264) -- neither of
+    //          which also matches /nodes/<id>/files (create, POST) or
+    //          /nodes/<id>/files/<fileId>/rename, which stay central as
+    //          they are today.
     //
     // NOT matched (served centrally): /nodes/<id>/files (create),
     // /nodes/<id>/files/<fileId>/rename, /nodes/<id>/file-url,
@@ -1256,7 +1267,9 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
                 return true;
             }
             if let Some(file_seg) = sub.strip_prefix("files/") {
-                if !file_seg.is_empty() && !file_seg.contains('/') {
+                if (!file_seg.is_empty() && !file_seg.contains('/'))
+                    || file_seg.ends_with("/resolve")
+                {
                     return true;
                 }
             }
@@ -3963,9 +3976,12 @@ mod local_only_path_tests {
     }
 
     #[test]
-    fn node_files_resolve_is_still_central_phase_b() {
-        // Not covered by #254 -- the /resolve routing gap belongs to #264.
-        assert!(!is_local_only_path("/nodes/abc123/files/somefileid/resolve"));
+    fn node_files_resolve_is_local_only() {
+        // POST /nodes/:id/files/:fileId/resolve (#264): the agent-router
+        // already resolves conflicts against the device's own mirror
+        // correctly; this route just never reached it before.
+        assert!(is_local_only_path("/nodes/abc123/files/somefileid/resolve"));
+        assert!(is_local_only_path("/nodes/abc123/files/somefileid/resolve?x=1"));
     }
 
     #[test]
