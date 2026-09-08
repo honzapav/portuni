@@ -195,6 +195,25 @@ symlink to this file.
   or the equivalent `portuni_store`/`portuni_pull` calls. Model:
   `docs/archive/specs/2026-06-28-deterministic-file-state-design.md`,
   `docs/superpowers/specs/2026-08-28-deterministic-file-reconciliation-design.md`.
+  **A directory `mv` is walked, not no-op'd (#253).** `fs.watch` fires
+  exactly one event for a directory that was created or moved into place —
+  never a separate event per (unchanged) child — so a single-file `mv`'s
+  inode pairing (`reconcile.ts`'s `tryApplyDiskMove` /
+  `tryApplyDiskMoveCentral`, matched by `file_state.cached_ino/cached_dev`)
+  never used to run for a directory `mv` at all: `reconcilePath`/
+  `reconcilePathCentral` treated any directory path as a flat no-op. Both
+  now recurse into a directory that exists on disk (`reconcileDirectory` /
+  `reconcileDirectoryCentral`) and reconcile every file inside at its own
+  current path, so each one gets paired exactly as if it had fired its own
+  mv event. The backfill sweeps (`dbBackfillMirror`,
+  `centralBackfillMirror` in `apps/server/desktop.ts`) are the catch-up path
+  for a `mv` that happened while nothing was watching (server down, or a
+  missed directory event) — both are now routed through
+  `reconcilePath`/`reconcilePathCentral` per untracked file instead of a raw
+  batch register, so the same pairing applies there too instead of always
+  producing a fresh duplicate record. `StatusResult.moved` (a bucket nothing
+  ever populated, by design — pairing happens at reconcile time, not scan
+  time) was removed rather than kept as a permanently-empty field.
 - **Drive sync has two auth paths sharing one adapter.** Desktop local
   workspaces connect via per-user OAuth: Settings → Synchronizace →
   `google_drive_connect` (`apps/desktop/src/auth.rs`, PKCE loopback) hands the

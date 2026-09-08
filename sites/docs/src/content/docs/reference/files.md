@@ -219,7 +219,9 @@ migrations, or whenever the user asks about sync state.
 
 Returns: classified buckets (`clean`, `push_candidates`, `pull_candidates`,
 `conflicts`, `remote_missing`, `remote_error`, `native`, `new_local`,
-`new_remote`, `deleted_local`, `deleted_remote`, `moved`).
+`new_remote`, `deleted_local`, `deleted_remote`). There is no `moved`
+bucket — an on-disk move is paired as it happens (see below), not
+reported as a scan finding.
 
 :::note[Deletions and moves propagate deterministically]
 - **`deleted_remote`** — an untracked disk copy whose record was removed
@@ -230,11 +232,15 @@ Returns: classified buckets (`clean`, `push_candidates`, `pull_candidates`,
   last synced state — and the next sync run removes the local copy instead
   of re-uploading it. A file **modified after** the delete fails the hash
   check and stays `new_local`; local data is never destroyed.
-- **On-disk `mv`** is paired by inode identity at watcher registration
-  time and applied through the real move (remote rename, Drive file ID
-  preserved) — one record, no duplicate. A cross-volume move (inode
-  changes) falls back to plain registration. The `moved` bucket is kept
-  for API compatibility and is always empty.
+- **On-disk `mv`** is paired by inode identity when the watcher (or a
+  backfill sweep) reconciles the path — applied through the real move
+  (remote rename, Drive file ID preserved), one record, no duplicate. A
+  cross-volume move (inode changes) falls back to plain registration. A
+  directory `mv` is paired the same way: the watcher only ever receives one
+  event for the moved directory itself (its unchanged children generate no
+  events of their own), so reconciling a path that turns out to be a
+  directory walks its file tree and pairs each file individually instead of
+  treating the directory event as a no-op.
 - **Deleting a never-pushed file on disk unregisters it** from Portuni
   entirely (it was metadata-only). Deleting a pushed file keeps the
   record and the remote copy (`deleted_local`) for an explicit decision —

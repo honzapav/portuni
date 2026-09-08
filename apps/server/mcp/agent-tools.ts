@@ -187,7 +187,6 @@ const HANDLERS: Record<string, LocalHandler> = {
       new_remote: [],
       deleted_local: [],
       deleted_remote: [],
-      moved: [],
     };
     for (const m of mirrors) {
       const r = await statusScanCentral(client, {
@@ -207,7 +206,6 @@ const HANDLERS: Record<string, LocalHandler> = {
       agg.new_remote.push(...r.new_remote);
       agg.deleted_local.push(...r.deleted_local);
       agg.deleted_remote.push(...r.deleted_remote);
-      agg.moved.push(...r.moved);
     }
     return agg;
   },

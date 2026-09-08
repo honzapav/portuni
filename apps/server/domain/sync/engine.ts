@@ -620,13 +620,6 @@ export interface NewRemoteEntry {
   hash: string | null;
 }
 
-export interface MoveProposal {
-  file_id: string;
-  old_local_path: string;
-  new_local_path: string;
-  hash: string;
-}
-
 // An untracked disk file whose record was deliberately deleted elsewhere
 // (matched against a delete tombstone -- see matchDeleteTombstones). The
 // sync run removes the local copy and the dangling file_state row instead
@@ -656,7 +649,6 @@ export interface StatusResult {
   new_remote: NewRemoteEntry[];
   deleted_local: StatusFileEntry[];
   deleted_remote: DeletedRemoteEntry[];
-  moved: MoveProposal[];
 }
 
 async function fileExistsAt(path: string): Promise<boolean> {
@@ -970,7 +962,6 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
     new_remote: [],
     deleted_local: [],
     deleted_remote: [],
-    moved: [],
   };
 
   // Select files to scan.
@@ -1079,12 +1070,14 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
     const m = await matchDeleteTombstones(db, a.userId, out.new_local);
     out.new_local = m.remaining;
     out.deleted_remote = m.deleted_remote;
-    // NOTE: on-disk move detection lives in reconcile.ts (tryApplyDiskMove),
-    // keyed on inode identity at watcher registration time. The old
-    // moveDetectionPhase here paired deleted_local x new_local -- but with
-    // the watcher running, a moved file's new path is registered before any
-    // scan sees it as new_local, so the phase was dead code. The `moved`
-    // bucket stays in StatusResult for API compatibility (always empty).
+    // NOTE: on-disk move detection lives in reconcile.ts (tryApplyDiskMove)
+    // and its directory-subtree counterpart, keyed on inode identity at
+    // watcher/backfill reconcile time -- never here. The old
+    // moveDetectionPhase here paired deleted_local x new_local, but with the
+    // watcher running a moved file's new path is registered (or paired)
+    // before any scan sees it as new_local, so the phase was dead code; the
+    // always-empty `moved` StatusResult field it fed was removed with it
+    // (#253) rather than kept as a field nothing ever populates.
   }
 
   return out;

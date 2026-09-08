@@ -326,18 +326,23 @@ Algorithm:
                        skipped by the sync run
        native          is_native_format = true (report modified_at only)
 
-  Also run move detection:
-    5. missing = files rows where local file is absent.
-    6. unknown_local = files on disk not matching any row.
-    7. For each unknown_local, if its hash matches a missing row's last_synced_hash,
-       mark as "moved" candidate. Collapse large same-prefix shifts into folder renames.
+  portuni_status itself does NOT do move detection -- an on-disk mv is
+  paired by inode identity (`reconcile.ts`'s `tryApplyDiskMove` /
+  `tryApplyDiskMoveCentral`) when the watcher or a backfill sweep reconciles
+  the path, not by comparing scan snapshots. A directory mv is walked
+  recursively into its per-file reconciles for the same pairing (#253) --
+  the watcher only ever receives one event for the directory itself, not
+  its unchanged children, so `reconcilePath`/`reconcilePathCentral` expand a
+  directory path into its file tree instead of no-op'ing on it. There is no
+  `moved` (or `renamed_folders`) bucket in the status output: a run that
+  hits `push_candidates` or `deleted_local` for what is really a move is a
+  detection gap in the watcher/backfill path, not something `portuni_status`
+  itself is expected to paper over after the fact.
 
 Output: {
   clean: [...], push: [...], pull: [...], conflict: [...],
   new_local: [...], new_remote: [...], deleted_local: [...],
-  remote_missing: [...], remote_error: [...], native: [...],
-  moved: [{ file_id, old_path, new_path, hash }],
-  renamed_folders: [{ old_prefix, new_prefix, file_ids: [...] }]
+  remote_missing: [...], remote_error: [...], native: [...]
 }
 
 For deleted_local entries, resolve with `portuni_pull(file_id)` (restore) or

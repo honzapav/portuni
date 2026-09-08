@@ -270,7 +270,6 @@ describe("portuni_status", () => {
     const payload = JSON.parse(r.content[0].text);
     assert.equal(payload.new_local.length, 1);
     assert.ok(Array.isArray(payload.clean));
-    assert.ok(Array.isArray(payload.moved));
   });
 });
 

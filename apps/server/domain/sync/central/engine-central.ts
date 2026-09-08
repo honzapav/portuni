@@ -49,7 +49,7 @@ import {
   type Section,
 } from "../remote-path.js";
 import { loadMirrorIgnore, type MirrorIgnore } from "../mirror-ignore.js";
-import { md5Buffer, sha256Buffer, statForCache } from "../hash.js";
+import { md5Buffer, sha256Buffer, sha256File, statForCache } from "../hash.js";
 import type { NodeSyncInfo, SyncInfoFile } from "../sync-remote-api.js";
 import type { RemoteSweepResult } from "../remote-sweep.js";
 import type {
@@ -271,7 +271,6 @@ async function statusScanForContext(
     new_remote: [],
     deleted_local: [],
     deleted_remote: [],
-    moved: [],
   };
   // Bounded fan-out: slow scans hash changed files (CPU+disk); fast scans
   // are sync.db reads. Order of buckets stays deterministic via mapConcurrent.
@@ -396,14 +395,24 @@ async function walkUntracked(
       if (known.has(p.normalize("NFC"))) continue;
       const sub = subpathFromMirror(ctx.mirrorRoot as string, p);
       if (!sub) continue;
-      out.push({
-        node_id: ctx.si.node.id,
-        local_path: p,
-        section: sub.section,
-        subpath: sub.subpath,
-        filename: sub.filename,
-        hash: "",
-      });
+      // Real hash, not a placeholder (#253): status output should be
+      // truthful, and a real hash also makes a hash-based fallback pairing
+      // possible for a moved-but-unpaired file surfaced here as "new".
+      // Matches the local engine's walkMirror, which hashes for the same
+      // NewLocalEntry.hash field.
+      try {
+        const hash = await sha256File(p);
+        out.push({
+          node_id: ctx.si.node.id,
+          local_path: p,
+          section: sub.section,
+          subpath: sub.subpath,
+          filename: sub.filename,
+          hash,
+        });
+      } catch {
+        /* unreadable -- skip, matching walkMirror's behavior */
+      }
     }
   }
 }
@@ -748,7 +757,15 @@ export async function pullFileCentral(
 // ---------------------------------------------------------------------------
 
 export type ReconcileCentralResult = {
-  action: "ignored" | "noop" | "registered" | "rehashed" | "deleted" | "unregistered" | "moved";
+  action:
+    | "ignored"
+    | "noop"
+    | "registered"
+    | "rehashed"
+    | "deleted"
+    | "unregistered"
+    | "moved"
+    | "walked";
   file_id?: string;
 };
 
@@ -797,7 +814,13 @@ export async function reconcilePathCentral(
   );
 
   if (!rec) {
-    if (!st.exists || !st.isFile) return { action: "noop" };
+    if (!st.exists) return { action: "noop" };
+    // A directory event (created, or moved here) -- fs.watch fires one
+    // event for the directory itself, never one per unchanged child, so a
+    // directory mv is otherwise invisible at the per-file level this
+    // reconcile operates on (#253). Walk it and reconcile each file inside
+    // at its own current path, same as the local engine's reconcileDirectory.
+    if (!st.isFile) return reconcileDirectoryCentral(client, a, mirrorRoot, isIgnored);
     // On-disk mv pairing, central flavour (same contract as the local
     // tryApplyDiskMove; candidates limited to this node's records --
     // a cross-mirror mv falls back to plain registration).
@@ -840,6 +863,34 @@ export async function reconcilePathCentral(
     cached_dev: existing?.cached_dev ?? null,
   });
   return { action: "deleted", file_id: rec.id };
+}
+
+// Recursively reconcile every file under a directory that was just created
+// or moved here (#253), central flavour of reconcile.ts's reconcileDirectory.
+// Best-effort: an unreadable subdirectory (raced delete, permissions) is
+// skipped rather than aborting the whole walk.
+async function reconcileDirectoryCentral(
+  client: CentralClient,
+  a: { userId: string; nodeId: string; absPath: string },
+  mirrorRoot: string,
+  isIgnored: (p: string) => boolean,
+): Promise<ReconcileCentralResult> {
+  let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }> = [];
+  try {
+    entries = await readdir(a.absPath, { withFileTypes: true });
+  } catch {
+    return { action: "noop" };
+  }
+  for (const ent of entries) {
+    const p = join(a.absPath, ent.name);
+    if (isIgnored(p)) continue;
+    if (ent.isDirectory()) {
+      await reconcileDirectoryCentral(client, { ...a, absPath: p }, mirrorRoot, isIgnored);
+    } else if (ent.isFile()) {
+      await reconcilePathCentral(client, { ...a, absPath: p });
+    }
+  }
+  return { action: "walked" };
 }
 
 // Pair a to-be-registered path with a tracked record whose cached local copy
