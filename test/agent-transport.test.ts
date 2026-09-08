@@ -406,6 +406,54 @@ describe("agent MCP front door", () => {
     }
   });
 
+  it("a reconnect with the same X-Portuni-Spawn-Id keeps the narrow projection until the last session closes", async () => {
+    const { registerMirror } = await import("../apps/server/domain/sync/mirror-registry.js");
+    const { mkdir: mkdirp, writeFile, stat } = await import("node:fs/promises");
+    const mirrored = "01RECONNECTMIRROR00000000";
+    const mirrorDir = join(workspace, "org", "projects", "reconnect-target");
+    await mkdirp(join(mirrorDir, "wip"), { recursive: true });
+    await writeFile(join(mirrorDir, "wip", "n.md"), "hi\n");
+    const { SOLO_USER } = await import("../apps/server/infra/schema.js");
+    await registerMirror(SOLO_USER, mirrored, mirrorDir);
+
+    const spawnId = "01BX5ZZKBKACTAV9WEVGEMMVRZ";
+    const connect = async () => {
+      const client = new Client({ name: "agent-transport-reconnect", version: "0.0.0" });
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`${agentBase}/mcp?home_node_id=01TESTNODE0000000000000000`),
+        { requestInit: { headers: { "X-Portuni-Spawn-Id": spawnId } } },
+      );
+      await client.connect(transport);
+      return { client, transport };
+    };
+    const first = await connect();
+    const second = await connect();
+    const exists = (p: string) => stat(p).then(() => true, () => false);
+    try {
+      const r = (await second.client.callTool({
+        name: "portuni_expand_scope",
+        arguments: { node_ids: [mirrored], reason: "user-requested: test" },
+      })) as { content: Array<{ text: string }> };
+      const dir = (JSON.parse(r.content[0].text) as { projected: Record<string, string> }).projected[mirrored];
+      assert.ok(dir?.includes(`${sep}${spawnId}${sep}`), `expected the spawn-id directory, got ${dir}`);
+
+      // The stale first session goes away: the replacement still reads here.
+      await first.transport.terminateSession();
+      await first.client.close();
+      await new Promise((res) => setTimeout(res, 100));
+      assert.ok(await exists(dir), "projection must survive the stale session's close");
+
+      await second.transport.terminateSession();
+      await second.client.close();
+      const deadline = Date.now() + 2000;
+      while ((await exists(dir)) && Date.now() < deadline) await new Promise((res) => setTimeout(res, 25));
+      assert.ok(!(await exists(dir)), "projection gone once the last session closed");
+    } finally {
+      await first.client.close().catch(() => undefined);
+      await second.client.close().catch(() => undefined);
+    }
+  });
+
   it("keys the projection by the relayed X-Portuni-Spawn-Id, the directory the Seatbelt profile granted (#252)", async () => {
     const { registerMirror } = await import("../apps/server/domain/sync/mirror-registry.js");
     const { mkdir: mkdirp, writeFile, stat } = await import("node:fs/promises");

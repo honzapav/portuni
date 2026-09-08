@@ -821,11 +821,15 @@ symlink to this file.
   here, not just the depth-1 seed set (`files[].local_path` is derived under
   that same readable root, and `get_context`'s wire shape is the flat
   `[root, ...connected]` array, not `{root, connected}`). Cleanup rides on the local transport's
-  own `onclose` (`disposeAgentProjection`): a spawn-id-keyed directory goes
-  with its session, the `_shared` bucket only once no other live session in
-  this process's session map keys off it for the same home node (the device
-  has no durable `sessions` table to consult the way
-  `disposeSessionProjection` does). **`portuni_get_node` gained
+  own `onclose` (`disposeAgentProjection`): a projection directory is
+  removed only once no other live session in this process's session map
+  keys off the same id under the same home node — true for `_shared`, and
+  for a spawn id too, since a CLI reconnect inside one terminal carries the
+  same `X-Portuni-Spawn-Id` (the device has no durable `sessions` table to
+  consult the way `disposeSessionProjection` does). The projection registry
+  (`session-projection.ts`) is keyed by target directory, not session id:
+  two `_shared` sessions under different home roots projecting the same
+  node are two live projections, and both keep receiving watcher relinks. **`portuni_get_node` gained
   `readable_path`** (the same value as `local_path`'s per-file derivation,
   promoted to the top level) -- `local_mirror` stays registration metadata,
   not a read path. **`portuni_read_file` gained `as_path`**: past the 1 MB

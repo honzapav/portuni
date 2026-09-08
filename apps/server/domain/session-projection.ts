@@ -339,23 +339,31 @@ interface ProjectedEntry {
   targetDir: string;
 }
 
+// nodeId -> targetDir -> entry. Keyed by the TARGET directory, not the
+// session id: the shared bucket uses one fixed session id (_shared) under
+// every home node's projection root, so two non-relaying sessions rooted
+// at different home nodes that both project the same node are two distinct
+// live projections that must both keep receiving watcher relinks -- keyed
+// by session id the second would silently overwrite the first.
 const registry = new Map<string, Map<string, ProjectedEntry>>();
 
 export function registerProjectedNode(nodeId: string, entry: ProjectedEntry): void {
-  let bySession = registry.get(nodeId);
-  if (!bySession) {
-    bySession = new Map();
-    registry.set(nodeId, bySession);
+  let byTarget = registry.get(nodeId);
+  if (!byTarget) {
+    byTarget = new Map();
+    registry.set(nodeId, byTarget);
   }
-  bySession.set(entry.sessionId, entry);
+  byTarget.set(entry.targetDir, entry);
 }
 
 // Drop every projection this session registered, across all nodes. Call at
 // session end alongside cleanupSessionProjection.
 export function unregisterSessionProjections(sessionId: string): void {
-  for (const [nodeId, bySession] of registry) {
-    bySession.delete(sessionId);
-    if (bySession.size === 0) registry.delete(nodeId);
+  for (const [nodeId, byTarget] of registry) {
+    for (const [targetDir, entry] of byTarget) {
+      if (entry.sessionId === sessionId) byTarget.delete(targetDir);
+    }
+    if (byTarget.size === 0) registry.delete(nodeId);
   }
 }
 
@@ -366,16 +374,17 @@ export function unregisterSessionProjections(sessionId: string): void {
 // (creates go missing, deleted sources stay readable through stale links).
 export function unregisterSessionProjectionsUnder(sessionId: string, projectionRoot: string): void {
   const prefix = projectionRoot.endsWith(sep) ? projectionRoot : projectionRoot + sep;
-  for (const [nodeId, bySession] of registry) {
-    const entry = bySession.get(sessionId);
-    if (entry?.targetDir.startsWith(prefix)) bySession.delete(sessionId);
-    if (bySession.size === 0) registry.delete(nodeId);
+  for (const [nodeId, byTarget] of registry) {
+    for (const [targetDir, entry] of byTarget) {
+      if (entry.sessionId === sessionId && targetDir.startsWith(prefix)) byTarget.delete(targetDir);
+    }
+    if (byTarget.size === 0) registry.delete(nodeId);
   }
 }
 
 export function projectedEntriesForNode(nodeId: string): ProjectedEntry[] {
-  const bySession = registry.get(nodeId);
-  return bySession ? [...bySession.values()] : [];
+  const byTarget = registry.get(nodeId);
+  return byTarget ? [...byTarget.values()] : [];
 }
 
 // Test-only: drop every registered projection regardless of session, so

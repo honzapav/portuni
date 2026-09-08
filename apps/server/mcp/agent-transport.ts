@@ -229,11 +229,14 @@ function resolveProjectionSessionId(req: IncomingMessage): string {
 }
 
 // Agent-mode counterpart of disk-projection.ts's disposeSessionProjection.
-// A narrow (spawn-id-keyed) directory belongs to this session alone and goes
-// with it; the shared bucket is torn down only when no other live session on
-// the same home node still keys off it -- there is no durable `sessions`
-// table on the device, so "live" means this process's own session map.
-// Best-effort: every failure is swallowed, same as the local-mode version.
+// A projection directory is torn down only when no OTHER live session on
+// the same home node still keys off the same id -- always true for the
+// shared bucket, and also for a spawn id when the CLI reconnected inside
+// the same terminal (a new MCP session, same X-Portuni-Spawn-Id) before the
+// old transport was GC'd: the replacement is still reading that directory.
+// There is no durable `sessions` table on the device, so "live" means this
+// process's own session map. Best-effort: every failure is swallowed, same
+// as the local-mode version.
 async function disposeAgentProjection(
   userId: string,
   homeNodeId: string,
@@ -241,12 +244,8 @@ async function disposeAgentProjection(
   live: Map<string, AgentSessionEntry>,
 ): Promise<void> {
   try {
-    if (projectionSessionId === UNNARROWED_PROJECTION_ID) {
-      for (const s of live.values()) {
-        if (s.homeNodeId === homeNodeId && s.projectionSessionId === UNNARROWED_PROJECTION_ID) {
-          return;
-        }
-      }
+    for (const s of live.values()) {
+      if (s.homeNodeId === homeNodeId && s.projectionSessionId === projectionSessionId) return;
     }
     // Registry entries go together with the directory -- a stale entry
     // would make the next watcher relink recreate the removed directory

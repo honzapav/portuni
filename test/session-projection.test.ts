@@ -173,6 +173,26 @@ describe("relinkProjectedFile", () => {
     await assert.rejects(() => stat(join(target, "wip", "old")), "stale subtree must be gone");
   });
 
+  it("keeps and relinks two _shared projections of the same node under different home roots", async () => {
+    const targetA = nodeProjectionDir(join(projectionRoot, "homeA"), "_shared", "NODE");
+    const targetB = nodeProjectionDir(join(projectionRoot, "homeB"), "_shared", "NODE");
+    registerProjectedNode("NODE", { sessionId: "_shared", mirrorPath: mirror, targetDir: targetA });
+    registerProjectedNode("NODE", { sessionId: "_shared", mirrorPath: mirror, targetDir: targetB });
+    assert.equal(projectedEntriesForNode("NODE").length, 2, "both roots stay registered");
+
+    const src = join(mirror, "wip", "both.md");
+    await writeFile(src, "x\n");
+    await relinkProjectedFile("NODE", src);
+    assert.equal(await readFile(join(targetA, "wip", "both.md"), "utf8"), "x\n");
+    assert.equal(await readFile(join(targetB, "wip", "both.md"), "utf8"), "x\n");
+
+    unregisterSessionProjectionsUnder("_shared", join(projectionRoot, "homeA"));
+    assert.deepEqual(
+      projectedEntriesForNode("NODE").map((e) => e.targetDir),
+      [targetB],
+    );
+  });
+
   it("does nothing when no session projects the node", async () => {
     await writeFile(join(mirror, "wip", "a.md"), "a\n");
     // no registerProjectedNode call -- must not throw or create anything.

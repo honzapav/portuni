@@ -979,7 +979,19 @@ async function tryApplyDiskMoveCentral(
     const sub = subpathFromMirror(ctx.mirrorRoot, a.absPath);
     if (!sub) continue;
     if (rec.current_remote_hash === null) {
-      await client.deleteFileRecord(a.nodeId, c.file_id).catch(() => null);
+      // Record-only delete on central. A repair_needed answer (central
+      // could not confirm the remote side, e.g. Drive unreachable) means it
+      // deliberately KEPT the old record -- re-registering the new path
+      // then would be exactly the duplicate pair #253 is about. Leave both
+      // sides alone; the next watcher event or backfill sweep pairs it
+      // again once the delete can complete. An already-gone record (404)
+      // counts as deleted.
+      const del = await client
+        .deleteFileRecord(a.nodeId, c.file_id)
+        .catch((e: unknown) =>
+          e instanceof CentralHttpError && e.code === "NOT_FOUND" ? { status: "ok" } : null,
+        );
+      if (!del || (del as { status?: unknown }).status !== "ok") return { action: "noop" };
       await deleteFileState(c.file_id).catch(() => undefined);
       const r = await registerLocalFileCentral(client, {
         userId: a.userId,
