@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.13.5](https://github.com/honzapav/portuni/compare/v0.13.4...v0.13.5) (2026-09-08)
+
+
+### Bug Fixes
+
+* **desktop:** route conflict resolve to the local sync agent in central mode ([84cb815](https://github.com/honzapav/portuni/commit/84cb815278fd113a3c2e30f4596cd9be8bdfe633)), closes [#264](https://github.com/honzapav/portuni/issues/264)
+* **mcp,sync:** key agent-mode projection by spawn id, forward mirror-less delete, guard spill path ([36506b0](https://github.com/honzapav/portuni/commit/36506b0260eaf500acb228af35a6b14a9dc9979f))
+* **mcp:** embed portuni:// resource bodies at build time instead of reading them at runtime ([0d52bdf](https://github.com/honzapav/portuni/commit/0d52bdf0f9348c525ddb6f58eed816e41da43937)), closes [#255](https://github.com/honzapav/portuni/issues/255)
+* **scope:** emit only Edit(...) file permission rules in the mirror settings ([51700f8](https://github.com/honzapav/portuni/commit/51700f8ac9916625b4b264f8a9351dc74df2aeac))
+* **scope:** emit only Edit(...) file permission rules in the mirror settings ([8f67f35](https://github.com/honzapav/portuni/commit/8f67f353ce5d760db0b14991fd980be4d45bc76b))
+* **scope:** project every non-home node onto disk, add read_file as_path spill ([7824a6d](https://github.com/honzapav/portuni/commit/7824a6d9edb31c31a3990df966684895c82ebf7a)), closes [#252](https://github.com/honzapav/portuni/issues/252)
+* **sync,desktop:** route file rename to the sync agent in central mode and rename the mirror copy ([4f7ff98](https://github.com/honzapav/portuni/commit/4f7ff98fb075a8fdde37fd1bbdfcc7cd292824c6))
+* **sync,mcp:** gate agent-mode REST writes, serialize a create's upload with delete/resolve, scope shared projection cleanup ([3c79040](https://github.com/honzapav/portuni/commit/3c7904091408b8739d25233555195e2bea2e7fc9))
+* **sync,mcp:** keep the local copy on repair_needed, drop stale shared projections, enrich the real get_context shape ([c25d458](https://github.com/honzapav/portuni/commit/c25d45829b38dc310484e7debf07a64801e36922))
+* **sync,mcp:** re-register a paired move only after a confirmed delete, key projections by target, keep a reconnected spawn's projection ([e07a4c5](https://github.com/honzapav/portuni/commit/e07a4c55a0048430fc7d0a4c02b43a5157ffeaa9))
+* **sync,mcp:** validate spawn id as a path key, keep a mid-push edit unsynced, relink a moved directory ([13f6763](https://github.com/honzapav/portuni/commit/13f6763491bdc6ca76c3a2327a1a62c113f25269))
+* **sync,scope,mcp,desktop,web:** disk projection, mv/create/delete/resolve routing, resource embedding, contextual file-op feedback ([38d69d0](https://github.com/honzapav/portuni/commit/38d69d06f4ad4ff1d1a1b470f62c4e117f992aca))
+* **sync:** create a file device-side in central mode, without waiting on the Drive upload ([67f13b1](https://github.com/honzapav/portuni/commit/67f13b13fc4fae8b05f1c26fd763388897e5f1bf)), closes [#266](https://github.com/honzapav/portuni/issues/266)
+* **sync:** deleting a file removes the local mirror copy in every data mode ([cacdbf3](https://github.com/honzapav/portuni/commit/cacdbf3c3b4b44e8202a7677b1da4099645357a6)), closes [#254](https://github.com/honzapav/portuni/issues/254)
+* **sync:** pair a directory mv as a move instead of losing it to duplicate records ([d0261fa](https://github.com/honzapav/portuni/commit/d0261fa4227f5c0390d01f7a37d14d92c94f6729)), closes [#253](https://github.com/honzapav/portuni/issues/253)
+* **web,sync:** keep sync-run errors visible per file, hash untracked files only on slow central scans ([5fb9bfc](https://github.com/honzapav/portuni/commit/5fb9bfcae1ff76cc49e7cb912fdad50b59572f9e))
+* **web:** clear a synced node from the sync overview immediately ([106b617](https://github.com/honzapav/portuni/commit/106b617267c9e370cc92f51f5b20346f1c937625))
+* **web:** clear a synced node from the sync overview immediately ([d2c2097](https://github.com/honzapav/portuni/commit/d2c2097f9b220916fddd1e2cff5f20434e6fe69b))
+* **web:** don't overlay the graph loader on views without a graph ([#262](https://github.com/honzapav/portuni/issues/262)) ([2170ed3](https://github.com/honzapav/portuni/commit/2170ed37fd8770aa6bcafa164a10d0beb0c79c0d))
+* **web:** show sync/action feedback contextually instead of a detached box ([bc2028f](https://github.com/honzapav/portuni/commit/bc2028fe7c21e39aa370be69230a1471873f876e)), closes [#267](https://github.com/honzapav/portuni/issues/267)
+
 ## [0.13.4](https://github.com/honzapav/portuni/compare/v0.13.3...v0.13.4) (2026-09-05)
 
 
