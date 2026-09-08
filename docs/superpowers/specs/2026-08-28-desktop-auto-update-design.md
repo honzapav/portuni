@@ -6,8 +6,23 @@ steps are done by hand (Verification → Human), not filed as issues.
 
 ## Behaviour
 
-- The desktop app checks for a newer published release 10 s after
-  `backend-ready` and every 6 h afterwards, and on demand from Settings.
+- The desktop app checks for a newer published release 10 s after the update
+  hook itself mounts (`useAppUpdate`, `apps/web/src/lib/updater.ts`) and
+  every 6 h afterwards, and on demand from Settings. The check has no
+  dependency on the sidecar (it only talks to the GitHub releases endpoint),
+  so it does not wait on `backend-ready` to start -- that event is only an
+  ADDITIONAL trigger that resets (never stacks) the same schedule, since it
+  can otherwise fire more than once for a window (a sidecar restart, or a
+  replay a restored window gets). Originally the schedule started ONLY from
+  `backend-ready`, which can arrive before the webview's own listener
+  attaches (well within a window's first few hundred ms) -- when that
+  happened the schedule silently never started at all and the footer
+  indicator never appeared (#274). A window regaining focus after sitting
+  idle past a full interval (OS sleep, or a long-backgrounded window) also
+  triggers an immediate check. Settings → Obecné → Aktualizace shows
+  „naposledy zkontrolováno“ with the timestamp of the most recent completed
+  attempt (success or error), so a broken schedule is visible instead of
+  looking identical to "checked, up to date."
 - A newer version shows as a footer button `↑ X.Y.Z` (opens Settings → Obecné)
   and in Settings → Obecné → section „Aktualizace“ (current version, available
   version, „Zkontrolovat nyní“, „Stáhnout a nainstalovat“ with progress,
@@ -119,9 +134,10 @@ Feature: Desktop auto-update
 
   Scenario: Newer release published
     Given the installed app is 0.8.0 and release 0.8.1 is published
-    When the app has been running for 10 seconds after backend-ready
+    When the app window has been open for 10 seconds
     Then the footer shows "↑ 0.8.1"
     And Settings → Obecné → Aktualizace offers "Stáhnout a nainstalovat"
+    And Settings → Obecné → Aktualizace shows "naposledy zkontrolováno" with a recent timestamp
 
   Scenario: No newer release
     Given the installed app version equals the latest published release

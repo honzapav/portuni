@@ -13,7 +13,7 @@ type Props = {
 };
 
 export default function UpdateSection({ appUpdate }: Props) {
-  const { state, currentVersion, updateInfo, hasChecked, checkNow, install, restart } =
+  const { state, currentVersion, updateInfo, hasChecked, lastCheckedAt, checkNow, install, restart } =
     appUpdate;
 
   if (!isTauri()) {
@@ -59,6 +59,23 @@ export default function UpdateSection({ appUpdate }: Props) {
           <span className="text-[var(--color-danger)]">{state.message}</span>
         )}
       </div>
+
+      {lastCheckedAt && (
+        // #274: a silently-broken schedule (the check just never runs) used
+        // to look identical to "checked, up to date" -- this timestamp
+        // makes the schedule's own liveness visible, updated on every
+        // completed attempt including a failed one.
+        <div className="mb-4 text-[12px] text-[var(--color-text-dim)]">
+          Naposledy zkontrolováno:{" "}
+          {lastCheckedAt.toLocaleString("cs-CZ", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+          })}
+        </div>
+      )}
 
       {state.kind === "downloading" && (
         <div className="mb-4 h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-bg)]">

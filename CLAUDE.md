@@ -1109,6 +1109,40 @@ symlink to this file.
     just newly-added ones, bounded concurrency via `mapWithConcurrency`,
     re-entrancy guarded) and `boot/mirror-watch.ts` calls it on the same
     10-minute interval central mode already used.
+- **The update-check schedule starts from the hook's own mount, not solely
+  from `backend-ready` (#274).** `useAppUpdate` (`apps/web/src/lib/
+  updater.ts`) used to schedule its 10s-then-6h check ONLY inside a
+  `backend-ready` listener -- but that event can fire (sometimes fires
+  synchronously, in central/agent mode with no server_url) before the
+  webview has mounted React and awaited its dynamic `import("@tauri-apps/
+  api/event")` to call `listen()`, well within the first few hundred ms of
+  a window's life; when that race lost, the schedule never started at all
+  and the footer's `↑ X.Y.Z` indicator silently never appeared, no matter
+  how long the app had been open. `check_update` (`apps/desktop/src/
+  updater.rs`) has no dependency on the sidecar at all -- it only talks to
+  the GitHub releases endpoint -- so there was never a real reason to gate
+  it on backend readiness. The scheduling itself is now
+  `apps/web/src/lib/update-schedule.ts`'s `createUpdateScheduler`, a pure
+  DI-based module (injectable `setTimeout`/`clearInterval`/etc., same seam
+  shape `mirror-watcher.ts` uses for its `watchFactory`/`reconcile`) so it
+  is unit-testable via `node:test` without a browser (`test/update-
+  schedule.test.ts`) -- the rest of `apps/web` has no test runner
+  (`vitest`/`jest`), so this DI extraction is what makes the scheduling
+  logic testable at all, following the same "pure lib code tested through
+  the server's node:test runner" pattern as `workspace-storage.test.ts`.
+  `scheduler.schedule(checkNow)` is called once on mount AND again every
+  time `backend-ready` fires (still needed: that event is per-window,
+  `emit_to("ws:<id>", …)`, and can genuinely fire more than once for the
+  same window -- a sidecar restart, or the replay a just-created/restored
+  window gets) -- a repeat call resets rather than stacks the timers.
+  Also added: a window regaining focus after sitting idle past a full 6h
+  interval (`shouldCheckOnFocus`, same module) triggers an immediate
+  check, since a suspended OS never fires JS timers on schedule. `AppUpdate`
+  gained `lastCheckedAt: Date | null`, set on every COMPLETED check attempt
+  (success or error, never on a skipped one) and shown in Settings →
+  Obecné → Aktualizace as „naposledy zkontrolováno“ -- makes a silently
+  broken schedule visible instead of indistinguishable from "checked, up
+  to date."
 
 ## Security rules (from the auth refactor post-mortem)
 
