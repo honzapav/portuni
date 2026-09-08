@@ -578,7 +578,11 @@ export default function App() {
     editorDirtyRef.current = editorDirty;
   }, [editorDirty]);
 
-  const { pending: syncPending, refresh: refreshSyncPending } = useSyncPending();
+  const {
+    pending: syncPending,
+    refresh: refreshSyncPending,
+    applyRun: applySyncRun,
+  } = useSyncPending();
   const [syncOverviewOpen, setSyncOverviewOpen] = useState(false);
 
   const syncPendingRef = useRef(syncPending.total);
@@ -1320,6 +1324,7 @@ export default function App() {
         <SyncOverview
           pending={syncPending}
           onClose={() => setSyncOverviewOpen(false)}
+          onSynced={applySyncRun}
           onMutated={() => {
             refreshSyncPending();
             refetchAll().catch(() => undefined);

@@ -3,17 +3,21 @@
 // POST /nodes/:id/sync (runNodeSync). Opened from the StatusFooter badge.
 import { useState } from "react";
 import { X, RefreshCw, Loader2 } from "lucide-react";
-import type { SyncPendingResponse } from "../types";
+import type { SyncPendingResponse, SyncRunResponse } from "../types";
 import { runNodeSync } from "../api";
 
 export default function SyncOverview({
   pending,
   onClose,
+  onSynced,
   onMutated,
   onSelectNode,
 }: {
   pending: SyncPendingResponse;
   onClose: () => void;
+  // Applied per finished run, so a synced node leaves the list at once
+  // instead of waiting out the cross-mirror rescan behind onMutated.
+  onSynced: (nodeId: string, run: SyncRunResponse) => void;
   onMutated: () => void;
   onSelectNode: (id: string) => void;
 }) {
@@ -23,7 +27,7 @@ export default function SyncOverview({
   const syncOne = async (nodeId: string) => {
     setBusy((b) => new Set(b).add(nodeId));
     try {
-      await runNodeSync(nodeId);
+      onSynced(nodeId, await runNodeSync(nodeId));
       onMutated();
     } catch {
       /* per-node failure is surfaced by the refreshed aggregate */
@@ -41,7 +45,7 @@ export default function SyncOverview({
     try {
       for (const n of pending.nodes) {
         try {
-          await runNodeSync(n.node_id);
+          onSynced(n.node_id, await runNodeSync(n.node_id));
         } catch {
           /* keep going; refreshed aggregate shows what remains */
         }
