@@ -1041,9 +1041,22 @@ export async function renameFile(
       filename: fn,
     },
   });
+  // Stat both sides before renaming (#278 finding 5): the plain adapter.rename
+  // that used to run here had no destination-safety check at all -- an
+  // untracked object already sitting at newRemotePath (e.g. not yet adopted)
+  // would be silently duplicated (Drive) or overwritten (an overwrite-style
+  // backend). relocateRemoteObject refuses when both source and destination
+  // exist, and recognizes a retry whose remote step already landed
+  // (destination present, source gone) as already_at_target instead of
+  // failing on a source that no longer exists -- the same guard moveFile got
+  // in #271 and the retry queue's runMove already had.
   try {
-    const adapter = await getAdapter(db, remoteName);
-    await adapter.rename(oldRemotePath, newRemotePath);
+    await relocateRemoteObject(db, {
+      fromRemoteName: remoteName,
+      fromRemotePath: oldRemotePath,
+      toRemoteName: remoteName,
+      toRemotePath: newRemotePath,
+    });
   } catch (e) {
     await failPendingOp(db, pendingOpId, (e as Error).message);
     throw e;
@@ -1065,10 +1078,18 @@ export async function renameFile(
     }
   }
 
+  // writeRelocatedRecord (not a raw UPDATE): the watcher or a concurrent
+  // register/adopt can claim (node_id, newRemotePath) between the remote
+  // rename above and this write -- idx_files_unique_remote would otherwise
+  // reject the UPDATE with a raw SQLITE_CONSTRAINT error instead of merging
+  // the shadow row, same fix #271 gave moveFile/renameFolder.
   const now = new Date().toISOString();
-  await db.execute({
-    sql: `UPDATE files SET filename = ?, remote_path = ?, updated_at = ? WHERE id = ?`,
-    args: [fn, newRemotePath, now, a.fileId],
+  await writeRelocatedRecord(db, {
+    fileId: a.fileId,
+    nodeId,
+    newRemotePath,
+    updateSql: `UPDATE files SET filename = ?, remote_path = ?, updated_at = ? WHERE id = ?`,
+    updateArgs: [fn, newRemotePath, now],
   });
   await db.execute({
     sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)

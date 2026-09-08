@@ -97,6 +97,12 @@ returns `repair_needed`; the next sync run retries the same op
 idempotently until it completes, or reports it under `pending_repairs`
 with the last error if it can't (e.g. the remote state is now
 ambiguous, or the record no longer matches the path the op expected).
+`portuni_move_file`/`portuni_rename_folder`'s remote step also stats both
+the source and destination before touching either: an object already
+present at the destination (not yet adopted) refuses the move outright
+instead of duplicating or overwriting it, and a retry that finds the
+object already at the destination reports `already_at_target` instead
+of failing on a vanished source.
 
 ## Resolving conflicts and deleted files
 

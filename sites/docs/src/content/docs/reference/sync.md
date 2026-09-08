@@ -135,7 +135,7 @@ Move a tracked file within its node (new subpath or section) or to a different n
 | `new_subpath` | string \| null | no | New subpath within the section. Pass `null` to clear |
 | `confirmed` | boolean | no | First call returns a preview; pass `true` on the second call to execute |
 
-Returns either a preview (when `confirmed` is omitted or `false`) or the executed result. Partial failures return `repair_needed: true` with a hint.
+Returns either a preview (when `confirmed` is omitted or `false`) or the executed result. Partial failures return `repair_needed: true` with a hint. Like `portuni_rename_folder`, the remote step stats both the source and destination first and refuses the move outright if an object already sits at the destination path — an untracked file that hasn't been adopted yet is never silently duplicated or overwritten.
 
 ### portuni_rename_folder
 

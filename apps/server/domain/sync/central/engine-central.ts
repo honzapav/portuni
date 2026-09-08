@@ -85,7 +85,10 @@ export interface NodeContext {
   mirrorRoot: string | null;
 }
 
-async function loadNodeContext(
+// Exported for agent-router.ts's move handler (#278): a cross-node move
+// needs the TARGET node's own root/mirror, not the node the request URL
+// addresses, to derive where the local copy should land.
+export async function loadNodeContext(
   client: CentralClient,
   userId: string,
   nodeId: string,

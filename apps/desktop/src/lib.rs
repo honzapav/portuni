@@ -1275,9 +1275,10 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
     //          /nodes/<id>/sandbox-profile, /nodes/<id>/file (content),
     //          /nodes/<id>/files (create, #266), /nodes/<id>/files/<fileId>
     //          (delete, #254 -- exactly one segment after "files/"),
-    //          /nodes/<id>/files/<fileId>/resolve (#264) and
-    //          /nodes/<id>/files/<fileId>/rename (the device renames its
-    //          mirror copy after central confirms).
+    //          /nodes/<id>/files/<fileId>/resolve (#264),
+    //          /nodes/<id>/files/<fileId>/rename, and
+    //          /nodes/<id>/files/<fileId>/move (#278) -- the device renames/
+    //          relocates its own mirror copy after central confirms.
     //
     // NOT matched (served centrally): /nodes/<id>/file-url,
     // /nodes/<id>/folder-url.
@@ -1298,6 +1299,7 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
                 if (!file_seg.is_empty() && !file_seg.contains('/'))
                     || file_seg.ends_with("/resolve")
                     || file_seg.ends_with("/rename")
+                    || file_seg.ends_with("/move")
                 {
                     return true;
                 }
@@ -3998,6 +4000,16 @@ mod local_only_path_tests {
         // remote step, but the device has to rename its own mirror copy.
         assert!(is_local_only_path("/nodes/abc123/files/somefileid/rename"));
         assert!(is_local_only_path("/nodes/abc123/files/somefileid/rename?x=1"));
+    }
+
+    #[test]
+    fn node_files_move_is_local_only() {
+        // POST /nodes/:id/files/:fileId/move (#278): central keeps the
+        // record + remote step, but only the device can relocate its own
+        // mirror copy -- without this it went straight to central and the
+        // local file was left stranded at the old path.
+        assert!(is_local_only_path("/nodes/abc123/files/somefileid/move"));
+        assert!(is_local_only_path("/nodes/abc123/files/somefileid/move?x=1"));
     }
 
     #[test]

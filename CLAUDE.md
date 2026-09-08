@@ -1234,6 +1234,40 @@ symlink to this file.
   background push agent-router.ts's REST handlers already did -- the MCP
   path had the identical race #266 fixed on the REST side, just never
   wired to the same tracker.
+- **`renameFile` checks the remote destination before renaming; `POST
+  /nodes/:id/files/:fileId/move` is now routed to the sync agent (#278).**
+  `moveFile` and `renameFolder` already stat both sides of a remote
+  relocation before touching anything (`relocateRemoteObject`, #271) --
+  `renameFile` (the single-file basename-only rename, a different function)
+  did not: it called `adapter.rename` unconditionally, so an untracked
+  object already sitting at the destination (not yet adopted, or pushed
+  directly by a teammate) would be silently duplicated on Drive or
+  overwritten on an overwrite-style backend. It now goes through the same
+  `relocateRemoteObject` + `writeRelocatedRecord` helpers moveFile/
+  renameFolder already use -- refuses when both source and destination
+  exist, recognizes a retry whose remote step already landed as
+  `already_at_target` instead of failing on a vanished source, and merges a
+  colliding shadow DB row instead of raising a raw `SQLITE_CONSTRAINT`
+  error. Separately, `is_local_only_path` (`apps/desktop/src/lib.rs`) routed
+  `.../files/<id>/resolve` and `.../files/<id>/rename` to the sync agent but
+  never matched `.../files/<id>/move` -- the fourth instance of the routing
+  gap family #254/#264/#266 already fixed for delete/resolve/create. A move
+  went straight to central, which moved the record + remote object and
+  returned success while the device's own mirror copy stayed at the old
+  path with no disk event fired -- the next slow sync then saw the new path
+  as `deleted_local` and the old path as untracked, adopting/pushing the
+  stale copy as a second file. `agent-router.ts` gained a move handler
+  (same IDOR guard and `awaitPendingPush` wait as the existing resolve/
+  rename/delete handlers): it forwards the record+remote step to
+  `CentralClient.moveFileRecord` (plumbed on the client since #218 vintage
+  but never called from anywhere until now) unconditionally, then --
+  ONLY once confirmed and committed -- relocates this device's own mirror
+  copy. A cross-node move resolves the TARGET node's own mirror root/
+  nodeRoot independently (`engine-central.ts`'s `loadNodeContext`, now
+  exported) rather than reusing the source node's context, since the
+  destination may be a completely different node's mirror (or none at all
+  on this device, in which case it reports `repair_needed` with a hint
+  instead of silently stranding the old copy with no signal).
 
 ## Security rules (from the auth refactor post-mortem)
 
