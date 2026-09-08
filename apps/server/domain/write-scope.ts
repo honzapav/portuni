@@ -429,12 +429,13 @@ export function buildClaudeSettings(args: {
     .map(normalize)
     .filter((m) => m !== cur)
     .filter((m) => !isWithin(m, cur));
-  const ALLOW_VERBS = ["Edit", "Write", "NotebookEdit"] as const;
-  const allow = ALLOW_VERBS.map((v) => `${v}(${cur}/**)`);
-  const deny: string[] = [];
-  for (const m of others) {
-    for (const v of ALLOW_VERBS) deny.push(`${v}(${m}/**)`);
-  }
+  // Only `Edit(path)` is matched by Claude Code's file permission checks --
+  // and it covers every file-editing tool (Write, NotebookEdit, MultiEdit).
+  // Emitting `Write(...)`/`NotebookEdit(...)` rules changed nothing and made
+  // Claude Code print an "is not matched by file permission checks" warning
+  // per rule at session start.
+  const allow = [`Edit(${cur}/**)`];
+  const deny = others.map((m) => `Edit(${m}/**)`);
 
   const out: Record<string, unknown> = {
     // Portuni-managed marker so future code can recognise its own files

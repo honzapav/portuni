@@ -163,7 +163,12 @@ describe("buildClaudeSettings", () => {
     const deny = (s.permissions as { deny: string[] }).deny;
     assert.ok(allow.includes("Edit(/r/org/projects/p1/**)"));
     assert.ok(!deny.some((d) => d === "Edit(/r/org/**)"), "ancestor must not be in deny");
-    assert.ok(!deny.some((d) => d === "Write(/r/org/**)"), "ancestor must not be in deny");
+    // Only Edit(...) rules are emitted -- Claude Code ignores Write/NotebookEdit
+    // path rules and warns about them; Edit covers every file-editing tool.
+    assert.ok(
+      !allow.concat(deny).some((r) => r.startsWith("Write(") || r.startsWith("NotebookEdit(")),
+      "no Write/NotebookEdit path rules",
+    );
     assert.ok(deny.some((d) => d.includes("/r/org/projects/p2")), "true sibling stays in deny");
     assert.ok(deny.some((d) => d.includes("/r/other")), "unrelated mirror stays in deny");
   });
@@ -178,8 +183,8 @@ describe("buildClaudeSettings", () => {
       portuniRoot: "/r",
     });
     const deny = (s.permissions as { deny: string[] }).deny;
-    assert.ok(deny.some((d) => d === "Write(/r/org/projects/p1/**)"));
-    assert.ok(deny.some((d) => d === "Write(/r/other/**)"));
+    assert.ok(deny.some((d) => d === "Edit(/r/org/projects/p1/**)"));
+    assert.ok(deny.some((d) => d === "Edit(/r/other/**)"));
   });
 
   it("auto-approves the project-scoped portuni MCP server", () => {
