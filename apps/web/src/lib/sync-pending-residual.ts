@@ -7,9 +7,10 @@
 // is updated from it immediately and the aggregate refresh only reconciles.
 import type { SyncPendingNode, SyncPendingResponse, SyncRunResponse } from "../types";
 
-// Mirrors computeSyncPending's accounting (domain/sync/pending.ts):
-// total = push + conflict + untracked; remote_missing and deleted_local are
-// shown per node but never counted, since a sync run does not clear them.
+// Mirrors computeSyncPending's accounting (domain/sync/pending.ts): total =
+// push + untracked (actionable, what a run can clear); decisions = conflict
+// + deleted_local (needs a human, a run never resolves either). Both are
+// shown per node; remote_missing is shown but never counted either way.
 export function residualPendingNode(
   prev: SyncPendingNode,
   run: SyncRunResponse,
@@ -19,19 +20,22 @@ export function residualPendingNode(
   // (skipped) is still a push candidate on the next scan.
   const push = run.errors.length + skipped("push");
   const conflict = run.conflicts.length;
+  const deleted_local = run.deleted_local.length;
   // Untracked files are adopted by the run; anything that failed to adopt
   // is already counted through `errors`.
   const untracked = 0;
-  const total = push + conflict + untracked;
-  if (total === 0) return null;
+  const total = push + untracked;
+  const decisions = conflict + deleted_local;
+  if (total === 0 && decisions === 0) return null;
   return {
     ...prev,
     push,
     conflict,
     untracked,
     remote_missing: skipped("remote_missing"),
-    deleted_local: run.deleted_local.length,
+    deleted_local,
     total,
+    decisions,
   };
 }
 
@@ -45,7 +49,11 @@ export function applyPendingNode(
   const nodes = pending.nodes.filter((n) => n.node_id !== nodeId);
   if (node) nodes.push(node);
   nodes.sort((a, b) => b.total - a.total);
-  return { nodes, total: nodes.reduce((s, n) => s + n.total, 0) };
+  return {
+    nodes,
+    total: nodes.reduce((s, n) => s + n.total, 0),
+    decisions: nodes.reduce((s, n) => s + n.decisions, 0),
+  };
 }
 
 // An optimistic per-node result, valid until an aggregate scan that started

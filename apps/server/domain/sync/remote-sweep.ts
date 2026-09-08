@@ -182,6 +182,44 @@ export async function remoteSweep(db: Client, a: RemoteSweepArgs): Promise<Remot
     out.deleted_on_remote.push({ file_id: r.id as string, filename: r.filename as string, remote_path: remotePath });
   }
 
+  // 1.5. Hash backfill for tracked, present records whose hash is unknown.
+  // current_remote_hash is the ONLY source of remote truth central-mode
+  // classification reads (classifyRecord: remoteExists = remoteHash !==
+  // null), so a record stuck with a NULL hash reads as remote_missing
+  // forever even though this sweep's own listing just proved the object
+  // exists right here -- the same rows the hadObject filter above
+  // deliberately excludes from delete-detection (a NULL hash cannot tell
+  // "never had an object" apart from "had one, lost track of its hash"),
+  // which otherwise leaves them permanently unrepaired by any code path
+  // (#273). Uses the listing's own hash when the backend reported one;
+  // falls back to downloading and hashing the content, same as the adopt
+  // path's own backfill below, for backends (fs/OpenDAL) whose listing
+  // carries no hash.
+  const hashless = rows.rows.filter((r) => {
+    return (
+      (r.current_remote_hash as string | null) === null &&
+      Number(r.is_native_format) !== 1 &&
+      present.has((r.remote_path as string).normalize("NFC"))
+    );
+  });
+  const hashBackfills = await mapWithConcurrency(hashless, SWEEP_STAT_CONCURRENCY, async (r) => {
+    const remotePath = r.remote_path as string;
+    const ref = present.get(remotePath.normalize("NFC"))!;
+    if (ref.hash) return { id: r.id as string, hash: ref.hash, error: null as string | null };
+    try {
+      return { id: r.id as string, hash: sha256Buffer(await adapter.get(remotePath)), error: null };
+    } catch (e) {
+      return { id: r.id as string, hash: null, error: (e as Error).message };
+    }
+  });
+  for (const b of hashBackfills) {
+    if (b.error !== null || b.hash === null) continue;
+    await db.execute({
+      sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
+      args: [b.hash, b.id],
+    });
+  }
+
   // 2. New on the remote. Known = any record anywhere under this root (an
   // org mirror lists its children's files too).
   const likePrefix = nodeRoot.replace(/[\\%_]/g, (ch) => `\\${ch}`);

@@ -1253,9 +1253,20 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
     // (footer unsynced indicator + quit guard); the central server has none
     // and would answer an empty aggregate. /sync/health is the same shape
     // for the mirror-watcher error buffer (#202) -- also device-local, also
-    // empty on the central server. /sync/drive/* is NOT here: Drive
-    // remote config lives on the central server in central mode.
-    if p == "/scope" || p == "/sandbox-profile" || p == "/sync/pending" || p == "/sync/health" {
+    // empty on the central server. /sync/jobs (+ /sync/jobs/current,
+    // /sync/jobs/<id>, #273) is the background multi-node sync job the
+    // footer's "Synchronizovat vše" starts -- it fans out into per-node
+    // POST /nodes/:id/sync calls, which are themselves already local-only
+    // below, so the job driving them must run on this device too. /sync/drive/*
+    // is NOT here: Drive remote config lives on the central server in
+    // central mode.
+    if p == "/scope"
+        || p == "/sandbox-profile"
+        || p == "/sync/pending"
+        || p == "/sync/health"
+        || p == "/sync/jobs"
+        || p.starts_with("/sync/jobs/")
+    {
         return true;
     }
 
@@ -4034,6 +4045,19 @@ mod local_only_path_tests {
         // device's sidecar; the central server never runs a watcher against
         // this device's mirrors and would answer an empty/wrong result.
         assert!(is_local_only_path("/sync/health"));
+    }
+
+    #[test]
+    fn sync_jobs_is_local_only() {
+        // #273: the background multi-node sync job fans out into per-node
+        // POST /nodes/:id/sync calls, already local-only above -- the job
+        // itself (start, poll by id, poll "current") must run on the same
+        // device or it would drive central-side syncRunCentral calls with
+        // no device mirror context at all.
+        assert!(is_local_only_path("/sync/jobs"));
+        assert!(is_local_only_path("/sync/jobs/current"));
+        assert!(is_local_only_path("/sync/jobs/01ABCDEF"));
+        assert!(is_local_only_path("/sync/jobs/01ABCDEF?x=1"));
     }
 
     #[test]

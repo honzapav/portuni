@@ -9,7 +9,7 @@ import {
 } from "../apps/web/src/lib/sync-pending-residual.js";
 import type { SyncPendingNode, SyncRunResponse } from "../apps/server/shared/api-types.js";
 
-const node = (id: string, total: number): SyncPendingNode => ({
+const node = (id: string, total: number, decisions = 0): SyncPendingNode => ({
   node_id: id,
   node_name: `Node ${id}`,
   node_type: "project",
@@ -19,6 +19,7 @@ const node = (id: string, total: number): SyncPendingNode => ({
   remote_missing: 0,
   deleted_local: 0,
   total,
+  decisions,
 });
 
 const run = (over: Partial<SyncRunResponse> = {}): SyncRunResponse => ({
@@ -45,16 +46,20 @@ describe("residualPendingNode", () => {
     assert.equal(residualPendingNode(node("a", 3), run({ pushed: [file("f1")] })), null);
   });
 
-  it("keeps conflicts and failed transfers as pending", () => {
+  it("keeps a failed transfer in total, a conflict in decisions (a run never resolves a conflict)", () => {
     const r = residualPendingNode(
       node("a", 3),
       run({ conflicts: [file("f1")], errors: [{ ...file("f2"), error: "boom" }] }),
     );
-    assert.deepEqual(r && { push: r.push, conflict: r.conflict, total: r.total }, {
-      push: 1,
-      conflict: 1,
-      total: 2,
-    });
+    assert.deepEqual(
+      r && { push: r.push, conflict: r.conflict, total: r.total, decisions: r.decisions },
+      {
+        push: 1,
+        conflict: 1,
+        total: 1,
+        decisions: 1,
+      },
+    );
   });
 
   it("counts a skipped push but not a skipped remote_missing", () => {
@@ -79,12 +84,13 @@ describe("residualPendingNode", () => {
 });
 
 describe("applyPendingNode", () => {
-  const pending = { nodes: [node("a", 3), node("b", 1)], total: 4 };
+  const pending = { nodes: [node("a", 3), node("b", 1)], total: 4, decisions: 0 };
 
   it("drops a node and recomputes the total", () => {
     assert.deepEqual(applyPendingNode(pending, "a", null), {
       nodes: [node("b", 1)],
       total: 1,
+      decisions: 0,
     });
   });
 
@@ -100,6 +106,15 @@ describe("applyPendingNode", () => {
   it("leaves an unknown node id alone", () => {
     assert.equal(applyPendingNode(pending, "zz", null).total, 4);
   });
+
+  it("recomputes decisions alongside total", () => {
+    const withDecisions = {
+      nodes: [node("a", 0, 2), node("b", 1)],
+      total: 1,
+      decisions: 2,
+    };
+    assert.equal(applyPendingNode(withDecisions, "a", null).decisions, 0);
+  });
 });
 
 describe("overrides vs. a scan already in flight", () => {
@@ -114,7 +129,7 @@ describe("overrides vs. a scan already in flight", () => {
   });
 
   it("a stale scan cannot resurrect a node cleared after it started", () => {
-    const fetched = { nodes: [node("a", 3), node("b", 1)], total: 4 };
+    const fetched = { nodes: [node("a", 3), node("b", 1)], total: 4, decisions: 0 };
     const out = applyOverrides(fetched, pruneOverrides(overrides, 200));
     assert.deepEqual(
       out.nodes.map((n) => n.node_id),

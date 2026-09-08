@@ -1,12 +1,13 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { ulid } from "ulid";
 import { makeSharedDb } from "./helpers/shared-db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
-import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
+import { resetAdapterCacheForTests, getAdapter, setAdapterForTests } from "../apps/server/domain/sync/adapter-cache.js";
+import { sha256Buffer } from "../apps/server/domain/sync/hash.js";
 import {
   getNodeSyncInfo,
   registerFileRecordRemote,
@@ -363,6 +364,84 @@ describe("byte-plane read/write (binary-safe sync transfer)", () => {
       }),
       (e: unknown) => e instanceof FileContentError && e.code === "EXISTS",
     );
+  });
+
+  // #273: current_remote_hash is the only source of remote truth central
+  // classification reads -- a record stuck with a NULL hash reads as
+  // remote_missing forever unless something backfills it. These three
+  // tests cover the read/stat-only paths that prove the remote object's
+  // identity without ever reaching a successful `put` (which already
+  // backfills, per "refreshes the file record canonical hash after a
+  // write" above).
+  it("ifAbsent EXISTS backfills current_remote_hash before throwing (backend reports a hash on stat)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const reg = await registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "wip/e.txt" });
+    const w = await writeFileBytesRemote(db, {
+      userId: "U1", nodeId, relPath: "wip/e.txt", bytes: Buffer.from("first"),
+    });
+    // Simulate the trap: the record's hash was lost (e.g. never backfilled
+    // by an older code path) even though the remote object is still there.
+    await db.execute({ sql: "UPDATE files SET current_remote_hash = NULL WHERE id = ?", args: [reg.id] });
+
+    // The fs test adapter's stat() never reports a hash (no content-
+    // addressable metadata without a download, opendal-adapter.ts's
+    // statToRef) -- wrap it the way Drive's stat() actually behaves
+    // (md5Checksum included) so the EXISTS branch has a hash to backfill
+    // without downloading anything.
+    const real = await getAdapter(db, "test-fs");
+    setAdapterForTests("test-fs", {
+      ...real,
+      stat: async (p: string) => {
+        const s = await real.stat(p);
+        if (!s) return null;
+        return { ...s, hash: sha256Buffer(await real.get(p)) };
+      },
+    });
+
+    await assert.rejects(
+      () => writeFileBytesRemote(db, {
+        userId: "U1", nodeId, relPath: "wip/e.txt", bytes: Buffer.from("second"), ifAbsent: true,
+      }),
+      (e: unknown) => e instanceof FileContentError && e.code === "EXISTS",
+    );
+    const row = await db.execute({ sql: "SELECT current_remote_hash FROM files WHERE id = ?", args: [reg.id] });
+    assert.equal(row.rows[0].current_remote_hash, w.canonical_hash);
+  });
+
+  it("baseCanonicalHash CONFLICT backfills current_remote_hash before throwing", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const reg = await registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "wip/cf.txt" });
+    const w = await writeFileBytesRemote(db, {
+      userId: "U1", nodeId, relPath: "wip/cf.txt", bytes: Buffer.from("v1"),
+    });
+    await db.execute({ sql: "UPDATE files SET current_remote_hash = NULL WHERE id = ?", args: [reg.id] });
+
+    await assert.rejects(
+      () => writeFileBytesRemote(db, {
+        userId: "U1", nodeId, relPath: "wip/cf.txt", bytes: Buffer.from("v3"),
+        baseCanonicalHash: "0".repeat(64),
+      }),
+      (e: unknown) => e instanceof FileContentError && e.code === "CONFLICT",
+    );
+    const row = await db.execute({ sql: "SELECT current_remote_hash FROM files WHERE id = ?", args: [reg.id] });
+    assert.equal(row.rows[0].current_remote_hash, w.canonical_hash);
+  });
+
+  it("readFileBytesRemote backfills current_remote_hash for a tracked record with no cached hash", async () => {
+    const { db, nodeId, remoteRoot } = await makeSharedDb();
+    const reg = await registerFileRecordRemote(db, { userId: "U1", nodeId, relPath: "wip/r.txt" });
+    // The object exists on the remote (written directly, bypassing
+    // writeFileBytesRemote) but the record was only ever registered, never
+    // pushed -- current_remote_hash is NULL, so readFileBytesRemote takes
+    // the untracked/no-cached-hash path (stat + get), not the fast path.
+    const info = await getNodeSyncInfo(db, nodeId);
+    const rp = info.files[0].remote_path as string;
+    await mkdir(dirname(join(remoteRoot, rp)), { recursive: true });
+    await writeFile(join(remoteRoot, rp), "actual content");
+
+    const r = await readFileBytesRemote(db, { nodeId, relPath: "wip/r.txt" });
+    const row = await db.execute({ sql: "SELECT current_remote_hash FROM files WHERE id = ?", args: [reg.id] });
+    assert.equal(row.rows[0].current_remote_hash, r.canonical_hash);
   });
 });
 

@@ -47,6 +47,7 @@ import {
 } from "../domain/sync/central/engine-central.js";
 import { findEntryByFileId } from "../mcp/agent-tools.js";
 import { guardAgentRestWrite } from "./write-gate.js";
+import { startSyncJob, getSyncJob, getCurrentSyncJob } from "../domain/sync/sync-jobs.js";
 import { mimeFor, localHashFor, PullDirtyLocalError } from "../domain/sync/engine.js";
 import { safeMirrorJoin, type Section } from "../domain/sync/remote-path.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
@@ -339,6 +340,49 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
         if (respondCentral404(res, err)) return true;
         respondError(res, `POST /nodes/${nodeId}/sync`, err);
       }
+      return true;
+    }
+
+    // Background multi-node sync job (#273): central-mode counterpart of
+    // handleStartSyncJob/handleGetSyncJob (api/nodes.ts) -- "Synchronizovat
+    // vše" starts one of these regardless of data mode, so this front door
+    // needs the same three routes. guardAgentRestWrite is not actually
+    // per-node (it only checks the webview-proxy posture), so one call
+    // gates the whole batch instead of filtering node ids individually the
+    // way local mode's filterRestWritableNodeIds does.
+    if (pathname === "/sync/jobs" && method === "POST") {
+      if (!guardAgentRestWrite(req, res, identity, "sync-jobs")) return true;
+      const body = await parseJsonBody(req, res, z.object({ node_ids: z.array(z.string()).optional() }));
+      if (!body) return true;
+      try {
+        let nodeIds = body.node_ids;
+        if (!nodeIds) {
+          const pending = await computeSyncPendingCentral(client, identity.userId);
+          nodeIds = pending.nodes.filter((n) => n.total > 0).map((n) => n.node_id);
+        }
+        const job = startSyncJob({
+          userId: identity.userId,
+          nodeIds,
+          runNode: (nodeId) => syncRunCentral(client, { userId: identity.userId, nodeId }),
+        });
+        respondJson(res, 202, job);
+      } catch (err) {
+        respondError(res, "POST /sync/jobs", err);
+      }
+      return true;
+    }
+    if (pathname === "/sync/jobs/current" && method === "GET") {
+      respondJson(res, 200, { job: getCurrentSyncJob(identity.userId) });
+      return true;
+    }
+    const syncJobMatch = pathname.match(/^\/sync\/jobs\/([^/]+)$/);
+    if (syncJobMatch && method === "GET") {
+      const job = getSyncJob(identity.userId, decodeURIComponent(syncJobMatch[1]));
+      if (!job) {
+        respondJson(res, 404, { error: "job not found" });
+        return true;
+      }
+      respondJson(res, 200, job);
       return true;
     }
 

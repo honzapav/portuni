@@ -19,7 +19,6 @@ import {
   listUntrackedLocalCentral,
   mapConcurrent,
   reconcilePathCentral,
-  type ReconcileCentralResult,
 } from "./domain/sync/central/engine-central.js";
 import { createMirrorWatcher, type MirrorWatcher } from "./domain/sync/mirror-watcher.js";
 import { listUserMirrors } from "./domain/sync/mirror-registry.js";
@@ -34,7 +33,6 @@ import { sweepStaleRunningSessionsOnBoot } from "./boot/session-sweep.js";
 // them here (rather than threading raw strings through main()) keeps the
 // central-URL/token parsing local to the one place that needs the strings
 // rather than the CentralClient built from them.
-const RECONCILE_RETRY_DELAY_MS = 15_000;
 const BACKFILL_SWEEP_INTERVAL_MS = 10 * 60_000;
 
 function requiredEnv(name: string): string {
@@ -176,30 +174,19 @@ async function agentMain(client: CentralClient): Promise<void> {
   // Watcher with the central reconcile; the boot backfill is done below (the
   // built-in backfill needs the local graph db the agent doesn't have), and
   // backfillMirror covers mirrors registered while running.
-  // Watcher events are one-shot, so a failed reconcile (central unreachable,
-  // request timed out) gets ONE delayed re-run before we give up and leave
-  // the path to the periodic backfill sweep (GH #80).
-  const reconcileWithRetry = async (a: {
-    userId: string;
-    nodeId: string;
-    absPath: string;
-  }): Promise<ReconcileCentralResult> => {
-    try {
-      return await reconcilePathCentral(client, a);
-    } catch (e) {
-      console.error(
-        `[portuni:watch] reconcile failed for ${a.absPath}; retrying in ${RECONCILE_RETRY_DELAY_MS / 1000} s:`,
-        e,
-      );
-      await new Promise((r) => setTimeout(r, RECONCILE_RETRY_DELAY_MS));
-      return reconcilePathCentral(client, a);
-    }
-  };
+  // Watcher events are one-shot: a failed reconcile (central unreachable,
+  // request timed out) used to get one delayed retry INLINE, awaited inside
+  // the watcher's own per-mirror reconcile chain -- a 15s sleep that blocked
+  // every other queued event for that mirror behind it (#273). The retry
+  // now belongs on the periodic backfillSweep below (every 10 min, plus one
+  // at boot) instead of in the chain: a failure here is recorded
+  // (recordWatcherError, surfaced via onError) and left for that sweep to
+  // repair, so one bad path stalls nothing.
   let watcher: MirrorWatcher | null = null;
   if (process.env.PORTUNI_WATCH_MIRRORS !== "0") {
     watcher = createMirrorWatcher({
       userId: SOLO_USER,
-      reconcile: reconcileWithRetry,
+      reconcile: (a) => reconcilePathCentral(client, a),
       backfill: false,
       backfillMirror: (m) => centralBackfillMirror(client, m),
       onError: (e) => console.error("[portuni:watch]", e),

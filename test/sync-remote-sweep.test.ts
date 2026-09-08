@@ -228,6 +228,63 @@ describe("remoteSweep", () => {
     assert.deepEqual(out.adopted.map((f) => f.remote_path), [`${orgSyncKey}/wip/org-note.md`]);
   });
 
+  // #273: current_remote_hash is the ONLY source of remote truth central
+  // classification reads (remoteExists = remoteHash !== null) -- a record
+  // stuck with a NULL hash reads as remote_missing forever even when the
+  // object is right there in the sweep's own listing. The sweep now
+  // backfills it directly instead of leaving it to the next EXISTS/CONFLICT
+  // write attempt (file-content-remote.ts) or forever.
+  it("backfills current_remote_hash for a tracked, present record whose hash was lost", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const r = await pushed(db, nodeId, mirrorRoot, "a.md");
+    await db.execute({ sql: "UPDATE files SET current_remote_hash = NULL WHERE id = ?", args: [r.file_id] });
+
+    const out = await remoteSweep(db, { userId: "U1", nodeId });
+    assert.equal(out.errors.length, 0);
+    const row = await db.execute({
+      sql: "SELECT current_remote_hash FROM files WHERE id = ?",
+      args: [r.file_id],
+    });
+    assert.equal(row.rows[0].current_remote_hash, r.hash);
+  });
+
+  it("does not attempt a byte-hash backfill for an already-tracked native-format record", async () => {
+    const { db, nodeId, orgSyncKey, nodeSyncKey } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const nodeRoot = `${orgSyncKey}/projects/${nodeSyncKey}`;
+    const nativePath = `${nodeRoot}/outputs/Quarterly Report`;
+    const nativeRef: FileRef = {
+      path: nativePath,
+      hash: null,
+      size: 0,
+      modified_at: new Date(),
+      is_native_format: true,
+      native_format: "gdoc",
+    };
+    let getCalls = 0;
+    const base = fakeNativeAdapter(nativeRef);
+    setAdapterForTests("test-fs", {
+      ...base,
+      async get(p) {
+        getCalls++;
+        return base.get(p);
+      },
+    });
+    await db.execute({
+      sql: `INSERT INTO files (id, node_id, filename, remote_name, remote_path, status, is_native_format, current_remote_hash, created_by)
+            VALUES (?, ?, ?, ?, ?, 'output', 1, NULL, 'U1')`,
+      args: ["F-NATIVE", nodeId, "Quarterly Report", "test-fs", nativePath],
+    });
+    const out = await remoteSweep(db, { userId: "U1", nodeId });
+    assert.equal(out.errors.length, 0);
+    assert.equal(getCalls, 0, "a native record's bytes are never fetched -- alt=media rejects them");
+    const row = await db.execute({ sql: "SELECT current_remote_hash FROM files WHERE id = 'F-NATIVE'" });
+    assert.equal(row.rows[0].current_remote_hash, null);
+  });
+
   it("retries a leftover pending file op first and reports it as repaired", async () => {
     const { db, nodeId, remoteRoot, orgSyncKey, nodeSyncKey } = await makeSharedDb();
     const mirrorRoot = join(workspace, "mirror");

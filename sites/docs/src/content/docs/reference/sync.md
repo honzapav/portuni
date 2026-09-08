@@ -92,11 +92,32 @@ Returns: `{ file_id, filename, remote_path }`. With a local mirror the exported 
 `portuni_status` only reports the current classification — it never touches the remote or cleans anything up. Reconciling drift against the remote happens in a **deliberate sync run**, triggered by the desktop/web UI's "Synchronizovat" action (or, for a teammate mirror in central mode, by the sync agent). One run does, in order:
 
 1. **Retry pending file ops** — replays any move/rename/delete whose remote step didn't finish last time (see [Destructive operations](#destructive-operations) below).
-2. **Remote sweep** — a tracked file whose remote object is confirmed gone is removed and tombstoned; a file that appeared anywhere under `wip/`, `outputs/`, or `resources/` (at any depth) is adopted and pulled in the same run (a dot-prefixed filename or subfolder is skipped). A record never pushed from this device is left alone, and nothing is destroyed if the remote itself can't be confirmed reachable.
+2. **Remote sweep** — a tracked file whose remote object is confirmed gone is removed and tombstoned; a file that appeared anywhere under `wip/`, `outputs/`, or `resources/` (at any depth) is adopted and pulled in the same run (a dot-prefixed filename or subfolder is skipped). A record never pushed from this device is left alone, and nothing is destroyed if the remote itself can't be confirmed reachable. The sweep also backfills `current_remote_hash` for any tracked, present record whose hash is unknown — central-mode classification reads that column as its only source of remote truth, so a record stuck with a NULL hash used to read as `remote_missing` forever even though the object was right there in the sweep's own listing (#273).
 3. Status scan.
 4. Push every `push` candidate, pull every `pull` candidate. A `deleted_local` file is reported, not auto-restored — that needs an explicit decision (see [Resolving conflicts and deletions](#resolving-conflicts-and-deletions)).
 5. Clean up untracked local copies that match a delete or move/rename tombstone.
 6. Adopt whatever local files are still untracked — including an edited copy of a file just deleted on the remote, which wins over the deletion and gets pushed back.
+
+### Background sync jobs (bulk "Synchronizovat vše")
+
+Running the sequence above for one node is a single blocking request (`POST /nodes/:id/sync`, unchanged — this is what `portuni_status`'s consumers and the MCP-adjacent tooling still use). Syncing *every* pending node at once no longer loops that request client-side: the web/desktop UI's "Synchronizovat vše" instead starts a background job that runs server-side with bounded concurrency across nodes, so closing the overview, switching windows, or one slow node no longer blocks the rest of the batch.
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/sync/jobs` | POST | Starts a job. Body `{ node_ids?: string[] }` — omitted defaults to every node with actionable pending work (`GET /sync/pending`'s `total > 0` set). Returns `202` with the job summary immediately; a second start while one is already running for the same user reattaches to it instead of racing a duplicate. |
+| `/sync/jobs/:id` | GET | Job status: `{ id, status: "running" \| "done", started_at, finished_at, total, completed, errored, nodes: [{ node_id, status, result?, error? }] }`. |
+| `/sync/jobs/current` | GET | `{ job: <summary> \| null }` — the caller's own currently-running job, so a reopened UI can reattach without remembering the job id. |
+
+Job state is in-memory on the server/sidecar process — it does not survive a restart, only a UI remount (closing/reopening the overview, switching windows). Each node's own sync work is unaffected either way: `runNodeSync`/`syncRunCentral` per node is the same idempotent call the direct route makes, so a lost job is a lost progress view, never lost or duplicated sync work.
+
+### `GET /sync/pending` — actionable work vs. decisions
+
+The cross-mirror aggregate behind the footer badge, the quit guard, and `/sync/jobs`' default node set splits each node's (and the aggregate's) count in two:
+
+- **`total`** — actionable: `push` + untracked file count. This is exactly what a sync run (or a background job) can clear.
+- **`decisions`** — needs a human: `conflict` + `deleted_local`. A run leaves both untouched by design (see [Resolving conflicts and deletions](#resolving-conflicts-and-deletions)), so counting them into `total` used to make the badge/quit guard warn about work "Synchronizovat vše" could never actually finish. A node with decisions but no actionable work still appears in the overview (not hidden), just with `total: 0`.
+
+`remote_missing` is reported per node but counted in neither — a run does not push or pull it either, and (per the remote-sweep hash backfill above) most `remote_missing` misclassifications now self-correct on the next sweep instead of needing a decision at all.
 
 ## Destructive operations
 

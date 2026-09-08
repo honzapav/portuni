@@ -313,6 +313,46 @@ describe("agent router over HTTP", () => {
     assert.equal(body.nodes[0].node_name, "Stan GWS");
   });
 
+  it("POST /sync/jobs, GET /sync/jobs/:id, GET /sync/jobs/current -- central-mode job runs syncRunCentral per node (#273)", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    await writeFile(join(mirrorRoot, "wip", "job.md"), "central job");
+
+    const start = await fetch(`${base}/sync/jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ node_ids: [NODE_ID] }),
+    });
+    assert.equal(start.status, 202);
+    const job = (await start.json()) as { id: string; total: number; status: string };
+    assert.equal(job.total, 1);
+
+    const cur = await fetch(`${base}/sync/jobs/current`);
+    assert.equal(cur.status, 200);
+    const curBody = (await cur.json()) as { job: { id: string } | null };
+    assert.equal(curBody.job?.id, job.id);
+
+    let finalStatus = "";
+    for (let i = 0; i < 200; i++) {
+      const r = await fetch(`${base}/sync/jobs/${job.id}`);
+      assert.equal(r.status, 200);
+      const body = (await r.json()) as { status: string };
+      finalStatus = body.status;
+      if (finalStatus === "done") break;
+      await new Promise((res) => setTimeout(res, 10));
+    }
+    assert.equal(finalStatus, "done");
+    assert.equal(
+      fake.bytes.get(posix.join(NODE_ROOT, "wip/job.md"))?.toString(),
+      "central job",
+      "the job actually ran syncRunCentral, not a no-op",
+    );
+  });
+
+  it("GET /sync/jobs/:id for an unknown id is 404", async () => {
+    const r = await fetch(`${base}/sync/jobs/nonexistent`);
+    assert.equal(r.status, 404);
+  });
+
   it("unknown node maps to 404; graph routes answer 501 agent_mode", async () => {
     const r404 = await fetch(`${base}/nodes/NOPE/sync-status`);
     assert.equal(r404.status, 404);

@@ -18,13 +18,12 @@ import {
   statusScan,
   storeFile,
   pullFile,
-  matchDeleteTombstones,
-  cleanupDeletedRemote,
   resolveNodeInfo,
   PullDirtyLocalError,
 } from "../domain/sync/engine.js";
 import { listUntrackedLocal } from "../domain/sync/discover-local.js";
 import { remoteSweep } from "../domain/sync/remote-sweep.js";
+import { runNodeSync } from "../domain/sync/sync-run.js";
 import { mimeFor } from "../domain/sync/engine.js";
 import { createNodeInternal, updateNodeInternal, NodeVisibilityManagedError } from "../domain/nodes.js";
 import { moveNodeToOrganization } from "../domain/edges.js";
@@ -38,8 +37,9 @@ import {
   resolveSandboxScopeForNode,
   ResumeSessionUnauthorizedError,
 } from "../domain/sandbox-profile.js";
-import type { SyncStatusResponse, SyncRunResponse, UntrackedFile } from "../shared/api-types.js";
+import type { SyncStatusResponse, UntrackedFile } from "../shared/api-types.js";
 import { computeSyncPending } from "../domain/sync/pending.js";
+import { startSyncJob, getSyncJob, getCurrentSyncJob } from "../domain/sync/sync-jobs.js";
 import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
 import { parseBody, parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 import { nodeVisibleTo, filterVisibleNodeIds } from "../auth/node-access.js";
@@ -426,6 +426,84 @@ export async function handleSyncHealth(
   }
 }
 
+const StartSyncJobBody = z.object({
+  node_ids: z.array(z.string()).optional(),
+});
+
+// POST /sync/jobs -- starts (or reattaches to an already-running) background
+// sync run across many nodes at once (#273): "Synchronizovat vše" no longer
+// blocks the UI on a client-side loop over POST /nodes/:id/sync, one node
+// at a time. Defaults to every node with actionable pending work
+// (computeSyncPending's total > 0 set) when node_ids is omitted -- exactly
+// the set "Synchronizovat vše" used to loop over. Filtered through the same
+// write-gate batch check handlePositions uses (filterRestWritableNodeIds):
+// a node this identity may not write to is silently dropped from the job
+// rather than 403ing the whole batch over one out-of-scope entry.
+export async function handleStartSyncJob(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+): Promise<void> {
+  const body = await parseJsonBody(req, res, StartSyncJobBody);
+  if (!body) return;
+  try {
+    const db = getDb();
+    let nodeIds = body.node_ids;
+    if (!nodeIds) {
+      const pending = await computeSyncPending(db, identity);
+      nodeIds = pending.nodes.filter((n) => n.total > 0).map((n) => n.node_id);
+    }
+    const writable = await filterRestWritableNodeIds(req, identity, nodeIds);
+    const job = startSyncJob({
+      userId: identity.userId,
+      nodeIds: nodeIds.filter((id) => writable.has(id)),
+      runNode: (nodeId) => runNodeSync(db, { userId: identity.userId, nodeId }),
+    });
+    respondJson(res, 202, job);
+  } catch (err) {
+    respondError(res, `${req.method} /sync/jobs`, err);
+  }
+}
+
+// GET /sync/jobs/:id -- progress/result of a background sync job. Scoped to
+// the caller's own jobs (getSyncJob checks user_id); a job id belonging to
+// someone else, or one whose retention window has passed, reads the same
+// as an unknown id.
+export async function handleGetSyncJob(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  jobId: string,
+): Promise<void> {
+  try {
+    const job = getSyncJob(identity.userId, jobId);
+    if (!job) {
+      respondJson(res, 404, { error: "job not found" });
+      return;
+    }
+    respondJson(res, 200, job);
+  } catch (err) {
+    respondError(res, `${req.method} /sync/jobs/${jobId}`, err);
+  }
+}
+
+// GET /sync/jobs/current -- the caller's own currently-running job, if any,
+// so a remounted overview (modal reopened, window switched back to) can
+// reattach to progress instead of losing track of it entirely. `job: null`
+// when nothing is running (including once a job has finished -- fetch it
+// by id within its retention window instead).
+export async function handleGetCurrentSyncJob(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+): Promise<void> {
+  try {
+    respondJson(res, 200, { job: getCurrentSyncJob(identity.userId) });
+  } catch (err) {
+    respondError(res, `${req.method} /sync/jobs/current`, err);
+  }
+}
+
 // Browser-openable URL of the node's folder on its routed remote. Returns
 // { url, remote_name } when the routed adapter exposes folderUrl AND the
 // folder already exists on the remote; { url: null } otherwise (no remote
@@ -588,8 +666,10 @@ export async function handleFileUrl(
 // Per-node sync trigger. Re-runs statusScan and acts on it: push candidates
 // are uploaded via storeFile, pull candidates downloaded via pullFile.
 // Conflicts are surfaced but never auto-resolved -- the data-safety default
-// ("Portuni never auto-merges") applies. The sequential loop avoids racing
-// on the per-device file_state cache.
+// ("Portuni never auto-merges") applies. The actual work is runNodeSync
+// (sync-run.ts, #273) -- split out so the same per-node logic also runs as
+// one unit of work inside a background sync job (sync-jobs.ts), instead of
+// only ever being reachable through this synchronous request/response.
 export async function handleSyncRun(
   req: IncomingMessage,
   res: ServerResponse,
@@ -603,122 +683,7 @@ export async function handleSyncRun(
       return;
     }
     if (!(await guardHeadlessFileWrite(req, res, identity, nodeId))) return;
-    // Sweep the remote before scanning: records whose remote object is
-    // confirmed gone are dropped (their local copy is untracked afterward
-    // and picked up by the tombstone cleanup below), and files that
-    // appeared on the remote out of band are adopted so the scan classifies
-    // them as pull candidates in this same run.
-    const sweep = await remoteSweep(db, { userId: identity.userId, nodeId });
-    const scan = await statusScan(db, {
-      userId: identity.userId,
-      nodeId,
-      includeDiscovery: false,
-    });
-    const result: SyncRunResponse = {
-      pushed: [],
-      pulled: [],
-      adopted: [],
-      adopted_remote: [],
-      conflicts: [],
-      deleted_local: [],
-      deleted_remote: [],
-      deleted_on_remote: [],
-      sweep_errors: [],
-      repaired: [],
-      pending_repairs: [],
-      errors: [],
-      skipped: [],
-    };
-    for (const f of sweep.adopted) {
-      result.adopted_remote.push({ file_id: f.file_id, filename: f.filename });
-    }
-    for (const f of sweep.deleted_on_remote) {
-      result.deleted_on_remote.push({ file_id: f.file_id, filename: f.filename });
-    }
-    result.sweep_errors.push(...sweep.errors);
-    for (const r of sweep.repaired) {
-      result.repaired.push({ file_id: r.file_id, filename: r.filename });
-    }
-    result.pending_repairs.push(...sweep.pending_repairs);
-    for (const e of scan.push_candidates) {
-      if (!e.local_path) {
-        result.errors.push({
-          file_id: e.file_id,
-          filename: e.filename,
-          error: "no local path -- node has no mirror on this device",
-        });
-        continue;
-      }
-      try {
-        await storeFile(db, {
-          userId: identity.userId,
-          nodeId: e.node_id,
-          localPath: e.local_path,
-        });
-        result.pushed.push({ file_id: e.file_id, filename: e.filename });
-      } catch (err) {
-        result.errors.push({
-          file_id: e.file_id,
-          filename: e.filename,
-          error: String(err),
-        });
-      }
-    }
-    // pull_candidates: remote moved forward, local at last-synced -- safe
-    // to download. deleted_local is NOT pulled: the local deletion may be
-    // intentional, and auto-restoring made it impossible to ever remove a
-    // file from the mirror. It is reported for an explicit decision
-    // (portuni_pull restores, portuni_delete_file removes everywhere).
-    for (const e of scan.pull_candidates) {
-      try {
-        await pullFile(db, { userId: identity.userId, fileId: e.file_id });
-        result.pulled.push({ file_id: e.file_id, filename: e.filename });
-      } catch (err) {
-        result.errors.push({
-          file_id: e.file_id,
-          filename: e.filename,
-          error: String(err),
-        });
-      }
-    }
-    for (const e of scan.deleted_local) {
-      result.deleted_local.push({ file_id: e.file_id, filename: e.filename });
-    }
-    for (const e of scan.conflicts) {
-      result.conflicts.push({ file_id: e.file_id, filename: e.filename });
-    }
-    for (const e of [...scan.clean, ...scan.remote_missing, ...scan.remote_error, ...scan.native]) {
-      result.skipped.push({
-        file_id: e.file_id,
-        filename: e.filename,
-        sync_class: e.class,
-      });
-    }
-    // Deterministic registration: adopt any file the agent wrote to the
-    // mirror but never registered. Each storeFile registers + pushes.
-    // Tombstoned copies (deliberately deleted elsewhere, byte-identical to
-    // the last synced state) are cleaned up instead of adopted -- adopting
-    // them would resurrect the deletion (GH #79).
-    const allUntracked = await listUntrackedLocal(db, { userId: identity.userId, nodeId });
-    const tombMatch = await matchDeleteTombstones(db, identity.userId, allUntracked);
-    const cleanup = await cleanupDeletedRemote(tombMatch.deleted_remote);
-    for (const c of cleanup.cleaned) {
-      result.deleted_remote.push({ file_id: c.file_id, filename: c.filename });
-    }
-    result.errors.push(...cleanup.errors);
-    const untracked = tombMatch.remaining;
-    for (const u of untracked) {
-      try {
-        const sr = await storeFile(db, {
-          userId: identity.userId,
-          nodeId: u.node_id,
-          localPath: u.local_path,
-        });
-        result.adopted.push({ file_id: sr.file_id, filename: u.filename });
-      } catch (err) {
-        result.errors.push({ file_id: "", filename: u.filename, error: String(err) });
-      }
-    }
+    const result = await runNodeSync(db, { userId: identity.userId, nodeId });
     respondJson(res, 200, result);
   } catch (err) {
     respondError(res, `${req.method} /nodes/${nodeId}/sync`, err);

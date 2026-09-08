@@ -16,6 +16,7 @@ import { listLocalMirrors, type LocalMirrorRow } from "./local-db.js";
 import { listUntrackedLocal } from "./discover-local.js";
 import { onMirrorRegistryChange } from "./mirror-registry.js";
 import { reconcilePath, type ReconcileResult } from "./reconcile.js";
+import { mapWithConcurrency } from "./engine.js";
 import { relinkProjectedFile } from "../session-projection.js";
 import { recordWatcherError, clearWatcherError } from "./watcher-error-buffer.js";
 
@@ -89,6 +90,15 @@ export interface MirrorWatcher {
   // Re-list mirrors and diff against the watched set: watch + backfill new
   // mirrors, drop watches for unregistered ones, re-resolve event ownership.
   refresh(): Promise<void>;
+  // Periodic catch-up (#273): re-backfill EVERY currently-watched mirror,
+  // not just newly-added ones (refresh() only backfills the diff). The
+  // safety net for a watcher event lost under load, or a reconcile that
+  // failed and has no inline retry (central mode's watcher no longer
+  // retries in its own chain -- see desktop.ts). Local mode had no
+  // periodic sweep at all before this; central mode's own equivalent
+  // (desktop.ts's backfillSweep) predates this and calls its central
+  // backfill directly, independent of this method.
+  sweep(): Promise<void>;
   stop(): void;
 }
 
@@ -119,11 +129,16 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
 
   // Coalesce the event burst editors emit on an atomic save (write temp +
   // rename) into a single reconcile per path. Reconciles are SERIALIZED in
-  // firing order: an mv emits events for the old and the new path, and the
-  // pairing logic (tryApplyDiskMove / the unregister branch) depends on the
-  // first event's outcome being visible to the second -- two concurrent
-  // reconciles for the same physical file race on the files row otherwise.
-  let reconcileChain: Promise<void> = Promise.resolve();
+  // firing order WITHIN a mirror: an mv emits events for the old and the new
+  // path, and the pairing logic (tryApplyDiskMove / the unregister branch)
+  // depends on the first event's outcome being visible to the second -- two
+  // concurrent reconciles for the same physical file race on the files row
+  // otherwise. That ordering requirement is per-mirror, not global (#273):
+  // one chain per node id, so a slow or failing reconcile in one mirror no
+  // longer blocks every other mirror's queued events behind it -- the
+  // previous single global chain meant one bad path on a machine with dozens
+  // of mirrors stalled reconciliation everywhere.
+  const reconcileChains = new Map<string, Promise<void>>();
   function schedule(absPath: string): void {
     const existing = timers.get(absPath);
     if (existing) clearTimeout(existing);
@@ -139,13 +154,17 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
         // an edit/create/delete in the mirror is reflected there without
         // waiting on file-state reconciliation.
         relinkProjectedFile(nodeId, absPath).catch(onError);
-        reconcileChain = reconcileChain.then(() =>
-          reconcile({ userId: deps.userId, nodeId, absPath }).then(
-            () => clearWatcherError(nodeId, absPath),
-            (e) => {
-              recordWatcherError(nodeId, absPath, e);
-              onError(e);
-            },
+        const prior = reconcileChains.get(nodeId) ?? Promise.resolve();
+        reconcileChains.set(
+          nodeId,
+          prior.then(() =>
+            reconcile({ userId: deps.userId, nodeId, absPath }).then(
+              () => clearWatcherError(nodeId, absPath),
+              (e) => {
+                recordWatcherError(nodeId, absPath, e);
+                onError(e);
+              },
+            ),
           ),
         );
       }, debounceMs),
@@ -250,6 +269,9 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
     return refreshChain;
   }
 
+  const SWEEP_CONCURRENCY = 4;
+  let sweepRunning = false;
+
   return {
     async start(): Promise<void> {
       stopped = false;
@@ -262,6 +284,25 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
     },
     refresh(): Promise<void> {
       return queueReconcile(refreshBackfillMirror);
+    },
+    async sweep(): Promise<void> {
+      if (stopped || sweepRunning) return;
+      const backfillOne = refreshBackfillMirror;
+      if (!backfillOne) return;
+      sweepRunning = true;
+      try {
+        // `mirrors` (not the watched map) so a mirror whose watch failed to
+        // attach still gets its periodic backfill pass.
+        await mapWithConcurrency(mirrors, SWEEP_CONCURRENCY, async (m) => {
+          try {
+            await backfillOne(m);
+          } catch (e) {
+            onError(e);
+          }
+        });
+      } finally {
+        sweepRunning = false;
+      }
     },
     stop(): void {
       stopped = true;

@@ -704,7 +704,12 @@ describe("computeSyncPendingCentral", () => {
     assert.equal(r.nodes[0].untracked, 1);
   });
 
-  it("a node whose only pending files are deleted_local is absent, total 0", async () => {
+  // #273: deleted_local needs a human decision (restore or accept the
+  // deletion) -- a sync run never resolves it, so it must not count toward
+  // `total` (footer badge / quit guard: "work a run can actually clear").
+  // It must not be hidden from the overview either, so the node still
+  // appears with total 0 and decisions counting it instead.
+  it("a node whose only pending files are deleted_local appears with total 0, decisions counting it", async () => {
     const c = new FakeCentral();
     await setupMirror();
     const abs = join(mirrorRoot, "wip", "a.md");
@@ -715,8 +720,13 @@ describe("computeSyncPendingCentral", () => {
 
     const r = await computeSyncPendingCentral(c, "U1");
 
-    assert.equal(r.nodes.find((n) => n.node_id === NODE_ID), undefined);
+    const node = r.nodes.find((n) => n.node_id === NODE_ID);
+    assert.ok(node, "a node needing a decision must still appear in the overview");
+    assert.equal(node.deleted_local, 1);
+    assert.equal(node.total, 0);
+    assert.equal(node.decisions, 1);
     assert.equal(r.total, 0);
+    assert.equal(r.decisions, 1);
   });
 
   it("matches the local engine's total rule: push counts, deleted_local does not", async () => {
@@ -740,6 +750,7 @@ describe("computeSyncPendingCentral", () => {
     assert.ok(node);
     assert.equal(node.deleted_local, 1);
     assert.equal(node.total, node.push);
+    assert.equal(node.decisions, 1);
     assert.ok(node.push >= 1);
   });
 

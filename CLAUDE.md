@@ -1028,6 +1028,87 @@ symlink to this file.
   literally indistinguishable in the Relace list. Migration 028's backfill
   for pre-existing rows is intentionally left date-only (never rewrite
   existing rows); both shapes are valid default names for their era.
+- **A sync run is a background job for "Synchronizovat vše"; the pending
+  aggregate splits actionable work from decisions; central-mode hash
+  tracking self-heals; the mirror watcher no longer has one global chain
+  (#273).** Four independent fixes to the same area, landed together:
+  - **Job**: `POST /nodes/:id/sync` (one node, synchronous) is unchanged --
+    it is still what the MCP-adjacent tooling and single-node "Synchronizovat"
+    use. Bulk sync ("Synchronizovat vše", `SyncOverview.tsx`) used to be a
+    client-side `for` loop over that endpoint, one node at a time, with a
+    single spinner and no progress -- closing the modal didn't even stop it
+    (the loop kept running detached from the unmounted component), it just
+    stopped being visible. `POST /sync/jobs` (body `{ node_ids? }`, default
+    every node with `computeSyncPending`'s `total > 0`) starts a job and
+    returns `202` immediately; `domain/sync/sync-jobs.ts`'s in-memory
+    registry runs each node through a `runNode` callback with bounded
+    concurrency (`PORTUNI_SYNC_JOB_CONCURRENCY`, default 3) -- local mode's
+    callback is `runNodeSync` (`domain/sync/sync-run.ts`, extracted from
+    `handleSyncRun`'s old inline body so both the synchronous route and the
+    job call the identical per-node logic), central/agent mode's is
+    `syncRunCentral`, wired into `agent-router.ts`'s own `/sync/jobs*`
+    routes (also added to `is_local_only_path` in `lib.rs`, same as any
+    other route that fans out into already-local-only per-node sync calls).
+    `GET /sync/jobs/:id` polls progress; `GET /sync/jobs/current` lets a
+    remounted UI (modal reopened, window switched back to) reattach without
+    remembering the job id. One job per user at a time -- a second
+    `POST /sync/jobs` while one is running reattaches instead of racing a
+    duplicate. State is in-memory only (no cross-restart durability -- a
+    lost job is a lost progress view, never lost or duplicated work, since
+    each node's own sync call is independently idempotent); a full durable
+    job queue was out of scope for this fix.
+  - **Pending accounting**: `computeSyncPending`/`computeSyncPendingCentral`
+    used to fold `conflict` into `total` (the footer badge / quit guard /
+    job's default node set) alongside `push`+`untracked`, even though a
+    sync run never resolves a conflict any more than it resolves
+    `deleted_local` (already excluded) -- a node with one conflict kept the
+    badge permanently non-zero. `total` is now `push + untracked` only
+    (actionable -- what a run can actually clear); a new `decisions` field
+    (`conflict + deleted_local`) tracks what needs a human via
+    `POST /nodes/:id/files/:fileId/resolve`. A decisions-only node used to
+    be dropped from the response entirely (`total === 0` gated inclusion);
+    it now still appears (gate is `total === 0 && decisions === 0`), so it
+    isn't hidden from the overview. `SyncOverview.tsx` shows the split
+    (`+N k rozhodnutí`) and only ever includes actionable nodes in a job's
+    default node set.
+  - **Central hash self-healing**: `current_remote_hash` is central
+    classification's ONLY source of remote truth (`classifyRecord`:
+    `remoteExists = remoteHash !== null`) -- three read/stat-only paths in
+    `file-content-remote.ts` proved the remote object's identity (and often
+    its hash) without ever persisting it: `writeFileBytesRemote`'s
+    `ifAbsent` EXISTS short-circuit, its `baseCanonicalHash` CONFLICT check,
+    and `readFileBytesRemote`'s untracked/no-cached-hash path. A record
+    that hit any of these stayed `remote_missing` forever even though the
+    object plainly existed. All three now call a shared `backfillRemoteHash`
+    helper before returning/throwing. Separately, `remote-sweep.ts`'s
+    listing already proves every present object's path -- a new step
+    backfills `current_remote_hash` for any tracked, present record whose
+    hash is NULL, using the listing's own hash or (backends that report
+    none on stat, e.g. fs/OpenDAL) downloading and hashing, same pattern
+    the adopt path's own backfill already used. Native-format records are
+    excluded (no bytes to hash, by design). This is the NULL-hash half of
+    the hash-tracking problem; a STALE-but-non-null hash (an out-of-band
+    Drive edit to an already-tracked file) is a separate, still-open issue
+    (#276) -- land any fix there in the same sweep step.
+  - **Watcher chain**: `mirror-watcher.ts`'s reconcile serialization used
+    to be ONE global `Promise` chain shared by every mirror on the machine
+    (needed for same-mirror event ordering, e.g. an `mv`'s old+new path
+    events) -- a slow or failing reconcile for one mirror blocked every
+    other mirror's queued events behind it. Now `reconcileChains` is a
+    `Map<nodeId, Promise<void>>`, one chain per mirror; ordering within a
+    mirror is preserved, mirrors no longer block each other. Central mode's
+    watcher additionally used to retry a failed reconcile with a 15s
+    `setTimeout` sleep **inside** that chain (`desktop.ts`'s
+    `reconcileWithRetry`) -- removed; a failure is now recorded
+    (`recordWatcherError`) and left for the existing periodic
+    `backfillSweep` (every 10 min) to repair, matching "the retry belongs
+    on a timer/queue, not in the chain." Local mode had no periodic sweep
+    at all (only start-time and new-mirror-registration backfills, both
+    funneled through the same serialized chains) -- `MirrorWatcher` gained
+    a `sweep()` method (re-backfills every currently-watched mirror, not
+    just newly-added ones, bounded concurrency via `mapWithConcurrency`,
+    re-entrancy guarded) and `boot/mirror-watch.ts` calls it on the same
+    10-minute interval central mode already used.
 
 ## Security rules (from the auth refactor post-mortem)
 

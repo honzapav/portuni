@@ -158,6 +158,29 @@ async function getFileRecord(
   };
 }
 
+// #273: files.current_remote_hash is the ONLY source of remote truth
+// central-mode classification reads (engine-central.ts's classifyRecord:
+// remoteExists = remoteHash !== null) -- a record whose hash is NULL reads
+// as remote_missing forever, even when the object plainly exists, unless
+// something writes the hash back. A successful `put` already does this
+// (below); this helper covers the read/stat-only paths that PROVE the
+// remote object's identity without ever reaching a `put` -- the ifAbsent
+// EXISTS short-circuit, the baseCanonicalHash CONFLICT check, and a plain
+// byte read -- all of which used to compute the current hash and then
+// discard it. No-op when there is no record to update, the hash is
+// unknown, or it already matches (avoids a write on every read).
+async function backfillRemoteHash(
+  db: Client,
+  record: { id: string; currentRemoteHash: string | null } | null,
+  observedHash: string | null,
+): Promise<void> {
+  if (!record || observedHash === null || record.currentRemoteHash === observedHash) return;
+  await db.execute({
+    sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
+    args: [observedHash, record.id],
+  });
+}
+
 export async function readFileContentRemote(
   db: Client,
   a: { userId: string; nodeId: string; relPath: string },
@@ -335,10 +358,16 @@ export async function readFileBytesRemote(
     throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
   }
   const buf = await adapter.get(remotePath);
+  const canonicalHash = stat.hash ? stat.hash.toLowerCase() : sha256Buffer(buf);
+  // This device just proved the remote object's identity by downloading
+  // it -- persist that onto a tracked-but-hashless record so it stops
+  // reading as remote_missing (#273). A genuinely untracked path (no
+  // `record` at all) has nothing to backfill.
+  await backfillRemoteHash(db, record, canonicalHash);
   return {
     bytes: buf,
     version: sha256Buffer(buf),
-    canonical_hash: stat.hash ? stat.hash.toLowerCase() : sha256Buffer(buf),
+    canonical_hash: canonicalHash,
     filename,
     mime_type: mimeFor(filename),
   };
@@ -378,6 +407,10 @@ export async function writeFileBytesRemote(
       throw new FileContentError(`file is a native format, no byte round-trip: ${a.relPath}`, "NOT_EDITABLE");
     }
     if (a.ifAbsent && stat) {
+      // The object's presence -- and, when the backend reports one on
+      // stat, its hash -- is proven right here; persist it before throwing
+      // so this record does not stay stuck as remote_missing forever (#273).
+      await backfillRemoteHash(db, record, stat.hash?.toLowerCase() ?? null);
       throw new FileContentError(`file already exists on the remote: ${a.relPath}`, "EXISTS");
     }
     if (a.baseCanonicalHash && stat) {
@@ -391,6 +424,10 @@ export async function writeFileBytesRemote(
         current =
           a.baseCanonicalHash.length === 32 ? md5Buffer(bytes) : sha256Buffer(bytes);
       }
+      // Persist the freshly observed hash regardless of whether it matches
+      // the precondition below -- either way this device just proved what
+      // the remote's canonical hash actually is right now (#273).
+      await backfillRemoteHash(db, record, current);
       if (current !== a.baseCanonicalHash.toLowerCase()) {
         throw new FileContentError(
           "file changed on the remote since the last sync",

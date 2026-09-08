@@ -49,7 +49,11 @@ local. Each tracked file is classified:
 - **remote_missing** -- DB row exists but the remote object does not:
   either registered elsewhere and never pushed, or deleted on the
   remote and awaiting the next sync run's remote sweep. Skipped by
-  the sync run.
+  the sync run. In central mode this classification is derived purely
+  from the record's cached remote hash; the remote sweep backfills that
+  hash for any tracked, present object whose hash was previously
+  unknown, so a record stuck here due to a missing (not stale) hash
+  self-corrects on the next sync run instead of staying misclassified.
 - **remote_error** -- remote stat failed (network/auth); transient,
   skipped by the sync run
 - **native** -- non-byte-stream remote (e.g. Google Doc) where hash

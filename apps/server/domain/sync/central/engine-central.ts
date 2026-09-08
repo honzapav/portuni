@@ -1212,7 +1212,7 @@ export async function computeSyncPendingCentral(
   userId: string,
 ): Promise<SyncPendingResponse> {
   const mirrors = await listUserMirrors(userId);
-  if (mirrors.length === 0) return { nodes: [], total: 0 };
+  if (mirrors.length === 0) return { nodes: [], total: 0, decisions: 0 };
 
   // ONE batch request for every mirrored node's sync-info -- the perf
   // review's top finding was this aggregate firing 2 requests per mirror
@@ -1222,7 +1222,7 @@ export async function computeSyncPendingCentral(
   try {
     infos = await client.syncInfoBatch(mirrors.map((m) => m.node_id));
   } catch {
-    return { nodes: [], total: 0 }; // central unreachable -- empty overview
+    return { nodes: [], total: 0, decisions: 0 }; // central unreachable -- empty overview
   }
   const infoById = new Map(infos.map((i) => [i.node.id, i]));
 
@@ -1251,11 +1251,13 @@ export async function computeSyncPendingCentral(
     const untracked = scan.new_local.length + scan.deleted_remote.length;
     const remote_missing = scan.remote_missing.length;
     const deleted_local = scan.deleted_local.length;
-    // remote_missing and deleted_local are informational only -- a sync run
-    // neither pushes nor pulls them, so they must not count towards total
-    // (see the local engine's computeSyncPending for the same rule).
-    const total = push + conflict + untracked;
-    if (total === 0) return null;
+    // remote_missing is informational only -- a sync run neither pushes nor
+    // pulls it, so it must not count towards either total. `total`
+    // (actionable) vs `decisions` (needs a human): see the local engine's
+    // computeSyncPending for the identical split and its rationale.
+    const total = push + untracked;
+    const decisions = conflict + deleted_local;
+    if (total === 0 && decisions === 0) return null;
     return {
       node_id: m.node_id,
       node_name: si.node.name,
@@ -1266,6 +1268,7 @@ export async function computeSyncPendingCentral(
       remote_missing,
       deleted_local,
       total,
+      decisions,
     };
   };
 
@@ -1285,7 +1288,8 @@ export async function computeSyncPendingCentral(
 
   nodes.sort((a, b) => b.total - a.total);
   const total = nodes.reduce((s, n) => s + n.total, 0);
-  return { nodes, total };
+  const decisions = nodes.reduce((s, n) => s + n.decisions, 0);
+  return { nodes, total, decisions };
 }
 
 // ---------------------------------------------------------------------------
