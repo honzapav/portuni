@@ -375,12 +375,11 @@ describe("agent MCP front door", () => {
     await registerMirror(SOLO_USER, mirrored, mirrorDir);
 
     const client = new Client({ name: "agent-transport-badspawn", version: "0.0.0" });
-    await client.connect(
-      new StreamableHTTPClientTransport(
-        new URL(`${agentBase}/mcp?home_node_id=01TESTNODE0000000000000000`),
-        { requestInit: { headers: { "X-Portuni-Spawn-Id": "../../.." } } },
-      ),
+    const clientTransport = new StreamableHTTPClientTransport(
+      new URL(`${agentBase}/mcp?home_node_id=01TESTNODE0000000000000000`),
+      { requestInit: { headers: { "X-Portuni-Spawn-Id": "../../.." } } },
     );
+    await client.connect(clientTransport);
     try {
       const r = (await client.callTool({
         name: "portuni_expand_scope",
@@ -392,6 +391,16 @@ describe("agent MCP front door", () => {
         payload.projected[mirrored]?.includes(`${sep}_shared${sep}`),
         `expected the _shared bucket, got ${payload.projected[mirrored]}`,
       );
+      // The shared `localClient` session (no spawn header) on the same
+      // home node is still live, so ending THIS session must leave the
+      // shared bucket and its registry entry alone.
+      await clientTransport.terminateSession();
+      await client.close();
+      await new Promise((r) => setTimeout(r, 100));
+      const { stat } = await import("node:fs/promises");
+      await stat(payload.projected[mirrored]);
+      const { projectedEntriesForNode } = await import("../apps/server/domain/session-projection.js");
+      assert.ok(projectedEntriesForNode(mirrored).some((e) => e.sessionId === "_shared"));
     } finally {
       await client.close().catch(() => undefined);
     }

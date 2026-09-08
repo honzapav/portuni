@@ -240,15 +240,17 @@ async function disposeAgentProjection(
   live: Map<string, AgentSessionEntry>,
 ): Promise<void> {
   try {
-    if (projectionSessionId !== UNNARROWED_PROJECTION_ID) {
-      unregisterSessionProjections(projectionSessionId);
-    } else {
+    if (projectionSessionId === UNNARROWED_PROJECTION_ID) {
       for (const s of live.values()) {
         if (s.homeNodeId === homeNodeId && s.projectionSessionId === UNNARROWED_PROJECTION_ID) {
           return;
         }
       }
     }
+    // Registry entries go together with the directory -- a stale entry
+    // would make the next watcher relink recreate the removed directory
+    // (mkdir + hardlink) for a scope nobody holds anymore.
+    unregisterSessionProjections(projectionSessionId);
     const root = await resolveProjectionRootForNode(userId, homeNodeId);
     if (root) await cleanupSessionProjection(root.projectionRoot, projectionSessionId);
   } catch {

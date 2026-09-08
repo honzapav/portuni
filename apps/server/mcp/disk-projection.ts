@@ -184,6 +184,10 @@ async function sweepSharedProjectionIfIdle(
     args: excludeSessionId ? [homeNodeId, excludeSessionId] : [homeNodeId],
   });
   if (other.rows.length > 0) return;
+  // Registry entries go together with the directory: a stale _shared entry
+  // would make the next watcher relink recreate the removed bucket (mkdir +
+  // hardlink) for a scope no running session holds anymore.
+  unregisterSessionProjections(UNNARROWED_PROJECTION_ID);
   const root = await resolveProjectionRootForNode(userId, homeNodeId);
   if (!root) return;
   await rm(join(root.projectionRoot, UNNARROWED_PROJECTION_ID), { recursive: true, force: true });

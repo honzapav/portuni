@@ -335,23 +335,6 @@ type ToolTextResult = {
   isError?: boolean;
 };
 
-// The seatbelt-granted read set in central mode: the session home node plus
-// its depth-1 neighbours (Phase 3a grants exactly these real mirror paths).
-// Read tools may only surface real paths for nodes in this set; deeper ad-hoc
-// nodes are not readable and stay null. Best-effort: a central hiccup narrows
-// the set to just home (never widens it beyond what the seatbelt grants).
-async function seedNodeIds(
-  client: CentralClient,
-  homeNodeId: string | null,
-): Promise<Set<string>> {
-  if (!homeNodeId) return new Set();
-  try {
-    return new Set([homeNodeId, ...(await client.nodeNeighbours(homeNodeId))]);
-  } catch {
-    return new Set([homeNodeId]);
-  }
-}
-
 // Overlay device-local fields onto a proxied portuni_get_node result. Central
 // serves the node with local_mirror:null and files[].local_path:null (it has
 // no device state); this fills them from the device that owns the mirror, so
@@ -364,10 +347,11 @@ async function seedNodeIds(
 //   already passed central's own guardNodeRead (a scope refusal is an error
 //   result, returned above before this point), so no scope re-check is
 //   needed here -- only "is there a local mirror to read it from".
-// - files[].local_path: derived real paths for nodes in the seatbelt read set
-//   (home + depth-1 neighbours). Deeper ad-hoc nodes are not readable under
-//   the sandbox, so their files stay null rather than pointing at a denied
-//   path.
+// - files[].local_path: derived under the SAME readable root as
+//   readable_path (the real mirror for home, the projection directory for
+//   any other node -- the projection preserves the mirror's relative
+//   layout, so the derivation is identical). Never the real mirror of a
+//   non-home node: that path is not granted by the sandbox.
 //
 // Defensive: any shape it does not recognise passes through unchanged (error
 // result, no text block, non-JSON text, no string id). A syncInfo failure
@@ -414,8 +398,8 @@ export async function enrichGetNodeResult<T extends ToolTextResult>(
     }
     node.readable_path = readablePath;
   }
-  const seed = await seedNodeIds(client, homeNodeId);
-  if (seed.has(id) && mirrorPath && Array.isArray(node.files)) {
+  const readableRoot = typeof node.readable_path === "string" ? node.readable_path : null;
+  if (readableRoot && Array.isArray(node.files)) {
     try {
       const si = await client.syncInfo(id);
       const nodeRoot = buildNodeRoot({
@@ -431,7 +415,7 @@ export async function enrichGetNodeResult<T extends ToolTextResult>(
         const remotePath = remoteById.get(f.id);
         if (!remotePath) continue;
         try {
-          f.local_path = deriveLocalPath({ mirrorRoot: mirrorPath, nodeRoot, remotePath });
+          f.local_path = deriveLocalPath({ mirrorRoot: readableRoot, nodeRoot, remotePath });
         } catch {
           /* derivation failed (path escapes mirror etc.) -- leave null */
         }
@@ -466,10 +450,22 @@ export async function enrichGetContextResult<T extends ToolTextResult>(
     (c) => c.type === "text" && typeof c.text === "string",
   );
   if (!first || typeof first.text !== "string") return result;
-  let payload: Record<string, unknown>;
+  let payload: unknown;
   try {
-    payload = JSON.parse(first.text) as Record<string, unknown>;
+    payload = JSON.parse(first.text);
   } catch {
+    return result;
+  }
+  // Wire shape is the flat array [root, ...connected] (context.ts's
+  // serializeForMcp); the structured { root, connected } object is accepted
+  // too so a caller that hands over the domain payload directly still works.
+  let nodes: unknown[];
+  if (Array.isArray(payload)) {
+    nodes = payload;
+  } else if (payload && typeof payload === "object") {
+    const obj = payload as { root?: unknown; connected?: unknown };
+    nodes = [obj.root, ...(Array.isArray(obj.connected) ? obj.connected : [])];
+  } else {
     return result;
   }
   const fill = async (n: unknown): Promise<void> => {
@@ -486,10 +482,7 @@ export async function enrichGetContextResult<T extends ToolTextResult>(
     const outcome = await projector.projectNode(node.id);
     if (outcome.kind === "projected") node.local_path = outcome.dir;
   };
-  await fill(payload.root);
-  if (Array.isArray(payload.connected)) {
-    for (const n of payload.connected) await fill(n);
-  }
+  for (const n of nodes) await fill(n);
   const text = JSON.stringify(payload, null, 2);
   return {
     ...result,

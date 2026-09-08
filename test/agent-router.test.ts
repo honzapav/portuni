@@ -167,9 +167,20 @@ class FakeCentral implements CentralClient {
 
   // Record + remote deletion (the central half of DELETE /nodes/:id/files/:fileId).
   deleted: Array<{ fileId: string; remotePath: string }> = [];
+  // When set, central reports the remote delete as failed: 200 with
+  // status "repair_needed" and the record deliberately kept.
+  deleteRepairNeeded = false;
   async deleteFileRecord(_nodeId: string, fileId: string) {
     const entry = [...this.records.entries()].find(([, r]) => r.id === fileId);
     if (!entry) throw new CentralHttpError("not found", 404, "NOT_FOUND");
+    if (this.deleteRepairNeeded) {
+      return {
+        file_id: fileId,
+        mode: "complete",
+        status: "repair_needed",
+        repair_hint: "Remote delete failed; DB row and local file kept intact.",
+      };
+    }
     const [remotePath] = entry;
     this.records.delete(remotePath);
     this.bytes.delete(remotePath);
@@ -607,6 +618,37 @@ describe("DELETE /nodes/:id/files/:fileId (agent mode, #254)", () => {
 
     assert.deepEqual(fake.deleted, [{ fileId, remotePath: posix.join(NODE_ROOT, "wip/gone.md") }]);
     await assert.rejects(() => readFile(abs), "local mirror copy must be removed");
+  });
+
+  it("keeps the local copy and file_state when central answers repair_needed", async () => {
+    await fetch(`${base}/nodes/${NODE_ID}/mirror`, { method: "POST" });
+    const abs = join(mirrorRoot, "wip", "kept.md");
+    await writeFile(abs, "obsah");
+    const sync1 = await fetch(`${base}/nodes/${NODE_ID}/sync`, { method: "POST" });
+    const synced1 = (await sync1.json()) as { adopted: Array<{ file_id: string }> };
+    const fileId = synced1.adopted[0].file_id;
+    await writeFile(abs, "unsynced local edit");
+
+    fake.deleteRepairNeeded = true;
+    try {
+      const r = await fetch(`${base}/nodes/${NODE_ID}/files/${fileId}?confirmed=true`, {
+        method: "DELETE",
+      });
+      assert.equal(r.status, 200);
+      const body = (await r.json()) as { status: string };
+      assert.equal(body.status, "repair_needed");
+    } finally {
+      fake.deleteRepairNeeded = false;
+    }
+    assert.equal(await readFile(abs, "utf8"), "unsynced local edit");
+    const st = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+    const s = (await st.json()) as { files: Array<{ local_path: string | null; sync_class: string }> };
+    // Fast status trusts the cached hash (no watcher in this harness), so
+    // only the record's survival is asserted here, not its classification.
+    assert.ok(
+      s.files.some((f) => f.local_path === abs),
+      "file_state / record still tracked",
+    );
   });
 
   it("rejects a delete without confirmed=true", async () => {

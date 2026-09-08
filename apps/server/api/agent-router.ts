@@ -503,9 +503,14 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
           return true;
         }
         // Record + remote object first (the source of truth); only clean up
-        // the local copy once that has actually succeeded.
+        // the local copy once that has actually succeeded. Central answers
+        // 200 with { status: "repair_needed" } when the remote delete
+        // failed and it deliberately KEPT the record -- same contract the
+        // MCP path checks in applyLocalAfterProxiedMutation -- so the local
+        // copy and file_state must stay put then too, or an unsynced local
+        // edit would be lost for a delete that never happened.
         const r = await client.deleteFileRecord(nodeId, fileId);
-        if (found) {
+        if (found && (r as { status?: unknown }).status === "ok") {
           if (found.entry.local_path) {
             const { rm } = await import("node:fs/promises");
             await rm(found.entry.local_path, { force: true }).catch(() => undefined);

@@ -806,7 +806,9 @@ symlink to this file.
   (central's own is structurally useless, no device filesystem), and
   `enrichGetNodeResult`/`enrichGetContextResult` (`agent-tools.ts`) fill
   `readable_path`/`local_path` the same way for ANY node with a local mirror
-  here, not just the depth-1 seed set. Cleanup rides on the local transport's
+  here, not just the depth-1 seed set (`files[].local_path` is derived under
+  that same readable root, and `get_context`'s wire shape is the flat
+  `[root, ...connected]` array, not `{root, connected}`). Cleanup rides on the local transport's
   own `onclose` (`disposeAgentProjection`): a spawn-id-keyed directory goes
   with its session, the `_shared` bucket only once no other live session in
   this process's session map keys off it for the same home node (the device

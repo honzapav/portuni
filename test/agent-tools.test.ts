@@ -504,7 +504,7 @@ describe("enrichGetNodeResult", () => {
     assert.equal(node.readable_path, mirrorRoot);
   });
 
-  it("leaves file local_paths null for a non-home node", async () => {
+  it("derives non-home file local_paths under this session's projection dir, never the real mirror", async () => {
     const fake = new FakeCentral();
     await setupMirror();
     const reg = await fake.registerFile(NODE_ID, "wip/a.md");
@@ -520,12 +520,15 @@ describe("enrichGetNodeResult", () => {
         },
       ],
     };
-    // homeNodeId is a different node -> not readable under the sandbox, so no
-    // file paths are surfaced even though the mirror exists on disk.
+    // homeNodeId is a different node -> the real mirror is not granted by
+    // the sandbox; files resolve under the projection dir readable_path
+    // names instead (same relative layout as the mirror).
     const otherHome = "N00000000000000000000OTHER";
     const out = await enrichGetNodeResult(fake, "U1", otherHome, testProjector(otherHome), result);
     const node = JSON.parse(out.content[0].text as string);
-    assert.equal(node.files[0].local_path, null);
+    assert.match(node.readable_path, /TEST-SESSION/);
+    assert.equal(node.files[0].local_path, join(node.readable_path, "wip", "a.md"));
+    assert.ok(!String(node.files[0].local_path).startsWith(mirrorRoot));
   });
 
   it("fills readable_path with this session's projection dir for a non-home node with a local mirror", async () => {
@@ -565,22 +568,22 @@ describe("enrichGetContextResult", () => {
       content: [
         {
           type: "text",
-          text: JSON.stringify({
-            root: { id: NODE_ID, local_path: null, depth: 0 },
-            connected: [
-              { id: NODE_ID, local_path: null, depth: 1 },
-              { id: "N00000000000000000000OTHER", local_path: null, depth: 1 },
-            ],
-          }),
+          // Production wire shape: the flat [root, ...connected] array
+          // context.ts's serializeForMcp emits, not { root, connected }.
+          text: JSON.stringify([
+            { id: NODE_ID, local_path: null, depth: 0 },
+            { id: NODE_ID, local_path: null, depth: 1 },
+            { id: "N00000000000000000000OTHER", local_path: null, depth: 1 },
+          ]),
         },
       ],
     };
     const out = await enrichGetContextResult("U1", NODE_ID, testProjector(NODE_ID), result);
     const payload = JSON.parse(out.content[0].text as string);
-    assert.equal(payload.root.local_path, mirrorRoot);
-    assert.equal(payload.connected[0].local_path, mirrorRoot);
+    assert.equal(payload[0].local_path, mirrorRoot);
+    assert.equal(payload[1].local_path, mirrorRoot);
     // Different id, no local mirror on this device -> stays null.
-    assert.equal(payload.connected[1].local_path, null);
+    assert.equal(payload[2].local_path, null);
   });
 
   it("fills a non-home node's local_path with this session's projection dir (#252)", async () => {
@@ -594,15 +597,16 @@ describe("enrichGetContextResult", () => {
       content: [
         {
           type: "text",
-          text: JSON.stringify({
-            root: { id: NODE_ID, local_path: null, depth: 0 },
-            connected: [{ id: neighbourId, local_path: null, depth: 1 }],
-          }),
+          text: JSON.stringify([
+            { id: NODE_ID, local_path: null, depth: 0 },
+            { id: neighbourId, local_path: null, depth: 1 },
+          ]),
         },
       ],
     };
     const out = await enrichGetContextResult("U1", NODE_ID, testProjector(NODE_ID), result);
-    const payload = JSON.parse(out.content[0].text as string);
+    const flat = JSON.parse(out.content[0].text as string);
+    const payload = { connected: [flat[1]] };
     // Preferred over the raw neighbourDir: the projection directory is
     // unconditionally granted by the Seatbelt profile, while the real depth-1
     // mirror grant is frozen at spawn and can skew from what this session
