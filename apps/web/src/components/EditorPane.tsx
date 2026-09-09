@@ -1,6 +1,6 @@
 // Compact source editor for the workspace right column. Swaps in for the
 // node detail (Option C). "← zpět" returns to detail; ⤢ expands to fullscreen.
-import { ChevronLeft, Eye, Maximize2, Pencil, Save } from "lucide-react";
+import { ChevronLeft, Eye, Loader2, Maximize2, Pencil, Save } from "lucide-react";
 import type { FileEditor } from "../lib/use-file-editor";
 import { isHtmlPath } from "../App";
 import { isShowtimePath } from "../lib/showtime";
@@ -105,7 +105,8 @@ export function EditorBody({
   const fullWidthPreview = isHtmlPath(relPath) || isShowtimePath(relPath);
   if (ed.status.kind === "loading") {
     return (
-      <div className="flex flex-1 items-center justify-center text-[13px] text-[var(--color-text-dim)]">
+      <div className="flex flex-1 items-center justify-center gap-2 text-[13px] text-[var(--color-text-dim)]">
+        <Loader2 size={13} className="animate-spin" />
         Načítám…
       </div>
     );
