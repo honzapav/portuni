@@ -258,8 +258,9 @@ export function NewFileForm({
           type="button"
           disabled={!name.trim() || busy}
           onClick={() => void submit()}
-          className="shrink-0 rounded-md border border-[var(--color-accent-dim)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-accent)] hover:border-[var(--color-accent)] disabled:opacity-50"
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-accent)] hover:border-[var(--color-accent)] disabled:opacity-50"
         >
+          {busy && <Loader2 size={12} className="animate-spin" />}
           {busy ? "Vytvářím…" : "Vytvořit"}
         </button>
         <button
@@ -519,7 +520,40 @@ function CopyDriveLinkButton({ nodeId, fileId }: { nodeId: string; fileId: strin
 // Shared class for the row's plain (non-destructive) text actions --
 // Přejmenovat's class, reused for the resolve buttons below.
 const ACTION_BTN =
-  "text-[11px] text-[var(--color-text-dim)] hover:text-[var(--color-text)]";
+  "text-[11px] text-[var(--color-text-dim)] hover:text-[var(--color-text)] disabled:opacity-50";
+
+// While a row action runs, the row's sync badge is replaced by this one:
+// the action's own verb plus a spinner. Without it the row went silently
+// unresponsive -- the buttons were disabled, but nothing said so, and the
+// action strip itself is hover-gated, so moving the mouse away hid even
+// that. Rename/delete/resolve all wait on a server round trip plus the
+// detail + sync-status refetch that follows it.
+type RowBusy = "rename" | "delete" | ResolveAction;
+
+const ROW_BUSY_LABEL: Record<RowBusy, string> = {
+  rename: "přejmenovávám",
+  delete: "mažu",
+  restore: "obnovuji",
+  keep_local: "nahrávám",
+  take_remote: "stahuji",
+};
+
+function RowBusyBadge({ action }: { action: RowBusy }) {
+  return (
+    <span
+      className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[8.5px] uppercase tracking-wider"
+      style={{
+        color: "var(--color-accent)",
+        background: "color-mix(in srgb, var(--color-accent) 12%, transparent)",
+        border:
+          "1px solid color-mix(in srgb, var(--color-accent) 25%, transparent)",
+      }}
+    >
+      <Loader2 size={9} className="animate-spin" />
+      {ROW_BUSY_LABEL[action]}
+    </span>
+  );
+}
 
 // One file row. Rename is an inline input (Enter saves, Escape cancels);
 // delete is a two-step confirm that auto-resets after a few seconds. Both
@@ -551,7 +585,8 @@ function FileRow({
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(f.filename);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState<RowBusy | null>(null);
+  const busy = busyAction !== null;
   // Row-scoped action error (#267): rename/delete/resolve failures show
   // here, under the filename, instead of a tab-level box -- dismissed by
   // the next action on this row or, failing that, a timeout.
@@ -585,14 +620,14 @@ function FileRow({
       return;
     }
     setRowError(null);
-    setBusy(true);
+    setBusyAction("rename");
     try {
       await onRename(f.fileId!, name);
       setRenaming(false);
     } catch (e) {
       showRowError(e); // keep editing so the user can retry the name
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   };
 
@@ -605,22 +640,23 @@ function FileRow({
     if (confirmTimer.current) clearTimeout(confirmTimer.current);
     setConfirmingDelete(false);
     setRowError(null);
-    setBusy(true);
+    setBusyAction("delete");
     onDelete(f.fileId!)
       .catch(showRowError)
-      .finally(() => setBusy(false));
+      .finally(() => setBusyAction(null));
   };
 
   const act = (action: ResolveAction) => {
     setRowError(null);
-    setBusy(true);
+    setBusyAction(action);
     onResolve(f.fileId!, action)
       .catch(showRowError)
-      .finally(() => setBusy(false));
+      .finally(() => setBusyAction(null));
   };
 
   return (
     <div
+      aria-busy={busy}
       className="group flex items-start gap-2 rounded px-2 py-1 hover:bg-[var(--color-surface)]"
       style={{ paddingLeft: indent + 8 }}
     >
@@ -659,6 +695,7 @@ function FileRow({
                 "truncate text-left text-[13.5px] text-[var(--color-text)] " +
                 (editable ? "hover:underline" : "cursor-default opacity-70")
               }
+              style={busy ? { opacity: 0.5 } : undefined}
             >
               {f.filename}
             </button>
@@ -688,7 +725,11 @@ function FileRow({
               <CopyDriveLinkButton nodeId={nodeId} fileId={f.fileId} />
             </span>
           )}
-          {sync && <SyncStatusBadge sync={sync} />}
+          {busyAction ? (
+            <RowBusyBadge action={busyAction} />
+          ) : (
+            sync && <SyncStatusBadge sync={sync} />
+          )}
           {!f.fileId && (
             <span
               title="Soubor je na disku, ale ještě není zaregistrovaný. Zaregistruje se při synchronizaci."
@@ -708,7 +749,7 @@ function FileRow({
             <span
               className={
                 "ml-auto gap-1 " +
-                (confirmingDelete ? "flex" : "hidden group-hover:flex")
+                (confirmingDelete || busy ? "flex" : "hidden group-hover:flex")
               }
             >
               <button
@@ -719,7 +760,7 @@ function FileRow({
                   setRenaming(true);
                 }}
                 title="Přejmenovat"
-                className="text-[11px] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+                className={ACTION_BTN}
               >
                 Přejmenovat
               </button>
@@ -733,7 +774,7 @@ function FileRow({
                     : "Smazat"
                 }
                 className={
-                  "text-[11px] " +
+                  "text-[11px] disabled:opacity-50 " +
                   (confirmingDelete
                     ? "font-medium text-[var(--color-danger)]"
                     : "text-[var(--color-text-dim)] hover:text-[var(--color-danger)]")
