@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.9](https://github.com/honzapav/portuni/compare/v0.13.8...v0.13.9) (2026-09-09)
+
+
+### Bug Fixes
+
+* **web:** show a file row action while it runs ([e3d8631](https://github.com/honzapav/portuni/commit/e3d8631648d150eaf0fcdd1f7258598fea1f27d1))
+* **web:** show a file row action while it runs ([f936120](https://github.com/honzapav/portuni/commit/f936120e7e90178465b7a37d0367a9a4b45719f0))
+
 ## [0.13.8](https://github.com/honzapav/portuni/compare/v0.13.7...v0.13.8) (2026-09-09)
 
 
