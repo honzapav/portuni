@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.8](https://github.com/honzapav/portuni/compare/v0.13.7...v0.13.8) (2026-09-09)
+
+
+### Bug Fixes
+
+* **web:** stop the unsynced overview promising work it will not do, and lay it out so nothing wraps ([1f3bc9c](https://github.com/honzapav/portuni/commit/1f3bc9c99f066f2850cde088c0855ea67809483f))
+* **web:** unsynced overview layout and honest row actions, plus two release-hygiene fixes ([2c56a79](https://github.com/honzapav/portuni/commit/2c56a795ca611a3941eac523440f72841aade841))
+
 ## [0.13.7](https://github.com/honzapav/portuni/compare/v0.13.6...v0.13.7) (2026-09-09)
 
 
