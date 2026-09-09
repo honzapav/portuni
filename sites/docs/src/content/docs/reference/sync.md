@@ -115,7 +115,7 @@ Job state is in-memory on the server/sidecar process — it does not survive a r
 The cross-mirror aggregate behind the footer badge, the quit guard, and `/sync/jobs`' default node set splits each node's (and the aggregate's) count in two:
 
 - **`total`** — actionable: `push` + untracked file count. This is exactly what a sync run (or a background job) can clear.
-- **`decisions`** — needs a human: `conflict` + `deleted_local`. A run leaves both untouched by design (see [Resolving conflicts and deletions](#resolving-conflicts-and-deletions)), so counting them into `total` used to make the badge/quit guard warn about work "Synchronizovat vše" could never actually finish. A node with decisions but no actionable work still appears in the overview (not hidden), just with `total: 0`.
+- **`decisions`** — needs a human: `conflict` + `deleted_local`. A run leaves both untouched by design (see [Resolving conflicts and deletions](#resolving-conflicts-and-deletions)), so counting them into `total` used to make the badge/quit guard warn about work "Synchronizovat vše" could never actually finish. A node with decisions but no actionable work still appears in the overview (not hidden), just with `total: 0` — and its row offers "Rozhodnout", which opens the node, rather than "Synchronizovat": a run on such a node would report nothing and change nothing. "Synchronizovat vše" likewise covers only nodes with `total > 0`.
 
 `remote_missing` is reported per node but counted in neither — a run does not push or pull it either, and (per the remote-sweep hash backfill above) most `remote_missing` misclassifications now self-correct on the next sweep instead of needing a decision at all.
 
