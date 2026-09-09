@@ -24,6 +24,7 @@ import { startSyncJob, getSyncJob, getCurrentSyncJob } from "../apps/server/doma
 import { runNodeSync } from "../apps/server/domain/sync/sync-run.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
 import type { Client } from "@libsql/client";
+import type { SyncRunResponse } from "../apps/server/shared/api-types.js";
 
 // The domain-level tests below drive startSyncJob directly (not through the
 // REST handler), so they supply the same runNode callback
@@ -112,6 +113,37 @@ describe("startSyncJob / getSyncJob / getCurrentSyncJob (domain)", () => {
     assert.equal(getCurrentSyncJob(SOLO_USER), null, "no longer 'current' once finished");
     // Still fetchable by id within its retention window.
     assert.ok(getSyncJob(SOLO_USER, started.id));
+  });
+
+  it("a reattaching start appends the nodes the running job does not already cover", async () => {
+    // Reattaching must not silently swallow the caller's node set: a 202 for
+    // nodes that then never sync is worse than a duplicate job.
+    const seen: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const runNode = async (nodeId: string): Promise<SyncRunResponse> => {
+      seen.push(nodeId);
+      if (nodeId === "NODE-A") await gate;
+      return {} as SyncRunResponse;
+    };
+
+    const first = startSyncJob({ userId: SOLO_USER, nodeIds: ["NODE-A"], runNode });
+    const second = startSyncJob({ userId: SOLO_USER, nodeIds: ["NODE-A", "NODE-B"], runNode });
+    assert.equal(second.id, first.id, "reattaches rather than racing a duplicate");
+    assert.deepEqual(
+      second.nodes.map((n) => n.node_id),
+      ["NODE-A", "NODE-B"],
+      "the uncovered node is appended, the covered one is not duplicated",
+    );
+
+    release();
+    await waitUntil(() => getSyncJob(SOLO_USER, first.id)?.status === "done");
+    assert.deepEqual([...seen].sort(), ["NODE-A", "NODE-B"]);
+    const done = getSyncJob(SOLO_USER, first.id);
+    assert.equal(done?.total, 2);
+    assert.equal(done?.completed, 2);
   });
 
   it("a second start while one is already running reattaches instead of racing a duplicate", async () => {

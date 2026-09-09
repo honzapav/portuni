@@ -18,7 +18,12 @@ import { getAdapter } from "./adapter-cache.js";
 import { resolveRemote } from "./routing.js";
 import { removeLocalCopyAndState } from "./local-cleanup.js";
 import { getMirrorPath } from "./mirror-registry.js";
-import { enqueuePendingOp, completePendingOp, failPendingOp } from "./pending-ops.js";
+import {
+  enqueuePendingOp,
+  completePendingOp,
+  failPendingOp,
+  markPendingMoveSourceCopied,
+} from "./pending-ops.js";
 import { relocateRemoteObject, writeRelocatedRecord } from "./file-relocation.js";
 import {
   buildNodeRoot,
@@ -255,8 +260,12 @@ export async function moveFile(
     );
     alreadyAtTarget = outcome.status === "already_at_target";
   } catch (e) {
-    await failPendingOp(db, pendingOpId, (e as Error).message);
     const copied = remoteProgress.subStep === "delete_source";
+    // Record WHICH step got as far as landing before failing: the retry
+    // queue otherwise sees source and destination both present and refuses
+    // to guess which one is its own copy, so the op can never complete.
+    if (copied) await markPendingMoveSourceCopied(db, pendingOpId);
+    await failPendingOp(db, pendingOpId, (e as Error).message);
     return {
       status: "repair_needed",
       file_id: a.fileId,
@@ -272,7 +281,7 @@ export async function moveFile(
         new_remote_path: newRemotePath,
       },
       repair_hint: copied
-        ? `The file was copied to ${newRemoteName}:${newRemotePath}, but deleting the source copy at ${oldRemoteName}:${oldRemotePath} failed. The DB still tracks the source. Delete the source copy manually (or retry), then re-run the move.`
+        ? `The file was copied to ${newRemoteName}:${newRemotePath}, but deleting the source copy at ${oldRemoteName}:${oldRemotePath} failed. The DB still tracks the source. The next sync run retries this automatically and finishes by removing the source copy; delete it manually only if that keeps failing.`
         : "Remote move failed. No state changed. Retry the tool; if it still fails, inspect the remote manually.",
     };
   }

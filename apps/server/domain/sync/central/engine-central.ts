@@ -491,8 +491,6 @@ async function pushEntryCentral(
   const relPath = relPathFor(a.mirrorRoot, localPath);
   if (!relPath) throw new Error(`path left the mirror sections: ${localPath}`);
 
-  const baseline = a.entry.last_synced_hash;
-
   // Serialized per local path (#277 finding 4/7/8's shared coordinator)
   // against any other push or pull of this same file -- a concurrent
   // storeFileCentral/pullFileCentral call, or a background push from #266's
@@ -504,6 +502,14 @@ async function pushEntryCentral(
     // finding 7): the cached (mtime, size) must describe the bytes that
     // actually get pushed, and a rehash after the upload catches an edit
     // that landed mid-upload instead of masking it as clean.
+    //
+    // The baseline is re-read here rather than taken from the scan entry:
+    // a push that ran while this call waited for the lock has already
+    // advanced last_synced_hash, and sending the scan's older value as the
+    // precondition makes the server answer CONFLICT for a file that is not
+    // actually in conflict.
+    const state = await getFileState(a.entry.file_id);
+    const baseline = state?.last_synced_hash ?? a.entry.last_synced_hash ?? null;
     const fsInfo = await statForCache(localPath);
     const bytes = await readFile(localPath);
     let put: { version: string; canonicalHash: string };

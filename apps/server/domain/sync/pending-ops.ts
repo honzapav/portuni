@@ -30,6 +30,13 @@ export type PendingOp =
       to_remote_path: string;
       to_node_id: string;
       filename: string;
+      // Set when the failed attempt is known to have finished the
+      // cross-remote copy and failed on the source delete. It is the only
+      // thing that tells a later retry which of the two present objects is
+      // its own copy; without it both-present stays an ambiguity the retry
+      // refuses to guess away (see relocateRemoteObject). Optional: rows
+      // enqueued before this field existed simply don't carry it.
+      source_copied?: boolean;
     }
   | {
       op: "delete";
@@ -71,6 +78,23 @@ export async function enqueuePendingOp(
 
 export async function completePendingOp(db: Client, id: string): Promise<void> {
   await db.execute({ sql: "DELETE FROM pending_file_ops WHERE id = ?", args: [id] });
+}
+
+// Records that this move's cross-remote copy landed, so the retry can
+// finish the source delete instead of reading both-present as an ambiguity.
+// Called before failPendingOp, on the one failure path that knows it.
+export async function markPendingMoveSourceCopied(db: Client, id: string): Promise<void> {
+  const r = await db.execute({
+    sql: "SELECT payload FROM pending_file_ops WHERE id = ?",
+    args: [id],
+  });
+  if (r.rows.length === 0) return;
+  const payload = JSON.parse(r.rows[0].payload as string) as PendingOp;
+  if (payload.op !== "move") return;
+  await db.execute({
+    sql: "UPDATE pending_file_ops SET payload = ? WHERE id = ?",
+    args: [JSON.stringify({ ...payload, source_copied: true }), id],
+  });
 }
 
 export async function failPendingOp(db: Client, id: string, error: string): Promise<void> {
@@ -159,6 +183,7 @@ async function runMove(
     fromRemotePath: p.from_remote_path,
     toRemoteName: p.to_remote_name,
     toRemotePath: p.to_remote_path,
+    sourceCopied: p.source_copied === true,
   });
   const now = new Date().toISOString();
   await writeRelocatedRecord(db, {

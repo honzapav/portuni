@@ -104,7 +104,7 @@ Running the sequence above for one node is a single blocking request (`POST /nod
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/sync/jobs` | POST | Starts a job. Body `{ node_ids?: string[] }` — omitted defaults to every node with actionable pending work (`GET /sync/pending`'s `total > 0` set). Returns `202` with the job summary immediately; a second start while one is already running for the same user reattaches to it instead of racing a duplicate. |
+| `/sync/jobs` | POST | Starts a job. Body `{ node_ids?: string[] }` — omitted defaults to every node with actionable pending work (`GET /sync/pending`'s `total > 0` set). Returns `202` with the job summary immediately; a second start while one is already running for the same user reattaches to it instead of racing a duplicate, appending any node the running job does not already cover. |
 | `/sync/jobs/:id` | GET | Job status: `{ id, status: "running" \| "done", started_at, finished_at, total, completed, errored, nodes: [{ node_id, status, result?, error? }] }`. |
 | `/sync/jobs/current` | GET | `{ job: <summary> \| null }` — the caller's own currently-running job, so a reopened UI can reattach without remembering the job id. |
 
@@ -135,7 +135,7 @@ Move a tracked file within its node (new subpath or section) or to a different n
 | `new_subpath` | string \| null | no | New subpath within the section. Pass `null` to clear |
 | `confirmed` | boolean | no | First call returns a preview; pass `true` on the second call to execute |
 
-Returns either a preview (when `confirmed` is omitted or `false`) or the executed result. Partial failures return `repair_needed: true` with a hint. Like `portuni_rename_folder`, the remote step stats both the source and destination first and refuses the move outright if an object already sits at the destination path — an untracked file that hasn't been adopted yet is never silently duplicated or overwritten.
+Returns either a preview (when `confirmed` is omitted or `false`) or the executed result. Partial failures return `repair_needed: true` with a hint. Like `portuni_rename_folder`, the remote step stats both the source and destination first and refuses the move outright if an object already sits at the destination path — an untracked file that hasn't been adopted yet is never silently duplicated or overwritten. A move between two different remotes is a copy followed by a delete, so it is not atomic: when the copy lands and the delete of the source fails, that fact is recorded with the operation's intent, and the next sync run finishes it by removing the source copy. Without that record both objects are present and indistinguishable, which the retry refuses to resolve on a guess.
 
 ### portuni_rename_folder
 

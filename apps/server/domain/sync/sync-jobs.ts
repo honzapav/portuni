@@ -64,8 +64,21 @@ function toSummary(job: SyncJob): SyncJobSummary {
 export function startSyncJob(
   a: { userId: string; nodeIds: string[]; runNode: (nodeId: string) => Promise<SyncRunResponse> },
 ): SyncJobSummary {
-  const existing = getCurrentSyncJob(a.userId);
-  if (existing) return existing;
+  // Reattach to a job already running for this user rather than racing a
+  // duplicate -- but a reattach must never swallow nodes the caller asked
+  // for. Anything not already in the running job is appended to it, and the
+  // job's worker pool picks the additions up (see runJob's outer loop):
+  // returning the running job as-is would answer 202 for nodes that then
+  // never sync at all.
+  const running = currentRunningJob(a.userId);
+  if (running) {
+    for (const node_id of a.nodeIds) {
+      if (!running.nodes.some((n) => n.node_id === node_id)) {
+        running.nodes.push({ node_id, status: "pending" });
+      }
+    }
+    return toSummary(running);
+  }
 
   const id = ulid();
   const job: SyncJob = {
@@ -100,9 +113,18 @@ async function runJob(job: SyncJob, runNode: (nodeId: string) => Promise<SyncRun
       }
     }
   };
-  await Promise.all(
-    Array.from({ length: Math.min(JOB_CONCURRENCY, job.nodes.length) }, () => worker()),
-  );
+  // Outer loop so nodes appended by a reattaching startSyncJob after the
+  // pool has already drained still get run: the workers exit once cursor
+  // passes the length they saw, and a fresh round resumes from that same
+  // cursor over the grown list.
+  do {
+    await Promise.all(
+      Array.from(
+        { length: Math.min(JOB_CONCURRENCY, Math.max(job.nodes.length - cursor, 0)) },
+        () => worker(),
+      ),
+    );
+  } while (job.nodes.some((n) => n.status === "pending"));
   job.status = "done";
   job.finished_at = new Date().toISOString();
   // Only clear "current" if nothing else already replaced it (defensive;
@@ -124,10 +146,14 @@ export function getSyncJob(userId: string, jobId: string): SyncJobSummary | null
 // (modal reopened, window switched back to) reattach without needing to
 // have remembered the job id. Returns null once the job has finished, even
 // if it is still within its retention window (fetch it by id instead).
-export function getCurrentSyncJob(userId: string): SyncJobSummary | null {
+function currentRunningJob(userId: string): SyncJob | null {
   const id = currentJobIdByUser.get(userId);
   if (!id) return null;
   const job = jobs.get(id);
-  if (job?.status !== "running") return null;
-  return toSummary(job);
+  return job?.status === "running" ? job : null;
+}
+
+export function getCurrentSyncJob(userId: string): SyncJobSummary | null {
+  const job = currentRunningJob(userId);
+  return job ? toSummary(job) : null;
 }

@@ -20,6 +20,8 @@ import {
   retryPendingFileOps,
 } from "../apps/server/domain/sync/pending-ops.js";
 import { runNodeSync } from "../apps/server/domain/sync/sync-run.js";
+import { ulid } from "ulid";
+import { upsertRemote, addRule } from "../apps/server/domain/sync/routing.js";
 
 async function exists(p: string): Promise<boolean> {
   return stat(p).then(
@@ -485,5 +487,118 @@ describe("pending file ops", () => {
       await readFile(join(remoteRoot, reg.remote_path), "utf8"),
       "nekdo jiny sem nahral soubor",
     );
+  });
+});
+
+describe("interrupted cross-remote move", () => {
+  // A cross-remote move is copy-then-delete, so it is not atomic. When the
+  // copy lands and the source delete fails, source and destination are both
+  // present -- an ambiguity the retry refuses to guess away on its own. The
+  // recorded `source_copied` intent is what lets it finish the one missing
+  // step instead of failing the same way on every future sync run.
+  async function twoRemoteSetup() {
+    const shared = await makeSharedDb();
+    const { db } = shared;
+    const secondRoot = await mkdtemp(join(tmpdir(), "portuni-pending-ops-remote2-"));
+    await upsertRemote(db, {
+      name: "test-fs-2",
+      type: "fs",
+      config: { root: secondRoot },
+      created_by: "U1",
+    });
+    const org2 = "N0000000000000000000000OR2";
+    const node2 = "N00000000000000000000PROJ2";
+    await db.execute({
+      sql: "INSERT INTO nodes (id,type,name,sync_key,created_by) VALUES (?,?,?,?,?)",
+      args: [org2, "organization", "Druha", "druha", "U1"],
+    });
+    await db.execute({
+      sql: "INSERT INTO nodes (id,type,name,sync_key,created_by) VALUES (?,?,?,?,?)",
+      args: [node2, "project", "Druhy projekt", "druhy-projekt", "U1"],
+    });
+    await db.execute({
+      sql: "INSERT INTO edges (id,source_id,target_id,relation,created_by) VALUES (?,?,?,?,?)",
+      args: [ulid(), node2, org2, "belongs_to", "U1"],
+    });
+    // priority ASC wins, so this beats the shared fixture's catch-all rule
+    // for org "druha" only -- the source node keeps test-fs.
+    await addRule(db, { priority: 1, node_type: null, org_slug: "druha", remote_name: "test-fs-2" });
+    return { ...shared, secondRoot, node2 };
+  }
+
+  it("records source_copied and the retry finishes by deleting the source", async () => {
+    const { db, nodeId, node2, remoteRoot, secondRoot } = await twoRemoteSetup();
+    const mirrorRoot = join(workspace, "mirror");
+    const mirrorRoot2 = join(workspace, "mirror2");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    await registerMirror("U1", node2, mirrorRoot2);
+    const r = await pushed(db, nodeId, mirrorRoot, "a.md");
+
+    const real = await getAdapter(db, "test-fs");
+    let failDelete = true;
+    setAdapterForTests("test-fs", {
+      ...real,
+      delete: async (path: string) => {
+        if (failDelete) throw new Error("source delete boom");
+        return real.delete(path);
+      },
+    });
+
+    const mv = await moveFile(db, {
+      userId: "U1",
+      fileId: r.file_id,
+      newNodeId: node2,
+      confirmed: true,
+    });
+    assert.equal("status" in mv ? mv.status : null, "repair_needed");
+    // The copy landed on the destination remote; the source is still there.
+    assert.equal(await exists(join(remoteRoot, r.remote_path)), true);
+    const ops = await listPendingOps(db, nodeId);
+    assert.equal(ops.length, 1);
+    assert.equal(ops[0].payload.op === "move" && ops[0].payload.source_copied, true);
+
+    failDelete = false;
+    const retry = await retryPendingFileOps(db, { userId: "U1", nodeId });
+    assert.equal(retry.pending_repairs.length, 0);
+    assert.deepEqual(retry.repaired, [{ file_id: r.file_id, op: "move", filename: "a.md" }]);
+    assert.equal(await exists(join(remoteRoot, r.remote_path)), false);
+    const row = await db.execute({
+      sql: "SELECT remote_name, remote_path FROM files WHERE id = ?",
+      args: [r.file_id],
+    });
+    assert.equal(row.rows[0].remote_name, "test-fs-2");
+    assert.equal(await exists(join(secondRoot, row.rows[0].remote_path as string)), true);
+    assert.equal(await listPendingOps(db, nodeId).then((o) => o.length), 0);
+  });
+
+  it("both present without a recorded copy stays an ambiguity the retry refuses to resolve", async () => {
+    const { db, nodeId, remoteRoot, orgSyncKey, nodeSyncKey } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const r = await pushed(db, nodeId, mirrorRoot, "a.md");
+    const nodeRoot = `${orgSyncKey}/projects/${nodeSyncKey}`;
+    const to = `${nodeRoot}/outputs/a.md`;
+    await mkdir(join(remoteRoot, nodeRoot, "outputs"), { recursive: true });
+    // Someone else's file already sits at the destination.
+    await writeFile(join(remoteRoot, to), "cizi obsah");
+    await enqueuePendingOp(db, {
+      userId: "U1",
+      nodeId,
+      fileId: r.file_id,
+      payload: {
+        op: "move",
+        from_remote_name: "test-fs",
+        from_remote_path: r.remote_path,
+        to_remote_name: "test-fs",
+        to_remote_path: to,
+        to_node_id: nodeId,
+        filename: "a.md",
+      },
+    });
+    const retry = await retryPendingFileOps(db, { userId: "U1", nodeId });
+    assert.equal(retry.repaired.length, 0);
+    assert.match(retry.pending_repairs[0].last_error, /both .* exist on the remote/);
+    assert.equal(await readFile(join(remoteRoot, to), "utf8"), "cizi obsah");
+    assert.equal(await exists(join(remoteRoot, r.remote_path)), true);
   });
 });

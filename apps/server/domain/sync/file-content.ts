@@ -186,17 +186,24 @@ export async function createFile(
     throw new FileContentError("invalid path", "INVALID_PATH");
   }
 
-  // Refuse to clobber an existing file.
-  try {
-    await readFile(abs);
-    throw new FileContentError(`file already exists: ${fn}`, "EXISTS");
-  } catch (e) {
-    if (e instanceof FileContentError) throw e;
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-  }
+  // Refuse to clobber an existing file. The check and the write it gates are
+  // serialized per path for the same reason writeFileContent's are: two
+  // concurrent creates of the same filename would otherwise both observe
+  // ENOENT and the second would silently overwrite the first. Deliberately
+  // scoped to these two steps only -- storeFile below takes the same lock
+  // for its own push, and withPathLock is not reentrant.
+  await withPathLock(abs, async () => {
+    try {
+      await readFile(abs);
+      throw new FileContentError(`file already exists: ${fn}`, "EXISTS");
+    } catch (e) {
+      if (e instanceof FileContentError) throw e;
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
 
-  await mkdir(dirname(abs), { recursive: true });
-  await writeFile(abs, Buffer.from(a.content ?? "", "utf8"));
+    await mkdir(dirname(abs), { recursive: true });
+    await writeFile(abs, Buffer.from(a.content ?? "", "utf8"));
+  });
 
   // Register + push when a remote is routed -- storeFile detects the file is
   // already inside the mirror (subpathFromMirror) and skips the copy,

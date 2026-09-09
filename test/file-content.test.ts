@@ -257,3 +257,33 @@ describe("createFile", () => {
     );
   });
 });
+
+describe("createFile concurrency", () => {
+  it("two concurrent creates of the same filename: one wins, the other reports EXISTS", async () => {
+    const { createFile } = await import("../apps/server/domain/sync/file-content.js");
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+
+    // The exists-check and the write it gates are serialized per path, so
+    // the loser sees the winner's file instead of silently overwriting it.
+    const results = await Promise.allSettled([
+      createFile(db, { userId: "U1", nodeId, filename: "race.md", content: "prvni" }),
+      createFile(db, { userId: "U1", nodeId, filename: "race.md", content: "druhy" }),
+    ]);
+    const ok = results.filter((r) => r.status === "fulfilled");
+    const failed = results.filter((r) => r.status === "rejected");
+    assert.equal(ok.length, 1);
+    assert.equal(failed.length, 1);
+    const reason = (failed[0] as PromiseRejectedResult).reason;
+    assert.ok(reason instanceof FileContentError && reason.code === "EXISTS");
+
+    const onDisk = await readFile(join(mirrorRoot, "wip", "race.md"), "utf8");
+    assert.ok(onDisk === "prvni" || onDisk === "druhy");
+    const rows = await db.execute({
+      sql: "SELECT id FROM files WHERE node_id = ? AND filename = ?",
+      args: [nodeId, "race.md"],
+    });
+    assert.equal(rows.rows.length, 1, "exactly one record for one file");
+  });
+});

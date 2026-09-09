@@ -14,6 +14,14 @@ export interface RelocateParams {
   fromRemotePath: string;
   toRemoteName: string;
   toRemotePath: string;
+  // Set by a retry whose earlier attempt is KNOWN to have completed the
+  // cross-remote copy and failed on the source delete (pending-ops.ts's
+  // `source_copied`, recorded by moveFile when its onPhase reached
+  // "delete_source"). Without it, both-present is an unresolvable ambiguity
+  // and every retry fails the same way forever -- the copy can never be
+  // completed and the caller is told to fix the remote by hand. With it,
+  // the retry finishes the one step that is missing.
+  sourceCopied?: boolean;
 }
 
 export type RelocateStatus = "moved" | "already_at_target";
@@ -44,6 +52,20 @@ export async function relocateRemoteObject(
   const dst = p.toRemoteName === p.fromRemoteName ? src : await getAdapter(db, p.toRemoteName);
   const [atFrom, atTo] = await Promise.all([src.stat(p.fromRemotePath), dst.stat(p.toRemotePath)]);
   if (atFrom && atTo) {
+    // Only the source delete is left, and the destination is provably this
+    // op's own copy: same-length hashes let the two be compared directly
+    // (a cross-backend move -- Drive md5 vs fs sha256 -- reports different
+    // algorithms, so there the recorded intent is all there is to go on).
+    const comparable =
+      atFrom.hash && atTo.hash && atFrom.hash.length === atTo.hash.length;
+    const sameContent = comparable
+      ? atFrom.hash!.toLowerCase() === atTo.hash!.toLowerCase()
+      : true;
+    if (p.sourceCopied && sameContent) {
+      onPhase?.("delete_source");
+      await src.delete(p.fromRemotePath);
+      return { status: "moved" };
+    }
     throw new Error(`both ${p.fromRemotePath} and ${p.toRemotePath} exist on the remote`);
   }
   if (!atFrom && !atTo) {

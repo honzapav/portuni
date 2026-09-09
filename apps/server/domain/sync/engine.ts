@@ -515,20 +515,19 @@ export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileRes
   const localPath = deriveLocalPath({ mirrorRoot, nodeRoot, remotePath });
 
   const adapter = await getAdapter(db, remoteName);
-  const content = await adapter.get(remotePath);
 
-  // Use the same hash algorithm the backend reports, so file_state stays
-  // comparable with adapter.stat() in subsequent statusScans.
-  const useMd5 = knownRemoteHash !== null && knownRemoteHash.length === 32;
-  const hash = useMd5 ? md5Buffer(content) : sha256Buffer(content);
+  // The download, the dirty-local check and the overwrite all happen inside
+  // the lock. Downloading outside it would let a push of this same path
+  // land between the fetch and the write: the bytes in hand are then older
+  // than what the remote now holds, and writing them reverts the just-pushed
+  // local content and records the stale hash as this device's baseline.
+  const hash = await withPathLock(localPath, async () => {
+    const content = await adapter.get(remotePath);
 
-  // The dirty-local check and the overwrite it gates must be atomic against
-  // any OTHER mutation of this same local path -- a push (storeFile), a
-  // background push (#266), or another pull -- or an edit landing in the
-  // gap between "checked clean" and "wrote" is silently destroyed (#277
-  // finding 4). withPathLock re-runs nothing on its own; it just makes sure
-  // nothing else can touch localPath between this check and this write.
-  await withPathLock(localPath, async () => {
+    // Use the same hash algorithm the backend reports, so file_state stays
+    // comparable with adapter.stat() in subsequent statusScans.
+    const useMd5 = knownRemoteHash !== null && knownRemoteHash.length === 32;
+    const hash = useMd5 ? md5Buffer(content) : sha256Buffer(content);
     // Dirty-local guard: overwriting is only safe when the local copy matches
     // the last state this device synced, or already equals the remote bytes.
     // A local file with unpushed edits (or with no baseline at all) must not
@@ -589,6 +588,8 @@ export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileRes
         now,
       ],
     });
+
+    return hash;
   });
 
   return { file_id: a.fileId, local_path: localPath, hash };
