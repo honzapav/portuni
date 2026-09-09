@@ -29,6 +29,31 @@ export interface UpdateScheduler {
   stop(): void;
 }
 
+// The four timer functions on their own, so a caller can hand them over
+// without restating the schedule's own knobs.
+export type TimerDeps = Pick<
+  UpdateScheduleDeps,
+  "setTimeout" | "clearTimeout" | "setInterval" | "clearInterval"
+>;
+
+// Timer functions taken from a real window, wrapped so each call keeps that
+// window as its receiver. Passing the globals by shorthand
+// (`{ setTimeout, clearTimeout, ... }`) reads as equivalent and is not: the
+// scheduler then calls them as `deps.setTimeout(...)`, i.e. with the deps
+// object as `this`, and a WebKit/WKWebView window method rejects any other
+// receiver outright -- "TypeError: Can only call Window.setTimeout on
+// instances of Window", thrown out of the hook's effect during commit, which
+// took the whole render down in 0.13.6. Never inline the shorthand at a call
+// site; go through here.
+export function windowTimerDeps(win: TimerDeps): TimerDeps {
+  return {
+    setTimeout: (fn, ms) => win.setTimeout(fn, ms),
+    clearTimeout: (id) => win.clearTimeout(id),
+    setInterval: (fn, ms) => win.setInterval(fn, ms),
+    clearInterval: (id) => win.clearInterval(id),
+  };
+}
+
 export function createUpdateScheduler(deps: UpdateScheduleDeps): UpdateScheduler {
   let checkTimer: ReturnType<typeof setTimeout> | null = null;
   let intervalTimer: ReturnType<typeof setInterval> | null = null;

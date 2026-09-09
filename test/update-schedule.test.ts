@@ -6,7 +6,11 @@
 // DI seam -- no browser, no React needed.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createUpdateScheduler, shouldCheckOnFocus } from "../apps/web/src/lib/update-schedule.js";
+import {
+  createUpdateScheduler,
+  shouldCheckOnFocus,
+  windowTimerDeps,
+} from "../apps/web/src/lib/update-schedule.js";
 
 // Minimal fake timer queue: setTimeout/setInterval just record a callback
 // + delay and hand back an incrementing id; advance() runs every timer
@@ -148,6 +152,76 @@ describe("createUpdateScheduler", () => {
     scheduler.stop();
     timers.advance(100_000);
     assert.equal(calls, 1, "no further checks after stop()");
+  });
+});
+
+// A window whose timer methods refuse any receiver but the window itself --
+// exactly how WebKit/WKWebView (and Chromium, with "Illegal invocation")
+// define them. Node's own setTimeout does not care, so a fake is the only
+// way to cover this in this runner.
+function webkitLikeWindow() {
+  const calls: string[] = [];
+  const win = {
+    setTimeout(this: unknown, _fn: () => void, _ms: number) {
+      if (this !== win) throw new TypeError("Can only call Window.setTimeout on instances of Window");
+      calls.push("setTimeout");
+      return 1 as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearTimeout(this: unknown, _id: ReturnType<typeof setTimeout>) {
+      if (this !== win) throw new TypeError("Can only call Window.clearTimeout on instances of Window");
+      calls.push("clearTimeout");
+    },
+    setInterval(this: unknown, _fn: () => void, _ms: number) {
+      if (this !== win) throw new TypeError("Can only call Window.setInterval on instances of Window");
+      calls.push("setInterval");
+      return 2 as unknown as ReturnType<typeof setInterval>;
+    },
+    clearInterval(this: unknown, _id: ReturnType<typeof setInterval>) {
+      if (this !== win) throw new TypeError("Can only call Window.clearInterval on instances of Window");
+      calls.push("clearInterval");
+    },
+  };
+  return { win, calls };
+}
+
+// A check callback that never runs in these two cases -- the schedule is
+// either torn down immediately or throws before any timer fires.
+function noop(): void {
+  return;
+}
+
+describe("windowTimerDeps", () => {
+  it("keeps the window as the receiver, so a WebKit window method accepts the call", () => {
+    const { win, calls } = webkitLikeWindow();
+    const scheduler = createUpdateScheduler({
+      ...windowTimerDeps(win),
+      checkDelayMs: 10_000,
+      checkIntervalMs: 3600_000,
+    });
+
+    scheduler.schedule(noop);
+    scheduler.stop();
+
+    assert.deepEqual(calls, ["setTimeout", "clearTimeout"]);
+  });
+
+  it("the shorthand form the regression shipped with does NOT work -- this is what it protects against", () => {
+    const { win } = webkitLikeWindow();
+    const scheduler = createUpdateScheduler({
+      // The 0.13.6 call site, spelled out: the functions land on the deps
+      // object, so the scheduler calls them with `deps` as `this`.
+      setTimeout: win.setTimeout,
+      clearTimeout: win.clearTimeout,
+      setInterval: win.setInterval,
+      clearInterval: win.clearInterval,
+      checkDelayMs: 10_000,
+      checkIntervalMs: 3600_000,
+    });
+
+    assert.throws(
+      () => scheduler.schedule(noop),
+      /Can only call Window\.setTimeout on instances of Window/,
+    );
   });
 });
 
