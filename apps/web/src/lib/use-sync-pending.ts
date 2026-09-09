@@ -9,7 +9,7 @@ import {
 } from "./sync-pending-residual";
 import type { SyncPendingResponse, SyncRunResponse } from "../types";
 
-const EMPTY: SyncPendingResponse = { nodes: [], total: 0 };
+const EMPTY: SyncPendingResponse = { nodes: [], total: 0, decisions: 0 };
 
 const POLL_MS = 30_000;
 // Window-focus refreshes are throttled: alt-tabbing around the desktop used

@@ -12,7 +12,11 @@ import {
   upsertFileState,
   resetLocalDbForTests,
 } from "../apps/server/domain/sync/local-db.js";
-import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
+import {
+  resetAdapterCacheForTests,
+  setAdapterForTests,
+  getAdapter,
+} from "../apps/server/domain/sync/adapter-cache.js";
 
 let workspaceA: string;
 let workspaceB: string;
@@ -240,5 +244,58 @@ describe("sync.db file_state schema migration", () => {
     // Legacy row survives the rebuild.
     const f1 = await getFileState("F1");
     assert.equal(f1?.last_synced_hash, "abc");
+  });
+});
+
+describe("pullFile holds the path lock across the download", () => {
+  it("a push of the same path cannot land between the fetch and the overwrite", async () => {
+    process.env.PORTUNI_WORKSPACE_ROOT = workspaceA;
+    resetLocalDbForTests();
+    resetAdapterCacheForTests();
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspaceA, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    await mkdir(join(mirrorRoot, "wip"), { recursive: true });
+    const localPath = join(mirrorRoot, "wip", "a.md");
+    await writeFile(localPath, "v1");
+    const r = await storeFile(db, { userId: "U1", nodeId, localPath });
+
+    // Block the pull inside adapter.get: if the download sat outside the
+    // lock, the push below would acquire it and finish first, and the pull
+    // would then overwrite the pushed bytes with the older ones it holds.
+    const real = await getAdapter(db, "test-fs");
+    let getStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      getStarted = resolve;
+    });
+    let releaseGet!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGet = resolve;
+    });
+    setAdapterForTests("test-fs", {
+      ...real,
+      get: async (path: string) => {
+        getStarted();
+        await gate;
+        return real.get(path);
+      },
+    });
+
+    const order: string[] = [];
+    const pull = pullFile(db, { userId: "U1", fileId: r.file_id }).then(() => {
+      order.push("pull");
+    });
+    await started;
+
+    const push = storeFile(db, { userId: "U1", nodeId, localPath }).then(() => {
+      order.push("push");
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.deepEqual(order, [], "the push must be queued behind the in-flight pull");
+
+    releaseGet();
+    await Promise.all([pull, push]);
+    assert.deepEqual(order, ["pull", "push"]);
+    assert.equal(await readFile(localPath, "utf8"), "v1");
   });
 });

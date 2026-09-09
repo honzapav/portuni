@@ -207,9 +207,10 @@ suspend/resume, the review UI, and deterministic consumers possible.
 
 ### Naming & UI
 
-- Default name `node · date`, enriched from the handoff's title at suspend;
-  always renamable. Shown with state, last activity, CLI + profile, write
-  count.
+- Default name `node · date time` (#272 added the time component -- a
+  date-only default made two same-day sessions on the same node
+  indistinguishable), enriched from the handoff's title at suspend; always
+  renamable. Shown with state, last activity, CLI + profile, write count.
 - **Node detail**: sessions of that node.
 - **Přehled** (below): sessions across the workspace — the same list serves
   as the headless review surface (what a session read, where it expanded,

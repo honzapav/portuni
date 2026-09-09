@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "./backend-url";
+import { createUpdateScheduler, shouldCheckOnFocus } from "./update-schedule";
 
 export type UpdateInfo = {
   version: string;
@@ -55,6 +56,10 @@ export type AppUpdate = {
   // the UI can tell "never checked" apart from "checked, up to date";
   // both are the `idle` state.
   hasChecked: boolean;
+  // When the most recent check attempt (success OR error) completed, so a
+  // silently-broken schedule is visible in Settings instead of invisible
+  // (#274) -- set on every completed attempt, not just successful ones.
+  lastCheckedAt: Date | null;
   checkNow: () => void;
   install: () => void;
   restart: () => Promise<void>;
@@ -72,10 +77,14 @@ export function useAppUpdate(): AppUpdate {
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [hasChecked, setHasChecked] = useState(false);
+  const [lastCheckedAt, setLastCheckedAt] = useState<Date | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
   const updateInfoRef = useRef(updateInfo);
   updateInfoRef.current = updateInfo;
+  // Epoch ms, readable synchronously by the focus handler -- lastCheckedAt
+  // (state) would only reflect the value as of the last render.
+  const lastCheckedAtMsRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -101,6 +110,8 @@ export function useAppUpdate(): AppUpdate {
     void checkForUpdate()
       .then((info) => {
         setHasChecked(true);
+        lastCheckedAtMsRef.current = Date.now();
+        setLastCheckedAt(new Date(lastCheckedAtMsRef.current));
         if (info) {
           setUpdateInfo(info);
           setState({ kind: "available", info });
@@ -109,41 +120,67 @@ export function useAppUpdate(): AppUpdate {
         }
       })
       .catch((e) => {
+        // Still record the attempt: an error you can SEE (Settings ->
+        // Aktualizace's "naposledy zkontrolováno") is diagnosable; a check
+        // that silently never ran again looks identical to one that ran
+        // and found nothing (#274).
+        lastCheckedAtMsRef.current = Date.now();
+        setLastCheckedAt(new Date(lastCheckedAtMsRef.current));
         setState({ kind: "error", message: errorMessage(e) });
       });
   }, []);
 
-  // 10s after backend-ready, then every 6h. backend-ready is per-window
+  // First check ~10s after this hook mounts, then every 6h -- the check has
+  // no dependency on the sidecar at all (it only talks to GitHub), so it
+  // does not need to wait for one. backend-ready is kept as an ADDITIONAL
+  // trigger that resets (never stacks) the schedule: it is per-window
   // (emit_to("ws:<id>", ...)) and can fire more than once for this window
-  // -- a sidecar restart, or the replay a just-created/restored window
-  // gets if its sidecar was already up (or already failed) before the
-  // window existed -- so a later event replaces rather than stacks the
-  // timers.
+  // (a sidecar restart, or the replay a just-created/restored window gets),
+  // and historically it was the ONLY trigger -- which meant a webview whose
+  // listener attached after the event had already fired (routine: the event
+  // can arrive within a few hundred ms of window creation, well before
+  // React has mounted and awaited its dynamic event-module import) never
+  // saw it and never scheduled anything at all (#274). A window focus after
+  // sitting idle past a full interval (the OS was asleep, or this window
+  // was backgrounded through several missed intervals) also triggers an
+  // immediate check, same reasoning pollBackendReady's event+poll race
+  // guards against for backend readiness.
   useEffect(() => {
     if (!isTauri()) return;
     let cancelled = false;
-    let checkTimer: ReturnType<typeof setTimeout> | null = null;
-    let intervalTimer: ReturnType<typeof setInterval> | null = null;
-    let unlisten: (() => void) | null = null;
+    let unlistenReady: (() => void) | null = null;
+    const scheduler = createUpdateScheduler({
+      setTimeout,
+      clearTimeout,
+      setInterval,
+      clearInterval,
+      checkDelayMs: CHECK_DELAY_MS,
+      checkIntervalMs: CHECK_INTERVAL_MS,
+    });
+
+    scheduler.schedule(checkNow);
 
     void (async () => {
       const { listen } = await import("@tauri-apps/api/event");
-      unlisten = await listen("backend-ready", () => {
+      unlistenReady = await listen("backend-ready", () => {
         if (cancelled) return;
-        if (checkTimer) clearTimeout(checkTimer);
-        checkTimer = setTimeout(() => {
-          checkNow();
-          if (intervalTimer) clearInterval(intervalTimer);
-          intervalTimer = setInterval(checkNow, CHECK_INTERVAL_MS);
-        }, CHECK_DELAY_MS);
+        scheduler.schedule(checkNow);
       });
     })();
 
+    const onFocus = () => {
+      if (cancelled) return;
+      if (shouldCheckOnFocus(lastCheckedAtMsRef.current, Date.now(), CHECK_INTERVAL_MS)) {
+        checkNow();
+      }
+    };
+    window.addEventListener("focus", onFocus);
+
     return () => {
       cancelled = true;
-      if (checkTimer) clearTimeout(checkTimer);
-      if (intervalTimer) clearInterval(intervalTimer);
-      unlisten?.();
+      scheduler.stop();
+      unlistenReady?.();
+      window.removeEventListener("focus", onFocus);
     };
   }, [checkNow]);
 
@@ -188,5 +225,5 @@ export function useAppUpdate(): AppUpdate {
     await restartApp();
   }, []);
 
-  return { state, currentVersion, updateInfo, hasChecked, checkNow, install, restart };
+  return { state, currentVersion, updateInfo, hasChecked, lastCheckedAt, checkNow, install, restart };
 }

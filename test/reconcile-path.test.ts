@@ -95,10 +95,17 @@ describe("reconcilePath", () => {
     const res = await reconcilePath(db, { userId: "U1", nodeId, absPath: fp });
     assert.equal(res.action, "deleted");
 
+    const scan = await fastScan(db, nodeId);
     assert.deepEqual(
-      (await fastScan(db, nodeId)).deleted_local.map((f) => f.filename),
+      scan.deleted_local.map((f) => f.filename),
       ["doc.md"],
     );
+    // #280 finding 14: the entry's own `class` field used to say "clean"
+    // even though it lives in the deleted_local bucket -- an MCP consumer
+    // trusting entry.class directly (rather than which bucket array it came
+    // from) would treat a deleted file as clean and skip the required
+    // restore/delete decision.
+    assert.equal(scan.deleted_local[0].class, "deleted_local");
   });
 
   it("walks (and registers nothing for) a newly created, empty directory", async () => {

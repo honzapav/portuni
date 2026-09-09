@@ -49,6 +49,7 @@ import {
   type Section,
 } from "../remote-path.js";
 import { loadMirrorIgnore, type MirrorIgnore } from "../mirror-ignore.js";
+import { withPathLock } from "../path-lock.js";
 import { md5Buffer, sha256Buffer, sha256File, statForCache } from "../hash.js";
 import type { NodeSyncInfo, SyncInfoFile } from "../sync-remote-api.js";
 import type { RemoteSweepResult } from "../remote-sweep.js";
@@ -84,7 +85,10 @@ export interface NodeContext {
   mirrorRoot: string | null;
 }
 
-async function loadNodeContext(
+// Exported for agent-router.ts's move handler (#278): a cross-node move
+// needs the TARGET node's own root/mirror, not the node the request URL
+// addresses, to derive where the local copy should land.
+export async function loadNodeContext(
   client: CentralClient,
   userId: string,
   nodeId: string,
@@ -219,7 +223,7 @@ async function classifyRecord(
 
   if (localHash === null) {
     if (base.last_synced_hash) {
-      return { bucket: "deleted_local", entry: { ...base, class: "clean" } };
+      return { bucket: "deleted_local", entry: { ...base, class: "deleted_local" } };
     }
     // Remote content exists but this device never synced it -> fetchable.
     return { bucket: "pull_candidates", entry: { ...base, class: "pull" } };
@@ -487,49 +491,79 @@ async function pushEntryCentral(
   const relPath = relPathFor(a.mirrorRoot, localPath);
   if (!relPath) throw new Error(`path left the mirror sections: ${localPath}`);
 
-  const baseline = a.entry.last_synced_hash;
-  const bytes = await readFile(localPath);
-  let put: { version: string; canonicalHash: string };
-  try {
-    put = await client.putFileRaw(
-      a.nodeId,
-      relPath,
-      bytes,
-      baseline !== null ? { baseCanonicalHash: baseline } : { ifAbsent: true },
-    );
-  } catch (e) {
-    if (e instanceof CentralHttpError && e.code === "EXISTS" && baseline === null) {
-      // Never-synced file but the remote already has bytes. Only a
-      // byte-identical remote is safe to claim; verify with one download.
-      const cur = await client.getFileRaw(a.nodeId, relPath);
-      const localInCanonical =
-        cur.canonicalHash.length === 32 ? md5Buffer(bytes) : sha256Buffer(bytes);
-      if (localInCanonical !== cur.canonicalHash) {
-        throw new Error(
-          "remote already has different content for a never-synced file -- resolve manually",
-        );
-      }
-      // Identical bytes -- adopt the remote state without rewriting it.
-      put = { version: cur.version, canonicalHash: cur.canonicalHash };
-    } else if (e instanceof CentralHttpError && e.code === "CONFLICT") {
-      throw new Error(
-        `remote changed since the last scan (baseline ${baseline}, remote is ${e.currentVersion ?? "unknown"}) -- rescan and resolve`,
+  // Serialized per local path (#277 finding 4/7/8's shared coordinator)
+  // against any other push or pull of this same file -- a concurrent
+  // storeFileCentral/pullFileCentral call, or a background push from #266's
+  // create flow (tracked separately via pending-pushes.ts, awaited by
+  // agent-router.ts/agent-transport.ts before their own mutations -- this
+  // lock additionally covers the sync-run bulk-push path those don't reach).
+  await withPathLock(localPath, async () => {
+    // Stat BEFORE reading, matching storeFileCentral's own guard (#277
+    // finding 7): the cached (mtime, size) must describe the bytes that
+    // actually get pushed, and a rehash after the upload catches an edit
+    // that landed mid-upload instead of masking it as clean.
+    //
+    // The baseline is re-read here rather than taken from the scan entry:
+    // a push that ran while this call waited for the lock has already
+    // advanced last_synced_hash, and sending the scan's older value as the
+    // precondition makes the server answer CONFLICT for a file that is not
+    // actually in conflict.
+    const state = await getFileState(a.entry.file_id);
+    const baseline = state?.last_synced_hash ?? a.entry.last_synced_hash ?? null;
+    const fsInfo = await statForCache(localPath);
+    const bytes = await readFile(localPath);
+    let put: { version: string; canonicalHash: string };
+    try {
+      put = await client.putFileRaw(
+        a.nodeId,
+        relPath,
+        bytes,
+        baseline !== null ? { baseCanonicalHash: baseline } : { ifAbsent: true },
       );
-    } else {
-      throw e;
+    } catch (e) {
+      if (e instanceof CentralHttpError && e.code === "EXISTS" && baseline === null) {
+        // Never-synced file but the remote already has bytes. Only a
+        // byte-identical remote is safe to claim; verify with one download.
+        const cur = await client.getFileRaw(a.nodeId, relPath);
+        const localInCanonical =
+          cur.canonicalHash.length === 32 ? md5Buffer(bytes) : sha256Buffer(bytes);
+        if (localInCanonical !== cur.canonicalHash) {
+          throw new Error(
+            "remote already has different content for a never-synced file -- resolve manually",
+          );
+        }
+        // Identical bytes -- adopt the remote state without rewriting it.
+        put = { version: cur.version, canonicalHash: cur.canonicalHash };
+      } else if (e instanceof CentralHttpError && e.code === "CONFLICT") {
+        throw new Error(
+          `remote changed since the last scan (baseline ${baseline}, remote is ${e.currentVersion ?? "unknown"}) -- rescan and resolve`,
+        );
+      } else {
+        throw e;
+      }
     }
-  }
 
-  const fsInfo = await statForCache(localPath);
-  await upsertFileState({
-    file_id: a.entry.file_id,
-    last_synced_hash: put.canonicalHash,
-    last_synced_at: new Date().toISOString(),
-    cached_local_hash: put.canonicalHash,
-    cached_mtime: fsInfo.mtime,
-    cached_size: fsInfo.size,
-    cached_ino: fsInfo.ino,
-    cached_dev: fsInfo.dev,
+    // Re-stat after the upload; if the identity moved, rehash instead of
+    // caching the pushed hash -- otherwise a mid-push edit reads as clean
+    // and is never pushed (same rationale as storeFileCentral).
+    const after = await statForCache(localPath);
+    const changedMidPush =
+      after.mtime !== fsInfo.mtime || after.size !== fsInfo.size || after.ino !== fsInfo.ino;
+    const cachedLocalHash = changedMidPush
+      ? put.canonicalHash.length === 32
+        ? md5Buffer(await readFile(localPath))
+        : await sha256File(localPath)
+      : put.canonicalHash;
+    await upsertFileState({
+      file_id: a.entry.file_id,
+      last_synced_hash: put.canonicalHash,
+      last_synced_at: new Date().toISOString(),
+      cached_local_hash: cachedLocalHash,
+      cached_mtime: after.mtime,
+      cached_size: after.size,
+      cached_ino: after.ino,
+      cached_dev: after.dev,
+    });
   });
 }
 
@@ -645,74 +679,80 @@ export async function storeFileCentral(
     );
   }
 
-  const state = await getFileState(reg.file_id);
-  const baseline = state?.last_synced_hash ?? null;
-  // Stat BEFORE reading: the cached (mtime, size) must describe the bytes
-  // that actually get pushed. Stat'ing after the upload would pair the
-  // pushed hash with the mtime/size of whatever the file is by then -- an
-  // edit landing mid-upload (e.g. the editor saving into a file the
-  // create handler is still pushing in the background) would read as
-  // clean and never be pushed.
-  const fsInfo = await statForCache(localPath);
-  const bytes = await readFile(localPath);
+  // Serialized per local path (#277 finding 4/7/8's shared coordinator)
+  // against any other push or pull of this same file.
+  const canonicalHash = await withPathLock(localPath, async () => {
+    const state = await getFileState(reg.file_id);
+    const baseline = state?.last_synced_hash ?? null;
+    // Stat BEFORE reading: the cached (mtime, size) must describe the bytes
+    // that actually get pushed. Stat'ing after the upload would pair the
+    // pushed hash with the mtime/size of whatever the file is by then -- an
+    // edit landing mid-upload (e.g. the editor saving into a file the
+    // create handler is still pushing in the background) would read as
+    // clean and never be pushed.
+    const fsInfo = await statForCache(localPath);
+    const bytes = await readFile(localPath);
 
-  let put: { version: string; canonicalHash: string };
-  try {
-    put = await client.putFileRaw(
-      a.nodeId,
-      relPath,
-      bytes,
-      a.force
-        ? { force: true }
-        : baseline !== null
-          ? { baseCanonicalHash: baseline }
-          : { ifAbsent: true },
-    );
-  } catch (e) {
-    if (e instanceof CentralHttpError && e.code === "EXISTS" && baseline === null) {
-      // Never-synced file but the remote already has bytes. Only a
-      // byte-identical remote is safe to claim; verify with one download.
-      const cur = await client.getFileRaw(a.nodeId, relPath);
-      const localInCanonical =
-        cur.canonicalHash.length === 32 ? md5Buffer(bytes) : sha256Buffer(bytes);
-      if (localInCanonical !== cur.canonicalHash) {
-        throw new Error(
-          "remote already has different content for a never-synced file -- resolve manually",
-        );
-      }
-      put = { version: cur.version, canonicalHash: cur.canonicalHash };
-    } else if (e instanceof CentralHttpError && e.code === "CONFLICT") {
-      throw new Error(
-        `remote changed since the last scan (baseline ${baseline}, remote is ${e.currentVersion ?? "unknown"}) -- rescan and resolve`,
+    let put: { version: string; canonicalHash: string };
+    try {
+      put = await client.putFileRaw(
+        a.nodeId,
+        relPath,
+        bytes,
+        a.force
+          ? { force: true }
+          : baseline !== null
+            ? { baseCanonicalHash: baseline }
+            : { ifAbsent: true },
       );
-    } else {
-      throw e;
+    } catch (e) {
+      if (e instanceof CentralHttpError && e.code === "EXISTS" && baseline === null) {
+        // Never-synced file but the remote already has bytes. Only a
+        // byte-identical remote is safe to claim; verify with one download.
+        const cur = await client.getFileRaw(a.nodeId, relPath);
+        const localInCanonical =
+          cur.canonicalHash.length === 32 ? md5Buffer(bytes) : sha256Buffer(bytes);
+        if (localInCanonical !== cur.canonicalHash) {
+          throw new Error(
+            "remote already has different content for a never-synced file -- resolve manually",
+          );
+        }
+        put = { version: cur.version, canonicalHash: cur.canonicalHash };
+      } else if (e instanceof CentralHttpError && e.code === "CONFLICT") {
+        throw new Error(
+          `remote changed since the last scan (baseline ${baseline}, remote is ${e.currentVersion ?? "unknown"}) -- rescan and resolve`,
+        );
+      } else {
+        throw e;
+      }
     }
-  }
 
-  // Fast status trusts cached_local_hash outright (no mtime check), so the
-  // cache written here must describe the file as it is NOW, not as it was
-  // when read: an edit that landed while the upload was in flight (the
-  // editor saving into a file the create handler is still pushing in the
-  // background) must surface as push, never be masked as clean by the
-  // pushed hash. Re-stat after the upload; if the identity moved, rehash.
-  const after = await statForCache(localPath);
-  const changedMidPush =
-    after.mtime !== fsInfo.mtime || after.size !== fsInfo.size || after.ino !== fsInfo.ino;
-  const cachedLocalHash = changedMidPush
-    ? put.canonicalHash.length === 32
-      ? md5Buffer(await readFile(localPath))
-      : await sha256File(localPath)
-    : put.canonicalHash;
-  await upsertFileState({
-    file_id: reg.file_id,
-    last_synced_hash: put.canonicalHash,
-    last_synced_at: new Date().toISOString(),
-    cached_local_hash: cachedLocalHash,
-    cached_mtime: after.mtime,
-    cached_size: after.size,
-    cached_ino: after.ino,
-    cached_dev: after.dev,
+    // Fast status trusts cached_local_hash outright (no mtime check), so the
+    // cache written here must describe the file as it is NOW, not as it was
+    // when read: an edit that landed while the upload was in flight (the
+    // editor saving into a file the create handler is still pushing in the
+    // background) must surface as push, never be masked as clean by the
+    // pushed hash. Re-stat after the upload; if the identity moved, rehash.
+    const after = await statForCache(localPath);
+    const changedMidPush =
+      after.mtime !== fsInfo.mtime || after.size !== fsInfo.size || after.ino !== fsInfo.ino;
+    const cachedLocalHash = changedMidPush
+      ? put.canonicalHash.length === 32
+        ? md5Buffer(await readFile(localPath))
+        : await sha256File(localPath)
+      : put.canonicalHash;
+    await upsertFileState({
+      file_id: reg.file_id,
+      last_synced_hash: put.canonicalHash,
+      last_synced_at: new Date().toISOString(),
+      cached_local_hash: cachedLocalHash,
+      cached_mtime: after.mtime,
+      cached_size: after.size,
+      cached_ino: after.ino,
+      cached_dev: after.dev,
+    });
+
+    return put.canonicalHash;
   });
 
   return {
@@ -720,7 +760,7 @@ export async function storeFileCentral(
     remote_name: reg.remote_name,
     remote_path: reg.remote_path,
     local_path: localPath,
-    hash: put.canonicalHash,
+    hash: canonicalHash,
   };
 }
 
@@ -752,40 +792,45 @@ export async function pullFileCentral(
 
   const cur = await client.getFileRaw(a.nodeId, relPath);
 
-  // Dirty-local guard (same contract as engine.pullFile): overwriting is only
-  // safe when the local copy matches this device's synced baseline or already
-  // equals the incoming bytes.
-  const exists = await fsStat(localPath).then(
-    () => true,
-    () => false,
-  );
-  if (!a.force && exists) {
-    const state = await getFileState(a.entry.file_id);
-    const baseline = state?.last_synced_hash ?? null;
-    const local = await readFile(localPath);
-    const localCur =
-      cur.canonicalHash.length === 32 ? md5Buffer(local) : sha256Buffer(local);
-    const dirty =
-      localCur !== cur.canonicalHash && (baseline === null || localCur !== baseline);
-    if (dirty) {
-      throw new PullDirtyLocalError(
-        `File ${a.entry.file_id} has local changes that were never pushed from this device (${localPath}). Sync them first, or force the pull.`,
-      );
+  // The dirty-local check and the overwrite it gates must be atomic against
+  // any other mutation of this same local path (#277 finding 4/8's shared
+  // coordinator) -- a push, a background push (#266), or another pull.
+  await withPathLock(localPath, async () => {
+    // Dirty-local guard (same contract as engine.pullFile): overwriting is only
+    // safe when the local copy matches this device's synced baseline or already
+    // equals the incoming bytes.
+    const exists = await fsStat(localPath).then(
+      () => true,
+      () => false,
+    );
+    if (!a.force && exists) {
+      const state = await getFileState(a.entry.file_id);
+      const baseline = state?.last_synced_hash ?? null;
+      const local = await readFile(localPath);
+      const localCur =
+        cur.canonicalHash.length === 32 ? md5Buffer(local) : sha256Buffer(local);
+      const dirty =
+        localCur !== cur.canonicalHash && (baseline === null || localCur !== baseline);
+      if (dirty) {
+        throw new PullDirtyLocalError(
+          `File ${a.entry.file_id} has local changes that were never pushed from this device (${localPath}). Sync them first, or force the pull.`,
+        );
+      }
     }
-  }
 
-  await mkdir(dirname(localPath), { recursive: true });
-  await writeFile(localPath, cur.bytes);
-  const fsInfo = await statForCache(localPath);
-  await upsertFileState({
-    file_id: a.entry.file_id,
-    last_synced_hash: cur.canonicalHash,
-    last_synced_at: new Date().toISOString(),
-    cached_local_hash: cur.canonicalHash,
-    cached_mtime: fsInfo.mtime,
-    cached_size: fsInfo.size,
-    cached_ino: fsInfo.ino,
-    cached_dev: fsInfo.dev,
+    await mkdir(dirname(localPath), { recursive: true });
+    await writeFile(localPath, cur.bytes);
+    const fsInfo = await statForCache(localPath);
+    await upsertFileState({
+      file_id: a.entry.file_id,
+      last_synced_hash: cur.canonicalHash,
+      last_synced_at: new Date().toISOString(),
+      cached_local_hash: cur.canonicalHash,
+      cached_mtime: fsInfo.mtime,
+      cached_size: fsInfo.size,
+      cached_ino: fsInfo.ino,
+      cached_dev: fsInfo.dev,
+    });
   });
   return { file_id: a.entry.file_id, local_path: localPath, hash: cur.canonicalHash };
 }
@@ -884,7 +929,22 @@ export async function reconcilePathCentral(
   const neverPushed =
     rec.current_remote_hash === null && (existing?.last_synced_hash ?? null) === null;
   if (neverPushed) {
-    await client.deleteFileRecord(a.nodeId, rec.id).catch(() => null);
+    // #280 finding 11: a bare `.catch(() => null)` swallowed both a thrown
+    // failure AND a fulfilled `{status:"repair_needed"}` -- central keeping
+    // the record deliberately because it could not confirm the delete --
+    // and proceeded to erase file_state and report "unregistered" either
+    // way. That contradicts the "one-shot watcher event must not silently
+    // degrade" rule the comment above `loadNodeContext` already states, and
+    // the sibling move-pairing branch (tryApplyDiskMoveCentral) already gets
+    // this right: only actually-confirmed success clears local state; any
+    // other outcome leaves file_state alone and reports a non-destructive
+    // action so the next watcher event or backfill sweep tries again instead
+    // of the record turning into a remote-missing zombie with no local
+    // identity to recover it.
+    const del = await client.deleteFileRecord(a.nodeId, rec.id).catch(() => null);
+    if (!del || (del as { status?: unknown }).status !== "ok") {
+      return { action: "noop", file_id: rec.id };
+    }
     await deleteFileState(rec.id).catch(() => undefined);
     return { action: "unregistered", file_id: rec.id };
   }
@@ -1212,7 +1272,7 @@ export async function computeSyncPendingCentral(
   userId: string,
 ): Promise<SyncPendingResponse> {
   const mirrors = await listUserMirrors(userId);
-  if (mirrors.length === 0) return { nodes: [], total: 0 };
+  if (mirrors.length === 0) return { nodes: [], total: 0, decisions: 0 };
 
   // ONE batch request for every mirrored node's sync-info -- the perf
   // review's top finding was this aggregate firing 2 requests per mirror
@@ -1222,7 +1282,7 @@ export async function computeSyncPendingCentral(
   try {
     infos = await client.syncInfoBatch(mirrors.map((m) => m.node_id));
   } catch {
-    return { nodes: [], total: 0 }; // central unreachable -- empty overview
+    return { nodes: [], total: 0, decisions: 0 }; // central unreachable -- empty overview
   }
   const infoById = new Map(infos.map((i) => [i.node.id, i]));
 
@@ -1251,11 +1311,13 @@ export async function computeSyncPendingCentral(
     const untracked = scan.new_local.length + scan.deleted_remote.length;
     const remote_missing = scan.remote_missing.length;
     const deleted_local = scan.deleted_local.length;
-    // remote_missing and deleted_local are informational only -- a sync run
-    // neither pushes nor pulls them, so they must not count towards total
-    // (see the local engine's computeSyncPending for the same rule).
-    const total = push + conflict + untracked;
-    if (total === 0) return null;
+    // remote_missing is informational only -- a sync run neither pushes nor
+    // pulls it, so it must not count towards either total. `total`
+    // (actionable) vs `decisions` (needs a human): see the local engine's
+    // computeSyncPending for the identical split and its rationale.
+    const total = push + untracked;
+    const decisions = conflict + deleted_local;
+    if (total === 0 && decisions === 0) return null;
     return {
       node_id: m.node_id,
       node_name: si.node.name,
@@ -1266,6 +1328,7 @@ export async function computeSyncPendingCentral(
       remote_missing,
       deleted_local,
       total,
+      decisions,
     };
   };
 
@@ -1285,7 +1348,8 @@ export async function computeSyncPendingCentral(
 
   nodes.sort((a, b) => b.total - a.total);
   const total = nodes.reduce((s, n) => s + n.total, 0);
-  return { nodes, total };
+  const decisions = nodes.reduce((s, n) => s + n.decisions, 0);
+  return { nodes, total, decisions };
 }
 
 // ---------------------------------------------------------------------------

@@ -246,12 +246,38 @@ export type SyncRunResponse = {
   skipped: SyncRunSkippedFile[];
 };
 
+// A background sync job (#273): "Synchronizovat vše" starts one of these
+// (POST /sync/jobs) instead of blocking on a client-side loop over
+// POST /nodes/:id/sync per node -- the job runs server-side with bounded
+// concurrency and is polled (GET /sync/jobs/:id) for progress, so closing
+// the overview modal or switching windows does not stop it. State is
+// in-memory only (see sync-jobs.ts): it does not survive a sidecar/server
+// restart, only a UI remount.
+export type SyncJobNodeStatus = "pending" | "running" | "done" | "error";
+export type SyncJobNode = {
+  node_id: string;
+  status: SyncJobNodeStatus;
+  result?: SyncRunResponse;
+  error?: string;
+};
+export type SyncJobSummary = {
+  id: string;
+  status: "running" | "done";
+  started_at: string;
+  finished_at: string | null;
+  total: number;
+  completed: number;
+  errored: number;
+  nodes: SyncJobNode[];
+};
+
 // Cross-mirror "what is not yet on a remote" aggregate, per node. `total`
-// (and node inclusion) counts only classes a sync run actually clears:
-// push + conflict + untracked. remote_missing and deleted_local are carried
-// as informational counts — a sync run neither pushes nor pulls them (they
-// need a human decision via the resolve endpoint), so they are surfaced in
-// the node's file list instead of driving the footer badge / quit guard.
+// counts only classes a sync run actually clears (push + untracked);
+// `decisions` counts classes that need a human (conflict + deleted_local)
+// via the resolve endpoint, since a run leaves both untouched by design. A
+// node is included when either is nonzero, so a decisions-only node is
+// still visible in the overview instead of silently disappearing.
+// remote_missing is informational only and counts toward neither.
 // Incoming pull candidates are excluded entirely.
 export type SyncPendingNode = {
   node_id: string;
@@ -262,11 +288,20 @@ export type SyncPendingNode = {
   untracked: number;
   remote_missing: number;
   deleted_local: number;
+  // Actionable: what a deliberate sync run can actually clear (push +
+  // untracked). A run never resolves a conflict, so it is deliberately
+  // excluded here -- see `decisions`.
   total: number;
+  // Needs a human decision (conflict + deleted_local): a sync run leaves
+  // both untouched by design, so counting them into `total` would make the
+  // "unsynced" indicator permanently non-zero for a node with a conflict.
+  // Resolved via POST /nodes/:id/files/:fileId/resolve.
+  decisions: number;
 };
 export type SyncPendingResponse = {
-  nodes: SyncPendingNode[]; // only nodes with total > 0, sorted by total desc
-  total: number;            // sum of every node's total
+  nodes: SyncPendingNode[]; // nodes with total > 0 OR decisions > 0, sorted by total desc
+  total: number;            // sum of every node's total (actionable only)
+  decisions: number;        // sum of every node's decisions
 };
 
 export type DetailEvent = {

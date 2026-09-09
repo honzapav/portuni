@@ -12,6 +12,7 @@ import { autoSeedFromHome, parseHomeNodeIdFromUrl, parseResumeSessionIdFromUrl }
 import { resumeSessionPersistence } from "./session-persistence.js";
 import { disposeSessionProjection } from "./disk-projection.js";
 import { spawnSessionIdFromHeader } from "../domain/session-projection.js";
+import { extractClientNameFromInitializeBody } from "./client-name.js";
 import { logAudit } from "../infra/audit.js";
 import { getDb } from "../infra/db.js";
 import { closeSessionIfRunning } from "../domain/sessions.js";
@@ -90,36 +91,6 @@ export function createMcpTransport(): McpTransport {
         return;
       }
 
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (newSessionId) => {
-          sessions.set(newSessionId, { transport, lastUsedAt: Date.now(), userId: identity.userId });
-        },
-      });
-
-      transport.onclose = () => {
-        if (transport.sessionId) {
-          sessions.delete(transport.sessionId);
-        }
-        // GC backstop (#218, "Sessions follow PTY exit"): a CLI whose config
-        // format cannot carry X-Portuni-Terminal (Codex, Vibe) or a crash
-        // that never reaches POST /terminals/:terminal_id/exit would
-        // otherwise leave its session row stuck 'running' until the
-        // 30-minute idle GC. closeSessionIfRunning never touches
-        // 'suspended' -- an agent that called portuni_session_suspend
-        // before disconnecting must stay resumable. `scope` is assigned by
-        // createMcpServer below; this closure only runs after that call
-        // returns.
-        if (scope.sessionId) {
-          closeSessionIfRunning(getDb(), scope.sessionId).catch((err) => {
-            console.error("closeSessionIfRunning on transport close failed:", err);
-          });
-        }
-        // Disk contract: the agent never manages its projection directory
-        // (spec: "Disk contract") -- clean it up here, at session end.
-        void disposeSessionProjection(scope, identity.userId, getDb());
-      };
-
       // Parsed here (before createMcpServer) because session_type
       // derivation needs it: a headless-flagged device token is refused
       // below when it's absent, and interactive_task recognition depends
@@ -172,7 +143,7 @@ export function createMcpTransport(): McpTransport {
         return;
       }
 
-      const { server, scope } = createMcpServer(
+      const { server, scope, bindSession } = createMcpServer(
         identity,
         homeNodeId,
         profileId,
@@ -249,6 +220,39 @@ export function createMcpTransport(): McpTransport {
           return;
         }
       }
+
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (newSessionId) => {
+          sessions.set(newSessionId, { transport, lastUsedAt: Date.now(), userId: identity.userId });
+          // #272: only now -- a genuine initialize request has been
+          // received and accepted for this session id -- is a durable
+          // `sessions` row created. A no-op for a resumed connection
+          // (its row already exists; see bindSession's doc in server.ts).
+          bindSession(extractClientNameFromInitializeBody(body));
+        },
+      });
+
+      transport.onclose = () => {
+        if (transport.sessionId) {
+          sessions.delete(transport.sessionId);
+        }
+        // GC backstop (#218, "Sessions follow PTY exit"): a CLI whose config
+        // format cannot carry X-Portuni-Terminal (Codex, Vibe) or a crash
+        // that never reaches POST /terminals/:terminal_id/exit would
+        // otherwise leave its session row stuck 'running' until the
+        // 30-minute idle GC. closeSessionIfRunning never touches
+        // 'suspended' -- an agent that called portuni_session_suspend
+        // before disconnecting must stay resumable.
+        if (scope.sessionId) {
+          closeSessionIfRunning(getDb(), scope.sessionId).catch((err) => {
+            console.error("closeSessionIfRunning on transport close failed:", err);
+          });
+        }
+        // Disk contract: the agent never manages its projection directory
+        // (spec: "Disk contract") -- clean it up here, at session end.
+        void disposeSessionProjection(scope, identity.userId, getDb());
+      };
 
       await server.connect(transport);
       await transport.handleRequest(req, res, body);

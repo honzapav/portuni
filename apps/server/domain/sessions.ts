@@ -41,15 +41,22 @@ async function loadSession(db: Client, id: string): Promise<SessionRow | null> {
   return SessionRow.parse(res.rows[0]);
 }
 
-// Default session name -- spec ("Naming & UI"): "Default name `node · date`".
-// `node` is the anchor's name, or 'Chat' for the anchor-less
-// interactive_chat type. `createdAtIso` is truncated to its date part
-// (matches migration 028's SQL backfill exactly, so old and new rows are
-// indistinguishable). Exported so session-handoff.ts's suspend-time
-// enrichment can compare a session's current name against this to decide
-// whether the user has since renamed it (see name_is_custom).
+// Default session name -- spec ("Naming & UI"): "Default name `node · date`",
+// extended with a time-of-day component (#272) so two sessions opened on the
+// same node on the same day are still distinguishable at a glance in the
+// Relace list -- the date-only format made every same-day row on a node
+// literally identical text. `node` is the anchor's name, or 'Chat' for the
+// anchor-less interactive_chat type. `createdAtIso` is sliced into its date
+// (chars 0-10) and HH:MM (chars 11-16) parts.
+//
+// migration 028's SQL backfill predates this and stays date-only by design
+// (existing rows are never rewritten) -- an old row's default-shaped name
+// (no time component) and a new row's (with time) are both valid, just from
+// different eras; do not "fix" old rows to match.
 export function computeDefaultSessionName(nodeName: string | null, createdAtIso: string): string {
-  return `${nodeName ?? "Chat"} · ${createdAtIso.slice(0, 10)}`;
+  const date = createdAtIso.slice(0, 10);
+  const time = createdAtIso.slice(11, 16);
+  return `${nodeName ?? "Chat"} · ${date} ${time}`;
 }
 
 // preassignedId (#208 follow-up, "kernel-level isolation between concurrent
@@ -285,6 +292,25 @@ export async function closeSessionIfRunning(db: Client, sessionId: string): Prom
   const row = await loadSession(db, sessionId);
   if (row?.state !== "running") return;
   await transitionSessionState(db, row.user_id, sessionId, "closed");
+}
+
+// Boot sweep (#272): a 'running' row can survive a process restart (app
+// quit, crash, central redeploy) that never reached the graceful close path
+// (mcp/transport.ts's onclose / closeSessionIfRunning, or
+// closeSessionsByTerminalId on PTY exit) -- at process start there is no
+// live transport that could possibly own any of these connections anymore,
+// so every 'running' row left over from a previous life is stale by
+// definition. Mirrors sweepStaleSessionProjectionsOnBoot's shape (same call
+// sites: index.ts, desktop.ts). Deliberately does NOT touch 'suspended' --
+// an agent that explicitly suspended before the process's previous life
+// ended must stay resumable. Not scoped to a single user: this is a
+// process-wide maintenance sweep, same as autoArchiveClosedSessions above.
+export async function closeStaleRunningSessionsOnBoot(db: Client): Promise<number> {
+  const res = await db.execute({ sql: "SELECT id, user_id FROM sessions WHERE state = 'running'" });
+  for (const row of res.rows) {
+    await transitionSessionState(db, String(row.user_id), String(row.id), "closed");
+  }
+  return res.rows.length;
 }
 
 // Auto-archive closed sessions older than the given age -- a view filter

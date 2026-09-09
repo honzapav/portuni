@@ -105,6 +105,44 @@ describe("deleteFile", () => {
     assert.equal(await getFileState(reg.file_id), null);
   });
 
+  // #275: file_state used to be deleted unconditionally after a best-effort
+  // (swallowed) local rm, even when that rm actually failed -- destroying
+  // the only proof (last_synced_hash) a later sync's tombstone cleanup
+  // needs to recognize a leftover local copy as this exact confirmed
+  // deletion rather than new content to adopt and push back.
+  it("complete mode preserves file_state when the local removal itself fails", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    const src = join(workspace, "blocked.txt");
+    await writeFile(src, "d");
+    const { file_id, local_path } = await storeFile(db, {
+      userId: "U1",
+      nodeId,
+      localPath: src,
+    });
+    // Simulate the local removal failing: replace the mirrored file with a
+    // directory at the same path. rm(path, {force:true}) (no recursive)
+    // throws EISDIR for a directory -- the same "something went wrong
+    // locally" shape a permission error would produce.
+    await rm(local_path);
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(local_path);
+
+    const r = await deleteFile(db, {
+      userId: "U1",
+      fileId: file_id,
+      mode: "complete",
+      confirmed: true,
+    });
+    assert.equal(r.status, "ok", "remote + record deletion still completes");
+    const rr = await db.execute({ sql: "SELECT id FROM files WHERE id = ?", args: [file_id] });
+    assert.equal(rr.rows.length, 0);
+    const state = await getFileState(file_id);
+    assert.ok(state, "file_state must survive a failed local removal");
+    assert.ok(state!.last_synced_hash, "synced baseline stays intact for a later tombstone match");
+  });
+
   it("unregister_only keeps local + remote", async () => {
     const { db, nodeId } = await makeSharedDb();
     const mirrorRoot = join(workspace, "mirror");

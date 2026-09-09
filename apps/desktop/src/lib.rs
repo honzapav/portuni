@@ -1253,9 +1253,20 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
     // (footer unsynced indicator + quit guard); the central server has none
     // and would answer an empty aggregate. /sync/health is the same shape
     // for the mirror-watcher error buffer (#202) -- also device-local, also
-    // empty on the central server. /sync/drive/* is NOT here: Drive
-    // remote config lives on the central server in central mode.
-    if p == "/scope" || p == "/sandbox-profile" || p == "/sync/pending" || p == "/sync/health" {
+    // empty on the central server. /sync/jobs (+ /sync/jobs/current,
+    // /sync/jobs/<id>, #273) is the background multi-node sync job the
+    // footer's "Synchronizovat vše" starts -- it fans out into per-node
+    // POST /nodes/:id/sync calls, which are themselves already local-only
+    // below, so the job driving them must run on this device too. /sync/drive/*
+    // is NOT here: Drive remote config lives on the central server in
+    // central mode.
+    if p == "/scope"
+        || p == "/sandbox-profile"
+        || p == "/sync/pending"
+        || p == "/sync/health"
+        || p == "/sync/jobs"
+        || p.starts_with("/sync/jobs/")
+    {
         return true;
     }
 
@@ -1264,9 +1275,10 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
     //          /nodes/<id>/sandbox-profile, /nodes/<id>/file (content),
     //          /nodes/<id>/files (create, #266), /nodes/<id>/files/<fileId>
     //          (delete, #254 -- exactly one segment after "files/"),
-    //          /nodes/<id>/files/<fileId>/resolve (#264) and
-    //          /nodes/<id>/files/<fileId>/rename (the device renames its
-    //          mirror copy after central confirms).
+    //          /nodes/<id>/files/<fileId>/resolve (#264),
+    //          /nodes/<id>/files/<fileId>/rename, and
+    //          /nodes/<id>/files/<fileId>/move (#278) -- the device renames/
+    //          relocates its own mirror copy after central confirms.
     //
     // NOT matched (served centrally): /nodes/<id>/file-url,
     // /nodes/<id>/folder-url.
@@ -1287,6 +1299,7 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
                 if (!file_seg.is_empty() && !file_seg.contains('/'))
                     || file_seg.ends_with("/resolve")
                     || file_seg.ends_with("/rename")
+                    || file_seg.ends_with("/move")
                 {
                     return true;
                 }
@@ -3990,6 +4003,16 @@ mod local_only_path_tests {
     }
 
     #[test]
+    fn node_files_move_is_local_only() {
+        // POST /nodes/:id/files/:fileId/move (#278): central keeps the
+        // record + remote step, but only the device can relocate its own
+        // mirror copy -- without this it went straight to central and the
+        // local file was left stranded at the old path.
+        assert!(is_local_only_path("/nodes/abc123/files/somefileid/move"));
+        assert!(is_local_only_path("/nodes/abc123/files/somefileid/move?x=1"));
+    }
+
+    #[test]
     fn node_files_delete_is_local_only() {
         // DELETE /nodes/:id/files/:fileId (#254): the device runs the local
         // disk-cleanup step the central server cannot do itself.
@@ -4034,6 +4057,19 @@ mod local_only_path_tests {
         // device's sidecar; the central server never runs a watcher against
         // this device's mirrors and would answer an empty/wrong result.
         assert!(is_local_only_path("/sync/health"));
+    }
+
+    #[test]
+    fn sync_jobs_is_local_only() {
+        // #273: the background multi-node sync job fans out into per-node
+        // POST /nodes/:id/sync calls, already local-only above -- the job
+        // itself (start, poll by id, poll "current") must run on the same
+        // device or it would drive central-side syncRunCentral calls with
+        // no device mirror context at all.
+        assert!(is_local_only_path("/sync/jobs"));
+        assert!(is_local_only_path("/sync/jobs/current"));
+        assert!(is_local_only_path("/sync/jobs/01ABCDEF"));
+        assert!(is_local_only_path("/sync/jobs/01ABCDEF?x=1"));
     }
 
     #[test]

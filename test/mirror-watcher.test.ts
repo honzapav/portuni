@@ -82,6 +82,54 @@ describe("createMirrorWatcher dispatch", () => {
     assert.deepEqual(calls[0], { nodeId: "N1", absPath: "/m/wip/a.md" });
   });
 
+  it("a slow reconcile in one mirror does not block a concurrent reconcile in another (#273)", async () => {
+    const calls: { nodeId: string; absPath: string }[] = [];
+    let releaseSlow: (() => void) | null = null;
+    const emitters: Record<string, (p: string) => void> = {};
+    const watcher = createMirrorWatcher({
+      db: {} as unknown as Client,
+      userId: "U1",
+      listMirrors: async () => [
+        { user_id: "U1", node_id: "N1", local_path: "/m1", registered_at: "" },
+        { user_id: "U1", node_id: "N2", local_path: "/m2", registered_at: "" },
+      ],
+      reconcile: async (a) => {
+        if (a.nodeId === "N1") {
+          await new Promise<void>((resolve) => {
+            releaseSlow = resolve;
+          });
+        }
+        calls.push({ nodeId: a.nodeId, absPath: a.absPath });
+        return { action: "noop" };
+      },
+      backfill: false,
+      watchFactory: (root, onPath) => {
+        emitters[root] = onPath;
+        return { close() {
+          /* no-op */
+        } };
+      },
+      debounceMs: 5,
+    });
+    await watcher.start();
+    emitters["/m1"]("/m1/wip/slow.md");
+    await delay(30); // N1's reconcile is now running and blocked on releaseSlow.
+    emitters["/m2"]("/m2/wip/fast.md");
+    await delay(60);
+    assert.deepEqual(
+      calls,
+      [{ nodeId: "N2", absPath: "/m2/wip/fast.md" }],
+      "N2's reconcile must complete while N1's is still stuck -- independent chains",
+    );
+    releaseSlow!();
+    await delay(30);
+    watcher.stop();
+    assert.deepEqual(calls, [
+      { nodeId: "N2", absPath: "/m2/wip/fast.md" },
+      { nodeId: "N1", absPath: "/m1/wip/slow.md" },
+    ]);
+  });
+
   it("re-links an active session projection when a watched file changes (#191)", async () => {
     const root = await mkdtemp(join(tmpdir(), "portuni-watch-proj-"));
     const mirror = join(root, "mirror");
@@ -345,6 +393,51 @@ describe("createMirrorWatcher refresh", () => {
     await watcher.refresh();
     watcher.stop();
     assert.deepEqual(backfilled, ["N2"]);
+  });
+
+  it("sweep re-backfills every currently-watched mirror, not just newly added ones (#273)", async () => {
+    const h = harness();
+    h.mirrors.push({ user_id: "U1", node_id: "N1", local_path: "/m1", registered_at: "" });
+    h.mirrors.push({ user_id: "U1", node_id: "N2", local_path: "/m2", registered_at: "" });
+    const backfilled: string[] = [];
+    const watcher = createMirrorWatcher({
+      ...h.deps,
+      backfillMirror: async (m: { node_id: string }) => {
+        backfilled.push(m.node_id);
+      },
+    });
+    await watcher.start();
+    backfilled.length = 0; // ignore whatever start() did (harness disables backfill on start)
+
+    await watcher.sweep();
+    watcher.stop();
+    assert.deepEqual(
+      backfilled.sort(),
+      ["N1", "N2"],
+      "sweep re-backfills mirrors that were already being watched, not just new ones",
+    );
+  });
+
+  it("sweep does not overlap with itself when called again before the first pass finishes", async () => {
+    const h = harness();
+    h.mirrors.push({ user_id: "U1", node_id: "N1", local_path: "/m1", registered_at: "" });
+    let concurrentCalls = 0;
+    let maxConcurrent = 0;
+    const watcher = createMirrorWatcher({
+      ...h.deps,
+      backfillMirror: async () => {
+        concurrentCalls++;
+        maxConcurrent = Math.max(maxConcurrent, concurrentCalls);
+        await delay(20);
+        concurrentCalls--;
+      },
+    });
+    await watcher.start();
+    const first = watcher.sweep();
+    const second = watcher.sweep(); // must no-op while the first is in flight
+    await Promise.all([first, second]);
+    watcher.stop();
+    assert.equal(maxConcurrent, 1);
   });
 
   it("refreshes on registry notification via the subscribe seam and unsubscribes on stop", async () => {

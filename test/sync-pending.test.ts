@@ -63,7 +63,7 @@ describe("computeSyncPending", () => {
     await registerMirror(SOLO_USER, shared.nodeId, mirror);
 
     const r = await computeSyncPending(shared.db, adminIdentity());
-    assert.deepEqual(r, { nodes: [], total: 0 });
+    assert.deepEqual(r, { nodes: [], total: 0, decisions: 0 });
   });
 
   // Task 14 point 7: a mirror for a node the caller can no longer see
@@ -105,7 +105,13 @@ describe("computeSyncPending", () => {
     );
   });
 
-  it("a node whose only pending files are deleted_local is absent, total 0", async () => {
+  // #273: deleted_local needs a human decision (restore or accept the
+  // deletion) -- a sync run never resolves it, so it must not count toward
+  // `total` (which the footer badge / quit guard read as "work a run can
+  // actually clear"). But it must not be hidden from the overview either,
+  // or the decision it needs would never surface anywhere -- so the node
+  // still appears, just with total 0 and decisions counting it instead.
+  it("a node whose only pending files are deleted_local appears with total 0, decisions counting it", async () => {
     const shared = await makeSharedDb();
     setDbForTesting(shared.db);
     const mirror = join(workspace, "mirror-deleted");
@@ -119,12 +125,48 @@ describe("computeSyncPending", () => {
 
     const r = await computeSyncPending(shared.db, adminIdentity());
 
-    assert.equal(
-      r.nodes.find((n) => n.node_id === shared.nodeId),
-      undefined,
-      "a node with only deleted_local files must not appear",
-    );
+    const node = r.nodes.find((n) => n.node_id === shared.nodeId);
+    assert.ok(node, "a node needing a decision must still appear in the overview");
+    assert.equal(node.deleted_local, 1);
+    assert.equal(node.total, 0, "a run cannot clear deleted_local, so it must not count toward total");
+    assert.equal(node.decisions, 1);
     assert.equal(r.total, 0);
+    assert.equal(r.decisions, 1);
+  });
+
+  // A sync run never resolves a conflict either -- resolution is
+  // POST /nodes/:id/files/:fileId/resolve, a deliberate human decision.
+  // Counting it into `total` used to make the footer badge / quit guard
+  // permanently non-zero for a node a run could never actually finish.
+  it("a node whose only pending files are conflicts appears with total 0, decisions counting it", async () => {
+    const shared = await makeSharedDb();
+    setDbForTesting(shared.db);
+    const mirror = join(workspace, "mirror-conflict");
+    await mkdir(join(mirror, "wip"), { recursive: true });
+    const fp = join(mirror, "wip", "doc.md");
+    await writeFile(fp, "v1");
+    await registerMirror(SOLO_USER, shared.nodeId, mirror);
+    const pushed = await storeFile(shared.db, { userId: SOLO_USER, nodeId: shared.nodeId, localPath: fp });
+    // Diverge local from the synced baseline...
+    await writeFile(fp, "local edit");
+    await reconcilePath(shared.db, { userId: SOLO_USER, nodeId: shared.nodeId, absPath: fp });
+    // ...and simulate an out-of-band remote edit already reflected in the
+    // cached remote hash the fast scan reads (files.current_remote_hash) --
+    // both sides now differ from last_synced_hash, which is exactly conflict.
+    await shared.db.execute({
+      sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
+      args: ["f".repeat(64), pushed.file_id],
+    });
+
+    const r = await computeSyncPending(shared.db, adminIdentity());
+
+    const node = r.nodes.find((n) => n.node_id === shared.nodeId);
+    assert.ok(node, "a node needing a decision must still appear in the overview");
+    assert.equal(node.conflict, 1);
+    assert.equal(node.total, 0, "a run cannot resolve a conflict, so it must not count toward total");
+    assert.equal(node.decisions, 1);
+    assert.equal(r.total, 0);
+    assert.equal(r.decisions, 1);
   });
 
   it("a node with push and deleted_local is listed with total counting only the push", async () => {
@@ -148,6 +190,7 @@ describe("computeSyncPending", () => {
     assert.ok(node, "the mixed node must appear");
     assert.equal(node.deleted_local, 1);
     assert.equal(node.total, node.push);
+    assert.equal(node.decisions, 1);
     assert.ok(node.push >= 1);
   });
 

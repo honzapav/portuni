@@ -14,6 +14,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ensureSchema } from "../infra/schema.js";
 import { SOLO_USER } from "../infra/schema.js";
 import { createMcpServer } from "./server.js";
+import { normalizeCliName } from "./client-name.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 
 // JSON-RPC owns stdout in stdio mode. Anything else (migration logs,
@@ -49,7 +50,15 @@ async function main(): Promise<void> {
   await ensureSchema();
 
   const identity = buildStdioIdentity();
-  const { server } = createMcpServer(identity);
+  const { server, bindSession } = createMcpServer(identity);
+  // #272: create the durable session row only once the client's handshake
+  // actually completes (the InitializedNotification, the low-level SDK's
+  // own signal for this), not merely because this process was spawned --
+  // mirrors the HTTP transport's onsessioninitialized wiring.
+  server.server.oninitialized = () => {
+    const name = server.server.getClientVersion()?.name;
+    bindSession(name ? normalizeCliName(name) : null);
+  };
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

@@ -18,6 +18,7 @@ import {
   loadResumableSession,
   closeSessionsByTerminalId,
   closeSessionIfRunning,
+  closeStaleRunningSessionsOnBoot,
 } from "../apps/server/domain/sessions.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
 
@@ -87,12 +88,15 @@ describe("createSession / getSession / listSessions", () => {
 });
 
 describe("computeDefaultSessionName", () => {
-  it("formats '<node name> · <date>' from an ISO timestamp", () => {
-    assert.equal(computeDefaultSessionName("Stan GWS", "2026-05-01T10:00:00.000Z"), "Stan GWS · 2026-05-01");
+  it("formats '<node name> · <date> <time>' from an ISO timestamp", () => {
+    assert.equal(
+      computeDefaultSessionName("Stan GWS", "2026-05-01T10:00:00.000Z"),
+      "Stan GWS · 2026-05-01 10:00",
+    );
   });
 
   it("falls back to 'Chat' when there is no anchor node", () => {
-    assert.equal(computeDefaultSessionName(null, "2026-05-01T10:00:00.000Z"), "Chat · 2026-05-01");
+    assert.equal(computeDefaultSessionName(null, "2026-05-01T10:00:00.000Z"), "Chat · 2026-05-01 10:00");
   });
 });
 
@@ -293,6 +297,28 @@ describe("closeSessionIfRunning (#218, GC backstop)", () => {
   it("is a no-op for an unknown session id", async () => {
     const { db } = await makeSharedDb();
     await assert.doesNotReject(closeSessionIfRunning(db, "nope"));
+  });
+});
+
+describe("closeStaleRunningSessionsOnBoot (#272)", () => {
+  it("closes every running row, process-wide, leaving suspended untouched", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const running1 = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    const running2 = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
+    const suspended = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await transitionSessionState(db, "U1", suspended.id, "suspended");
+
+    const closed = await closeStaleRunningSessionsOnBoot(db);
+    assert.equal(closed, 2);
+
+    assert.equal((await getSession(db, running1.id))?.state, "closed");
+    assert.equal((await getSession(db, running2.id))?.state, "closed");
+    assert.equal((await getSession(db, suspended.id))?.state, "suspended");
+  });
+
+  it("is a no-op when nothing is running", async () => {
+    const { db } = await makeSharedDb();
+    assert.equal(await closeStaleRunningSessionsOnBoot(db), 0);
   });
 });
 

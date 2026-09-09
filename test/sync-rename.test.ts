@@ -110,6 +110,42 @@ describe("renameFile", () => {
     assert.equal(r.status, "ok");
   });
 
+  it("refuses to rename over an untracked object already at the destination (#278 finding 5)", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const mirrorRoot = join(workspace, "mirror");
+    await registerMirror("U1", nodeId, mirrorRoot);
+    await mkdir(join(mirrorRoot, "wip"), { recursive: true });
+    const src = join(mirrorRoot, "wip", "old.md");
+    await writeFile(src, "body");
+    const { file_id, remote_path } = await storeFile(db, { userId: "U1", nodeId, localPath: src });
+
+    // An object nobody has adopted yet already sits at the rename target on
+    // the remote -- e.g. a teammate pushed new.md directly, or a previous
+    // sync hasn't run. Before #278's fix this went straight to
+    // adapter.rename with no destination check: on Drive it would create a
+    // duplicate sibling, on an overwrite-style backend it would destroy the
+    // untracked bytes.
+    const destRemotePath = remote_path.slice(0, remote_path.length - "old.md".length) + "new.md";
+    const adapter = await getAdapter(db, "test-fs");
+    await adapter.put(destRemotePath, Buffer.from("untracked destination content"));
+
+    await assert.rejects(
+      () => renameFile(db, { userId: "U1", fileId: file_id, newFilename: "new.md" }),
+      /both .* exist on the remote/,
+    );
+
+    // Nothing was touched: the source is still at the old path, the
+    // untracked destination is untouched, and the DB row is unchanged.
+    assert.equal(await exists(join(mirrorRoot, "wip", "old.md")), true);
+    const destContent = await adapter.get(destRemotePath);
+    assert.equal(destContent.toString("utf8"), "untracked destination content");
+    const row = await db.execute({
+      sql: "SELECT filename, remote_path FROM files WHERE id = ?",
+      args: [file_id],
+    });
+    assert.equal(row.rows[0].filename, "old.md");
+  });
+
   it("rejects an unsafe filename", async () => {
     const { db, nodeId } = await makeSharedDb();
     const mirrorRoot = join(workspace, "mirror");

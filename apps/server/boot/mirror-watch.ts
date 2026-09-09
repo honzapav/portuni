@@ -14,6 +14,13 @@ import {
   type MirrorWatcher,
 } from "../domain/sync/mirror-watcher.js";
 
+// Same cadence as the central-mode agent's backfillSweep (desktop.ts) --
+// local mode previously had no periodic sweep at all (#273), only the
+// start-time backfill and whatever refresh() picks up when a mirror is
+// newly registered. This is the safety net for a watcher event lost under
+// load (fs.watch's recursive mode can drop events on a big enough burst).
+const SWEEP_INTERVAL_MS = 10 * 60_000;
+
 export function startMirrorWatcher(enabled: boolean): MirrorWatcher | null {
   if (!enabled) return null;
   const mode =
@@ -28,5 +35,8 @@ export function startMirrorWatcher(enabled: boolean): MirrorWatcher | null {
     .start()
     .then(() => console.log("[portuni:watch] mirror watcher active"))
     .catch((e) => console.error("[portuni:watch] start failed:", e));
+  setInterval(() => {
+    void watcher.sweep().catch((e) => console.error("[portuni:watch] periodic sweep failed:", e));
+  }, SWEEP_INTERVAL_MS).unref();
   return watcher;
 }

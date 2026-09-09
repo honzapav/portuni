@@ -87,6 +87,9 @@ import {
   handleSyncPending,
   handleSyncRun,
   handleSyncStatus,
+  handleStartSyncJob,
+  handleGetSyncJob,
+  handleGetCurrentSyncJob,
 } from "./nodes.js";
 import { handleCreateEdge, handleDeleteEdge } from "./edges.js";
 import { handleGetNodeAccess, handleListGroups, handlePutNodeAccess } from "./access.js";
@@ -274,6 +277,21 @@ async function routeSystem(
   }
   if (pathname === "/sync/health" && method === "GET") {
     await handleSyncHealth(req, res, identity);
+    return true;
+  }
+  if (pathname === "/sync/jobs" && method === "POST") {
+    await handleStartSyncJob(req, res, identity);
+    return true;
+  }
+  // Checked before the /sync/jobs/:id pattern below -- "current" would
+  // otherwise be swallowed as a literal job id.
+  if (pathname === "/sync/jobs/current" && method === "GET") {
+    await handleGetCurrentSyncJob(req, res, identity);
+    return true;
+  }
+  const jobMatch = pathname.match(/^\/sync\/jobs\/([^/]+)$/);
+  if (jobMatch && method === "GET") {
+    await handleGetSyncJob(req, res, identity, decodeURIComponent(jobMatch[1]));
     return true;
   }
   return false;

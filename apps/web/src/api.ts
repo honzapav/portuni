@@ -9,6 +9,7 @@ import type {
   SyncRunResponse,
   SyncPendingResponse,
   SyncHealthResponse,
+  SyncJobSummary,
   DetailFile,
   FileContentResponse,
   NodeAccessResponse,
@@ -205,6 +206,26 @@ export async function runNodeSync(id: string): Promise<SyncRunResponse> {
     "POST",
     `/nodes/${encodeURIComponent(id)}/sync`,
   );
+}
+
+// Background multi-node sync job (#273): starts immediately (202) and is
+// polled, instead of "Synchronizovat vše" blocking on a client-side loop
+// over runNodeSync per node. node_ids omitted defaults server-side to every
+// node with actionable pending work (computeSyncPending's total > 0 set).
+export function startSyncJob(nodeIds?: string[]): Promise<SyncJobSummary> {
+  return jsonRequest<SyncJobSummary>("POST", "/sync/jobs", nodeIds ? { node_ids: nodeIds } : undefined);
+}
+
+export function fetchSyncJob(id: string): Promise<SyncJobSummary> {
+  return jsonRequest<SyncJobSummary>("GET", `/sync/jobs/${encodeURIComponent(id)}`);
+}
+
+// The caller's own currently-running job, if any -- lets the overview
+// reattach to progress after being remounted (modal reopened, window
+// switched back to) instead of losing track of an in-flight run.
+export async function fetchCurrentSyncJob(): Promise<SyncJobSummary | null> {
+  const res = await jsonRequest<{ job: SyncJobSummary | null }>("GET", "/sync/jobs/current");
+  return res.job;
 }
 
 // Create a working folder for the node and register it in sync.db.

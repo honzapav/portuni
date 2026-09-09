@@ -29,6 +29,7 @@ import {
 } from "./remote-path.js";
 import { resolveNodeInfo } from "./node-info.js";
 import { loadMirrorIgnore } from "./mirror-ignore.js";
+import { withPathLock } from "./path-lock.js";
 
 // Re-export so existing imports `from "./engine.js"` keep working.
 export { resolveNodeInfo };
@@ -166,120 +167,128 @@ export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFile
     }
   }
 
-  // Stat BEFORE reading, so the cached (mtime, size) describes exactly the
-  // bytes pushed below -- an edit landing mid-push must invalidate the
-  // cache on the next scan instead of being masked as clean.
-  const fsInfo = await statForCache(mirroredAbs);
-  const content = await readFile(mirroredAbs);
-
   // Remote path.
   const remotePath = buildRemotePath({ ...info, section, subpath, filename });
 
-  // Upload.
-  const adapter = await getAdapter(db, remoteName);
-  const mt = mimeFor(filename);
-  await adapter.put(remotePath, content, mt ? { mimeType: mt } : undefined);
+  // The whole read-upload-write sequence below is serialized per local path
+  // (#277 finding 7/4's shared coordinator) against any other push or pull
+  // touching the same mirrored file on this device -- e.g. a background
+  // push (#266's create flow) and a foreground store racing the same path.
+  const { fileId, hash } = await withPathLock(mirroredAbs, async () => {
+    // Stat BEFORE reading, so the cached (mtime, size) describes exactly the
+    // bytes pushed below -- an edit landing mid-push must invalidate the
+    // cache on the next scan instead of being masked as clean.
+    const fsInfo = await statForCache(mirroredAbs);
+    const content = await readFile(mirroredAbs);
 
-  // Post-upload verification + canonical hash selection. Backends report
-  // different hash algorithms: Drive returns md5Checksum (32 hex), fs returns
-  // no hash, future S3/Dropbox vary. We use whichever the backend reports as
-  // the canonical "what I last saw" so that statusScan compares like-for-like.
-  let hash = sha256Buffer(content);
-  try {
-    const stat = await adapter.stat(remotePath);
-    if (stat?.hash) {
-      const expected = stat.hash.length === 32 ? md5Buffer(content) : hash;
-      if (stat.hash.toLowerCase() !== expected.toLowerCase()) {
-        throw new Error(
-          `Post-upload hash verification failed: expected ${expected}, adapter reported ${stat.hash}`,
-        );
+    // Upload.
+    const adapter = await getAdapter(db, remoteName);
+    const mt = mimeFor(filename);
+    await adapter.put(remotePath, content, mt ? { mimeType: mt } : undefined);
+
+    // Post-upload verification + canonical hash selection. Backends report
+    // different hash algorithms: Drive returns md5Checksum (32 hex), fs returns
+    // no hash, future S3/Dropbox vary. We use whichever the backend reports as
+    // the canonical "what I last saw" so that statusScan compares like-for-like.
+    let hash = sha256Buffer(content);
+    try {
+      const stat = await adapter.stat(remotePath);
+      if (stat?.hash) {
+        const expected = stat.hash.length === 32 ? md5Buffer(content) : hash;
+        if (stat.hash.toLowerCase() !== expected.toLowerCase()) {
+          throw new Error(
+            `Post-upload hash verification failed: expected ${expected}, adapter reported ${stat.hash}`,
+          );
+        }
+        hash = stat.hash.toLowerCase();
       }
-      hash = stat.hash.toLowerCase();
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("Post-upload hash")) throw e;
+      // Adapter may not support stat or may have transient failure - treat as soft warning.
     }
-  } catch (e) {
-    if (e instanceof Error && e.message.startsWith("Post-upload hash")) throw e;
-    // Adapter may not support stat or may have transient failure - treat as soft warning.
-  }
 
-  // Upsert files row. Single statement against the idx_files_unique_remote
-  // partial index -- a concurrent store of the same path becomes an UPDATE
-  // instead of a duplicate row (the old SELECT-then-INSERT could interleave).
-  // The conflict target is (node_id, remote_path) only, not remote_name
-  // (#201): this is also how a file registered before any remote existed
-  // (registerLocalFile, remote_name NULL) gets its remote_name backfilled
-  // here -- the row already matches on remote_path, so this INSERT becomes
-  // the UPDATE branch and excluded.remote_name (now resolved) overwrites
-  // the NULL. RETURNING gives us the surviving row id either way.
-  // status/description only overwrite when explicitly provided.
-  const now = new Date().toISOString();
-  const upsert = await db.execute({
-    sql: `INSERT INTO files (id, node_id, filename, status, mime_type,
-                              remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
-                              is_native_format, created_by, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
-          ON CONFLICT(node_id, remote_path) WHERE remote_path IS NOT NULL
-          DO UPDATE SET
-            remote_name = excluded.remote_name,
-            filename = excluded.filename,
-            status = COALESCE(?, files.status),
-            current_remote_hash = excluded.current_remote_hash,
-            last_pushed_by = excluded.last_pushed_by,
-            last_pushed_at = excluded.last_pushed_at,
-            mime_type = excluded.mime_type,
-            updated_at = excluded.updated_at
-          RETURNING id`,
-    args: [
-      ulid(),
-      a.nodeId,
-      filename,
-      a.status ?? "wip",
-      mt,
-      remoteName,
-      remotePath,
-      hash,
-      a.userId,
-      now,
-      a.userId,
-      now,
-      now,
-      a.status ?? null,
-    ],
-  });
-  const fileId = upsert.rows[0].id as string;
+    // Upsert files row. Single statement against the idx_files_unique_remote
+    // partial index -- a concurrent store of the same path becomes an UPDATE
+    // instead of a duplicate row (the old SELECT-then-INSERT could interleave).
+    // The conflict target is (node_id, remote_path) only, not remote_name
+    // (#201): this is also how a file registered before any remote existed
+    // (registerLocalFile, remote_name NULL) gets its remote_name backfilled
+    // here -- the row already matches on remote_path, so this INSERT becomes
+    // the UPDATE branch and excluded.remote_name (now resolved) overwrites
+    // the NULL. RETURNING gives us the surviving row id either way.
+    // status/description only overwrite when explicitly provided.
+    const now = new Date().toISOString();
+    const upsert = await db.execute({
+      sql: `INSERT INTO files (id, node_id, filename, status, mime_type,
+                                remote_name, remote_path, current_remote_hash, last_pushed_by, last_pushed_at,
+                                is_native_format, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+            ON CONFLICT(node_id, remote_path) WHERE remote_path IS NOT NULL
+            DO UPDATE SET
+              remote_name = excluded.remote_name,
+              filename = excluded.filename,
+              status = COALESCE(?, files.status),
+              current_remote_hash = excluded.current_remote_hash,
+              last_pushed_by = excluded.last_pushed_by,
+              last_pushed_at = excluded.last_pushed_at,
+              mime_type = excluded.mime_type,
+              updated_at = excluded.updated_at
+            RETURNING id`,
+      args: [
+        ulid(),
+        a.nodeId,
+        filename,
+        a.status ?? "wip",
+        mt,
+        remoteName,
+        remotePath,
+        hash,
+        a.userId,
+        now,
+        a.userId,
+        now,
+        now,
+        a.status ?? null,
+      ],
+    });
+    const fileId = upsert.rows[0].id as string;
 
-  // Audit.
-  await db.execute({
-    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
-          VALUES (?, ?, 'sync_store', 'file', ?, ?, ?)`,
-    args: [
-      ulid(),
-      a.userId,
-      fileId,
-      JSON.stringify({ remote_name: remoteName, remote_path: remotePath, hash }),
-      now,
-    ],
-  });
+    // Audit.
+    await db.execute({
+      sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+            VALUES (?, ?, 'sync_store', 'file', ?, ?, ?)`,
+      args: [
+        ulid(),
+        a.userId,
+        fileId,
+        JSON.stringify({ remote_name: remoteName, remote_path: remotePath, hash }),
+        now,
+      ],
+    });
 
-  // Local sync.db file_state. Fast status trusts cached_local_hash outright,
-  // so the cache must describe the file as it is NOW: if it changed while
-  // the upload was in flight, rehash instead of caching the pushed hash --
-  // otherwise the mid-push edit would read as clean and never be pushed.
-  const after = await statForCache(mirroredAbs);
-  const changedMidPush =
-    after.mtime !== fsInfo.mtime || after.size !== fsInfo.size || after.ino !== fsInfo.ino;
-  const cachedLocalHash = changedMidPush
-    ? hash.length === 32
-      ? md5Buffer(await readFile(mirroredAbs))
-      : await sha256File(mirroredAbs)
-    : hash;
-  await upsertFileState({
-    file_id: fileId,
-    last_synced_hash: hash,
-    cached_local_hash: cachedLocalHash,
-    cached_mtime: after.mtime,
-    cached_size: after.size,
-    cached_ino: after.ino,
-    cached_dev: after.dev,
+    // Local sync.db file_state. Fast status trusts cached_local_hash outright,
+    // so the cache must describe the file as it is NOW: if it changed while
+    // the upload was in flight, rehash instead of caching the pushed hash --
+    // otherwise the mid-push edit would read as clean and never be pushed.
+    const after = await statForCache(mirroredAbs);
+    const changedMidPush =
+      after.mtime !== fsInfo.mtime || after.size !== fsInfo.size || after.ino !== fsInfo.ino;
+    const cachedLocalHash = changedMidPush
+      ? hash.length === 32
+        ? md5Buffer(await readFile(mirroredAbs))
+        : await sha256File(mirroredAbs)
+      : hash;
+    await upsertFileState({
+      file_id: fileId,
+      last_synced_hash: hash,
+      cached_local_hash: cachedLocalHash,
+      cached_mtime: after.mtime,
+      cached_size: after.size,
+      cached_ino: after.ino,
+      cached_dev: after.dev,
+    });
+
+    return { fileId, hash };
   });
 
   return {
@@ -506,72 +515,81 @@ export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileRes
   const localPath = deriveLocalPath({ mirrorRoot, nodeRoot, remotePath });
 
   const adapter = await getAdapter(db, remoteName);
-  const content = await adapter.get(remotePath);
 
-  // Use the same hash algorithm the backend reports, so file_state stays
-  // comparable with adapter.stat() in subsequent statusScans.
-  const useMd5 = knownRemoteHash !== null && knownRemoteHash.length === 32;
-  const hash = useMd5 ? md5Buffer(content) : sha256Buffer(content);
+  // The download, the dirty-local check and the overwrite all happen inside
+  // the lock. Downloading outside it would let a push of this same path
+  // land between the fetch and the write: the bytes in hand are then older
+  // than what the remote now holds, and writing them reverts the just-pushed
+  // local content and records the stale hash as this device's baseline.
+  const hash = await withPathLock(localPath, async () => {
+    const content = await adapter.get(remotePath);
 
-  // Dirty-local guard: overwriting is only safe when the local copy matches
-  // the last state this device synced, or already equals the remote bytes.
-  // A local file with unpushed edits (or with no baseline at all) must not
-  // be silently destroyed.
-  if (!a.force && (await fileExistsAt(localPath))) {
-    const state = await getFileState(a.fileId);
-    const baseline = state?.last_synced_hash ?? null;
-    const localCur = useMd5
-      ? md5Buffer(await readFile(localPath))
-      : await sha256File(localPath);
-    const dirty =
-      localCur !== hash && (baseline === null || localCur !== baseline);
-    if (dirty) {
-      throw new PullDirtyLocalError(
-        `File ${a.fileId} has local changes that were never pushed from this device ` +
-          `(${localPath}). Push them with portuni_store, or pass force: true to overwrite.`,
-      );
+    // Use the same hash algorithm the backend reports, so file_state stays
+    // comparable with adapter.stat() in subsequent statusScans.
+    const useMd5 = knownRemoteHash !== null && knownRemoteHash.length === 32;
+    const hash = useMd5 ? md5Buffer(content) : sha256Buffer(content);
+    // Dirty-local guard: overwriting is only safe when the local copy matches
+    // the last state this device synced, or already equals the remote bytes.
+    // A local file with unpushed edits (or with no baseline at all) must not
+    // be silently destroyed.
+    if (!a.force && (await fileExistsAt(localPath))) {
+      const state = await getFileState(a.fileId);
+      const baseline = state?.last_synced_hash ?? null;
+      const localCur = useMd5
+        ? md5Buffer(await readFile(localPath))
+        : await sha256File(localPath);
+      const dirty =
+        localCur !== hash && (baseline === null || localCur !== baseline);
+      if (dirty) {
+        throw new PullDirtyLocalError(
+          `File ${a.fileId} has local changes that were never pushed from this device ` +
+            `(${localPath}). Push them with portuni_store, or pass force: true to overwrite.`,
+        );
+      }
     }
-  }
 
-  await mkdir(dirname(localPath), { recursive: true });
-  await writeFile(localPath, content);
-  const fsInfo = await statForCache(localPath);
-  const now = new Date().toISOString();
-  await upsertFileState({
-    file_id: a.fileId,
-    last_synced_hash: hash,
-    last_synced_at: now,
-    cached_local_hash: hash,
-    cached_mtime: fsInfo.mtime,
-    cached_size: fsInfo.size,
-    cached_ino: fsInfo.ino,
-    cached_dev: fsInfo.dev,
-  });
+    await mkdir(dirname(localPath), { recursive: true });
+    await writeFile(localPath, content);
+    const fsInfo = await statForCache(localPath);
+    const now = new Date().toISOString();
+    await upsertFileState({
+      file_id: a.fileId,
+      last_synced_hash: hash,
+      last_synced_at: now,
+      cached_local_hash: hash,
+      cached_mtime: fsInfo.mtime,
+      cached_size: fsInfo.size,
+      cached_ino: fsInfo.ino,
+      cached_dev: fsInfo.dev,
+    });
 
-  // Keep files.current_remote_hash in step with what we just confirmed is
-  // on the remote. It normally only advances via a push (storeFile) --
-  // this device's own pull downloads exactly what that column already
-  // recorded from whichever device last pushed, so writing it here is a
-  // no-op in the common case. It only diverges when the remote was edited
-  // out of band of any Portuni push; without this write, a fast-mode
-  // status scan (files.current_remote_hash + file_state, no disk or
-  // adapter I/O) would keep reporting the file as a pull candidate right
-  // after it was just pulled.
-  await db.execute({
-    sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
-    args: [hash, a.fileId],
-  });
+    // Keep files.current_remote_hash in step with what we just confirmed is
+    // on the remote. It normally only advances via a push (storeFile) --
+    // this device's own pull downloads exactly what that column already
+    // recorded from whichever device last pushed, so writing it here is a
+    // no-op in the common case. It only diverges when the remote was edited
+    // out of band of any Portuni push; without this write, a fast-mode
+    // status scan (files.current_remote_hash + file_state, no disk or
+    // adapter I/O) would keep reporting the file as a pull candidate right
+    // after it was just pulled.
+    await db.execute({
+      sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
+      args: [hash, a.fileId],
+    });
 
-  await db.execute({
-    sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
-          VALUES (?, ?, 'sync_pull', 'file', ?, ?, ?)`,
-    args: [
-      ulid(),
-      a.userId,
-      a.fileId,
-      JSON.stringify({ remote_name: remoteName, remote_path: remotePath, hash }),
-      now,
-    ],
+    await db.execute({
+      sql: `INSERT INTO audit_log (id, user_id, action, target_type, target_id, detail, timestamp)
+            VALUES (?, ?, 'sync_pull', 'file', ?, ?, ?)`,
+      args: [
+        ulid(),
+        a.userId,
+        a.fileId,
+        JSON.stringify({ remote_name: remoteName, remote_path: remotePath, hash }),
+        now,
+      ],
+    });
+
+    return hash;
   });
 
   return { file_id: a.fileId, local_path: localPath, hash };
@@ -614,7 +632,15 @@ export interface StatusFileEntry {
   local_hash: string | null;
   remote_hash: string | null;
   last_synced_hash: string | null;
-  class: "clean" | "push" | "pull" | "conflict" | "remote_missing" | "remote_error" | "native";
+  class:
+    | "clean"
+    | "push"
+    | "pull"
+    | "conflict"
+    | "remote_missing"
+    | "remote_error"
+    | "native"
+    | "deleted_local";
 }
 
 export interface NewLocalEntry {
@@ -896,7 +922,7 @@ async function scanRow(
 
   if (localHash === null) {
     if (base.last_synced_hash) {
-      return { bucket: "deleted_local", entry: { ...base, class: "clean" } };
+      return { bucket: "deleted_local", entry: { ...base, class: "deleted_local" } };
     }
     // Remote content exists but this device never synced it -> fetchable.
     return { bucket: "pull_candidates", entry: { ...base, class: "pull" } };

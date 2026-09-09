@@ -92,11 +92,32 @@ Returns: `{ file_id, filename, remote_path }`. With a local mirror the exported 
 `portuni_status` only reports the current classification — it never touches the remote or cleans anything up. Reconciling drift against the remote happens in a **deliberate sync run**, triggered by the desktop/web UI's "Synchronizovat" action (or, for a teammate mirror in central mode, by the sync agent). One run does, in order:
 
 1. **Retry pending file ops** — replays any move/rename/delete whose remote step didn't finish last time (see [Destructive operations](#destructive-operations) below).
-2. **Remote sweep** — a tracked file whose remote object is confirmed gone is removed and tombstoned; a file that appeared anywhere under `wip/`, `outputs/`, or `resources/` (at any depth) is adopted and pulled in the same run (a dot-prefixed filename or subfolder is skipped). A record never pushed from this device is left alone, and nothing is destroyed if the remote itself can't be confirmed reachable.
+2. **Remote sweep** — a tracked file whose remote object is confirmed gone is removed and tombstoned; a file that appeared anywhere under `wip/`, `outputs/`, or `resources/` (at any depth) is adopted and pulled in the same run (a dot-prefixed filename or subfolder is skipped). A record never pushed from this device is left alone, and nothing is destroyed if the remote itself can't be confirmed reachable. The sweep also refreshes `current_remote_hash` for any tracked, present record — central-mode classification reads that column as its only source of remote truth, so a record with a NULL hash used to read as `remote_missing` forever even though the object was right there in the sweep's own listing (#273), and a record whose hash went stale (a teammate editing the file directly in Drive) used to read as permanently clean, so the edit was never pulled by any device (#276). For a backend that reports a content hash on listing (Drive) this refresh costs no extra remote call; a backend that doesn't (e.g. a plain filesystem remote) only gets a NULL hash resolved (by downloading and hashing), since re-verifying an already-known hash there would mean downloading every tracked file's content on every sync.
 3. Status scan.
-4. Push every `push` candidate, pull every `pull` candidate. A `deleted_local` file is reported, not auto-restored — that needs an explicit decision (see [Resolving conflicts and deletions](#resolving-conflicts-and-deletions)).
+4. Push every `push` candidate, pull every `pull` candidate. A `deleted_local` file is reported, not auto-restored — that needs an explicit decision (see [Resolving conflicts and deletions](#resolving-conflicts-and-deletions)). Every push and pull is serialized per local path against any other push/pull of that same file on this device (a background push from `portuni_store`'s create flow, a sync-run push, a foreground pull, an editor save) — an edit landing mid-push is rehashed and stays a push candidate instead of being masked as clean, and a pull's dirty-local check can't be raced by a write landing after the check but before the overwrite (#277).
 5. Clean up untracked local copies that match a delete or move/rename tombstone.
 6. Adopt whatever local files are still untracked — including an edited copy of a file just deleted on the remote, which wins over the deletion and gets pushed back.
+
+### Background sync jobs (bulk "Synchronizovat vše")
+
+Running the sequence above for one node is a single blocking request (`POST /nodes/:id/sync`, unchanged — this is what `portuni_status`'s consumers and the MCP-adjacent tooling still use). Syncing *every* pending node at once no longer loops that request client-side: the web/desktop UI's "Synchronizovat vše" instead starts a background job that runs server-side with bounded concurrency across nodes, so closing the overview, switching windows, or one slow node no longer blocks the rest of the batch.
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/sync/jobs` | POST | Starts a job. Body `{ node_ids?: string[] }` — omitted defaults to every node with actionable pending work (`GET /sync/pending`'s `total > 0` set). Returns `202` with the job summary immediately; a second start while one is already running for the same user reattaches to it instead of racing a duplicate, appending any node the running job does not already cover. |
+| `/sync/jobs/:id` | GET | Job status: `{ id, status: "running" \| "done", started_at, finished_at, total, completed, errored, nodes: [{ node_id, status, result?, error? }] }`. |
+| `/sync/jobs/current` | GET | `{ job: <summary> \| null }` — the caller's own currently-running job, so a reopened UI can reattach without remembering the job id. |
+
+Job state is in-memory on the server/sidecar process — it does not survive a restart, only a UI remount (closing/reopening the overview, switching windows). Each node's own sync work is unaffected either way: `runNodeSync`/`syncRunCentral` per node is the same idempotent call the direct route makes, so a lost job is a lost progress view, never lost or duplicated sync work.
+
+### `GET /sync/pending` — actionable work vs. decisions
+
+The cross-mirror aggregate behind the footer badge, the quit guard, and `/sync/jobs`' default node set splits each node's (and the aggregate's) count in two:
+
+- **`total`** — actionable: `push` + untracked file count. This is exactly what a sync run (or a background job) can clear.
+- **`decisions`** — needs a human: `conflict` + `deleted_local`. A run leaves both untouched by design (see [Resolving conflicts and deletions](#resolving-conflicts-and-deletions)), so counting them into `total` used to make the badge/quit guard warn about work "Synchronizovat vše" could never actually finish. A node with decisions but no actionable work still appears in the overview (not hidden), just with `total: 0`.
+
+`remote_missing` is reported per node but counted in neither — a run does not push or pull it either, and (per the remote-sweep hash backfill above) most `remote_missing` misclassifications now self-correct on the next sweep instead of needing a decision at all.
 
 ## Destructive operations
 
@@ -114,11 +135,11 @@ Move a tracked file within its node (new subpath or section) or to a different n
 | `new_subpath` | string \| null | no | New subpath within the section. Pass `null` to clear |
 | `confirmed` | boolean | no | First call returns a preview; pass `true` on the second call to execute |
 
-Returns either a preview (when `confirmed` is omitted or `false`) or the executed result. Partial failures return `repair_needed: true` with a hint.
+Returns either a preview (when `confirmed` is omitted or `false`) or the executed result. Partial failures return `repair_needed: true` with a hint. Like `portuni_rename_folder`, the remote step stats both the source and destination first and refuses the move outright if an object already sits at the destination path — an untracked file that hasn't been adopted yet is never silently duplicated or overwritten. A move between two different remotes is a copy followed by a delete, so it is not atomic: when the copy lands and the delete of the source fails, that fact is recorded with the operation's intent, and the next sync run finishes it by removing the source copy. Without that record both objects are present and indistinguishable, which the retry refuses to resolve on a guess.
 
 ### portuni_rename_folder
 
-Rename a subpath within a node's sync layout. Updates `remote_path` for every file under the prefix atomically.
+Rename a subpath within a node's sync layout. Updates `remote_path` for every file under the prefix, one remote operation per file.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -126,6 +147,9 @@ Rename a subpath within a node's sync layout. Updates `remote_path` for every fi
 | `old_prefix` | string | yes | Existing subpath prefix (relative to the node's section root) |
 | `new_prefix` | string | yes | New subpath prefix |
 | `dry_run` | boolean | no | Defaults to `true` — returns a preview of affected files. Call again with `dry_run: false` to apply |
+| `limit` | number | no | Max files to rename in this apply call (default 20). Ignored for `dry_run` |
+
+An apply call is bounded by `limit` so a large folder can't time out the caller mid-run. When the result's `remaining` is greater than 0, call again with the **same** `node_id`/`old_prefix`/`new_prefix` — already-renamed files no longer match `old_prefix`, so the next call picks up exactly where the previous one left off, with no extra state to track. Each file's remote step stats both the source and destination first, so a retry that finds the object already at the destination reports it `ok` with `already_at_target: true` instead of failing.
 
 `sync_key` itself is immutable — this tool only changes the visible subpath. The underlying identifier the system uses for routing does not change.
 

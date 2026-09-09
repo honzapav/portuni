@@ -49,11 +49,21 @@ local. Each tracked file is classified:
 - **remote_missing** -- DB row exists but the remote object does not:
   either registered elsewhere and never pushed, or deleted on the
   remote and awaiting the next sync run's remote sweep. Skipped by
-  the sync run.
+  the sync run. In central mode this classification is derived purely
+  from the record's cached remote hash; the remote sweep backfills that
+  hash for any tracked, present object whose hash was previously
+  unknown, so a record stuck here due to a missing (not stale) hash
+  self-corrects on the next sync run instead of staying misclassified.
 - **remote_error** -- remote stat failed (network/auth); transient,
   skipped by the sync run
 - **native** -- non-byte-stream remote (e.g. Google Doc) where hash
   comparison doesn't apply
+- **deleted_local** -- was synced, the local copy is now gone, the remote
+  object still exists. Needs a decision (restore via `portuni_pull`, or
+  remove via `portuni_delete_file`) -- never auto-restored. Each entry's own
+  `class` field says `deleted_local`, not `clean`, so a caller that trusts
+  `entry.class` directly (rather than which top-level bucket array it came
+  from) still sees it correctly (#280)
 
 ## Deliberate sync run
 
@@ -73,7 +83,11 @@ tombstones. Order:
 3. Status scan.
 4. Push `push` candidates, pull `pull` candidates. `deleted_local` is
    reported, not auto-pulled -- restoring a locally deleted file is an
-   explicit decision.
+   explicit decision. Every push/pull of a given local path is serialized
+   against any other push or pull of that same path on this device, so a
+   mid-push edit is rehashed instead of masked as clean, and a pull's
+   dirty-local check can't be raced by a write landing after the check but
+   before the overwrite.
 5. Tombstone cleanup of untracked local copies that match a delete or
    move/rename tombstone.
 6. Adopt any remaining untracked local file (including an edited copy
@@ -89,6 +103,12 @@ returns `repair_needed`; the next sync run retries the same op
 idempotently until it completes, or reports it under `pending_repairs`
 with the last error if it can't (e.g. the remote state is now
 ambiguous, or the record no longer matches the path the op expected).
+`portuni_move_file`/`portuni_rename_folder`'s remote step also stats both
+the source and destination before touching either: an object already
+present at the destination (not yet adopted) refuses the move outright
+instead of duplicating or overwriting it, and a retry that finds the
+object already at the destination reports `already_at_target` instead
+of failing on a vanished source.
 
 ## Resolving conflicts and deleted files
 
@@ -142,7 +162,11 @@ is "first call previews, second call applies":
   with `confirmed: true` executes.
 - `portuni_rename_folder` -- defaults to `dry_run: true`. Show the
   affected file list to the user; second call with `dry_run: false`
-  applies.
+  applies. An apply call is bounded (`limit`, default 20 files); when the
+  result's `remaining` is > 0, call again with the SAME node_id/old_prefix/
+  new_prefix to continue -- already-renamed files no longer match
+  old_prefix and are skipped automatically, so there is no separate resume
+  state to track.
 - `portuni_adopt_files` -- non-destructive. Safe to run after
   `portuni_status` surfaces `new_remote` entries.
 

@@ -38,6 +38,9 @@ class FakeCentral implements CentralClient {
     { id: string; filename: string; status: string; is_native_format: boolean }
   >();
   bytes = new Map<string, Buffer>();
+  // When set, putFileRaw awaits this before reading/writing bytes -- lets a
+  // test simulate an edit landing while an upload is in flight.
+  putDelay: Promise<void> | null = null;
   // Delete tombstones the server would derive from audit_log (GH #79).
   deleted: Array<{ file_id: string; remote_path: string }> = [];
   nextId = 1;
@@ -132,6 +135,7 @@ class FakeCentral implements CentralClient {
     bytes: Buffer,
     opts?: { baseVersion?: string; force?: boolean },
   ) {
+    if (this.putDelay) await this.putDelay;
     const remotePath = posix.join(NODE_ROOT, relPath);
     const cur = this.bytes.get(remotePath);
     if (opts?.baseVersion && !opts.force && cur && sha(cur) !== opts.baseVersion) {
@@ -362,6 +366,43 @@ describe("statusScanCentral", () => {
     assert.equal(scan.conflicts.length, 1);
   });
 
+  it("an edit landing while a sync-run push is in flight stays push, not clean (#277 finding 7)", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "raced.md");
+    await writeFile(abs, "v1");
+    await registerLocalFileCentral(c, { userId: "U1", nodeId: NODE_ID, localPath: abs });
+
+    let release: (() => void) | undefined;
+    c.putDelay = new Promise<void>((r) => {
+      release = r;
+    });
+    const runPromise = syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+    // Let the push read "v1" and call putFileRaw, which is now blocked.
+    await new Promise((res) => setTimeout(res, 20));
+    await writeFile(abs, "v2 -- edited while the sync run's push was in flight");
+    release?.();
+    c.putDelay = null;
+    const run = await runPromise;
+    assert.equal(run.errors.length, 0, JSON.stringify(run.errors));
+
+    // The remote now holds "v1" (what was read before the edit), but the
+    // local file is "v2" -- a fast scan (cached_local_hash, no rehash) must
+    // not report this as clean, or the edit would silently never get pushed.
+    const scan = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID, fast: true });
+    assert.equal(
+      scan.push_candidates.some((f) => f.filename === "raced.md"),
+      true,
+      `expected raced.md to still be a push candidate: ${JSON.stringify(scan)}`,
+    );
+    assert.equal(scan.clean.some((f) => f.filename === "raced.md"), false);
+    assert.equal(
+      c.bytes.get(posix.join(NODE_ROOT, "wip/raced.md"))?.toString("utf8"),
+      "v1",
+      "the remote only ever saw the bytes read before the edit",
+    );
+  });
+
   it("deleted local file (after sync) reports deleted_local", async () => {
     const c = new FakeCentral();
     await setupMirror();
@@ -373,6 +414,10 @@ describe("statusScanCentral", () => {
     await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: abs });
     const scan = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID, fast: true });
     assert.equal(scan.deleted_local.length, 1);
+    // #280 finding 14: the entry's own class must say deleted_local, not
+    // clean -- an MCP consumer trusting entry.class directly would
+    // otherwise treat a deleted file as needing no decision.
+    assert.equal(scan.deleted_local[0].class, "deleted_local");
   });
 
   it("watcher-observed mv of a pushed file pairs by inode and calls the central move", async () => {
@@ -667,6 +712,46 @@ describe("reconcilePathCentral", () => {
     assert.equal(c.records.size, 0);
   });
 
+  it("a never-pushed file's delete that central could not confirm (repair_needed) is NOT treated as unregistered (#280 finding 11)", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "w.md");
+    await writeFile(abs, "v1");
+    const r1 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: abs });
+    assert.equal(r1.action, "registered");
+    const fileId = r1.file_id as string;
+
+    c.deleteRepairNeeded = true;
+    await rm(abs);
+    const r2 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: abs });
+    assert.equal(r2.action, "noop", "must not falsely report unregistered");
+    // The record and this device's own identity proof must both survive --
+    // central deliberately kept the record, so erasing file_state here would
+    // leave the record a zombie with no way for a later sync to recover it.
+    assert.equal(c.records.size, 1);
+    assert.ok(await getFileState(fileId), "file_state must survive an unconfirmed delete");
+  });
+
+  it("a never-pushed file's delete that fails outright (thrown) is NOT treated as unregistered", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const abs = join(mirrorRoot, "wip", "w.md");
+    await writeFile(abs, "v1");
+    const r1 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: abs });
+    const fileId = r1.file_id as string;
+
+    const origDelete = c.deleteFileRecord.bind(c);
+    c.deleteFileRecord = async () => {
+      throw new CentralHttpError("unreachable", 503, "UNAVAILABLE");
+    };
+    await rm(abs);
+    const r2 = await reconcilePathCentral(c, { userId: "U1", nodeId: NODE_ID, absPath: abs });
+    assert.equal(r2.action, "noop");
+    assert.equal(c.records.size, 1);
+    assert.ok(await getFileState(fileId));
+    c.deleteFileRecord = origDelete;
+  });
+
   it("deletion of a PUSHED file keeps the record and clears the cache (deleted)", async () => {
     const c = new FakeCentral();
     await setupMirror();
@@ -704,7 +789,12 @@ describe("computeSyncPendingCentral", () => {
     assert.equal(r.nodes[0].untracked, 1);
   });
 
-  it("a node whose only pending files are deleted_local is absent, total 0", async () => {
+  // #273: deleted_local needs a human decision (restore or accept the
+  // deletion) -- a sync run never resolves it, so it must not count toward
+  // `total` (footer badge / quit guard: "work a run can actually clear").
+  // It must not be hidden from the overview either, so the node still
+  // appears with total 0 and decisions counting it instead.
+  it("a node whose only pending files are deleted_local appears with total 0, decisions counting it", async () => {
     const c = new FakeCentral();
     await setupMirror();
     const abs = join(mirrorRoot, "wip", "a.md");
@@ -715,8 +805,13 @@ describe("computeSyncPendingCentral", () => {
 
     const r = await computeSyncPendingCentral(c, "U1");
 
-    assert.equal(r.nodes.find((n) => n.node_id === NODE_ID), undefined);
+    const node = r.nodes.find((n) => n.node_id === NODE_ID);
+    assert.ok(node, "a node needing a decision must still appear in the overview");
+    assert.equal(node.deleted_local, 1);
+    assert.equal(node.total, 0);
+    assert.equal(node.decisions, 1);
     assert.equal(r.total, 0);
+    assert.equal(r.decisions, 1);
   });
 
   it("matches the local engine's total rule: push counts, deleted_local does not", async () => {
@@ -740,6 +835,7 @@ describe("computeSyncPendingCentral", () => {
     assert.ok(node);
     assert.equal(node.deleted_local, 1);
     assert.equal(node.total, node.push);
+    assert.equal(node.decisions, 1);
     assert.ok(node.push >= 1);
   });
 

@@ -44,13 +44,17 @@ import {
   pullFileCentral,
   syncRunCentral,
   registerLocalFileCentral,
+  loadNodeContext,
 } from "../domain/sync/central/engine-central.js";
 import { findEntryByFileId } from "../mcp/agent-tools.js";
 import { guardAgentRestWrite } from "./write-gate.js";
+import { startSyncJob, getSyncJob, getCurrentSyncJob } from "../domain/sync/sync-jobs.js";
 import { mimeFor, localHashFor, PullDirtyLocalError } from "../domain/sync/engine.js";
-import { safeMirrorJoin, type Section } from "../domain/sync/remote-path.js";
+import { safeMirrorJoin, deriveLocalPath, type Section } from "../domain/sync/remote-path.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
-import { getLocalMirror, deleteFileState } from "../domain/sync/local-db.js";
+import { getLocalMirror } from "../domain/sync/local-db.js";
+import { removeLocalCopyAndState } from "../domain/sync/local-cleanup.js";
+import { trackPendingPush, clearPendingPushIfCurrent, awaitPendingPush } from "../domain/sync/pending-pushes.js";
 import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
 import { MirrorCreateError } from "../domain/sync/mirror-create.js";
 import {
@@ -164,6 +168,15 @@ const agentPutFileSchema = z.object({
 // Same shape as api/files.ts's renameSchema.
 const agentRenameFileSchema = z.object({ new_filename: z.string().min(1) });
 
+// Same shape as api/files.ts's moveSchema.
+const agentMoveFileSchema = z.object({
+  new_section: z.enum(["wip", "outputs", "resources"]).optional(),
+  new_subpath: z.string().nullable().optional(),
+  new_filename: z.string().min(1).optional(),
+  new_node_id: z.string().optional(),
+  confirmed: z.boolean().optional(),
+});
+
 // Same shape as api/files.ts's createSchema -- kept in sync deliberately.
 const agentCreateFileSchema = z.object({
   filename: z.string().min(1),
@@ -178,18 +191,6 @@ export type AgentRouteFn = (
   url: URL,
   identity: RequestIdentity,
 ) => Promise<boolean>;
-
-// Background uploads started by POST /nodes/:id/files (#266), keyed by the
-// mirror path they push. Delete/resolve on the same path await the entry
-// (awaitPendingPush) so the upload cannot land after the record is gone.
-// Rename is routed here as well, so every file mutation on this device
-// waits for it.
-const pendingPushes = new Map<string, Promise<void>>();
-
-async function awaitPendingPush(localPath: string): Promise<void> {
-  const p = pendingPushes.get(localPath);
-  if (p) await p;
-}
 
 export function createAgentRouter(client: CentralClient): AgentRouteFn {
   return async (req, res, url, identity) => {
@@ -342,6 +343,49 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
       return true;
     }
 
+    // Background multi-node sync job (#273): central-mode counterpart of
+    // handleStartSyncJob/handleGetSyncJob (api/nodes.ts) -- "Synchronizovat
+    // vše" starts one of these regardless of data mode, so this front door
+    // needs the same three routes. guardAgentRestWrite is not actually
+    // per-node (it only checks the webview-proxy posture), so one call
+    // gates the whole batch instead of filtering node ids individually the
+    // way local mode's filterRestWritableNodeIds does.
+    if (pathname === "/sync/jobs" && method === "POST") {
+      if (!guardAgentRestWrite(req, res, identity, "sync-jobs")) return true;
+      const body = await parseJsonBody(req, res, z.object({ node_ids: z.array(z.string()).optional() }));
+      if (!body) return true;
+      try {
+        let nodeIds = body.node_ids;
+        if (!nodeIds) {
+          const pending = await computeSyncPendingCentral(client, identity.userId);
+          nodeIds = pending.nodes.filter((n) => n.total > 0).map((n) => n.node_id);
+        }
+        const job = startSyncJob({
+          userId: identity.userId,
+          nodeIds,
+          runNode: (nodeId) => syncRunCentral(client, { userId: identity.userId, nodeId }),
+        });
+        respondJson(res, 202, job);
+      } catch (err) {
+        respondError(res, "POST /sync/jobs", err);
+      }
+      return true;
+    }
+    if (pathname === "/sync/jobs/current" && method === "GET") {
+      respondJson(res, 200, { job: getCurrentSyncJob(identity.userId) });
+      return true;
+    }
+    const syncJobMatch = pathname.match(/^\/sync\/jobs\/([^/]+)$/);
+    if (syncJobMatch && method === "GET") {
+      const job = getSyncJob(identity.userId, decodeURIComponent(syncJobMatch[1]));
+      if (!job) {
+        respondJson(res, 404, { error: "job not found" });
+        return true;
+      }
+      respondJson(res, 200, job);
+      return true;
+    }
+
     // Create (#266): a device with a mirror owns the bytes, same as local
     // mode's createFile -- write into the mirror, register the record
     // WITHOUT waiting on the Drive upload, and push in the background.
@@ -427,19 +471,21 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
         // the bytes with an ifAbsent precondition (no last_synced_hash yet
         // on a brand-new record), then writes the last_synced_hash baseline
         // that flips the row from "push" to "clean".
-        // Tracked per path so a later delete/resolve on the same file waits
-        // for it (awaitPendingPush) instead of racing the upload -- an
-        // adapter.put landing after the record was deleted would recreate
-        // the remote object as an orphan and undo the confirmed delete.
+        // Tracked per path (pending-pushes.ts, shared with agent-transport.ts's
+        // MCP dispatch, #277) so a later delete/resolve/move on the same
+        // file -- through EITHER entry point -- waits for it
+        // (awaitPendingPush) instead of racing the upload: an adapter.put
+        // landing after the record was deleted would recreate the remote
+        // object as an orphan and undo the confirmed delete.
         const push = storeFileCentral(client, { userId: identity.userId, nodeId, localPath: abs })
           .then(() => undefined)
           .catch((e) => {
             console.error(`[portuni:agent] background push after create failed for ${abs}:`, e);
           })
           .finally(() => {
-            if (pendingPushes.get(abs) === push) pendingPushes.delete(abs);
+            clearPendingPushIfCurrent(abs, push);
           });
-        pendingPushes.set(abs, push);
+        trackPendingPush(abs, push);
       } catch (err) {
         if (respondCentral404(res, err)) return true;
         respondError(res, `POST /nodes/${nodeId}/files`, err);
@@ -543,8 +589,23 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
               await fsRename(oldLocal, newLocal);
               await localHashFor(newLocal, fileId, null).catch(() => null);
             } catch (e) {
-              // No local copy (pull-pending) -- nothing to rename here.
-              if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+              if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+                // No local copy (pull-pending) -- nothing to rename here.
+              } else {
+                // #279 finding 13: central already committed the record +
+                // remote rename -- a local failure past this point (a
+                // permission error, a destination collision) must report
+                // repair_needed like the move handler above, not a raw 500
+                // that implies nothing happened.
+                respondJson(res, 200, {
+                  ...(r as Record<string, unknown>),
+                  status: "repair_needed",
+                  detail: { local_error: (e as Error).message },
+                  repair_hint:
+                    "Remote already renamed; the local copy could not be renamed. Rename it manually, or delete the local copy and pull.",
+                });
+                return true;
+              }
             }
           }
         }
@@ -552,6 +613,116 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
       } catch (err) {
         if (respondCentral404(res, err)) return true;
         respondError(res, `POST /nodes/${nodeId}/files/${fileId}/rename`, err);
+      }
+      return true;
+    }
+
+    // Move (#278): same shape as rename above -- central owns the record +
+    // remote step (CentralClient.moveFileRecord, the same POST a
+    // non-agent-mode move hits, whose own local disk step no-ops since the
+    // central server has no mirror), but only THIS device can relocate the
+    // mirror copy. Without this handler the desktop sent the move straight
+    // to central (is_local_only_path never matched it), central moved the
+    // record + remote object, and the device's local file just sat at the
+    // old path forever -- the next slow sync then saw the new path as
+    // deleted_local and the old path as untracked, adopting/pushing the
+    // stale copy as a second file.
+    const moveFileMatch = pathname.match(/^\/nodes\/([^/]+)\/files\/([^/]+)\/move$/);
+    if (moveFileMatch && method === "POST") {
+      const nodeId = decodeURIComponent(moveFileMatch[1]);
+      const fileId = decodeURIComponent(moveFileMatch[2]);
+      if (!guardAgentRestWrite(req, res, identity, nodeId)) return true;
+      const body = await parseJsonBody(req, res, agentMoveFileSchema);
+      if (!body) return true;
+      if (body.new_node_id && body.new_node_id !== nodeId) {
+        if (!guardAgentRestWrite(req, res, identity, body.new_node_id)) return true;
+      }
+      try {
+        // Same IDOR guard as rename/resolve/delete.
+        const found = await findEntryByFileId(client, identity.userId, fileId);
+        if (found && found.nodeId !== nodeId) {
+          respondJson(res, 404, { error: "file not found on this device" });
+          return true;
+        }
+        const oldLocal = found?.entry.local_path ?? null;
+        if (oldLocal) await awaitPendingPush(oldLocal);
+        const r = (await client.moveFileRecord(nodeId, fileId, {
+          new_section: body.new_section,
+          new_subpath: body.new_subpath ?? null,
+          new_filename: body.new_filename,
+          new_node_id: body.new_node_id,
+          confirmed: body.confirmed ?? false,
+        })) as {
+          status?: string;
+          requires_confirmation?: boolean;
+          new_remote_path?: string;
+          [key: string]: unknown;
+        };
+        // Unconfirmed -- central returned a preview, nothing committed yet.
+        // No local step: there is nothing on disk to move.
+        if (r.requires_confirmation || !oldLocal || r.status !== "ok" || !r.new_remote_path) {
+          respondJson(res, 200, r);
+          return true;
+        }
+        // Confirmed and committed on central -- relocate this device's own
+        // mirror copy. The target node may differ from the URL's node
+        // (cross-node move), so its mirror root/nodeRoot must be resolved
+        // independently rather than reusing the source node's context.
+        const targetNodeId = body.new_node_id ?? nodeId;
+        const targetCtx = await loadNodeContext(client, identity.userId, targetNodeId);
+        let newLocal: string | null = null;
+        if (targetCtx.mirrorRoot) {
+          try {
+            newLocal = deriveLocalPath({
+              mirrorRoot: targetCtx.mirrorRoot,
+              nodeRoot: targetCtx.nodeRoot,
+              remotePath: r.new_remote_path,
+            });
+          } catch {
+            newLocal = null;
+          }
+        }
+        if (!newLocal) {
+          // The target node isn't mirrored on this device (or the derived
+          // path was rejected) -- there is nowhere to put the file. The
+          // record and remote object already moved; only the local half is
+          // incomplete, so report repair_needed rather than silently
+          // leaving a stale copy at the old path with no signal.
+          respondJson(res, 200, {
+            ...r,
+            status: "repair_needed",
+            detail: { ...(r.detail as object | undefined), local_reason: "target_not_mirrored" },
+            repair_hint:
+              "Remote already moved; this device has no mirror for the target node, so the local copy could not be relocated. Remove it manually or mirror the target node and pull.",
+          });
+          return true;
+        }
+        if (newLocal === oldLocal) {
+          respondJson(res, 200, r);
+          return true;
+        }
+        try {
+          await mkdir(dirname(newLocal), { recursive: true });
+          await fsRename(oldLocal, newLocal);
+          await localHashFor(newLocal, fileId, null).catch(() => null);
+          respondJson(res, 200, r);
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+            // No local copy to move (pull-pending) -- nothing to do here.
+            respondJson(res, 200, r);
+          } else {
+            respondJson(res, 200, {
+              ...r,
+              status: "repair_needed",
+              detail: { ...(r.detail as object | undefined), local_error: (e as Error).message },
+              repair_hint:
+                "Remote already moved; the local copy could not be relocated. Move or copy it manually, or run portuni_pull to re-download.",
+            });
+          }
+        }
+      } catch (err) {
+        if (respondCentral404(res, err)) return true;
+        respondError(res, `POST /nodes/${nodeId}/files/${fileId}/move`, err);
       }
       return true;
     }
@@ -598,11 +769,14 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
         // edit would be lost for a delete that never happened.
         const r = await client.deleteFileRecord(nodeId, fileId);
         if (found && (r as { status?: unknown }).status === "ok") {
-          if (found.entry.local_path) {
-            const { rm } = await import("node:fs/promises");
-            await rm(found.entry.local_path, { force: true }).catch(() => undefined);
-          }
-          await deleteFileState(fileId).catch(() => undefined);
+          // file_state is only cleared once the local copy is actually
+          // confirmed gone (#275) -- otherwise a failed rm here left an
+          // orphan with no identity proof, which the next sync's discovery
+          // scan read as new content and adopted/pushed back, resurrecting
+          // a confirmed deletion. central.deleteFileRecord already wrote
+          // the tombstone, so a leftover copy is still cleaned up by that
+          // sync's tombstone cleanup even when this rm fails here.
+          await removeLocalCopyAndState(found.entry.local_path, fileId);
         }
         respondJson(res, 200, r);
       } catch (err) {

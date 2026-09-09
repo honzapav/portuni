@@ -30,6 +30,7 @@ import { getLocalMirror } from "../domain/sync/local-db.js";
 import { buildNodeRoot, deriveLocalPath } from "../domain/sync/remote-path.js";
 import type { StatusFileEntry, StatusResult, NewLocalEntry } from "../domain/sync/engine.js";
 import type { NodeSyncInfo } from "../domain/sync/sync-remote-api.js";
+import { type StatusClass, filterStatusResult } from "../domain/sync/status-filter.js";
 
 export const LOCAL_TOOLS: ReadonlySet<string> = new Set([
   "portuni_mirror",
@@ -167,8 +168,15 @@ const HANDLERS: Record<string, LocalHandler> = {
     // the caller explicitly opts out.
     const includeDiscovery = args.include_discovery !== false;
     const nodeId = args.node_id as string | undefined;
+    const filterOpts = {
+      classes: args.classes as StatusClass[] | undefined,
+      pathPrefix: args.path_prefix as string | undefined,
+      limit: args.limit as number | undefined,
+      offset: args.offset as number | undefined,
+    };
     if (nodeId) {
-      return statusScanCentral(client, { userId, nodeId, includeDiscovery, fast: false });
+      const r = await statusScanCentral(client, { userId, nodeId, includeDiscovery, fast: false });
+      return filterStatusResult(r, filterOpts);
     }
     // No node_id: scan across every mirror this user has and aggregate the
     // buckets -- the central-mode analog of local statusScan's cross-mirror
@@ -207,7 +215,7 @@ const HANDLERS: Record<string, LocalHandler> = {
       agg.deleted_local.push(...r.deleted_local);
       agg.deleted_remote.push(...r.deleted_remote);
     }
-    return agg;
+    return filterStatusResult(agg, filterOpts);
   },
 
   async portuni_store(client, userId, args) {
@@ -500,7 +508,11 @@ export async function callLocalTool(
   if (!handler) throw new Error(`not a local tool: ${name}`);
   try {
     const result = await handler(client, userId, args);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    // No pretty-print indent: portuni_status on a large node can serialize
+    // to hundreds of KB, and the indentation alone is a large fraction of
+    // that. The other LOCAL_TOOLS payloads are small enough that this is
+    // just a minor win, not a behavior change either way.
+    return { content: [{ type: "text", text: JSON.stringify(result) }] };
   } catch (e) {
     if (e instanceof MirrorCreateError || e instanceof CentralHttpError) {
       return {
@@ -608,7 +620,7 @@ export async function snapshotForDiskMutation(
   };
 }
 
-function deriveOrNull(a: {
+export function deriveOrNull(a: {
   mirrorRoot: string;
   nodeRoot: string;
   remotePath: string;
@@ -656,8 +668,7 @@ export async function applyLocalAfterProxiedMutation(
   } catch {
     return null;
   }
-  const { rm } = await import("node:fs/promises");
-  const { deleteFileState } = await import("../domain/sync/local-db.js");
+  const { removeLocalCopyAndState } = await import("../domain/sync/local-cleanup.js");
   const { localHashFor } = await import("../domain/sync/engine.js");
 
   if (snapshot.tool === "portuni_delete_file") {
@@ -668,8 +679,11 @@ export async function applyLocalAfterProxiedMutation(
       nodeRoot: snapshot.nodeRoot,
       remotePath: snapshot.oldRemotePath,
     });
-    if (localPath) await rm(localPath, { force: true }).catch(() => undefined);
-    await deleteFileState(snapshot.fileId).catch(() => undefined);
+    // file_state is only cleared once the local copy is actually confirmed
+    // gone (#275) -- central already wrote the tombstone for this delete,
+    // so a leftover copy from a failed rm here is still cleaned up by the
+    // next sync's tombstone cleanup instead of being silently re-adopted.
+    await removeLocalCopyAndState(localPath, snapshot.fileId);
     client.invalidateSyncInfo(snapshot.nodeId);
     return null;
   }
@@ -699,17 +713,41 @@ export async function applyLocalAfterProxiedMutation(
       nodeRoot: targetNodeRoot,
       remotePath: newRemotePath,
     });
-    let localDone = false;
-    if (oldLocal && newLocal && oldLocal !== newLocal) {
-      localDone = await renameLocalBestEffort(oldLocal, newLocal);
-      if (localDone) await localHashFor(newLocal, snapshot.fileId, null).catch(() => null);
-    }
-    client.invalidateSyncInfo(snapshot.nodeId);
-    if (targetNodeId !== snapshot.nodeId) client.invalidateSyncInfo(targetNodeId);
     const detail =
       parsed.detail && typeof parsed.detail === "object"
         ? (parsed.detail as Record<string, unknown>)
         : {};
+    // #279 finding 13: central already committed the record + remote move
+    // (the `parsed.status !== "ok"` gate above already returned). A local
+    // rename failure here (permission error, destination collision -- ENOENT
+    // is handled inside renameLocalBestEffort as "nothing to do") must not
+    // be swallowed into central's unmodified "ok" by the caller's outer
+    // catch -- that told the agent the move fully succeeded while the
+    // device's own mirror copy was actually stranded at the old path. Caught
+    // here and rewritten into the same repair_needed shape the REST move
+    // handler (agent-router.ts) already reports for this exact scenario.
+    let localDone = false;
+    let localError: string | null = null;
+    if (oldLocal && newLocal && oldLocal !== newLocal) {
+      try {
+        localDone = await renameLocalBestEffort(oldLocal, newLocal);
+        if (localDone) await localHashFor(newLocal, snapshot.fileId, null).catch(() => null);
+      } catch (e) {
+        localError = e instanceof Error ? e.message : String(e);
+      }
+    }
+    client.invalidateSyncInfo(snapshot.nodeId);
+    if (targetNodeId !== snapshot.nodeId) client.invalidateSyncInfo(targetNodeId);
+    if (localError !== null) {
+      return JSON.stringify({
+        ...parsed,
+        status: "repair_needed",
+        new_local_path: null,
+        detail: { ...detail, local_done: false, local_error: localError },
+        repair_hint:
+          "Remote already moved; the local copy could not be relocated. Move or copy it manually, or run portuni_pull to re-download.",
+      });
+    }
     return JSON.stringify({
       ...parsed,
       new_local_path: newLocal,
@@ -719,6 +757,7 @@ export async function applyLocalAfterProxiedMutation(
 
   if (snapshot.tool === "portuni_rename_folder") {
     if (parsed.type !== "applied" || !Array.isArray(parsed.files)) return null;
+    let anyLocalError = false;
     for (const f of parsed.files as Array<Record<string, unknown>>) {
       if (f.status !== "ok") continue;
       const oldLocal = deriveOrNull({
@@ -732,10 +771,26 @@ export async function applyLocalAfterProxiedMutation(
         remotePath: f.new_remote_path as string,
       });
       if (oldLocal && newLocal && oldLocal !== newLocal) {
-        await renameLocalBestEffort(oldLocal, newLocal);
+        // Per-file, like the move branch above: central already committed
+        // this file's remote rename, so a local failure here downgrades
+        // just this entry to repair_needed instead of throwing and losing
+        // the whole batch's outcome to the caller's outer swallow-to-null.
+        try {
+          await renameLocalBestEffort(oldLocal, newLocal);
+        } catch (e) {
+          f.status = "repair_needed";
+          f.error = e instanceof Error ? e.message : String(e);
+          anyLocalError = true;
+        }
       }
     }
     client.invalidateSyncInfo(snapshot.nodeId);
+    if (!anyLocalError) return null;
+    const renamed = (parsed.files as Array<Record<string, unknown>>).filter(
+      (f) => f.status === "ok",
+    ).length;
+    const failed = (parsed.files as Array<Record<string, unknown>>).length - renamed;
+    return JSON.stringify({ ...parsed, renamed, failed });
   }
   return null;
 }

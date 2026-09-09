@@ -158,6 +158,20 @@ function registerSetupDriveRemotePrompt(server: McpServer): void {
 // through to bindSessionPersistence so the session row records it; a resume
 // keeps whatever terminal_id the original session row already had (it is
 // not part of resumeSessionPersistence's rehydration).
+//
+// `bindSession` is returned rather than called here (#272): a `sessions`
+// row must only ever be created once a connection completes a genuine MCP
+// handshake, never merely because a server/scope pair was constructed for
+// it -- an aborted connection, a client's protocol/version probe, or any
+// other non-initialize first request used to leak a permanent `running`
+// row that nothing would ever close, since a transport that never reaches
+// its own "session initialized" point never fires `onclose` either. The
+// caller (transport.ts's onsessioninitialized, stdio-entry.ts's
+// server.server.oninitialized) invokes it exactly at that point -- after
+// the underlying transport has confirmed a real session exists, not
+// before. A resumed connection's row already exists (resumeSessionPersistence,
+// awaited by the caller before the connection is allowed to proceed), so
+// bindSession is a no-op then.
 export function createMcpServer(
   identity: RequestIdentity,
   homeNodeId: string | null = null,
@@ -165,7 +179,7 @@ export function createMcpServer(
   resumeSessionId: string | null = null,
   spawnSessionId: string | null = null,
   terminalId: string | null = null,
-): { server: McpServer; scope: SessionScope } {
+): { server: McpServer; scope: SessionScope; bindSession: (cli?: string | null) => void } {
   const scope = new SessionScope(deriveSessionType(identity, homeNodeId));
   // #211: resolved synchronously, before any tool call can race it (unlike
   // scope.sessionId, set later by bindSessionPersistence's fire-and-forget
@@ -177,9 +191,19 @@ export function createMcpServer(
   scope.projectionSessionId = resumeSessionId ?? spawnSessionId ?? UNNARROWED_PROJECTION_ID;
   const projector = createDiskProjector({ userId: identity.userId, scope });
   scope.onAdd((nodeId) => projector.schedule(nodeId));
-  if (!resumeSessionId) {
-    bindSessionPersistence(getDb(), scope, identity, profileId, homeNodeId, spawnSessionId, terminalId);
-  }
+  const bindSession = resumeSessionId
+    ? () => undefined
+    : (cli?: string | null) =>
+        bindSessionPersistence(
+          getDb(),
+          scope,
+          identity,
+          profileId,
+          homeNodeId,
+          spawnSessionId,
+          terminalId,
+          cli,
+        );
   const server = new McpServer(
     { name: "portuni", version: "0.1.0" },
     { instructions: INSTRUCTIONS },
@@ -202,5 +226,5 @@ export function createMcpServer(
   registerActorTools(server, ctx);
   registerResponsibilityTools(server, ctx);
   registerEntityAttributeTools(server, ctx);
-  return { server, scope };
+  return { server, scope, bindSession };
 }

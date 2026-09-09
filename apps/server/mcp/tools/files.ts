@@ -395,12 +395,18 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
 
   server.tool(
     "portuni_rename_folder",
-    "Rename a subpath within a node's sync layout. Defaults to dry_run: true and returns a preview of affected files. Show the affected file list to the user; call again with dry_run: false to apply. See portuni://sync-model.",
+    "Rename a subpath within a node's sync layout. Defaults to dry_run: true and returns a preview of affected files. Show the affected file list to the user; call again with dry_run: false to apply. An apply call is bounded (limit, default 20 files) -- when the result's remaining is > 0, call again with the SAME node_id/old_prefix/new_prefix to continue (already-renamed files no longer match old_prefix, so the call naturally picks up where it left off). See portuni://sync-model.",
     {
       node_id: z.string(),
       old_prefix: z.string(),
       new_prefix: z.string(),
       dry_run: z.boolean().optional(),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Max files to rename in this apply call (default 20). Ignored for dry_run."),
     },
     async (args) => {
       const db = getDb();
@@ -415,6 +421,7 @@ export function registerFileTools(server: McpServer, ctx: SessionCtx): void {
         oldPrefix: args.old_prefix,
         newPrefix: args.new_prefix,
         dryRun: args.dry_run !== false,
+        limit: args.limit,
       });
       return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }] };
     },

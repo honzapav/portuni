@@ -930,6 +930,179 @@ symlink to this file.
   when the hardened posture (#213) is active for that workspace — it
   originates from the same trusted Tauri host process, not a spawned
   terminal.
+- **A `sessions` row exists only for a completed MCP handshake.**
+  `createMcpServer` returns `bindSession(cli?)` instead of inserting the row
+  itself; callers invoke it at their own post-handshake signal --
+  `transport.ts`'s `onsessioninitialized`, `stdio-entry.ts`'s
+  `server.server.oninitialized`. A resumed connection's `bindSession` is a
+  no-op (`resumeSessionPersistence` already created the row). Agent mode
+  opens its upstream connection to central only for a request that carries a
+  valid `initialize`, so a probe at the local front door burns no row on
+  central either. `cli` comes from the handshake's own
+  `params.clientInfo.name`, normalized to `claude|codex|vibe`
+  (`client-name.ts`) -- not from a header, which Codex and Vibe cannot send.
+  `wireOngoingSync` persists the session's home node as `writable=1`, since
+  `guardWrite` allows it implicitly and `getSessionWriteCount` counts only
+  persisted rows. `boot/session-sweep.ts` closes any row left `running` by a
+  process that died, on every boot.
+- **Bulk sync is a server-side job; the pending aggregate separates
+  actionable work from decisions.**
+  - **Job**: `POST /nodes/:id/sync` (one node, synchronous) is what the
+    MCP-adjacent tooling and single-node "Synchronizovat" use. Bulk
+    "Synchronizovat vše" goes through `POST /sync/jobs` (body
+    `{ node_ids? }`, default: every node with `computeSyncPending`'s
+    `total > 0`), which answers `202` immediately. `domain/sync/sync-jobs.ts`
+    runs each node through a `runNode` callback with bounded concurrency
+    (`PORTUNI_SYNC_JOB_CONCURRENCY`, default 3) -- `runNodeSync`
+    (`sync-run.ts`) in local mode, `syncRunCentral` in central/agent mode,
+    whose routes live in `agent-router.ts` and in `is_local_only_path`
+    (`lib.rs`). `GET /sync/jobs/:id` polls progress; `GET /sync/jobs/current`
+    lets a remounted UI reattach without the job id. One job per user: a
+    second `POST /sync/jobs` reattaches to the running one and appends any
+    node it does not already cover (the worker pool picks the additions up),
+    so a reattach never drops nodes the caller asked for. State is in-memory
+    -- a restart loses the progress view, never work, since each node's sync
+    call is independently idempotent.
+  - **Pending accounting**: `total` is `push + untracked` (what a run can
+    actually clear); `decisions` is `conflict + deleted_local` (needs a
+    human via `POST /nodes/:id/files/:fileId/resolve`). A node with only
+    decisions still appears in the overview with `total: 0`.
+    `SyncOverview.tsx` shows the split as `+N k rozhodnutí` and puts only
+    actionable nodes in a job's default node set.
+  - **Central hash tracking**: `current_remote_hash` is central-mode
+    classification's only source of remote truth, so every path that proves
+    the remote's identity persists it -- `writeFileBytesRemote`'s `ifAbsent`
+    and `baseCanonicalHash` checks and `readFileBytesRemote` all call
+    `backfillRemoteHash`, and `remote-sweep.ts`'s hash-refresh step fills a
+    NULL hash and corrects a stale one whenever the listing reports a hash
+    (Drive: md5Checksum -- an out-of-band Drive edit is caught this way).
+    Native-format records are excluded. A backend that reports no hash on
+    listing (fs/OpenDAL) gets only its NULL hashes resolved; re-verifying a
+    known hash there would mean downloading every tracked file on every run.
+  - **Watcher**: `mirror-watcher.ts` keeps one reconcile chain per mirror
+    (`reconcileChains`, `Map<nodeId, Promise>`), so ordering holds within a
+    mirror and mirrors do not block each other. A failed reconcile is
+    recorded (`recordWatcherError`), never retried inside the chain;
+    `MirrorWatcher.sweep()` re-backfills every watched mirror on a 10-minute
+    interval (`boot/mirror-watch.ts`) and repairs it.
+- **The update check is scheduled from the hook's mount, not from
+  `backend-ready` alone.** `check_update` (`apps/desktop/src/updater.rs`)
+  only talks to the GitHub releases endpoint, so it does not depend on the
+  sidecar. `useAppUpdate` calls `scheduler.schedule(checkNow)` on mount and
+  again on every `backend-ready` (per-window, and it can fire more than
+  once); a repeat call resets the timers rather than stacking them. The
+  scheduling itself is `apps/web/src/lib/update-schedule.ts`'s
+  `createUpdateScheduler` -- timers injected, so it is unit-testable through
+  the server's `node:test` runner (`apps/web` has no test runner of its
+  own). A window regaining focus after a full interval checks immediately
+  (`shouldCheckOnFocus`), since a suspended OS fires no JS timers.
+  `AppUpdate.lastCheckedAt` is set on every completed attempt (success or
+  error, never a skipped one) and shown in Settings → Obecné → Aktualizace.
+- **`file_state` is cleared only once the local file is confirmed gone.**
+  `file_state.last_synced_hash` is the only proof a later sync's tombstone
+  cleanup (`matchDeleteTombstones` + `cleanupDeletedRemote`) has that a
+  leftover local copy is an already-confirmed deletion rather than new
+  content to adopt and push back. Every delete path -- `engine-mutations.ts`'s
+  `deleteFile`, `pending-ops.ts`'s `runDelete`, `agent-router.ts`'s
+  `DELETE /nodes/:id/files/:fileId`, `agent-tools.ts`'s
+  `applyLocalAfterProxiedMutation` -- goes through `local-cleanup.ts`'s
+  `removeLocalCopyAndState(localPath, fileId)`, which attempts the `rm`
+  (ENOENT counts as success) and clears `file_state` only if that worked.
+  On any other failure the state and the tombstone audit row stay, and the
+  next sync's tombstone-cleanup pass finishes the job. `runDelete` resolves
+  this device's own mirror path (`getMirrorPath` + `resolveNodeInfo` +
+  `deriveLocalPath`) so a retried delete cleans up locally too.
+- **Push/pull is serialized per path.** `path-lock.ts`'s
+  `withPathLock(key, fn)` is a per-key async mutex wrapping the whole
+  check-then-write critical section: `engine.ts`'s `pullFile`/`storeFile`,
+  `engine-central.ts`'s `pullFileCentral`/`storeFileCentral`/
+  `pushEntryCentral`, and `file-content.ts`'s `writeFileContent`/`createFile`
+  key on the local absolute path; `file-content-remote.ts`'s
+  `writeFileContentRemote`/`writeFileBytesRemote`/`renameFileRemote` key on
+  `remote_name:remote_path`, having no local path to key on. Everything the
+  decision depends on belongs inside the lock -- a pull downloads its bytes
+  there too, or it can overwrite a newer push with older content and record
+  the stale hash as this device's baseline. The lock is **not reentrant**:
+  never take it around a call that takes it again (`createFile` releases it
+  before calling `storeFile`). It is also in-process only -- it does not
+  protect against another device or process writing the same Drive object;
+  storage-level preconditions (ETag/If-Match) remain a known gap, marked at
+  the `writeFileContentRemote`/`writeFileBytesRemote` call sites.
+  `pushEntryCentral` stats before the read and rehashes after the put, so a
+  mid-upload edit stays a push candidate instead of reading as clean, and it
+  re-reads its baseline under the lock rather than trusting the scan entry.
+  `pending-pushes.ts` tracks in-flight background pushes for both
+  dispatchers -- `agent-router.ts`'s REST handlers and `agent-transport.ts`'s
+  MCP proxied mutations both `awaitPendingPush` before mutating a path.
+- **Remote relocation is destination-safe and retry-safe.**
+  `relocateRemoteObject` (`file-relocation.ts`) stats source and destination
+  first: same path is a no-op, both present is an ambiguity it refuses to
+  guess away, only-destination is `already_at_target`. `moveFile`,
+  `renameFile`, `renameFolder`, `renameFileRemote` and `pending-ops.ts`'s
+  `runMove` all route through it, plus `writeRelocatedRecord`, which folds a
+  colliding shadow row into the survivor inside the same `db.batch` as the
+  UPDATE instead of raising `SQLITE_CONSTRAINT`. A cross-remote move is
+  copy-then-delete and therefore not atomic: when the copy lands and the
+  delete fails, `moveFile` records `source_copied` on the pending op
+  (`markPendingMoveSourceCopied`), which is the only thing that later tells
+  the retry which of the two present objects is its own copy -- without it
+  both-present is unresolvable and the op can never complete. The retry
+  deletes the source only when the recorded intent says so and the two
+  hashes are comparable and equal. `portuni_rename_folder` applies at most
+  `limit` files per call (default 20) and reports `remaining` + `next_call`;
+  re-running the same call resumes, since renamed files no longer match
+  `old_prefix`. `portuni_status` takes `classes`/`path_prefix`/`limit`/
+  `offset` (`status-filter.ts`) and always returns `counts` (true per-bucket
+  sizes, ignoring the filters) plus `truncated`.
+- **`POST /nodes/:id/files/:fileId/move` is routed to the sync agent.**
+  `is_local_only_path` (`apps/desktop/src/lib.rs`) matches it alongside
+  `resolve`/`rename`/`delete`/create -- the same routing-gap family. The
+  handler forwards the record + remote step to `CentralClient.moveFileRecord`
+  and only then, once that is confirmed and committed, relocates this
+  device's mirror copy. A cross-node move resolves the TARGET node's mirror
+  root and nodeRoot independently (`loadNodeContext`); when the target has
+  no mirror on this device it reports `repair_needed` with a hint rather
+  than stranding the old copy silently.
+- **A local step that runs after central already committed reports
+  `repair_needed`, never a 500 and never a silent success.** REST
+  (`agent-router.ts`) returns 200 with `status: "repair_needed"` and a hint;
+  MCP (`agent-tools.ts`'s `applyLocalAfterProxiedMutation`) rewrites
+  central's response itself instead of letting the caller's outer `.catch()`
+  swallow it -- `rename_folder` downgrades only the failed entry and
+  recomputes `renamed`/`failed`, keeping the rest of the batch's outcome.
+  `deleteFileRemote` treats a confirmed retry that finds nothing to delete
+  as `already_deleted: true` when this file_id's own
+  `sync_delete`/`sync_delete_remote` audit history proves the first attempt
+  landed; an unknown id still throws, and only `confirmed: true` qualifies.
+  `sync_rename_remote` counts as a tombstone-qualifying action in
+  `sync-remote-api.ts`.
+- **A watcher-driven delete unregisters only on a confirmed `status: "ok"`.**
+  `reconcilePathCentral`'s never-pushed-delete branch treats a thrown
+  failure and a `repair_needed` alike: `file_state` stays, the result is
+  `{action: "noop"}`, and the next watcher event or backfill sweep retries.
+  A one-shot watcher event must never silently degrade -- same rule as
+  `tryApplyDiskMoveCentral`.
+- **A `StatusFileEntry` carries the class of the bucket it is in**, including
+  `deleted_local`. REST derives `sync_class` from the bucket array, but
+  `portuni_status` serializes the raw `StatusResult`, so a consumer reading
+  `entry.class` must get the same answer.
+- **`createFile` registers locally when no remote is routed.** It resolves
+  the remote first and calls `storeFile` (register + push) or
+  `registerLocalFile` (record-only, as the watcher's auto-registration does)
+  -- a local-only workspace is a legitimate configuration, and failing after
+  the bytes are already on disk left a retry hitting `EXISTS`. The push stays
+  available later via `portuni_store` or a sync run.
+- **Deliberately not done** (do not re-litigate without new reasons):
+  reserving a `files` row before `createFileRemote`'s upload (worth it only
+  paired with real idempotent-resume; alone it trades an invisible orphan
+  blob for a phantom row nothing can complete); a general idempotency-key
+  replay mechanism for the central client's mutation retries (larger than
+  one backlog item -- the delete-replay case above is the reachable one);
+  making `moveFile`/`renameFile`/`renameFolder` work for a never-routed
+  local-only file (today a clear rejection: `"File X has no remote binding"`,
+  or a per-file `repair_needed` in `renameFolder`'s batch -- widening the
+  public `remote_name` fields to nullable is a riskier change than the
+  narrow scenario warrants).
 
 ## Security rules (from the auth refactor post-mortem)
 

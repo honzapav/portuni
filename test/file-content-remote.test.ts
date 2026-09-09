@@ -419,6 +419,74 @@ describe("renameFileRemote (B3)", () => {
       /Invalid filename/,
     );
   });
+
+  it("refuses to rename over an untracked object already at the destination (#279 finding 9)", async () => {
+    await seedRemote("wip/old.md", "body");
+    const fileId = await insertFileRow("wip/old.md", { hash: "h" });
+    // Nobody has adopted new.md yet -- it just exists on the remote.
+    await seedRemote("wip/new.md", "untracked destination content");
+
+    await assert.rejects(
+      () => renameFileRemote(shared.db, { userId: "U1", fileId, newFilename: "new.md" }),
+      /both .* exist on the remote/,
+    );
+
+    // Nothing was touched.
+    const adapter = await getAdapter(shared.db, "test-fs");
+    assert.equal((await adapter.get(await remotePathFor("wip/old.md"))).toString("utf8"), "body");
+    assert.equal(
+      (await adapter.get(await remotePathFor("wip/new.md"))).toString("utf8"),
+      "untracked destination content",
+    );
+    const row = await shared.db.execute({
+      sql: "SELECT filename, remote_path FROM files WHERE id = ?",
+      args: [fileId],
+    });
+    assert.equal(row.rows[0].filename, "old.md");
+  });
+
+  it("a retry that finds the object already at the destination reports ok instead of failing on a vanished source (#279 finding 9)", async () => {
+    await seedRemote("wip/old.md", "body");
+    const fileId = await insertFileRow("wip/old.md", { hash: "h" });
+    await renameFileRemote(shared.db, { userId: "U1", fileId, newFilename: "new.md" });
+
+    // Simulate a client-side retry after a lost response: the row (and
+    // remote) already reflect the rename, so a second call for the SAME
+    // target must not fail on a source that no longer exists.
+    const r = await renameFileRemote(shared.db, { userId: "U1", fileId, newFilename: "new.md" });
+    assert.equal(r.status, "ok");
+    assert.equal(r.new_remote_path, await remotePathFor("wip/new.md"));
+  });
+
+  async function countPendingOps(fileId: string): Promise<number> {
+    const r = await shared.db.execute({
+      sql: "SELECT COUNT(*) AS n FROM pending_file_ops WHERE file_id = ?",
+      args: [fileId],
+    });
+    return Number(r.rows[0].n);
+  }
+
+  it("leaves a durable pending_file_ops row when the remote rename fails", async () => {
+    await seedRemote("wip/old.md", "body");
+    const fileId = await insertFileRow("wip/old.md", { hash: "h" });
+    // Force a remote-phase failure: both source and destination already
+    // exist (relocateRemoteObject's ambiguity guard), so the op is left
+    // pending (not completed) for the next sync run's retry to pick up --
+    // before #279 this path had no pending_file_ops entry at all.
+    await seedRemote("wip/new.md", "collision");
+    await assert.rejects(() =>
+      renameFileRemote(shared.db, { userId: "U1", fileId, newFilename: "new.md" }),
+    );
+    assert.equal(await countPendingOps(fileId), 1, "a failed remote rename leaves a pending op");
+  });
+
+  it("a successful rename completes its own pending op, leaving nothing behind", async () => {
+    await seedRemote("wip/old.md", "body");
+    const fileId = await insertFileRow("wip/old.md", { hash: "h" });
+    const r = await renameFileRemote(shared.db, { userId: "U1", fileId, newFilename: "clean.md" });
+    assert.equal(r.status, "ok");
+    assert.equal(await countPendingOps(fileId), 0);
+  });
 });
 
 describe("deleteFileRemote (B3)", () => {
@@ -449,5 +517,49 @@ describe("deleteFileRemote (B3)", () => {
     assert.equal(row.rows.length, 0);
     const adapter = await getAdapter(shared.db, "test-fs");
     assert.equal(await adapter.stat(await remotePathFor("wip/x.md")), null);
+  });
+
+  it("a confirmed retry after the delete already landed reports ok, not a failure (#279 finding 10)", async () => {
+    await seedRemote("wip/x.md", "body");
+    const fileId = await insertFileRow("wip/x.md");
+    const first = await deleteFileRemote(shared.db, {
+      userId: "U1",
+      fileId,
+      mode: "complete",
+      confirmed: true,
+    });
+    assert.ok("status" in first && first.status === "ok");
+
+    // The central client retries once on an ambiguous network failure --
+    // this simulates the retry finding the record already gone because the
+    // FIRST attempt's response was the one that got lost, not the request.
+    const retry = await deleteFileRemote(shared.db, {
+      userId: "U1",
+      fileId,
+      mode: "complete",
+      confirmed: true,
+    });
+    assert.ok("status" in retry && retry.status === "ok");
+    assert.equal((retry as { already_deleted?: boolean }).already_deleted, true);
+  });
+
+  it("a confirmed delete of a file_id with no delete history still throws (never a fake success)", async () => {
+    await assert.rejects(
+      () =>
+        deleteFileRemote(shared.db, {
+          userId: "U1",
+          fileId: "never-existed",
+          mode: "complete",
+          confirmed: true,
+        }),
+      /not found/,
+    );
+  });
+
+  it("an UNconfirmed call for an unknown file_id still throws (no preview to show)", async () => {
+    await assert.rejects(
+      () => deleteFileRemote(shared.db, { userId: "U1", fileId: "never-existed", mode: "complete" }),
+      /not found/,
+    );
   });
 });

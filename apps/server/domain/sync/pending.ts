@@ -62,12 +62,20 @@ export async function computeSyncPending(
     const untracked = scan.new_local.length + scan.deleted_remote.length;
     const remote_missing = scan.remote_missing.length;
     const deleted_local = scan.deleted_local.length;
-    // remote_missing and deleted_local are surfaced per-node (SyncBar/file
-    // list) but do not count towards "unsynced": a sync run neither pushes
-    // nor pulls them, so they'd never clear and would make the footer badge
-    // / quit guard warn about work that isn't actually pending.
-    const total = push + conflict + untracked;
-    if (total === 0) return null;
+    // remote_missing is surfaced per-node (SyncBar/file list) but does not
+    // count towards either total: a sync run neither pushes nor pulls it,
+    // so it would never clear.
+    //
+    // `total` (actionable) vs `decisions` (needs a human): a sync run
+    // pushes/pulls push+untracked but never resolves a conflict or restores
+    // a deleted_local file -- counting those into `total` made the footer
+    // badge / quit guard warn about work "Synchronizovat vše" can never
+    // actually clear. Split so each count means what it says; a node is
+    // still included below when it only has decisions, so it isn't hidden
+    // from the overview entirely.
+    const total = push + untracked;
+    const decisions = conflict + deleted_local;
+    if (total === 0 && decisions === 0) return null;
     return {
       node_id: m.node_id,
       node_name: row.rows[0].name as string,
@@ -78,6 +86,7 @@ export async function computeSyncPending(
       remote_missing,
       deleted_local,
       total,
+      decisions,
     };
   };
 
@@ -98,5 +107,6 @@ export async function computeSyncPending(
 
   nodes.sort((a, b) => b.total - a.total);
   const total = nodes.reduce((s, n) => s + n.total, 0);
-  return { nodes, total };
+  const decisions = nodes.reduce((s, n) => s + n.decisions, 0);
+  return { nodes, total, decisions };
 }

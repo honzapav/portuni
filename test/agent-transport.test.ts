@@ -17,6 +17,7 @@ import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
 import type { AddressInfo } from "node:net";
 import { z } from "zod";
+import { ulid } from "ulid";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -107,14 +108,19 @@ interface StubCentral {
   // client that was properly closed leaves no open GET behind, while a
   // leaked one holds its stream open forever.
   openGets: () => number;
+  // Headers on the most recent POST the stub saw (#272: asserts
+  // openUpstream forwards X-Portuni-Terminal/Spawn-Id/Profile).
+  lastHeaders: () => Record<string, string | string[] | undefined>;
 }
 
 function startStubCentral(): Promise<StubCentral> {
   const sessions = new Map<string, StreamableHTTPServerTransport>();
   const seenUrls: string[] = [];
   let openGets = 0;
+  let lastHeaders: Record<string, string | string[] | undefined> = {};
   const httpServer = createServer(async (req, res) => {
     seenUrls.push(req.url ?? "");
+    lastHeaders = req.headers;
     if (req.method === "GET") {
       openGets++;
       res.on("close", () => {
@@ -236,6 +242,7 @@ function startStubCentral(): Promise<StubCentral> {
         seenUrls,
         sessionsInitialized: () => sessions.size,
         openGets: () => openGets,
+        lastHeaders: () => lastHeaders,
       });
     });
   });
@@ -560,14 +567,16 @@ describe("agent MCP front door", () => {
     await waitFor(() => central.openGets() >= 2);
   });
 
-  it("closes the upstream client when the first request never initializes a session", async () => {
+  it("refuses a first request that never initializes a session, without ever opening an upstream connection (#272)", async () => {
     const sessionsBefore = central.sessionsInitialized();
     const getsBefore = central.openGets();
 
     // A first request that is NOT an initialize (and carries no
-    // mcp-session-id): the SDK server transport rejects it with 400 and
-    // onsessioninitialized never fires -- the freshly opened upstream client
-    // must be closed by the transport, not orphaned.
+    // mcp-session-id): refused with 400 BEFORE openUpstream runs at all --
+    // openUpstream's client.connect() always issues its own genuine
+    // initialize handshake regardless of what the downstream request was,
+    // so opening it for a doomed request would burn a real session on
+    // central for traffic that never became a session here.
     const res = await fetch(`${agentBase}/mcp`, {
       method: "POST",
       headers: {
@@ -579,18 +588,37 @@ describe("agent MCP front door", () => {
     assert.equal(res.status, 400);
     await res.body?.cancel();
 
-    // The agent DID open an upstream connection for the doomed request...
-    assert.equal(central.sessionsInitialized(), sessionsBefore + 1);
-    // ...and closed it: a leaked client would (eventually) hold its
-    // standalone GET SSE stream open forever, so openGets must return to
-    // the pre-request baseline and stay there.
-    const settled = await waitFor(() => central.openGets() === getsBefore);
-    assert.ok(
-      settled,
-      `orphaned upstream GET stream still open: ${central.openGets()} != ${getsBefore}`,
-    );
+    // No upstream connection was opened for the doomed request at all.
     await new Promise((r) => setTimeout(r, 150));
-    assert.equal(central.openGets(), getsBefore, "upstream GET stream reopened after close");
+    assert.equal(central.sessionsInitialized(), sessionsBefore);
+    assert.equal(central.openGets(), getsBefore);
+  });
+
+  it("forwards X-Portuni-Terminal/Spawn-Id/Profile from the downstream connection onto the upstream request (#272)", async () => {
+    const spawnId = ulid();
+    const client = new Client({ name: "agent-transport-header-test", version: "0.0.0" });
+    try {
+      await client.connect(
+        new StreamableHTTPClientTransport(
+          new URL(`${agentBase}/mcp?home_node_id=01TESTNODE0000000000000000`),
+          {
+            requestInit: {
+              headers: {
+                "X-Portuni-Terminal": "term-abc",
+                "X-Portuni-Spawn-Id": spawnId,
+                "X-Portuni-Profile": "profile-xyz",
+              },
+            },
+          },
+        ),
+      );
+      const headers = central.lastHeaders();
+      assert.equal(headers["x-portuni-terminal"], "term-abc");
+      assert.equal(headers["x-portuni-spawn-id"], spawnId);
+      assert.equal(headers["x-portuni-profile"], "profile-xyz");
+    } finally {
+      await client.close().catch(() => undefined);
+    }
   });
 });
 

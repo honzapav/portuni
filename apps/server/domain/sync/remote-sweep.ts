@@ -182,6 +182,62 @@ export async function remoteSweep(db: Client, a: RemoteSweepArgs): Promise<Remot
     out.deleted_on_remote.push({ file_id: r.id as string, filename: r.filename as string, remote_path: remotePath });
   }
 
+  // 1.5. Hash refresh for tracked, present records whose cached hash is
+  // unknown (#273) OR stale (#276). current_remote_hash is the ONLY source
+  // of remote truth central-mode classification reads (classifyRecord:
+  // remoteExists = remoteHash !== null, and equality against it is the
+  // only push/pull/conflict signal). A record stuck with a NULL hash reads
+  // as remote_missing forever even though this sweep's own listing just
+  // proved the object exists right here (#273) -- the same rows the
+  // hadObject filter above deliberately excludes from delete-detection (a
+  // NULL hash cannot tell "never had an object" apart from "had one, lost
+  // track of its hash"). A record whose hash WAS once correct but the
+  // object was since edited out of band (a teammate's direct Drive edit)
+  // reads as permanently clean instead, so the edit is never pulled by any
+  // device (#276) -- central mode has no other path that ever re-verifies
+  // an already-known hash; local mode's slow scan self-heals this the same
+  // way by statting the remote live on every non-fast scan, central mode
+  // has nothing equivalent.
+  //
+  // For a backend that reports a content hash on listing (Drive:
+  // md5Checksum) both cases are corrected for free -- the sweep already
+  // paid for the listing call, no extra remote round trip needed. For a
+  // backend that reports none (the fs/OpenDAL test adapter) a NULL hash
+  // still falls back to downloading and hashing the content, same as the
+  // adopt path's own backfill below; an already-non-null hash on such a
+  // backend is left alone -- with no free staleness signal, refreshing it
+  // would mean downloading and hashing every tracked file's full content
+  // on every sync run. That is the same structural limit local mode's own
+  // slow scan already has for such backends (cachedRemoteStat's hash stays
+  // null there too, so it defers to the local/last-synced comparison
+  // instead of ever proving the remote changed) -- not a new gap this fix
+  // introduces.
+  const hashCandidates = rows.rows.filter((r) => {
+    if (Number(r.is_native_format) === 1) return false;
+    const ref = present.get((r.remote_path as string).normalize("NFC"));
+    if (!ref) return false;
+    const cached = r.current_remote_hash as string | null;
+    if (cached === null) return true;
+    return ref.hash !== null && ref.hash !== cached;
+  });
+  const hashBackfills = await mapWithConcurrency(hashCandidates, SWEEP_STAT_CONCURRENCY, async (r) => {
+    const remotePath = r.remote_path as string;
+    const ref = present.get(remotePath.normalize("NFC"))!;
+    if (ref.hash) return { id: r.id as string, hash: ref.hash, error: null as string | null };
+    try {
+      return { id: r.id as string, hash: sha256Buffer(await adapter.get(remotePath)), error: null };
+    } catch (e) {
+      return { id: r.id as string, hash: null, error: (e as Error).message };
+    }
+  });
+  for (const b of hashBackfills) {
+    if (b.error !== null || b.hash === null) continue;
+    await db.execute({
+      sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
+      args: [b.hash, b.id],
+    });
+  }
+
   // 2. New on the remote. Known = any record anywhere under this root (an
   // org mirror lists its children's files too).
   const likePrefix = nodeRoot.replace(/[\\%_]/g, (ch) => `\\${ch}`);

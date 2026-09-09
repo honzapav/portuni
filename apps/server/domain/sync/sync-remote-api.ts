@@ -57,7 +57,9 @@ export interface NodeSyncInfo {
   // (deleted_remote classification), so a copy left behind on another
   // device cannot resurrect a deletion, or get pushed back to a path the
   // file has since moved away from. Qualifying actions are exactly
-  // sync_delete / sync_delete_remote / sync_move / sync_rename —
+  // sync_delete / sync_delete_remote / sync_move / sync_rename /
+  // sync_rename_remote (the mirror-less adapter-direct rename,
+  // renameFileRemote -- #279).
   // *_repair_needed and sync_move_partial rows mean the remote copy still
   // exists at the old path and must never trigger cleanup. record_alive
   // distinguishes the two: true for a move/rename (the record is still
@@ -139,7 +141,7 @@ export async function getNodeSyncInfos(
                        ) AS rn
                   FROM audit_log
                  WHERE target_type = 'file'
-                   AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename')
+                   AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename', 'sync_rename_remote')
                    AND audit_node_id IN (${ph})
                    AND timestamp >= ?
               ) WHERE rn <= 20000
@@ -260,7 +262,7 @@ export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeS
                           json_extract(detail, '$.old_remote_path')) AS remote_path
           FROM audit_log
           WHERE target_type = 'file'
-            AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename')
+            AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename', 'sync_rename_remote')
             AND audit_node_id = ?
             AND timestamp >= ?
           ORDER BY timestamp DESC LIMIT 20000`,
@@ -309,7 +311,7 @@ function dedupeByRemotePath(
     out.push({
       file_id: r.target_id as string,
       remote_path: remotePath,
-      record_alive: r.action === "sync_move" || r.action === "sync_rename",
+      record_alive: r.action === "sync_move" || r.action === "sync_rename" || r.action === "sync_rename_remote",
     });
   }
   return out;

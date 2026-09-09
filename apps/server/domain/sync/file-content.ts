@@ -3,18 +3,26 @@
 // path to disk; registration is a separate concern).
 // writeFileContent is local-only: it writes the mirror file and never pushes
 // -- the sync run / statusScan picks up the change as a push candidate.
-// createFile registers + pushes immediately via storeFile (a new tracked
-// file needs a remote binding). Conflict detection on writeFileContent
-// compares the on-disk sha256 against the caller's baseVersion so a
-// concurrent terminal-agent edit is never silently clobbered.
+// createFile registers + pushes immediately via storeFile when a remote is
+// routed (a new tracked file needs a remote binding to push). A local-only
+// workspace (no remote configured at all, #201/#280) has nowhere to push to
+// -- createFile falls back to registerLocalFile there instead of failing
+// after the bytes are already on disk; the deliberate push stays available
+// later via portuni_store/a sync run, same as any other registered-only
+// file. Conflict detection on writeFileContent compares the on-disk sha256
+// against the caller's baseVersion so a concurrent terminal-agent edit is
+// never silently clobbered.
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import type { Client } from "@libsql/client";
 import { getMirrorPath } from "./mirror-registry.js";
-import { mimeFor, storeFile } from "./engine.js";
+import { mimeFor, storeFile, registerLocalFile } from "./engine.js";
+import { resolveNodeInfo } from "./node-info.js";
+import { resolveRemote } from "./routing.js";
 import { sha256Buffer } from "./hash.js";
 import { safeMirrorJoin, type Section } from "./remote-path.js";
+import { withPathLock } from "./path-lock.js";
 
 export type FileContentErrorCode =
   | "NO_MIRROR"
@@ -112,29 +120,36 @@ export async function writeFileContent(
   if (!mirrorRoot) throw new FileContentError("node has no local mirror", "NO_MIRROR");
   const abs = resolveMirrorAbs(mirrorRoot, a.relPath);
 
-  if (a.baseVersion && !a.force) {
-    let current: Buffer | null = null;
-    try {
-      current = await readFile(abs);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    }
-    if (current) {
-      const currentVersion = sha256Buffer(current);
-      if (currentVersion !== a.baseVersion) {
-        throw new FileContentError(
-          "file changed on disk since it was opened",
-          "CONFLICT",
-          currentVersion,
-        );
+  // Serialized per local path (#277 finding 3/4's shared coordinator): the
+  // conflict check above and the write below must be atomic against any
+  // other writer of this same path (a concurrent save, a pull, a push) or
+  // an edit landing in the gap is either silently lost or silently
+  // clobbers a change the CONFLICT check was meant to catch.
+  return withPathLock(abs, async () => {
+    if (a.baseVersion && !a.force) {
+      let current: Buffer | null = null;
+      try {
+        current = await readFile(abs);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      }
+      if (current) {
+        const currentVersion = sha256Buffer(current);
+        if (currentVersion !== a.baseVersion) {
+          throw new FileContentError(
+            "file changed on disk since it was opened",
+            "CONFLICT",
+            currentVersion,
+          );
+        }
       }
     }
-  }
 
-  await mkdir(dirname(abs), { recursive: true });
-  const bytes = Buffer.from(a.content, "utf8");
-  await writeFile(abs, bytes);
-  return { version: sha256Buffer(bytes) };
+    await mkdir(dirname(abs), { recursive: true });
+    const bytes = Buffer.from(a.content, "utf8");
+    await writeFile(abs, bytes);
+    return { version: sha256Buffer(bytes) };
+  });
 }
 
 export async function createFile(
@@ -171,26 +186,48 @@ export async function createFile(
     throw new FileContentError("invalid path", "INVALID_PATH");
   }
 
-  // Refuse to clobber an existing file.
-  try {
-    await readFile(abs);
-    throw new FileContentError(`file already exists: ${fn}`, "EXISTS");
-  } catch (e) {
-    if (e instanceof FileContentError) throw e;
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-  }
+  // Refuse to clobber an existing file. The check and the write it gates are
+  // serialized per path for the same reason writeFileContent's are: two
+  // concurrent creates of the same filename would otherwise both observe
+  // ENOENT and the second would silently overwrite the first. Deliberately
+  // scoped to these two steps only -- storeFile below takes the same lock
+  // for its own push, and withPathLock is not reentrant.
+  await withPathLock(abs, async () => {
+    try {
+      await readFile(abs);
+      throw new FileContentError(`file already exists: ${fn}`, "EXISTS");
+    } catch (e) {
+      if (e instanceof FileContentError) throw e;
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
 
-  await mkdir(dirname(abs), { recursive: true });
-  await writeFile(abs, Buffer.from(a.content ?? "", "utf8"));
-
-  // Register + push. storeFile detects the file is already inside the mirror
-  // (subpathFromMirror) and skips the copy, uploads, and upserts the row.
-  const stored = await storeFile(db, {
-    userId: a.userId,
-    nodeId: a.nodeId,
-    localPath: abs,
-    status: section === "outputs" ? "output" : "wip",
+    await mkdir(dirname(abs), { recursive: true });
+    await writeFile(abs, Buffer.from(a.content ?? "", "utf8"));
   });
+
+  // Register + push when a remote is routed -- storeFile detects the file is
+  // already inside the mirror (subpathFromMirror) and skips the copy,
+  // uploads, and upserts the row. A local-only workspace (no remote routed
+  // at all) has nothing to push to: storeFile would throw ROUTING_GUIDANCE
+  // AFTER the bytes above are already on disk, so this checks first and
+  // falls back to registerLocalFile (record-only, matching the watcher's own
+  // auto-registration) instead of reporting a failure for a create that, on
+  // disk, already succeeded (#280 finding 12).
+  const info = await resolveNodeInfo(db, a.nodeId);
+  const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
+  const stored = remoteName
+    ? await storeFile(db, {
+        userId: a.userId,
+        nodeId: a.nodeId,
+        localPath: abs,
+        status: section === "outputs" ? "output" : "wip",
+      })
+    : await registerLocalFile(db, {
+        userId: a.userId,
+        nodeId: a.nodeId,
+        localPath: abs,
+        status: section === "outputs" ? "output" : "wip",
+      });
 
   const relative_path = abs.startsWith(mirrorRoot + "/")
     ? abs.slice(mirrorRoot.length + 1)
