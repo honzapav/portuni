@@ -136,6 +136,33 @@ async function connectWithElicitation(
   return client;
 }
 
+// Same again, but the client records every dialog message it is shown, so a
+// test can assert what the human actually reads.
+async function connectCapturingDialogs(
+  scope: SessionScope,
+  ident: RequestIdentity,
+  seen: string[],
+): Promise<McpClient> {
+  const projector = createDiskProjector({ userId: ident.userId, scope });
+  const server = new McpServer({ name: "write-gate-dialog-test", version: "0.0.1" }, {});
+  const ctx: SessionCtx = { scope, identity: ident, projector, elicit: createElicitor(server) };
+  registerNodeTools(server, ctx);
+  registerGetNodeTool(server, ctx);
+  registerScopeTools(server, ctx);
+  const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+  const client = new McpClient(
+    { name: "write-gate-dialog-test-client", version: "0.0.1" },
+    { capabilities: { elicitation: {} } },
+  );
+  client.setRequestHandler(ElicitRequestSchema, async (request) => {
+    seen.push(String(request.params.message ?? ""));
+    return { action: "accept" as const, content: { confirm: true } };
+  });
+  await server.connect(serverT);
+  await client.connect(clientT);
+  return client;
+}
+
 let workspace: string;
 let db: DbClient;
 let orgId: string;
@@ -426,5 +453,64 @@ describe("read gate: protocol elicitation", () => {
     assert.equal(r.isError, true);
     assert.equal(payloadOf(r).error, "scope_expansion_required");
     assert.equal(scope.has(otherId), false);
+  });
+});
+
+// A node of this test's own: the shared `otherId` fixture gets renamed by
+// tests above, and these assertions are about the node's name.
+async function freshNode(name: string): Promise<string> {
+  const id = ulid();
+  await db.execute({
+    sql: "INSERT INTO nodes (id, type, name, sync_key, created_by) VALUES (?, ?, ?, ?, ?)",
+    args: [id, "project", name, `k-${id}`, SOLO],
+  });
+  return id;
+}
+
+describe("write dialogs are written for the human answering them", () => {
+  // The dialog and the structured error address different readers: the agent
+  // gets the ULID plus the expand_scope call, the person gets the node's
+  // name and type and no instructions they cannot act on.
+  it("names the node in the dialog raised by a mutating tool", async () => {
+    const targetId = await freshNode("Tempo akademie");
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = homeId;
+    scope.addSeed(homeId);
+    scope.add(targetId);
+    const seen: string[] = [];
+    const client = await connectCapturingDialogs(scope, identity({ via: "device_token" }), seen);
+
+    const r = (await client.callTool({
+      name: "portuni_update_node",
+      arguments: { node_id: targetId, name: "Renamed" },
+    })) as ToolResult;
+    assert.equal(r.isError, undefined, JSON.stringify(r));
+    assert.equal(seen.length, 1);
+    assert.match(seen[0], /"Tempo akademie" \(project\)/);
+    assert.match(seen[0], new RegExp(targetId));
+    assert.doesNotMatch(seen[0], /portuni_expand_scope/);
+    assert.doesNotMatch(seen[0], /ask the user/i);
+  });
+
+  it("names the node and quotes the agent's stated reason in the expand_scope write dialog", async () => {
+    const targetId = await freshNode("Rozpočet 2026");
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = homeId;
+    scope.addSeed(homeId);
+    scope.add(targetId);
+    const seen: string[] = [];
+    const client = await connectCapturingDialogs(scope, identity({ via: "device_token" }), seen);
+
+    const expand = (await client.callTool({
+      name: "portuni_expand_scope",
+      arguments: { node_ids: [targetId], reason: "cleaning up stale events", writable: true },
+    })) as ToolResult;
+    assert.equal(expand.isError, undefined);
+    assert.equal(seen.length, 1);
+    assert.match(seen[0], /"Rozpočet 2026" \(project\)/);
+    // The reason is the agent's claim, shown as such -- not as the server's
+    // own justification.
+    assert.match(seen[0], /The agent asks for write access, saying: "cleaning up stale events"/);
+    assert.doesNotMatch(seen[0], /portuni_expand_scope/);
   });
 });

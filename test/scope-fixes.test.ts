@@ -1,7 +1,8 @@
 // Regression tests for the scope-decision helpers:
 //   - violatesHardFloor matches what decideRead's hard-floor branch checks.
 //   - guardNodeRead: returns elicit/allow with audit + auto-add.
-//   - loadNodeScopeMeta: pulls visibility / created_by / scope_sensitive.
+//   - loadNodeScopeMeta: pulls visibility / created_by / scope_sensitive,
+//     plus the name/type the elicitation prompt needs.
 // (decideGlobalQuery is gone -- search and global list_nodes are
 // permission-only now, see docs/superpowers/specs/
 // 2026-08-31-scope-sessions-redesign-design.md, "Search is discovery, not
@@ -89,6 +90,8 @@ describe("loadNodeScopeMeta", () => {
     assert.equal(m.visibility, "private");
     assert.equal(m.creatorUserId, "U1");
     assert.equal(m.scopeSensitive, true);
+    assert.equal(m.name, "P");
+    assert.equal(m.type, "project");
   });
 
   it("tolerates malformed meta JSON", async () => {
@@ -134,6 +137,26 @@ describe("guardNodeRead", () => {
     const r = await guardNodeRead(db, scope, "N1", "U1");
     assert.equal(r.kind, "elicit");
     assert.equal(scope.has("N1"), false);
+  });
+
+  it("hands the elicitation dialog the human prompt, not the agent hint", async () => {
+    const db = await freshDb();
+    await db.execute({
+      sql: `INSERT INTO nodes (id, type, name, owner_id, created_by, visibility, meta) VALUES (?,?,?,?,?,?,?)`,
+      args: ["N1", "project", "Tempo akademie", null, "U1", "team", null],
+    });
+    const seen: string[] = [];
+    const scope = new SessionScope("interactive_task");
+    const r = await guardNodeRead(db, scope, "N1", "U1", undefined, {
+      confirm: async (message: string) => {
+        seen.push(message);
+        return "accept" as const;
+      },
+    });
+    assert.equal(r.kind, "allow");
+    assert.equal(seen.length, 1);
+    assert.match(seen[0], /"Tempo akademie" \(project\)/);
+    assert.doesNotMatch(seen[0], /portuni_expand_scope/);
   });
 
   it("auto-expands an edge-reachable out-of-scope node without an elicit round-trip", async () => {

@@ -50,7 +50,7 @@ import type { RequestIdentity } from "../auth/request-identity.js";
 import type { McpTransport } from "./transport.js";
 import { INSTRUCTIONS } from "./server.js";
 import { parseHomeNodeIdFromUrl } from "./auto-seed.js";
-import type { SessionType } from "./scope.js";
+import { nodeConsentPrompt, type SessionType } from "./scope.js";
 import {
   LOCAL_TOOLS,
   callLocalTool,
@@ -64,7 +64,12 @@ import {
   deriveOrNull,
 } from "./agent-tools.js";
 import { awaitPendingPush } from "../domain/sync/pending-pushes.js";
-import { guardWrite, writeGuardError, type WriteContext } from "../domain/write-gate.js";
+import {
+  guardWrite,
+  writeGuardError,
+  WRITE_SCOPE_WHY,
+  type WriteContext,
+} from "../domain/write-gate.js";
 import { createElicitorFromServer, AGENT_RELAY_ELICIT_TIMEOUT_MS } from "./elicit.js";
 import { CentralHttpError, type CentralClient } from "../domain/sync/central/client.js";
 import { createDiskProjector, type ProjectorScope } from "./disk-projection.js";
@@ -377,13 +382,24 @@ function buildAgentServer(
         // real dialog for "elicit" (never headless, guardWrite only
         // refuses that outright), otherwise fall back to the structured
         // refusal.
-        if (outcome.kind === "elicit" && (await elicitor.confirm(outcome.message)) === "accept") {
+        // This front door has no graph DB (see the note above), so the
+        // prompt cannot name the node -- but it still must not show the
+        // human the agent-facing expand_scope instructions.
+        if (
+          outcome.kind === "elicit" &&
+          (await elicitor.confirm(
+            nodeConsentPrompt("write to", nodeId, { name: null, type: null }, WRITE_SCOPE_WHY),
+          )) === "accept"
+        ) {
           writableNodes.add(nodeId);
           continue;
         }
         return {
           content: [
-            { type: "text", text: JSON.stringify(writeGuardError(nodeId, outcome.kind, outcome.message)) },
+            {
+              type: "text",
+              text: JSON.stringify(writeGuardError(nodeId, outcome.kind, outcome.agentHint)),
+            },
           ],
           isError: true,
         };

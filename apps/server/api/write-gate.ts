@@ -213,7 +213,7 @@ export async function guardRestNodeWrite(
   const ctx = await resolveRestWriteContext(req, identity);
   const outcome = guardWrite(ctx, nodeId);
   if (outcome.kind === "allow") return true;
-  respondJson(res, 403, writeGuardError(nodeId, outcome.kind, outcome.message));
+  respondJson(res, 403, writeGuardError(nodeId, outcome.kind, outcome.agentHint));
   return false;
 }
 

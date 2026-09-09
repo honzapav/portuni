@@ -150,7 +150,7 @@ describe("decideRead – hard floors", () => {
     const scope = new SessionScope("interactive_task");
     const d = decideRead(scope, "X", { visibility: "private", creatorUserId: "U_SELF", scopeSensitive: false }, "U_SELF", false);
     assert.equal(d.kind, "elicit");
-    assert.match(d.message ?? "", /outside the session scope/);
+    assert.match(d.agentHint ?? "", /outside the session scope/);
   });
 });
 
@@ -190,7 +190,7 @@ describe("decideRead – disconnected jump elicits", () => {
       const scope = new SessionScope(sessionType);
       const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1", false);
       assert.equal(d.kind, "elicit", `session_type=${sessionType}`);
-      assert.match(d.message ?? "", /disconnected jump/);
+      assert.match(d.agentHint ?? "", /disconnected jump/);
     }
   });
 
@@ -198,15 +198,69 @@ describe("decideRead – disconnected jump elicits", () => {
     const scope = new SessionScope("headless");
     const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1", false);
     assert.equal(d.kind, "elicit");
-    assert.doesNotMatch(d.message ?? "", /ask the user/i);
-    assert.match(d.message ?? "", /portuni_expand_scope/);
+    assert.doesNotMatch(d.agentHint ?? "", /ask the user/i);
+    assert.match(d.agentHint ?? "", /portuni_expand_scope/);
   });
 
   it("interactive message still asks the user to confirm", () => {
     const scope = new SessionScope("interactive_task");
     const d = decideRead(scope, "X", { visibility: "team", creatorUserId: null, scopeSensitive: false }, "U1", false);
     assert.equal(d.kind, "elicit");
-    assert.match(d.message ?? "", /ask the user/i);
+    assert.match(d.agentHint ?? "", /ask the user/i);
+  });
+});
+
+describe("decideRead – the dialog prompt is written for the human, not the agent", () => {
+  // The dialog text and the structured error serve different readers. The
+  // agent gets the ULID and the expand_scope call; the person answering the
+  // dialog gets the node's name and type, and none of the tool-call
+  // instructions they cannot act on.
+  const meta = {
+    visibility: "team",
+    creatorUserId: null,
+    scopeSensitive: false,
+    name: "Tempo akademie",
+    type: "project",
+  };
+
+  it("names the node and its type, and keeps expand_scope instructions out of the prompt", () => {
+    const scope = new SessionScope("interactive_task");
+    const d = decideRead(scope, "01KW6NQ2CXQG5TPC0YVB7NSM8T", meta, "U1", false);
+    assert.equal(d.kind, "elicit");
+    assert.match(d.userPrompt ?? "", /"Tempo akademie" \(project\)/);
+    assert.doesNotMatch(d.userPrompt ?? "", /portuni_expand_scope/);
+    assert.doesNotMatch(d.userPrompt ?? "", /ask the user/i);
+    // The ULID stays on the prompt as a locator, just not as the identity.
+    assert.match(d.userPrompt ?? "", /01KW6NQ2CXQG5TPC0YVB7NSM8T/);
+  });
+
+  it("falls back to the bare node ID when identity was not loaded", () => {
+    const scope = new SessionScope("interactive_task");
+    const d = decideRead(
+      scope,
+      "X",
+      { visibility: "team", creatorUserId: null, scopeSensitive: false },
+      "U1",
+      false,
+    );
+    assert.equal(d.kind, "elicit");
+    assert.match(d.userPrompt ?? "", /node X/);
+  });
+
+  it("gives the scope-sensitive hard floor a prompt too", () => {
+    const scope = new SessionScope("interactive_task");
+    const d = decideRead(scope, "X", { ...meta, scopeSensitive: true }, "U1", false);
+    assert.equal(d.kind, "elicit");
+    assert.match(d.userPrompt ?? "", /scope-sensitive/);
+    assert.doesNotMatch(d.userPrompt ?? "", /portuni_expand_scope/);
+  });
+
+  it("leaves headless without a prompt: there is no user to ask", () => {
+    const scope = new SessionScope("headless");
+    const d = decideRead(scope, "X", meta, "U1", false);
+    assert.equal(d.kind, "elicit");
+    assert.equal(d.userPrompt, undefined);
+    assert.match(d.agentHint ?? "", /portuni_expand_scope/);
   });
 });
 

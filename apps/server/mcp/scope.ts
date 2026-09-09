@@ -83,7 +83,17 @@ export interface ScopeRequestDecision {
   // "refused" – a hard, non-negotiable refusal: no round-trip through
   //   expand_scope can succeed (headless session hitting a hard floor).
   kind: "allow" | "elicit" | "refused";
-  message?: string;
+  // Agent-facing hint. Goes into the structured error
+  // (scope_expansion_required / scope_refused) the agent reads: it names the
+  // node ID and the exact portuni_expand_scope call that unblocks the read.
+  agentHint?: string;
+  // Human-facing prompt: the text of the MCP elicitation dialog. Identifies
+  // the node the way a person can actually judge it -- name and type, with
+  // the ULID demoted to a locator -- and carries none of the tool-call
+  // instructions, which are addressed to the agent and only confuse the
+  // human answering the dialog. Absent on "refused" and for headless (no
+  // user to ask).
+  userPrompt?: string;
   // Set on "allow" when the node was not already in scope and is being
   // auto-added because it is edge-reachable from the current scope set.
   // Callers (guardNodeRead) perform the actual add + audit; decideRead
@@ -289,6 +299,33 @@ export interface NodeScopeMeta {
   visibility: string;
   creatorUserId: string | null;
   scopeSensitive: boolean;
+  // Identity, used only to word the human-facing prompt -- never to gate a
+  // decision. Optional so pure-logic callers can omit it; loadNodeScopeMeta
+  // always fills both, and a missing name degrades the prompt to the bare
+  // node ID.
+  name?: string | null;
+  type?: string | null;
+}
+
+// Word the dialog a human answers: name and type first, ULID last and only
+// as a locator. A ULID alone is not something anyone can consent to. Shared
+// by the read gate here and the write gate (mcp/write-gate.ts,
+// tools/scope.ts, agent-transport.ts) so every dialog reads the same way.
+// `action` is the verb ("read", "write to"); `why` is one plain sentence
+// about the gate, never an instruction addressed to the agent.
+export function nodeConsentPrompt(
+  action: string,
+  nodeId: string,
+  meta: Pick<NodeScopeMeta, "name" | "type">,
+  why: string,
+): string {
+  if (!meta.name) return `Allow this session to ${action} node ${nodeId}? ${why}`;
+  const label = meta.type ? `"${meta.name}" (${meta.type})` : `"${meta.name}"`;
+  return `Allow this session to ${action} ${label}? ${why}\n${nodeId}`;
+}
+
+function userPromptFor(nodeId: string, meta: NodeScopeMeta, why: string): string {
+  return nodeConsentPrompt("read", nodeId, meta, why);
 }
 
 export function decideRead(
@@ -314,14 +351,19 @@ export function decideRead(
     if (scope.sessionType === "headless") {
       return {
         kind: "refused",
-        message: `Node ${nodeId} is scope-sensitive and cannot be reached by a headless session.`,
+        agentHint: `Node ${nodeId} is scope-sensitive and cannot be reached by a headless session.`,
       };
     }
     return {
       kind: "elicit",
-      message:
+      agentHint:
         `Target node ${nodeId} is scope-sensitive. Ask the user to confirm, ` +
         `then call portuni_expand_scope with reason 'user-confirmed-in-chat'.`,
+      userPrompt: userPromptFor(
+        nodeId,
+        nodeMeta,
+        "It is marked scope-sensitive, so it stays out of reach unless you confirm.",
+      ),
     };
   }
 
@@ -348,7 +390,7 @@ export function decideRead(
   if (scope.sessionType === "headless") {
     return {
       kind: "elicit",
-      message:
+      agentHint:
         `Node ${nodeId} is outside the session scope and not reachable via a graph edge ` +
         `from anything already in scope (a disconnected jump). Headless sessions have no ` +
         `user to ask -- call portuni_expand_scope with a reason describing why this node ` +
@@ -357,10 +399,15 @@ export function decideRead(
   }
   return {
     kind: "elicit",
-    message:
+    agentHint:
       `Node ${nodeId} is outside the session scope and not reachable via a graph edge ` +
       `from anything already in scope (a disconnected jump). Ask the user to confirm, ` +
       `then call portuni_expand_scope with reason 'user-confirmed-in-chat'.`,
+    userPrompt: userPromptFor(
+      nodeId,
+      nodeMeta,
+      "It is outside this session's scope and nothing already in scope links to it.",
+    ),
   };
 }
 
@@ -408,6 +455,10 @@ export interface NodeScopeRow {
   visibility: string;
   creatorUserId: string | null;
   scopeSensitive: boolean;
+  // Identity for the elicitation prompt (see NodeScopeMeta). Null only for a
+  // node that does not exist.
+  name: string | null;
+  type: string | null;
 }
 
 // Look up the bits of a node that drive scope decisions:
@@ -426,11 +477,18 @@ export async function loadNodeScopeMeta(
   nodeId: string,
 ): Promise<NodeScopeRow> {
   const r = await db.execute({
-    sql: "SELECT visibility, created_by, meta FROM nodes WHERE id = ?",
+    sql: "SELECT visibility, created_by, meta, name, type FROM nodes WHERE id = ?",
     args: [nodeId],
   });
   if (r.rows.length === 0) {
-    return { exists: false, visibility: "team", creatorUserId: null, scopeSensitive: false };
+    return {
+      exists: false,
+      visibility: "team",
+      creatorUserId: null,
+      scopeSensitive: false,
+      name: null,
+      type: null,
+    };
   }
   const row = r.rows[0];
   const creatorUserId = (row.created_by as string | null) ?? null;
@@ -449,6 +507,8 @@ export async function loadNodeScopeMeta(
     visibility: row.visibility as string,
     creatorUserId,
     scopeSensitive,
+    name: (row.name as string | null) ?? null,
+    type: (row.type as string | null) ?? null,
   };
 }
 
@@ -530,6 +590,8 @@ export async function guardNodeRead(
       visibility: meta.visibility,
       creatorUserId: meta.creatorUserId,
       scopeSensitive: meta.scopeSensitive,
+      name: meta.name,
+      type: meta.type,
     },
     sessionUserId,
     reachable,
@@ -538,13 +600,15 @@ export async function guardNodeRead(
   if (decision.kind === "refused") {
     return {
       kind: "refused",
-      error: scopeRefusedError(nodeId, decision.message ?? "refused"),
+      error: scopeRefusedError(nodeId, decision.agentHint ?? "refused"),
     };
   }
   if (decision.kind === "elicit") {
     if (scope.sessionType !== "headless" && elicitor !== undefined) {
+      // The dialog gets the human-facing prompt; the agent-facing hint (with
+      // its expand_scope instructions) is for the structured error below.
       const outcome = await elicitor.confirm(
-        decision.message ?? `Allow this session to read node ${nodeId}?`,
+        decision.userPrompt ?? `Allow this session to read node ${nodeId}?`,
       );
       if (outcome === "accept") {
         scope.add(nodeId);
@@ -564,7 +628,7 @@ export async function guardNodeRead(
     }
     return {
       kind: "elicit",
-      error: scopeExpansionError(nodeId, decision.message ?? "expand scope first"),
+      error: scopeExpansionError(nodeId, decision.agentHint ?? "expand scope first"),
     };
   }
 
@@ -591,7 +655,7 @@ export async function guardNodeRead(
 // silently widen scope to a private-created-by-other or scope_sensitive node
 // without explicit acknowledgement.
 export function violatesHardFloor(
-  meta: NodeScopeRow,
+  meta: Pick<NodeScopeRow, "visibility" | "creatorUserId" | "scopeSensitive">,
   sessionUserId: string,
 ): boolean {
   if (meta.scopeSensitive) return true;

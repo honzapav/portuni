@@ -55,7 +55,11 @@ async function confirmVia(
             confirm: {
               type: "boolean",
               title: "Confirm",
-              description: message,
+              // Deliberately NOT `message`: clients render the request
+              // message and the field description separately, so repeating
+              // the message here prints the whole prompt twice in the
+              // dialog. The field is a bare yes/no next to the message.
+              description: "Yes, allow it",
             },
           },
           required: ["confirm"],

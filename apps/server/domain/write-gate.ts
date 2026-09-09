@@ -31,10 +31,22 @@ export interface WriteContext {
   writableNodes: ReadonlySet<string>;
 }
 
+// Why a write is gated, in one sentence a person can act on. The domain
+// layer has no DB handle and cannot name the node, so callers that can
+// (mcp/write-gate.ts, tools/scope.ts) pair this with nodeConsentPrompt;
+// agent-transport.ts, which has no graph DB at all, uses it with the bare
+// node ID. Kept here so every write dialog gives the same reason.
+export const WRITE_SCOPE_WHY = "It is outside this session's write scope.";
+
 export type WriteGuardOutcome =
   | { kind: "allow" }
-  | { kind: "elicit"; message: string }
-  | { kind: "refused"; message: string };
+  // agentHint (not a single shared `message`) because the structured error
+  // and the confirmation dialog address different readers: this text names
+  // the node ID and the expand_scope call for the agent, and must never be
+  // what a human is asked to approve. See ScopeRequestDecision in
+  // mcp/scope.ts for the read-side counterpart.
+  | { kind: "elicit"; agentHint: string }
+  | { kind: "refused"; agentHint: string };
 
 export function guardWrite(ctx: WriteContext, nodeId: string): WriteGuardOutcome {
   if (ctx.sessionType === "env") return { kind: "allow" };
@@ -44,7 +56,7 @@ export function guardWrite(ctx: WriteContext, nodeId: string): WriteGuardOutcome
   if (ctx.sessionType === "headless") {
     return {
       kind: "refused",
-      message:
+      agentHint:
         `Node ${nodeId} is outside this headless session's write scope (home node only). ` +
         `Headless sessions cannot expand their write set mid-run -- this write cannot proceed.`,
     };
@@ -53,7 +65,7 @@ export function guardWrite(ctx: WriteContext, nodeId: string): WriteGuardOutcome
   // expandable) both round-trip through user confirmation.
   return {
     kind: "elicit",
-    message:
+    agentHint:
       `Node ${nodeId} is outside this session's write scope. Ask the user to confirm this ` +
       `write, then call portuni_expand_scope with node_ids: ["${nodeId}"], writable: true, ` +
       `reason 'user-confirmed-in-chat'.`,

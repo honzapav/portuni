@@ -5,6 +5,7 @@ import { logAudit } from "../../infra/audit.js";
 import {
   isEdgeReachable,
   loadNodeScopeMeta,
+  nodeConsentPrompt,
   seedScopeFromHome,
   violatesHardFloor,
 } from "../scope.js";
@@ -237,9 +238,17 @@ export function registerScopeTools(server: McpServer, ctx: SessionCtx): void {
           // without the elicitation capability cannot fall back to the
           // pre-elicitation convention here the way reads do: it is refused
           // outright.
+          // `meta` is already loaded above. The reason is the agent's own
+          // words, so it is quoted and attributed as a claim -- the user is
+          // approving the node, not the sentence.
           const outcome = ctx.elicit
             ? await ctx.elicit.confirm(
-                `Grant write access to node ${id}? Reason: ${args.reason}`,
+                nodeConsentPrompt(
+                  "write to",
+                  id,
+                  meta,
+                  `The agent asks for write access, saying: "${args.reason}"`,
+                ),
               )
             : "unsupported";
           if (outcome !== "accept") {
