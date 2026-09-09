@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "./backend-url";
-import { createUpdateScheduler, shouldCheckOnFocus } from "./update-schedule";
+import { createUpdateScheduler, shouldCheckOnFocus, windowTimerDeps } from "./update-schedule";
 
 export type UpdateInfo = {
   version: string;
@@ -150,10 +150,10 @@ export function useAppUpdate(): AppUpdate {
     let cancelled = false;
     let unlistenReady: (() => void) | null = null;
     const scheduler = createUpdateScheduler({
-      setTimeout,
-      clearTimeout,
-      setInterval,
-      clearInterval,
+      // windowTimerDeps, not the `{ setTimeout, clearTimeout, ... }`
+      // shorthand: the latter makes the scheduler call them with the deps
+      // object as `this`, which WKWebView refuses outright.
+      ...windowTimerDeps(window),
       checkDelayMs: CHECK_DELAY_MS,
       checkIntervalMs: CHECK_INTERVAL_MS,
     });
