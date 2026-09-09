@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.7](https://github.com/honzapav/portuni/compare/v0.13.6...v0.13.7) (2026-09-09)
+
+
+### Bug Fixes
+
+* **mcp:** address confirmation dialogs to the user, not the agent ([8f2c83e](https://github.com/honzapav/portuni/commit/8f2c83edf8a07bb3c37c560b25dca91ac5c99606))
+* **web:** call the update scheduler's timers with window as the receiver ([#286](https://github.com/honzapav/portuni/issues/286)) ([f2b4500](https://github.com/honzapav/portuni/commit/f2b45004c6a2677355474b104f1755f4885ab0ff))
+
 ## [0.13.6](https://github.com/honzapav/portuni/compare/v0.13.5...v0.13.6) (2026-09-09)
 
 
