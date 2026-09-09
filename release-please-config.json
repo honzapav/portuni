@@ -19,7 +19,12 @@
           "path": "apps/desktop/tauri.conf.json",
           "jsonpath": "$.version"
         },
-        "apps/desktop/Cargo.toml"
+        "apps/desktop/Cargo.toml",
+        {
+          "type": "toml",
+          "path": "apps/desktop/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value==\"app\")].version"
+        }
       ]
     }
   }
