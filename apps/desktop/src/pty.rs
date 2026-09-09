@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::Mutex;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 use base64::{prelude::BASE64_STANDARD, Engine};
@@ -174,6 +174,71 @@ fn spawn_program(
             ("/usr/bin/sandbox-exec".to_string(), argv)
         }
         None => (shell.to_string(), shell_args.to_vec()),
+    }
+}
+
+/// A shell's line editor enables bracketed paste (`ESC [ ? 2 0 0 4 h`)
+/// immediately before it reads the first key of a line -- i.e. once the rc
+/// files have finished running and nothing else is reading the tty. That
+/// makes it the one readiness signal we can wait for before injecting the
+/// pre-command; a fixed delay cannot tell "the prompt is up" from "an rc
+/// file is blocked on `read`".
+const PROMPT_READY_MARKER: &[u8] = b"\x1b[?2004h";
+
+/// How long to wait for PROMPT_READY_MARKER from a shell whose line editor
+/// is known to emit it (zsh >= 5.1, fish). Long, because the thing we are
+/// waiting out is an rc file asking the user a question -- oh-my-zsh's
+/// periodic "Would you like to update? [Y/n]" reads a single key, and
+/// injecting into that read swallows the first character of the command.
+const MARKER_SHELL_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Fallback for shells we cannot vouch for (macOS still ships bash 3.2,
+/// which has no bracketed paste): inject after a short cosmetic delay, the
+/// pre-readiness behaviour. A newer bash still trips the marker first and
+/// never waits this out.
+const UNKNOWN_SHELL_WAIT: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// Incremental search for PROMPT_READY_MARKER across the reader thread's
+/// chunk boundaries: the marker can straddle two `read` calls, so the
+/// number of bytes matched so far has to survive between feeds.
+#[derive(Default)]
+struct PromptReadyScan {
+    matched: usize,
+}
+
+impl PromptReadyScan {
+    /// Feed one chunk of pty output. Returns true once the full marker has
+    /// been seen, and keeps returning true afterwards.
+    fn feed(&mut self, chunk: &[u8]) -> bool {
+        if self.matched >= PROMPT_READY_MARKER.len() {
+            return true;
+        }
+        for b in chunk {
+            if *b == PROMPT_READY_MARKER[self.matched] {
+                self.matched += 1;
+                if self.matched == PROMPT_READY_MARKER.len() {
+                    return true;
+                }
+            } else {
+                // Restart, but let a byte that is itself the marker's first
+                // byte (ESC) begin a new match instead of being dropped.
+                self.matched = usize::from(*b == PROMPT_READY_MARKER[0]);
+            }
+        }
+        false
+    }
+}
+
+/// How long the pre-command injection waits for the shell to signal that
+/// its line editor is reading, before giving up and typing anyway.
+fn prompt_ready_timeout(shell: &str) -> std::time::Duration {
+    let name = std::path::Path::new(shell)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    match name.as_str() {
+        "zsh" | "fish" => MARKER_SHELL_WAIT,
+        _ => UNKNOWN_SHELL_WAIT,
     }
 }
 
@@ -529,6 +594,11 @@ pub fn pty_spawn(
         .map_err(|e| format!("try_clone_reader failed: {e}"))?;
 
     let session_id = args.session_id.clone();
+    // Readiness gate between the reader thread (which sees the shell's
+    // bracketed-paste marker) and the pre-command injector below. Set to
+    // true either when the marker arrives or when the reader loop ends, so
+    // the injector never waits out its full timeout on a dead pty.
+    let prompt_ready = Arc::new((Mutex::new(false), Condvar::new()));
     let session = PtySession {
         master: pair.master,
         writer,
@@ -550,6 +620,15 @@ pub fn pty_spawn(
     // makes bash print PS2 continuation prompts (`cmdand quote>`) for
     // every embedded newline in the agent prompt, which looks broken
     // even though it eventually executes correctly.
+    //
+    // The line goes in only once the shell's line editor says it is
+    // reading (PROMPT_READY_MARKER). A login shell's rc files can read the
+    // tty themselves -- oh-my-zsh's periodic update check does `read -k 1`
+    // -- and a keystroke injected while one of those is blocked is eaten by
+    // it: the `b` of `bash` answered the update prompt and the shell then
+    // ran the leftover `ash '/var/.../portuni-precmd-*.sh'`, so the agent
+    // never started. No fixed delay can tell that state apart from a ready
+    // prompt, which is why this waits for the shell's own signal.
     if !effective_command.trim().is_empty() {
         let tempfile = std::env::temp_dir().join(format!(
             "portuni-precmd-{}.sh",
@@ -563,10 +642,13 @@ pub fn pty_spawn(
             let invocation = format!("bash {0}; rm -f {0}\n", quoted);
             let sid = session_id.clone();
             let app_handle = app.clone();
+            let gate = prompt_ready.clone();
+            let wait = prompt_ready_timeout(&shell);
             thread::spawn(move || {
-                // Give the shell ~150ms to print its first prompt before
-                // injecting. Not strictly required but cosmetic.
-                thread::sleep(std::time::Duration::from_millis(150));
+                let (lock, cv) = &*gate;
+                if let Ok(ready) = lock.lock() {
+                    let _ = cv.wait_timeout_while(ready, wait, |ready| !*ready);
+                }
                 if let Some(state) = app_handle.try_state::<PtyState>() {
                     if let Ok(mut sessions) = state.sessions.lock() {
                         if let Some(s) = sessions.get_mut(&sid) {
@@ -594,8 +676,18 @@ pub fn pty_spawn(
     // workspace resolved at spawn time.
     let label_for_reader = spawn_ws_id.clone().map(|id| format!("ws:{id}"));
     let profile_for_cleanup = sandbox_profile_path.clone();
+    let gate_for_reader = prompt_ready.clone();
     thread::spawn(move || {
         let mut reader = reader;
+        let mut scan = PromptReadyScan::default();
+        let mut gate_open = false;
+        let open_gate = |gate: &(Mutex<bool>, Condvar)| {
+            let (lock, cv) = gate;
+            if let Ok(mut ready) = lock.lock() {
+                *ready = true;
+            }
+            cv.notify_all();
+        };
         // 16 KB buffer reduces per-chunk overhead (event serialization
         // + IPC round-trip) for high-throughput output. Larger buffers
         // mean fewer events; xterm's WebGL renderer handles the bigger
@@ -608,6 +700,10 @@ pub fn pty_spawn(
                     break;
                 }
                 Ok(n) => {
+                    if !gate_open && scan.feed(&buf[..n]) {
+                        gate_open = true;
+                        open_gate(&gate_for_reader);
+                    }
                     let encoded = BASE64_STANDARD.encode(&buf[..n]);
                     let payload = PtyDataEvent {
                         session_id: sid_for_reader.clone(),
@@ -628,6 +724,10 @@ pub fn pty_spawn(
                 }
             }
         }
+        // The pty is gone: release a still-waiting injector rather than
+        // leaving it parked for the rest of its timeout. It finds no
+        // session in the map below and writes nothing.
+        open_gate(&gate_for_reader);
         // Tell the webview the session is gone so it can clean up xterm.
         let exit_payload = PtyExitEvent {
             session_id: sid_for_reader.clone(),
@@ -912,5 +1012,62 @@ mod profile_env_tests {
     #[test]
     fn resolve_profile_env_of_an_empty_map_is_empty() {
         assert!(resolve_profile_env(&std::collections::BTreeMap::new(), Some("/Users/honza")).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod prompt_ready_tests {
+    use super::*;
+
+    #[test]
+    fn detects_the_marker_inside_a_chunk() {
+        let mut scan = PromptReadyScan::default();
+        assert!(scan.feed(b"\x1b[0m\xe2\x9e\x9c  mirror \x1b[?1h\x1b=\x1b[?2004h"));
+    }
+
+    #[test]
+    fn detects_the_marker_split_across_chunks() {
+        let mut scan = PromptReadyScan::default();
+        assert!(!scan.feed(b"\x1b[?20"));
+        assert!(scan.feed(b"04h"));
+    }
+
+    #[test]
+    fn ignores_output_without_the_marker() {
+        let mut scan = PromptReadyScan::default();
+        assert!(!scan.feed(b"[oh-my-zsh] Would you like to update? [Y/n] "));
+        assert!(!scan.feed(b"\x1b[?2004l\x1b[?1l\x1b>"));
+    }
+
+    #[test]
+    fn a_false_start_does_not_swallow_the_real_marker() {
+        // An ESC that begins a different sequence must not leave the scan
+        // stuck mid-marker: the real one arrives right after.
+        let mut scan = PromptReadyScan::default();
+        assert!(scan.feed(b"\x1b[?2\x1b[?2004h"));
+    }
+
+    #[test]
+    fn stays_matched_once_the_marker_was_seen() {
+        let mut scan = PromptReadyScan::default();
+        assert!(scan.feed(b"\x1b[?2004h"));
+        assert!(scan.feed(b"plain output"));
+    }
+
+    #[test]
+    fn zle_shells_are_waited_for_rather_than_guessed_at() {
+        assert_eq!(prompt_ready_timeout("/bin/zsh"), MARKER_SHELL_WAIT);
+        assert_eq!(
+            prompt_ready_timeout("/opt/homebrew/bin/fish"),
+            MARKER_SHELL_WAIT
+        );
+    }
+
+    #[test]
+    fn shells_that_may_never_advertise_readiness_keep_the_short_fallback() {
+        // macOS still ships bash 3.2, which has no bracketed paste at all.
+        assert_eq!(prompt_ready_timeout("/bin/bash"), UNKNOWN_SHELL_WAIT);
+        assert_eq!(prompt_ready_timeout("/bin/sh"), UNKNOWN_SHELL_WAIT);
+        assert_eq!(prompt_ready_timeout(""), UNKNOWN_SHELL_WAIT);
     }
 }
