@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.13.6](https://github.com/honzapav/portuni/compare/v0.13.5...v0.13.6) (2026-09-09)
+
+
+### Bug Fixes
+
+* **desktop,web:** update-check schedule starts on mount, not solely on backend-ready ([92e8f00](https://github.com/honzapav/portuni/commit/92e8f00f7edb85e10c71181fe626066c54c1bb8e))
+* **desktop:** wait for the shell's line editor before injecting the terminal pre-command ([#284](https://github.com/honzapav/portuni/issues/284)) ([333c87f](https://github.com/honzapav/portuni/commit/333c87f6440592c919c95125e78e4c55250a3bc6)), closes [#283](https://github.com/honzapav/portuni/issues/283)
+* **mcp,sessions:** create session rows on handshake completion, not connection setup ([d41cb15](https://github.com/honzapav/portuni/commit/d41cb15e3608b4f861fe3622fde3318fc9db810a))
+* **sync,desktop:** destination-safety on renameFile, route file move to the sync agent ([2962169](https://github.com/honzapav/portuni/commit/2962169e84af38b941637fe4a5ac6638cdd8c54a))
+* **sync:** a repaired pending delete no longer resurrects the file ([66af5a9](https://github.com/honzapav/portuni/commit/66af5a90691807f41f3c494f85bbf2b5a0c5ad96))
+* **sync:** background sync jobs, actionable/decisions split, central hash self-healing, per-mirror watcher chains ([819fb35](https://github.com/honzapav/portuni/commit/819fb35bde1d6dd18331160287e79b3bf8819d9c))
+* **sync:** central mode never refreshes a stale current_remote_hash ([b54ae6c](https://github.com/honzapav/portuni/commit/b54ae6cd485ebdd401b6c3c133cb3816f3a5f193))
+* **sync:** finish an interrupted cross-remote move, pull inside the path lock ([c0325fd](https://github.com/honzapav/portuni/commit/c0325fd434951f2fcdc6701937e449d9a76c0a6b))
+* **sync:** make renameFileRemote durable/destination-safe, normalize local after-step failures to repair_needed, idempotent delete retry ([2f4c3da](https://github.com/honzapav/portuni/commit/2f4c3da4a16bf08ecb736c6fc0d30fcb7d057284))
+* **sync:** rename_folder/move_file retry-safety, destination collision merge, portuni_status filters ([f86abfe](https://github.com/honzapav/portuni/commit/f86abfe1e478542977cdd349450bbd4cb4ea6472))
+* **sync:** rename_folder/move_file retry-safety, destination merge, portuni_status filters ([50bd367](https://github.com/honzapav/portuni/commit/50bd3673eb951f217aade836b290e6aaa9a49e1a))
+* **sync:** serialize push/pull per path, rehash central sync-run's mid-push edits ([413702b](https://github.com/honzapav/portuni/commit/413702b4d929ebff0d5b456556e1ce31426a7e6d))
+* **sync:** watcher never falsely reports unregistered, deleted_local entries carry the right class, local-only create no longer fails after writing bytes ([e5c6629](https://github.com/honzapav/portuni/commit/e5c662904f2747f0ac24024f46cee22922c137fb))
+
 ## [0.13.5](https://github.com/honzapav/portuni/compare/v0.13.4...v0.13.5) (2026-09-08)
 
 
