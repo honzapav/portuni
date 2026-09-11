@@ -17,7 +17,11 @@ import {
   createMirrorForNodeCentral,
 } from "../apps/server/domain/sync/central/engine-central.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
-import { resetLocalDbForTests, getFileState } from "../apps/server/domain/sync/local-db.js";
+import {
+  resetLocalDbForTests,
+  getFileState,
+  upsertFileState,
+} from "../apps/server/domain/sync/local-db.js";
 import type { NodeSyncInfo } from "../apps/server/domain/sync/sync-remote-api.js";
 import type { RemoteSweepResult } from "../apps/server/domain/sync/remote-sweep.js";
 import { MirrorCreateError } from "../apps/server/domain/sync/mirror-create.js";
@@ -62,9 +66,10 @@ class FakeCentral implements CentralClient {
         filename: r.filename,
         status: r.status,
         remote_path: remotePath,
-        current_remote_hash: this.bytes.has(remotePath)
-          ? sha(this.bytes.get(remotePath) as Buffer)
-          : null,
+        current_remote_hash:
+          this.bytes.has(remotePath) && !this.hashlessRecords.has(remotePath)
+            ? sha(this.bytes.get(remotePath) as Buffer)
+            : null,
         is_native_format: r.is_native_format,
         mime_type: null,
       })),
@@ -133,11 +138,23 @@ class FakeCentral implements CentralClient {
     _nodeId: string,
     relPath: string,
     bytes: Buffer,
-    opts?: { baseVersion?: string; force?: boolean },
+    opts?: {
+      baseVersion?: string;
+      baseCanonicalHash?: string;
+      ifAbsent?: boolean;
+      force?: boolean;
+    },
   ) {
     if (this.putDelay) await this.putDelay;
     const remotePath = posix.join(NODE_ROOT, relPath);
     const cur = this.bytes.get(remotePath);
+    // Stat-only preconditions, same order writeFileBytesRemote applies them.
+    if (opts?.ifAbsent && !opts.force && cur) {
+      throw new CentralHttpError("file already exists on the remote", 409, "EXISTS");
+    }
+    if (opts?.baseCanonicalHash && !opts.force && cur && sha(cur) !== opts.baseCanonicalHash) {
+      throw new CentralHttpError("changed", 409, "CONFLICT", sha(cur));
+    }
     if (opts?.baseVersion && !opts.force && cur && sha(cur) !== opts.baseVersion) {
       throw new CentralHttpError("changed", 409, "CONFLICT", sha(cur));
     }
@@ -249,6 +266,20 @@ class FakeCentral implements CentralClient {
   }
 
   // Test helper: seed a record whose bytes exist remotely.
+  // Remote paths whose central record reports current_remote_hash: null even
+  // though the object is right there in `bytes` -- the real shape of a row
+  // whose hash central never recorded (a record-only registration whose
+  // background push never reported back, #266). Central-mode classification
+  // reads that column as its ONLY proof the remote exists, so such a record
+  // reads as if the remote object were absent.
+  hashlessRecords = new Set<string>();
+
+  seedHashless(relPath: string, content: string): string {
+    const id = this.seedRemote(relPath, content);
+    this.hashlessRecords.add(posix.join(NODE_ROOT, relPath));
+    return id;
+  }
+
   seedRemote(relPath: string, content: string): string {
     const remotePath = posix.join(NODE_ROOT, relPath);
     const id = `F${this.nextId++}`;
@@ -320,11 +351,15 @@ describe("statusScanCentral", () => {
     assert.equal(scan.new_local[0].hash, sha(Buffer.from("x")));
   });
 
-  it("a fast scan lists untracked files without hashing them", async () => {
+  it("hashUntracked: false lists untracked files without hashing them", async () => {
     const c = new FakeCentral();
     await setupMirror();
     await writeFile(join(mirrorRoot, "wip", "loose.txt"), "x");
-    const scan = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID, fast: true });
+    const scan = await statusScanCentral(c, {
+      userId: "U1",
+      nodeId: NODE_ID,
+      hashUntracked: false,
+    });
     assert.equal(scan.new_local.length, 1);
     assert.equal(scan.new_local[0].filename, "loose.txt");
     assert.equal(scan.new_local[0].hash, "");
@@ -956,5 +991,166 @@ describe("storeFileCentral copy-in + section routing", () => {
     assert.equal(res.remote_path, posix.join(NODE_ROOT, "wip/already.md"));
     assert.equal(res.local_path, inside);
     assert.equal(await readFile(inside, "utf8"), "here");
+  });
+});
+
+// A record whose central row carries no current_remote_hash while the remote
+// object is really there. Central-mode classification reads that column as
+// its ONLY proof the remote exists (classifyRecord), so such a record used to
+// be classified as if the remote were absent -- `push` with local content and
+// no baseline, `remote_missing` otherwise. Neither bucket offers conflict
+// resolution (the file row gates "Ponechat lokální"/"Vzít z remote" on
+// sync_class === "conflict"), and the one action offered, a push, aborts on
+// the remote it did not expect. The device does learn the truth in those
+// moments -- it just used to throw the observed hash away.
+describe("hashless central record (remote object exists, hash never recorded)", () => {
+  it("push against a differing remote reports a conflict, not a raw error", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    c.seedHashless("wip/doc.md", "remote content");
+    const abs = join(mirrorRoot, "wip", "doc.md");
+    await writeFile(abs, "local content");
+
+    // Pre-state: the record reads as an ordinary pending upload.
+    const before = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(before.push_candidates.length, 1);
+
+    const run = await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(run.pushed.length, 0, "the differing remote must not be overwritten");
+    assert.equal(
+      run.conflicts.length,
+      1,
+      "a push blocked by differing remote content is a conflict, not an error",
+    );
+    assert.equal(run.conflicts[0].filename, "doc.md");
+    assert.deepEqual(run.errors, []);
+    // Neither side was touched.
+    assert.equal(await readFile(abs, "utf8"), "local content");
+    assert.equal(
+      c.bytes.get(posix.join(NODE_ROOT, "wip/doc.md"))?.toString(),
+      "remote content",
+    );
+  });
+
+  it("the next scan classifies it as conflict, so the row can be resolved", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    c.seedHashless("wip/doc.md", "remote content");
+    await writeFile(join(mirrorRoot, "wip", "doc.md"), "local content");
+    await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+
+    const after = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(after.push_candidates.length, 0, "must not stay a push that always fails");
+    assert.equal(after.conflicts.length, 1);
+    assert.equal(after.conflicts[0].class, "conflict");
+    assert.equal(after.conflicts[0].remote_hash, sha(Buffer.from("remote content")));
+  });
+
+  it("a pull proves the remote exists, so the record stops reading as remote_missing", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    c.seedHashless("wip/doc.md", "remote content");
+
+    const scan = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(scan.remote_missing.length, 1);
+    await pullFileCentral(c, {
+      userId: "U1",
+      nodeId: NODE_ID,
+      entry: scan.remote_missing[0],
+    });
+
+    const after = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(
+      after.remote_missing.length,
+      0,
+      "the bytes were just downloaded from it -- the remote plainly exists",
+    );
+    assert.equal(after.clean.length, 1);
+  });
+
+  it("an identical remote is adopted and reads clean, not remote_missing", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    c.seedHashless("wip/doc.md", "same content");
+    await writeFile(join(mirrorRoot, "wip", "doc.md"), "same content");
+
+    const run = await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.deepEqual(run.errors, []);
+    assert.deepEqual(run.conflicts, []);
+
+    const after = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(after.clean.length, 1);
+    assert.equal(after.remote_missing.length, 0);
+  });
+
+  it("central's own hash still wins once it knows one", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    c.seedHashless("wip/doc.md", "remote content");
+    await writeFile(join(mirrorRoot, "wip", "doc.md"), "local content");
+    await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+
+    // Central catches up (its remote sweep backfills the hash) and the remote
+    // moves on. The cached observation must not mask the newer truth.
+    c.hashlessRecords.clear();
+    c.bytes.set(posix.join(NODE_ROOT, "wip/doc.md"), Buffer.from("remote v2"));
+    const after = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(after.conflicts.length, 1);
+    assert.equal(after.conflicts[0].remote_hash, sha(Buffer.from("remote v2")));
+  });
+});
+
+// The reconcile pass the sync run now runs before reading. Its whole job is
+// the case classification can never fix on its own: a record central has no
+// hash for, which the run used to skip as `remote_missing` forever.
+describe("resolveUnknownRemotes (the sync run's reconcile pass)", () => {
+  it("unsticks a record the run would otherwise skip forever", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    const id = c.seedHashless("wip/doc.md", "same content");
+    const abs = join(mirrorRoot, "wip", "doc.md");
+    await writeFile(abs, "same content");
+    // A device that synced this file once (baseline present) but has no
+    // observation of the remote itself -- a fresh sync.db, a restored
+    // backup, or the record-only registration this bug came from. Baseline
+    // present + no remote hash is exactly what made it `remote_missing`,
+    // the bucket the run skips outright.
+    const st = await import("node:fs/promises").then((m) => m.stat(abs));
+    await upsertFileState({
+      file_id: id,
+      last_synced_hash: sha(Buffer.from("same content")),
+      last_synced_at: new Date().toISOString(),
+      cached_local_hash: sha(Buffer.from("same content")),
+      cached_mtime: Math.floor(st.mtimeMs),
+      cached_size: st.size,
+      cached_ino: Number(st.ino),
+      cached_dev: Number(st.dev),
+    });
+
+    const before = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(before.remote_missing.length, 1, "the stuck state this fixes");
+
+    const run = await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.deepEqual(run.errors, []);
+
+    const after = await statusScanCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.equal(after.remote_missing.length, 0, "the run verified it -- it is not missing");
+    assert.equal(after.clean.length, 1);
+  });
+
+  it("a genuinely absent remote stays remote_missing and is not reported as an error", async () => {
+    const c = new FakeCentral();
+    await setupMirror();
+    // A record with no bytes behind it at all: getFileRaw 404s.
+    const id = c.seedRemote("wip/gone.md", "bytes");
+    c.bytes.delete(posix.join(NODE_ROOT, "wip/gone.md"));
+    assert.ok(id);
+
+    const run = await syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
+    assert.deepEqual(
+      run.sweep_errors.filter((e) => e.error.includes("could not verify")),
+      [],
+      "a 404 is a real answer, not a verification failure",
+    );
   });
 });

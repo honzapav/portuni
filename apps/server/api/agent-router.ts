@@ -278,7 +278,6 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
           userId: identity.userId,
           nodeId,
           includeDiscovery: true,
-          fast: true,
         });
         const tagged: SyncStatusResponse["files"] = [];
         const push = (

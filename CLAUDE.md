@@ -160,8 +160,13 @@ symlink to this file.
 - **File state is deterministic, not agent-driven.** A mirror watcher
   (`apps/server/domain/sync/mirror-watcher.ts` → `reconcile.ts`) registers new
   files and reconciles edits/deletes on every disk change, so the UI's sync
-  status (fast-mode `statusScan`, which reads `file_state.cached_local_hash`)
-  is current without anyone calling `portuni_store`/`portuni_status`.
+  status (`statusScan`, which reads `file_state.cached_local_hash`)
+  is current without anyone calling `portuni_store`/`portuni_status`. In
+  central mode the scan is ONLY that read -- `statusScanCentral` has no
+  `fast` parameter anymore; re-deriving what the device does not know is the
+  sync run's own reconcile pass (`resolveUnknownRemotes`), never a mode of
+  reading. The local engine still has `fast` (its slow path stats the remote
+  live, which the UI poll cannot afford across every mirror).
   Registration is local-only (`registerLocalFile`, no upload); a file then
   reads as `push` until a deliberate "Synchronizovat"/`portuni_store` pushes
   it to the remote. **Registration never requires a remote.** A local-only

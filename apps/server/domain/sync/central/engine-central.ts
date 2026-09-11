@@ -6,8 +6,12 @@
 // watcher stay local and are shared with the local engine unchanged.
 //
 // Deliberate v1 scope cuts (documented in the plan):
-//   - remote truth is ALWAYS files.current_remote_hash from sync-info
-//     ("hash is identity"; Turso is canonical) -- no per-file adapter.stat.
+//   - remote truth is files.current_remote_hash from sync-info ("hash is
+//     identity"; Turso is canonical) -- no per-file adapter.stat. Where that
+//     column is NULL, classification falls back to a hash THIS device
+//     observed first-hand on an earlier push/pull (remote_stat_cache, via
+//     rememberRemoteHash); that is a recorded observation, not a new remote
+//     round trip, and central's own value always wins when it has one.
 //   - no new_remote discovery and no move detection (owner-side features).
 //   - no remote folder scaffold on mirror create; folders materialize when
 //     the first file is pushed (adapter.put resolves parents server-side).
@@ -38,7 +42,14 @@ import {
   upsertFileState,
   deleteFileState,
   findFileStateByInode,
+  getRemoteStat,
+  upsertRemoteStat,
 } from "../local-db.js";
+import {
+  hashOf,
+  knowledgeFromRecordAndObservation,
+  treatAsExisting,
+} from "../remote-knowledge.js";
 import { getMirrorPath, listUserMirrors, registerMirror } from "../mirror-registry.js";
 import {
   buildNodeRoot,
@@ -151,20 +162,47 @@ function relPathFor(mirrorRoot: string, absPath: string): string | null {
 export interface StatusCentralArgs {
   userId: string;
   nodeId: string;
-  // Fast: classify from file_state.cached_local_hash only (UI hot path; the
-  // watcher keeps the cache current). Slow: re-hash local files (mtime/size
-  // guarded) for ground truth before a sync run.
-  fast?: boolean;
   includeDiscovery?: boolean;
+  // Discovery sub-flag: skip content-hashing the untracked files the walk
+  // finds. Its own knob rather than a facet of a global "how much truth do
+  // you want" flag -- the cross-mirror aggregate only counts them, while
+  // portuni_status reports each one's hash (#253). Tombstone matching
+  // rehashes on demand either way.
+  hashUntracked?: boolean;
   // Preloaded sync-info -- avoids a redundant fetch when the caller already
   // holds the document (batch pending pass, sync run).
   preloadedInfo?: NodeSyncInfo;
 }
 
+// A push whose remote precondition failed is not an error the caller should
+// print -- it is a file that needs a human to pick a side. The sync run
+// reports it under `conflicts` (where the UI's resolve actions live) instead
+// of `errors`.
+export class RemoteConflictError extends Error {
+  constructor(
+    message: string,
+    readonly fileId: string,
+    readonly filename: string,
+  ) {
+    super(message);
+    this.name = "RemoteConflictError";
+  }
+}
+
+// Persist a remote canonical hash this device just observed first-hand (a
+// put that landed, a download, or a precondition that reported the current
+// hash back). files.current_remote_hash is central's column and this device
+// cannot write it; remote_stat_cache is the device's own equivalent, and it
+// is what keeps classification honest when central's copy is missing --
+// see the fallback in classifyRecord.
+async function rememberRemoteHash(fileId: string, hash: string | null): Promise<void> {
+  if (!hash) return;
+  await upsertRemoteStat({ file_id: fileId, remote_hash: hash, remote_modified_at: null });
+}
+
 async function classifyRecord(
   ctx: NodeContext,
   rec: SyncInfoFile,
-  fast: boolean,
 ): Promise<{ bucket: keyof StatusResult; entry: StatusFileEntry }> {
   const localPath =
     ctx.mirrorRoot && rec.remote_path
@@ -201,16 +239,34 @@ async function classifyRecord(
 
   const state = await getFileState(rec.id);
   base.last_synced_hash = state?.last_synced_hash ?? null;
-  const remoteHash = rec.current_remote_hash;
-  const localHash = fast
-    ? (state?.cached_local_hash ?? null)
-    : localPath
-      ? await localHashFor(localPath, rec.id, remoteHash)
-      : null;
+  // current_remote_hash is central's own record of the remote object. When it
+  // is missing, "the remote does not exist" is an ASSUMPTION, not knowledge --
+  // and a wrong one strands the record in a bucket with no way out (`push`
+  // whose every attempt aborts on the remote it did not expect, or
+  // `remote_missing` which the sync run skips outright). Local mode can stat
+  // the remote live; central mode has no stat endpoint to call, so it uses
+  // the next best
+  // thing -- a hash this device observed first-hand on an earlier push or
+  // pull (rememberRemoteHash). Central's own value always wins when it has
+  // one; this only fills a hole. Deliberately not TTL-bounded, unlike local
+  // mode's cache: there is no live stat to fall back to here, so expiring
+  // the observation would only put the record back in the dead end. A stale
+  // observation can at worst show a conflict the user resolves explicitly
+  // (both resolve actions re-verify against the remote); a missing one
+  // hides the file from every action there is.
+  const knowledge = knowledgeFromRecordAndObservation(
+    rec.current_remote_hash,
+    (await getRemoteStat(rec.id))?.remote_hash ?? null,
+  );
+  const remoteHash = hashOf(knowledge);
+  // One read. The local hash is always stat-guarded (localHashFor rehashes
+  // only when mtime/size moved), so there is no cheap-vs-correct choice to
+  // make here -- see the note on the removal of the `fast` parameter.
+  const localHash = localPath ? await localHashFor(localPath, rec.id, remoteHash) : null;
   base.local_hash = localHash;
   base.remote_hash = remoteHash;
 
-  const remoteExists = remoteHash !== null;
+  const remoteExists = treatAsExisting(knowledge);
   if (!remoteExists) {
     // Registered but never pushed: pending upload reads as push; a file
     // whose remote vanished after a sync, or with no local content, is
@@ -261,7 +317,7 @@ export async function statusScanCentral(
 
 async function statusScanForContext(
   ctx: NodeContext,
-  a: Pick<StatusCentralArgs, "fast" | "includeDiscovery">,
+  a: Pick<StatusCentralArgs, "includeDiscovery" | "hashUntracked">,
 ): Promise<StatusResult> {
   const out: StatusResult = {
     clean: [],
@@ -276,23 +332,15 @@ async function statusScanForContext(
     deleted_local: [],
     deleted_remote: [],
   };
-  // Bounded fan-out: slow scans hash changed files (CPU+disk); fast scans
-  // are sync.db reads. Order of buckets stays deterministic via mapConcurrent.
-  const classified = await mapConcurrent(ctx.si.files, 8, (rec) =>
-    classifyRecord(ctx, rec, a.fast ?? false),
-  );
+  // Bounded fan-out; order of buckets stays deterministic via mapConcurrent.
+  const classified = await mapConcurrent(ctx.si.files, 8, (rec) => classifyRecord(ctx, rec));
   for (const r of classified) {
     (out[r.bucket] as StatusFileEntry[]).push(r.entry);
   }
   if (a.includeDiscovery !== false) {
-    // Hash untracked files only on a slow scan: the fast scan is what the
-    // UI's sync-status and the 30s footer poll run across EVERY mirror, and
-    // hashing every loose file there is I/O the caller never asked for --
-    // discover-local.ts is hash-free for the same reason. Tombstone matching
-    // below rehashes on demand (diskHashMatching) when the entry carries none.
     const m = await matchTombstonesForContext(
       ctx,
-      await untrackedForContext(ctx, { hash: !(a.fast ?? false) }),
+      await untrackedForContext(ctx, { hash: a.hashUntracked !== false }),
     );
     out.new_local = m.remaining;
     out.deleted_remote = m.deleted_remote;
@@ -362,7 +410,7 @@ async function matchTombstonesForContext(
 
 // `hash: true` computes each untracked file's sha256 (slow scans /
 // portuni_status, where the entry's hash is part of the reported state);
-// `hash: false` leaves "" so a fast scan or a path-only listing does not
+// `hash: false` leaves "" so hashUntracked: false or a path-only listing does not
 // read every loose file in the mirror.
 async function untrackedForContext(
   ctx: NodeContext,
@@ -418,7 +466,7 @@ async function walkUntracked(
       // Real hash on a slow scan (#253): status output should be truthful,
       // and a real hash also makes a hash-based fallback pairing possible
       // for a moved-but-unpaired file surfaced here as "new". Matches the
-      // local engine's walkMirror. A fast scan keeps the "" placeholder
+      // local engine's walkMirror. hashUntracked: false keeps the "" placeholder
       // instead of reading every loose file on each UI poll.
       try {
         const hash = withHash ? await sha256File(p) : "";
@@ -525,23 +573,35 @@ async function pushEntryCentral(
         // Never-synced file but the remote already has bytes. Only a
         // byte-identical remote is safe to claim; verify with one download.
         const cur = await client.getFileRaw(a.nodeId, relPath);
+        // Whatever the comparison decides, this download just PROVED the
+        // remote object exists and what its hash is. Record that before
+        // acting on it: throwing it away is what left the record classified
+        // as if there were no remote at all, with no resolve action offered.
+        await rememberRemoteHash(a.entry.file_id, cur.canonicalHash);
         const localInCanonical =
           cur.canonicalHash.length === 32 ? md5Buffer(bytes) : sha256Buffer(bytes);
         if (localInCanonical !== cur.canonicalHash) {
-          throw new Error(
+          throw new RemoteConflictError(
             "remote already has different content for a never-synced file -- resolve manually",
+            a.entry.file_id,
+            a.entry.filename,
           );
         }
         // Identical bytes -- adopt the remote state without rewriting it.
         put = { version: cur.version, canonicalHash: cur.canonicalHash };
       } else if (e instanceof CentralHttpError && e.code === "CONFLICT") {
-        throw new Error(
+        // The precondition reported the remote's current hash back at us.
+        await rememberRemoteHash(a.entry.file_id, e.currentVersion ?? null);
+        throw new RemoteConflictError(
           `remote changed since the last scan (baseline ${baseline}, remote is ${e.currentVersion ?? "unknown"}) -- rescan and resolve`,
+          a.entry.file_id,
+          a.entry.filename,
         );
       } else {
         throw e;
       }
     }
+    await rememberRemoteHash(a.entry.file_id, put.canonicalHash);
 
     // Re-stat after the upload; if the identity moved, rehash instead of
     // caching the pushed hash -- otherwise a mid-push edit reads as clean
@@ -710,22 +770,29 @@ export async function storeFileCentral(
         // Never-synced file but the remote already has bytes. Only a
         // byte-identical remote is safe to claim; verify with one download.
         const cur = await client.getFileRaw(a.nodeId, relPath);
+        await rememberRemoteHash(reg.file_id, cur.canonicalHash);
         const localInCanonical =
           cur.canonicalHash.length === 32 ? md5Buffer(bytes) : sha256Buffer(bytes);
         if (localInCanonical !== cur.canonicalHash) {
-          throw new Error(
+          throw new RemoteConflictError(
             "remote already has different content for a never-synced file -- resolve manually",
+            reg.file_id,
+            basename(localPath),
           );
         }
         put = { version: cur.version, canonicalHash: cur.canonicalHash };
       } else if (e instanceof CentralHttpError && e.code === "CONFLICT") {
-        throw new Error(
+        await rememberRemoteHash(reg.file_id, e.currentVersion ?? null);
+        throw new RemoteConflictError(
           `remote changed since the last scan (baseline ${baseline}, remote is ${e.currentVersion ?? "unknown"}) -- rescan and resolve`,
+          reg.file_id,
+          basename(localPath),
         );
       } else {
         throw e;
       }
     }
+    await rememberRemoteHash(reg.file_id, put.canonicalHash);
 
     // Fast status trusts cached_local_hash outright (no mtime check), so the
     // cache written here must describe the file as it is NOW, not as it was
@@ -791,6 +858,9 @@ export async function pullFileCentral(
   if (!relPath) throw new Error(`derived path left the mirror sections: ${localPath}`);
 
   const cur = await client.getFileRaw(a.nodeId, relPath);
+  // The download itself is proof the remote object exists; a record central
+  // has no hash for must stop reading as remote_missing after this.
+  await rememberRemoteHash(a.entry.file_id, cur.canonicalHash);
 
   // The dirty-local check and the overwrite it gates must be atomic against
   // any other mutation of this same local path (#277 finding 4/8's shared
@@ -1081,6 +1151,69 @@ async function tryApplyDiskMoveCentral(
 // Sync run (push + pull + adopt) -- the POST /nodes/:id/sync equivalent
 // ---------------------------------------------------------------------------
 
+// Resolve every tracked record whose remote state is UNKNOWN -- central has no
+// hash for it and this device has never observed one either. Without this
+// step such a record is stuck for good: it classifies as `remote_missing`
+// (which the run skips) or as a `push` that aborts on the object the
+// classifier insisted was not there, and nothing in either path ever asks
+// the question that would settle it.
+//
+// The question is settled by fetching the bytes: central exposes no
+// hash-only stat for the sync agent, so `getFileRaw` is the cheapest truthful
+// probe available. That is a real download, so the pass is bounded per run
+// (UNKNOWN_RESOLVE_LIMIT) and naturally self-extinguishing -- a resolved
+// record never comes back, and a healthy node has none at all. A cheap
+// stat endpoint on central would make the download unnecessary; that needs a
+// central deployment, this does not.
+//
+// A 404 is a real answer (the object is genuinely gone) and needs no cache
+// entry: the record classifies as remote_missing, which is then CORRECT and
+// the next remote sweep tombstones it. Anything else is reported to the
+// caller rather than swallowed.
+const UNKNOWN_RESOLVE_LIMIT = Math.max(
+  1,
+  Number(process.env.PORTUNI_UNKNOWN_RESOLVE_LIMIT ?? 25),
+);
+
+export async function resolveUnknownRemotes(
+  client: CentralClient,
+  ctx: NodeContext,
+): Promise<Array<{ file_id: string; remote_path: string; error: string }>> {
+  if (!ctx.mirrorRoot) return [];
+  const unknown: SyncInfoFile[] = [];
+  for (const rec of ctx.si.files) {
+    if (rec.is_native_format || !rec.remote_path) continue;
+    if (rec.current_remote_hash !== null) continue;
+    if ((await getRemoteStat(rec.id))?.remote_hash) continue;
+    unknown.push(rec);
+    if (unknown.length >= UNKNOWN_RESOLVE_LIMIT) break;
+  }
+  if (unknown.length === 0) return [];
+
+  const failures: Array<{ file_id: string; remote_path: string; error: string }> = [];
+  await mapConcurrent(unknown, 4, async (rec) => {
+    const localPath = deriveLocalPath({
+      mirrorRoot: ctx.mirrorRoot as string,
+      nodeRoot: ctx.nodeRoot,
+      remotePath: rec.remote_path as string,
+    });
+    const relPath = relPathFor(ctx.mirrorRoot as string, localPath);
+    if (!relPath) return;
+    try {
+      const cur = await client.getFileRaw(ctx.si.node.id, relPath);
+      await rememberRemoteHash(rec.id, cur.canonicalHash);
+    } catch (e) {
+      if (e instanceof CentralHttpError && e.status === 404) return; // genuinely absent
+      failures.push({
+        file_id: rec.id,
+        remote_path: rec.remote_path as string,
+        error: `could not verify remote state: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
+  });
+  return failures;
+}
+
 export async function syncRunCentral(
   client: CentralClient,
   a: { userId: string; nodeId: string },
@@ -1126,7 +1259,14 @@ export async function syncRunCentral(
   // reuse it too, and pushes/adopts run through a bounded worker pool
   // instead of a strictly sequential per-file chain.
   const ctx = await loadNodeContext(client, a.userId, a.nodeId);
-  const scan = await statusScanForContext(ctx, { includeDiscovery: true, fast: false });
+  // Reconcile before reading. This is the step that used to hide behind
+  // `fast: false`: a scan is a READ of what we know, and re-deriving what we
+  // do not know is a separate job with its own cost and its own failure
+  // modes. Resolving the unknowns here is also the only thing that ever
+  // unsticks a record central has no hash for -- classification alone can
+  // never turn "unknown" into knowledge, it can only keep guessing.
+  const unresolved = await resolveUnknownRemotes(client, ctx);
+  const scan = await statusScanForContext(ctx, { includeDiscovery: true });
   const result: SyncRunResponse = {
     pushed: [],
     pulled: [],
@@ -1170,6 +1310,12 @@ export async function syncRunCentral(
       await pushEntryCentral(client, { userId: a.userId, nodeId: a.nodeId, mirrorRoot, entry: e });
       result.pushed.push({ file_id: e.file_id, filename: e.filename });
     } catch (err) {
+      // A push the remote refused because it holds different content is a
+      // decision, not a failure: report it where the resolve actions are.
+      if (err instanceof RemoteConflictError) {
+        result.conflicts.push({ file_id: e.file_id, filename: e.filename });
+        return;
+      }
       result.errors.push({ file_id: e.file_id, filename: e.filename, error: String(err) });
     }
   });
@@ -1191,6 +1337,11 @@ export async function syncRunCentral(
   }
   for (const e of [...scan.clean, ...scan.remote_missing, ...scan.remote_error, ...scan.native]) {
     result.skipped.push({ file_id: e.file_id, filename: e.filename, sync_class: e.class });
+  }
+  // A record we could not verify is reported, not silently skipped: before
+  // this it read as remote_missing and the run said nothing at all about it.
+  for (const u of unresolved) {
+    result.sweep_errors.push({ remote_path: u.remote_path, error: u.error });
   }
 
   // Adopt untracked: one BATCH registration for all new files (one request +
@@ -1300,7 +1451,8 @@ export async function computeSyncPendingCentral(
       userId,
       nodeId: m.node_id,
       includeDiscovery: true,
-      fast: true,
+      // Counted, never reported per file -- no need for their content hashes.
+      hashUntracked: false,
       preloadedInfo: si,
     }).catch(() => null);
     if (!scan) return null;

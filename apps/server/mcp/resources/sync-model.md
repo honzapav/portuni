@@ -49,11 +49,21 @@ local. Each tracked file is classified:
 - **remote_missing** -- DB row exists but the remote object does not:
   either registered elsewhere and never pushed, or deleted on the
   remote and awaiting the next sync run's remote sweep. Skipped by
-  the sync run. In central mode this classification is derived purely
-  from the record's cached remote hash; the remote sweep backfills that
-  hash for any tracked, present object whose hash was previously
-  unknown, so a record stuck here due to a missing (not stale) hash
-  self-corrects on the next sync run instead of staying misclassified.
+  the sync run. A missing remote hash means UNKNOWN, never absent -- the
+  only path that ever proves absence (the remote sweep) deletes the record
+  instead. In central mode a sync run therefore starts with a reconcile
+  pass that resolves those unknowns, so a record central has no hash for
+  stops being skipped forever; classification itself derives from the
+  record's cached remote hash, falling back to a hash this device
+  observed first-hand on an earlier push or pull; the remote sweep
+  backfills the record's own hash for any tracked, present object whose
+  hash was previously unknown, so a record stuck here due to a missing
+  (not stale) hash self-corrects on the next sync run instead of staying
+  misclassified. A push the remote refuses because it already holds
+  different content is reported as a **conflict**, not an error -- the
+  refusal itself proves the remote object exists, so the file becomes
+  resolvable (keep local / take remote) instead of retrying a push that
+  can never land.
 - **remote_error** -- remote stat failed (network/auth); transient,
   skipped by the sync run
 - **native** -- non-byte-stream remote (e.g. Google Doc) where hash

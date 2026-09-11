@@ -175,7 +175,7 @@ const HANDLERS: Record<string, LocalHandler> = {
       offset: args.offset as number | undefined,
     };
     if (nodeId) {
-      const r = await statusScanCentral(client, { userId, nodeId, includeDiscovery, fast: false });
+      const r = await statusScanCentral(client, { userId, nodeId, includeDiscovery });
       return filterStatusResult(r, filterOpts);
     }
     // No node_id: scan across every mirror this user has and aggregate the
@@ -201,7 +201,6 @@ const HANDLERS: Record<string, LocalHandler> = {
         userId,
         nodeId: m.node_id,
         includeDiscovery,
-        fast: false,
       });
       agg.clean.push(...r.clean);
       agg.push_candidates.push(...r.push_candidates);
@@ -256,7 +255,6 @@ const HANDLERS: Record<string, LocalHandler> = {
       userId,
       nodeId: nodeId as string,
       includeDiscovery: false,
-      fast: false,
     });
     return {
       files: [
