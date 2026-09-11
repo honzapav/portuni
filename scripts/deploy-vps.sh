@@ -20,6 +20,20 @@ cd "$(dirname "$0")/.."
 echo "==> qa (lint + typecheck + tests + build)"
 npm run qa
 
+# The server runs pending migrations on boot, so every deploy is a schema
+# change until proven otherwise. `docs/lessons-learned.md` §7 made "back up
+# first" the rule after migration 017 emptied nodes on production; leaving it
+# to the operator's memory is what let a deploy go out in 2026-09 against a
+# backup of an unrelated scratch database. The backup script refuses to run
+# without an explicit TURSO_URL, so this also fails fast when the operator's
+# environment is not pointed at the database they are about to migrate.
+if [[ "${PORTUNI_SKIP_BACKUP:-}" == "1" ]]; then
+  echo "==> WARNING: backup skipped (PORTUNI_SKIP_BACKUP=1)"
+else
+  echo "==> backup before migrations"
+  node --import tsx scripts/backup-turso.ts
+fi
+
 echo "==> rsync dist + manifests -> $VPS_HOST:$APP_DIR"
 rsync -az --delete dist/ "$VPS_HOST:$APP_DIR/dist/"
 rsync -az package.json package-lock.json "$VPS_HOST:$APP_DIR/"
