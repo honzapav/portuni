@@ -40,6 +40,7 @@ import { listWorkspaces } from "../lib/workspaces";
 import { listProfiles, type ProfileInfo } from "../lib/profiles";
 import { copyText } from "../lib/clipboard";
 import { summarizeSyncRun } from "../lib/sync-run-summary";
+import { syncBarState } from "../lib/sync-bar-state";
 
 // ---------------------------------------------------------------------------
 // File tree (Files tab)
@@ -934,19 +935,10 @@ export function SyncBar({
   // matches what the user sees. deleted_local and conflicts are reported
   // separately: the sync run never acts on them automatically (the local
   // deletion may be intentional; conflicts need a human).
-  let pending = 0;
-  let conflicts = 0;
-  let deletedLocal = 0;
-  for (const f of statusMap.values()) {
-    if (f.sync_class === "push" || f.sync_class === "pull") {
-      pending++;
-    } else if (f.sync_class === "deleted_local") {
-      deletedLocal++;
-    } else if (f.sync_class === "conflict") {
-      conflicts++;
-    }
-  }
-  const noWork = statusLoaded && pending === 0 && conflicts === 0;
+  const { pending, conflicts, deletedLocal, remoteMissing, noWork, canRun } = syncBarState(
+    Array.from(statusMap.values(), (f) => f.sync_class),
+    statusLoaded,
+  );
   const ready = statusLoaded;
 
   const label = running
@@ -957,6 +949,10 @@ export function SyncBar({
     ? "Vše synchronizováno"
     : pending > 0
     ? `Synchronizovat (${syncPendingLabel(pending)})`
+    : remoteMissing > 0
+    // Nothing to push or pull, but these records' remote state has never been
+    // established -- a run's reconcile pass is the only thing that asks.
+    ? "Zkontrolovat na remote"
     : "Synchronizovat soubory";
 
   // Transient outcome line (#267): a run's result/error used to render as a
@@ -994,7 +990,7 @@ export function SyncBar({
       <div className="flex items-center gap-2">
         <button
           onClick={onRun}
-          disabled={running || noWork}
+          disabled={running || !canRun}
           className="inline-flex items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[12.5px] text-[var(--color-text)] transition-colors hover:border-[var(--color-border-strong)] disabled:cursor-default disabled:opacity-60"
         >
           <RefreshCw
