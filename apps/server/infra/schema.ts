@@ -17,7 +17,7 @@ import {
   EVENT_STATUSES,
   FILE_STATUSES,
 } from "../shared/popp.js";
-import { DDL, DDL_MIGRATION_006 } from "./schema-triggers.js";
+import { DDL, DDL_MIGRATION_006, DDL_AFTER_MIGRATIONS } from "./schema-triggers.js";
 import { runMigrations, appliedMigrationIds, MIGRATION_IDS } from "./schema-migrations.js";
 
 // Re-export canonical sets so existing imports from "./schema.js" keep working.
@@ -88,7 +88,7 @@ async function seedSoloUser(db: Client): Promise<void> {
 // change, and the boot after that is back to three calls.
 function ddlFingerprint(): string {
   const digest = createHash("sha256")
-    .update([...DDL, ...DDL_MIGRATION_006].join("\u0000"))
+    .update([...DDL, ...DDL_MIGRATION_006, ...DDL_AFTER_MIGRATIONS].join("\u0000"))
     .digest("hex")
     .slice(0, 16);
   return `ddl:${digest}`;
@@ -156,6 +156,8 @@ export async function ensureSchemaOn(
   }
   await seedSoloUser(db);
   await runMigrations(db);
+  // Anything that needs a column a migration adds -- see DDL_AFTER_MIGRATIONS.
+  for (const sql of DDL_AFTER_MIGRATIONS) await db.execute(sql);
   // Recorded last: only a replay that got all the way through may license the
   // next boot to skip it.
   await db.execute({

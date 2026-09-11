@@ -217,7 +217,6 @@ export const DDL = [
   INDEX_SESSIONS_NODE,
   INDEX_SESSIONS_USER,
   INDEX_SESSIONS_STATE,
-  INDEX_SESSIONS_TERMINAL,
   DDL_SESSION_SCOPE,
   INDEX_SESSION_SCOPE_SESSION,
   `CREATE TABLE IF NOT EXISTS nodes (
@@ -664,3 +663,21 @@ export const DDL_MIGRATION_006 = [
   TRIGGER_NODES_DERIVE_STATUS_FROM_LIFECYCLE,
   TRIGGER_NODES_VALIDATE_LIFECYCLE_STATE,
 ];
+
+// Schema statements that must run AFTER the migration pass, not with the DDL
+// replay that precedes it.
+//
+// `idx_sessions_terminal` indexes sessions.terminal_id, a column migration
+// 032 adds. Both paths cover the column on their own -- a fresh install gets
+// it from DDL_SESSIONS, an upgrade from 032's ADD COLUMN -- but the index
+// cannot sit in DDL: ensureSchemaOn replays DDL before running migrations, so
+// on a database whose sessions table predates the column (production, crossing
+// 0.11.0 -> 0.13.x) the CREATE INDEX fails with "no such column: terminal_id"
+// and the server never finishes booting. It cannot live only in 032 either:
+// on a fresh install DDL_SESSIONS already has the column, so 032's isApplied
+// returns true and it never runs. After the migration pass the column exists
+// either way, which is the one point where a single statement covers both.
+//
+// Same reasoning as migration 013's sync_key triggers, which are likewise
+// kept out of the DDL replay -- see the comment in ensureSchemaOn.
+export const DDL_AFTER_MIGRATIONS: string[] = [INDEX_SESSIONS_TERMINAL];
