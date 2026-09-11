@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.13.10](https://github.com/honzapav/portuni/compare/v0.13.9...v0.13.10) (2026-09-11)
+
+
+### Bug Fixes
+
+* **desktop:** back off when central is unreachable, and rotate sidecar logs ([2b14c22](https://github.com/honzapav/portuni/commit/2b14c2284c6f1f9f72d86d54136920cea2d5552f))
+* **sync:** a missing remote hash means unknown, not absent ([b3618d7](https://github.com/honzapav/portuni/commit/b3618d7f2da666d89e4269d2a6d9e0d817f22ddc))
+* **sync:** a missing remote hash means unknown, not absent ([9b3f5a6](https://github.com/honzapav/portuni/commit/9b3f5a68631c834f4abdb80f046b9439479c810a))
+
 ## [0.13.9](https://github.com/honzapav/portuni/compare/v0.13.8...v0.13.9) (2026-09-09)
 
 
