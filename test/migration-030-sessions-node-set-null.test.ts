@@ -114,3 +114,50 @@ test("migration 030 preserves existing rows and stops cascading session deletes 
   assert.equal(scope.length, 1, "the deleted node's own scope row cascades away independently");
   assert.equal(scope[0].node_id, orgId, "the surviving node's scope row is untouched");
 });
+
+// Structural guard, not behavioural: a table rebuild must reach the database
+// as ONE script over ONE connection. Per-statement db.execute() passes every
+// local :memory:/file: test -- SQLite keeps the PRAGMA on its single
+// connection -- and then empties a table on Turso, where each statement may
+// hit a different connection and `PRAGMA foreign_keys = OFF` never applies to
+// the DROP. That is incident 2026-06-10 (migration 017, nodes emptied on
+// production), and the rule written afterwards: every future rebuild is one
+// executeMultiple. sessions is referenced by session_scope ON DELETE CASCADE,
+// so the same mistake here empties the scope audit.
+describe("migration 030 is a single-connection rebuild", () => {
+  it("issues the rebuild through executeMultiple, not statement by statement", async () => {
+    const scripts: string[] = [];
+    const statements: string[] = [];
+    const fake = {
+      async execute(stmt: unknown) {
+        const sql = typeof stmt === "string" ? stmt : (stmt as { sql: string }).sql;
+        statements.push(sql);
+        // The only read the migration is allowed to do outside the script.
+        if (/PRAGMA table_info\(sessions\)/i.test(sql)) {
+          return { rows: [{ name: "terminal_id" }] };
+        }
+        return { rows: [] };
+      },
+      async executeMultiple(script: string) {
+        scripts.push(script);
+      },
+    };
+    await runMigration030(fake as unknown as Parameters<typeof runMigration030>[0]);
+
+    assert.equal(scripts.length, 1, "the rebuild must be exactly one script");
+    const script = scripts[0];
+    for (const required of [
+      "PRAGMA foreign_keys = OFF",
+      "CREATE TABLE sessions_new",
+      "INSERT INTO sessions_new",
+      "DROP TABLE sessions",
+      "ALTER TABLE sessions_new RENAME TO sessions",
+    ]) {
+      assert.ok(script.includes(required), `${required} must be inside the script`);
+    }
+    // Everything destructive belongs to the script; the only loose statement
+    // is the shape probe that decides what the script says.
+    const loose = statements.filter((s) => !/PRAGMA table_info/i.test(s));
+    assert.deepEqual(loose, [], `no statement may run outside the script: ${loose.join(" | ")}`);
+  });
+});

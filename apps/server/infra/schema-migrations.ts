@@ -1501,16 +1501,28 @@ export async function runMigration028(db: Client): Promise<void> {
 // target list leaves it NULL, which migration 032's own ADD COLUMN would have
 // produced anyway.
 export async function runMigration030(db: Client): Promise<void> {
-  await db.execute("PRAGMA foreign_keys = OFF");
-  try {
-    await db.execute("DROP INDEX IF EXISTS idx_sessions_node");
-    await db.execute("DROP INDEX IF EXISTS idx_sessions_user");
-    await db.execute("DROP INDEX IF EXISTS idx_sessions_state");
-
-    const info = await db.execute("PRAGMA table_info(sessions)");
-    const hasTerminalId = info.rows.some((r) => r.name === "terminal_id");
-
-    await db.execute(`CREATE TABLE sessions_new (
+  // Resolve the branch BEFORE the script: the rebuild itself has to be a
+  // single executeMultiple (below), so the shape check cannot sit between
+  // two statements of it.
+  const info = await db.execute("PRAGMA table_info(sessions)");
+  const hasTerminalId = info.rows.some((r) => r.name === "terminal_id");
+  const terminalIdCol = hasTerminalId ? ", terminal_id" : "";
+  // The whole rebuild runs as ONE script over ONE connection via
+  // executeMultiple. Per-statement db.execute() calls are unsafe for this on
+  // Turso/libsql over HTTP: each statement may hit a different connection,
+  // so `PRAGMA foreign_keys = OFF` does not stick and `DROP TABLE sessions`
+  // fires the FK cascade from session_scope (session_id REFERENCES
+  // sessions(id) ON DELETE CASCADE), emptying it mid-rebuild. Exactly the
+  // failure mode of incident 2026-06-10 (migration 017, nodes emptied on
+  // production). Local file: SQLite holds the PRAGMA on its single
+  // connection, which is why the per-statement version passed everywhere it
+  // had run so far.
+  await db.executeMultiple(`
+    PRAGMA foreign_keys = OFF;
+    DROP INDEX IF EXISTS idx_sessions_node;
+    DROP INDEX IF EXISTS idx_sessions_user;
+    DROP INDEX IF EXISTS idx_sessions_state;
+    CREATE TABLE sessions_new (
       id TEXT PRIMARY KEY CHECK(length(id) = 26),
       node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
       user_id TEXT NOT NULL REFERENCES users(id),
@@ -1527,26 +1539,24 @@ export async function runMigration030(db: Client): Promise<void> {
       created_at DATETIME NOT NULL DEFAULT (datetime('now')),
       last_active_at DATETIME NOT NULL DEFAULT (datetime('now')),
       closed_at DATETIME
-    )`);
-    const terminalIdCol = hasTerminalId ? ", terminal_id" : "";
-    await db.execute(`INSERT INTO sessions_new (
+    );
+    INSERT INTO sessions_new (
       id, node_id, user_id, session_type, cli, profile_id, agent_session_id, state,
       handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}
     ) SELECT
       id, node_id, user_id, session_type, cli, profile_id, agent_session_id, state,
       handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}
-    FROM sessions`);
-    await db.execute("DROP TABLE sessions");
-    await db.execute("ALTER TABLE sessions_new RENAME TO sessions");
-
-    await db.execute(INDEX_SESSIONS_NODE);
-    await db.execute(INDEX_SESSIONS_USER);
-    await db.execute(INDEX_SESSIONS_STATE);
-    await db.execute(INDEX_SESSIONS_TERMINAL);
-  } finally {
-    await db.execute("PRAGMA foreign_keys = ON");
-  }
+    FROM sessions;
+    DROP TABLE sessions;
+    ALTER TABLE sessions_new RENAME TO sessions;
+    ${INDEX_SESSIONS_NODE};
+    ${INDEX_SESSIONS_USER};
+    ${INDEX_SESSIONS_STATE};
+    ${INDEX_SESSIONS_TERMINAL};
+    PRAGMA foreign_keys = ON;
+  `);
 }
+
 
 // The ids of every migration this build knows about, in declaration order.
 // ensureSchemaOn compares the applied set against this to decide whether a
