@@ -26,6 +26,14 @@ import { createAgentRouter } from "./api/agent-router.js";
 import { createAgentMcpTransport } from "./mcp/agent-transport.js";
 import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
 import { sweepStaleRunningSessionsOnBoot } from "./boot/session-sweep.js";
+import {
+  backoffMsFor,
+  initialBackoff,
+  isUnreachableError,
+  recordReachable,
+  recordUnreachable,
+  shouldAttempt,
+} from "./domain/sync/central/reachability.js";
 
 // Reads a required env var, trimmed. Used for the two central-mode
 // connection settings: both are already validated non-empty by
@@ -204,18 +212,48 @@ async function agentMain(client: CentralClient): Promise<void> {
   // Runs at boot and then periodically -- the safety net for any watcher
   // event that was still lost despite timeout+retry (GH #80).
   let sweepRunning = false;
+  let backoff = initialBackoff();
   const backfillSweep = async (tag: string): Promise<void> => {
     if (sweepRunning) return;
+    // Central unreachable on the last round: stay quiet until the backoff
+    // window opens. A laptop that is asleep or off wifi would otherwise
+    // burn one doomed round every 10 minutes, forever.
+    if (!shouldAttempt(backoff, Date.now())) return;
     sweepRunning = true;
     try {
       const mirrors = await listUserMirrors(SOLO_USER);
+      // Set by the first mirror whose call fails at the NETWORK level. The
+      // remaining mirrors would all fail the same way, so they are skipped
+      // rather than asked -- 26 mirrors x 2 (client-side retry) doomed
+      // connects per round is what buried the log.
+      let unreachable = false;
       await mapConcurrent(mirrors, 4, async (m) => {
+        if (unreachable) return;
         try {
           await centralBackfillMirror(client, m);
         } catch (e) {
+          if (isUnreachableError(e)) {
+            unreachable = true;
+            return;
+          }
+          // Central answered -- this is a real per-mirror problem, so it
+          // keeps its full detail.
           console.error(`[${tag}] central backfill failed for`, m.node_id, e);
         }
       });
+      if (unreachable) {
+        backoff = recordUnreachable(backoff, Date.now());
+        // ONE line, no stack trace: being offline is not an error report,
+        // it is a condition. The stack was identical for every mirror and
+        // carried a source excerpt of the bundled sidecar with it.
+        console.warn(
+          `[${tag}] central unreachable, skipped ${mirrors.length} mirror(s); next attempt in ${Math.round(
+            backoffMsFor(backoff.consecutiveFailures) / 60_000,
+          )} min`,
+        );
+      } else {
+        backoff = recordReachable(backoff);
+      }
     } catch (e) {
       console.error(`[${tag}] central backfill skipped:`, e);
     } finally {
