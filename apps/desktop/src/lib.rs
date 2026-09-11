@@ -2319,10 +2319,42 @@ fn reap_orphan_sidecar(port: u16) {
 
 /// Append a raw sidecar line to the per-workspace log file. Best-effort:
 /// all IO errors are silently ignored. Creates parent directories as needed.
+// Sidecar logs are append-only and were never rotated or capped: a single
+// sidecar-<ws>.log reached 74 MB in normal use, because a stretch of central
+// being unreachable writes one multi-line stack trace per mirror per sweep
+// round. Keep one previous generation and start over past the cap, so the
+// file stays readable and disk use is bounded at 2x MAX.
+const WS_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+// Checking the size before every single line would be a syscall per line;
+// once every SIZE_CHECK_EVERY lines is enough to bound the file at
+// MAX + (a few hundred lines).
+const WS_LOG_SIZE_CHECK_EVERY: u64 = 256;
+
+// Pure decision core so the rotation rule is testable without touching disk.
+fn should_rotate_ws_log(len: u64, max: u64) -> bool {
+    len >= max
+}
+
+fn rotate_ws_log(p: &std::path::Path) {
+    let rotated = p.with_extension("log.1");
+    // Replaces any previous generation; a failure here must never stop
+    // logging, so every step is best-effort.
+    let _ = std::fs::rename(p, &rotated);
+}
+
 fn append_ws_log(path: &Option<std::path::PathBuf>, line: &str) {
     if let Some(p) = path {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
+        }
+        static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if n % WS_LOG_SIZE_CHECK_EVERY == 0 {
+            if let Ok(meta) = std::fs::metadata(p) {
+                if should_rotate_ws_log(meta.len(), WS_LOG_MAX_BYTES) {
+                    rotate_ws_log(p);
+                }
+            }
         }
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -4262,5 +4294,38 @@ mod merge_profile_env_update_tests {
         let stored = map(&[("A", "1"), ("B", "2")]);
         let submitted = map(&[("A", "1")]);
         assert_eq!(merge_profile_env_update(&stored, submitted), map(&[("A", "1")]));
+    }
+}
+
+#[cfg(test)]
+mod ws_log_rotation_tests {
+    use super::{append_ws_log, should_rotate_ws_log, WS_LOG_MAX_BYTES};
+
+    #[test]
+    fn rotates_only_at_or_past_the_cap() {
+        assert!(!should_rotate_ws_log(0, WS_LOG_MAX_BYTES));
+        assert!(!should_rotate_ws_log(WS_LOG_MAX_BYTES - 1, WS_LOG_MAX_BYTES));
+        assert!(should_rotate_ws_log(WS_LOG_MAX_BYTES, WS_LOG_MAX_BYTES));
+        assert!(should_rotate_ws_log(WS_LOG_MAX_BYTES * 3, WS_LOG_MAX_BYTES));
+    }
+
+    #[test]
+    fn an_oversized_log_is_moved_aside_and_writing_continues() {
+        let dir = std::env::temp_dir().join(format!("portuni-wslog-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("sidecar-test.log");
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(p.with_extension("log.1"));
+
+        std::fs::write(&p, vec![b'x'; (WS_LOG_MAX_BYTES + 1) as usize]).unwrap();
+        // The first write of a process checks the size (counter starts at 0).
+        append_ws_log(&Some(p.clone()), "after rotation");
+
+        let rotated = p.with_extension("log.1");
+        assert!(rotated.exists(), "previous generation must be kept");
+        let current = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(current, "after rotation\n", "logging continues into a fresh file");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
