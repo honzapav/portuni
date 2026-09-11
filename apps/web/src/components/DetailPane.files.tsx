@@ -19,6 +19,7 @@ import {
   Link2,
   Loader2,
   RefreshCw,
+  X,
 } from "lucide-react";
 import type {
   DetailFile,
@@ -38,6 +39,7 @@ import { getCachedDriveStatus } from "../lib/sync-drive";
 import { listWorkspaces } from "../lib/workspaces";
 import { listProfiles, type ProfileInfo } from "../lib/profiles";
 import { copyText } from "../lib/clipboard";
+import { summarizeSyncRun } from "../lib/sync-run-summary";
 
 // ---------------------------------------------------------------------------
 // File tree (Files tab)
@@ -901,47 +903,6 @@ export function WatcherErrorBanner({ errors }: { errors: WatcherErrorEntry[] }) 
 }
 
 // Compact one-line outcome of a sync run for SyncBar's transient inline
-// status (#267) -- deliberately short (counts only, no filename lists):
-// this fades after a few seconds, it is not the place for a full report.
-// Persistent state (conflicts, deleted_local) already has its own pill next
-// to the button, so it is not repeated here as a permanent element -- only
-// as part of this transient line, which is fine since it disappears too.
-function summarizeSyncRun(result: SyncRunResponse): {
-  text: string;
-  hasError: boolean;
-  detail: string | null;
-} {
-  const parts: string[] = [];
-  if (result.pushed.length > 0) parts.push(`Push ${result.pushed.length}`);
-  if (result.pulled.length > 0) parts.push(`Pull ${result.pulled.length}`);
-  if (result.adopted.length > 0) parts.push(`Zaregistrováno ${result.adopted.length}`);
-  if (result.adopted_remote.length > 0) parts.push(`Nové z remote ${result.adopted_remote.length}`);
-  if (result.conflicts.length > 0) {
-    parts.push(`${result.conflicts.length} konflikt${result.conflicts.length === 1 ? "" : "y"}`);
-  }
-  if (result.deleted_local.length > 0) parts.push(`smazáno lokálně ${result.deleted_local.length}`);
-  if (result.deleted_remote.length > 0) parts.push(`uklizeno ${result.deleted_remote.length}`);
-  if (result.deleted_on_remote.length > 0) {
-    parts.push(`smazáno na remote ${result.deleted_on_remote.length}`);
-  }
-  if (result.repaired.length > 0) parts.push(`opraveno ${result.repaired.length}`);
-  const hasError =
-    result.errors.length > 0 || result.sweep_errors.length > 0 || result.pending_repairs.length > 0;
-  if (result.pending_repairs.length > 0) parts.push(`nedokončeno ${result.pending_repairs.length}`);
-  if (result.sweep_errors.length > 0) parts.push(`kontrola remote selhala (${result.sweep_errors.length})`);
-  if (result.errors.length > 0) parts.push(`chyby ${result.errors.length}`);
-  // Full per-item detail for the title tooltip: the line above is counts
-  // only, and the sync-run errors that have no row of their own (sweep
-  // errors are keyed by remote path) would otherwise be lost.
-  const detail = [
-    ...result.errors.map((e) => `${e.filename}: ${e.error}`),
-    ...result.pending_repairs.map((p) => `${p.op} (${p.attempts}x): ${p.last_error ?? "?"}`),
-    ...result.sweep_errors.map((e) => `${e.remote_path}: ${e.error}`),
-  ];
-  if (parts.length === 0) return { text: "Vše synchronizováno", hasError: false, detail: null };
-  return { text: parts.join(" · "), hasError, detail: detail.length > 0 ? detail.join("\n") : null };
-}
-
 // Per-file errors of a sync run, keyed by file id, for the rows themselves
 // (FileTree.runErrors). Exported for the DetailPane wiring and tests.
 export function syncRunErrorsByFile(result: SyncRunResponse | null): Map<string, string> {
@@ -1074,11 +1035,26 @@ export function SyncBar({
         )}
         {showOutcome && outcome && (
           <span
-            className="truncate text-[11.5px] transition-opacity duration-300"
+            className="flex min-w-0 items-center gap-1 text-[11.5px] transition-opacity duration-300"
             title={outcome.detail ?? undefined}
             style={{ color: outcome.hasError ? "var(--color-danger)" : "var(--color-text-dim)" }}
           >
-            {outcome.text}
+            <span className="truncate">{outcome.text}</span>
+            {/* A failing outcome does not fade, so without this its only way
+                off the screen is starting another run -- which is exactly
+                what a user who just resolved the rows by hand is not about
+                to do. */}
+            {outcome.hasError && (
+              <button
+                type="button"
+                onClick={() => setShowOutcome(false)}
+                title="Skrýt"
+                aria-label="Skrýt výsledek synchronizace"
+                className="shrink-0 opacity-60 hover:opacity-100"
+              >
+                <X size={11} />
+              </button>
+            )}
           </span>
         )}
       </div>
