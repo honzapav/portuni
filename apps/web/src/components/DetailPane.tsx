@@ -101,6 +101,7 @@ import { AccessSection } from "./DetailPane.access";
 import { SessionsSection } from "./DetailPane.sessions";
 import { RequestAccessControl } from "./AccessRequests";
 import { copyText } from "../lib/clipboard";
+import { useDataMode } from "../lib/central";
 
 // Module-level cache of the per-node sync-status map, so revisiting a
 // node shows the last-known badges instantly while the background
@@ -302,6 +303,12 @@ function DetailPaneBody({
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // A local workspace has no remote at all (#310/#312) -- push/pull/resolve
+  // never apply, so SyncBar (and FileRow's "Obnovit") stay hidden rather than
+  // rendering an action that would only ever fail with LOCAL_MODE_NO_REMOTE.
+  // Optimistically hidden while loading, same as other data-mode-gated UI.
+  const dataMode = useDataMode();
+  const isCentralMode = dataMode?.mode === "central";
   const [tab, setTabState] = useState<DetailTab>(
     () => TAB_CACHE.get(node.id) ?? "overview",
   );
@@ -1079,7 +1086,7 @@ function DetailPaneBody({
               />
             )}
             <div className="mb-3 flex items-center justify-between">
-                  {node.local_mirror && (node.files.length > 0 || untracked.length > 0) ? (
+                  {isCentralMode && node.local_mirror && (node.files.length > 0 || untracked.length > 0) ? (
                     <SyncBar
                       running={syncRunning}
                       result={syncRunResult}
@@ -1118,6 +1125,7 @@ function DetailPaneBody({
                     onDelete={handleDeleteFile}
                     onResolve={handleResolveFile}
                     runErrors={syncRunErrorsByFile(syncRunResult)}
+                    isCentralMode={isCentralMode}
                   />
                 ) : (
                   <div className="text-[14px] text-[var(--color-text-dim)]">

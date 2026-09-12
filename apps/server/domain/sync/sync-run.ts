@@ -18,12 +18,18 @@ import {
 } from "./engine.js";
 import { listUntrackedLocal } from "./discover-local.js";
 import { remoteSweep } from "./remote-sweep.js";
+import { LocalModeNoRemoteError } from "./types.js";
+import { isLocalWorkspace } from "../../infra/server-config.js";
 import type { SyncRunResponse } from "../../shared/api-types.js";
 
 export async function runNodeSync(
   db: Client,
   a: { userId: string; nodeId: string },
 ): Promise<SyncRunResponse> {
+  // A local workspace never has a remote (#310) -- there is nothing for a
+  // sync run to sweep, push or pull. Fail fast, before touching the remote
+  // sweep or a scan, rather than discovering it deep inside storeFile.
+  if (isLocalWorkspace()) throw new LocalModeNoRemoteError();
   // Sweep the remote before scanning: records whose remote object is
   // confirmed gone are dropped (their local copy is untracked afterward
   // and picked up by the tombstone cleanup below), and files that appeared

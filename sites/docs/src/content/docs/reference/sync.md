@@ -11,7 +11,9 @@ For the conceptual model see [Local Mirrors](/concepts/mirrors/).
 
 A **remote** is a backend storage configuration. One row per remote in the `remotes` table. The same Portuni instance can have many remotes – e.g. one Google Shared Drive per organization.
 
-A **local workspace** (neither central mode nor a central-mode sync agent — see [Data Modes](/concepts/data-modes/)) cannot register or route to a remote at all. `portuni_setup_remote`, `portuni_set_routing_policy`, and the Drive connect/target REST endpoints all refuse with error code `LOCAL_MODE_NO_REMOTE` there. Sharing files across machines runs through central mode instead.
+A **local workspace** (neither central mode nor a central-mode sync agent — see [Data Modes](/concepts/data-modes/)) cannot register or route to a remote at all. `portuni_setup_remote` and `portuni_set_routing_policy` refuse with error code `LOCAL_MODE_NO_REMOTE` there, and so does every push/pull operation: `portuni_store`, `portuni_pull`, `portuni_snapshot`, `POST /nodes/:id/sync`, and `POST /nodes/:id/files/:fileId/resolve`. Sharing files across machines runs through central mode instead.
+
+A local workspace's `portuni_status` still works — it just never reports anything push/pull/conflict-shaped. Tracked files there classify as only `clean` (present on disk) or `deleted_local` (tracked, gone from disk); an untracked file is `new_local`. `push`, `pull`, `conflict`, `remote_missing`, and `remote_error` cannot occur without a remote to compare against.
 
 ### portuni_setup_remote
 
@@ -26,7 +28,7 @@ Create **or update** a named remote (upsert) and store its credentials. Calling 
 
 For a **Service Account** remote the `shared_drive_id` is mandatory – service accounts have no My Drive storage quota, so they can only write into Shared Drives.
 
-Desktop users don't call `portuni_setup_remote` for Google Drive by hand: **Settings → Synchronizace** runs a Google sign-in and configures the `gdrive` remote (plus a wildcard routing rule) for them, using per-user OAuth. That path also supports a personal My Drive folder (`root_folder_id`) as the target, which the Service-Account path cannot. See [Setting Up Remotes](/guides/setting-up-remotes/). The MCP tools remain the way to configure headless/central deployments and multi-remote routing.
+`portuni_setup_remote` (service account, central-mode only) is the only way to configure a Drive remote — there is no per-user OAuth connect flow. See [Setting Up Remotes](/guides/setting-up-remotes/).
 
 ### portuni_list_remotes
 

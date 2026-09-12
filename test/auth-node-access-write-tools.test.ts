@@ -112,6 +112,10 @@ describe("Access checks on the eight previously-unguarded write tools", () => {
     workspace = await mkdtemp(join(tmpdir(), "portuni-write-tools-"));
     remoteRoot = await mkdtemp(join(tmpdir(), "portuni-write-tools-remote-"));
     process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    // A local workspace has no remote (#310/#312); this suite exercises
+    // portuni_store/portuni_pull's real push/pull behavior, which now only
+    // runs on the one non-local deployment that still has a remote.
+    process.env.PORTUNI_AGENT_MODE = "1";
     resetLocalDbForTests();
     resetAdapterCacheForTests();
 
@@ -219,6 +223,7 @@ describe("Access checks on the eight previously-unguarded write tools", () => {
     resetLocalDbForTests();
     resetAdapterCacheForTests();
     __resetSnapshotExporterForTests();
+    delete process.env.PORTUNI_AGENT_MODE;
     await rm(workspace, { recursive: true, force: true });
     await rm(remoteRoot, { recursive: true, force: true });
   });

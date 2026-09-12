@@ -1,6 +1,10 @@
 # Data modes & the two sync planes
 
-> **Status (2026-07):** Central mode now serves file **content** and lifecycle
+> **Status (2026-09):** Collaboration is central mode only (see
+> `docs/superpowers/specs/2026-09-11-one-collaboration-mode-design.md`). A
+> local workspace cannot register or route to a remote at all
+> (`LOCAL_MODE_NO_REMOTE`, #310/#312) — it tracks files on one machine and
+> shares nothing. Central mode serves file **content** and lifecycle
 > (create / rename / delete) over the central server via a mirror-less,
 > Drive-direct service (`file-content-remote.ts`), and supports agent
 > **terminals** (the local sync agent serves the mirror + sandbox profile; the
@@ -15,12 +19,13 @@
 
 ## The one-sentence summary
 
-> The owner (**local mode**) runs the sync engine on his own machine and pushes
-> file bytes to Google Drive himself. A **central-mode** teammate reaches the
-> data through `api.portuni.com` with enforced permissions, and today gets
-> **both** the **graph** and **file bytes** — the file-bytes half over the
-> server is served mirror-less and Drive-direct by `file-content-remote.ts`
-> (design rationale archived in
+> The owner (**local mode**) tracks files in mirror folders on his own
+> machine and never talks to a remote — sharing files with anyone else means
+> switching to central mode. A **central-mode** teammate reaches the data
+> through `api.portuni.com` with enforced permissions, and gets **both** the
+> **graph** and **file bytes** — the file-bytes half over the server is
+> served mirror-less and Drive-direct by `file-content-remote.ts` (design
+> rationale archived in
 > [`central-file-content-phase-b.md`](../archive/central-file-content-phase-b.md)).
 
 ## "Sync" means two different things
@@ -46,8 +51,9 @@ This is `DesktopConfig.data_mode` (`apps/desktop/src/lib.rs`). It is **not** a
 feature toggle — it is a transport/trust boundary:
 
 - **local mode (default, owner):** the desktop spawns the **sidecar**, which
-  talks **directly to Turso** (raw token) and runs the **local sync engine**
-  (mirror folders <-> Drive). Full power, full trust.
+  talks **directly to Turso** (raw token) and tracks files in mirror folders
+  on your own machine — but never talks to a remote at all
+  (`LOCAL_MODE_NO_REMOTE`, #310/#312). Sharing files is central mode's job.
 - **central mode (teammate):** the webview's data requests go through the
   `api_request` Tauri command to **`server_url` (`api.portuni.com`)** with a
   Google **JWT**, so the server can **enforce permissions** (groups, node-access
@@ -57,7 +63,7 @@ feature toggle — it is a transport/trust boundary:
   but it never talks to Turso directly (see the agent-mode section below).
 
 In multi-workspace setups, **each workspace can have a different `data_mode`**:
-one workspace can be local (direct Turso + Drive access) while another is
+one workspace can be local (direct Turso, no remote) while another is
 central (through the server). This allows a single desktop to host, say, a
 central-mode Tempo workspace and a local-mode personal workspace simultaneously.
 
@@ -69,7 +75,7 @@ and is reached by JWT instead of a bearer token.
 
 |  | Graph plane | File-bytes plane |
 |---|---|---|
-| **local mode** | sidecar -> Turso | sync engine -> Drive |
+| **local mode** | sidecar -> Turso | sync engine -> tracked locally, no remote |
 | **central mode** | server -> Turso (shipped, the graph cutover) | sync agent -> device mirror; falls back to server -> Drive (mirror-less, `file-content-remote.ts`) |
 
 Central mode does **not** "drop Drive by design," and it no longer lacks file

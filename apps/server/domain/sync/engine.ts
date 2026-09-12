@@ -5,17 +5,15 @@ import { ulid } from "ulid";
 import { md5Buffer, sha256Buffer, sha256File, statForCache } from "./hash.js";
 import { getAdapter } from "./adapter-cache.js";
 import type { FileRef } from "./types.js";
+import { LocalModeNoRemoteError } from "./types.js";
+import { isLocalWorkspace } from "../../infra/server-config.js";
 import { resolveRemote } from "./routing.js";
 import {
   upsertFileState,
   getFileState,
   getFileStates,
   deleteFileState,
-  getRemoteStat,
-  getRemoteStats,
-  upsertRemoteStat,
   type FileStateRow,
-  type RemoteStatRow,
 } from "./local-db.js";
 import { getMirrorPath, listUserMirrors, unregisterMirror } from "./mirror-registry.js";
 import {
@@ -96,6 +94,7 @@ export interface StoreFileResult {
 }
 
 export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFileResult> {
+  if (isLocalWorkspace()) throw new LocalModeNoRemoteError();
   const info = await resolveNodeInfo(db, a.nodeId);
   const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
   if (!remoteName) {
@@ -488,6 +487,7 @@ export interface PullFileResult {
 }
 
 export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileResult> {
+  if (isLocalWorkspace()) throw new LocalModeNoRemoteError();
   const row = await db.execute({
     sql: "SELECT id, node_id, filename, remote_name, remote_path, current_remote_hash FROM files WHERE id = ?",
     args: [a.fileId],
@@ -598,19 +598,11 @@ export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileRes
 // statusScan / previewNode
 // ---------------------------------------------------------------------------
 
-const REMOTE_STAT_TTL_MS = 30_000;
-
 export interface StatusArgs {
   userId: string;
   nodeId?: string;
   remoteName?: string;
   includeDiscovery?: boolean;
-  // Fast mode: classify purely from DB cache (file_state.cached_local_hash
-  // + files.current_remote_hash + file_state.last_synced_hash) without
-  // touching the filesystem or the remote adapter. Used by the UI sync
-  // indicator where "what we last knew" is acceptable; the trigger path
-  // still uses the slow scan for ground truth before acting.
-  fast?: boolean;
   // Discovery sub-flag: when set, runDiscovery still walks the local mirror
   // for new_local files but SKIPS the per-mirror remote `adapter.list` call
   // that finds new_remote. The cross-mirror unsynced aggregate
@@ -747,12 +739,14 @@ export async function localHashFor(
   return h;
 }
 
-async function cachedRemoteStat(
+// Local workspaces never reach this (isLocalWorkspace() short-circuits
+// statusScan before any row needs a remote stat); the sole remaining caller
+// is a non-local, non-agent deployment (the central server itself, if it
+// happens to also carry a local mirror) with a real remote configured.
+async function remoteStatFor(
   db: Client,
-  fileId: string,
   remoteName: string,
   remotePath: string,
-  prefetchedStat?: RemoteStatRow | null,
   // Positive-only view of one listing of the node's sections. A path found
   // here is known present with a known hash, and needs no per-file call. A
   // path NOT found here falls through to stat() below -- never to "gone".
@@ -763,22 +757,9 @@ async function cachedRemoteStat(
 ): Promise<{ hash: string | null; exists: boolean } | null> {
   const fromListing = listed?.get(remotePath.normalize("NFC"));
   if (fromListing) return { hash: fromListing.hash, exists: true };
-  const cached = prefetchedStat !== undefined ? prefetchedStat : await getRemoteStat(fileId);
-  if (cached && Date.now() - new Date(cached.fetched_at).getTime() < REMOTE_STAT_TTL_MS) {
-    return {
-      hash: cached.remote_hash,
-      exists: cached.remote_hash !== null || cached.remote_modified_at !== null,
-    };
-  }
   try {
     const adapter = await getAdapter(db, remoteName);
     const stat = await adapter.stat(remotePath);
-    await upsertRemoteStat({
-      file_id: fileId,
-      remote_hash: stat?.hash ?? null,
-      remote_modified_at: stat?.modified_at.toISOString() ?? null,
-      fetched_at: new Date().toISOString(),
-    });
     return stat === null ? { hash: null, exists: false } : { hash: stat.hash, exists: true };
   } catch (e) {
     // Returning null classifies the file as remote_error -- when the cause
@@ -809,12 +790,11 @@ interface ScanRowResult {
 
 async function scanRow(
   db: Client,
-  a: StatusArgs,
+  localOnly: boolean,
   row: Record<string, unknown>,
   nodeInfoCache: Map<string, NodeInfo | null>,
   mirrorCache: Map<string, string | null>,
   fileStates: Map<string, FileStateRow>,
-  remoteStats: Map<string, RemoteStatRow>,
   listings: Map<string, ReadonlyMap<string, FileRef>>,
 ): Promise<ScanRowResult> {
   const fileId = row.id as string;
@@ -878,34 +858,37 @@ async function scanRow(
   const state = fileStates.get(fileId) ?? null;
   base.last_synced_hash = state?.last_synced_hash ?? null;
   const currentRemoteHash = (row.current_remote_hash as string | null) ?? null;
-  const localHash = a.fast
-    ? (state?.cached_local_hash ?? null)
-    : localPath
-      ? await localHashFor(localPath, fileId, currentRemoteHash, state)
-      : null;
+  const localHash = localPath
+    ? await localHashFor(localPath, fileId, currentRemoteHash, state)
+    : null;
   base.local_hash = localHash;
 
+  // A local workspace never has a remote (#310) -- ignore remote_name even
+  // on a legacy row from before that rule, and never touch the adapter.
+  // Tracked + present reads as `clean` (nothing to push to); tracked + gone
+  // from disk reads as `deleted_local`.
+  if (localOnly) {
+    return localHash === null
+      ? { bucket: "deleted_local", entry: { ...base, class: "deleted_local" } }
+      : { bucket: "clean", entry: { ...base, class: "clean" } };
+  }
+
   if (!remoteName) {
-    // No remote routed for this node (a local-only workspace, or routing
-    // simply not configured yet) -- there is nothing to compare local
-    // content against. Local content present reads as `push` (pending
-    // upload, same as a routed-but-never-synced file); no content is
-    // `clean` (nothing here to track).
+    // No remote routed for this node yet (routing simply not configured) --
+    // there is nothing to compare local content against. Local content
+    // present reads as `push` (pending upload, same as a routed-but-never-
+    // synced file); no content is `clean` (nothing here to track).
     return localHash === null
       ? { bucket: "clean", entry: { ...base, class: "clean" } }
       : { bucket: "push_candidates", entry: { ...base, class: "push" } };
   }
 
-  const rs = a.fast
-    ? { hash: currentRemoteHash, exists: currentRemoteHash !== null }
-    : await cachedRemoteStat(
-        db,
-        fileId,
-        remoteName,
-        remotePath,
-        remoteStats.get(fileId) ?? null,
-        listings.get(`${remoteName}\u0000${nodeId}`),
-      );
+  const rs = await remoteStatFor(
+    db,
+    remoteName,
+    remotePath,
+    listings.get(`${remoteName}\u0000${nodeId}`),
+  );
   if (rs === null) return { bucket: "remote_error", entry: { ...base, class: "remote_error" } };
   base.remote_hash = rs.hash;
   if (!rs.exists) {
@@ -989,6 +972,9 @@ const STATUS_SCAN_CONCURRENCY = Math.max(
 );
 
 export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResult> {
+  // A local workspace never has a remote (#310): classification never
+  // touches the adapter, and neither does the remote-listing block below.
+  const localOnly = isLocalWorkspace();
   const out: StatusResult = {
     clean: [],
     push_candidates: [],
@@ -1048,10 +1034,7 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
   // a full scan. Two chunked queries answer all of it up front; the per-file
   // writes still happen, but only for files that actually changed.
   const scanFileIds = rowsRes.rows.map((r) => r.id as string);
-  const [fileStates, remoteStats] = await Promise.all([
-    getFileStates(scanFileIds),
-    a.fast ? Promise.resolve(new Map<string, RemoteStatRow>()) : getRemoteStats(scanFileIds),
-  ]);
+  const fileStates = await getFileStates(scanFileIds);
 
   // One listing per (remote, node) instead of one stat() per file. On a
   // network backend that is the difference between O(files) round trips and
@@ -1059,9 +1042,10 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
   // in the listing, which is exactly what the comparison below needs. Used
   // as a positive cache only: anything the listing does not cover still
   // gets its own stat(), so a failed or short listing can never be read as
-  // "the file is gone". Skipped in fast mode, which touches no remote at all.
+  // "the file is gone". Skipped for a local workspace, which never has a
+  // remote to list.
   const listings = new Map<string, ReadonlyMap<string, FileRef>>();
-  if (!a.fast) {
+  if (!localOnly) {
     const pairs = new Map<string, { remoteName: string; nodeId: string }>();
     for (const r of rowsRes.rows) {
       const remoteName = (r.remote_name as string | null) ?? null;
@@ -1100,7 +1084,7 @@ export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResul
   const rowResults = await mapWithConcurrency(
     rowsRes.rows as unknown as Record<string, unknown>[],
     STATUS_SCAN_CONCURRENCY,
-    (row) => scanRow(db, a, row, nodeInfoCache, mirrorCache, fileStates, remoteStats, listings),
+    (row) => scanRow(db, localOnly, row, nodeInfoCache, mirrorCache, fileStates, listings),
   );
   for (const r of rowResults) out[r.bucket].push(r.entry);
 

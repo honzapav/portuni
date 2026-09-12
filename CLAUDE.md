@@ -169,32 +169,54 @@ symlink to this file.
   below.)
   A local workspace with pre-existing rows from before this rule logs one
   warning at boot (`boot/local-mode-remote-warning.ts`) and otherwise keeps
-  running unchanged; the local engine itself does not yet know to ignore
-  those rows (that is a follow-up, not part of #310).
+  running unchanged; `statusScan`'s local branch (below, #312) ignores
+  `remote_name` outright, including on a legacy row, so those rows cannot
+  resurface push/pull/conflict classifications either.
 - **File state is deterministic, not agent-driven.** A mirror watcher
   (`apps/server/domain/sync/mirror-watcher.ts` → `reconcile.ts`) registers new
   files and reconciles edits/deletes on every disk change, so the UI's sync
   status (`statusScan`, which reads `file_state.cached_local_hash`)
   is current without anyone calling `portuni_store`/`portuni_status`. In
   central mode the scan is ONLY that read -- `statusScanCentral` has no
-  `fast` parameter anymore; re-deriving what the device does not know is the
-  sync run's own reconcile pass (`resolveUnknownRemotes`), never a mode of
-  reading. The local engine still has `fast` (its slow path stats the remote
-  live, which the UI poll cannot afford across every mirror).
-  Registration is local-only (`registerLocalFile`, no upload); a file then
-  reads as `push` until a deliberate "Synchronizovat"/`portuni_store` pushes
-  it to the remote. **Registration never requires a remote.** A local-only
-  workspace (no remote/routing configured at all) still tracks every file —
-  `registerLocalFile` and its central-mode/REST equivalents
-  (`registerFileRecordRemote(s)`) leave `remote_name` NULL instead of
-  throwing when routing does not resolve; `remote_path` is still always
-  computed (it is derived purely from the node's own identity, never from
-  the remote). `idx_files_unique_remote` is keyed on `(node_id, remote_path)`
-  alone (migration 031) so a later `storeFile`/write on the same path
-  backfills `remote_name` onto the existing row instead of creating a
-  duplicate. `storeFile` (and any other deliberate push/write) still
-  requires a resolved remote and throws `ROUTING_GUIDANCE` otherwise — that
-  guidance belongs at the moment of a deliberate sync, not at registration.
+  `fast` parameter; re-deriving what the device does not know is the sync
+  run's own reconcile pass (`resolveUnknownRemotes`), never a mode of
+  reading. **A local workspace never has a remote at all (#310), so its own
+  scan dropped `fast` too (#312)**: `statusScan` computes `isLocalWorkspace()`
+  once and short-circuits every row before it would touch an adapter --
+  tracked + present reads `clean`, tracked + gone from disk reads
+  `deleted_local`; `push`/`pull`/`conflict`/`remote_*` cannot occur there.
+  `cachedRemoteStat`/`getRemoteStats` (the local engine's own TTL cache
+  wrapping `local-db.ts`'s `remote_stat_cache`) are gone with it -- the
+  table itself, `RemoteStatRow`, and the singular `getRemoteStat`/
+  `upsertRemoteStat` stay, since `engine-central.ts` (untouched by #312)
+  still uses them for its own remote-hash observation cache. The **non-local**
+  remaining caller of this same `engine.ts` (a server run with
+  `PORTUNI_AUTH_MODE=google`, i.e. the central server itself, which — unlike
+  an agent-mode device — still reaches `engine.ts` directly if it happens to
+  carry its own local mirrors) keeps the old always-live classification,
+  just without the persisted stat cache. Registration is local-only
+  (`registerLocalFile`, no upload); a file on a genuinely local workspace
+  then reads as `clean` (nothing to push to, ever); on a workspace where a
+  remote CAN resolve (central server, routing configured) it reads `push`
+  until a deliberate `portuni_store` pushes it. **Registration never
+  requires a remote.** A local-only workspace (no remote/routing configured
+  at all) still tracks every file — `registerLocalFile` and its
+  central-mode/REST equivalents (`registerFileRecordRemote(s)`) leave
+  `remote_name` NULL instead of throwing when routing does not resolve;
+  `remote_path` is still always computed (it is derived purely from the
+  node's own identity, never from the remote). `idx_files_unique_remote` is
+  keyed on `(node_id, remote_path)` alone (migration 031) so a later
+  `storeFile`/write on the same path backfills `remote_name` onto the
+  existing row instead of creating a duplicate. `storeFile`/`pullFile`/
+  `runNodeSync`/`snapshotService` refuse with `LocalModeNoRemoteError`
+  (`LOCAL_MODE_NO_REMOTE`) on a local workspace, checked before any other
+  work; on a workspace where a remote can resolve, `storeFile` still
+  requires one and throws `ROUTING_GUIDANCE` otherwise — that guidance
+  belongs at the moment of a deliberate sync, not at registration. Web:
+  `SyncBar`/`SyncOverview`'s "Synchronizovat" actions and the file row's
+  "Obnovit" (restore) button are hidden on a local workspace (`useDataMode()`
+  gating in `DetailPane.tsx`/`SyncOverview.tsx`), not merely disabled --
+  there is nothing they could ever do there.
   The watcher runs in the desktop sidecar by default
   (`PORTUNI_WATCH_MIRRORS`, on the standalone server it is opt-in `=1`); for
   backend dev against the tmux server, set `PORTUNI_WATCH_MIRRORS=1` if you

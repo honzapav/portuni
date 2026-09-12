@@ -9,6 +9,8 @@ import { storeFile, mimeFor } from "../../domain/sync/engine.js";
 import { createFileRemote } from "../../domain/sync/file-content-remote.js";
 import { getMirrorPath } from "../../domain/sync/mirror-registry.js";
 import { EXPORT_MIME } from "../../domain/sync/native-format.js";
+import { LocalModeNoRemoteError } from "../../domain/sync/types.js";
+import { isLocalWorkspace } from "../../infra/server-config.js";
 import { nodeVisibleTo } from "../../auth/node-access.js";
 import { guardNodeWrite } from "../write-gate.js";
 import type { SessionCtx } from "../server.js";
@@ -69,6 +71,7 @@ export function __resetSnapshotExporterForTests(): void {
 // createFileRemote (upload + record). A teammate's device pulls the new file
 // into its own mirror in the agent front door's post-proxy hook.
 export async function snapshotService(db: Client, a: SnapshotArgs): Promise<SnapshotResult> {
+  if (isLocalWorkspace()) throw new LocalModeNoRemoteError();
   const format = a.format ?? "pdf";
   const buf = await exporter(db, a.nodeId, a.docUrl, format);
   const fn =

@@ -29,12 +29,14 @@ project says "graph sync" it means the **Turso plane**.
 `data_mode` is not a feature switch — it is a transport and trust boundary:
 
 - **Local mode** (default, the owner). The desktop app runs the Portuni server
-  itself (the embedded sidecar), talks **directly to Turso**, and runs the
-  **file sync engine** on your own machine (mirror folders ↔ Drive). Full power,
-  full trust. A local workspace cannot be given a remote — `portuni_setup_remote`,
-  `portuni_set_routing_policy`, and connecting Drive all refuse with
-  `LOCAL_MODE_NO_REMOTE`. Sharing files with other machines is what central
-  mode is for.
+  itself (the embedded sidecar), talks **directly to Turso**, and tracks files
+  in mirror folders on your own machine — but never talks to a remote at all.
+  A local workspace cannot be given one: `portuni_setup_remote` and
+  `portuni_set_routing_policy` refuse with `LOCAL_MODE_NO_REMOTE`, and so does
+  every push/pull operation (`portuni_store`, `portuni_pull`, a sync run).
+  Files there classify as `clean` (tracked, present) or `deleted_local`
+  (tracked, gone from disk) — never `push`/`pull`/`conflict`. Sharing files
+  with other machines is what central mode is for.
 - **Central mode** (a teammate). Every graph request goes to a
   shared server with a **Google login**, so the server can **enforce
   permissions** (groups, per-node visibility). The teammate never holds the raw
@@ -56,7 +58,7 @@ directly against the routed remote (Drive) on the teammate's behalf.
 
 |  | Graph plane | File-bytes plane |
 |---|---|---|
-| **Local mode** | sidecar → Turso | sync engine → Drive |
+| **Local mode** | sidecar → Turso | sync engine → tracked locally, no remote |
 | **Central mode** | central server → Turso | sync agent → device mirror, falling back to central server → Drive (adapter-direct); the agent also brokers mirror folders ↔ central server |
 
 Both cells of the central row are live. Opening a file in central mode reads

@@ -202,14 +202,14 @@ function mapFileStateRow(row: Record<string, unknown>): FileStateRow {
 // All rows whose cached local copy had this inode identity. Several rows can
 // share it only transiently (inode reuse after a delete) -- the caller
 // disambiguates via the content hash before acting on a match.
-// Batch counterparts of getFileState / getRemoteStat.
+// Batch counterpart of getFileState.
 //
-// statusScan looked both up one file at a time -- three single-row SELECTs
-// per file (scanRow's own getFileState, localHashFor's second one, and
-// cachedRemoteStat's) plus a write. Measured on a 3000-file mirror: 12001
-// sync.db queries and 949 ms for a full scan. Single-row lookups cost ~16 us
-// each against this file-backed sqlite; the same rows fetched in chunks cost
-// ~1.7 us each. Chunked because sqlite caps host parameters per statement.
+// statusScan looked it up one file at a time -- a single-row SELECT per file
+// (scanRow's own getFileState, plus localHashFor's second one) plus a write.
+// Measured on a 3000-file mirror: thousands of sync.db queries and hundreds
+// of ms for a full scan. Single-row lookups cost ~16 us each against this
+// file-backed sqlite; the same rows fetched in chunks cost ~1.7 us each.
+// Chunked because sqlite caps host parameters per statement.
 const IN_CHUNK = 500;
 
 export async function getFileStates(fileIds: string[]): Promise<Map<string, FileStateRow>> {
@@ -226,29 +226,6 @@ export async function getFileStates(fileIds: string[]): Promise<Map<string, File
     for (const row of r.rows) {
       const mapped = mapFileStateRow(row as unknown as Record<string, unknown>);
       out.set(mapped.file_id, mapped);
-    }
-  }
-  return out;
-}
-
-export async function getRemoteStats(fileIds: string[]): Promise<Map<string, RemoteStatRow>> {
-  const out = new Map<string, RemoteStatRow>();
-  if (fileIds.length === 0) return out;
-  const db = await getLocalDb();
-  const distinct = [...new Set(fileIds)];
-  for (let i = 0; i < distinct.length; i += IN_CHUNK) {
-    const chunk = distinct.slice(i, i + IN_CHUNK);
-    const r = await db.execute({
-      sql: `SELECT * FROM remote_stat_cache WHERE file_id IN (${chunk.map(() => "?").join(",")})`,
-      args: chunk,
-    });
-    for (const row of r.rows) {
-      out.set(row.file_id as string, {
-        file_id: row.file_id as string,
-        remote_hash: (row.remote_hash as string | null) ?? null,
-        remote_modified_at: (row.remote_modified_at as string | null) ?? null,
-        fetched_at: row.fetched_at as string,
-      });
     }
   }
   return out;
@@ -271,7 +248,11 @@ export async function deleteFileState(fileId: string): Promise<void> {
   await db.execute({ sql: "DELETE FROM file_state WHERE file_id = ?", args: [fileId] });
 }
 
-// remote_stat_cache CRUD
+// remote_stat_cache CRUD. engine.ts (the local/direct engine) no longer
+// consumes this -- a local workspace never has a remote to stat (#312), and
+// its own remaining remote-stat path (remoteStatFor) always reads live, no
+// persisted cache. Kept for central/engine-central.ts's own remote-hash
+// observation cache, which is unrelated to this issue.
 export async function upsertRemoteStat(
   row: Omit<RemoteStatRow, "fetched_at"> & { fetched_at?: string },
 ): Promise<void> {

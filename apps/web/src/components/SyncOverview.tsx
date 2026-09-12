@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import type { SyncPendingResponse, SyncRunResponse, SyncJobSummary } from "../types";
 import { runNodeSync, startSyncJob, fetchSyncJob, fetchCurrentSyncJob } from "../api";
+import { useDataMode } from "../lib/central";
 
 const JOB_POLL_MS = 800;
 
@@ -42,6 +43,11 @@ export default function SyncOverview({
   onMutated: () => void;
   onSelectNode: (id: string) => void;
 }) {
+  // A local workspace has no remote (#310/#312) -- a sync run there would
+  // only ever fail with LOCAL_MODE_NO_REMOTE, so "Synchronizovat"/
+  // "Synchronizovat vše" stay hidden. Optimistically hidden while loading.
+  const dataMode = useDataMode();
+  const isCentralMode = dataMode?.mode === "central";
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [job, setJob] = useState<SyncJobSummary | null>(null);
   // Guards onSynced/onMutated so a re-render (e.g. a duplicate poll
@@ -156,7 +162,7 @@ export default function SyncOverview({
                 {job.completed}/{job.total}
               </span>
             )}
-            {actionable.length > 0 && (
+            {isCentralMode && actionable.length > 0 && (
               <button
                 type="button"
                 onClick={syncAll}
@@ -256,15 +262,17 @@ export default function SyncOverview({
                           Rozhodnout
                         </button>
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() => syncOne(n.node_id)}
-                          disabled={isBusy}
-                          className="flex items-center gap-1.5 whitespace-nowrap rounded px-2 py-1 text-[12px] text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)] disabled:opacity-50"
-                        >
-                          {isBusy ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
-                          Synchronizovat
-                        </button>
+                        isCentralMode && (
+                          <button
+                            type="button"
+                            onClick={() => syncOne(n.node_id)}
+                            disabled={isBusy}
+                            className="flex items-center gap-1.5 whitespace-nowrap rounded px-2 py-1 text-[12px] text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)] disabled:opacity-50"
+                          >
+                            {isBusy ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                            Synchronizovat
+                          </button>
+                        )
                       )}
                     </span>
                   )}

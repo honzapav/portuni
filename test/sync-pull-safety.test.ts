@@ -30,6 +30,7 @@ beforeEach(async () => {
 afterEach(async () => {
   resetLocalDbForTests();
   resetAdapterCacheForTests();
+  delete process.env.PORTUNI_AGENT_MODE;
   if (originalEnv === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
   else process.env.PORTUNI_WORKSPACE_ROOT = originalEnv;
   await rm(workspaceA, { recursive: true, force: true });
@@ -38,6 +39,7 @@ afterEach(async () => {
 
 async function switchTo(workspace: string): Promise<void> {
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+  process.env.PORTUNI_AGENT_MODE = "1";
   resetLocalDbForTests();
   resetAdapterCacheForTests();
 }
@@ -250,6 +252,7 @@ describe("sync.db file_state schema migration", () => {
 describe("pullFile holds the path lock across the download", () => {
   it("a push of the same path cannot land between the fetch and the overwrite", async () => {
     process.env.PORTUNI_WORKSPACE_ROOT = workspaceA;
+    process.env.PORTUNI_AGENT_MODE = "1";
     resetLocalDbForTests();
     resetAdapterCacheForTests();
     const { db, nodeId } = await makeSharedDb();

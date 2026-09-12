@@ -590,30 +590,22 @@ auto-merges and never silently overwrites.
 
 ## Setup flow
 
-### Desktop one-click (per-user OAuth)
-
-The default path for a local desktop workspace. **Settings → Synchronizace → Propojit Google Drive** runs the PKCE loopback OAuth flow in `apps/desktop/src/auth.rs` (`google_drive_connect`, scope `openid email https://www.googleapis.com/auth/drive`). The refresh token is extracted in Rust and POSTed to the sidecar's bearer-authed `POST /sync/drive/connect` over loopback — it never reaches the webview (security rule 1). The sidecar (`apps/server/domain/sync/remote-service.ts`) stores it via the TokenStore as a `refresh_token`-mode entry for the fixed remote name `gdrive`, then on target selection (`POST /sync/drive/target`) upserts the `gdrive` remote and adds a wildcard routing rule **only if the routing table is empty** (never clobbers an existing policy). Target can be a My Drive folder (`root_folder_id`, a `Portuni` folder Portuni creates) or a Shared Drive. The Drive adapter picks auth mode per token: `refresh_token` → `drive-user-auth.ts`, else service-account → `drive-sa-auth.ts`. REST surface: `/sync/drive/{connect,targets,target,status,test,disconnect}`.
+Collaboration is central mode only (see
+`docs/superpowers/specs/2026-09-11-one-collaboration-mode-design.md`): a
+local workspace cannot register or route to a remote at all
+(`LOCAL_MODE_NO_REMOTE`, #310), and the per-user Drive OAuth connect flow
+that used to run from the desktop's Settings → Synchronizace is retired
+(#311) along with it. Service Account setup, below, is the only path left.
 
 ### Admin setup (Service Account)
 
-One-time per Portuni deployment for headless/central/multi-remote setups, done by whoever sets up the Turso database. Also the only path when there's no desktop to click through consent:
+One-time per Portuni deployment (the central server), done by whoever sets
+it up:
 
-1. `portuni_setup_remote { name, type, config }` for each backend. Creates a `remotes` row. For `gdrive` a `shared_drive_id` is required (service accounts have no My Drive quota — enforced at setup by `assertSaDriveConfig`).
+1. `portuni_setup_remote { name, type, config, service_account_json }` for each backend. Creates a `remotes` row. For `gdrive` a `shared_drive_id` is required (service accounts have no My Drive quota — enforced at setup by `assertSaDriveConfig`).
 2. `portuni_set_routing_policy { rules }` to configure mapping from node-type/org to remote-name.
 
-Solo mode: one remote, one wildcard rule. Agents can be walked through this via the `setup-drive-remote` MCP prompt; when a store hits an unrouted node the error now carries setup guidance (`ROUTING_GUIDANCE` in `engine.ts`).
-
-### First-time device setup
-
-One-time per device (user's laptop, new machine, new teammate):
-
-1. `portuni_connect_device` reads the `remotes` table.
-2. For each remote, launches OAuth consent flow in a browser.
-3. Stores the refresh token in varlock under `portuni.remote.<name>.refresh_token`.
-4. Calls `adapter.stat()` against each remote to verify the token works.
-5. Initializes `$PORTUNI_WORKSPACE_ROOT/.portuni/sync.db` if absent.
-
-Subsequent machines of the same user use the same Google account and the same remote configs. Each machine gets its own refresh token stored locally.
+One remote, one wildcard rule covers the common case. Agents can be walked through this via the `setup-drive-remote` MCP prompt; when a store hits an unrouted node the error now carries setup guidance (`ROUTING_GUIDANCE` in `engine.ts`).
 
 ## Testing strategy
 

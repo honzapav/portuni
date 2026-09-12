@@ -295,6 +295,7 @@ export function FileTree({
   onResolve,
   readOnly,
   runErrors,
+  isCentralMode,
 }: {
   files: DetailFile[];
   untracked: UntrackedFile[];
@@ -314,6 +315,10 @@ export function FileTree({
   // still-pending repair is shown on the affected row, where the transient
   // toolbar line only carries a count. Cleared by the next run.
   runErrors?: Map<string, string>;
+  // A local workspace has no remote (#310/#312) -- hides the "Obnovit"
+  // (restore, i.e. pull) row action, which would otherwise only ever fail
+  // with LOCAL_MODE_NO_REMOTE. Undefined/false hides it, same as unresolved.
+  isCentralMode?: boolean;
 }) {
   const treeFiles = useMemo(
     () => toTreeFiles(files, untracked, syncStatus, mirrorPath),
@@ -352,6 +357,7 @@ export function FileTree({
           onResolve={onResolve}
           readOnly={readOnly}
           runErrors={runErrors}
+          isCentralMode={isCentralMode}
         />
       ))}
     </div>
@@ -372,6 +378,7 @@ function FileTreeNode({
   onResolve,
   readOnly,
   runErrors,
+  isCentralMode,
 }: {
   node: TreeNode;
   depth: number;
@@ -386,6 +393,7 @@ function FileTreeNode({
   onResolve: (fileId: string, action: ResolveAction) => Promise<void>;
   readOnly?: boolean;
   runErrors?: Map<string, string>;
+  isCentralMode?: boolean;
 }) {
   const indent = depth * 14;
   if (node.file) {
@@ -401,6 +409,7 @@ function FileTreeNode({
         onResolve={onResolve}
         readOnly={readOnly}
         runError={node.file.fileId ? (runErrors?.get(node.file.fileId) ?? null) : null}
+        isCentralMode={isCentralMode}
       />
     );
   }
@@ -456,6 +465,7 @@ function FileTreeNode({
               onResolve={onResolve}
               readOnly={readOnly}
               runErrors={runErrors}
+              isCentralMode={isCentralMode}
             />
           ))}
         </div>
@@ -571,6 +581,7 @@ function FileRow({
   onResolve,
   readOnly,
   runError,
+  isCentralMode,
 }: {
   file: TreeFile;
   indent: number;
@@ -583,6 +594,9 @@ function FileRow({
   readOnly?: boolean;
   // This file's error from the last sync run, if any (see FileTree.runErrors).
   runError?: string | null;
+  // A local workspace has no remote (#310/#312) -- hides "Obnovit" (restore,
+  // i.e. pull), which would otherwise only ever fail with LOCAL_MODE_NO_REMOTE.
+  isCentralMode?: boolean;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(f.filename);
@@ -806,7 +820,7 @@ function FileRow({
                   </button>
                 </>
               )}
-              {sync?.sync_class === "deleted_local" && (
+              {isCentralMode && sync?.sync_class === "deleted_local" && (
                 <button
                   type="button"
                   onClick={() => act("restore")}
