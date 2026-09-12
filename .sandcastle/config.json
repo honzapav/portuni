@@ -16,7 +16,12 @@
     "npm ci --prefix sites/docs",
     "scripts/desktop-dev-placeholders.sh"
   ],
-  "sandboxEnv": {},
+  "sandboxEnv": {
+    "CARGO_BUILD_JOBS": "2",
+    "BASH_DEFAULT_TIMEOUT_MS": "1800000",
+    "BASH_MAX_TIMEOUT_MS": "1800000",
+    "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"
+  },
   "hostPreStart": [],
   "labels": {
     "ready": "ready-for-agent",
