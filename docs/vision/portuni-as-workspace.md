@@ -126,6 +126,22 @@ Asana je koordinační plocha týmu. Portuni funguje i bez ní.
 - **Kontext firmy a člověka je skill organizace a skill aktéra.** Aktéři v grafu ponesou roli, vztah k organizacím a entity, které dnes žijí mimo Portuni. Skill organizace vzniká stejným mechanismem jako skill procesu.
 - **Šablony projektů** jsou zatím myšlenka. Návrh bez nového typu: proces nese, jak se z něj zakládá projekt, a založení je skill toho procesu.
 
+## Local vs. central
+
+Nová funkce se staví jednou, jako kód serverové domény, který běží na centralu i v lokálním sidecaru. Co by pro lokální mód vyžadovalo druhou implementaci, je central-only. Lokální mód je central v krabici pro jednoho člověka: SQLite místo Postgres, bez Google loginu, bez Drivu, bez týmu. Slouží na vyzkoušení a musí se v něm dát pracovat.
+
+| | Central | Lokál |
+|---|---|---|
+| Graf, mirrory, editor, sledování souborů | ano | ano, stejný kód |
+| Relace jako úkol, chat, handoff, runner rozhraní, adaptéry | ano | ano, stejný kód, host = tentýž sidecar |
+| Host přes central, fronta úkolů, token na jméno zadavatele | ano | ne, úkol se spustí přímo na tomto stroji |
+| Asana adaptér | ano | ne |
+| Rutiny, agent nadhledu, generování skills | ano, plánovač na centralu | ne; rutinu jde spustit ručně jako úkol |
+| Tým, práva, sdílené hosty | ano | ne |
+| Drive sync | ano | ne |
+
+Dnešní dvojice engine / engine-central, router / agent-router, transport / agent-transport jsou to, čemu se nová práce vyhýbá; další pár nesmí vzniknout. Runner a chat se staví v sidecaru tak, aby v central módu byl sidecar host a central držel záznam relace, a v lokálním módu obojí dělal jeden proces.
+
 ## Proč agent-native matters
 
 Většina aplikací dnes přidává agenta jako "AI feature" — sidebar chat, autocomplete tlačítko. Portuni navrhuje opačné mapování: **agent je primary, UI je vizualizace toho, co agent + uživatel dělají společně**.
