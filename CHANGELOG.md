@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.14.0](https://github.com/honzapav/portuni/compare/v0.13.10...v0.14.0) (2026-09-12)
+
+
+### Features
+
+* **sync:** one collaboration mode — local-only remotes, retire Drive OAuth, local engine as file tracker ([#316](https://github.com/honzapav/portuni/issues/316)) ([d0049b7](https://github.com/honzapav/portuni/commit/d0049b77f3767754b94676cfe6354d440a6c9409))
+
+
+### Bug Fixes
+
+* **schema:** create idx_sessions_terminal after migrations, not in the DDL replay ([3d9144a](https://github.com/honzapav/portuni/commit/3d9144a9d896937062960df837b3f4fea6c8b3a7))
+* **schema:** create idx_sessions_terminal after migrations, not in the DDL replay ([48a989c](https://github.com/honzapav/portuni/commit/48a989cae200af2e6871fa379fd79bf649a08832))
+* **schema:** rebuild sessions in one script, not statement by statement ([64f6d97](https://github.com/honzapav/portuni/commit/64f6d971e4b13dd2939d013d859bb1e8ed8702f5))
+* **schema:** rebuild sessions in one script, not statement by statement ([ceaf6a7](https://github.com/honzapav/portuni/commit/ceaf6a783109a45ab4b6605d5ac7b9738220b46f))
+* **sync:** stop the session projection relinking itself in a loop ([#327](https://github.com/honzapav/portuni/issues/327)) ([aea3408](https://github.com/honzapav/portuni/commit/aea3408e6e097622fd4f883facb3d799e4b8be3d))
+* **web:** let a run start when only remote_missing files are left ([e70342d](https://github.com/honzapav/portuni/commit/e70342def810e02250d8e40f1f49f36f3b876cee))
+* **web:** let a run start when only remote_missing files are left ([7723714](https://github.com/honzapav/portuni/commit/77237141655638e1c06471cb039de8f6a80fdba3))
+* **web:** stop the sync outcome line from freezing live counts ([a84983d](https://github.com/honzapav/portuni/commit/a84983d9a2ffa0d332d2fada3db7e116211a0fd2))
+* **web:** stop the sync outcome line from freezing live counts ([a641647](https://github.com/honzapav/portuni/commit/a641647968558c35642b75ff19f03066e90040c9))
+
 ## [0.13.10](https://github.com/honzapav/portuni/compare/v0.13.9...v0.13.10) (2026-09-11)
 
 
