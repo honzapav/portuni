@@ -125,3 +125,57 @@ export interface DeltaFrame {
   run_id: string;
   text: string;
 }
+
+// --- Runner interface (spec: "Runner interface") -------------------------
+// The contract every adapter (adapters/claude.ts, adapters/fake.ts, and
+// later Codex/OpenCode) implements, and the shape session-runtime.ts drives
+// them through. Deliberately free of any SDK type -- an adapter translates
+// its own provider's shapes into this one, not the other way around.
+
+// "default" enforces the write tiers and asks before an mcp__portuni__
+// portuni_expand_scope call (permissions.ts); "auto" allows scope expansion
+// without asking -- everything else (write tiers, AskUserQuestion,
+// ExitPlanMode) is unaffected by the policy.
+export type PermissionPolicy = "default" | "auto";
+
+export interface RunnerAvailability {
+  installed: boolean;
+  version: string | null;
+  logged_in: boolean;
+  instances_supported: boolean;
+}
+
+export interface RunStart {
+  sessionId: string;
+  runId: string;
+  cwd: string;
+  // First user message on a fresh run; null on a resume (the conversation
+  // already has the context).
+  brief: string | null;
+  resume: null | { agentSessionId: string; at?: string };
+  // Appended to the runner's own system prompt.
+  orientation: string;
+  instance: { id: string | null; env: Record<string, string> };
+  mcp: { url: string; token: string; homeNodeId: string };
+  policy: PermissionPolicy;
+}
+
+export interface RunHandle {
+  // Next user message (queued mid-turn if the runner is still working).
+  send(text: string): Promise<void>;
+  answer(requestId: string, decision: QuestionDecision): Promise<void>;
+  interrupt(): Promise<void>;
+  // Graceful end of the run's process.
+  close(): Promise<void>;
+  agentSessionId(): string | null;
+}
+
+export type EventSink = (event: CanonicalEvent | DeltaFrame) => void;
+
+export interface RunnerAdapter {
+  // e.g. "claude", "fake" -- string rather than a literal union so the
+  // registry (a later issue) can hold a heterogeneous set of adapters.
+  id: string;
+  detect(): Promise<RunnerAvailability>;
+  start(run: RunStart, sink: EventSink): Promise<RunHandle>;
+}
