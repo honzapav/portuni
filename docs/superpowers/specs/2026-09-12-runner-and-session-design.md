@@ -30,8 +30,10 @@ In:
   injection into shells, agent-command presets, terminal close guard.
 
 Out (later plans): host reachable through central and the task queue
-(step 2), Codex and OpenCode adapters (step 2), Asana (step 3), routines
-and skills (step 4). Central-mode teammates keep using hand-opened CLIs in
+(step 2, `2026-09-12-remote-hosts-and-task-queue-design.md`), Codex and
+OpenCode adapters (step 2, `2026-09-12-codex-and-opencode-adapters-design.md`),
+Asana (step 3, `2026-09-12-asana-task-surface-design.md`), routines and
+skills (step 4, `2026-09-12-routines-and-skills-design.md`). Central-mode teammates keep using hand-opened CLIs in
 mirrors until step 2; the materialized per-mirror configs stay for that.
 
 ## Rules
@@ -128,18 +130,40 @@ event list.
 
 ### Live channel
 
-`GET /sessions/:id/stream?after=<seq>` (SSE, on the sidecar): replays
-persisted events after `seq`, then streams new events and `delta` frames
-(`{ run_id, text }` for the assistant message in progress, not persisted).
-`GET /sessions/stream` (SSE) carries `state_changed` and `question` events
-for every session the caller can see, for the Relace tab, Práce sidebar and
-Přehled without polling.
+One WebSocket per window, `GET /sessions/ws` (upgrade, same bearer as
+REST), carries everything live in both directions; REST stays for
+reads and for mutations that are not part of a conversation. T3 Code
+runs its whole client on a long-lived WebSocket RPC for the same reason
+(verified 2026-09-12 in `pingdotgg/t3code`, `apps/server/src/server.ts`):
+one connection with explicit reconnect semantics instead of an SSE stream
+plus separate POSTs, and the same channel a relay can carry to a mobile
+client later.
 
-The webview does not open HTTP itself (security rule 3): Rust commands
-`session_subscribe(session_id)` / `session_unsubscribe` hold the SSE
-connection to the sidecar and re-emit frames to the calling window as
-`session-event` (same per-window shape as `backend-ready`). The Vite dev
-build connects directly, like `api.ts` does for REST.
+Frames are JSON `{ id?, type, payload }`; `id` present on requests that
+expect a `{ id, type: "reply", payload }`.
+
+| direction | type | payload |
+|---|---|---|
+| client → server | `subscribe` | `{ session_id, after: seq }` — replays persisted events after `seq`, then streams |
+| client → server | `unsubscribe` | `{ session_id }` |
+| client → server | `message` | `{ session_id, text }` |
+| client → server | `answer` | `{ session_id, request_id, decision }` |
+| client → server | `interrupt` \| `suspend` \| `close` | `{ session_id }` |
+| server → client | `event` | `{ session_id, event: CanonicalEvent }` (persisted, with `seq`) |
+| server → client | `delta` | `{ session_id, run_id, text }` (not persisted) |
+| server → client | `session_state` | `{ session_id, state, waiting_since, node_id }` for every session the caller can see, always on, no subscription needed — the Relace tab, Práce sidebar and Přehled read this |
+
+Reconnect: the client reconnects with backoff (1 s → 30 s) and
+re-subscribes with the last `seq` it saw per session; nothing is lost
+because events are the record (rule 3) and deltas are disposable. The
+`POST /sessions/:id/messages` … `/close` REST routes stay as the
+equivalent for scripts and tests; the window uses the socket.
+
+The webview does not open the socket itself (security rule 3): the Rust
+command `sessions_connect()` holds it per window and bridges frames to
+`session-event` window events and back through `sessions_send(frame)`.
+The Vite dev build opens the WebSocket directly, like `api.ts` does for
+REST.
 
 ## Runtime
 
@@ -151,7 +175,7 @@ build connects directly, like `api.ts` does for REST.
   (create session → provision → start run), `sendMessage`, `answer`,
   `interrupt`, `suspend`, `resume`, `closeSession`. Holds the map of live
   runs per session. Applies `waiting_since` and `state_changed`. Fans out
-  to SSE subscribers.
+  to socket subscribers.
 - `provision.ts`: what the spawn path does today minus the terminal:
   ensure the mirror exists (`createNodeMirror`), build the orientation
   (`buildOrientationHint`, plus the handoff pointer on resume), resolve the
@@ -274,8 +298,12 @@ the agent router with the runtime; the record half goes to central through
 - `POST /sessions/:id/messages` `{ text }`; `POST /sessions/:id/questions/:request_id`
   `{ decision }`; `POST /sessions/:id/interrupt`; `POST /sessions/:id/suspend`;
   `POST /sessions/:id/resume { mode }`; `POST /sessions/:id/close`.
-- `GET /sessions/:id/events?after&limit`, `GET /sessions/:id/stream`,
-  `GET /sessions/stream`.
+  Who may call what: the access table in
+  `2026-09-12-remote-hosts-and-task-queue-design.md` (Visibility and
+  control) — events readable by anyone who sees the node, messages
+  owner-only, stop actions also for the host owner and `manage`.
+- `GET /sessions/:id/events?after&limit`, `GET /sessions/ws` (the live
+  channel).
 - `GET /runners` (adapters + availability), `GET|POST|PATCH|DELETE
   /runners/instances`.
 
@@ -319,11 +347,11 @@ Removed: `POST /terminals/:id/exit`, `GET /sandbox-profile`,
   `lib/session-suspend.ts`, `lib/prompt.ts`, `AGENT_PRESETS`,
   `TERMINAL_PRESETS`, `ProfilesSection.tsx`, `lib/profiles.ts`, the
   terminal close guard in `App.tsx`, `AnsiPalette`, `StatusFooter`'s PTY
-  count (becomes running-session count from `/sessions/stream`).
+  count (becomes running-session count from `session_state` frames).
 
 ## Desktop (Rust)
 
-- Add `session_subscribe` / `session_unsubscribe` (SSE bridge to the
+- Add `sessions_connect` / `sessions_send` (WebSocket bridge to the
   window), nothing else new.
 - Remove `pty.rs` (keep `ensure_device_token`, moved to `auth.rs`, label
   renamed to "Sync agent"), `PtyState`, `pty_*` commands, `launch_claude_for_node`,
@@ -362,7 +390,7 @@ the existing auto-archive sweep; the handoff file stays.
 - Runtime with the fake adapter: start → events persisted with monotonic
   `seq`; question sets and clears `waiting_since`; interrupt; suspend with
   and without an agent handoff; resume both modes; boot sweep on a stale
-  pid; SSE replay from `after`.
+  pid; socket replay from `after` and re-subscribe after a drop.
 - Claude adapter against an injected fake `query` (the SDK function is a
   constructor parameter): message translation for every kind, deltas,
   `canUseTool` → question round trip, `close()` sequence, env composition
@@ -381,11 +409,12 @@ the existing auto-archive sweep; the handoff file stays.
 
 1. **Server**: types, runtime, permissions, fake adapter, instances store,
    storage (migration 035, `DbSessionStore`, `CentralSessionStore`), API,
-   SSE. Ships without UI; verifiable through REST and tests.
+   the WebSocket channel. Ships without UI; verifiable through REST, a
+   socket client in tests.
 2. **Claude adapter**: the real adapter behind the same tests, `GET /runners`
    detection, pid sweep.
 3. **Web + Rust bridge**: `SessionChat`, new task, Relace, sidebar,
-   Přehled, Nastavení › Runnery, `session_subscribe`. The terminal is still
+   Přehled, Nastavení › Runnery, `sessions_connect`. The terminal is still
    present in this phase behind the old button so both can be compared on
    a real node.
 4. **Removal**: everything under Web/Desktop/Server removals, `CLAUDE.md`
