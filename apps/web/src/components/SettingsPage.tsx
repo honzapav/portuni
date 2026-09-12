@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Check } from "lucide-react";
 import {
-  AGENT_PRESETS,
-  DEFAULT_AGENT_COMMAND,
   TERMINAL_PRESETS,
   DEFAULT_TERMINAL_LAUNCH,
   loadShowtimeEnabled,
@@ -14,7 +12,7 @@ import SettingsUsersPanel from "./SettingsPage.users";
 import SettingsAccessRequestsPanel from "./AccessRequests";
 import AccountSection from "./AccountSection";
 import WorkspacesSection from "./WorkspacesSection";
-import ProfilesSection from "./ProfilesSection";
+import RunnersSection from "./RunnersSection";
 import SyncSection from "./SyncSection";
 import UpdateSection from "./UpdateSection";
 import { fetchAccessRequestCount, fetchMe } from "../api";
@@ -23,8 +21,6 @@ import { showtimeInstalled } from "../lib/showtime";
 import type { AppUpdate } from "../lib/updater";
 
 type Props = {
-  agentCommand: string;
-  onAgentCommandChange: (value: string) => void;
   terminalLaunch: string;
   onTerminalLaunchChange: (value: string) => void;
   appUpdate: AppUpdate;
@@ -35,14 +31,12 @@ type SubTab =
   | "actors"
   | "account"
   | "workspaces"
-  | "profiles"
+  | "runners"
   | "sync"
   | "users"
   | "access-requests";
 
 export default function SettingsPage({
-  agentCommand,
-  onAgentCommandChange,
   terminalLaunch,
   onTerminalLaunchChange,
   appUpdate,
@@ -53,7 +47,7 @@ export default function SettingsPage({
     if (t === "actors") return "actors";
     if (t === "account") return "account";
     if (t === "workspaces") return "workspaces";
-    if (t === "profiles") return "profiles";
+    if (t === "runners" || t === "profiles") return "runners";
     if (t === "sync") return "sync";
     if (t === "users") return "users";
     if (t === "access-requests") return "access-requests";
@@ -113,20 +107,6 @@ export default function SettingsPage({
 
   const isGeneralTab = tab === "general";
 
-  const [draft, setDraft] = useState(agentCommand);
-
-  useEffect(() => {
-    setDraft(agentCommand);
-  }, [agentCommand]);
-
-  const commit = (value: string) => {
-    const next = value.trim() || DEFAULT_AGENT_COMMAND;
-    setDraft(next);
-    onAgentCommandChange(next);
-  };
-
-  const matchingPreset = AGENT_PRESETS.find((p) => p.command === draft);
-
   const [termDraft, setTermDraft] = useState(terminalLaunch);
   const [showtimeEnabled, setShowtimeEnabled] = useState(loadShowtimeEnabled);
   // null while the desktop is still answering; false in the browser.
@@ -156,10 +136,6 @@ export default function SettingsPage({
   };
 
   const matchingTerminal = TERMINAL_PRESETS.find((p) => p.template === termDraft);
-
-  const previewPath = "/Users/ty/workspaces/portuni/tvuj-projekt";
-  const invocation = (draft.trim() || DEFAULT_AGENT_COMMAND).replace(/\s*\{prompt\}\s*/g, " ").trim();
-  const preview = `cd '${previewPath}' && ${invocation}`;
 
   return (
     <div className="scroll-thin h-full w-full overflow-y-auto bg-[var(--color-bg)]">
@@ -215,14 +191,14 @@ export default function SettingsPage({
               Workspaces
             </button>
             <button
-              onClick={() => setTab("profiles")}
+              onClick={() => setTab("runners")}
               className={`rounded px-3 py-1 text-[13px] transition-colors ${
-                tab === "profiles"
+                tab === "runners"
                   ? "bg-[var(--color-bg)] text-[var(--color-text)]"
                   : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
               }`}
             >
-              Profily
+              Runnery
             </button>
             <button
               onClick={() => setTab("sync")}
@@ -272,7 +248,7 @@ export default function SettingsPage({
 
         {tab === "workspaces" && <WorkspacesSection />}
 
-        {tab === "profiles" && <ProfilesSection />}
+        {tab === "runners" && <RunnersSection />}
 
         {tab === "sync" && <SyncSection />}
 
@@ -293,81 +269,6 @@ export default function SettingsPage({
             <UpdateSection appUpdate={appUpdate} />
 
             <McpServerSection />
-
-            <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
-              <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-                Příkaz agenta
-              </div>
-              <p className="mb-3 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-                Když otevřeš terminál z uzlu, Portuni ho prefixuje přechodem{" "}
-                <code className="font-mono">cd</code> do lokální složky uzlu a
-                spustí tenhle příkaz beze změny — terminál se otevře prázdný a
-                připravený, žádný úvodní prompt se neposílá. Kontext uzlu
-                (souhrn, odpovědnosti, nedávné události, ukazatel na handoff)
-                najde agent sám v{" "}
-                <code className="font-mono text-[var(--color-accent)]">
-                  PORTUNI_SCOPE.md
-                </code>{" "}
-                v pracovní složce.
-              </p>
-
-              <div className="mb-4 space-y-1.5">
-                <div className="text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
-                  Předvolby
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {AGENT_PRESETS.map((p) => {
-                    const active = matchingPreset?.id === p.id;
-                    return (
-                      <button
-                        key={p.id}
-                        onClick={() => commit(p.command)}
-                        title={p.hint}
-                        className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[13.5px] transition-colors ${
-                          active
-                            ? "border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 text-[var(--color-accent)]"
-                            : "border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text-muted)] hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
-                        }`}
-                      >
-                        {active && <Check size={11} />}
-                        {p.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <label className="mb-1 block text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
-                Šablona příkazu
-              </label>
-              <input
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onBlur={(e) => commit(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    commit((e.target as HTMLInputElement).value);
-                  }
-                }}
-                spellCheck={false}
-                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[14px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)]"
-                placeholder={DEFAULT_AGENT_COMMAND}
-              />
-
-              <div className="mt-4">
-                <div className="mb-1 flex items-center justify-between">
-                  <div className="text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
-                    Náhled
-                  </div>
-                  <div className="text-[12px] text-[var(--color-text-dim)]">
-                    Vzorová cesta – skutečná cesta vznikne z vybraného uzlu.
-                  </div>
-                </div>
-                <pre className="scroll-thin max-h-[360px] overflow-auto whitespace-pre-wrap break-words rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2.5 font-mono text-[12.5px] leading-relaxed text-[var(--color-text-muted)]">
-                  {preview}
-                </pre>
-              </div>
-            </section>
 
             <section className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
               <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">

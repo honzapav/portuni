@@ -313,7 +313,10 @@ async function throwForStatus(res: Response, label: string): Promise<void> {
   throw new Error(`${label}: ${res.status} ${text}`);
 }
 
-async function jsonRequest<T>(
+// Exported for lib/runners.ts, which needs the same REST-over-api_request
+// plumbing but lives outside this file (a Tauri-invoke-only lib module
+// otherwise, per the runners.ts/profiles.ts split).
+export async function jsonRequest<T>(
   method: string,
   path: string,
   body?: unknown,
