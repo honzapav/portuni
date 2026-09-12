@@ -8,6 +8,7 @@ import { startHttpServer } from "./http/server.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
 import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
 import { sweepStaleRunningSessionsOnBoot } from "./boot/session-sweep.js";
+import { warnIfLocalWorkspaceHasStaleRemotesOnBoot } from "./boot/local-mode-remote-warning.js";
 
 async function main() {
   await ensureSchema();
@@ -19,6 +20,7 @@ async function main() {
   if (watcher) process.on("SIGINT", () => watcher.stop());
   void sweepStaleSessionProjectionsOnBoot();
   void sweepStaleRunningSessionsOnBoot();
+  void warnIfLocalWorkspaceHasStaleRemotesOnBoot();
 }
 
 main().catch((err) => {

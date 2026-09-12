@@ -26,6 +26,7 @@ import { createAgentRouter } from "./api/agent-router.js";
 import { createAgentMcpTransport } from "./mcp/agent-transport.js";
 import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
 import { sweepStaleRunningSessionsOnBoot } from "./boot/session-sweep.js";
+import { warnIfLocalWorkspaceHasStaleRemotesOnBoot } from "./boot/local-mode-remote-warning.js";
 import {
   backoffMsFor,
   initialBackoff,
@@ -334,6 +335,7 @@ async function main(): Promise<void> {
 
   void sweepStaleSessionProjectionsOnBoot();
   void sweepStaleRunningSessionsOnBoot();
+  void warnIfLocalWorkspaceHasStaleRemotesOnBoot();
 
   // Refresh every registered mirror's harness configs so any .mcp.json
   // pointing at an older random port / rotated token picks up the

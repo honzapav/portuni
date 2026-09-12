@@ -24,6 +24,9 @@ import {
   renameFileRemote,
   deleteFileRemote,
 } from "../apps/server/domain/sync/file-content-remote.js";
+import { useRemoteCapableEnv } from "./helpers/remote-capable-env.js";
+
+useRemoteCapableEnv();
 
 let shared: SharedDb;
 let workspace: string;

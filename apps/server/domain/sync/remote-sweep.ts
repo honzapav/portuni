@@ -16,6 +16,7 @@ import { adoptFiles } from "./engine-mutations.js";
 import { sha256Buffer } from "./hash.js";
 import { mapWithConcurrency } from "./engine.js";
 import type { FileRef } from "./types.js";
+import { assertRemoteCapable } from "./types.js";
 import { retryPendingFileOps, type RetryResult } from "./pending-ops.js";
 
 // Bounded fan-out for the per-file remote calls a sweep still has to make:
@@ -56,6 +57,9 @@ function adoptableSection(nodeRoot: string, remotePath: string): "wip" | "output
 }
 
 export async function remoteSweep(db: Client, a: RemoteSweepArgs): Promise<RemoteSweepResult> {
+  // Nothing to sweep on a local workspace, and a leftover pending op there
+  // must not be retried against a backend it can no longer reach.
+  assertRemoteCapable();
   const out: RemoteSweepResult = {
     adopted: [],
     deleted_on_remote: [],
@@ -208,10 +212,8 @@ export async function remoteSweep(db: Client, a: RemoteSweepArgs): Promise<Remot
   // backend is left alone -- with no free staleness signal, refreshing it
   // would mean downloading and hashing every tracked file's full content
   // on every sync run. That is the same structural limit local mode's own
-  // slow scan already has for such backends (cachedRemoteStat's hash stays
-  // null there too, so it defers to the local/last-synced comparison
-  // instead of ever proving the remote changed) -- not a new gap this fix
-  // introduces.
+  // slow scan had for such backends before the local engine lost its remote
+  // half (#312) -- not a new gap this fix introduces.
   const hashCandidates = rows.rows.filter((r) => {
     if (Number(r.is_native_format) === 1) return false;
     const ref = present.get((r.remote_path as string).normalize("NFC"));

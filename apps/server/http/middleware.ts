@@ -5,7 +5,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { ZodType } from "zod";
-import { checkAuthRequiredForConfig } from "../infra/server-config.js";
+import { authMode, checkAuthRequiredForConfig } from "../infra/server-config.js";
+import { LocalModeNoRemoteError } from "../domain/sync/types.js";
 import { getDb } from "../infra/db.js";
 import { SOLO_USER } from "../infra/schema.js";
 import { EnvAdapter } from "../auth/env-adapter.js";
@@ -92,7 +93,7 @@ let identityCtxCache: IdentityContext | null = null;
 
 export function getIdentityContext(): IdentityContext {
   if (identityCtxCache) return identityCtxCache;
-  const mode = (process.env.PORTUNI_AUTH_MODE ?? "env") === "google" ? "google" : "env";
+  const mode = authMode();
   const ctx: IdentityContext = {
     db: getDb(),
     mode,
@@ -259,6 +260,11 @@ export function respondError(res: ServerResponse, ctx: string, err: unknown): vo
   if (err instanceof Error && err.name === "ZodError") {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: err.message, request_id: id }));
+    return;
+  }
+  if (err instanceof LocalModeNoRemoteError) {
+    res.writeHead(409, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: err.message, code: err.code, request_id: id }));
     return;
   }
   if (err instanceof Error && err.message.includes("SQLITE_CONSTRAINT")) {

@@ -13,6 +13,8 @@ import { mkdir, rename as fsRename } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Client, InStatement } from "@libsql/client";
 import type { FileRef } from "./types.js";
+import { assertRemoteCapable } from "./types.js";
+import { isLocalWorkspace } from "../../infra/server-config.js";
 import { ulid } from "ulid";
 import { getAdapter } from "./adapter-cache.js";
 import { resolveRemote } from "./routing.js";
@@ -61,9 +63,10 @@ export interface MoveFilePreview {
   preview: {
     file_id: string;
     filename: string;
-    old_remote_name: string;
+    // null on a local workspace, which has no remote (#310).
+    old_remote_name: string | null;
     old_remote_path: string;
-    new_remote_name: string;
+    new_remote_name: string | null;
     new_remote_path: string;
     old_local_path: string | null;
     new_local_path: string | null;
@@ -75,7 +78,7 @@ export interface MoveFilePreview {
 
 export interface MoveFileSuccess extends OpResult {
   file_id: string;
-  new_remote_name: string;
+  new_remote_name: string | null;
   new_remote_path: string;
   new_local_path: string | null;
   moved_at: string;
@@ -108,14 +111,20 @@ export async function moveFile(
   });
   if (row.rows.length === 0) throw new Error(`File ${a.fileId} not found`);
   const fr = row.rows[0];
-  const oldRemoteName = fr.remote_name as string | null;
+  // A local workspace has no remote (#310): whatever remote_name a legacy
+  // row still carries is ignored, the move is the local copy plus the row,
+  // and the row comes out with remote_name cleared.
+  const localOnly = isLocalWorkspace();
+  const oldRemoteName = localOnly ? null : (fr.remote_name as string | null);
   const oldRemotePath = fr.remote_path as string | null;
-  if (!oldRemoteName || !oldRemotePath) throw new Error(`File ${a.fileId} has no remote binding`);
+  if (!oldRemotePath || (!localOnly && !oldRemoteName)) {
+    throw new Error(`File ${a.fileId} has no remote binding`);
+  }
 
   const targetNodeId = a.newNodeId ?? (fr.node_id as string);
   const newInfo = await resolveNodeInfo(db, targetNodeId);
   const newRemoteName = await resolveRemote(db, newInfo.nodeType, newInfo.orgSyncKey);
-  if (!newRemoteName) throw new Error(`No remote for target node`);
+  if (!localOnly && !newRemoteName) throw new Error(`No remote for target node`);
   const filename = (a.newFilename ?? (fr.filename as string)).normalize("NFC");
   const newRemotePath = buildRemotePath({
     ...newInfo,
@@ -212,6 +221,8 @@ export async function moveFile(
     });
   }
 
+  if (localOnly) return moveFileLocalOnly();
+
   // Record the intent before the first side effect (Task 6): if the remote
   // step below throws, the op stays pending and the next sync run's retry
   // finishes it idempotently instead of leaving a silent half-move.
@@ -221,9 +232,9 @@ export async function moveFile(
     fileId: a.fileId,
     payload: {
       op: "move",
-      from_remote_name: oldRemoteName,
+      from_remote_name: oldRemoteName!,
       from_remote_path: oldRemotePath,
-      to_remote_name: newRemoteName,
+      to_remote_name: newRemoteName!,
       to_remote_path: newRemotePath,
       to_node_id: targetNodeId,
       filename,
@@ -249,9 +260,9 @@ export async function moveFile(
     const outcome = await relocateRemoteObject(
       db,
       {
-        fromRemoteName: oldRemoteName,
+        fromRemoteName: oldRemoteName!,
         fromRemotePath: oldRemotePath,
-        toRemoteName: newRemoteName,
+        toRemoteName: newRemoteName!,
         toRemotePath: newRemotePath,
       },
       (phase) => {
@@ -374,6 +385,41 @@ export async function moveFile(
     moved_at: now,
     detail: { remote_done: true, local_done: localDone, already_at_target: alreadyAtTarget },
   };
+
+  // The local-workspace move: no remote object, no pending op (the retry
+  // queue only ever runs from a sync run, which a local workspace refuses).
+  // A failed local rename is a plain error here -- nothing else has changed
+  // yet, so there is no half-state to report as repair_needed.
+  async function moveFileLocalOnly(): Promise<MoveFileSuccess> {
+    let localDone = false;
+    if (oldLocalPath && newLocalPath && oldLocalPath !== newLocalPath) {
+      try {
+        await mkdir(dirname(newLocalPath), { recursive: true });
+        await fsRename(oldLocalPath, newLocalPath);
+        localDone = true;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      }
+    }
+    const now = new Date().toISOString();
+    await writeRelocatedRecord(db, {
+      fileId: a.fileId,
+      nodeId: targetNodeId,
+      newRemotePath,
+      updateSql: `UPDATE files SET remote_name = NULL, remote_path = ?, node_id = ?, filename = ?, updated_at = ? WHERE id = ?`,
+      updateArgs: [newRemotePath, targetNodeId, filename, now],
+    });
+    await writeMoveTombstone(now);
+    return {
+      status: "ok",
+      file_id: a.fileId,
+      new_remote_name: null,
+      new_remote_path: newRemotePath,
+      new_local_path: newLocalPath,
+      moved_at: now,
+      detail: { remote_done: false, local_done: localDone, already_at_target: false },
+    };
+  }
 }
 
 // --- renameFolder ---
@@ -448,13 +494,16 @@ export async function renameFolder(
     sql: "SELECT id, filename, remote_name, remote_path FROM files WHERE node_id = ? AND remote_path LIKE ? ESCAPE '\\' ORDER BY remote_path",
     args: [a.nodeId, `${likePrefix}/%`],
   });
+  // A local workspace renames the local copies and the rows only (#310);
+  // a legacy row's remote_name is ignored, never dialled.
+  const localOnly = isLocalWorkspace();
   const affected = rows.rows.map((r) => {
     const oldRemote = r.remote_path as string;
     const newRemote = `${newAbs}${oldRemote.slice(oldAbs.length)}`;
     return {
       file_id: r.id as string,
       filename: r.filename as string,
-      remote_name: r.remote_name as string,
+      remote_name: localOnly ? null : (r.remote_name as string | null),
       old_remote_path: oldRemote,
       new_remote_path: newRemote,
       old_local_path: mirrorRoot
@@ -532,30 +581,44 @@ export async function renameFolder(
   }
 
   for (const f of toProcess) {
-    const pendingOpId = await enqueuePendingOp(db, {
-      userId: a.userId,
-      nodeId: a.nodeId,
-      fileId: f.file_id,
-      payload: {
-        op: "move",
-        from_remote_name: f.remote_name,
-        from_remote_path: f.old_remote_path,
-        to_remote_name: f.remote_name,
-        to_remote_path: f.new_remote_path,
-        to_node_id: a.nodeId,
-        filename: f.filename,
-      },
-    });
+    if (f.remote_name === null && !localOnly) {
+      results.push({
+        file_id: f.file_id,
+        status: "repair_needed",
+        old_remote_path: f.old_remote_path,
+        new_remote_path: f.new_remote_path,
+        error: `File ${f.file_id} has no remote binding`,
+      });
+      continue;
+    }
+    const pendingOpId = localOnly
+      ? null
+      : await enqueuePendingOp(db, {
+          userId: a.userId,
+          nodeId: a.nodeId,
+          fileId: f.file_id,
+          payload: {
+            op: "move",
+            from_remote_name: f.remote_name!,
+            from_remote_path: f.old_remote_path,
+            to_remote_name: f.remote_name!,
+            to_remote_path: f.new_remote_path,
+            to_node_id: a.nodeId,
+            filename: f.filename,
+          },
+        });
     try {
       // Stat both sides first: an object already at new_remote_path (a
       // previous call that timed out client-side but landed server-side)
       // is done, not a failure to retry.
-      const outcome = await relocateRemoteObject(db, {
-        fromRemoteName: f.remote_name,
-        fromRemotePath: f.old_remote_path,
-        toRemoteName: f.remote_name,
-        toRemotePath: f.new_remote_path,
-      });
+      const outcome = localOnly
+        ? { status: "moved" as const }
+        : await relocateRemoteObject(db, {
+            fromRemoteName: f.remote_name!,
+            fromRemotePath: f.old_remote_path,
+            toRemoteName: f.remote_name!,
+            toRemotePath: f.new_remote_path,
+          });
       const alreadyAtTarget = outcome.status === "already_at_target";
       if (f.old_local_path && f.new_local_path) {
         try {
@@ -571,7 +634,7 @@ export async function renameFolder(
               updateArgs: [f.new_remote_path, now],
             });
             await writeRenameTombstone(f);
-            await completePendingOp(db, pendingOpId);
+            if (pendingOpId) await completePendingOp(db, pendingOpId);
             results.push({
               file_id: f.file_id,
               status: "repair_needed",
@@ -592,7 +655,7 @@ export async function renameFolder(
         updateArgs: [f.new_remote_path, now],
       });
       await writeRenameTombstone(f);
-      await completePendingOp(db, pendingOpId);
+      if (pendingOpId) await completePendingOp(db, pendingOpId);
       results.push({
         file_id: f.file_id,
         status: "ok",
@@ -601,13 +664,13 @@ export async function renameFolder(
         already_at_target: alreadyAtTarget,
       });
     } catch (e) {
-      await failPendingOp(db, pendingOpId, (e as Error).message);
+      if (pendingOpId) await failPendingOp(db, pendingOpId, (e as Error).message);
       results.push({
         file_id: f.file_id,
         status: "repair_needed",
         old_remote_path: f.old_remote_path,
         new_remote_path: f.new_remote_path,
-        error: `remote: ${(e as Error).message}`,
+        error: `${localOnly ? "local" : "remote"}: ${(e as Error).message}`,
       });
     }
   }
@@ -669,6 +732,7 @@ export async function adoptFiles(
   db: Client,
   a: AdoptFilesArgs,
 ): Promise<AdoptFilesResult> {
+  assertRemoteCapable();
   const info = await resolveNodeInfo(db, a.nodeId);
   const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
   if (!remoteName) throw new Error(`No remote for node ${a.nodeId}`);
@@ -818,7 +882,9 @@ export async function deleteFile(
   const f = r.rows[0];
   const mode = a.mode ?? "complete";
   const nodeId = f.node_id as string;
-  const remoteName = f.remote_name as string | null;
+  // A local workspace has no remote (#310): a legacy row's remote_name is
+  // ignored and the delete is the local copy plus the row.
+  const remoteName = isLocalWorkspace() ? null : (f.remote_name as string | null);
   const remotePath = f.remote_path as string | null;
   const filename = f.filename as string;
   // Identity of the object being deleted, so a retry of a half-finished
@@ -1014,9 +1080,13 @@ export async function renameFile(
   const f = r.rows[0];
   const nodeId = f.node_id as string;
   const oldFilename = f.filename as string;
-  const remoteName = f.remote_name as string | null;
+  // A local workspace renames the local copy and the row only (#310).
+  const localOnly = isLocalWorkspace();
+  const remoteName = localOnly ? null : (f.remote_name as string | null);
   const oldRemotePath = f.remote_path as string | null;
-  if (!remoteName || !oldRemotePath) throw new Error(`File ${a.fileId} has no remote binding`);
+  if (!oldRemotePath || (!localOnly && !remoteName)) {
+    throw new Error(`File ${a.fileId} has no remote binding`);
+  }
   if (!oldRemotePath.endsWith("/" + oldFilename) && oldRemotePath !== oldFilename) {
     throw new Error(`Remote path ${oldRemotePath} does not end with /${oldFilename}`);
   }
@@ -1036,20 +1106,22 @@ export async function renameFile(
     }
   }
 
-  const pendingOpId = await enqueuePendingOp(db, {
-    userId: a.userId,
-    nodeId,
-    fileId: a.fileId,
-    payload: {
-      op: "move",
-      from_remote_name: remoteName,
-      from_remote_path: oldRemotePath,
-      to_remote_name: remoteName,
-      to_remote_path: newRemotePath,
-      to_node_id: nodeId,
-      filename: fn,
-    },
-  });
+  const pendingOpId = localOnly
+    ? null
+    : await enqueuePendingOp(db, {
+        userId: a.userId,
+        nodeId,
+        fileId: a.fileId,
+        payload: {
+          op: "move",
+          from_remote_name: remoteName!,
+          from_remote_path: oldRemotePath,
+          to_remote_name: remoteName!,
+          to_remote_path: newRemotePath,
+          to_node_id: nodeId,
+          filename: fn,
+        },
+      });
   // Stat both sides before renaming (#278 finding 5): the plain adapter.rename
   // that used to run here had no destination-safety check at all -- an
   // untracked object already sitting at newRemotePath (e.g. not yet adopted)
@@ -1059,16 +1131,18 @@ export async function renameFile(
   // (destination present, source gone) as already_at_target instead of
   // failing on a source that no longer exists -- the same guard moveFile got
   // in #271 and the retry queue's runMove already had.
-  try {
-    await relocateRemoteObject(db, {
-      fromRemoteName: remoteName,
-      fromRemotePath: oldRemotePath,
-      toRemoteName: remoteName,
-      toRemotePath: newRemotePath,
-    });
-  } catch (e) {
-    await failPendingOp(db, pendingOpId, (e as Error).message);
-    throw e;
+  if (pendingOpId) {
+    try {
+      await relocateRemoteObject(db, {
+        fromRemoteName: remoteName!,
+        fromRemotePath: oldRemotePath,
+        toRemoteName: remoteName!,
+        toRemotePath: newRemotePath,
+      });
+    } catch (e) {
+      await failPendingOp(db, pendingOpId, (e as Error).message);
+      throw e;
+    }
   }
 
   // From here on the remote object lives at the new path. A local failure
@@ -1117,7 +1191,7 @@ export async function renameFile(
       now,
     ],
   });
-  await completePendingOp(db, pendingOpId);
+  if (pendingOpId) await completePendingOp(db, pendingOpId);
 
   return {
     file_id: a.fileId,

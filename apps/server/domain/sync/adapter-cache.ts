@@ -1,5 +1,6 @@
 import type { Client } from "@libsql/client";
 import type { FileAdapter } from "./types.js";
+import { assertRemoteCapable } from "./types.js";
 import { getRemote } from "./routing.js";
 import { createOpenDALAdapter } from "./opendal-adapter.js";
 import { createDriveAdapter } from "./drive-adapter.js";
@@ -7,7 +8,10 @@ import { readDeviceTokens } from "./device-tokens.js";
 
 const cache = new Map<string, FileAdapter>();
 
+// Backstop for the routing guard: a local workspace never reaches a backend,
+// whatever remote_name a legacy row still carries.
 export async function getAdapter(db: Client, remoteName: string): Promise<FileAdapter> {
+  assertRemoteCapable();
   const hit = cache.get(remoteName);
   if (hit) return hit;
   const remote = await getRemote(db, remoteName);
