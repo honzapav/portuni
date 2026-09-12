@@ -44,3 +44,19 @@ export function checkAuthRequiredForConfig(
     message: `Refusing to start: PORTUNI_AUTH_TOKEN is unset but the server is in a team/prod configuration (${reasons.join("; ")}). Set PORTUNI_AUTH_TOKEN to enable bearer auth, or set HOST=127.0.0.1 and unset TURSO_URL (or use a file: URL) for single-machine loopback dev.`,
   };
 }
+
+// A local workspace is neither the central server (PORTUNI_AUTH_MODE=google)
+// nor a central-mode sync agent (PORTUNI_AGENT_MODE=1) -- direct Turso, one
+// machine, no remote. Read live rather than cached: unlike identity context
+// (per-request, worth memoizing) this is checked rarely enough that a stale
+// cache is not worth the test-seam cost.
+export function isLocalWorkspace(): boolean {
+  const agentMode = process.env.PORTUNI_AGENT_MODE === "1";
+  return authMode() !== "google" && !agentMode;
+}
+
+// The server's auth mode, read live from the environment: "google" is the
+// central server, anything else is solo bearer-token mode.
+export function authMode(): "google" | "env" {
+  return (process.env.PORTUNI_AUTH_MODE ?? "env") === "google" ? "google" : "env";
+}

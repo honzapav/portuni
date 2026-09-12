@@ -232,13 +232,9 @@ describe("DriveAdapter stat vs. trash and a stale path cache", () => {
 describe("DriveAdapter search (fullText contains)", () => {
   it("sends fullText contains + trashed=false with shared-drive params and resolves paths to the root", async () => {
     const { FakeDrive } = await import("./helpers/fake-drive.js");
-    const { __setUserTokenFetchForTests, resetUserTokenCacheForTests } = await import(
-      "../apps/server/domain/sync/drive-user-auth.js"
-    );
     const drive = new FakeDrive();
     __setDriveFetchForTests(drive.fetch);
-    resetUserTokenCacheForTests();
-    __setUserTokenFetchForTests(async () => ({ access_token: "UAT", expires_in: 3600 }));
+    resetSaTokenCacheForTests();
 
     const org = drive.addFolder("workflow", drive.rootId);
     const projects = drive.addFolder("projects", org);
@@ -250,11 +246,9 @@ describe("DriveAdapter search (fullText contains)", () => {
     const elsewhere = drive.addFolder("elsewhere", "NOT-A-KNOWN-FOLDER");
     drive.addFile("stray.md", elsewhere, "quarterly budget elsewhere\n");
 
-    const userRemote: RemoteConfig = { name: "dw", type: "gdrive", config: { shared_drive_id: "ROOT" } };
-    const userTokens: DeviceTokens = {
-      dw: { mode: "refresh_token", refresh_token: "r", client_id: "c", client_secret: "s" },
-    };
-    const adapter = createDriveAdapter(userRemote, userTokens);
+    const searchRemote: RemoteConfig = { name: "dw", type: "gdrive", config: { shared_drive_id: "ROOT" } };
+    const searchTokens: DeviceTokens = { dw: { mode: "service_account", service_account_json: sa } };
+    const adapter = createDriveAdapter(searchRemote, searchTokens);
     assert.ok(adapter.search, "Drive adapter must implement search");
     const hits = await adapter.search!("quarterly budget", { limit: 10 });
 
@@ -283,16 +277,12 @@ describe("DriveAdapter search (fullText contains)", () => {
 
   it("escapes single quotes in the query", async () => {
     const { FakeDrive } = await import("./helpers/fake-drive.js");
-    const { __setUserTokenFetchForTests, resetUserTokenCacheForTests } = await import(
-      "../apps/server/domain/sync/drive-user-auth.js"
-    );
     const drive = new FakeDrive();
     __setDriveFetchForTests(drive.fetch);
-    resetUserTokenCacheForTests();
-    __setUserTokenFetchForTests(async () => ({ access_token: "UAT", expires_in: 3600 }));
+    resetSaTokenCacheForTests();
     const adapter = createDriveAdapter(
       { name: "dw", type: "gdrive", config: { shared_drive_id: "ROOT" } },
-      { dw: { mode: "refresh_token", refresh_token: "r", client_id: "c", client_secret: "s" } },
+      { dw: { mode: "service_account", service_account_json: sa } },
     );
     await adapter.search!("o'neill");
     const search = drive.requests.find((r) => r.url.includes("fullText"));
@@ -301,19 +291,15 @@ describe("DriveAdapter search (fullText contains)", () => {
 
   it("memoises ancestor lookups: many hits under one folder cost one files.get per distinct ancestor", async () => {
     const { FakeDrive } = await import("./helpers/fake-drive.js");
-    const { __setUserTokenFetchForTests, resetUserTokenCacheForTests } = await import(
-      "../apps/server/domain/sync/drive-user-auth.js"
-    );
     const drive = new FakeDrive();
     __setDriveFetchForTests(drive.fetch);
-    resetUserTokenCacheForTests();
-    __setUserTokenFetchForTests(async () => ({ access_token: "UAT", expires_in: 3600 }));
+    resetSaTokenCacheForTests();
     const org = drive.addFolder("workflow", drive.rootId);
     const wip = drive.addFolder("wip", org);
     for (let i = 0; i < 5; i++) drive.addFile(`f${i}.md`, wip, "needle");
     const adapter = createDriveAdapter(
       { name: "dw", type: "gdrive", config: { shared_drive_id: "ROOT" } },
-      { dw: { mode: "refresh_token", refresh_token: "r", client_id: "c", client_secret: "s" } },
+      { dw: { mode: "service_account", service_account_json: sa } },
     );
     const hits = await adapter.search!("needle", { limit: 10 });
     assert.equal(hits.length, 5);
@@ -328,13 +314,9 @@ describe("DriveAdapter search (fullText contains)", () => {
 
   it("leaves snippet undefined when the match sits outside the bounded fetch window", async () => {
     const { FakeDrive } = await import("./helpers/fake-drive.js");
-    const { __setUserTokenFetchForTests, resetUserTokenCacheForTests } = await import(
-      "../apps/server/domain/sync/drive-user-auth.js"
-    );
     const drive = new FakeDrive();
     __setDriveFetchForTests(drive.fetch);
-    resetUserTokenCacheForTests();
-    __setUserTokenFetchForTests(async () => ({ access_token: "UAT", expires_in: 3600 }));
+    resetSaTokenCacheForTests();
     const org = drive.addFolder("workflow", drive.rootId);
     const wip = drive.addFolder("wip", org);
     // Padding well past the adapter's bounded snippet-fetch window, with the
@@ -344,7 +326,7 @@ describe("DriveAdapter search (fullText contains)", () => {
     drive.addFile("huge.md", wip, `${padding}needle at the very end\n`);
     const adapter = createDriveAdapter(
       { name: "dw", type: "gdrive", config: { shared_drive_id: "ROOT" } },
-      { dw: { mode: "refresh_token", refresh_token: "r", client_id: "c", client_secret: "s" } },
+      { dw: { mode: "service_account", service_account_json: sa } },
     );
     const hits = await adapter.search!("needle", { limit: 10 });
     assert.equal(hits.length, 1);
@@ -353,20 +335,16 @@ describe("DriveAdapter search (fullText contains)", () => {
 
   it("leaves snippet undefined for a Google-native format (no plain-text export in this fake)", async () => {
     const { FakeDrive } = await import("./helpers/fake-drive.js");
-    const { __setUserTokenFetchForTests, resetUserTokenCacheForTests } = await import(
-      "../apps/server/domain/sync/drive-user-auth.js"
-    );
     const drive = new FakeDrive();
     __setDriveFetchForTests(drive.fetch);
-    resetUserTokenCacheForTests();
-    __setUserTokenFetchForTests(async () => ({ access_token: "UAT", expires_in: 3600 }));
+    resetSaTokenCacheForTests();
     const org = drive.addFolder("workflow", drive.rootId);
     const wip = drive.addFolder("wip", org);
     const docId = drive.addFile("doc.gdoc", wip, "needle inside a google doc\n");
     drive.files.get(docId)!.mimeType = "application/vnd.google-apps.document";
     const adapter = createDriveAdapter(
       { name: "dw", type: "gdrive", config: { shared_drive_id: "ROOT" } },
-      { dw: { mode: "refresh_token", refresh_token: "r", client_id: "c", client_secret: "s" } },
+      { dw: { mode: "service_account", service_account_json: sa } },
     );
     const hits = await adapter.search!("needle", { limit: 10 });
     assert.equal(hits.length, 1);
@@ -379,12 +357,8 @@ describe("DriveAdapter search (fullText contains)", () => {
   // above 1 (genuinely concurrent) without exceeding the adapter's cap.
   it("fetches snippets with bounded concurrency, not one request at a time", async () => {
     const { FakeDrive } = await import("./helpers/fake-drive.js");
-    const { __setUserTokenFetchForTests, resetUserTokenCacheForTests } = await import(
-      "../apps/server/domain/sync/drive-user-auth.js"
-    );
     const drive = new FakeDrive();
-    resetUserTokenCacheForTests();
-    __setUserTokenFetchForTests(async () => ({ access_token: "UAT", expires_in: 3600 }));
+    resetSaTokenCacheForTests();
 
     const org = drive.addFolder("workflow", drive.rootId);
     const wip = drive.addFolder("wip", org);
@@ -410,7 +384,7 @@ describe("DriveAdapter search (fullText contains)", () => {
 
     const adapter = createDriveAdapter(
       { name: "dw", type: "gdrive", config: { shared_drive_id: "ROOT" } },
-      { dw: { mode: "refresh_token", refresh_token: "r", client_id: "c", client_secret: "s" } },
+      { dw: { mode: "service_account", service_account_json: sa } },
     );
     const hits = await adapter.search!("needle", { limit: 10 });
     assert.equal(hits.length, HIT_COUNT);

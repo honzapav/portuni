@@ -19,6 +19,9 @@ import {
 } from "../apps/server/domain/sync/file-content-remote.js";
 import { FileContentError } from "../apps/server/domain/sync/file-content.js";
 import { addRule } from "../apps/server/domain/sync/routing.js";
+import { useRemoteCapableEnv } from "./helpers/remote-capable-env.js";
+
+useRemoteCapableEnv();
 
 let workspace: string;
 let originalEnv: string | undefined;

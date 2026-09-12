@@ -1,12 +1,12 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { makeSharedDb } from "./helpers/shared-db.js";
+import { makeSharedDb, insertRemoteForTests } from "./helpers/shared-db.js";
 import {
   listRemotesService,
   setupRemoteService,
   setRoutingPolicyService,
 } from "../apps/server/mcp/tools/sync-remotes.js";
-import { upsertRemote, listRules } from "../apps/server/domain/sync/routing.js";
+import { listRules } from "../apps/server/domain/sync/routing.js";
 import { TOKEN_ENV_PREFIX } from "../apps/server/domain/sync/types.js";
 import { resetTokenStoreForTests } from "../apps/server/domain/sync/token-store.js";
 
@@ -23,6 +23,9 @@ beforeEach(() => {
   originalTokenStore = process.env.PORTUNI_TOKEN_STORE;
   originalWorkspaceRoot = process.env.PORTUNI_WORKSPACE_ROOT;
   process.env.PORTUNI_TOKEN_STORE = "varlock";
+  // setupRemoteService/setRoutingPolicyService refuse on a local workspace
+  // (#310) -- these tests are about the tool logic, not that guard.
+  process.env.PORTUNI_AGENT_MODE = "1";
   resetTokenStoreForTests();
 });
 afterEach(() => {
@@ -32,6 +35,7 @@ afterEach(() => {
   else process.env.PORTUNI_TOKEN_STORE = originalTokenStore;
   if (originalWorkspaceRoot === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
   else process.env.PORTUNI_WORKSPACE_ROOT = originalWorkspaceRoot;
+  delete process.env.PORTUNI_AGENT_MODE;
   resetTokenStoreForTests();
 });
 
@@ -46,7 +50,7 @@ describe("listRemotesService auth detection", () => {
 
   it("reports gdrive remote with SA JSON in env as authenticated", async () => {
     const { db } = await makeSharedDb();
-    await upsertRemote(db, {
+    await insertRemoteForTests(db, {
       name: "drive-w",
       type: "gdrive",
       config: { shared_drive_id: "0AX" },
@@ -61,7 +65,7 @@ describe("listRemotesService auth detection", () => {
 
   it("reports gdrive remote without SA JSON as not authenticated", async () => {
     const { db } = await makeSharedDb();
-    await upsertRemote(db, {
+    await insertRemoteForTests(db, {
       name: "drive-w",
       type: "gdrive",
       config: { shared_drive_id: "0AX" },
@@ -75,7 +79,7 @@ describe("listRemotesService auth detection", () => {
 
   it("reports non-gdrive remote with refresh_token as authenticated", async () => {
     const { db } = await makeSharedDb();
-    await upsertRemote(db, {
+    await insertRemoteForTests(db, {
       name: "dbx",
       type: "dropbox",
       config: {},

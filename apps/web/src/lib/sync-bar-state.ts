@@ -14,8 +14,12 @@ import type { SyncClass } from "../types.js";
 // established, and there was no way to start a run at all.
 //
 // So it stays out of the counts that drive labels and badges (an object that
-// is genuinely gone must not produce a permanent red pill) and goes into
-// `canRun` only.
+// is genuinely gone must not produce a permanent red pill) and only keeps
+// `noWork` false. The button itself is always enabled (#313): a mirror with
+// zero tracked files, or one where everything reads clean, still needs a run,
+// since its remote sweep is the only thing that adopts a file that showed up
+// on Drive out of band. SyncBar swaps the label to "Zkontrolovat remote" in
+// that state.
 export interface SyncBarState {
   pending: number;
   conflicts: number;
@@ -23,8 +27,6 @@ export interface SyncBarState {
   remoteMissing: number;
   // Nothing for a run to do AND nothing for a human to decide.
   noWork: boolean;
-  // Something a run would act on or at least verify.
-  canRun: boolean;
 }
 
 export function syncBarState(
@@ -48,6 +50,5 @@ export function syncBarState(
     deletedLocal,
     remoteMissing,
     noWork: statusLoaded && idle,
-    canRun: !statusLoaded || !idle,
   };
 }

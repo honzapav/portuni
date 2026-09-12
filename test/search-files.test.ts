@@ -25,6 +25,9 @@ import { resolveNodeInfo } from "../apps/server/domain/sync/node-info.js";
 import { searchFiles } from "../apps/server/domain/search-files.js";
 import { createMcpServer } from "../apps/server/mcp/server.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
+import { useRemoteCapableEnv } from "./helpers/remote-capable-env.js";
+
+useRemoteCapableEnv();
 
 let shared: SharedDb;
 let workspace: string;

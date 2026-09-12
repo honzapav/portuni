@@ -28,6 +28,7 @@ import { TOOL_MIN_SCOPE } from "../auth/min-scopes.js";
 import { scopeAtLeast } from "../auth/roles.js";
 import { getDb } from "../infra/db.js";
 import { UNNARROWED_PROJECTION_ID } from "../domain/session-projection.js";
+import { LocalModeNoRemoteError } from "../domain/sync/types.js";
 
 // Top-level server brief. Kept short -- many MCP clients truncate this
 // field at ~2 KB. Anything load-bearing for an individual tool lives in
@@ -66,8 +67,23 @@ export function buildDefaultEnvIdentity(): RequestIdentity {
   };
 }
 
+// A domain error that carries a code is returned as a structured error
+// result, so an MCP caller sees the same `code` a REST caller gets from
+// respondError (http/middleware.ts) instead of only the message the SDK
+// would otherwise wrap an uncaught throw in.
+function typedToolError(err: unknown): { content: Array<{ type: "text"; text: string }>; isError: true } | null {
+  if (err instanceof LocalModeNoRemoteError) {
+    return {
+      content: [{ type: "text", text: JSON.stringify({ error: err.message, code: err.code }) }],
+      isError: true,
+    };
+  }
+  return null;
+}
+
 // Wrap server.tool so every registered tool is guarded by the caller's
-// globalScope. Installed once before any registerXxxTools call.
+// globalScope and its typed domain errors are mapped (typedToolError).
+// Installed once before any registerXxxTools call.
 // The registration-time throw (missing map entry) ensures gaps are caught
 // immediately rather than at call time.
 function gateToolsByScope(server: McpServer, identity: RequestIdentity): void {
@@ -98,17 +114,24 @@ function gateToolsByScope(server: McpServer, identity: RequestIdentity): void {
           isError: true,
         };
       }
-      return handler(...h);
+      try {
+        return await handler(...h);
+      } catch (err) {
+        const typed = typedToolError(err);
+        if (typed) return typed;
+        throw err;
+      }
     };
     return original(...(args as Parameters<typeof original>));
   };
 }
 
 // Guides an agent/admin through the service-account path for Google Drive
-// sync -- the headless counterpart to the desktop app's Nastavení ->
-// Synchronizace OAuth flow. Surfaced to the model as a slash-style prompt so
-// it can be invoked directly instead of being rediscovered from the routing
-// error text every time.
+// sync -- the only path now that collaboration runs through central mode
+// (a local workspace cannot route to a remote at all, see #310/#311).
+// Surfaced to the model as a slash-style prompt so it can be invoked
+// directly instead of being rediscovered from the routing error text every
+// time.
 function registerSetupDriveRemotePrompt(server: McpServer): void {
   server.prompt(
     "setup-drive-remote",
@@ -126,8 +149,8 @@ function registerSetupDriveRemotePrompt(server: McpServer): void {
             "config {shared_drive_id}, and the JSON key as service_account_json; (4) call " +
             "portuni_set_routing_policy with [{priority: 1, node_type: null, org_slug: null, remote_name: <name>}] " +
             "unless a policy already exists (check portuni_list_remotes first); (5) verify with a test " +
-            "portuni_store and confirm the file appears on the shared drive. Note: desktop users should " +
-            "prefer Nastavení → Synchronizace (user OAuth) — the service account is for headless servers.",
+            "portuni_store and confirm the file appears on the shared drive. This is a central-mode-only " +
+            "setup — a local workspace cannot register or route to a remote.",
         },
       }],
     }),

@@ -24,6 +24,9 @@ import { createMcpServer } from "../apps/server/mcp/server.js";
 import { routeApiRequest } from "../apps/server/api/router.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { useRemoteCapableEnv } from "./helpers/remote-capable-env.js";
+
+useRemoteCapableEnv();
 
 const SOLO = "01SOLO0000000000000000000";
 

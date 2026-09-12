@@ -156,31 +156,75 @@ symlink to this file.
   falls back to `file:<dataDir>/portuni.db` (`apps/server/desktop.ts`) — there
   the local SQLite IS the source of truth and no Turso is involved. Central
   mode (`data_mode: "central"`) has no graph DB in the sidecar at all;
-  everything goes through the central server.
+  everything goes through the central server. **A local workspace (neither
+  `PORTUNI_AUTH_MODE=google` nor `PORTUNI_AGENT_MODE=1` —
+  `infra/server-config.ts`'s `isLocalWorkspace()`) cannot register or route
+  to a remote (#310).** `upsertRemote`, `setupRemoteService` and
+  `setRoutingPolicyService` (`domain/sync/routing.ts`,
+  `domain/sync/remote-service.ts`) all throw `LocalModeNoRemoteError` (code
+  `LOCAL_MODE_NO_REMOTE`) there instead of writing `remotes`/
+  `remote_routing` — collaboration is central mode's job. (The per-user
+  Drive OAuth connect flow that also used to throw this, `connectDrive`/
+  `setDriveTarget`, is gone entirely as of #311 — see the Drive gotcha
+  below.)
+  A local workspace with pre-existing rows from before this rule logs one
+  warning at boot (`boot/local-mode-remote-warning.ts`, the only reader of
+  the raw rows via `legacyRemoteRowCounts`) and otherwise behaves as if the
+  rows were not there: `resolveRemote`/`listRemotes`/`listRules` answer
+  null/empty on a local workspace, `getAdapter` refuses with the same error
+  as a backstop, and `deleteFile`/`moveFile`/`renameFile`/`renameFolder`
+  ignore a legacy row's `remote_name` and touch only the local copy and
+  the row (`moveFile` clears `remote_name` on the way). `statusScan`'s local
+  branch (below, #312) ignores `remote_name` outright too, so legacy rows
+  cannot resurface push/pull/conflict classifications. The MCP tool wrapper
+  (`mcp/server.ts`'s `typedToolError`) returns `LocalModeNoRemoteError` as
+  an `isError` result carrying `code`, the same code REST's `respondError`
+  sends as 409.
 - **File state is deterministic, not agent-driven.** A mirror watcher
   (`apps/server/domain/sync/mirror-watcher.ts` → `reconcile.ts`) registers new
   files and reconciles edits/deletes on every disk change, so the UI's sync
   status (`statusScan`, which reads `file_state.cached_local_hash`)
   is current without anyone calling `portuni_store`/`portuni_status`. In
   central mode the scan is ONLY that read -- `statusScanCentral` has no
-  `fast` parameter anymore; re-deriving what the device does not know is the
-  sync run's own reconcile pass (`resolveUnknownRemotes`), never a mode of
-  reading. The local engine still has `fast` (its slow path stats the remote
-  live, which the UI poll cannot afford across every mirror).
-  Registration is local-only (`registerLocalFile`, no upload); a file then
-  reads as `push` until a deliberate "Synchronizovat"/`portuni_store` pushes
-  it to the remote. **Registration never requires a remote.** A local-only
-  workspace (no remote/routing configured at all) still tracks every file —
-  `registerLocalFile` and its central-mode/REST equivalents
-  (`registerFileRecordRemote(s)`) leave `remote_name` NULL instead of
-  throwing when routing does not resolve; `remote_path` is still always
-  computed (it is derived purely from the node's own identity, never from
-  the remote). `idx_files_unique_remote` is keyed on `(node_id, remote_path)`
-  alone (migration 031) so a later `storeFile`/write on the same path
-  backfills `remote_name` onto the existing row instead of creating a
-  duplicate. `storeFile` (and any other deliberate push/write) still
-  requires a resolved remote and throws `ROUTING_GUIDANCE` otherwise — that
-  guidance belongs at the moment of a deliberate sync, not at registration.
+  `fast` parameter; re-deriving what the device does not know is the sync
+  run's own reconcile pass (`resolveUnknownRemotes`), never a mode of
+  reading. **A local workspace never has a remote at all (#310), so its own
+  scan dropped `fast` too (#312)**: `statusScan` computes `isLocalWorkspace()`
+  once and short-circuits every row before it would touch an adapter --
+  tracked + present reads `clean`, tracked + gone from disk reads
+  `deleted_local`; `push`/`pull`/`conflict`/`remote_*` cannot occur there.
+  `cachedRemoteStat`/`getRemoteStats` (the local engine's own TTL cache
+  wrapping `local-db.ts`'s `remote_stat_cache`) are gone with it -- the
+  table itself, `RemoteStatRow`, and the singular `getRemoteStat`/
+  `upsertRemoteStat` stay, since `engine-central.ts` (untouched by #312)
+  still uses them for its own remote-hash observation cache. The **non-local**
+  remaining caller of this same `engine.ts` (a server run with
+  `PORTUNI_AUTH_MODE=google`, i.e. the central server itself, which — unlike
+  an agent-mode device — still reaches `engine.ts` directly if it happens to
+  carry its own local mirrors) keeps the old always-live classification,
+  just without the persisted stat cache. Registration is local-only
+  (`registerLocalFile`, no upload); a file on a genuinely local workspace
+  then reads as `clean` (nothing to push to, ever); on a workspace where a
+  remote CAN resolve (central server, routing configured) it reads `push`
+  until a deliberate `portuni_store` pushes it. **Registration never
+  requires a remote.** A local-only workspace (no remote/routing configured
+  at all) still tracks every file — `registerLocalFile` and its
+  central-mode/REST equivalents (`registerFileRecordRemote(s)`) leave
+  `remote_name` NULL instead of throwing when routing does not resolve;
+  `remote_path` is still always computed (it is derived purely from the
+  node's own identity, never from the remote). `idx_files_unique_remote` is
+  keyed on `(node_id, remote_path)` alone (migration 031) so a later
+  `storeFile`/write on the same path backfills `remote_name` onto the
+  existing row instead of creating a duplicate. `storeFile`/`pullFile`/
+  `runNodeSync`/`snapshotService` refuse with `LocalModeNoRemoteError`
+  (`LOCAL_MODE_NO_REMOTE`) on a local workspace, checked before any other
+  work; on a workspace where a remote can resolve, `storeFile` still
+  requires one and throws `ROUTING_GUIDANCE` otherwise — that guidance
+  belongs at the moment of a deliberate sync, not at registration. Web:
+  `SyncBar`/`SyncOverview`'s "Synchronizovat" actions and the file row's
+  "Obnovit" (restore) button are hidden on a local workspace (`useDataMode()`
+  gating in `DetailPane.tsx`/`SyncOverview.tsx`), not merely disabled --
+  there is nothing they could ever do there.
   The watcher runs in the desktop sidecar by default
   (`PORTUNI_WATCH_MIRRORS`, on the standalone server it is opt-in `=1`); for
   backend dev against the tmux server, set `PORTUNI_WATCH_MIRRORS=1` if you
@@ -297,25 +341,23 @@ symlink to this file.
   central is reached this way, not by the desktop proxy, since the route is
   now local-only for every node regardless of whether THIS device happens
   to mirror it.
-- **Drive sync has two auth paths sharing one adapter.** Desktop local
-  workspaces connect via per-user OAuth: Settings → Synchronizace →
-  `google_drive_connect` (`apps/desktop/src/auth.rs`, PKCE loopback) hands the
-  refresh token to the sidecar's bearer-authed `POST /sync/drive/connect` over
-  loopback — never through the webview (security rule 1). It lands as a
-  `refresh_token`-mode TokenStore entry under the fixed remote name `gdrive`;
-  `POST /sync/drive/target` upserts the remote and adds a wildcard routing rule
-  **only if routing is empty**. Domain logic is `remote-service.ts`
-  (`connectDrive/setDriveTarget/driveStatus/testDrive/disconnectDrive`), REST is
-  `apps/server/api/sync-drive.ts` (`/sync/drive/{connect,targets,target,status,test,disconnect}`),
-  web is `SyncSection.tsx` + `lib/sync-drive.ts`. The Drive adapter
-  (`drive-adapter.ts`) picks auth by token mode: `refresh_token` →
-  `drive-user-auth.ts`, else service-account → `drive-sa-auth.ts`
-  (`assertSaDriveConfig` forces a `shared_drive_id` — SAs have no My Drive quota;
-  OAuth may target My Drive via `root_folder_id`). The service-account path stays
-  MCP-only (`portuni_setup_remote`; `setup-drive-remote` prompt) for headless /
-  central / multi-remote. `driveStatus.routed` guards the "connected but nothing
-  routes to gdrive" trap. Spec/plan:
-  `docs/archive/{specs,plans}/2026-07-05-sync-settings*.md`.
+- **Drive sync has one auth path: the service account, on central mode
+  only.** Collaboration is central mode (#310/#311,
+  `docs/superpowers/specs/2026-09-11-one-collaboration-mode-design.md`) — a
+  local workspace cannot register or route to a remote, so the per-user
+  Drive OAuth connect flow that used to live at Settings → Synchronizace is
+  retired. `drive-adapter.ts` picks auth from the token's
+  `service_account_json` only, via `drive-sa-auth.ts`
+  (`assertSaDriveConfig` forces a `shared_drive_id` — service accounts have
+  no My Drive quota, so My Drive targets are not supported). Domain logic is
+  `remote-service.ts` (`setupRemoteService`/`setRoutingPolicyService`/
+  `listRemotesService`, admin-tier, refused on a local workspace by
+  `LocalModeNoRemoteError`), configured via `portuni_setup_remote` (MCP-only;
+  `setup-drive-remote` prompt walks the steps) — there is no REST or web UI
+  for connecting Drive. `apps/web/src/components/SyncSection.tsx` (Nastavení
+  → Synchronizace) is an informational stub: central mode shows the
+  server URL, a local workspace shows a one-line "local mode, no remote"
+  note; both show mirror-watcher errors, unrelated to Drive.
 - **Mirror scope configs are Portuni-managed.** `portuni_mirror` materializes
   `.mcp.json`, `.claude/settings.local.json`, `.codex/config.toml`,
   `.vibe/config.toml`, `.cursor/rules`, `PORTUNI_SCOPE.md` and marker blocks
@@ -361,7 +403,7 @@ symlink to this file.
 - **Auto-seed runs on MCP connect** when the URL carries `?home_node_id=...`.
   Failures (DB unreachable, network) return 503 with the underlying reason
   rather than serving an empty-scope session – see `apps/server/mcp/transport.ts`.
-- **Auth mode**: `PORTUNI_AUTH_MODE=env` (default) = solo bearer token; `google` = Google OAuth + Groups. Enforcement lives server-side in `apps/server/auth/` (min-scopes per tool, node-access for group visibility). Scope tiers (`min-scopes.ts`): `read` = read only (no group needed); `write` = everyday editing (create/update nodes, edges, actors, responsibilities, data sources, tools, events, files); `manage` = move_node, sharing (`PUT /nodes/:id/access`, access requests), positions; `admin` = deletes, users, `setup_remote`, routing policy, `/sync/drive/*`. Each `PORTUNI_GROUPS_*` var is a comma list.
+- **Auth mode**: `PORTUNI_AUTH_MODE=env` (default) = solo bearer token; `google` = Google OAuth + Groups. Enforcement lives server-side in `apps/server/auth/` (min-scopes per tool, node-access for group visibility). Scope tiers (`min-scopes.ts`): `read` = read only (no group needed); `write` = everyday editing (create/update nodes, edges, actors, responsibilities, data sources, tools, events, files); `manage` = move_node, sharing (`PUT /nodes/:id/access`, access requests), positions; `admin` = deletes, users, `setup_remote`, routing policy. Each `PORTUNI_GROUPS_*` var is a comma list.
 - **Desktop central-server config**: `server_url` + `google_client_id` in
   `config.json` (non-secret) enable Settings → Účet (Google login, device
   tokens). Refresh token + session JWT live in Keychain; webview reaches the
@@ -413,10 +455,9 @@ symlink to this file.
   `set_turso_token`, `clear_turso_token`, `get_data_mode`, `open_path_external`,
   `restart_sidecar` (explicit `id` still wins; `None` now means "this
   window's own" instead of "the active one"), and `auth.rs`'s `auth_status`/
-  `google_login`/`google_client_configured`/`google_drive_connect`/
-  `auth_refresh`/`auth_logout`/`central_request` (`load_auth_config`/
-  `load_google_client` now take an explicit `ws_id` instead of resolving it
-  themselves). The `portuni-html` URI scheme handler resolves the same way
+  `google_login`/`auth_refresh`/`auth_logout`/`central_request` (`load_auth_config`
+  now takes an explicit `ws_id` instead of resolving it itself). The
+  `portuni-html` URI scheme handler resolves the same way
   from `ctx.webview_label()` via `ws_of_from_dir` (no `tauri::Window` object
   available there, just the label). `pty_spawn` captures the spawning
   window's workspace onto `PtySession.ws_id` (already true since #219, now

@@ -144,19 +144,6 @@ describe("minScopeForRoute", () => {
     assert.equal(minScopeForRoute("GET", "/users"), "write");
   });
 
-  it("maps all /sync/drive/* routes -> admin (infrastructure)", () => {
-    for (const [method, path] of [
-      ["POST", "/sync/drive/connect"],
-      ["GET", "/sync/drive/targets"],
-      ["POST", "/sync/drive/target"],
-      ["GET", "/sync/drive/status"],
-      ["POST", "/sync/drive/test"],
-      ["POST", "/sync/drive/disconnect"],
-    ] as const) {
-      assert.equal(minScopeForRoute(method, path), "admin", `${method} ${path}`);
-    }
-  });
-
   it("maps unknown route -> admin (fail-closed)", () => {
     assert.equal(minScopeForRoute("GET", "/unknown-future-route"), "admin");
   });

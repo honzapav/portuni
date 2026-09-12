@@ -326,10 +326,6 @@ export async function handleSyncStatus(
       userId: identity.userId,
       nodeId,
       includeDiscovery: false,
-      // DB-only fast path: no fs.stat, no Drive .stat() calls. The UI
-      // indicator is allowed to lag a real on-disk change until the next
-      // storeFile/pullFile/sync writes file_state.
-      fast: true,
     });
     const tagged: Array<{
       file_id: string;
