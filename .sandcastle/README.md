@@ -19,7 +19,7 @@ specific.
 
 ## Prerequisites (old Mac)
 
-1. Docker Desktop running.
+1. Docker Desktop running, with at least 10 GB of memory (Settings → Resources); `cargo test` in the gate OOMs at 6 GB.
 2. Keychain entries `sandcastle.claude-code.oauth-token` and
    `sandcastle.portuni.github-pat` (values never on disk; the login keychain is
    locked over ssh, unlock it in the same `ssh -t` command):
