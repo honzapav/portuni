@@ -60,6 +60,9 @@ import {
   INDEX_SESSIONS_TERMINAL,
   DDL_SESSION_SCOPE,
   INDEX_SESSION_SCOPE_SESSION,
+  DDL_SESSION_RUNS,
+  INDEX_SESSION_RUNS_SESSION,
+  DDL_SESSION_EVENTS,
 } from "./schema-triggers.js";
 
 interface Migration {
@@ -1432,6 +1435,37 @@ const MIGRATIONS: Migration[] = [
       );
     },
   },
+  // Runner batch (docs/superpowers/specs/2026-09-12-runner-and-session-design.md):
+  // the session becomes a task record (brief/runner/host_id/waiting_since),
+  // profile_id is renamed to instance_id (same column, new meaning -- a
+  // provider instance rather than a desktop spawn-env profile), and runs +
+  // events get their own tables. session_runs/session_events are brand new
+  // tables, so on both a fresh install and an upgrade the DDL replay in
+  // ensureSchemaOn already creates them (CREATE TABLE IF NOT EXISTS) before
+  // this migration runs -- only the ALTERs against the pre-existing sessions
+  // table need to happen here.
+  {
+    id: "034_sessions_runner_columns",
+    isApplied: async (db) => {
+      const info = await db.execute("PRAGMA table_info(sessions)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      return cols.has("instance_id");
+    },
+    up: async (db) => {
+      const info = await db.execute("PRAGMA table_info(sessions)");
+      const cols = new Set(info.rows.map((r) => r.name as string));
+      if (!cols.has("brief")) await db.execute("ALTER TABLE sessions ADD COLUMN brief TEXT");
+      if (!cols.has("runner")) await db.execute("ALTER TABLE sessions ADD COLUMN runner TEXT");
+      if (!cols.has("host_id")) await db.execute("ALTER TABLE sessions ADD COLUMN host_id TEXT");
+      if (!cols.has("waiting_since")) await db.execute("ALTER TABLE sessions ADD COLUMN waiting_since TEXT");
+      if (cols.has("profile_id") && !cols.has("instance_id")) {
+        await db.execute("ALTER TABLE sessions RENAME COLUMN profile_id TO instance_id");
+      }
+      await db.execute(DDL_SESSION_RUNS);
+      await db.execute(INDEX_SESSION_RUNS_SESSION);
+      await db.execute(DDL_SESSION_EVENTS);
+    },
+  },
 ];
 
 export async function runMigration024(db: Client): Promise<void> {
@@ -1490,23 +1524,31 @@ export async function runMigration028(db: Client): Promise<void> {
 // copy, drop, rename, recreate indexes). No triggers reference `sessions`.
 //
 // The new table's shape always includes every column the CURRENT DDL_SESSIONS
-// has (terminal_id, added by migration 032, #218) -- a fresh install that
-// already has it must not lose it when this rebuild runs (test/migration-
-// 030-sessions-node-set-null.test.ts's upgrade-path simulation exercises
-// exactly this: DDL creates it, then only 030's marker is cleared). The
-// source SELECT list, however, only names terminal_id when the table being
-// rebuilt actually has it -- a genuine sequential upgrade of a pre-032 DB
-// runs 030 (this function) BEFORE 032 ever adds the column, so unconditionally
-// selecting it would fail with "no such column". Omitting it from the INSERT
-// target list leaves it NULL, which migration 032's own ADD COLUMN would have
-// produced anyway.
+// has (terminal_id from migration 032, #218; instance_id/brief/runner/
+// host_id/waiting_since from migration 034, the runner batch) -- a fresh
+// install that already has them must not lose them when this rebuild runs
+// (test/migration-030-sessions-node-set-null.test.ts's upgrade-path
+// simulation exercises exactly this: DDL creates them, then only 030's
+// marker is cleared). The source SELECT list, however, only names a later
+// column when the table being rebuilt actually has it -- a genuine
+// sequential upgrade of a pre-032/pre-034 DB runs 030 (this function)
+// before those columns exist at all, so unconditionally selecting them
+// would fail with "no such column". Omitting one from the INSERT target
+// list leaves it NULL, which the later migration's own ADD COLUMN would
+// have produced anyway; profile_id/instance_id is a rename rather than an
+// addition, so the source list picks whichever name is actually present
+// instead of omitting it.
 export async function runMigration030(db: Client): Promise<void> {
   // Resolve the branch BEFORE the script: the rebuild itself has to be a
   // single executeMultiple (below), so the shape check cannot sit between
   // two statements of it.
   const info = await db.execute("PRAGMA table_info(sessions)");
-  const hasTerminalId = info.rows.some((r) => r.name === "terminal_id");
+  const cols = new Set(info.rows.map((r) => r.name as string));
+  const hasTerminalId = cols.has("terminal_id");
   const terminalIdCol = hasTerminalId ? ", terminal_id" : "";
+  const profileSourceCol = cols.has("instance_id") ? "instance_id" : "profile_id";
+  const runnerCols = ["brief", "runner", "host_id", "waiting_since"].filter((c) => cols.has(c));
+  const runnerColList = runnerCols.length > 0 ? ", " + runnerCols.join(", ") : "";
   // The whole rebuild runs as ONE script over ONE connection via
   // executeMultiple. Per-statement db.execute() calls are unsafe for this on
   // Turso/libsql over HTTP: each statement may hit a different connection,
@@ -1528,9 +1570,13 @@ export async function runMigration030(db: Client): Promise<void> {
       user_id TEXT NOT NULL REFERENCES users(id),
       session_type TEXT NOT NULL CHECK(session_type IN ('interactive_task','interactive_chat','headless','env')),
       cli TEXT,
-      profile_id TEXT,
+      instance_id TEXT,
       agent_session_id TEXT,
       terminal_id TEXT,
+      brief TEXT,
+      runner TEXT,
+      host_id TEXT,
+      waiting_since TEXT,
       state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived')),
       handoff_path TEXT,
       handoff_hash TEXT,
@@ -1541,11 +1587,11 @@ export async function runMigration030(db: Client): Promise<void> {
       closed_at DATETIME
     );
     INSERT INTO sessions_new (
-      id, node_id, user_id, session_type, cli, profile_id, agent_session_id, state,
-      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}
+      id, node_id, user_id, session_type, cli, instance_id, agent_session_id, state,
+      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}${runnerColList}
     ) SELECT
-      id, node_id, user_id, session_type, cli, profile_id, agent_session_id, state,
-      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}
+      id, node_id, user_id, session_type, cli, ${profileSourceCol}, agent_session_id, state,
+      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}${runnerColList}
     FROM sessions;
     DROP TABLE sessions;
     ALTER TABLE sessions_new RENAME TO sessions;

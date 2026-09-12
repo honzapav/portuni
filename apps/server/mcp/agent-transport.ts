@@ -153,7 +153,7 @@ function relayableCapabilities(caps: ClientCapabilities | undefined): ClientCapa
 // for its own session row (terminal id, spawn id, profile id) -- forwarded
 // upstream unchanged so central's own session row for this connection
 // carries them too (#272 finding 5). Without this, every agent-mode session
-// central sees has terminal_id/profile_id NULL regardless of what the
+// central sees has terminal_id/instance_id NULL regardless of what the
 // desktop terminal actually set, since openUpstream previously sent only
 // Authorization.
 interface UpstreamHeaders {

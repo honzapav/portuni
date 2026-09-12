@@ -241,9 +241,9 @@ function SessionRow({
       // general never reach the webview, but this one well-known, never-
       // secret-shaped key is an explicit exception.
       let configDir: string | null = null;
-      if (session.profile_id) {
+      if (session.instance_id) {
         try {
-          configDir = await getProfileConfigDir(session.profile_id);
+          configDir = await getProfileConfigDir(session.instance_id);
         } catch {
           /* profiles registry is optional context -- fall back to the default location */
         }
@@ -259,7 +259,7 @@ function SessionRow({
     return () => {
       cancelled = true;
     };
-  }, [session.id, session.state, session.profile_id]);
+  }, [session.id, session.state, session.instance_id]);
 
   const save = async () => {
     const trimmed = draft.trim();
@@ -335,7 +335,7 @@ function SessionRow({
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-[var(--color-text-dim)]">
         <span>{STATE_LABEL[session.state]}</span>
         <span>{fmtDateTime(session.last_active_at)}</span>
-        <span>{session.cli ?? "cli neznámé"}{session.profile_id ? ` · ${session.profile_id}` : ""}</span>
+        <span>{session.cli ?? "cli neznámé"}{session.instance_id ? ` · ${session.instance_id}` : ""}</span>
         <span title="Počet uzlů v zápisovém rozsahu této relace">
           Zápis: {session.write_count}
         </span>

@@ -185,7 +185,7 @@ export function bindSessionPersistence(
         {
           node_id: resolvedHomeNodeId,
           session_type: scope.sessionType,
-          profile_id: profileId,
+          instance_id: profileId,
           terminal_id: terminalId ?? null,
           cli: cli ?? null,
         },

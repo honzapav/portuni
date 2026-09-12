@@ -22,9 +22,12 @@ const CreateSessionInput = z.object({
   node_id: z.string().nullable().describe("Anchor node (ULID). Null for interactive_chat, which has no anchor."),
   session_type: z.enum(SESSION_TYPES).describe("Derived by the server from the auth path -- never self-declared."),
   cli: z.string().nullable().optional().describe("CLI the session runs under (claude|codex|vibe|...), when known."),
-  profile_id: z.string().nullable().optional().describe("Spawn profile used (phase 3 -- CLI profiles registry)."),
+  instance_id: z.string().nullable().optional().describe("Runner provider instance used (apps/server/domain/runner/instances.ts) -- renamed from profile_id."),
   agent_session_id: z.string().nullable().optional().describe("The underlying agent CLI's own conversation id, for --resume."),
   terminal_id: z.string().nullable().optional().describe("Desktop PTY that spawned this session's CLI (#218, phase 0 of the multi-window design), when known."),
+  brief: z.string().nullable().optional().describe("The task as given (runner batch): the first user message on a fresh run."),
+  runner: z.string().nullable().optional().describe("Runner adapter id (e.g. 'claude') this session's task runs under."),
+  host_id: z.string().nullable().optional().describe("The device/workspace running this session's task."),
 });
 type CreateSessionInput = z.infer<typeof CreateSessionInput>;
 
@@ -89,17 +92,20 @@ export async function createSession(
   const name = computeDefaultSessionName(nodeName, now);
 
   await db.execute({
-    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, cli, profile_id, agent_session_id, terminal_id, state, name, created_at, last_active_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
+    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, brief, runner, host_id, state, name, created_at, last_active_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
     args: [
       id,
       parsed.node_id,
       userId,
       parsed.session_type,
       parsed.cli ?? null,
-      parsed.profile_id ?? null,
+      parsed.instance_id ?? null,
       parsed.agent_session_id ?? null,
       parsed.terminal_id ?? null,
+      parsed.brief ?? null,
+      parsed.runner ?? null,
+      parsed.host_id ?? null,
       name,
       now,
       now,

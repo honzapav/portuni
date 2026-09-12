@@ -146,7 +146,7 @@ export function claudeProjectSlug(cwd: string): string {
 // the desktop app's config.json (Rust, apps/desktop/src/workspace.rs), not
 // reachable from this server process, so the caller (api/sessions.ts, via an
 // optional `config_dir` query param) is responsible for resolving the
-// session's profile_id to a config dir and passing it through -- null (the
+// session's instance_id to a config dir and passing it through -- null (the
 // default) means "resolve the default location", not "no profile exists".
 export async function checkConversationResumable(
   cli: string | null,

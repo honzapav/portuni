@@ -46,8 +46,11 @@ async function toSummary(row: SessionRow): Promise<SessionSummary> {
     user_id: row.user_id,
     session_type: row.session_type,
     cli: row.cli,
-    profile_id: row.profile_id,
+    instance_id: row.instance_id,
     terminal_id: row.terminal_id,
+    brief: row.brief,
+    runner: row.runner,
+    waiting_since: row.waiting_since,
     state: row.state,
     name: row.name,
     name_is_custom: row.name_is_custom === 1,
@@ -187,7 +190,7 @@ export async function handleGetSessionResumeInfo(
     const mirrorRoot = existing.node_id ? await getMirrorPath(identity.userId, existing.node_id) : null;
     // config_dir (#204): the profiles registry lives in the desktop app's
     // config.json (Rust), unreachable from this server process -- the
-    // caller resolves the session's profile_id to a CLAUDE_CONFIG_DIR (when
+    // caller resolves the session's instance_id to a CLAUDE_CONFIG_DIR (when
     // one applies) and passes it through so checkConversationResumable
     // checks the right transcript location instead of always the default.
     const configDir = url.searchParams.get("config_dir") || null;

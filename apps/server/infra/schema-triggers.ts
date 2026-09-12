@@ -151,15 +151,26 @@ export const INDEX_OAUTH_CODES_HASH = `CREATE UNIQUE INDEX IF NOT EXISTS idx_oau
 // session sharing a terminal_id when that PTY exits, closing the "rows
 // stuck in running" gap the 30-minute idle GC used to be the only backstop
 // for.
+// brief/runner/host_id/waiting_since (runner batch, migration 034,
+// docs/superpowers/specs/2026-09-12-runner-and-session-design.md): a
+// session is now the task record -- the brief it was given, the runner
+// adapter and host running it, and whether it is currently blocked on a
+// question (waiting_since set) versus just running. instance_id replaces
+// the meaning of profile_id (same migration renames the column): the
+// provider instance (apps/server/domain/runner/instances.ts) a run uses.
 export const DDL_SESSIONS = `CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY CHECK(length(id) = 26),
     node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
     user_id TEXT NOT NULL REFERENCES users(id),
     session_type TEXT NOT NULL CHECK(session_type IN ('interactive_task','interactive_chat','headless','env')),
     cli TEXT,
-    profile_id TEXT,
+    instance_id TEXT,
     agent_session_id TEXT,
     terminal_id TEXT,
+    brief TEXT,
+    runner TEXT,
+    host_id TEXT,
+    waiting_since TEXT,
     state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived')),
     handoff_path TEXT,
     handoff_hash TEXT,
@@ -174,6 +185,41 @@ export const INDEX_SESSIONS_NODE = `CREATE INDEX IF NOT EXISTS idx_sessions_node
 export const INDEX_SESSIONS_USER = `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`;
 export const INDEX_SESSIONS_STATE = `CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state)`;
 export const INDEX_SESSIONS_TERMINAL = `CREATE INDEX IF NOT EXISTS idx_sessions_terminal ON sessions(terminal_id)`;
+
+// One row per attempt to run a session's task in a runner process. A
+// session has zero or more runs; at most one has ended_at IS NULL (the
+// live run). resumed_from_run_id links a conversation-resume run back to
+// the run whose agent_session_id it continues.
+export const DDL_SESSION_RUNS = `CREATE TABLE IF NOT EXISTS session_runs (
+    id TEXT PRIMARY KEY CHECK(length(id) = 26),
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    runner TEXT NOT NULL,
+    instance_id TEXT,
+    host_id TEXT,
+    agent_session_id TEXT,
+    resumed_from_run_id TEXT REFERENCES session_runs(id) ON DELETE SET NULL,
+    started_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    ended_at DATETIME,
+    end_reason TEXT CHECK(end_reason IN ('completed','interrupted','suspended','error','limit','host_lost')),
+    usage TEXT
+  )`;
+
+export const INDEX_SESSION_RUNS_SESSION = `CREATE INDEX IF NOT EXISTS idx_session_runs_session ON session_runs(session_id)`;
+
+// Append-only canonical event log -- the record the chat renders from
+// (streamed deltas are never persisted here, see the runner spec's "Live
+// channel"). seq is assigned by domain/runner/store.ts, monotonic per
+// session, never reused.
+export const DDL_SESSION_EVENTS = `CREATE TABLE IF NOT EXISTS session_events (
+    id TEXT PRIMARY KEY CHECK(length(id) = 26),
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    run_id TEXT REFERENCES session_runs(id) ON DELETE SET NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(session_id, seq)
+  )`;
 
 // One row per (session, node) currently in the session's read-scope set --
 // membership, not an append-only event log (an expansion that re-adds an
@@ -219,6 +265,9 @@ export const DDL = [
   INDEX_SESSIONS_STATE,
   DDL_SESSION_SCOPE,
   INDEX_SESSION_SCOPE_SESSION,
+  DDL_SESSION_RUNS,
+  INDEX_SESSION_RUNS_SESSION,
+  DDL_SESSION_EVENTS,
   `CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY CHECK(length(id) = 26),
     type TEXT NOT NULL CHECK(type IN (${NODE_TYPES_SQL})),

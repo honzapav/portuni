@@ -999,7 +999,18 @@ symlink to this file.
   `wireOngoingSync` persists the session's home node as `writable=1`, since
   `guardWrite` allows it implicitly and `getSessionWriteCount` counts only
   persisted rows. `boot/session-sweep.ts` closes any row left `running` by a
-  process that died, on every boot.
+  process that died, on every boot. **The runner batch adds a task layer
+  underneath this row** (migration 034,
+  `docs/superpowers/specs/2026-09-12-runner-and-session-design.md`):
+  `sessions` gains `brief`/`runner`/`host_id`/`waiting_since`, `profile_id`
+  is renamed `instance_id` (same column, now a runner provider instance
+  rather than a desktop spawn-env profile), and each attempt to run the
+  session's task is a row in the new `session_runs` table, with its
+  canonical, append-only transcript in `session_events`
+  (`apps/server/domain/runner/store.ts`'s `SessionStore`/`DbSessionStore` --
+  the only writer of runs and events once the runtime issue lands). Every
+  event kind and its payload shape are in `apps/server/domain/runner/
+  types.ts`'s `CanonicalEvent` union.
 - **Bulk sync is a server-side job; the pending aggregate separates
   actionable work from decisions.**
   - **Job**: `POST /nodes/:id/sync` (one node, synchronous) is what the

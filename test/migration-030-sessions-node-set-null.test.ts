@@ -69,9 +69,12 @@ test("migration 030 preserves existing rows and stops cascading session deletes 
     created_at DATETIME NOT NULL DEFAULT (datetime('now')), last_active_at DATETIME NOT NULL DEFAULT (datetime('now')),
     closed_at DATETIME
   )`);
+  // sessions (source) is the CURRENT (post-034) table, so its column is
+  // instance_id, not profile_id -- the legacy shape being rebuilt here
+  // predates that rename, hence the alias into sessions_legacy.profile_id.
   await db.execute(`INSERT INTO sessions_legacy (id, node_id, user_id, session_type, cli, profile_id,
       agent_session_id, state, handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at)
-    SELECT id, node_id, user_id, session_type, cli, profile_id, agent_session_id, state,
+    SELECT id, node_id, user_id, session_type, cli, instance_id, agent_session_id, state,
       handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at FROM sessions`);
   await db.execute("DROP TABLE sessions");
   await db.execute("ALTER TABLE sessions_legacy RENAME TO sessions");
