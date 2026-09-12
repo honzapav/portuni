@@ -52,10 +52,9 @@ export class PullDirtyLocalError extends Error {
 // whoever hits it -- a desktop user with the OAuth path, or an agent/admin
 // wiring up a service account -- instead of a dead end.
 export const ROUTING_GUIDANCE =
-  "File sync is not configured. Desktop user: Nastavení → Synchronizace → Propojit Google Drive. " +
-  "Agent/admin (service account): call portuni_list_remotes to inspect state, then portuni_setup_remote " +
-  "(type gdrive, config {shared_drive_id}, service_account_json) and portuni_set_routing_policy with a " +
-  "wildcard rule, or run the setup-drive-remote MCP prompt.";
+  "File sync is not configured. Agent/admin (service account): call portuni_list_remotes to inspect " +
+  "state, then portuni_setup_remote (type gdrive, config {shared_drive_id}, service_account_json) and " +
+  "portuni_set_routing_policy with a wildcard rule, or run the setup-drive-remote MCP prompt.";
 
 const WARN_SIZE_BYTES = 100 * 1024 * 1024; // 100 MB
 

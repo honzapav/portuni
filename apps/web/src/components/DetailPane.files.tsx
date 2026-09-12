@@ -35,7 +35,6 @@ import { agentDisplayName, loadCollapsedFolders, saveCollapsedFolders } from "..
 import { createNodeMirror, fetchNodeFileUrl } from "../api";
 import type { ResolveAction } from "../api";
 import { isTauri, openInFinder } from "../lib/backend-url";
-import { getCachedDriveStatus } from "../lib/sync-drive";
 import { listWorkspaces } from "../lib/workspaces";
 import { listProfiles, type ProfileInfo } from "../lib/profiles";
 import { copyText } from "../lib/clipboard";
@@ -846,21 +845,18 @@ function syncPendingLabel(count: number): string {
 
 // Local-only hint for the Files tab. Rendered by DetailPane above the sync
 // bar so it shows even on a node with zero files (where SyncBar is not
-// mounted) — that empty state is exactly when the "connect Drive first"
-// nudge is most useful. Only for local-mode workspaces that have never
-// connected Google Drive; central-mode syncs through the server. Cached per
-// session (getCachedDriveStatus) so every node's Files tab shares one fetch.
+// mounted) — that empty state is exactly when the hint is most useful. A
+// local workspace never holds a remote (#310), so this shows unconditionally
+// for one; central-mode syncs through the server and never shows it.
 export function DriveNotConfiguredBanner() {
   const [show, setShow] = useState(false);
   useEffect(() => {
     let alive = true;
     (async () => {
       const ws = (await listWorkspaces()).find((w) => w.active);
-      if (!ws || ws.data_mode === "central") return;
-      const s = await getCachedDriveStatus();
-      if (alive && s && !s.configured) setShow(true);
+      if (alive && ws && ws.data_mode !== "central") setShow(true);
     })().catch(() => {
-      /* workspace/status lookup failed; leave the banner hidden */
+      /* workspace lookup failed; leave the banner hidden */
     });
     return () => {
       alive = false;
@@ -869,14 +865,8 @@ export function DriveNotConfiguredBanner() {
   if (!show) return null;
   return (
     <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px] text-[var(--color-text-dim)]">
-      Soubory se ukládají jen lokálně – propoj Google Drive v{" "}
-      <a
-        href="/?settingsTab=sync"
-        className="text-[var(--color-accent)] hover:underline"
-      >
-        Nastavení → Synchronizace
-      </a>
-      .
+      Soubory se ukládají jen lokálně na tento počítač a nesdílejí se. Sdílení
+      souborů vyžaduje připojení k týmu (centrální režim).
     </div>
   );
 }

@@ -101,18 +101,19 @@ Sections worth highlighting:
 - **Theme** — light / dark; the choice persists in `localStorage` and is reapplied on launch.
 - **Agent command preset** — pick which CLI agent your "Copy launch command" / new-terminal default uses. Built-in presets: Claude Code (`claude`), Codex CLI (`codex`), Gemini CLI (`gemini`), Cursor Agent (`cursor-agent`), OpenCode (`opencode`), Mistral Vibe (`vibe --trust`). You can also type a custom command — it runs unmodified, `cd`'d into the node's mirror. (The Vibe preset passes `--trust` so it loads the mirror's project config and auto-seeds scope — see [Mistral Vibe](/clients/mistral-vibe/).)
 - **MCP server** — shows the sidecar's URL (typically `http://localhost:4011/mcp`), port, and whether an auth token is set. The bearer token itself lives in macOS Keychain (Tauri-only); reveal it on demand or rotate with one click. The install buttons write the URL + token into `~/.claude.json`, `~/.codex/config.toml`, and `~/.vibe/config.toml` so external clients can talk to the app's sidecar without manual config editing.
-- **Synchronizace** — connect Google Drive so stored files leave the local mirror. See below.
+- **Synchronizace** — informational. See below.
 - **Integrace → Showtime** — off by default, stored in `localStorage` like the other settings. On, a `.showtime` deck in a node's files opens as a rendered preview (the `preview.html` Showtime packs into the bundle at every save; `GET /nodes/:id/file` returns that entry as `text/html` for a `.showtime` path) and the preview offers „Otevřít v Showtime" when Showtime.app is installed — the section shows whether Showtime.app was found (`/Applications` or `~/Applications`) and what the button hands over: the node's Portuni connection for the agent and the node's mirror as a working directory. Off, the bundle is a binary file like any other.
 
-## Synchronizace (Google Drive)
+## Synchronizace
 
-For a **local** workspace, Settings → Synchronizace is where you connect Google Drive:
-
-1. **Propojit Google Drive** — a normal Google sign-in opens in your browser. The refresh token is handled entirely by the desktop shell and the local sidecar; it never reaches the web UI.
-2. **Pick a target** — your My Drive (Portuni creates a `Portuni` folder) or any Shared Drive you can access.
-3. **Otestovat připojení** confirms the target is reachable; **Odpojit** removes the connection (local files stay put).
-
-Until a target is connected, stored files sit in the local mirror only — a node's Soubory pane shows a "soubory se ukládají jen lokálně" banner linking here. A **central** workspace shows nothing to configure: file sync is managed by the org's server. Under the hood this is per-user OAuth writing to a `gdrive` remote with a wildcard routing rule; the equivalent MCP setup for headless/server deployments is in [Setting Up Remotes](/guides/setting-up-remotes/).
+Collaboration in Portuni is central mode — a **local** (single-machine)
+workspace has no remote to connect at all, so Settings → Synchronizace has
+nothing to configure there: stored files always sit in the local mirror
+only, and a node's Soubory pane shows a "soubory se ukládají jen lokálně"
+banner. A **central** workspace shows the server URL that manages file sync
+— nothing to configure client-side either. Configuring the actual Google
+Drive remote (a Service Account on the central server) is an MCP-only,
+one-time admin task; see [Setting Up Remotes](/guides/setting-up-remotes/).
 
 ## Recommended daily flow
 

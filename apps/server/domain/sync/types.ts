@@ -71,10 +71,7 @@ export interface DeviceToken {
   refresh_token?: string;
   expires_at?: number;
   service_account_json?: string;
-  mode?: "oauth" | "service_account" | "refresh_token";
-  client_id?: string;
-  client_secret?: string;
-  account_email?: string;
+  mode?: "oauth" | "service_account";
 }
 
 export type DeviceTokens = Record<string, DeviceToken>;

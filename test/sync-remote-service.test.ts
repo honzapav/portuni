@@ -5,16 +5,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
 import { getTokenStore, resetTokenStoreForTests } from "../apps/server/domain/sync/token-store.js";
-import { listRules, replaceRules } from "../apps/server/domain/sync/routing.js";
-import { resetUserTokenCacheForTests, __setUserTokenFetchForTests } from "../apps/server/domain/sync/drive-user-auth.js";
-import {
-  connectDrive, setDriveTarget, driveStatus, testDrive, disconnectDrive, setupRemoteService,
-  __setDriveRestFetchForTests,
-} from "../apps/server/domain/sync/remote-service.js";
+import { setupRemoteService } from "../apps/server/domain/sync/remote-service.js";
 import { LocalModeNoRemoteError } from "../apps/server/domain/sync/types.js";
 
 let workspace: string;
-const CONN = { userId: "U1", refresh_token: "R1", client_id: "C", client_secret: "S", account_email: "a@b.cz" };
 
 const SAMPLE_SA = JSON.stringify({
   type: "service_account",
@@ -32,8 +26,6 @@ beforeEach(async () => {
   // below, which unsets this again.
   process.env.PORTUNI_AGENT_MODE = "1";
   resetTokenStoreForTests();
-  resetUserTokenCacheForTests();
-  __setUserTokenFetchForTests(async () => ({ access_token: "UAT", expires_in: 3600 }));
 });
 
 afterEach(async () => {
@@ -43,121 +35,11 @@ afterEach(async () => {
   await rm(workspace, { recursive: true, force: true });
 });
 
-function okJson(body: unknown): Response {
-  return new Response(JSON.stringify(body), { status: 200 });
-}
-
-describe("connectDrive + setDriveTarget", () => {
-  it("stores the token, lists drives, sets target and wildcard routing", async () => {
-    const { db } = await makeSharedDb();
-    __setDriveRestFetchForTests((async (url: string) =>
-      url.includes("/drives") ? okJson({ drives: [{ id: "D1", name: "Tým" }] }) : okJson({ files: [] })
-    ) as typeof fetch);
-    const r = await connectDrive(db, CONN);
-    assert.deepEqual(r.shared_drives, [{ id: "D1", name: "Tým" }]);
-    const stored = await (await getTokenStore()).read("gdrive");
-    assert.equal(stored?.refresh_token, "R1");
-    assert.equal(stored?.mode, "refresh_token");
-
-    await setDriveTarget(db, { userId: "U1", shared_drive_id: "D1" });
-    // makeSharedDb seeds exactly one routing rule for its "test-fs" remote
-    // (priority 10, wildcard node_type/org_slug). The only-if-empty guard in
-    // setDriveTarget must not add a gdrive wildcard rule on top of it.
-    const rules = await listRules(db);
-    assert.deepEqual(rules, [
-      { priority: 10, node_type: null, org_slug: null, remote_name: "test-fs" },
-    ]);
-    const s = await driveStatus(db);
-    assert.equal(s.configured, true);
-    assert.equal(s.account_email, "a@b.cz");
-    assert.equal(s.target?.kind, "shared_drive");
-  });
-
-  it("my_drive target creates the Portuni folder when missing", async () => {
-    const { db } = await makeSharedDb();
-    const posted: string[] = [];
-    __setDriveRestFetchForTests((async (url: string, init?: RequestInit) => {
-      if (url.includes("/drives")) return okJson({ drives: [] });
-      if (init?.method === "POST") { posted.push(String(init.body)); return okJson({ id: "NEW" }); }
-      return okJson({ files: [] }); // folder search: not found
-    }) as typeof fetch);
-    await connectDrive(db, CONN);
-    const t = await setDriveTarget(db, { userId: "U1", my_drive: true });
-    assert.equal(t.target.kind, "my_drive");
-    assert.ok(posted[0]?.includes("Portuni"));
-  });
-});
-
-describe("testDrive + disconnectDrive", () => {
-  it("maps auth failure to TOKEN_INVALID and 404 to TARGET_NOT_FOUND", async () => {
-    const { db } = await makeSharedDb();
-    __setDriveRestFetchForTests((async (url: string) =>
-      url.includes("/drives") ? okJson({ drives: [] }) : okJson({ files: [] })) as typeof fetch);
-    await connectDrive(db, CONN);
-    await setDriveTarget(db, { userId: "U1", shared_drive_id: "D1" });
-
-    __setDriveRestFetchForTests((async () => new Response("nope", { status: 404 })) as typeof fetch);
-    assert.deepEqual((await testDrive(db)) as object, { ok: false, code: "TARGET_NOT_FOUND", detail: "nope" });
-
-    const { DriveAuthError } = await import("../apps/server/domain/sync/drive-user-auth.js");
-    __setUserTokenFetchForTests(async () => { throw new DriveAuthError("revoked"); });
-    resetUserTokenCacheForTests();
-    const t = await testDrive(db);
-    assert.equal(t.ok, false);
-    assert.equal((t as { code: string }).code, "TOKEN_INVALID");
-  });
-
-  it("disconnect removes rules, remote and token in FK-safe order", async () => {
-    const { db } = await makeSharedDb();
-    __setDriveRestFetchForTests((async (url: string) =>
-      url.includes("/drives") ? okJson({ drives: [] }) : okJson({ files: [] })) as typeof fetch);
-    await connectDrive(db, CONN);
-    await setDriveTarget(db, { userId: "U1", shared_drive_id: "D1" });
-    await disconnectDrive(db);
-    assert.equal(await (await getTokenStore()).read("gdrive"), null);
-    assert.ok((await listRules(db)).every((r) => r.remote_name !== "gdrive"));
-    const s = await driveStatus(db);
-    assert.equal(s.configured, false);
-    assert.equal(s.connected, false);
-  });
-});
-
 describe("routing error guidance", () => {
   it("store failure without routing tells the agent and the user what to do", async () => {
     const { ROUTING_GUIDANCE } = await import("../apps/server/domain/sync/engine.js");
-    assert.match(ROUTING_GUIDANCE, /Nastavení → Synchronizace/);
     assert.match(ROUTING_GUIDANCE, /portuni_setup_remote/);
     assert.match(ROUTING_GUIDANCE, /portuni_list_remotes/);
-  });
-});
-
-describe("driveStatus.routed", () => {
-  it("is true when setDriveTarget adds the wildcard rule to an empty routing table", async () => {
-    const { db } = await makeSharedDb();
-    // Clear the test-fs rule makeSharedDb seeds so the routing table is
-    // genuinely empty when setDriveTarget runs its only-if-empty guard.
-    await replaceRules(db, []);
-    __setDriveRestFetchForTests((async (url: string) =>
-      url.includes("/drives") ? okJson({ drives: [{ id: "D1", name: "Tým" }] }) : okJson({ files: [] })
-    ) as typeof fetch);
-    await connectDrive(db, CONN);
-    await setDriveTarget(db, { userId: "U1", shared_drive_id: "D1" });
-
-    const s = await driveStatus(db);
-    assert.equal(s.routed, true);
-  });
-
-  it("is false when a pre-existing non-gdrive rule keeps the wildcard from being added", async () => {
-    const { db } = await makeSharedDb(); // seeds a "test-fs" wildcard rule
-    __setDriveRestFetchForTests((async (url: string) =>
-      url.includes("/drives") ? okJson({ drives: [{ id: "D1", name: "Tým" }] }) : okJson({ files: [] })
-    ) as typeof fetch);
-    await connectDrive(db, CONN);
-    await setDriveTarget(db, { userId: "U1", shared_drive_id: "D1" });
-
-    const s = await driveStatus(db);
-    assert.equal(s.configured, true);
-    assert.equal(s.routed, false);
   });
 });
 
@@ -177,41 +59,15 @@ describe("setupRemoteService SA My-Drive guard", () => {
   });
 });
 
-describe("connectDrive SA/gdrive name collision guard", () => {
-  it("throws when a service-account remote named gdrive already exists", async () => {
-    const { db } = await makeSharedDb();
-    await setupRemoteService(db, {
-      userId: "U1",
-      name: "gdrive",
-      type: "gdrive",
-      config: { shared_drive_id: "D1" },
-      service_account_json: SAMPLE_SA,
-    });
-
-    await assert.rejects(
-      connectDrive(db, CONN),
-      /service-account remote named 'gdrive' already exists/,
-    );
-  });
-});
-
 describe("local workspace cannot register or route to a remote (#310)", () => {
-  it("connectDrive, setDriveTarget and setupRemoteService all refuse with LOCAL_MODE_NO_REMOTE", async () => {
+  it("setupRemoteService refuses with LOCAL_MODE_NO_REMOTE", async () => {
     delete process.env.PORTUNI_AGENT_MODE;
     const { db } = await makeSharedDb();
-    await assert.rejects(
-      connectDrive(db, CONN),
-      (err: unknown) => err instanceof LocalModeNoRemoteError && err.code === "LOCAL_MODE_NO_REMOTE",
-    );
-    await assert.rejects(
-      setDriveTarget(db, { userId: "U1", shared_drive_id: "D1" }),
-      (err: unknown) => err instanceof LocalModeNoRemoteError,
-    );
     await assert.rejects(
       setupRemoteService(db, { userId: "U1", name: "x", type: "fs", config: { root: "/tmp/x" } }),
       (err: unknown) => err instanceof LocalModeNoRemoteError,
     );
-    // No side effect from connectDrive's token-store write leaked through.
+    // No side effect leaked through.
     assert.equal(await (await getTokenStore()).read("gdrive"), null);
   });
 });

@@ -105,10 +105,11 @@ function gateToolsByScope(server: McpServer, identity: RequestIdentity): void {
 }
 
 // Guides an agent/admin through the service-account path for Google Drive
-// sync -- the headless counterpart to the desktop app's Nastavení ->
-// Synchronizace OAuth flow. Surfaced to the model as a slash-style prompt so
-// it can be invoked directly instead of being rediscovered from the routing
-// error text every time.
+// sync -- the only path now that collaboration runs through central mode
+// (a local workspace cannot route to a remote at all, see #310/#311).
+// Surfaced to the model as a slash-style prompt so it can be invoked
+// directly instead of being rediscovered from the routing error text every
+// time.
 function registerSetupDriveRemotePrompt(server: McpServer): void {
   server.prompt(
     "setup-drive-remote",
@@ -126,8 +127,8 @@ function registerSetupDriveRemotePrompt(server: McpServer): void {
             "config {shared_drive_id}, and the JSON key as service_account_json; (4) call " +
             "portuni_set_routing_policy with [{priority: 1, node_type: null, org_slug: null, remote_name: <name>}] " +
             "unless a policy already exists (check portuni_list_remotes first); (5) verify with a test " +
-            "portuni_store and confirm the file appears on the shared drive. Note: desktop users should " +
-            "prefer Nastavení → Synchronizace (user OAuth) — the service account is for headless servers.",
+            "portuni_store and confirm the file appears on the shared drive. This is a central-mode-only " +
+            "setup — a local workspace cannot register or route to a remote.",
         },
       }],
     }),

@@ -1,7 +1,6 @@
 import type { FileAdapter, FileRef, RemoteConfig, DeviceTokens, SearchHit } from "./types.js";
 import { parseDriveConfig, parseServiceAccountJson, assertSaDriveConfig, type ServiceAccountKey, type DriveConfig } from "./drive-config.js";
 import { getDriveAccessToken, __setTokenFetchForTests } from "./drive-sa-auth.js";
-import { getUserAccessToken } from "./drive-user-auth.js";
 import { detectNativeFormat, EXPORT_MIME } from "./native-format.js";
 import { SEARCH_SNIPPET_MAX_CHARS } from "./types.js";
 
@@ -71,15 +70,13 @@ export function createDriveAdapter(remote: RemoteConfig, tokens: DeviceTokens): 
   const cfg: DriveConfig = parseDriveConfig(remote.config);
   const t = tokens[remote.name];
   let getAccessToken: () => Promise<string>;
-  if (t?.mode === "refresh_token" && t.refresh_token) {
-    getAccessToken = () => getUserAccessToken(t);
-  } else if (t?.service_account_json) {
+  if (t?.service_account_json) {
     assertSaDriveConfig(cfg);
     const sa: ServiceAccountKey = parseServiceAccountJson(t.service_account_json);
     getAccessToken = () => getDriveAccessToken(sa);
   } else {
     throw new Error(
-      `Drive remote ${remote.name}: no credentials on this device. Connect Google Drive in Nastavení → Synchronizace, or run portuni_setup_remote with service_account_json.`,
+      `Drive remote ${remote.name}: no credentials on this device. Run portuni_setup_remote with service_account_json.`,
     );
   }
   const driveRoot = cfg.root_folder_id ?? cfg.shared_drive_id!;

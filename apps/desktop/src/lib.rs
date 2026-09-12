@@ -1257,9 +1257,7 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
     // /sync/jobs/<id>, #273) is the background multi-node sync job the
     // footer's "Synchronizovat vše" starts -- it fans out into per-node
     // POST /nodes/:id/sync calls, which are themselves already local-only
-    // below, so the job driving them must run on this device too. /sync/drive/*
-    // is NOT here: Drive remote config lives on the central server in
-    // central mode.
+    // below, so the job driving them must run on this device too.
     if p == "/scope"
         || p == "/sandbox-profile"
         || p == "/sync/pending"
@@ -2031,9 +2029,9 @@ async fn restart_sidecar(window: tauri::Window, id: Option<String>) -> Result<()
 
 // Snapshot the local sidecar's port + bearer token for `ws_id`, then drop
 // the guards before the caller awaits anything — holding a std::sync::Mutex
-// across .await deadlocks the executor on contention. Shared by api_request
-// (webview proxy) and auth::google_drive_connect (loopback POST to the
-// sidecar), both of which need to reach the same local backend.
+// across .await deadlocks the executor on contention. Shared by callers that
+// need to reach this workspace's local backend (e.g. api_request's webview
+// proxy, pty.rs's terminal-exit report).
 //
 // Port 0 is the central-mode sentinel: the sync agent for this workspace
 // isn't running (not logged in yet, or no server_url). Callers that need to
@@ -3332,8 +3330,6 @@ pub fn run() {
             pty::pty_kill,
             auth::auth_status,
             auth::google_login,
-            auth::google_client_configured,
-            auth::google_drive_connect,
             auth::auth_refresh,
             auth::auth_logout,
             auth::central_request,
@@ -4102,14 +4098,6 @@ mod local_only_path_tests {
         assert!(is_local_only_path("/sync/jobs/current"));
         assert!(is_local_only_path("/sync/jobs/01ABCDEF"));
         assert!(is_local_only_path("/sync/jobs/01ABCDEF?x=1"));
-    }
-
-    #[test]
-    fn sync_drive_stays_central() {
-        // Drive remote config lives on the central server in central mode
-        // (the agent has no Drive credentials) -- only /sync/pending is
-        // device-local, not the whole /sync/* namespace.
-        assert!(!is_local_only_path("/sync/drive/status"));
     }
 
     #[test]
