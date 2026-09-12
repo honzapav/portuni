@@ -9,7 +9,7 @@ import { createMcpServer } from "./server.js";
 import { parseBody, RequestBodyTooLargeError } from "../http/middleware.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { autoSeedFromHome, parseHomeNodeIdFromUrl, parseResumeSessionIdFromUrl } from "./auto-seed.js";
-import { resumeSessionPersistence } from "./session-persistence.js";
+import { rehydrateConnectorWriteGrants, resumeSessionPersistence } from "./session-persistence.js";
 import { disposeSessionProjection } from "./disk-projection.js";
 import { spawnSessionIdFromHeader } from "../domain/session-projection.js";
 import { extractClientNameFromInitializeBody } from "./client-name.js";
@@ -179,6 +179,24 @@ export function createMcpTransport(): McpTransport {
             }),
           );
           return;
+        }
+      }
+
+      // Connector sessions (interactive_chat): restore the durable "created
+      // by this user's chats" write grants before the first tool call --
+      // see rehydrateConnectorWriteGrants. Best-effort: a failure leaves the
+      // write set empty (the pre-existing behavior) and is logged, since
+      // nothing a connector session reads depends on it.
+      if (scope.sessionType === "interactive_chat") {
+        try {
+          const granted = await rehydrateConnectorWriteGrants(getDb(), scope, identity);
+          if (granted.length > 0) {
+            await logAudit(identity.userId, "connector_write_grants_rehydrated", "scope", granted.join(","), {
+              node_ids: granted,
+            });
+          }
+        } catch (err) {
+          console.error("MCP connector write-grant rehydration failed:", err);
         }
       }
 

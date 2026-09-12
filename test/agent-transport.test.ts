@@ -711,6 +711,11 @@ describe("agent MCP front door: write gate on LOCAL_TOOLS", () => {
       assert.equal(r.isError, true);
       const payload = JSON.parse(r.content[0].text);
       assert.equal(payload.error, "write_expansion_required");
+      // connectAs declares no elicitation capability, so the front door
+      // must give the same honest hint as guardNodeWrite (mcp/write-gate.ts)
+      // instead of recommending an expand_scope call it would refuse.
+      assert.equal(payload.elicitation_supported, false);
+      assert.match(String(payload.hint), /does not support MCP elicitation dialogs/);
     } finally {
       await closeClient(client);
     }

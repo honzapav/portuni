@@ -215,7 +215,7 @@ migrations, or whenever the user asks about sync state.
 |-----------|------|----------|-------------|
 | `node_id` | string | no | Restrict to one node |
 | `remote_name` | string | no | Restrict to one remote |
-| `include_discovery` | boolean | no | Walk the mirror + list the remote for new files (default: true) |
+| `include_discovery` | boolean | no | Walk the mirror + list the remote for new files (default: true). With `node_id`, the remote is listed even when the node has no mirror on this device (a connector session on the central server, for instance), so a file dropped on the remote by hand or via a Drive connector surfaces as `new_remote` and can be `portuni_adopt_files`'d; `new_local` needs a mirror |
 | `classes` | string[] | no | Only return entries for these classes: `clean`, `push`, `pull`, `conflict`, `remote_missing`, `remote_error`, `native`, `deleted_local`, `new_local`, `new_remote` |
 | `path_prefix` | string | no | Only return entries whose path starts with this prefix |
 | `limit` | number | no | Max entries per class |
