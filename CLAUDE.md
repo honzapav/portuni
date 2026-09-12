@@ -156,7 +156,18 @@ symlink to this file.
   falls back to `file:<dataDir>/portuni.db` (`apps/server/desktop.ts`) — there
   the local SQLite IS the source of truth and no Turso is involved. Central
   mode (`data_mode: "central"`) has no graph DB in the sidecar at all;
-  everything goes through the central server.
+  everything goes through the central server. **A local workspace (neither
+  `PORTUNI_AUTH_MODE=google` nor `PORTUNI_AGENT_MODE=1` —
+  `infra/server-config.ts`'s `isLocalWorkspace()`) cannot register or route
+  to a remote (#310).** `upsertRemote`, `setupRemoteService`,
+  `setRoutingPolicyService`, `connectDrive` and `setDriveTarget`
+  (`domain/sync/routing.ts`, `domain/sync/remote-service.ts`) all throw
+  `LocalModeNoRemoteError` (code `LOCAL_MODE_NO_REMOTE`) there instead of
+  writing `remotes`/`remote_routing` — collaboration is central mode's job.
+  A local workspace with pre-existing rows from before this rule logs one
+  warning at boot (`boot/local-mode-remote-warning.ts`) and otherwise keeps
+  running unchanged; the local engine itself does not yet know to ignore
+  those rows (that is a follow-up, not part of #310).
 - **File state is deterministic, not agent-driven.** A mirror watcher
   (`apps/server/domain/sync/mirror-watcher.ts` → `reconcile.ts`) registers new
   files and reconciles edits/deletes on every disk change, so the UI's sync

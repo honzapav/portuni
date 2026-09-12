@@ -11,6 +11,7 @@ import {
   connectDrive, setDriveTarget, driveStatus, testDrive, disconnectDrive, setupRemoteService,
   __setDriveRestFetchForTests,
 } from "../apps/server/domain/sync/remote-service.js";
+import { LocalModeNoRemoteError } from "../apps/server/domain/sync/types.js";
 
 let workspace: string;
 const CONN = { userId: "U1", refresh_token: "R1", client_id: "C", client_secret: "S", account_email: "a@b.cz" };
@@ -26,6 +27,10 @@ beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), "portuni-remotesvc-"));
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
   process.env.PORTUNI_TOKEN_STORE = "file";
+  // These tests exercise remote-service.ts's business logic, not the
+  // LOCAL_MODE_NO_REMOTE guard (#310) -- that has its own describe block
+  // below, which unsets this again.
+  process.env.PORTUNI_AGENT_MODE = "1";
   resetTokenStoreForTests();
   resetUserTokenCacheForTests();
   __setUserTokenFetchForTests(async () => ({ access_token: "UAT", expires_in: 3600 }));
@@ -34,6 +39,7 @@ beforeEach(async () => {
 afterEach(async () => {
   resetTokenStoreForTests();
   delete process.env.PORTUNI_TOKEN_STORE;
+  delete process.env.PORTUNI_AGENT_MODE;
   await rm(workspace, { recursive: true, force: true });
 });
 
@@ -186,5 +192,26 @@ describe("connectDrive SA/gdrive name collision guard", () => {
       connectDrive(db, CONN),
       /service-account remote named 'gdrive' already exists/,
     );
+  });
+});
+
+describe("local workspace cannot register or route to a remote (#310)", () => {
+  it("connectDrive, setDriveTarget and setupRemoteService all refuse with LOCAL_MODE_NO_REMOTE", async () => {
+    delete process.env.PORTUNI_AGENT_MODE;
+    const { db } = await makeSharedDb();
+    await assert.rejects(
+      connectDrive(db, CONN),
+      (err: unknown) => err instanceof LocalModeNoRemoteError && err.code === "LOCAL_MODE_NO_REMOTE",
+    );
+    await assert.rejects(
+      setDriveTarget(db, { userId: "U1", shared_drive_id: "D1" }),
+      (err: unknown) => err instanceof LocalModeNoRemoteError,
+    );
+    await assert.rejects(
+      setupRemoteService(db, { userId: "U1", name: "x", type: "fs", config: { root: "/tmp/x" } }),
+      (err: unknown) => err instanceof LocalModeNoRemoteError,
+    );
+    // No side effect from connectDrive's token-store write leaked through.
+    assert.equal(await (await getTokenStore()).read("gdrive"), null);
   });
 });

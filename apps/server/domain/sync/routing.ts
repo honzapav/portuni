@@ -1,5 +1,7 @@
 import type { Client } from "@libsql/client";
 import type { RemoteConfig, RemoteType } from "./types.js";
+import { LocalModeNoRemoteError } from "./types.js";
+import { isLocalWorkspace } from "../../infra/server-config.js";
 
 export interface RemoteRow extends RemoteConfig {
   created_by: string;
@@ -14,6 +16,7 @@ export interface UpsertRemoteArgs {
 }
 
 export async function upsertRemote(db: Client, a: UpsertRemoteArgs): Promise<void> {
+  if (isLocalWorkspace()) throw new LocalModeNoRemoteError();
   await db.execute({
     sql: `INSERT INTO remotes (name, type, config_json, created_by, created_at)
           VALUES (?, ?, ?, ?, datetime('now'))

@@ -40,6 +40,12 @@ before(async () => {
   process.env.PORT = String(PORT);
   process.env.HOST = "127.0.0.1";
   process.env.PORTUNI_AUTH_TOKEN = TOKEN;
+  // These routes exercise remote-service.ts's business logic, not the
+  // LOCAL_MODE_NO_REMOTE guard (#310) -- covered separately below. Setting
+  // just PORTUNI_AGENT_MODE (not PORTUNI_AUTH_MODE=google, which would
+  // switch the bearer-token auth path above to Google JWT) is enough to
+  // make isLocalWorkspace() report false without touching auth.
+  process.env.PORTUNI_AGENT_MODE = "1";
 
   const { ensureSchemaOn } = await import("../apps/server/infra/schema.js");
   const { setDbForTesting } = await import("../apps/server/infra/db.js");
@@ -65,6 +71,7 @@ after(async () => {
   await handle.shutdown();
   const { setDbForTesting } = await import("../apps/server/infra/db.js");
   setDbForTesting(null);
+  delete process.env.PORTUNI_AGENT_MODE;
 });
 
 beforeEach(async () => {
@@ -182,5 +189,34 @@ describe("target before connect", () => {
     assert.equal(res.status, 409);
     const body = (await res.json()) as { error: string };
     assert.equal(body.error, "not_connected");
+  });
+});
+
+describe("local workspace cannot register a remote (#310)", () => {
+  it("connect and target both 409 with LOCAL_MODE_NO_REMOTE when neither central nor agent mode", async () => {
+    delete process.env.PORTUNI_AGENT_MODE;
+    try {
+      const connectRes = await fetch(`${base}/sync/drive/connect`, {
+        method: "POST",
+        headers: authJson,
+        body: JSON.stringify({
+          refresh_token: "R", client_id: "C", client_secret: "S", account_email: "a@b.cz",
+        }),
+      });
+      assert.equal(connectRes.status, 409);
+      const connectBody = (await connectRes.json()) as { code: string };
+      assert.equal(connectBody.code, "LOCAL_MODE_NO_REMOTE");
+
+      const targetRes = await fetch(`${base}/sync/drive/target`, {
+        method: "POST",
+        headers: authJson,
+        body: JSON.stringify({ shared_drive_id: "D1" }),
+      });
+      assert.equal(targetRes.status, 409);
+      const targetBody = (await targetRes.json()) as { code: string };
+      assert.equal(targetBody.code, "LOCAL_MODE_NO_REMOTE");
+    } finally {
+      process.env.PORTUNI_AGENT_MODE = "1";
+    }
   });
 });

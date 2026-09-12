@@ -31,7 +31,10 @@ project says "graph sync" it means the **Turso plane**.
 - **Local mode** (default, the owner). The desktop app runs the Portuni server
   itself (the embedded sidecar), talks **directly to Turso**, and runs the
   **file sync engine** on your own machine (mirror folders ↔ Drive). Full power,
-  full trust.
+  full trust. A local workspace cannot be given a remote — `portuni_setup_remote`,
+  `portuni_set_routing_policy`, and connecting Drive all refuse with
+  `LOCAL_MODE_NO_REMOTE`. Sharing files with other machines is what central
+  mode is for.
 - **Central mode** (a teammate). Every graph request goes to a
   shared server with a **Google login**, so the server can **enforce
   permissions** (groups, per-node visibility). The teammate never holds the raw

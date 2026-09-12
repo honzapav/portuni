@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile, readFile, mkdir, rename, stat, copyFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { makeSharedDb } from "./helpers/shared-db.js";
+import { makeSharedDb, insertRemoteForTests, insertRuleForTests } from "./helpers/shared-db.js";
 import { storeFile, registerLocalFile } from "../apps/server/domain/sync/engine.js";
 import { sha256Buffer } from "../apps/server/domain/sync/hash.js";
 import { moveFile, deleteFile } from "../apps/server/domain/sync/engine-mutations.js";
@@ -21,7 +21,6 @@ import {
 } from "../apps/server/domain/sync/pending-ops.js";
 import { runNodeSync } from "../apps/server/domain/sync/sync-run.js";
 import { ulid } from "ulid";
-import { upsertRemote, addRule } from "../apps/server/domain/sync/routing.js";
 
 async function exists(p: string): Promise<boolean> {
   return stat(p).then(
@@ -500,7 +499,7 @@ describe("interrupted cross-remote move", () => {
     const shared = await makeSharedDb();
     const { db } = shared;
     const secondRoot = await mkdtemp(join(tmpdir(), "portuni-pending-ops-remote2-"));
-    await upsertRemote(db, {
+    await insertRemoteForTests(db, {
       name: "test-fs-2",
       type: "fs",
       config: { root: secondRoot },
@@ -522,7 +521,7 @@ describe("interrupted cross-remote move", () => {
     });
     // priority ASC wins, so this beats the shared fixture's catch-all rule
     // for org "druha" only -- the source node keeps test-fs.
-    await addRule(db, { priority: 1, node_type: null, org_slug: "druha", remote_name: "test-fs-2" });
+    await insertRuleForTests(db, { priority: 1, node_type: null, org_slug: "druha", remote_name: "test-fs-2" });
     return { ...shared, secondRoot, node2 };
   }
 

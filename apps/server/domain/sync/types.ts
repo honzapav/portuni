@@ -85,3 +85,15 @@ export class CapabilityError extends Error {
     this.name = "CapabilityError";
   }
 }
+
+// A local workspace (see infra/server-config.ts's isLocalWorkspace()) has no
+// remote and cannot be given one -- collaboration runs through central mode
+// instead. Thrown by every remote-registration/routing write; central and
+// agent-mode servers never see this.
+export class LocalModeNoRemoteError extends Error {
+  readonly code = "LOCAL_MODE_NO_REMOTE" as const;
+  constructor() {
+    super("Lokální workspace nemá remote; sdílení souborů běží přes centrální server.");
+    this.name = "LocalModeNoRemoteError";
+  }
+}

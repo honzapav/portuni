@@ -1,5 +1,7 @@
 import type { Client } from "@libsql/client";
 import type { DeviceToken, RemoteType } from "./types.js";
+import { LocalModeNoRemoteError } from "./types.js";
+import { isLocalWorkspace } from "../../infra/server-config.js";
 import {
   upsertRemote,
   getRemote,
@@ -29,6 +31,9 @@ export interface SetupRemoteArgs {
 }
 
 export async function setupRemoteService(db: Client, a: SetupRemoteArgs): Promise<void> {
+  // Fail before any side effect (e.g. the token-store write below) rather
+  // than relying solely on upsertRemote's own guard further down.
+  if (isLocalWorkspace()) throw new LocalModeNoRemoteError();
   if (a.type === "fs") {
     if (typeof a.config.root !== "string") {
       throw new Error("fs remote requires config.root as a string");
@@ -64,6 +69,7 @@ export async function setRoutingPolicyService(
   db: Client,
   rules: RoutingRule[],
 ): Promise<void> {
+  if (isLocalWorkspace()) throw new LocalModeNoRemoteError();
   await replaceRules(db, rules);
 }
 
@@ -174,6 +180,7 @@ export async function connectDrive(
   db: Client,
   a: ConnectDriveArgs,
 ): Promise<{ account_email: string; shared_drives: DriveInfo[] }> {
+  if (isLocalWorkspace()) throw new LocalModeNoRemoteError();
   const existingRemote = await getRemote(db, GDRIVE_REMOTE);
   if (existingRemote) {
     const existingToken = await (await getTokenStore()).read(GDRIVE_REMOTE);
@@ -208,6 +215,7 @@ export async function setDriveTarget(
   db: Client,
   a: SetDriveTargetArgs,
 ): Promise<{ target: DriveTargetInfo }> {
+  if (isLocalWorkspace()) throw new LocalModeNoRemoteError();
   const token = await readGdriveToken();
   if (!token) throw new DriveNotConnectedError("Google Drive not connected");
 

@@ -11,6 +11,8 @@ For the conceptual model see [Local Mirrors](/concepts/mirrors/).
 
 A **remote** is a backend storage configuration. One row per remote in the `remotes` table. The same Portuni instance can have many remotes – e.g. one Google Shared Drive per organization.
 
+A **local workspace** (neither central mode nor a central-mode sync agent — see [Data Modes](/concepts/data-modes/)) cannot register or route to a remote at all. `portuni_setup_remote`, `portuni_set_routing_policy`, and the Drive connect/target REST endpoints all refuse with error code `LOCAL_MODE_NO_REMOTE` there. Sharing files across machines runs through central mode instead.
+
 ### portuni_setup_remote
 
 Create **or update** a named remote (upsert) and store its credentials. Calling it again with an existing `name` replaces that remote's config and drops the cached adapter.

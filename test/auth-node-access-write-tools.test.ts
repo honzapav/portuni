@@ -18,7 +18,7 @@ import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
-import { upsertRemote, addRule } from "../apps/server/domain/sync/routing.js";
+import { insertRemoteForTests, insertRuleForTests } from "./helpers/shared-db.js";
 import { createMcpServer, type SessionCtx } from "../apps/server/mcp/server.js";
 import { SessionScope } from "../apps/server/mcp/scope.js";
 import { createDiskProjector } from "../apps/server/mcp/disk-projection.js";
@@ -164,13 +164,13 @@ describe("Access checks on the eight previously-unguarded write tools", () => {
       args: [ulid(), visibleNodeId, orgId, SOLO],
     });
 
-    await upsertRemote(db, {
+    await insertRemoteForTests(db, {
       name: "test-fs",
       type: "fs",
       config: { root: remoteRoot },
       created_by: SOLO,
     });
-    await addRule(db, { priority: 10, node_type: null, org_slug: null, remote_name: "test-fs" });
+    await insertRuleForTests(db, { priority: 10, node_type: null, org_slug: null, remote_name: "test-fs" });
 
     await registerMirror(SOLO, restrictedNodeId, join(workspace, "restricted-mirror"));
     await registerMirror(SOLO, visibleNodeId, join(workspace, "visible-mirror"));
