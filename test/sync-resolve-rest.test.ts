@@ -38,6 +38,7 @@ beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), "portuni-resolve-rest-"));
   originalWorkspaceRoot = process.env.PORTUNI_WORKSPACE_ROOT;
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+  process.env.PORTUNI_AGENT_MODE = "1";
   resetLocalDbForTests();
   resetAdapterCacheForTests();
   shared = await makeSharedDb();
@@ -61,6 +62,7 @@ afterEach(async () => {
   resetAdapterCacheForTests();
   if (originalWorkspaceRoot === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
   else process.env.PORTUNI_WORKSPACE_ROOT = originalWorkspaceRoot;
+  delete process.env.PORTUNI_AGENT_MODE;
   await rm(workspace, { recursive: true, force: true });
 });
 

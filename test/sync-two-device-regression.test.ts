@@ -21,6 +21,7 @@ beforeEach(async () => {
 afterEach(async () => {
   resetLocalDbForTests();
   resetAdapterCacheForTests();
+  delete process.env.PORTUNI_AGENT_MODE;
   if (originalEnv === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
   else process.env.PORTUNI_WORKSPACE_ROOT = originalEnv;
   await rm(workspaceA, { recursive: true, force: true });
@@ -29,6 +30,7 @@ afterEach(async () => {
 
 async function switchTo(workspace: string): Promise<void> {
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+  process.env.PORTUNI_AGENT_MODE = "1";
   resetLocalDbForTests();
   resetAdapterCacheForTests();
 }

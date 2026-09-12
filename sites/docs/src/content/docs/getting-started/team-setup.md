@@ -10,7 +10,7 @@ If you're a teammate whose organization already runs a server, skip to [Join as 
 ## Two ways to share a graph
 
 - **Central server (recommended).** The org deploys the Portuni server with `PORTUNI_AUTH_MODE=google`. Teammates sign in with Google; the server checks Google Workspace group membership on every request and enforces per-user permissions and node visibility. Graph and file content both travel through the server.
-- **Shared credentials (small-team shortcut).** Everyone runs local mode against the same Turso database and the same Drive Service Account. It works, but every teammate holds the raw database token — full, unrestricted access, no per-user permissions. Treat it as a stopgap, not a destination. See [Data Modes](/concepts/data-modes/) for the full comparison.
+- **Shared credentials.** No longer possible. A local workspace cannot be given a remote or routed to one (`LOCAL_MODE_NO_REMOTE`), and sharing the raw database token gave every teammate full, unrestricted access with no per-user permissions. See [Data Modes](/concepts/data-modes/) for the full comparison.
 
 The rest of this page describes the central-server path.
 
@@ -50,7 +50,7 @@ The full variable inventory, including tunables not listed here, lives in [`docs
 
 | Scope | Who | Capabilities |
 |-------|-----|--------------|
-| admin | `PORTUNI_GROUPS_ADMIN` members | Everything: deletes, user management, remotes, routing policy, Drive connect; sees every node regardless of visibility |
+| admin | `PORTUNI_GROUPS_ADMIN` members | Everything: deletes, user management, remotes, routing policy; sees every node regardless of visibility |
 | manage | `PORTUNI_GROUPS_MANAGE` members | write + placing nodes in the network (move between organizations), node sharing (access lists, approving access requests), graph positions |
 | write | `PORTUNI_GROUPS_WRITE` members | Everyday work: create and edit nodes, edges, actors, responsibilities, data sources and tools; log and resolve events; files (store, pull, move, snapshot) |
 | read | any authenticated user from an allowed domain | Read only: context, nodes, files, events. Cannot create or edit anything |

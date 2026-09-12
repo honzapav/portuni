@@ -105,7 +105,6 @@ import {
   handleCreateEvent,
   handleUpdateEvent,
 } from "./events.js";
-import { routeSyncDrive } from "./sync-drive.js";
 import {
   handleGetSessionResumeInfo,
   handleListNodeSessions,
@@ -481,9 +480,6 @@ async function routeFiles(
   if (registerBatchMatch && method === "POST") {
     await handleRegisterFilesBatch(req, res, identity, decodeURIComponent(registerBatchMatch[1]));
     return true;
-  }
-  if (pathname.startsWith("/sync/drive/")) {
-    return routeSyncDrive(req, res, url, identity);
   }
   if (pathname === "/sync/info-batch" && method === "POST") {
     await handleSyncInfoBatch(req, res, identity);

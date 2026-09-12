@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createClient, type Client } from "@libsql/client";
 import { DDL_REMOTES_TABLE, DDL_REMOTE_ROUTING_TABLE, INDEX_REMOTE_ROUTING_PRIORITY } from "../apps/server/infra/schema.js";
-import { upsertRemote, addRule, resolveRemote } from "../apps/server/domain/sync/routing.js";
+import { resolveRemote } from "../apps/server/domain/sync/routing.js";
+import { insertRemoteForTests, insertRuleForTests } from "./helpers/shared-db.js";
 import { createOpenDALAdapter } from "../apps/server/domain/sync/opendal-adapter.js";
 import { buildRemotePath, buildNodeRoot } from "../apps/server/domain/sync/remote-path.js";
 import { sha256Buffer } from "../apps/server/domain/sync/hash.js";
@@ -14,6 +15,9 @@ import {
   upsertFileState, getFileState,
   resetLocalDbForTests,
 } from "../apps/server/domain/sync/local-db.js";
+import { useRemoteCapableEnv } from "./helpers/remote-capable-env.js";
+
+useRemoteCapableEnv();
 
 let workspace: string;
 let remoteRoot: string;
@@ -62,8 +66,8 @@ async function makeShared(): Promise<Client> {
 describe("foundation smoke", () => {
   it("wires routing, adapter, local state together", async () => {
     const db = await makeShared();
-    await upsertRemote(db, { name: "smoke-fs", type: "fs", config: { root: remoteRoot }, created_by: "U1" });
-    await addRule(db, { priority: 10, node_type: null, org_slug: null, remote_name: "smoke-fs" });
+    await insertRemoteForTests(db, { name: "smoke-fs", type: "fs", config: { root: remoteRoot }, created_by: "U1" });
+    await insertRuleForTests(db, { priority: 10, node_type: null, org_slug: null, remote_name: "smoke-fs" });
 
     const remoteName = await resolveRemote(db, "project", "workflow");
     assert.equal(remoteName, "smoke-fs");

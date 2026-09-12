@@ -3,11 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { makeSharedDb } from "./helpers/shared-db.js";
+import { makeSharedDb, insertRemoteForTests, insertRuleForTests } from "./helpers/shared-db.js";
 import { storeFile, statusScan } from "../apps/server/domain/sync/engine.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { moveNodeToOrganization } from "../apps/server/domain/edges.js";
-import { addRule, upsertRemote } from "../apps/server/domain/sync/routing.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
 
@@ -18,6 +17,7 @@ beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), "portuni-orgmove-"));
   originalEnv = process.env.PORTUNI_WORKSPACE_ROOT;
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+  process.env.PORTUNI_AGENT_MODE = "1";
   resetLocalDbForTests();
   resetAdapterCacheForTests();
 });
@@ -26,6 +26,7 @@ afterEach(async () => {
   resetAdapterCacheForTests();
   if (originalEnv === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
   else process.env.PORTUNI_WORKSPACE_ROOT = originalEnv;
+  delete process.env.PORTUNI_AGENT_MODE;
   await rm(workspace, { recursive: true, force: true });
 });
 
@@ -85,13 +86,13 @@ describe("moveNodeToOrganization migrates tracked files", () => {
     await storeFile(db, { userId: "U1", nodeId, localPath: src });
 
     const otherRoot = join(workspace, "other-remote");
-    await upsertRemote(db, {
+    await insertRemoteForTests(db, {
       name: "other-fs",
       type: "fs",
       config: { root: otherRoot },
       created_by: "U1",
     });
-    await addRule(db, { priority: 5, node_type: null, org_slug: "acme", remote_name: "other-fs" });
+    await insertRuleForTests(db, { priority: 5, node_type: null, org_slug: "acme", remote_name: "other-fs" });
 
     await assert.rejects(
       () => moveNodeToOrganization(db, "U1", nodeId, ORG2_ID),

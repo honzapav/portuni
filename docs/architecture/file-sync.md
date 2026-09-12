@@ -143,14 +143,14 @@ CREATE TABLE IF NOT EXISTS remote_stat_cache (
   file_id TEXT PRIMARY KEY,
   remote_hash TEXT,
   remote_modified_at DATETIME,
-  fetched_at DATETIME NOT NULL            -- used for 30s debounce in portuni_status
+  fetched_at DATETIME NOT NULL            -- when the hash was observed
 );
 ```
 
 Two tables:
 
 - `file_state` – the authoritative "what I last saw" record, plus a cached local hash keyed by (mtime, size) so we can skip rehashing unchanged files. Same trick as rsync and git.
-- `remote_stat_cache` – short-lived cache for remote stat results, so rapid successive `portuni_status` calls don't hammer the Drive API.
+- `remote_stat_cache` – the central engine's record of the remote hash it last observed per file. The local engine no longer reads or writes it: a local workspace has no remote (#312).
 
 ## FileAdapter interface
 
@@ -181,12 +181,11 @@ export interface RemoteConfig {
   config: Record<string, unknown>;
 }
 
-export interface DeviceTokens {
-  [remoteName: string]: {
-    access_token?: string;
-    refresh_token: string;
-  };
+export interface DeviceToken {
+  service_account_json?: string;
+  mode?: "service_account";
 }
+export type DeviceTokens = Record<string, DeviceToken>;
 
 export function createAdapter(remote: RemoteConfig, tokens: DeviceTokens): FileAdapter;
 ```
@@ -309,7 +308,9 @@ Algorithm:
   For each relevant files row:
     1. local_hash = read from sync.db cache if (mtime, size) unchanged,
                     else compute SHA-256 and update cache.
-    2. remote_stat = adapter.stat(remote_path), with 30s debounce from remote_stat_cache.
+    2. remote_stat = adapter.stat(remote_path) (central engine only; a local
+       workspace has no remote and skips this step, so it can only ever
+       classify clean, new_local or deleted_local).
     3. last_synced_hash = sync.db file_state.
     4. Classify:
        in_sync         local = last_synced = remote
@@ -449,10 +450,9 @@ of Phase 1.
 
 ### Supporting tools
 
-- **portuni_setup_remote** `{ name, type, config }` – admin, one-time per remote, creates `remotes` row.
+- **portuni_setup_remote** `{ name, type, config, service_account_json }` – admin, one-time per remote (central server only), creates `remotes` row and stores the service-account credential via TokenStore.
 - **portuni_set_routing_policy** `{ rules }` – admin, rare, rewrites `remote_routing`.
-- **portuni_connect_device** `{ remote_name? }` – per-device OAuth flow, stores tokens in varlock.
-- **portuni_list_remotes** – diagnostic, shows configured remotes and auth status on this device.
+- **portuni_list_remotes** – diagnostic, shows configured remotes and auth status.
 - **portuni_move_file** `{ file_id, new_subpath?, new_node_id? }` – explicit move within node or across nodes.
 - **portuni_rename_folder** `{ node_id, old_prefix, new_prefix }` – bulk prefix rename, atomic in DB, best-effort on remote.
 - **portuni_adopt_files** `{ node_id, paths, status? }` – register existing remote or local files that have no `files` row.
@@ -590,30 +590,22 @@ auto-merges and never silently overwrites.
 
 ## Setup flow
 
-### Desktop one-click (per-user OAuth)
-
-The default path for a local desktop workspace. **Settings → Synchronizace → Propojit Google Drive** runs the PKCE loopback OAuth flow in `apps/desktop/src/auth.rs` (`google_drive_connect`, scope `openid email https://www.googleapis.com/auth/drive`). The refresh token is extracted in Rust and POSTed to the sidecar's bearer-authed `POST /sync/drive/connect` over loopback — it never reaches the webview (security rule 1). The sidecar (`apps/server/domain/sync/remote-service.ts`) stores it via the TokenStore as a `refresh_token`-mode entry for the fixed remote name `gdrive`, then on target selection (`POST /sync/drive/target`) upserts the `gdrive` remote and adds a wildcard routing rule **only if the routing table is empty** (never clobbers an existing policy). Target can be a My Drive folder (`root_folder_id`, a `Portuni` folder Portuni creates) or a Shared Drive. The Drive adapter picks auth mode per token: `refresh_token` → `drive-user-auth.ts`, else service-account → `drive-sa-auth.ts`. REST surface: `/sync/drive/{connect,targets,target,status,test,disconnect}`.
+Collaboration is central mode only (see
+`docs/superpowers/specs/2026-09-11-one-collaboration-mode-design.md`): a
+local workspace cannot register or route to a remote at all
+(`LOCAL_MODE_NO_REMOTE`, #310), and the per-user Drive OAuth connect flow
+that used to run from the desktop's Settings → Synchronizace is retired
+(#311) along with it. Service Account setup, below, is the only path left.
 
 ### Admin setup (Service Account)
 
-One-time per Portuni deployment for headless/central/multi-remote setups, done by whoever sets up the Turso database. Also the only path when there's no desktop to click through consent:
+One-time per Portuni deployment (the central server), done by whoever sets
+it up:
 
-1. `portuni_setup_remote { name, type, config }` for each backend. Creates a `remotes` row. For `gdrive` a `shared_drive_id` is required (service accounts have no My Drive quota — enforced at setup by `assertSaDriveConfig`).
+1. `portuni_setup_remote { name, type, config, service_account_json }` for each backend. Creates a `remotes` row. For `gdrive` a `shared_drive_id` is required (service accounts have no My Drive quota — enforced at setup by `assertSaDriveConfig`).
 2. `portuni_set_routing_policy { rules }` to configure mapping from node-type/org to remote-name.
 
-Solo mode: one remote, one wildcard rule. Agents can be walked through this via the `setup-drive-remote` MCP prompt; when a store hits an unrouted node the error now carries setup guidance (`ROUTING_GUIDANCE` in `engine.ts`).
-
-### First-time device setup
-
-One-time per device (user's laptop, new machine, new teammate):
-
-1. `portuni_connect_device` reads the `remotes` table.
-2. For each remote, launches OAuth consent flow in a browser.
-3. Stores the refresh token in varlock under `portuni.remote.<name>.refresh_token`.
-4. Calls `adapter.stat()` against each remote to verify the token works.
-5. Initializes `$PORTUNI_WORKSPACE_ROOT/.portuni/sync.db` if absent.
-
-Subsequent machines of the same user use the same Google account and the same remote configs. Each machine gets its own refresh token stored locally.
+One remote, one wildcard rule covers the common case. Agents can be walked through this via the `setup-drive-remote` MCP prompt; when a store hits an unrouted node the error now carries setup guidance (`ROUTING_GUIDANCE` in `engine.ts`).
 
 ## Testing strategy
 
@@ -634,13 +626,13 @@ Subsequent machines of the same user use the same Google account and the same re
 ### Smoke tests against real Drive
 
 - Separate suite, opt-in via env var. Runs against a Google test account with a dedicated shared drive.
-- Verifies OAuth flow, resumable upload on a large file, rate-limit retry behavior.
+- Verifies the service-account JWT auth flow, resumable upload on a large file, rate-limit retry behavior.
 - Not part of the default `npm test` because it is slow and costs Google quota.
 
 ### What is mocked vs real
 
 - **FileAdapter is never mocked in unit tests for sync engine.** The FS backend of OpenDAL is our "test double" – it is a real adapter that happens to be local. This avoids mock-vs-real drift: the same adapter code runs in tests and production, only the backend config differs.
-- **OAuth flow is mocked in tests.** Real auth is only exercised in manual setup.
+- **The service-account JWT auth flow is mocked in tests.** Real auth is only exercised in manual setup.
 
 ## Phasing
 
@@ -649,7 +641,7 @@ Subsequent machines of the same user use the same Google account and the same re
 - OpenDAL-based FileAdapter with Google Drive as the first concrete backend.
 - Schema migration for `remotes`, `remote_routing`, updated `files` columns, local `sync.db`.
 - Five primary MCP tools: store, pull, status, snapshot, delete_file.
-- Supporting tools: setup_remote, set_routing_policy, connect_device, list_remotes, adopt_files.
+- Supporting tools: setup_remote, set_routing_policy, list_remotes, adopt_files.
 - Move detection in `portuni_status`; explicit `move_file` and `rename_folder`.
 - Solo user, one Drive shared drive, two devices (test scenario).
 - Tests: unit + integration against OpenDAL FS backend + opt-in smoke against real Drive.
@@ -688,10 +680,10 @@ Subsequent machines of the same user use the same Google account and the same re
 
 ## Open questions
 
-1. **Token rotation.** How do we handle Google OAuth refresh token expiry or revocation across devices? Per-device re-auth is simple but annoying. Centralized token vault (e.g. one device pushes fresh tokens to Turso encrypted) is more elegant but adds complexity. Phase 1: per-device re-auth, document the flow.
+1. ~~Token rotation.~~ Moot: collaboration is central mode only, and Drive credentials live on the central server alone as a single service-account key — no per-device token, no per-device re-auth, nothing to rotate across machines (#310/#311).
 2. **Large binary quotas.** What is the right user warning threshold? 100 MB feels conservative; 1 GB feels dangerous. Measure in practice.
 3. **Folder move vs delete+recreate semantics.** If a user deletes a folder on Drive web UI and creates a new one with the same name somewhere else, is that a move or two unrelated events? Hash matching handles file content, not folder identity. For now, treat as separate operations.
-4. **Stat cache invalidation for team scenarios.** The 30s remote_stat_cache is fine for solo. In a team, if user A pushes and user B runs status 10s later, B's cache misses the change. Acceptable for Phase 1; add cache invalidation (e.g. cache key includes `files.last_pushed_at`) in Phase 2.
+4. **Stat cache invalidation for team scenarios.** The local engine dropped its own 30s remote_stat_cache entirely once a local workspace could no longer have a remote to stat (#312) — this question now applies only to `engine-central.ts`'s own remote-hash observation cache (same table, different code path). If user A pushes and user B runs status 10s later, B's cache misses the change; add cache invalidation (e.g. cache key includes `files.last_pushed_at`) if this becomes a real problem in practice.
 5. ~~Deletion propagation.~~ Resolved in spec. `portuni_status` distinguishes `deleted_local` (files row + sync.db entry present, local missing) from `new_remote` (files row present, no sync.db entry – never pulled locally). `portuni_delete_file` offers `complete` and `unregister_only` modes. No auto-propagation either way.
 6. **Cold-start cost.** On a new device, first `portuni_status` has no sync.db cache, so it rehashes every local file and stats every remote. For a large project this could take minutes. Consider seeding sync.db from an initial pull operation rather than expecting status to bootstrap itself.
 
@@ -707,5 +699,5 @@ Subsequent machines of the same user use the same Google account and the same re
 - [ ] Write integration tests against OpenDAL FS backend.
 - [ ] Write opt-in smoke tests against real Google Drive test account.
 - [ ] Update MCP server instructions so Claude knows when to call portuni_status.
-- [ ] Document OAuth setup for Google Drive in project README.
+- [ ] Document Service Account setup for Google Drive in project README.
 - [ ] Manual test: solo user, two physical machines, round-trip edits with conflict detection.

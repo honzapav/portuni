@@ -29,9 +29,14 @@ project says "graph sync" it means the **Turso plane**.
 `data_mode` is not a feature switch — it is a transport and trust boundary:
 
 - **Local mode** (default, the owner). The desktop app runs the Portuni server
-  itself (the embedded sidecar), talks **directly to Turso**, and runs the
-  **file sync engine** on your own machine (mirror folders ↔ Drive). Full power,
-  full trust.
+  itself (the embedded sidecar), talks **directly to Turso**, and tracks files
+  in mirror folders on your own machine — but never talks to a remote at all.
+  A local workspace cannot be given one: `portuni_setup_remote` and
+  `portuni_set_routing_policy` refuse with `LOCAL_MODE_NO_REMOTE`, and so does
+  every push/pull operation (`portuni_store`, `portuni_pull`, a sync run).
+  Files there classify as `clean` (tracked, present) or `deleted_local`
+  (tracked, gone from disk) — never `push`/`pull`/`conflict`. Sharing files
+  with other machines is what central mode is for.
 - **Central mode** (a teammate). Every graph request goes to a
   shared server with a **Google login**, so the server can **enforce
   permissions** (groups, per-node visibility). The teammate never holds the raw
@@ -53,7 +58,7 @@ directly against the routed remote (Drive) on the teammate's behalf.
 
 |  | Graph plane | File-bytes plane |
 |---|---|---|
-| **Local mode** | sidecar → Turso | sync engine → Drive |
+| **Local mode** | sidecar → Turso | sync engine → tracked locally, no remote |
 | **Central mode** | central server → Turso | sync agent → device mirror, falling back to central server → Drive (adapter-direct); the agent also brokers mirror folders ↔ central server |
 
 Both cells of the central row are live. Opening a file in central mode reads
@@ -61,9 +66,9 @@ the device mirror when the node has one — including files that exist only
 locally and have not been pushed yet — and otherwise reads the bytes from
 Drive through the server (which has no mirror of its own and talks to the
 remote adapter directly). Saving writes the mirror file when one exists (the
-sync engine pushes it later, exactly like local mode) or writes back through
-the server, which refreshes the canonical hash in the graph so both planes
-stay consistent.
+sync agent pushes it to the central server later, on a deliberate sync) or
+writes back through the server directly, which refreshes the canonical hash
+in the graph so both planes stay consistent.
 Optimistic concurrency works the same as locally — a stale base version is a
 conflict, not a silent overwrite.
 
@@ -80,24 +85,19 @@ the teammate's machine.
 ### One desktop, both modes
 
 `data_mode` is **per workspace**, not per machine. The desktop's multi-workspace
-config can host a local-mode workspace (your own org, direct Turso + Drive) and
-a central-mode workspace (a team you're a teammate in) side by side, each with
-its own sidecar, port, and credentials.
+config can host a local-mode workspace (your own org, direct Turso, no remote)
+and a central-mode workspace (a team you're a teammate in) side by side, each
+with its own sidecar, port, and credentials.
 
-## Two ways teammates can collaborate
+## Collaboration is central mode
 
-### Shared-database collaboration (works today)
-
-Everyone runs **local mode** and shares the owner's database access and the same
-Drive. Each teammate's machine mirrors the same nodes and syncs the **same Drive
-folder**, keyed by the **same graph**.
-
-- **Pro:** file sharing works now.
-- **Con:** every teammate holds the **raw database token** — full, unrestricted
-  read/write. There are no per-person permissions. This is the exact problem
-  central mode exists to solve.
-
-### Central collaboration (the secure default for teams)
+Collaboration only ever happens through central mode — a local workspace
+cannot register or route to a remote at all (`LOCAL_MODE_NO_REMOTE`), so it
+has no way to share files or database access with anyone else, even if you
+wanted it to. An earlier "shared-database" pattern (everyone in local mode,
+sharing the owner's raw Turso token and Drive access) used to work but held
+no per-person permissions — that was exactly the problem central mode was
+built to solve, and it is no longer possible to set up at all.
 
 Teammates run **central mode**, sign in with Google, and get **enforced
 permissions** with no raw database token. Graph, file content, and teammate
@@ -105,7 +105,6 @@ mirrors all work through the central server.
 
 | | Files work? | Permissions enforced? | Teammate needs |
 |---|---|---|---|
-| **Shared-database** | yes | no (raw token) | database token + Drive access |
 | **Central** | yes | yes | a Google login |
 
 ## Glossary

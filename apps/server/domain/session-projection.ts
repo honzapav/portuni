@@ -405,6 +405,27 @@ export async function relinkProjectedFile(nodeId: string, absPath: string): Prom
   await Promise.all(entries.map((entry) => relinkOne(entry, absPath)));
 }
 
+// True when dest is already a hardlink of src (same inode on the same
+// device): the projection is current by construction and there is nothing
+// to redo. This check is what keeps the watcher <-> projection pair from
+// feeding itself: on macOS, link(src, dest) fires an fs.watch event for the
+// SOURCE file's parent directory even though dest lies outside the watched
+// mirror, so a relink that re-creates links it made a moment ago produces
+// exactly the directory event that triggers the next relink (Asana
+// 1218416968309091: an expanded 121-file node rebuilt every ~1 s, sidecar
+// pinned at 80-94 % CPU). Unlinking alone fires nothing, so once every link
+// is found current the cycle ends. A replaced inode (atomic save: write temp
+// + rename) or a missing dest still relinks; an EXDEV copy never matches and
+// is refreshed on every event, as before.
+async function isCurrentLink(src: string, dest: string): Promise<boolean> {
+  try {
+    const [s, d] = await Promise.all([stat(src), stat(dest)]);
+    return s.ino === d.ino && s.dev === d.dev;
+  } catch {
+    return false;
+  }
+}
+
 async function relinkTree(
   entry: ProjectedEntry,
   dirPath: string,
@@ -424,6 +445,7 @@ async function relinkTree(
     } else if (ent.isFile()) {
       const dest = join(entry.targetDir, relative(entry.mirrorPath, p));
       try {
+        if (await isCurrentLink(p, dest)) continue;
         await mkdir(dirname(dest), { recursive: true });
         await rm(dest, { force: true });
         await linkOrCopy(p, dest);
@@ -453,6 +475,7 @@ async function relinkOne(entry: ProjectedEntry, absPath: string): Promise<void> 
       await relinkTree(entry, absPath, isIgnored);
       return;
     }
+    if (await isCurrentLink(absPath, dest)) return;
     await mkdir(dirname(dest), { recursive: true });
     await rm(dest, { force: true });
     await linkOrCopy(absPath, dest);

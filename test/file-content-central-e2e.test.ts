@@ -27,7 +27,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { ulid } from "ulid";
 import { createClient, type Client } from "@libsql/client";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
-import { upsertRemote, replaceRules } from "../apps/server/domain/sync/routing.js";
+import { replaceRules } from "../apps/server/domain/sync/routing.js";
+import { insertRemoteForTests } from "./helpers/shared-db.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
@@ -142,7 +143,7 @@ beforeEach(async () => {
   if (REMOTE_NAME && SHARED_DRIVE_ID) {
     const config: Record<string, unknown> = { shared_drive_id: SHARED_DRIVE_ID };
     if (ROOT_FOLDER_ID) config.root_folder_id = ROOT_FOLDER_ID;
-    await upsertRemote(db, { name: REMOTE_NAME, type: "gdrive", config, created_by: "U1" });
+    await insertRemoteForTests(db, { name: REMOTE_NAME, type: "gdrive", config, created_by: "U1" });
     await replaceRules(db, [
       { priority: 1, node_type: null, org_slug: null, remote_name: REMOTE_NAME },
     ]);

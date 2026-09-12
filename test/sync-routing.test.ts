@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createClient, type Client } from "@libsql/client";
 import {
@@ -16,6 +16,7 @@ import {
   replaceRules,
   resolveRemote,
 } from "../apps/server/domain/sync/routing.js";
+import { LocalModeNoRemoteError } from "../apps/server/domain/sync/types.js";
 
 async function freshDb(): Promise<Client> {
   const db = createClient({ url: ":memory:" });
@@ -25,6 +26,20 @@ async function freshDb(): Promise<Client> {
   await db.execute("PRAGMA foreign_keys = ON");
   return db;
 }
+
+// upsertRemote refuses on a local workspace (#310) -- these CRUD tests are
+// about routing.ts's storage behavior, not that guard, so run them as
+// central mode (the isLocalWorkspace() check is exercised by its own
+// describe block below).
+let originalAuthMode: string | undefined;
+beforeEach(() => {
+  originalAuthMode = process.env.PORTUNI_AUTH_MODE;
+  process.env.PORTUNI_AUTH_MODE = "google";
+});
+afterEach(() => {
+  if (originalAuthMode === undefined) delete process.env.PORTUNI_AUTH_MODE;
+  else process.env.PORTUNI_AUTH_MODE = originalAuthMode;
+});
 
 describe("routing -- remotes CRUD", () => {
   it("upsertRemote creates a row; re-upsert updates", async () => {
@@ -194,5 +209,44 @@ describe("routing -- resolveRemote", () => {
     });
     assert.equal(await resolveRemote(db, "project", null), null);
     assert.equal(await resolveRemote(db, "project", "workflow"), "specific");
+  });
+});
+
+describe("routing -- local workspace cannot register a remote (#310)", () => {
+  it("upsertRemote refuses with LOCAL_MODE_NO_REMOTE when neither central nor agent mode", async () => {
+    delete process.env.PORTUNI_AUTH_MODE;
+    delete process.env.PORTUNI_AGENT_MODE;
+    const db = await freshDb();
+    await assert.rejects(
+      () => upsertRemote(db, { name: "x", type: "fs", config: {}, created_by: "U" }),
+      (err: unknown) => {
+        assert.ok(err instanceof LocalModeNoRemoteError);
+        assert.equal(err.code, "LOCAL_MODE_NO_REMOTE");
+        return true;
+      },
+    );
+    assert.equal(await getRemote(db, "x"), null);
+  });
+
+  it("upsertRemote succeeds again once auth mode is google", async () => {
+    delete process.env.PORTUNI_AUTH_MODE;
+    delete process.env.PORTUNI_AGENT_MODE;
+    const db = await freshDb();
+    process.env.PORTUNI_AUTH_MODE = "google";
+    await upsertRemote(db, { name: "x", type: "fs", config: {}, created_by: "U" });
+    assert.ok(await getRemote(db, "x"));
+  });
+
+  it("upsertRemote succeeds again once agent mode is on", async () => {
+    delete process.env.PORTUNI_AUTH_MODE;
+    delete process.env.PORTUNI_AGENT_MODE;
+    const db = await freshDb();
+    process.env.PORTUNI_AGENT_MODE = "1";
+    try {
+      await upsertRemote(db, { name: "x", type: "fs", config: {}, created_by: "U" });
+      assert.ok(await getRemote(db, "x"));
+    } finally {
+      delete process.env.PORTUNI_AGENT_MODE;
+    }
   });
 });

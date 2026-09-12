@@ -6,21 +6,28 @@ import { describe, it, beforeEach, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { createDriveAdapter, __setDriveFetchForTests } from "../apps/server/domain/sync/drive-adapter.js";
 import type { RemoteConfig, DeviceTokens } from "../apps/server/domain/sync/types.js";
-import { __setUserTokenFetchForTests, resetUserTokenCacheForTests } from "../apps/server/domain/sync/drive-user-auth.js";
+import { generateKeyPairSync } from "node:crypto";
+import { resetSaTokenCacheForTests } from "../apps/server/domain/sync/drive-sa-auth.js";
 import { FakeDrive } from "./helpers/fake-drive.js";
 
+const { privateKey: pk } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const PRIVATE_KEY_PEM = pk.export({ type: "pkcs8", format: "pem" }) as string;
+const sa = JSON.stringify({
+  type: "service_account",
+  client_email: "sa@proj.iam.gserviceaccount.com",
+  private_key: PRIVATE_KEY_PEM,
+  token_uri: "https://oauth2.googleapis.com/token",
+});
+
 const remote: RemoteConfig = { name: "dw", type: "gdrive", config: { shared_drive_id: "ROOT" } };
-const tokens: DeviceTokens = {
-  dw: { mode: "refresh_token", refresh_token: "r", client_id: "c", client_secret: "s" },
-};
+const tokens: DeviceTokens = { dw: { mode: "service_account", service_account_json: sa } };
 
 describe("Drive adapter: folder identity under concurrency", () => {
   let drive: FakeDrive;
   beforeEach(() => {
     drive = new FakeDrive();
     __setDriveFetchForTests(drive.fetch);
-    resetUserTokenCacheForTests();
-    __setUserTokenFetchForTests(async () => ({ access_token: "UAT", expires_in: 3600 }));
+    resetSaTokenCacheForTests();
   });
   afterEach(() => {
     mock.restoreAll();
@@ -65,8 +72,7 @@ describe("Drive adapter: existing duplicate siblings", () => {
   beforeEach(() => {
     drive = new FakeDrive();
     __setDriveFetchForTests(drive.fetch);
-    resetUserTokenCacheForTests();
-    __setUserTokenFetchForTests(async () => ({ access_token: "UAT", expires_in: 3600 }));
+    resetSaTokenCacheForTests();
     warn = mock.method(console, "warn", () => undefined);
   });
   afterEach(() => {

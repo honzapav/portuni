@@ -559,7 +559,16 @@ describe("createMirrorWatcher backfill", () => {
     await mkdir(oldDir, { recursive: true });
     const oldAbs = join(oldDir, "slide.md");
     await writeFile(oldAbs, "obsah");
-    const stored = await storeFile(db, { userId: "U1", nodeId, localPath: oldAbs });
+    // storeFile is fixture setup here (pre-existing tracked file before the
+    // mv), not the subject under test -- a local workspace can't push, so
+    // simulate the one non-local deployment that still can (#310/#312).
+    process.env.PORTUNI_AGENT_MODE = "1";
+    let stored: Awaited<ReturnType<typeof storeFile>>;
+    try {
+      stored = await storeFile(db, { userId: "U1", nodeId, localPath: oldAbs });
+    } finally {
+      delete process.env.PORTUNI_AGENT_MODE;
+    }
 
     // The mv happens with no watcher running at all.
     await mkdir(join(mirrorRoot, "outputs"), { recursive: true });

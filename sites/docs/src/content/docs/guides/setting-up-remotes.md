@@ -1,38 +1,32 @@
 ---
 title: Setting Up Remotes
-description: Connect Google Drive from the desktop app in one click, or set up a Service Account for headless and multi-remote deployments.
+description: Set up a Google Drive Service Account remote for central mode — the only way Portuni shares files across a team.
 ---
 
-There are two ways to connect Portuni to Google Drive:
+Collaboration in Portuni is central mode: the central server is the only
+thing that ever holds Drive credentials, and it reaches Drive with a single
+Service Account. A local (single-machine) workspace cannot register or
+route to a remote at all — see [Data Modes](/concepts/data-modes/). There is
+no per-user Google sign-in for Drive; only an admin or agent with access to
+the central server's MCP tools configures a remote.
 
-- **Desktop, one click (recommended for most people).** In `Portuni.app`, open **Settings → Synchronizace** and click **Propojit Google Drive**. This runs a normal Google sign-in, you pick a target (a folder on your own My Drive, or a Shared Drive), and you're done — no Cloud Console, no JSON keys. Files sync under *your* Google identity. See [Working in the App](/guides/working-in-the-app/#synchronizace-google-drive).
-- **Service Account (headless servers, or advanced multi-remote routing).** The rest of this guide. Use it when there is no desktop app to click through the sign-in — a central server, CI, or a deployment that fans several organizations out to different Shared Drives. It's more setup (one-time admin in the Google Cloud Console) but it needs no interactive login.
-
-This guide walks the Service-Account path from "I have a fresh Google account" to "Portuni is pushing files to a Shared Drive on my behalf." Most of the work is one-time admin in the Google Cloud Console; the Portuni-side configuration is two MCP calls. If you'd rather be walked through it interactively, run the `setup-drive-remote` MCP prompt (in Claude Code, `/mcp__portuni__setup-drive-remote`) and an agent will guide you step by step and make the calls for you.
+This guide walks the Service-Account path from "I have a fresh Google
+account" to "Portuni is pushing files to a Shared Drive on my behalf." Most
+of the work is one-time admin in the Google Cloud Console; the Portuni-side
+configuration is two MCP calls. If you'd rather be walked through it
+interactively, run the `setup-drive-remote` MCP prompt (in Claude Code,
+`/mcp__portuni__setup-drive-remote`) and an agent will guide you step by
+step and make the calls for you.
 
 ## What you'll end up with
 
-- A Service Account (SA) with a JSON key, stored on each device that needs to sync.
+- A Service Account (SA) with a JSON key, stored on the central server.
 - One or more Google Shared Drives that the SA is a member of.
 - A registered Portuni remote pointing at each Shared Drive.
 - Routing rules that send each node type to the right remote.
 
-## Service Account vs OAuth
-
-Both auth paths exist. Which fits depends on whether there's a person at a desktop to sign in:
-
-| | Service Account | Desktop OAuth |
-|--|---|---|
-| Setup | One-time admin in Cloud Console | One click in Settings → Synchronizace |
-| Runs without a person present | Yes (servers, CI, central mode) | No — needs an interactive sign-in |
-| Identity | Fixed SA email, all actions attributed to SA | Per-user, real audit on Drive's side |
-| Target | Shared Drives the SA is a member of | Your My Drive folder, or any Shared Drive you can access |
-| Multi-remote routing (per-org Shared Drives) | Full control via routing rules | One target per connection |
-| Compromise blast radius | Drives the SA is in | The user's whole Drive |
-
-Reach for the Service Account when there's no desktop to click through consent (a central server, CI), or when you're fanning several organizations out to different Shared Drives with routing rules. Everyone else should use the desktop one-click flow — it's simpler and attributes changes to the real user on Drive's side.
-
-Domain-wide delegation (a Workspace user acting on behalf of others) is still not implemented; see [Workspace deployments with restricted Shared Drives](#workspace-deployments-with-restricted-shared-drives) below.
+Shared Drives only — service accounts have no My Drive quota, so a personal
+My Drive target is not supported.
 
 ## One-time admin setup (per Portuni deployment)
 
@@ -166,15 +160,14 @@ After this, `portuni_store` and `portuni_pull` "just work" – Portuni picks the
 
 ## Per-device distribution
 
-Each device that runs Portuni needs the SA JSON via its own TokenStore. The recommended pattern is "one SA shared across all your devices" – distribute the same JSON to each machine. Per-device SAs add admin overhead without meaningfully changing the security picture in Phase 1.
+The central server needs the SA JSON via its own TokenStore. There is only one server-side deployment to distribute it to, so this is a one-time setup rather than a per-device concern.
 
 ## Workspace deployments with restricted Shared Drives
 
-Some Google Workspace setups configure Shared Drives so external members – which the SA technically is – can't be added. In that case the SA flow won't work. Three workarounds:
+Some Google Workspace setups configure Shared Drives so external members – which the SA technically is – can't be added. In that case the SA flow won't work. Two workarounds:
 
-1. **Use the desktop OAuth flow instead** (Settings → Synchronizace). It signs in as a real user, so it reaches any Shared Drive that user can access, plus their own My Drive — no external-member restriction applies. This is the simplest fix when there's a desktop to click through.
-2. **Remove the external-member restriction** on the target drives (admin setting in Google Admin Console).
-3. **Use a dedicated Workspace user** (e.g. `portuni-sync@yourdomain.com`) and connect it via desktop OAuth. Portuni does not yet implement domain-wide delegation (one Workspace user acting headlessly on behalf of others), so this still needs an interactive sign-in.
+1. **Remove the external-member restriction** on the target drives (admin setting in Google Admin Console).
+2. **Use domain-wide delegation** (a Workspace user acting on behalf of others) so the SA acts as a real Workspace member instead of an external one. Portuni does not yet implement this end-to-end (the underlying `sub`-claim support in `drive-sa-auth.ts` is there, but nothing passes it yet) — see the design spec's "Domain-wide delegation" section.
 
 ## What Drive users should expect
 

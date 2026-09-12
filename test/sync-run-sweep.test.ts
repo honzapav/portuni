@@ -40,6 +40,7 @@ beforeEach(async () => {
   resetGateCachesForTesting();
   workspace = await mkdtemp(join(tmpdir(), "portuni-syncrun-sweep-"));
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+  process.env.PORTUNI_AGENT_MODE = "1";
   resetLocalDbForTests();
   resetAdapterCacheForTests();
 });
@@ -48,6 +49,7 @@ afterEach(async () => {
   setDbForTesting(null);
   resetLocalDbForTests();
   resetAdapterCacheForTests();
+  delete process.env.PORTUNI_AGENT_MODE;
   await rm(workspace, { recursive: true, force: true });
 });
 

@@ -1,6 +1,6 @@
 ## Gate
 
-`scripts/agent-gate.sh`: server qa, web typecheck + build, `cargo test` + `cargo clippy -D warnings`, docs site build (the same checks `ci.yml` runs). The first `cargo` run in a fresh worktree takes about 10 minutes; later runs are incremental.
+`scripts/agent-gate.sh`: server qa, web typecheck + build, `cargo test` + `cargo clippy -D warnings`, docs site build (the same checks `ci.yml` runs). Run it as one foreground Bash call with `timeout: 1800000`; never split it, never background it. The first `cargo` run in a fresh worktree takes about 10 minutes; later runs are incremental. `CARGO_BUILD_JOBS` is set in the container; leave it.
 
 ## Sync conflicts
 

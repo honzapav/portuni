@@ -4,7 +4,35 @@ import { tmpdir } from "node:os";
 import { ulid } from "ulid";
 import { createClient, type Client } from "@libsql/client";
 import { ensureSchemaOn } from "../../apps/server/infra/schema.js";
-import { upsertRemote, addRule } from "../../apps/server/domain/sync/routing.js";
+import type { RoutingRule } from "../../apps/server/domain/sync/routing.js";
+
+// Inserts directly into remotes/remote_routing, bypassing upsertRemote's and
+// addRule's own writes -- fixtures using these represent a remote that
+// already exists (the scenario local-engine tests exercise), which is
+// exactly what a local workspace can no longer create from scratch since
+// #310's LOCAL_MODE_NO_REMOTE guard. Going through the guarded domain
+// functions here would make every test importing makeSharedDb depend on
+// PORTUNI_AUTH_MODE=google.
+export async function insertRemoteForTests(
+  db: Client,
+  a: { name: string; type: string; config: Record<string, unknown>; created_by: string },
+): Promise<void> {
+  await db.execute({
+    sql: `INSERT INTO remotes (name, type, config_json, created_by, created_at)
+          VALUES (?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(name) DO UPDATE SET
+            type = excluded.type,
+            config_json = excluded.config_json`,
+    args: [a.name, a.type, JSON.stringify(a.config), a.created_by],
+  });
+}
+
+export async function insertRuleForTests(db: Client, rule: RoutingRule): Promise<void> {
+  await db.execute({
+    sql: "INSERT INTO remote_routing (priority, node_type, org_slug, remote_name) VALUES (?, ?, ?, ?)",
+    args: [rule.priority, rule.node_type, rule.org_slug, rule.remote_name],
+  });
+}
 
 export interface SharedDb {
   db: Client;
@@ -50,12 +78,12 @@ export async function makeSharedDb(): Promise<SharedDb> {
   });
 
   const remoteRoot = await mkdtemp(join(tmpdir(), "portuni-shareddb-remote-"));
-  await upsertRemote(db, {
+  await insertRemoteForTests(db, {
     name: "test-fs",
     type: "fs",
     config: { root: remoteRoot },
     created_by: "U1",
   });
-  await addRule(db, { priority: 10, node_type: null, org_slug: null, remote_name: "test-fs" });
+  await insertRuleForTests(db, { priority: 10, node_type: null, org_slug: null, remote_name: "test-fs" });
   return { db, remoteRoot, orgId, nodeId, orgSyncKey, nodeSyncKey };
 }

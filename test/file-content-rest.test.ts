@@ -19,6 +19,9 @@ import { resolveNodeInfo } from "../apps/server/domain/sync/node-info.js";
 import { buildRemotePath, type Section } from "../apps/server/domain/sync/remote-path.js";
 import { routeApiRequest } from "../apps/server/api/router.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
+import { useRemoteCapableEnv } from "./helpers/remote-capable-env.js";
+
+useRemoteCapableEnv();
 
 let shared: SharedDb;
 let workspace: string;

@@ -32,7 +32,7 @@ Every node has an immutable `sync_key` (generated at create, unique, never chang
 | Routing and remote configs | Turso `remotes`, `remote_routing` |
 | Node path identity (`sync_key`) | Turso `nodes.sync_key` (NOT NULL UNIQUE) |
 | "What I last saw" per device | Local `.portuni/sync.db` `file_state` |
-| 30s remote stat cache per device | Local `.portuni/sync.db` `remote_stat_cache` |
+| Remote hash observations per device (central engine only) | Local `.portuni/sync.db` `remote_stat_cache` |
 | Local mirror paths per device | Local `.portuni/sync.db` `local_mirrors` |
 
 ## Google Drive backend (Service Account only)

@@ -16,13 +16,13 @@
 
 import { getDb } from "../infra/db.js";
 import { SOLO_USER } from "../infra/schema.js";
+import { authMode } from "../infra/server-config.js";
 import { listUserMirrors } from "../domain/sync/mirror-registry.js";
 import { resolvePortuniRoot } from "../domain/write-scope.js";
 import { sweepStaleSessionProjections } from "../domain/session-projection.js";
 
 export async function sweepStaleSessionProjectionsOnBoot(): Promise<void> {
-  const mode = (process.env.PORTUNI_AUTH_MODE ?? "env") === "google" ? "google" : "env";
-  if (mode !== "env") return;
+  if (authMode() !== "env") return;
   try {
     const mirrors = await listUserMirrors(SOLO_USER);
     const portuniRoot = resolvePortuniRoot({

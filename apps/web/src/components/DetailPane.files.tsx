@@ -35,7 +35,6 @@ import { agentDisplayName, loadCollapsedFolders, saveCollapsedFolders } from "..
 import { createNodeMirror, fetchNodeFileUrl } from "../api";
 import type { ResolveAction } from "../api";
 import { isTauri, openInFinder } from "../lib/backend-url";
-import { getCachedDriveStatus } from "../lib/sync-drive";
 import { listWorkspaces } from "../lib/workspaces";
 import { listProfiles, type ProfileInfo } from "../lib/profiles";
 import { copyText } from "../lib/clipboard";
@@ -296,6 +295,7 @@ export function FileTree({
   onResolve,
   readOnly,
   runErrors,
+  isCentralMode,
 }: {
   files: DetailFile[];
   untracked: UntrackedFile[];
@@ -315,6 +315,10 @@ export function FileTree({
   // still-pending repair is shown on the affected row, where the transient
   // toolbar line only carries a count. Cleared by the next run.
   runErrors?: Map<string, string>;
+  // A local workspace has no remote (#310/#312) -- hides the "Obnovit"
+  // (restore, i.e. pull) row action, which would otherwise only ever fail
+  // with LOCAL_MODE_NO_REMOTE. Undefined/false hides it, same as unresolved.
+  isCentralMode?: boolean;
 }) {
   const treeFiles = useMemo(
     () => toTreeFiles(files, untracked, syncStatus, mirrorPath),
@@ -353,6 +357,7 @@ export function FileTree({
           onResolve={onResolve}
           readOnly={readOnly}
           runErrors={runErrors}
+          isCentralMode={isCentralMode}
         />
       ))}
     </div>
@@ -373,6 +378,7 @@ function FileTreeNode({
   onResolve,
   readOnly,
   runErrors,
+  isCentralMode,
 }: {
   node: TreeNode;
   depth: number;
@@ -387,6 +393,7 @@ function FileTreeNode({
   onResolve: (fileId: string, action: ResolveAction) => Promise<void>;
   readOnly?: boolean;
   runErrors?: Map<string, string>;
+  isCentralMode?: boolean;
 }) {
   const indent = depth * 14;
   if (node.file) {
@@ -402,6 +409,7 @@ function FileTreeNode({
         onResolve={onResolve}
         readOnly={readOnly}
         runError={node.file.fileId ? (runErrors?.get(node.file.fileId) ?? null) : null}
+        isCentralMode={isCentralMode}
       />
     );
   }
@@ -457,6 +465,7 @@ function FileTreeNode({
               onResolve={onResolve}
               readOnly={readOnly}
               runErrors={runErrors}
+              isCentralMode={isCentralMode}
             />
           ))}
         </div>
@@ -572,6 +581,7 @@ function FileRow({
   onResolve,
   readOnly,
   runError,
+  isCentralMode,
 }: {
   file: TreeFile;
   indent: number;
@@ -584,6 +594,9 @@ function FileRow({
   readOnly?: boolean;
   // This file's error from the last sync run, if any (see FileTree.runErrors).
   runError?: string | null;
+  // A local workspace has no remote (#310/#312) -- hides "Obnovit" (restore,
+  // i.e. pull), which would otherwise only ever fail with LOCAL_MODE_NO_REMOTE.
+  isCentralMode?: boolean;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(f.filename);
@@ -807,7 +820,7 @@ function FileRow({
                   </button>
                 </>
               )}
-              {sync?.sync_class === "deleted_local" && (
+              {isCentralMode && sync?.sync_class === "deleted_local" && (
                 <button
                   type="button"
                   onClick={() => act("restore")}
@@ -844,23 +857,20 @@ function syncPendingLabel(count: number): string {
   return `${count} souborů ke synchronizaci`;
 }
 
-// Local-only hint for the Files tab. Rendered by DetailPane above the sync
-// bar so it shows even on a node with zero files (where SyncBar is not
-// mounted) — that empty state is exactly when the "connect Drive first"
-// nudge is most useful. Only for local-mode workspaces that have never
-// connected Google Drive; central-mode syncs through the server. Cached per
-// session (getCachedDriveStatus) so every node's Files tab shares one fetch.
-export function DriveNotConfiguredBanner() {
+// Local-workspace hint for the Files tab. Rendered by DetailPane above the
+// sync bar so it shows even on a node with zero files (where SyncBar is not
+// mounted). A local workspace never holds a remote (#310), so this shows
+// unconditionally for one; central mode syncs through the server and never
+// shows it.
+export function LocalWorkspaceFilesBanner() {
   const [show, setShow] = useState(false);
   useEffect(() => {
     let alive = true;
     (async () => {
       const ws = (await listWorkspaces()).find((w) => w.active);
-      if (!ws || ws.data_mode === "central") return;
-      const s = await getCachedDriveStatus();
-      if (alive && s && !s.configured) setShow(true);
+      if (alive && ws && ws.data_mode !== "central") setShow(true);
     })().catch(() => {
-      /* workspace/status lookup failed; leave the banner hidden */
+      /* workspace lookup failed; leave the banner hidden */
     });
     return () => {
       alive = false;
@@ -869,20 +879,14 @@ export function DriveNotConfiguredBanner() {
   if (!show) return null;
   return (
     <div className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12.5px] text-[var(--color-text-dim)]">
-      Soubory se ukládají jen lokálně – propoj Google Drive v{" "}
-      <a
-        href="/?settingsTab=sync"
-        className="text-[var(--color-accent)] hover:underline"
-      >
-        Nastavení → Synchronizace
-      </a>
-      .
+      Soubory se ukládají jen lokálně na tento počítač a nesdílejí se. Sdílení
+      souborů vyžaduje připojení k týmu (centrální režim).
     </div>
   );
 }
 
 // Recent mirror-watcher failures for this node (#202). Rendered alongside
-// DriveNotConfiguredBanner/NoMirrorBanner so it shows even on a node with
+// LocalWorkspaceFilesBanner/NoMirrorBanner so it shows even on a node with
 // zero tracked files -- that is exactly the state a registration failure
 // (e.g. the #201 "no remote configured" bug) used to look like from the UI.
 export function WatcherErrorBanner({ errors }: { errors: WatcherErrorEntry[] }) {
@@ -935,7 +939,7 @@ export function SyncBar({
   // matches what the user sees. deleted_local and conflicts are reported
   // separately: the sync run never acts on them automatically (the local
   // deletion may be intentional; conflicts need a human).
-  const { pending, conflicts, deletedLocal, remoteMissing, noWork, canRun } = syncBarState(
+  const { pending, conflicts, deletedLocal, remoteMissing, noWork } = syncBarState(
     Array.from(statusMap.values(), (f) => f.sync_class),
     statusLoaded,
   );
@@ -946,7 +950,11 @@ export function SyncBar({
     : !ready
     ? "Synchronizovat soubory"
     : noWork
-    ? "Vše synchronizováno"
+    // Nothing pending locally, but the button stays actionable (#313): a run's
+    // remote sweep is the only way to discover a file that showed up on Drive
+    // out of band, so a node with no records yet (or one that's fully clean)
+    // must still be able to trigger one instead of reading as a dead end.
+    ? "Zkontrolovat remote"
     : pending > 0
     ? `Synchronizovat (${syncPendingLabel(pending)})`
     : remoteMissing > 0
@@ -990,7 +998,7 @@ export function SyncBar({
       <div className="flex items-center gap-2">
         <button
           onClick={onRun}
-          disabled={running || !canRun}
+          disabled={running}
           className="inline-flex items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[12.5px] text-[var(--color-text)] transition-colors hover:border-[var(--color-border-strong)] disabled:cursor-default disabled:opacity-60"
         >
           <RefreshCw

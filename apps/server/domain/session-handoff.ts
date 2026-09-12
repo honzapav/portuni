@@ -13,7 +13,8 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import type { Client } from "@libsql/client";
 import { sha256Buffer } from "./sync/hash.js";
-import { storeFile } from "./sync/engine.js";
+import { registerLocalFile, storeFile } from "./sync/engine.js";
+import { isLocalWorkspace } from "../infra/server-config.js";
 import { suspendSession } from "./sessions.js";
 import type { SessionRow } from "../shared/types.js";
 
@@ -77,8 +78,11 @@ export async function writeHandoffAndSuspend(
     handoffTitle: extractHandoffTitle(content),
   });
 
+  // A local workspace has no remote (#310): the handoff is registered as a
+  // tracked file, same as the watcher would do, and never pushed anywhere.
+  const track = isLocalWorkspace() ? registerLocalFile : storeFile;
   try {
-    await storeFile(db, {
+    await track(db, {
       userId: actorUserId,
       nodeId: session.nodeId,
       localPath: absPath,
@@ -87,7 +91,7 @@ export async function writeHandoffAndSuspend(
     });
   } catch (err) {
     console.error(
-      `[portuni:session-handoff] storeFile failed for ${absPath}; the session is suspended and the handoff is written locally, but not yet uploaded:`,
+      `[portuni:session-handoff] ${track.name} failed for ${absPath}; the session is suspended and the handoff is written locally, but not yet tracked:`,
       err,
     );
   }

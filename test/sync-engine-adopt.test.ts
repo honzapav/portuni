@@ -7,6 +7,9 @@ import { makeSharedDb } from "./helpers/shared-db.js";
 import { adoptFiles } from "../apps/server/domain/sync/engine.js";
 import { getAdapter, resetAdapterCacheForTests } from "../apps/server/domain/sync/adapter-cache.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { useRemoteCapableEnv } from "./helpers/remote-capable-env.js";
+
+useRemoteCapableEnv();
 
 let workspace: string;
 let originalEnv: string | undefined;

@@ -51,7 +51,6 @@ export async function computeSyncPending(
       // The aggregate never counts new_remote, so skip the per-mirror Drive
       // listing — it is the single slowest part of the scan and pure waste here.
       skipRemoteDiscovery: true,
-      fast: true,
     }).catch(() => null);
     if (!scan) return null; // unscannable mirror — skip, don't break the overview
     const push = scan.push_candidates.length;

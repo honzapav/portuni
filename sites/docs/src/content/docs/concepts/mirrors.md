@@ -49,8 +49,7 @@ its remote path.
 The shared Turso graph DB does NOT track mirror paths anymore (migration
 011 dropped the `local_mirrors` table from Turso). Each device keeps its
 own SQLite registry at `{PORTUNI_WORKSPACE_ROOT}/.portuni/sync.db`
-(`local_mirrors` table), together with `file_state` (local hash cache)
-and `remote_stat_cache` (short-lived remote metadata cache).
+(`local_mirrors` table), together with `file_state` (local hash cache).
 
 This split has two consequences:
 
@@ -92,9 +91,12 @@ tracked section is registered in the local sync DB (local-only — no upload,
 no graph knowledge created), and edits and deletes are reconciled into the
 cached local hash. The result is that sync status in the UI is always
 correct, without any agent calling `portuni_status` or `portuni_store`. A
-freshly registered file simply shows as "needs push" until someone
-deliberately pushes it. The watcher runs by default in the desktop sidecar;
-on a standalone server it is opt-in via `PORTUNI_WATCH_MIRRORS=1`.
+local workspace has no remote at all (collaboration is [central
+mode](/concepts/data-modes/)), so a freshly registered file there just
+shows as tracked/clean — there is nothing to push it to. On a workspace with
+a remote configured it shows "needs push" until someone deliberately pushes
+it. The watcher runs by default in the desktop sidecar; on a standalone
+server it is opt-in via `PORTUNI_WATCH_MIRRORS=1`.
 
 **A watcher failure surfaces in the UI, not only the sidecar log.** When
 registering or reconciling a file fails (a misconfiguration, an unreadable

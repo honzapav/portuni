@@ -4,7 +4,7 @@ import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
-import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { resetLocalDbForTests, getFileState, upsertFileState } from "../apps/server/domain/sync/local-db.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
 import { computeSyncPending } from "../apps/server/domain/sync/pending.js";
@@ -27,6 +27,7 @@ beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), "portuni-pending-"));
   originalRoot = process.env.PORTUNI_WORKSPACE_ROOT;
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+  process.env.PORTUNI_AGENT_MODE = "1";
   resetLocalDbForTests();
 });
 afterEach(async () => {
@@ -34,6 +35,7 @@ afterEach(async () => {
   resetLocalDbForTests();
   if (originalRoot === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
   else process.env.PORTUNI_WORKSPACE_ROOT = originalRoot;
+  delete process.env.PORTUNI_AGENT_MODE;
   await rm(workspace, { recursive: true, force: true });
 });
 
@@ -150,13 +152,16 @@ describe("computeSyncPending", () => {
     // Diverge local from the synced baseline...
     await writeFile(fp, "local edit");
     await reconcilePath(shared.db, { userId: SOLO_USER, nodeId: shared.nodeId, absPath: fp });
-    // ...and simulate an out-of-band remote edit already reflected in the
-    // cached remote hash the fast scan reads (files.current_remote_hash) --
-    // both sides now differ from last_synced_hash, which is exactly conflict.
-    await shared.db.execute({
-      sql: "UPDATE files SET current_remote_hash = ? WHERE id = ?",
-      args: ["f".repeat(64), pushed.file_id],
-    });
+    // ...and drop this device's baseline, simulating a second device that
+    // never confirmed a sync of its own -- the remote object genuinely
+    // exists (storeFile above put it there), the fs adapter never reports a
+    // content hash on read (only put() does), and no baseline + local
+    // content present is exactly the "never guess" conflict case (statusScan
+    // always stats the adapter live now -- #312 removed the fast/cached
+    // current_remote_hash shortcut, so faking that DB column no longer moves
+    // what a scan observes).
+    const state = await getFileState(pushed.file_id);
+    await upsertFileState({ ...state!, last_synced_hash: null, last_synced_at: null });
 
     const r = await computeSyncPending(shared.db, adminIdentity());
 

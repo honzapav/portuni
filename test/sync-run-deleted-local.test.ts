@@ -33,6 +33,11 @@ before(async () => {
   resetGateCachesForTesting();
   workspace = await mkdtemp(join(tmpdir(), "portuni-syncrun-"));
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+  // A local workspace has no remote (#310/#312) and POST /nodes/:id/sync
+  // refuses outright there -- this suite is exercising runNodeSync's actual
+  // push/pull/deleted_local logic, which needs the one non-local deployment
+  // that still has a real remote (the central server itself).
+  process.env.PORTUNI_AGENT_MODE = "1";
   resetLocalDbForTests();
   resetAdapterCacheForTests();
 
@@ -62,6 +67,7 @@ after(async () => {
   setDbForTesting(null);
   resetLocalDbForTests();
   resetAdapterCacheForTests();
+  delete process.env.PORTUNI_AGENT_MODE;
   await rm(workspace, { recursive: true, force: true });
 });
 

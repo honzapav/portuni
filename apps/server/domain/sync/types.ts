@@ -1,3 +1,5 @@
+import { isLocalWorkspace } from "../../infra/server-config.js";
+
 export type RemoteType = "gdrive" | "dropbox" | "s3" | "fs" | "webdav" | "sftp";
 export type NativeFormat = "gdoc" | "gsheet" | "gslide" | "notion_page";
 
@@ -71,10 +73,7 @@ export interface DeviceToken {
   refresh_token?: string;
   expires_at?: number;
   service_account_json?: string;
-  mode?: "oauth" | "service_account" | "refresh_token";
-  client_id?: string;
-  client_secret?: string;
-  account_email?: string;
+  mode?: "oauth" | "service_account";
 }
 
 export type DeviceTokens = Record<string, DeviceToken>;
@@ -84,4 +83,22 @@ export class CapabilityError extends Error {
     super(`Backend ${backend} does not support operation: ${operation}`);
     this.name = "CapabilityError";
   }
+}
+
+// A local workspace (see infra/server-config.ts's isLocalWorkspace()) has no
+// remote and cannot be given one -- collaboration runs through central mode
+// instead. Thrown by every remote-registration/routing write; central and
+// agent-mode servers never see this.
+export class LocalModeNoRemoteError extends Error {
+  readonly code = "LOCAL_MODE_NO_REMOTE" as const;
+  constructor() {
+    super("Lokální workspace nemá remote; sdílení souborů běží přes centrální server.");
+    this.name = "LocalModeNoRemoteError";
+  }
+}
+
+// The one guard every remote-touching entry point runs first. Kept here,
+// next to the error it throws, so a new entry point has one line to add.
+export function assertRemoteCapable(): void {
+  if (isLocalWorkspace()) throw new LocalModeNoRemoteError();
 }

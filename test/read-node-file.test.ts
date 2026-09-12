@@ -18,6 +18,9 @@ import {
 } from "../apps/server/domain/read-node-file.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
+import { useRemoteCapableEnv } from "./helpers/remote-capable-env.js";
+
+useRemoteCapableEnv();
 
 const USER = "U1";
 const NODE = "N000000000000000000000READ";
