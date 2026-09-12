@@ -226,6 +226,16 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // the close to the caller's own sessions (identity.userId).
   if (/^\/terminals\/[^/]+\/exit$/.test(pathname) && m === "POST") return "write";
 
+  // --- Runners (adapter registry, provider instances; #319) ---
+  if (pathname === "/runners" && m === "GET") return "read";
+  if (pathname === "/runners/instances" && m === "GET") return "read";
+  if (pathname === "/runners/instances" && m === "POST") return "write";
+  if (/^\/runners\/instances\/[^/]+\/org-default$/.test(pathname) && m === "PUT") return "write";
+  if (/^\/runners\/instances\/[^/]+$/.test(pathname) && m === "PATCH") return "write";
+  // Same tier as deleting an actor/node/responsibility/tool/data source --
+  // deletion is admin-only across every entity in this table.
+  if (/^\/runners\/instances\/[^/]+$/.test(pathname) && m === "DELETE") return "admin";
+
   // --- Fail-closed: unknown future routes require admin ---
   return "admin";
 }

@@ -112,6 +112,14 @@ import {
   handleTerminalExit,
   handleTransitionSessionState,
 } from "./sessions.js";
+import {
+  handleCreateRunnerInstance,
+  handleDeleteRunnerInstance,
+  handleListRunnerInstances,
+  handleListRunners,
+  handleSetRunnerInstanceOrgDefault,
+  handleUpdateRunnerInstance,
+} from "./runners.js";
 
 // A sub-router takes the request and returns true if it handled the route
 // (response written or in flight), false to fall through to the next group.
@@ -139,6 +147,7 @@ const SUB_ROUTERS: SubRouter[] = [
   routeEvents,
   routeAccessRequests,
   routeSessions,
+  routeRunners,
 ];
 
 // Returns true when the route was handled (response written or in flight).
@@ -733,6 +742,47 @@ async function routeSessions(
   const sessionMatch = pathname.match(/^\/sessions\/([^/]+)$/);
   if (sessionMatch && method === "PATCH") {
     await handleRenameSession(req, res, identity, decodeURIComponent(sessionMatch[1]));
+    return true;
+  }
+  return false;
+}
+
+// --- Runners (adapter registry, provider instances; #319). No ownership
+// model -- the registry is one shared, device-wide file. /runners/
+// instances/:id/org-default MUST match before the bare
+// /runners/instances/:id handlers, same precedence reason as
+// /responsibilities/:id/assignments above. ---
+async function routeRunners(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  method: string,
+): Promise<boolean> {
+  const { pathname } = url;
+  if (pathname === "/runners" && method === "GET") {
+    await handleListRunners(req, res);
+    return true;
+  }
+  if (pathname === "/runners/instances" && method === "GET") {
+    await handleListRunnerInstances(req, res);
+    return true;
+  }
+  if (pathname === "/runners/instances" && method === "POST") {
+    await handleCreateRunnerInstance(req, res);
+    return true;
+  }
+  const orgDefaultMatch = pathname.match(/^\/runners\/instances\/([^/]+)\/org-default$/);
+  if (orgDefaultMatch && method === "PUT") {
+    await handleSetRunnerInstanceOrgDefault(req, res, decodeURIComponent(orgDefaultMatch[1]));
+    return true;
+  }
+  const instanceMatch = pathname.match(/^\/runners\/instances\/([^/]+)$/);
+  if (instanceMatch && method === "PATCH") {
+    await handleUpdateRunnerInstance(req, res, decodeURIComponent(instanceMatch[1]));
+    return true;
+  }
+  if (instanceMatch && method === "DELETE") {
+    await handleDeleteRunnerInstance(req, res, decodeURIComponent(instanceMatch[1]));
     return true;
   }
   return false;

@@ -651,3 +651,27 @@ export type NodeDetail = {
   // Meaningful for type='project' only.
   health: string;
 };
+
+// GET /runners -- detected adapters and their availability (runner batch,
+// docs/superpowers/specs/2026-09-12-runner-and-session-design.md).
+export type RunnerInfo = {
+  id: string;
+  availability: {
+    installed: boolean;
+    version: string | null;
+    logged_in: boolean;
+    instances_supported: boolean;
+  };
+};
+
+// GET/POST/PATCH /runners/instances -- provider instances (today's desktop
+// CLI spawn profiles, moved server-side). env values never appear here --
+// env_keys only; the values live in runners.json and are read server-side
+// only (domain/runner/instances.ts's getInstanceEnv).
+export type RunnerInstanceSummary = {
+  id: string;
+  name: string;
+  runner: string;
+  env_keys: string[];
+  org_defaults: string[];
+};
