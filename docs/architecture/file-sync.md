@@ -449,10 +449,9 @@ of Phase 1.
 
 ### Supporting tools
 
-- **portuni_setup_remote** `{ name, type, config }` – admin, one-time per remote, creates `remotes` row.
+- **portuni_setup_remote** `{ name, type, config, service_account_json }` – admin, one-time per remote (central server only), creates `remotes` row and stores the service-account credential via TokenStore.
 - **portuni_set_routing_policy** `{ rules }` – admin, rare, rewrites `remote_routing`.
-- **portuni_connect_device** `{ remote_name? }` – per-device OAuth flow, stores tokens in varlock.
-- **portuni_list_remotes** – diagnostic, shows configured remotes and auth status on this device.
+- **portuni_list_remotes** – diagnostic, shows configured remotes and auth status.
 - **portuni_move_file** `{ file_id, new_subpath?, new_node_id? }` – explicit move within node or across nodes.
 - **portuni_rename_folder** `{ node_id, old_prefix, new_prefix }` – bulk prefix rename, atomic in DB, best-effort on remote.
 - **portuni_adopt_files** `{ node_id, paths, status? }` – register existing remote or local files that have no `files` row.
@@ -626,13 +625,13 @@ One remote, one wildcard rule covers the common case. Agents can be walked throu
 ### Smoke tests against real Drive
 
 - Separate suite, opt-in via env var. Runs against a Google test account with a dedicated shared drive.
-- Verifies OAuth flow, resumable upload on a large file, rate-limit retry behavior.
+- Verifies the service-account JWT auth flow, resumable upload on a large file, rate-limit retry behavior.
 - Not part of the default `npm test` because it is slow and costs Google quota.
 
 ### What is mocked vs real
 
 - **FileAdapter is never mocked in unit tests for sync engine.** The FS backend of OpenDAL is our "test double" – it is a real adapter that happens to be local. This avoids mock-vs-real drift: the same adapter code runs in tests and production, only the backend config differs.
-- **OAuth flow is mocked in tests.** Real auth is only exercised in manual setup.
+- **The service-account JWT auth flow is mocked in tests.** Real auth is only exercised in manual setup.
 
 ## Phasing
 
@@ -641,7 +640,7 @@ One remote, one wildcard rule covers the common case. Agents can be walked throu
 - OpenDAL-based FileAdapter with Google Drive as the first concrete backend.
 - Schema migration for `remotes`, `remote_routing`, updated `files` columns, local `sync.db`.
 - Five primary MCP tools: store, pull, status, snapshot, delete_file.
-- Supporting tools: setup_remote, set_routing_policy, connect_device, list_remotes, adopt_files.
+- Supporting tools: setup_remote, set_routing_policy, list_remotes, adopt_files.
 - Move detection in `portuni_status`; explicit `move_file` and `rename_folder`.
 - Solo user, one Drive shared drive, two devices (test scenario).
 - Tests: unit + integration against OpenDAL FS backend + opt-in smoke against real Drive.
@@ -680,10 +679,10 @@ One remote, one wildcard rule covers the common case. Agents can be walked throu
 
 ## Open questions
 
-1. **Token rotation.** How do we handle Google OAuth refresh token expiry or revocation across devices? Per-device re-auth is simple but annoying. Centralized token vault (e.g. one device pushes fresh tokens to Turso encrypted) is more elegant but adds complexity. Phase 1: per-device re-auth, document the flow.
+1. ~~Token rotation.~~ Moot: collaboration is central mode only, and Drive credentials live on the central server alone as a single service-account key — no per-device token, no per-device re-auth, nothing to rotate across machines (#310/#311).
 2. **Large binary quotas.** What is the right user warning threshold? 100 MB feels conservative; 1 GB feels dangerous. Measure in practice.
 3. **Folder move vs delete+recreate semantics.** If a user deletes a folder on Drive web UI and creates a new one with the same name somewhere else, is that a move or two unrelated events? Hash matching handles file content, not folder identity. For now, treat as separate operations.
-4. **Stat cache invalidation for team scenarios.** The 30s remote_stat_cache is fine for solo. In a team, if user A pushes and user B runs status 10s later, B's cache misses the change. Acceptable for Phase 1; add cache invalidation (e.g. cache key includes `files.last_pushed_at`) in Phase 2.
+4. **Stat cache invalidation for team scenarios.** The local engine dropped its own 30s remote_stat_cache entirely once a local workspace could no longer have a remote to stat (#312) — this question now applies only to `engine-central.ts`'s own remote-hash observation cache (same table, different code path). If user A pushes and user B runs status 10s later, B's cache misses the change; add cache invalidation (e.g. cache key includes `files.last_pushed_at`) if this becomes a real problem in practice.
 5. ~~Deletion propagation.~~ Resolved in spec. `portuni_status` distinguishes `deleted_local` (files row + sync.db entry present, local missing) from `new_remote` (files row present, no sync.db entry – never pulled locally). `portuni_delete_file` offers `complete` and `unregister_only` modes. No auto-propagation either way.
 6. **Cold-start cost.** On a new device, first `portuni_status` has no sync.db cache, so it rehashes every local file and stats every remote. For a large project this could take minutes. Consider seeding sync.db from an initial pull operation rather than expecting status to bootstrap itself.
 
@@ -699,5 +698,5 @@ One remote, one wildcard rule covers the common case. Agents can be walked throu
 - [ ] Write integration tests against OpenDAL FS backend.
 - [ ] Write opt-in smoke tests against real Google Drive test account.
 - [ ] Update MCP server instructions so Claude knows when to call portuni_status.
-- [ ] Document OAuth setup for Google Drive in project README.
+- [ ] Document Service Account setup for Google Drive in project README.
 - [ ] Manual test: solo user, two physical machines, round-trip edits with conflict detection.

@@ -205,21 +205,21 @@ reuse that path. Instead the central server serves file content through a
 **mirror-less, Drive-direct** service (`file-content-remote.ts`) that talks to
 the Drive adapter directly — reading and writing bytes without any local mirror.
 
-## Two collaboration models (do not conflate them)
+## One collaboration model (the retired alternative)
 
-### Model 1 — shared token (works today, "small team" path)
+### Model 1 — shared token (retired, #310/#311)
 
-- Everyone runs **local mode** and shares **the owner's Turso token** + **Drive
-  access** (the same Service Account / Shared Drive).
-- Each teammate's desktop mirrors the same nodes and syncs the **same Drive
-  folder**, keyed by the **same Turso graph** ("same Portuni base").
-- Files travel via **Drive**, graph + canonical state via **Turso**; each device
-  keeps its own private `sync.db` ("what this machine has seen").
-- Pro: file sharing works **now**. Con: every teammate holds the **raw Turso
-  token = full unrestricted DB access**. No per-user permissions. This is the
-  exact problem the central server exists to fix.
+Early Portuni had a second, unsafe path: everyone ran **local mode** and
+shared **the owner's Turso token** plus Drive access (the same Service
+Account / Shared Drive), so each teammate's desktop mirrored the same nodes
+and synced the same Drive folder, keyed by the same Turso graph. It worked,
+but every teammate held the **raw Turso token — full, unrestricted DB
+access** — with no per-user permissions. This is exactly the problem the
+central server exists to fix, and a local workspace can no longer register
+or route to a remote at all (`LOCAL_MODE_NO_REMOTE`), so this path is not
+just discouraged — it is structurally impossible now.
 
-### Model 2 — brokered / central (the secure target, shipped)
+### Model 2 — brokered / central (the only path, shipped)
 
 - Teammates run **central mode**, authenticate with Google, get **enforced
   permissions**, never touch the raw Turso token.
@@ -227,10 +227,11 @@ the Drive adapter directly — reading and writing bytes without any local mirro
   lifecycle are served over the server, mirror-less and Drive-direct
   (`file-content-remote.ts`; design rationale archived in
   [`central-file-content-phase-b.md`](../archive/central-file-content-phase-b.md)).
+- Drive credentials live on the central server alone, as a single service
+  account — no device ever holds them.
 
 | | Files work now? | Permissions enforced? | Teammate needs |
 |---|---|---|---|
-| **Model 1** (all local) | yes | no (raw Turso token) | Turso token + Drive share |
 | **Model 2** (central) | yes | yes | Google login to `api.portuni.com` |
 
 ## Glossary (clearer names for the overloaded terms)
