@@ -40,8 +40,14 @@ export default function RunnersSection() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
 
+  // React 18 StrictMode double-invokes this effect in dev (setup -> cleanup
+  // -> setup again) synchronously, before any fetch below can possibly
+  // resolve -- resetting to true on setup (not just false on cleanup) is
+  // what keeps a real async response after that dance from being silently
+  // dropped for the rest of this mount's lifetime.
   const mountedRef = useRef(true);
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
     };
@@ -515,8 +521,14 @@ function CreateInstanceForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // React 18 StrictMode double-invokes this effect in dev (setup -> cleanup
+  // -> setup again) synchronously, before any fetch below can possibly
+  // resolve -- resetting to true on setup (not just false on cleanup) is
+  // what keeps a real async response after that dance from being silently
+  // dropped for the rest of this mount's lifetime.
   const mountedRef = useRef(true);
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
     };
