@@ -174,6 +174,11 @@ export const DDL_SESSIONS = `CREATE TABLE IF NOT EXISTS sessions (
     state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived')),
     handoff_path TEXT,
     handoff_hash TEXT,
+    -- Server-generated handoff text (#329) for a session with no local
+    -- mirror on this device -- writeHandoffAndSuspend's normal file write
+    -- has nowhere to land, so suspendSessionServerSide stores the content
+    -- here instead. NULL whenever handoff_path is set (a real file exists).
+    handoff_inline TEXT,
     name TEXT NOT NULL DEFAULT '',
     name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
     created_at DATETIME NOT NULL DEFAULT (datetime('now')),

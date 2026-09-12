@@ -1466,6 +1466,18 @@ const MIGRATIONS: Migration[] = [
       await db.execute(DDL_SESSION_EVENTS);
     },
   },
+  // #329: a server-generated handoff for a session with no local mirror on
+  // this device has nowhere to write a file, so it is stored inline.
+  {
+    id: "035_sessions_handoff_inline",
+    isApplied: async (db) => {
+      const info = await db.execute("PRAGMA table_info(sessions)");
+      return info.rows.some((r) => r.name === "handoff_inline");
+    },
+    up: async (db) => {
+      await db.execute("ALTER TABLE sessions ADD COLUMN handoff_inline TEXT");
+    },
+  },
 ];
 
 export async function runMigration024(db: Client): Promise<void> {
@@ -1549,6 +1561,7 @@ export async function runMigration030(db: Client): Promise<void> {
   const profileSourceCol = cols.has("instance_id") ? "instance_id" : "profile_id";
   const runnerCols = ["brief", "runner", "host_id", "waiting_since"].filter((c) => cols.has(c));
   const runnerColList = runnerCols.length > 0 ? ", " + runnerCols.join(", ") : "";
+  const handoffInlineCol = cols.has("handoff_inline") ? ", handoff_inline" : "";
   // The whole rebuild runs as ONE script over ONE connection via
   // executeMultiple. Per-statement db.execute() calls are unsafe for this on
   // Turso/libsql over HTTP: each statement may hit a different connection,
@@ -1580,6 +1593,7 @@ export async function runMigration030(db: Client): Promise<void> {
       state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived')),
       handoff_path TEXT,
       handoff_hash TEXT,
+      handoff_inline TEXT,
       name TEXT NOT NULL DEFAULT '',
       name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
       created_at DATETIME NOT NULL DEFAULT (datetime('now')),
@@ -1588,10 +1602,10 @@ export async function runMigration030(db: Client): Promise<void> {
     );
     INSERT INTO sessions_new (
       id, node_id, user_id, session_type, cli, instance_id, agent_session_id, state,
-      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}${runnerColList}
+      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}${runnerColList}${handoffInlineCol}
     ) SELECT
       id, node_id, user_id, session_type, cli, ${profileSourceCol}, agent_session_id, state,
-      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}${runnerColList}
+      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}${runnerColList}${handoffInlineCol}
     FROM sessions;
     DROP TABLE sessions;
     ALTER TABLE sessions_new RENAME TO sessions;

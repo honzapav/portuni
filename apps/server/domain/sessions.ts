@@ -15,6 +15,7 @@ import {
   type SessionState,
 } from "../shared/types.js";
 import { writeAudit } from "../infra/audit.js";
+import { suspendSessionServerSide, type ServerHandoffReason } from "./session-handoff.js";
 
 const SESSION_TYPES = ["interactive_task", "interactive_chat", "headless", "env"] as const;
 
@@ -262,15 +263,18 @@ export async function transitionSessionState(
   return row;
 }
 
-// PTY exit (#218, "Sessions follow PTY exit"): closes every 'running'
-// session sharing this terminal_id -- desktop's pty.rs calls this via
-// POST /terminals/:terminal_id/exit whenever the PTY that spawned a CLI
-// exits, for any reason (pty_kill, the user typing `exit`, a crash).
-// Scoped to actorUserId, matching the owner-scoped pattern the rest of this
-// module uses (a session is a personal work record) -- a terminal_id from
-// one user's PTY must never be able to close another user's session.
-// Idempotent: a terminal_id with no running session (already closed, or
-// never bound to one) is a no-op. Returns the number of sessions closed.
+// PTY exit (#218, "Sessions follow PTY exit"): suspends (#329; previously
+// closed) every 'running' session sharing this terminal_id -- desktop's
+// pty.rs calls this via POST /terminals/:terminal_id/exit whenever the PTY
+// that spawned a CLI exits, for any reason (pty_kill, the user typing
+// `exit`, a crash). Scoped to actorUserId, matching the owner-scoped
+// pattern the rest of this module uses (a session is a personal work
+// record) -- a terminal_id from one user's PTY must never be able to touch
+// another user's session. Idempotent: a terminal_id with no running
+// session (already suspended/closed, or never bound to one) is a no-op.
+// Returns the number of sessions suspended. Thin wrapper around
+// suspendSessionServerSide (domain/session-handoff.ts) -- kept here, under
+// its original name, so call sites and tests don't need to change.
 export async function closeSessionsByTerminalId(
   db: Client,
   actorUserId: string,
@@ -281,23 +285,26 @@ export async function closeSessionsByTerminalId(
     args: [terminalId, actorUserId],
   });
   for (const row of res.rows) {
-    await transitionSessionState(db, actorUserId, String(row.id), "closed");
+    await suspendSessionServerSide(db, String(row.id), "terminal_exit");
   }
   return res.rows.length;
 }
 
 // GC backstop (#218): called from mcp/transport.ts's onclose, for a CLI
-// whose config format cannot carry X-Portuni-Terminal (Codex, Vibe) or a
-// crash that never reaches the exit endpoint above. Closes the session iff
-// it is still 'running' -- deliberately does NOT use transitionSessionState's
-// general state machine here, because that machine also allows
-// suspended -> closed, and a session an agent has explicitly suspended
-// (portuni_session_suspend) must stay resumable even though its MCP
-// connection is gone.
-export async function closeSessionIfRunning(db: Client, sessionId: string): Promise<void> {
-  const row = await loadSession(db, sessionId);
-  if (row?.state !== "running") return;
-  await transitionSessionState(db, row.user_id, sessionId, "closed");
+// whose config format cannot carry X-Portuni-Terminal (Codex, Vibe), a
+// crash that never reaches the exit endpoint above, a genuine client
+// disconnect, or the transport's own 30-minute idle GC force-closing it.
+// Suspends (#329; previously closed) the session iff it is still
+// 'running' -- an already-suspended session (the agent's own
+// portuni_session_suspend already ran) is untouched either way, since
+// suspendSessionServerSide only acts on 'running'. Thin wrapper, see
+// closeSessionsByTerminalId's comment.
+export async function closeSessionIfRunning(
+  db: Client,
+  sessionId: string,
+  reason: ServerHandoffReason,
+): Promise<void> {
+  await suspendSessionServerSide(db, sessionId, reason);
 }
 
 // Boot sweep (#272): a 'running' row can survive a process restart (app
@@ -307,14 +314,14 @@ export async function closeSessionIfRunning(db: Client, sessionId: string): Prom
 // live transport that could possibly own any of these connections anymore,
 // so every 'running' row left over from a previous life is stale by
 // definition. Mirrors sweepStaleSessionProjectionsOnBoot's shape (same call
-// sites: index.ts, desktop.ts). Deliberately does NOT touch 'suspended' --
-// an agent that explicitly suspended before the process's previous life
-// ended must stay resumable. Not scoped to a single user: this is a
+// sites: index.ts, desktop.ts). Suspends (#329; previously closed) each one
+// with a server-generated handoff instead, so a session interrupted only by
+// a restart stays resumable. Not scoped to a single user: this is a
 // process-wide maintenance sweep, same as autoArchiveClosedSessions above.
 export async function closeStaleRunningSessionsOnBoot(db: Client): Promise<number> {
   const res = await db.execute({ sql: "SELECT id, user_id FROM sessions WHERE state = 'running'" });
   for (const row of res.rows) {
-    await transitionSessionState(db, String(row.user_id), String(row.id), "closed");
+    await suspendSessionServerSide(db, String(row.id), "boot_sweep");
   }
   return res.rows.length;
 }
@@ -427,8 +434,15 @@ export async function getSessionWriteCount(db: Client, sessionId: string): Promi
 // --- Suspend (phase 2, "Lifecycle" / "Handoff") ---
 
 export interface SuspendSessionInput {
-  handoffPath: string;
+  // Null when there is nowhere on this device to write a file (#329:
+  // suspendSessionServerSide on a session with no local mirror) -- the
+  // handoff text then goes into handoffInline instead.
+  handoffPath: string | null;
   handoffHash: string;
+  // Server-generated handoff content when handoffPath is null. Always
+  // cleared (set to null) on any suspend that DOES have a path -- only one
+  // representation is ever active for a given suspend.
+  handoffInline?: string | null;
   agentSessionId?: string | null;
   // Title extracted from the handoff content (session-handoff.ts's
   // extractHandoffTitle). Spec: "enriched from the handoff title at
@@ -463,10 +477,18 @@ export async function suspendSession(
       : existing.name;
   await db.execute({
     sql: `UPDATE sessions
-             SET state = 'suspended', handoff_path = ?, handoff_hash = ?,
+             SET state = 'suspended', handoff_path = ?, handoff_hash = ?, handoff_inline = ?,
                  agent_session_id = COALESCE(?, agent_session_id), last_active_at = ?, name = ?
            WHERE id = ?`,
-    args: [input.handoffPath, input.handoffHash, input.agentSessionId ?? null, now, enrichedName, sessionId],
+    args: [
+      input.handoffPath,
+      input.handoffHash,
+      input.handoffInline ?? null,
+      input.agentSessionId ?? null,
+      now,
+      enrichedName,
+      sessionId,
+    ],
   });
 
   await writeAudit(db, actorUserId, "session_suspend", "session", sessionId, {

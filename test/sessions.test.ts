@@ -20,6 +20,7 @@ import {
   closeSessionIfRunning,
   closeStaleRunningSessionsOnBoot,
 } from "../apps/server/domain/sessions.js";
+import { parseServerHandoffReason } from "../apps/server/domain/session-handoff.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
 
 describe("createSession / getSession / listSessions", () => {
@@ -215,8 +216,12 @@ describe("transitionSessionState: the state machine", () => {
   });
 });
 
-describe("closeSessionsByTerminalId (#218, PTY exit)", () => {
-  it("closes only running sessions sharing the terminal id", async () => {
+// #329: none of these three functions close a running session anymore --
+// they suspend it with a minimal server-generated handoff (no local mirror
+// is registered in these tests, so it always lands in handoff_inline, never
+// a file) so it stays resumable instead of being lost outright.
+describe("closeSessionsByTerminalId (#218, PTY exit; #329 suspends)", () => {
+  it("suspends only running sessions sharing the terminal id, with a terminal_exit handoff", async () => {
     const { db, nodeId } = await makeSharedDb();
     const running = await createSession(db, "U1", {
       node_id: nodeId,
@@ -238,12 +243,15 @@ describe("closeSessionsByTerminalId (#218, PTY exit)", () => {
     const closed = await closeSessionsByTerminalId(db, "U1", "term-1");
     assert.equal(closed, 1);
 
-    assert.equal((await getSession(db, running.id))?.state, "closed");
+    const runningRow = await getSession(db, running.id);
+    assert.equal(runningRow?.state, "suspended");
+    assert.equal(runningRow?.handoff_path, null);
+    assert.equal(parseServerHandoffReason(runningRow?.handoff_inline ?? null), "terminal_exit");
     assert.equal((await getSession(db, suspended.id))?.state, "suspended");
     assert.equal((await getSession(db, otherTerminal.id))?.state, "running");
   });
 
-  it("is idempotent -- a second call with nothing running closes nothing", async () => {
+  it("is idempotent -- a second call with nothing running suspends nothing further", async () => {
     const { db, nodeId } = await makeSharedDb();
     const row = await createSession(db, "U1", {
       node_id: nodeId,
@@ -252,10 +260,10 @@ describe("closeSessionsByTerminalId (#218, PTY exit)", () => {
     });
     assert.equal(await closeSessionsByTerminalId(db, "U1", "term-1"), 1);
     assert.equal(await closeSessionsByTerminalId(db, "U1", "term-1"), 0);
-    assert.equal((await getSession(db, row.id))?.state, "closed");
+    assert.equal((await getSession(db, row.id))?.state, "suspended");
   });
 
-  it("never closes another user's session sharing the same terminal id", async () => {
+  it("never touches another user's session sharing the same terminal id", async () => {
     const { db, nodeId } = await makeSharedDb();
     await db.execute({
       sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
@@ -276,32 +284,56 @@ describe("closeSessionsByTerminalId (#218, PTY exit)", () => {
     assert.equal(await closeSessionsByTerminalId(db, "U1", ""), 0);
     assert.equal((await getSession(db, row.id))?.state, "running");
   });
+
+  it("a custom name survives the suspend", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", {
+      node_id: nodeId,
+      session_type: "interactive_task",
+      terminal_id: "term-1",
+    });
+    await renameSession(db, "U1", row.id, "My custom name");
+    await closeSessionsByTerminalId(db, "U1", "term-1");
+    assert.equal((await getSession(db, row.id))?.name, "My custom name");
+  });
 });
 
-describe("closeSessionIfRunning (#218, GC backstop)", () => {
-  it("closes a running session", async () => {
+describe("closeSessionIfRunning (#218, GC backstop; #329 suspends)", () => {
+  it("suspends a running session with a disconnect handoff", async () => {
     const { db, nodeId } = await makeSharedDb();
     const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
-    await closeSessionIfRunning(db, row.id);
-    assert.equal((await getSession(db, row.id))?.state, "closed");
+    await closeSessionIfRunning(db, row.id, "disconnect");
+    const updated = await getSession(db, row.id);
+    assert.equal(updated?.state, "suspended");
+    assert.equal(parseServerHandoffReason(updated?.handoff_inline ?? null), "disconnect");
+  });
+
+  it("records idle as the reason when that is the caller's reason", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+    await closeSessionIfRunning(db, row.id, "idle");
+    const updated = await getSession(db, row.id);
+    assert.equal(parseServerHandoffReason(updated?.handoff_inline ?? null), "idle");
   });
 
   it("never touches a suspended session", async () => {
     const { db, nodeId } = await makeSharedDb();
     const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
     await transitionSessionState(db, "U1", row.id, "suspended");
-    await closeSessionIfRunning(db, row.id);
-    assert.equal((await getSession(db, row.id))?.state, "suspended");
+    await closeSessionIfRunning(db, row.id, "disconnect");
+    const updated = await getSession(db, row.id);
+    assert.equal(updated?.state, "suspended");
+    assert.equal(updated?.handoff_inline, null, "an already-suspended session's handoff is left alone");
   });
 
   it("is a no-op for an unknown session id", async () => {
     const { db } = await makeSharedDb();
-    await assert.doesNotReject(closeSessionIfRunning(db, "nope"));
+    await assert.doesNotReject(closeSessionIfRunning(db, "nope", "disconnect"));
   });
 });
 
-describe("closeStaleRunningSessionsOnBoot (#272)", () => {
-  it("closes every running row, process-wide, leaving suspended untouched", async () => {
+describe("closeStaleRunningSessionsOnBoot (#272; #329 suspends)", () => {
+  it("suspends every running row with a boot_sweep handoff, process-wide, leaving suspended untouched", async () => {
     const { db, nodeId } = await makeSharedDb();
     const running1 = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
     const running2 = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
@@ -311,8 +343,12 @@ describe("closeStaleRunningSessionsOnBoot (#272)", () => {
     const closed = await closeStaleRunningSessionsOnBoot(db);
     assert.equal(closed, 2);
 
-    assert.equal((await getSession(db, running1.id))?.state, "closed");
-    assert.equal((await getSession(db, running2.id))?.state, "closed");
+    const row1 = await getSession(db, running1.id);
+    const row2 = await getSession(db, running2.id);
+    assert.equal(row1?.state, "suspended");
+    assert.equal(row2?.state, "suspended");
+    assert.equal(parseServerHandoffReason(row1?.handoff_inline ?? null), "boot_sweep");
+    assert.equal(parseServerHandoffReason(row2?.handoff_inline ?? null), "boot_sweep");
     assert.equal((await getSession(db, suspended.id))?.state, "suspended");
   });
 

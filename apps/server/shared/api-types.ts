@@ -485,6 +485,11 @@ export type SessionResumeInfo = {
   // found unchanged) -- see domain/session-handoff.ts's ResumeInfo.
   handoff_checkable: boolean;
   conversation_resumable: boolean;
+  // #329: set when the handoff was written by the server, not the agent
+  // (a dropped connection, idle GC, terminal exit, or the boot sweep) --
+  // lets the Relace row say e.g. "pozastaveno serverem (nečinnost 30 min)".
+  generated_by: "server" | null;
+  reason: "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | null;
 };
 
 // GET /overview -- Přehled tab (phase 4, "Přehled (overview tab)" of the

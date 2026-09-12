@@ -201,6 +201,8 @@ export async function handleGetSessionResumeInfo(
       handoff_changed: info.handoffChanged,
       handoff_checkable: info.handoffCheckable,
       conversation_resumable: info.conversationResumable,
+      generated_by: info.generatedBy,
+      reason: info.reason,
     };
     respondJson(res, 200, payload);
   } catch (err) {

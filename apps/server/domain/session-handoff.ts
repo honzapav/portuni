@@ -14,8 +14,9 @@ import { join, dirname } from "node:path";
 import type { Client } from "@libsql/client";
 import { sha256Buffer } from "./sync/hash.js";
 import { registerLocalFile, storeFile } from "./sync/engine.js";
+import { getMirrorPath } from "./sync/mirror-registry.js";
 import { isLocalWorkspace } from "../infra/server-config.js";
-import { suspendSession } from "./sessions.js";
+import { getSession, getSessionScope, suspendSession } from "./sessions.js";
 import type { SessionRow } from "../shared/types.js";
 
 // Fixed synced-path convention for a session's handoff -- a pure function
@@ -114,6 +115,119 @@ export function extractHandoffTitle(content: string): string | null {
   return title.slice(0, MAX_HANDOFF_TITLE_LENGTH);
 }
 
+// --- Server-generated handoff (#329) ---------------------------------
+//
+// Every path that used to CLOSE a 'running' session out from under it
+// (a dropped MCP connection, the transport's idle GC, a PTY exit, the boot
+// sweep) now suspends it instead, with a minimal handoff the server writes
+// itself -- closed is terminal (no resume), and none of these are the
+// agent's own deliberate portuni_session_suspend. The runner spec's own
+// suspend() (session-runtime.ts, #320) has its own copy of this same idea
+// for runner-managed runs; this is the interim for hand-opened CLIs and
+// every session that predates the runner.
+
+export type ServerHandoffReason = "disconnect" | "idle" | "terminal_exit" | "boot_sweep";
+
+const SERVER_HANDOFF_REASONS: readonly ServerHandoffReason[] = [
+  "disconnect",
+  "idle",
+  "terminal_exit",
+  "boot_sweep",
+];
+
+// A leading HTML-comment marker rather than a new column for `generated_by`/
+// `reason`: it travels with the content itself (on disk or in
+// handoff_inline) instead of needing yet another pair of session columns,
+// and getResumeInfo already has the content in hand from its own
+// handoff-changed check.
+function serverHandoffMarker(reason: ServerHandoffReason): string {
+  return `<!-- portuni:server-handoff reason=${reason} -->`;
+}
+
+export function parseServerHandoffReason(content: string | null): ServerHandoffReason | null {
+  if (!content) return null;
+  const match = content.match(/^<!-- portuni:server-handoff reason=(\w+) -->/);
+  const reason = match?.[1];
+  return reason && (SERVER_HANDOFF_REASONS as readonly string[]).includes(reason)
+    ? (reason as ServerHandoffReason)
+    : null;
+}
+
+function buildServerHandoffContent(input: {
+  nodeName: string | null;
+  sessionName: string;
+  reason: ServerHandoffReason;
+  writeSet: readonly string[];
+  readSet: readonly string[];
+  lastActiveAt: string;
+}): string {
+  return [
+    serverHandoffMarker(input.reason),
+    `# ${input.sessionName}`,
+    "",
+    `Uzel: ${input.nodeName ?? "(bez uzlu)"}`,
+    `Poslední aktivita: ${input.lastActiveAt}`,
+    "",
+    "## Zápisový rozsah",
+    input.writeSet.length > 0 ? input.writeSet.map((id) => `- ${id}`).join("\n") : "(žádný)",
+    "",
+    "## Čtecí rozsah",
+    input.readSet.length > 0 ? input.readSet.map((id) => `- ${id}`).join("\n") : "(žádný)",
+    "",
+    "Konverzace nebyla uložena; pokračuj z tohoto handoffu.",
+  ].join("\n");
+}
+
+async function nodeNameForHandoff(db: Client, nodeId: string): Promise<string | null> {
+  const res = await db.execute({ sql: "SELECT name FROM nodes WHERE id = ?", args: [nodeId] });
+  return res.rows.length > 0 ? String(res.rows[0].name) : null;
+}
+
+// Suspends a 'running' session with a handoff the SERVER writes, not the
+// agent -- a real file in the mirror when one exists on this device (same
+// path writeHandoffAndSuspend uses), or handoff_inline when it doesn't
+// (central mode, or simply no mirror registered here). A no-op (returns
+// the row unchanged) for any state other than 'running': already-suspended
+// or terminal sessions have nothing for this to do.
+export async function suspendSessionServerSide(
+  db: Client,
+  sessionId: string,
+  reason: ServerHandoffReason,
+): Promise<SessionRow | null> {
+  const session = await getSession(db, sessionId);
+  if (session?.state !== "running") return session;
+
+  const nodeName = session.node_id ? await nodeNameForHandoff(db, session.node_id) : null;
+  const scope = await getSessionScope(db, sessionId);
+  const content = buildServerHandoffContent({
+    nodeName,
+    sessionName: session.name,
+    reason,
+    writeSet: scope.filter((s) => s.writable === 1).map((s) => s.node_id),
+    readSet: scope.map((s) => s.node_id),
+    lastActiveAt: session.last_active_at,
+  });
+
+  const mirrorRoot = session.node_id ? await getMirrorPath(session.user_id, session.node_id) : null;
+  if (mirrorRoot && session.node_id) {
+    const result = await writeHandoffAndSuspend(
+      db,
+      session.user_id,
+      { id: session.id, nodeId: session.node_id, mirrorRoot },
+      content,
+    );
+    return result.session;
+  }
+
+  const handoffHash = sha256Buffer(Buffer.from(content, "utf8"));
+  return suspendSession(db, session.user_id, session.id, {
+    handoffPath: null,
+    handoffHash,
+    handoffInline: content,
+    handoffTitle: extractHandoffTitle(content),
+  });
+}
+
 // Claude Code's local conversation-transcript layout: one directory per
 // working directory under ~/.claude/projects, named by replacing path
 // separators (and dots, which would otherwise collide with the directory
@@ -189,6 +303,11 @@ export interface ResumeInfo {
   // behavior, which reported a missing mirror as changed (a false positive).
   handoffCheckable: boolean;
   conversationResumable: boolean;
+  // #329: set when the handoff (file or handoff_inline) carries the
+  // server-generated marker -- null for an ordinary agent-written handoff,
+  // or when there is no handoff at all.
+  generatedBy: "server" | null;
+  reason: ServerHandoffReason | null;
 }
 
 // mirrorRoot is the absolute path of the session's home node mirror on THIS
@@ -202,13 +321,17 @@ export async function getResumeInfo(
 ): Promise<ResumeInfo> {
   const handoffCheckable = mirrorRoot !== null;
   let currentHandoffHash: string | null = null;
+  let handoffContent: string | null = null;
   if (session.handoff_path && mirrorRoot) {
     try {
       const buf = await readFile(join(mirrorRoot, session.handoff_path));
       currentHandoffHash = sha256Buffer(buf);
+      handoffContent = buf.toString("utf8");
     } catch {
       currentHandoffHash = null;
     }
+  } else if (!session.handoff_path) {
+    handoffContent = session.handoff_inline;
   }
   const handoffChanged =
     handoffCheckable && session.handoff_hash !== null && currentHandoffHash !== session.handoff_hash;
@@ -221,6 +344,12 @@ export async function getResumeInfo(
     configDir,
   );
 
+  // #329: a server-generated handoff (either a real file or handoff_inline)
+  // carries its own reason marker, read back here so the Relace row can say
+  // e.g. "pozastaveno serverem (nečinnost 30 min)" instead of looking like
+  // an ordinary agent-written one.
+  const serverHandoffReason = parseServerHandoffReason(handoffContent);
+
   return {
     session,
     handoffPath: session.handoff_path,
@@ -229,5 +358,7 @@ export async function getResumeInfo(
     handoffChanged,
     handoffCheckable,
     conversationResumable,
+    generatedBy: serverHandoffReason ? "server" : null,
+    reason: serverHandoffReason,
   };
 }

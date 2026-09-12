@@ -998,8 +998,31 @@ symlink to this file.
   (`client-name.ts`) -- not from a header, which Codex and Vibe cannot send.
   `wireOngoingSync` persists the session's home node as `writable=1`, since
   `guardWrite` allows it implicitly and `getSessionWriteCount` counts only
-  persisted rows. `boot/session-sweep.ts` closes any row left `running` by a
-  process that died, on every boot. **The runner batch adds a task layer
+  persisted rows. **A dropped connection, the transport's own idle GC, a
+  PTY exiting, or `boot/session-sweep.ts` finding a row left `running` by a
+  process that died all suspend the session now, never close it (#329)** --
+  `domain/session-handoff.ts`'s `suspendSessionServerSide(db, sessionId,
+  reason)` (`reason` one of `disconnect | idle | terminal_exit |
+  boot_sweep`) writes a minimal handoff itself, into the session's home
+  mirror when one exists on this device (same path
+  `writeHandoffAndSuspend` uses) or into the new `sessions.handoff_inline`
+  column when it doesn't (central mode, or simply no mirror registered
+  here) -- `getResumeInfo` reads whichever one is populated. The handoff
+  content carries an invisible marker recording its own reason;
+  `parseServerHandoffReason` reads it back so `GET /sessions/:id/resume-info`
+  can report `generated_by: "server"` and the reason (the Relace row shows
+  e.g. "pozastaveno serverem (nečinnost 30 min)") instead of looking like an
+  ordinary agent-written handoff. `domain/sessions.ts`'s
+  `closeSessionIfRunning`/`closeSessionsByTerminalId`/
+  `closeStaleRunningSessionsOnBoot` kept their names and call sites (a
+  transport-close reason of `disconnect` vs `idle` is decided by
+  `mcp/transport.ts` itself, since its own idle-GC timer and a genuine
+  client disconnect both fire the same `transport.onclose` handler) but now
+  delegate to `suspendSessionServerSide` -- `closed` is reached only by the
+  user's explicit Uzavřít or the auto-archive sweep. This is the interim
+  fix for hand-opened CLIs; the runner spec's own `suspend()`
+  (`session-runtime.ts`, #320) is the equivalent for runner-managed runs.
+  **The runner batch adds a task layer
   underneath this row** (migration 034,
   `docs/superpowers/specs/2026-09-12-runner-and-session-design.md`):
   `sessions` gains `brief`/`runner`/`host_id`/`waiting_since`, `profile_id`

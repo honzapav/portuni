@@ -34,6 +34,16 @@ export const STATE_LABEL: Record<SessionState, string> = {
   archived: "Archivováno",
 };
 
+// #329: labels for a session the server suspended (dropped connection,
+// idle GC, terminal exit, boot sweep) rather than the agent's own
+// portuni_session_suspend -- see SessionResumeInfo's generated_by/reason.
+const SERVER_SUSPEND_REASON_LABEL: Record<string, string> = {
+  disconnect: "odpojení",
+  idle: "nečinnost 30 min",
+  terminal_exit: "ukončení terminálu",
+  boot_sweep: "restart serveru",
+};
+
 export const STATE_COLOR: Record<SessionState, string> = {
   running: "var(--color-status-active)",
   suspended: "var(--color-node-process)",
@@ -225,6 +235,8 @@ function SessionRow({
     conversation_resumable: boolean;
     handoff_changed: boolean;
     handoff_checkable: boolean;
+    generated_by: "server" | null;
+    reason: "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | null;
   } | null>(null);
 
   // Resumability is only meaningful (and only worth the round trip) for a
@@ -346,6 +358,7 @@ function SessionRow({
               : "spustí se z handoffu"}
             {resumeInfo.handoff_changed ? " (handoff upraven od pozastavení)" : ""}
             {!resumeInfo.handoff_checkable ? " (nelze ověřit handoff na tomto zařízení)" : ""}
+            {resumeInfo.generated_by === "server" ? ` (pozastaveno serverem${SERVER_SUSPEND_REASON_LABEL[resumeInfo.reason ?? ""] ? `, ${SERVER_SUSPEND_REASON_LABEL[resumeInfo.reason ?? ""]}` : ""})` : ""}
           </span>
         )}
       </div>
