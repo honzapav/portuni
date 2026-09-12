@@ -216,6 +216,56 @@ suspend/resume, the review UI, and deterministic consumers possible.
   as the headless review surface (what a session read, where it expanded,
   disconnected jumps, what it wrote).
 
+### Restart & handoff UX
+
+The lifecycle above is server-side. This section is the user-facing flow
+over it, so a session is something you can hand off, resume and pick up —
+not just a row to look at.
+
+- **Suspend is the normal end of a session, not an exception.** Every
+  session ends through a handoff: the close dialog defaults to Pozastavit
+  (Ukončit stays available); `PORTUNI_SCOPE.md` and the CLAUDE.md/AGENTS.md
+  marker block instruct the agent to call `portuni_session_suspend` with a
+  handoff before it stops. A session that still ends without one (`exit`,
+  crash, PTY kill, a CLI that ignores the instruction) is closed by the
+  server, which then **generates the handoff and the name itself** from
+  the session record — read set and expansions with their reasons, write
+  set, files written, events logged. Deterministic, no model call; an LLM
+  pass to condense it is optional and never the only source. The result is
+  written to the same `wip/sessions/<session-id>-handoff.md` path and
+  enriches the name the same way an agent-written handoff does. No session
+  keeps the bare `node · date time` default once it is no longer running.
+- **Externalized compact.** Continuing a long conversation replays its
+  whole transcript in every turn; Portuni does not need the model to
+  summarize it, because the session record already is the summary of what
+  happened. "Předat a začít znovu" = suspend → handoff → a fresh session
+  whose context is provisioned by code (seed + consolidated read set on
+  disk, `PORTUNI_SCOPE.md` orientation with the handoff pointer) plus the
+  agent's own handoff note for the conversational nuance the record cannot
+  hold. Thousands of tokens instead of a replayed transcript. The same
+  mechanism is what a headless loop uses between iterations.
+- **Nahodit on a suspended session, two modes, chosen from
+  `GET /sessions/:id/resume-info`:** *Pokračovat* (`claude --resume
+  <agent_session_id>`, offered only while the conversation still exists
+  under the stored profile) and *Předat a začít znovu* (handoff-resume,
+  always available, works across profiles). Both respawn in the same
+  mirror with `?resume_session_id=<id>` on the MCP URL and on the
+  sandbox-profile request, so the sandbox is recomputed from the
+  accumulated read set (Disk contract, point 3). The per-mirror `.mcp.json`
+  is static today; the resume id is threaded per spawn (env expansion, or
+  rematerializing the config from the sandbox-profile endpoint), never
+  written into the mirror config as a literal. "Otevřít terminál" on a
+  session row is not a resume and must not be labelled as if it were.
+- **Restart indicator.** The terminal pane shows "vhodný čas na restart"
+  from signals Portuni owns: expansions since spawn (how much of the read
+  set lives only in the projection), write-set growth, session age. Not an
+  estimate of the CLI's context fill. The indicator's action is Nahodit's
+  "Předat a začít znovu" on the current session.
+- **Central mode gets the same flow.** Orientation (context,
+  responsibilities, recent events, handoff pointer) for central-mode
+  mirrors needs a central endpoint; the local-mode-only cut in phase 3 is
+  closed here, since a teammate's session otherwise never sees a handoff.
+
 ## Spawn UX
 
 - **No automatic first prompt.** Deterministic provisioning (seed on disk,
@@ -285,6 +335,11 @@ Phases are ordered so each ships alone; later phases build on earlier ones.
   `scope*.test.ts` and `search-files.test.ts` are rewrites).
 - **Phase 2 — persistent sessions**: tables, suspend/resume, handoff,
   projection directory + hardlink backend, restart consolidation, archive.
+- **Phase 2b — restart & handoff UX** (after phase 3's spawn work, since
+  it respawns through it): suspend-by-default close dialog + agent
+  instruction, server-generated handoff and name on a handoff-less close,
+  Nahodit with both modes and resume-id threading, restart indicator,
+  central-mode orientation endpoint.
 - **Phase 3 — spawn UX**: empty-terminal start, provisioning fattening,
   spawn instrumentation, profiles registry.
 - **Phase 4 — Přehled + health**: the overview tab, `health` migration and

@@ -98,9 +98,9 @@ Restart the app after editing `config.json`.
 
 ### Setting the Turso token
 
-The token is the org's shared Turso service credential — see the
-Phase 1.5 multi-user note in `docs/vision/portuni-as-workspace.md`
-for why this is a shared key today and `docs/specs.md` → "Security
+The token is the org's shared Turso service credential — see
+`docs/archive/auth-refactor-plan.md` for why this is a shared key today
+and `docs/specs.md` → "Security
 model" for where per-user identity lands later. It lives in the OS
 keychain (macOS Keychain Services on Darwin; Secret Service /
 Credential Manager on Linux/Windows), never in `config.json`.
