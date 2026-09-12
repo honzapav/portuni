@@ -33,10 +33,12 @@ person|automation`, `user_id`, `external_id`, `notes`),
 4. **Editing the specification edits the routines.** The actor's
    `spec` is the brief of every routine bound to it; saving it updates
    them all. A routine bound to an actor has no brief of its own.
-5. **Asana, if linked, is where a person sees the actor at work.** The
-   automation's runs on an Asana-linked node use the same bot account
-   and the same `Za: <actor name>` prefix as any headless run; nothing
-   new on the Asana side.
+5. **Asana, if linked, is where a person sees the actor at work.** An
+   automation actor may own a guest account there
+   (`actors.surface_account_id` → `task_surface_accounts`, Asana spec):
+   its comments appear under the actor's own name and a task assigned to
+   that guest runs as this actor. Without one, its runs use the member
+   account with the `Za: <actor name>` prefix.
 
 ## Model
 
@@ -44,7 +46,8 @@ person|automation`, `user_id`, `external_id`, `notes`),
 manager", "Consultant"; for automations the function in one line),
 `spec TEXT NULL` (automations only: the brief, Markdown), `enabled
 INTEGER NOT NULL DEFAULT 1` (automations only; disabling pauses every
-bound routine).
+bound routine), `surface_account_id TEXT NULL` (automations only: the
+guest account that is this actor's face on the task surface).
 
 `actor_organizations` (new): `actor_id`, `organization_id` (a node of
 type organization), `relation TEXT` (`member | contractor | client |
