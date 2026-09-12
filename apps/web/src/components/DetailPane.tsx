@@ -1086,7 +1086,7 @@ function DetailPaneBody({
               />
             )}
             <div className="mb-3 flex items-center justify-between">
-                  {isCentralMode && node.local_mirror && (node.files.length > 0 || untracked.length > 0) ? (
+                  {isCentralMode && node.local_mirror ? (
                     <SyncBar
                       running={syncRunning}
                       result={syncRunResult}

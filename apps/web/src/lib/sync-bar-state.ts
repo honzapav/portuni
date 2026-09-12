@@ -48,6 +48,13 @@ export function syncBarState(
     deletedLocal,
     remoteMissing,
     noWork: statusLoaded && idle,
-    canRun: !statusLoaded || !idle,
+    // Always runnable, including idle: a mirror with zero tracked files (or
+    // one where everything already reads clean) still benefits from a run,
+    // since its remote sweep is the only thing that ever adopts a file that
+    // showed up on Drive out of band -- disabling the button there was a
+    // dead end with no way to ask (#313). SyncBar's label swaps to
+    // "Zkontrolovat remote" in that state instead of implying there is
+    // nothing left to ever check.
+    canRun: true,
   };
 }

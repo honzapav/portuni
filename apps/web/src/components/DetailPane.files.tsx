@@ -950,7 +950,11 @@ export function SyncBar({
     : !ready
     ? "Synchronizovat soubory"
     : noWork
-    ? "Vše synchronizováno"
+    // Nothing pending locally, but the button stays actionable (#313): a run's
+    // remote sweep is the only way to discover a file that showed up on Drive
+    // out of band, so a node with no records yet (or one that's fully clean)
+    // must still be able to trigger one instead of reading as a dead end.
+    ? "Zkontrolovat remote"
     : pending > 0
     ? `Synchronizovat (${syncPendingLabel(pending)})`
     : remoteMissing > 0

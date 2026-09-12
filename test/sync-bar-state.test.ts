@@ -2,6 +2,13 @@
 // files whose remote state had never been established, the node reading "Vše
 // synchronizováno", and the button disabled -- so the reconcile pass that is
 // the only thing able to resolve them could not be started at all.
+//
+// #313: canRun is now unconditionally true, including idle -- a mirror with
+// zero tracked files (or one where everything already reads clean) still
+// needs a way to trigger a run, since its remote sweep is the only thing
+// that ever adopts a file that showed up on Drive out of band. SyncBar
+// itself (not this module) swaps the label to "Zkontrolovat remote" in that
+// state instead of disabling the button.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { syncBarState } from "../apps/web/src/lib/sync-bar-state.js";
@@ -10,10 +17,19 @@ import type { SyncClass } from "../apps/web/src/types.js";
 const s = (...classes: SyncClass[]) => syncBarState(classes, true);
 
 describe("syncBarState", () => {
-  it("a fully clean node offers nothing", () => {
+  it("a fully clean node still allows a run (nothing pending, but always runnable)", () => {
     const r = s("clean", "clean", "native");
     assert.equal(r.noWork, true);
-    assert.equal(r.canRun, false);
+    assert.equal(r.canRun, true);
+  });
+
+  it("a node with zero tracked files at all still allows a run", () => {
+    // The reported gap: a mirror created but never populated/adopted has no
+    // records to classify at all, so the button used to read as a dead end.
+    const r = s();
+    assert.equal(r.pending, 0);
+    assert.equal(r.noWork, true);
+    assert.equal(r.canRun, true);
   });
 
   it("push and pull are the run's own work", () => {
@@ -48,11 +64,11 @@ describe("syncBarState", () => {
     assert.equal(r.deletedLocal, 0);
   });
 
-  it("deleted_local alone is a decision, not run work", () => {
+  it("deleted_local alone is a decision, not run work, but still allows a run", () => {
     const r = s("clean", "deleted_local");
     assert.equal(r.deletedLocal, 1);
-    // A run never restores it; nothing for the button to do.
-    assert.equal(r.canRun, false);
+    // A run never restores it, but the button is not disabled by it either.
+    assert.equal(r.canRun, true);
     assert.equal(r.noWork, true);
   });
 
