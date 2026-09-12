@@ -9,6 +9,7 @@ import { resolveNodeInfo } from "./sync/node-info.js";
 import { buildNodeRoot } from "./sync/remote-path.js";
 import { resolveRemote } from "./sync/routing.js";
 import { getAdapter } from "./sync/adapter-cache.js";
+import { isLocalWorkspace } from "../infra/server-config.js";
 
 export type MoveNodeResult = {
   moved: boolean;
@@ -226,8 +227,12 @@ export async function moveNodeToOrganization(
       continue;
     }
     try {
-      const adapter = await getAdapter(db, f.remote_name);
-      await adapter.rename(f.old_remote_path, f.new_remote_path);
+      // A local workspace has no remote (#310); only the row's path moves.
+      // The mirror copy is re-derived from remote_path by the next scan.
+      if (!isLocalWorkspace()) {
+        const adapter = await getAdapter(db, f.remote_name);
+        await adapter.rename(f.old_remote_path, f.new_remote_path);
+      }
       await db.execute({
         sql: "UPDATE files SET remote_path = ?, updated_at = ? WHERE id = ?",
         args: [f.new_remote_path, now, f.file_id],

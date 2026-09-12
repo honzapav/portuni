@@ -5,7 +5,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { ZodType } from "zod";
-import { checkAuthRequiredForConfig } from "../infra/server-config.js";
+import { authMode, checkAuthRequiredForConfig } from "../infra/server-config.js";
 import { LocalModeNoRemoteError } from "../domain/sync/types.js";
 import { getDb } from "../infra/db.js";
 import { SOLO_USER } from "../infra/schema.js";
@@ -93,7 +93,7 @@ let identityCtxCache: IdentityContext | null = null;
 
 export function getIdentityContext(): IdentityContext {
   if (identityCtxCache) return identityCtxCache;
-  const mode = (process.env.PORTUNI_AUTH_MODE ?? "env") === "google" ? "google" : "env";
+  const mode = authMode();
   const ctx: IdentityContext = {
     db: getDb(),
     mode,

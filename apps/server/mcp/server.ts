@@ -28,6 +28,7 @@ import { TOOL_MIN_SCOPE } from "../auth/min-scopes.js";
 import { scopeAtLeast } from "../auth/roles.js";
 import { getDb } from "../infra/db.js";
 import { UNNARROWED_PROJECTION_ID } from "../domain/session-projection.js";
+import { LocalModeNoRemoteError } from "../domain/sync/types.js";
 
 // Top-level server brief. Kept short -- many MCP clients truncate this
 // field at ~2 KB. Anything load-bearing for an individual tool lives in
@@ -66,8 +67,23 @@ export function buildDefaultEnvIdentity(): RequestIdentity {
   };
 }
 
+// A domain error that carries a code is returned as a structured error
+// result, so an MCP caller sees the same `code` a REST caller gets from
+// respondError (http/middleware.ts) instead of only the message the SDK
+// would otherwise wrap an uncaught throw in.
+function typedToolError(err: unknown): { content: Array<{ type: "text"; text: string }>; isError: true } | null {
+  if (err instanceof LocalModeNoRemoteError) {
+    return {
+      content: [{ type: "text", text: JSON.stringify({ error: err.message, code: err.code }) }],
+      isError: true,
+    };
+  }
+  return null;
+}
+
 // Wrap server.tool so every registered tool is guarded by the caller's
-// globalScope. Installed once before any registerXxxTools call.
+// globalScope and its typed domain errors are mapped (typedToolError).
+// Installed once before any registerXxxTools call.
 // The registration-time throw (missing map entry) ensures gaps are caught
 // immediately rather than at call time.
 function gateToolsByScope(server: McpServer, identity: RequestIdentity): void {
@@ -98,7 +114,13 @@ function gateToolsByScope(server: McpServer, identity: RequestIdentity): void {
           isError: true,
         };
       }
-      return handler(...h);
+      try {
+        return await handler(...h);
+      } catch (err) {
+        const typed = typedToolError(err);
+        if (typed) return typed;
+        throw err;
+      }
     };
     return original(...(args as Parameters<typeof original>));
   };

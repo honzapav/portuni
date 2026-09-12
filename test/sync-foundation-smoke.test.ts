@@ -15,6 +15,9 @@ import {
   upsertFileState, getFileState,
   resetLocalDbForTests,
 } from "../apps/server/domain/sync/local-db.js";
+import { useRemoteCapableEnv } from "./helpers/remote-capable-env.js";
+
+useRemoteCapableEnv();
 
 let workspace: string;
 let remoteRoot: string;

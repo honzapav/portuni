@@ -168,10 +168,18 @@ symlink to this file.
   `setDriveTarget`, is gone entirely as of #311 — see the Drive gotcha
   below.)
   A local workspace with pre-existing rows from before this rule logs one
-  warning at boot (`boot/local-mode-remote-warning.ts`) and otherwise keeps
-  running unchanged; `statusScan`'s local branch (below, #312) ignores
-  `remote_name` outright, including on a legacy row, so those rows cannot
-  resurface push/pull/conflict classifications either.
+  warning at boot (`boot/local-mode-remote-warning.ts`, the only reader of
+  the raw rows via `legacyRemoteRowCounts`) and otherwise behaves as if the
+  rows were not there: `resolveRemote`/`listRemotes`/`listRules` answer
+  null/empty on a local workspace, `getAdapter` refuses with the same error
+  as a backstop, and `deleteFile`/`moveFile`/`renameFile`/`renameFolder`
+  ignore a legacy row's `remote_name` and touch only the local copy and
+  the row (`moveFile` clears `remote_name` on the way). `statusScan`'s local
+  branch (below, #312) ignores `remote_name` outright too, so legacy rows
+  cannot resurface push/pull/conflict classifications. The MCP tool wrapper
+  (`mcp/server.ts`'s `typedToolError`) returns `LocalModeNoRemoteError` as
+  an `isError` result carrying `code`, the same code REST's `respondError`
+  sends as 409.
 - **File state is deterministic, not agent-driven.** A mirror watcher
   (`apps/server/domain/sync/mirror-watcher.ts` → `reconcile.ts`) registers new
   files and reconciles edits/deletes on every disk change, so the UI's sync

@@ -88,7 +88,7 @@ import type { ResolveAction } from "../api";
 // DetailPane composes them with its own state.
 import { EventCard, AddEventForm } from "./DetailPane.events";
 import {
-  DriveNotConfiguredBanner,
+  LocalWorkspaceFilesBanner,
   FileTree,
   NewFileForm,
   SyncBar,
@@ -1074,9 +1074,9 @@ function DetailPaneBody({
             {/* Central mode uses the same full files UI: file content and
                 lifecycle go to the central server, sync + mirrors to the
                 local sync agent (teammate mirrors). */}
-            {/* Rendered here (not inside SyncBar) so the "connect Drive"
+            {/* Rendered here (not inside SyncBar) so the local-workspace
                 hint shows even on a node with no files yet. */}
-            <DriveNotConfiguredBanner />
+            <LocalWorkspaceFilesBanner />
             <WatcherErrorBanner errors={watcherErrors} />
             {node.type !== "organization" && !node.local_mirror && (
               <NoMirrorBanner

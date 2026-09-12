@@ -1,6 +1,5 @@
 import type { Client } from "@libsql/client";
-import { LocalModeNoRemoteError } from "./types.js";
-import { isLocalWorkspace } from "../../infra/server-config.js";
+import { assertRemoteCapable } from "./types.js";
 import { upsertRemote, listRemotes, replaceRules, type RoutingRule } from "./routing.js";
 import { readDeviceTokens } from "./device-tokens.js";
 import { invalidateAdapter } from "./adapter-cache.js";
@@ -16,7 +15,7 @@ export interface SetupRemoteArgs {
 export async function setupRemoteService(db: Client, a: SetupRemoteArgs): Promise<void> {
   // Fail before any side effect (e.g. the token-store write below) rather
   // than relying solely on upsertRemote's own guard further down.
-  if (isLocalWorkspace()) throw new LocalModeNoRemoteError();
+  assertRemoteCapable();
   if (a.type === "fs") {
     if (typeof a.config.root !== "string") {
       throw new Error("fs remote requires config.root as a string");
@@ -52,7 +51,7 @@ export async function setRoutingPolicyService(
   db: Client,
   rules: RoutingRule[],
 ): Promise<void> {
-  if (isLocalWorkspace()) throw new LocalModeNoRemoteError();
+  assertRemoteCapable();
   await replaceRules(db, rules);
 }
 

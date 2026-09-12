@@ -143,14 +143,14 @@ CREATE TABLE IF NOT EXISTS remote_stat_cache (
   file_id TEXT PRIMARY KEY,
   remote_hash TEXT,
   remote_modified_at DATETIME,
-  fetched_at DATETIME NOT NULL            -- used for 30s debounce in portuni_status
+  fetched_at DATETIME NOT NULL            -- when the hash was observed
 );
 ```
 
 Two tables:
 
 - `file_state` – the authoritative "what I last saw" record, plus a cached local hash keyed by (mtime, size) so we can skip rehashing unchanged files. Same trick as rsync and git.
-- `remote_stat_cache` – short-lived cache for remote stat results, so rapid successive `portuni_status` calls don't hammer the Drive API.
+- `remote_stat_cache` – the central engine's record of the remote hash it last observed per file. The local engine no longer reads or writes it: a local workspace has no remote (#312).
 
 ## FileAdapter interface
 
@@ -181,12 +181,11 @@ export interface RemoteConfig {
   config: Record<string, unknown>;
 }
 
-export interface DeviceTokens {
-  [remoteName: string]: {
-    access_token?: string;
-    refresh_token: string;
-  };
+export interface DeviceToken {
+  service_account_json?: string;
+  mode?: "service_account";
 }
+export type DeviceTokens = Record<string, DeviceToken>;
 
 export function createAdapter(remote: RemoteConfig, tokens: DeviceTokens): FileAdapter;
 ```
@@ -309,7 +308,9 @@ Algorithm:
   For each relevant files row:
     1. local_hash = read from sync.db cache if (mtime, size) unchanged,
                     else compute SHA-256 and update cache.
-    2. remote_stat = adapter.stat(remote_path), with 30s debounce from remote_stat_cache.
+    2. remote_stat = adapter.stat(remote_path) (central engine only; a local
+       workspace has no remote and skips this step, so it can only ever
+       classify clean, new_local or deleted_local).
     3. last_synced_hash = sync.db file_state.
     4. Classify:
        in_sync         local = last_synced = remote

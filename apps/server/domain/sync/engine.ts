@@ -5,7 +5,7 @@ import { ulid } from "ulid";
 import { md5Buffer, sha256Buffer, sha256File, statForCache } from "./hash.js";
 import { getAdapter } from "./adapter-cache.js";
 import type { FileRef } from "./types.js";
-import { LocalModeNoRemoteError } from "./types.js";
+import { assertRemoteCapable } from "./types.js";
 import { isLocalWorkspace } from "../../infra/server-config.js";
 import { resolveRemote } from "./routing.js";
 import {
@@ -94,7 +94,7 @@ export interface StoreFileResult {
 }
 
 export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFileResult> {
-  if (isLocalWorkspace()) throw new LocalModeNoRemoteError();
+  assertRemoteCapable();
   const info = await resolveNodeInfo(db, a.nodeId);
   const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
   if (!remoteName) {
@@ -487,7 +487,7 @@ export interface PullFileResult {
 }
 
 export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileResult> {
-  if (isLocalWorkspace()) throw new LocalModeNoRemoteError();
+  assertRemoteCapable();
   const row = await db.execute({
     sql: "SELECT id, node_id, filename, remote_name, remote_path, current_remote_hash FROM files WHERE id = ?",
     args: [a.fileId],

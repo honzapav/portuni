@@ -53,7 +53,7 @@ export default function SyncSection() {
         </p>
       ) : (
         <p className="text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-          Tento workspace běží v lokálním režimu — soubory se ukládají jen na
+          Tento workspace běží v lokálním režimu – soubory se ukládají jen na
           tento počítač a nesdílejí se. Sdílení souborů vyžaduje připojení k
           týmu (centrální režim).
         </p>

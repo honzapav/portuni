@@ -1,3 +1,5 @@
+import { isLocalWorkspace } from "../../infra/server-config.js";
+
 export type RemoteType = "gdrive" | "dropbox" | "s3" | "fs" | "webdav" | "sftp";
 export type NativeFormat = "gdoc" | "gsheet" | "gslide" | "notion_page";
 
@@ -93,4 +95,10 @@ export class LocalModeNoRemoteError extends Error {
     super("Lokální workspace nemá remote; sdílení souborů běží přes centrální server.");
     this.name = "LocalModeNoRemoteError";
   }
+}
+
+// The one guard every remote-touching entry point runs first. Kept here,
+// next to the error it throws, so a new entry point has one line to add.
+export function assertRemoteCapable(): void {
+  if (isLocalWorkspace()) throw new LocalModeNoRemoteError();
 }

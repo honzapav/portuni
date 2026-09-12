@@ -857,12 +857,12 @@ function syncPendingLabel(count: number): string {
   return `${count} souborů ke synchronizaci`;
 }
 
-// Local-only hint for the Files tab. Rendered by DetailPane above the sync
-// bar so it shows even on a node with zero files (where SyncBar is not
-// mounted) — that empty state is exactly when the hint is most useful. A
-// local workspace never holds a remote (#310), so this shows unconditionally
-// for one; central-mode syncs through the server and never shows it.
-export function DriveNotConfiguredBanner() {
+// Local-workspace hint for the Files tab. Rendered by DetailPane above the
+// sync bar so it shows even on a node with zero files (where SyncBar is not
+// mounted). A local workspace never holds a remote (#310), so this shows
+// unconditionally for one; central mode syncs through the server and never
+// shows it.
+export function LocalWorkspaceFilesBanner() {
   const [show, setShow] = useState(false);
   useEffect(() => {
     let alive = true;
@@ -886,7 +886,7 @@ export function DriveNotConfiguredBanner() {
 }
 
 // Recent mirror-watcher failures for this node (#202). Rendered alongside
-// DriveNotConfiguredBanner/NoMirrorBanner so it shows even on a node with
+// LocalWorkspaceFilesBanner/NoMirrorBanner so it shows even on a node with
 // zero tracked files -- that is exactly the state a registration failure
 // (e.g. the #201 "no remote configured" bug) used to look like from the UI.
 export function WatcherErrorBanner({ errors }: { errors: WatcherErrorEntry[] }) {
@@ -939,7 +939,7 @@ export function SyncBar({
   // matches what the user sees. deleted_local and conflicts are reported
   // separately: the sync run never acts on them automatically (the local
   // deletion may be intentional; conflicts need a human).
-  const { pending, conflicts, deletedLocal, remoteMissing, noWork, canRun } = syncBarState(
+  const { pending, conflicts, deletedLocal, remoteMissing, noWork } = syncBarState(
     Array.from(statusMap.values(), (f) => f.sync_class),
     statusLoaded,
   );
@@ -998,7 +998,7 @@ export function SyncBar({
       <div className="flex items-center gap-2">
         <button
           onClick={onRun}
-          disabled={running || !canRun}
+          disabled={running}
           className="inline-flex items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[12.5px] text-[var(--color-text)] transition-colors hover:border-[var(--color-border-strong)] disabled:cursor-default disabled:opacity-60"
         >
           <RefreshCw

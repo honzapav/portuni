@@ -6,16 +6,16 @@
 
 import { getDb } from "../infra/db.js";
 import { isLocalWorkspace } from "../infra/server-config.js";
-import { listRemotes, listRules } from "../domain/sync/routing.js";
+import { legacyRemoteRowCounts } from "../domain/sync/routing.js";
 
 export async function warnIfLocalWorkspaceHasStaleRemotesOnBoot(): Promise<void> {
   if (!isLocalWorkspace()) return;
   try {
     const db = getDb();
-    const [remotes, rules] = await Promise.all([listRemotes(db), listRules(db)]);
-    if (remotes.length === 0 && rules.length === 0) return;
+    const { remotes, rules } = await legacyRemoteRowCounts(db);
+    if (remotes === 0 && rules === 0) return;
     console.warn(
-      `[boot] local workspace has ${remotes.length} remote(s) and ${rules.length} routing rule(s) left over from before a local workspace stopped supporting a remote -- ignored, they cannot be reached from here anymore.`,
+      `[boot] local workspace has ${remotes} remote(s) and ${rules} routing rule(s) left over from before a local workspace stopped supporting a remote -- ignored, they cannot be reached from here anymore.`,
     );
   } catch (e) {
     console.error("[boot] local-mode remote check failed:", e);

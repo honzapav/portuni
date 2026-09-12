@@ -9,6 +9,7 @@
 
 import { getDb } from "../infra/db.js";
 import { SOLO_USER } from "../infra/schema.js";
+import { authMode } from "../infra/server-config.js";
 import {
   createMirrorWatcher,
   type MirrorWatcher,
@@ -23,9 +24,7 @@ const SWEEP_INTERVAL_MS = 10 * 60_000;
 
 export function startMirrorWatcher(enabled: boolean): MirrorWatcher | null {
   if (!enabled) return null;
-  const mode =
-    (process.env.PORTUNI_AUTH_MODE ?? "env") === "google" ? "google" : "env";
-  if (mode !== "env") return null;
+  if (authMode() !== "env") return null;
   const watcher = createMirrorWatcher({
     db: getDb(),
     userId: SOLO_USER,

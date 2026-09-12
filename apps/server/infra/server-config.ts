@@ -51,7 +51,12 @@ export function checkAuthRequiredForConfig(
 // (per-request, worth memoizing) this is checked rarely enough that a stale
 // cache is not worth the test-seam cost.
 export function isLocalWorkspace(): boolean {
-  const authMode = (process.env.PORTUNI_AUTH_MODE ?? "env") === "google" ? "google" : "env";
   const agentMode = process.env.PORTUNI_AGENT_MODE === "1";
-  return authMode !== "google" && !agentMode;
+  return authMode() !== "google" && !agentMode;
+}
+
+// The server's auth mode, read live from the environment: "google" is the
+// central server, anything else is solo bearer-token mode.
+export function authMode(): "google" | "env" {
+  return (process.env.PORTUNI_AUTH_MODE ?? "env") === "google" ? "google" : "env";
 }

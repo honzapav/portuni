@@ -1,6 +1,6 @@
 import type { Client } from "@libsql/client";
 import type { RemoteConfig, RemoteType } from "./types.js";
-import { LocalModeNoRemoteError } from "./types.js";
+import { assertRemoteCapable } from "./types.js";
 import { isLocalWorkspace } from "../../infra/server-config.js";
 
 export interface RemoteRow extends RemoteConfig {
@@ -16,7 +16,7 @@ export interface UpsertRemoteArgs {
 }
 
 export async function upsertRemote(db: Client, a: UpsertRemoteArgs): Promise<void> {
-  if (isLocalWorkspace()) throw new LocalModeNoRemoteError();
+  assertRemoteCapable();
   await db.execute({
     sql: `INSERT INTO remotes (name, type, config_json, created_by, created_at)
           VALUES (?, ?, ?, ?, datetime('now'))
@@ -40,7 +40,13 @@ export async function getRemote(db: Client, name: string): Promise<RemoteRow | n
   };
 }
 
+// A local workspace reads as having no remotes and no routing at all, even
+// when rows from before #310 are still in the tables: every caller below
+// takes "no remote" as the local-only branch, which is exactly the behaviour
+// those legacy rows must not override. The boot warning is the one reader
+// that wants the raw rows (legacyRemoteRowCounts).
 export async function listRemotes(db: Client): Promise<RemoteRow[]> {
+  if (isLocalWorkspace()) return [];
   const r = await db.execute("SELECT * FROM remotes ORDER BY name ASC");
   return r.rows.map((row) => ({
     name: row.name as string,
@@ -49,6 +55,16 @@ export async function listRemotes(db: Client): Promise<RemoteRow[]> {
     created_by: row.created_by as string,
     created_at: row.created_at as string,
   }));
+}
+
+export async function legacyRemoteRowCounts(
+  db: Client,
+): Promise<{ remotes: number; rules: number }> {
+  const [remotes, rules] = await Promise.all([
+    db.execute("SELECT COUNT(*) AS n FROM remotes"),
+    db.execute("SELECT COUNT(*) AS n FROM remote_routing"),
+  ]);
+  return { remotes: Number(remotes.rows[0].n), rules: Number(rules.rows[0].n) };
 }
 
 export async function deleteRemote(db: Client, name: string): Promise<void> {
@@ -70,6 +86,7 @@ export async function addRule(db: Client, rule: RoutingRule): Promise<void> {
 }
 
 export async function listRules(db: Client): Promise<RoutingRule[]> {
+  if (isLocalWorkspace()) return [];
   const r = await db.execute(
     "SELECT priority, node_type, org_slug, remote_name FROM remote_routing ORDER BY priority ASC, id ASC",
   );
@@ -130,6 +147,7 @@ export async function resolveRemote(
   nodeType: string,
   orgSlug: string | null,
 ): Promise<string | null> {
+  if (isLocalWorkspace()) return null;
   const r = await db.execute({
     sql: `SELECT remote_name FROM remote_routing
           WHERE (node_type = ? OR node_type IS NULL)
