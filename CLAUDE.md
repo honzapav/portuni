@@ -265,7 +265,16 @@ symlink to this file.
   time) was removed rather than kept as a permanently-empty field. The
   watcher's projection relink (`relinkProjectedFile`) walks a directory
   event the same way (`relinkTree`), so a moved subtree shows up in every
-  live session projection too. A push (`storeFile`/`storeFileCentral`)
+  live session projection too. **That walk must never re-create a link that is
+  already current**: on macOS `link(src, dest)` fires an fs.watch event for
+  the SOURCE file's parent directory even though `dest` lies outside the
+  watched mirror (unlink alone fires nothing), so a relink that redoes
+  links it just made produces exactly the directory event that triggers
+  the next walk -- an expanded 121-file node was rebuilt every ~1 s with
+  the sidecar pinned at 80-94 % CPU (v0.13.10, Asana 1218416968309091).
+  `isCurrentLink` (same inode + device) short-circuits both `relinkTree`
+  and `relinkOne`; only a missing dest or a replaced inode (atomic save)
+  relinks. A push (`storeFile`/`storeFileCentral`)
   stats the file before reading the bytes it uploads and re-stats after;
   if the identity moved mid-upload it caches the CURRENT content hash, not
   the pushed one — fast status trusts `cached_local_hash` outright, so an

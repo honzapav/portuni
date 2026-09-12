@@ -173,6 +173,64 @@ describe("relinkProjectedFile", () => {
     await assert.rejects(() => stat(join(target, "wip", "old")), "stale subtree must be gone");
   });
 
+  it("leaves an already-current hardlink alone on a repeat directory or file event", async () => {
+    // link() itself fires a watcher event for the SOURCE file's parent
+    // directory on macOS, so a relink that re-creates links it just made
+    // feeds the watcher forever (Asana 1218416968309091: sidecar at 80-94 %
+    // CPU rebuilding a 121-file projection every second). A dest that is
+    // already the same inode as its source is current by definition and
+    // must not be touched.
+    const target = nodeProjectionDir(projectionRoot, "SESS", "NODE");
+    registerProjectedNode("NODE", { sessionId: "SESS", mirrorPath: mirror, targetDir: target });
+    await mkdir(join(mirror, "wip", "deck"), { recursive: true });
+    await writeFile(join(mirror, "wip", "deck", "a.md"), "a\n");
+    await writeFile(join(mirror, "wip", "deck", "b.md"), "b\n");
+    await projectNode(mirror, target);
+
+    const before = await Promise.all(
+      ["a.md", "b.md"].map((f) => stat(join(target, "wip", "deck", f))),
+    );
+    assert.equal(before[0].nlink, 2);
+    await new Promise((r) => setTimeout(r, 20));
+
+    await relinkProjectedFile("NODE", join(mirror, "wip", "deck"));
+    await relinkProjectedFile("NODE", join(mirror, "wip", "deck", "a.md"));
+
+    const after = await Promise.all(
+      ["a.md", "b.md"].map((f) => stat(join(target, "wip", "deck", f))),
+    );
+    for (let i = 0; i < before.length; i++) {
+      assert.equal(after[i].ino, before[i].ino);
+      assert.equal(after[i].nlink, 2);
+      assert.equal(after[i].ctimeMs, before[i].ctimeMs, "link must not be recreated");
+    }
+  });
+
+  it("still relinks a file whose inode was replaced (atomic save)", async () => {
+    const target = nodeProjectionDir(projectionRoot, "SESS", "NODE");
+    registerProjectedNode("NODE", { sessionId: "SESS", mirrorPath: mirror, targetDir: target });
+    const { rename } = await import("node:fs/promises");
+    const src = join(mirror, "wip", "doc.md");
+    await writeFile(src, "v1\n");
+    await relinkProjectedFile("NODE", src);
+    const stale = await stat(join(target, "wip", "doc.md"));
+
+    await writeFile(join(mirror, "wip", ".doc.md.tmp"), "v2\n");
+    await rename(join(mirror, "wip", ".doc.md.tmp"), src);
+    await relinkProjectedFile("NODE", src);
+
+    assert.equal(await readFile(join(target, "wip", "doc.md"), "utf8"), "v2\n");
+    const fresh = await stat(join(target, "wip", "doc.md"));
+    assert.notEqual(fresh.ino, stale.ino);
+    assert.equal(fresh.ino, (await stat(src)).ino);
+
+    // The same replacement seen as a directory event must relink it too.
+    await writeFile(join(mirror, "wip", ".doc.md.tmp"), "v3\n");
+    await rename(join(mirror, "wip", ".doc.md.tmp"), src);
+    await relinkProjectedFile("NODE", join(mirror, "wip"));
+    assert.equal(await readFile(join(target, "wip", "doc.md"), "utf8"), "v3\n");
+  });
+
   it("keeps and relinks two _shared projections of the same node under different home roots", async () => {
     const targetA = nodeProjectionDir(join(projectionRoot, "homeA"), "_shared", "NODE");
     const targetB = nodeProjectionDir(join(projectionRoot, "homeB"), "_shared", "NODE");
