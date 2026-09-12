@@ -1,38 +1,21 @@
 # Portuni as Workspace — vision
 
-> Status: vision document, not a plan. No implementation date. Captured for future reference so we don't have to re-derive the framing.
+> Status: vision document, not a plan. No implementation date. Captured for future reference so we don't have to re-derive the framing. Naposledy revidováno 2026-09-12.
 
 ## Premise
 
-Portuni v0 (file sync + graph + MCP) řeší backend problém: kde žije znalost, jak teče mezi lidmi, jak ji čtou agenti. Funguje, ale uživatel s ním komunikuje přes terminál, Drive UI a Claude Code MCP volání. Tři konteksty, žádný cítí jako "Portuni".
+Portuni je vrstva mezi agentem a digitálními nástroji firmy. Drží kontext (graf POPP, scope), spravuje soubory nodů (mirrors, Drive), koordinuje s lidmi přes Asanu a spouští práci v cizích runnerech. Nenahrazuje žádný nástroj, integruje se s nimi. Používá to celý tým: Portuni desktop, Asana, Drive, každý nástroj ve své roli.
 
-Portuni jako workspace je posun: **jedna aplikace, ve které člověk dělá svou znalostní práci**. Graf je shell. Files, agent, editor, sync stav — všechno orbituje kolem aktuálního node.
+Způsob práce: člověk zadává práci agentovi nebo ji po něm přebírá, v UI dělá context management, Portuni to zjednodušuje. Děláme to pro sebe a pro svůj tým, abychom ušetřili práci a naučili se to.
 
 ## Identita
 
-> "Portuni je operační systém pro znalostní práci, agent-native."
+> "Portuni je control plane pro agentní práci se znalostmi."
 
 Klíčová slova:
-- **Operační systém** — ne aplikace, ne tool. Vrstva, ve které se odehrávají všechny ostatní akce. Terminál, editor, browser tabů, file picker, agent chat.
-- **Znalostní práce** — psaní, výzkum, návrhy, syntéza. Ne tasky (od toho je Asana / Linear). Ne tabulky (od toho je Sheets / Airtable). Práce s textem a kontextem.
-- **Agent-native** — Claude Code (a jeho budoucí ekvivalenty) nejsou feature. Jsou primary input. Otevřu terminál v Portuni, agent už ví, kde jsem, který node, který soubor, co se rozdělaného povaluje.
-
-## Konkurence
-
-**Skutečně konkuruje:**
-- **Obsidian** — markdown knowledge base s grafem, lokální soubory, plugins
-- **Solo (Aaron Francis)** — writing-first app, čistý markdown editor s preview
-- **iA Writer** — markdown editor s typewriter / focus modes
-- **Logseq, Roam, Tana** — graph-first knowledge
-- **Cursor, VS Code + chat** — agent-native editing (ale code-first, ne knowledge-first)
-
-**Nekonkuruje (a nesnažíme se):**
-- **Asana, Linear, Jira** — task management. Portuni linkuje, ne nahrazuje.
-- **Notion** — všeobjímající workspace s databázemi. Příliš generické, my máme úzký focus.
-- **Google Docs, Office** — rich-format collaborative editing. My se držíme markdown + linkujeme native dokumenty.
-- **Slack, Discord** — chat / messaging. Komunikace mezi lidmi není naše.
-
-Pozice: **Obsidian, ale s agentem jako primárním kanálem a synchronizací jako first-class invariant.**
+- **Control plane** — ne aplikace, ne tool. Vrstva, která rozhoduje, co agent vidí, kde pracuje, co smí zapsat a kde o tom zůstane záznam.
+- **Znalostní práce** — psaní, výzkum, návrhy, syntéza. Ne tasky (od toho je Asana). Ne tabulky (od toho je Sheets / Airtable). Práce s textem a kontextem.
+- **Agent-native** — agent je primární vstup. Kanál je úkol a jeho chat, ne terminál. Runner (Claude Code, Codex, OpenCode) je cizí a jen se připojí.
 
 ## Pozice vůči auto mode
 
@@ -57,41 +40,44 @@ Auto mode v Claude Code (a jeho ekvivalenty) **není konkurence Portuni – je t
 1. **Komunikace** musí tuhle hranici držet. Portuni není "lepší auto mode", je to **control plane pro agentní práci se znalostmi**. README, talky, zmínky se tomuto pozicování musí přizpůsobit.
 2. **Scope model** (implementace v `apps/server/mcp/scope.ts` + `apps/server/mcp/tools/scope.ts`: `portuni_expand_scope`, `portuni_session_log`, session type odvozený serverem z auth cesty – `interactive_task`/`interactive_chat`/`headless`/`env`, žádný `PORTUNI_SCOPE_MODE` env přepínač) je technické vyjádření této pozice. Read scope set + filesystem write tier 1/2/3 + audit jsou mechanismy, jak control plane funguje. Bez nich Portuni "ten control" jen tvrdí, ale nemá ho čím doložit.
 
+## Konkurence
+
+Portuni je vrstva pod nástroji, ne další nástroj vedle nich. Nesoutěží o uživatele s editory ani s knowledge base aplikacemi, ale s tím, že si harness vendor (Anthropic, OpenAI, T3) dostaví vlastní graf a knowledge base. To pro nás není důvod k rozhodování: děláme to pro sebe a pro tým.
+
+**Nekonkuruje (a nesnažíme se):**
+- **Asana, Linear, Jira** — task management. Asana je koordinační plocha týmu, Portuni ji nenahrazuje.
+- **Notion** — všeobjímající workspace s databázemi. Příliš generické, my máme úzký focus.
+- **Google Docs, Office** — rich-format collaborative editing. My se držíme markdown + linkujeme native dokumenty.
+- **Slack, Discord** — chat / messaging. Komunikace mezi lidmi není naše.
+- **Claude Code, Codex, OpenCode, T3 Code** — runnery a harnessy. Portuni je spouští a dává jim kontext, nestaví vlastní agent loop.
+
 ## Core UX moves
 
-### 1. Graf jako shell
+### 1. Práce na nodu je hlavní obrazovka
 
-Levý panel = kompresovaný graf (org → projects/processes → nodes). Klik = node se stane "active". Active node určuje:
-- pravý panel: detail node (files, edges, owner, responsibilities, events, lifecycle, summary)
-- terminal cwd
-- agent context
-- editor scope (jaký mirror se procháží)
+Záložka Práce: uprostřed chat relace s agentem, vedle detail nodu (soubory, hrany, aktéři, odpovědnosti, události, lifecycle) a editor. Levý sloupec ukazuje otevřené nody a jejich relace se stavem. Graf je mapa, ne shell: slouží k orientaci, tvorbě a propojování nodů.
 
-Žádný globální "soubory na disku" view. Vše je nodescoped.
+Aktivní node určuje agentův kontext, scope a mirror, ve kterém runner pracuje. Žádný globální "soubory na disku" view. Vše je nodescoped.
 
-### 2. Agent terminál (killer feature)
+### 2. Úkol a relace
 
-V Portuni je tab "Terminal". Otevře shell s:
-- `cwd` = mirror aktivního node
-- `PORTUNI_ACTIVE_NODE` env var nastavený
-- Claude Code už spuštěný a předem zkonfigurovaný k Portuni MCP serveru
-- Agent v session prologue ví: "user works in node X, of org Y, files [...]"
+Jednotka práce je relace, a relace je úkol. Relace trvá od zadání do archivu; pod ní se střídají konverzace runneru, po každém handoffu nová. Úkol relaci přidává zadání (prompt v Portuni, Asana task, později GitHub issue), stav (běží / čeká na mě / hotovo / archiv), runner, místo běhu a odkaz na Asana task.
 
-> "Otevřu Claude Code v Portuni a všechno je jednodušší." — to je celá teze.
-
-Konkrétně: agent nemusí pokaždé volat `portuni_get_node` na začátku. Nemusí se ptát "ve kterém adresáři jsi?". Ví to.
+- **Kompakce kontextu úkolu** je věc Portuni, kompakce transkriptu je věc runneru. „Předat a začít znovu" = suspend → handoff → nová konverzace naplněná kódem (seed, read set, orientace) plus handoff agenta.
+- **Otázka agenta** je tah v chatu. Portuni podle ní nastaví stav „čeká na mě". V headless úkolu z Asany je tatáž událost komentářem v Asaně. Jeden model, dva povrchy, žádné zrcadlení.
+- **Autonomie po triggeru** platí i pro odeslání: agent smí na konci běhu odeslat výstupy na Drive a napsat do Asany, když se tak rozhodne. Záměr vyjádřilo zadání úkolu.
+- **Přehled** je inbox: běží, čeká na mě, hotovo, na pozadí.
 
 ### 3. Markdown editor s preview
 
 Side-by-side jako Obsidian / iA Writer:
-- left: source markdown (CodeMirror nebo similar)
+- left: source markdown (CodeMirror)
 - right: rendered preview (live, syncscroll)
 - top bar: file name, sync indicator, last save time
-- save = auto `portuni_store` (na configured frequency, ne každý keystroke)
 
-Linkování `[[Node Name]]` resolvuje proti grafu, autocomplete z grafu.
+Člověk v Portuni píše rukou. Watcher registruje změny, push na remote je záměrná akce.
 
-Out-of-scope pro v1: tabulky, embed chart, code blocks s execution. Čistý markdown.
+Out-of-scope: tabulky, embed chart, code blocks s execution. Čistý markdown.
 
 ### 4. Sync indikátor per-file
 
@@ -100,18 +86,45 @@ Vedle každého souboru v node detail panelu:
 - ⬆ push (lokál nový)
 - ⬇ pull (Drive nový)
 - ⚠ conflict (oba se rozešli)
-- ◯ orphan (DB row bez remote)
+- ✕ remote_missing / remote_error / deleted_local
 - 🔗 native (Google Doc / link, není sync)
 
 Hover = detail (timestamps, hashes, who pushed). Klik = action menu (Push, Pull, Resolve, Snapshot).
 
-### 5. Settings UI
+### 5. Nastavení
 
-Vše, co dnes vyžaduje varlock + gcloud + JSON klíče, je form:
-- Add Drive remote: paste SA JSON, validate, "Test connection" button
-- Routing rules: drag-drop priority list s vizuálním preview "tenhle node půjde na tenhle remote"
-- Token store: dropdown (file / keychain / 1Password)
-- Mirror locations: vidět všech 35 + možnost override per node
+Hosté a providery místo příkazu agenta a profilů. Lokální CLI se najdou samy, přihlášení se dělá v nich. Vzdálený host se ohlásí sám, jakmile na něm běží Portuni agent přihlášený Googlem. Host je tvůj, dokud ho neoznačíš jako týmový. Host a instance providera se volí per úkol nebo výchozí per organizace. Tajemství nikdy do webview ani do plaintextu.
+
+## Runner a místo běhu
+
+Model T3 Code: provider + environment.
+
+- **Provider** (Claude Code, Codex, OpenCode) se nenastavuje. Najde se na PATH, přihlášení se ověří dotazem na samotné CLI. Osobní předplatné musí fungovat. Víc účtů = víc instancí providera (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, env); datový model dnešních profilů zůstává, čte ho adaptér na hostu.
+- **Environment** je stroj s běžícím Portuni agentem (sidecar v agent módu, odpojený od desktopu): lokálně, na serveru jako služba, na starém Macu přes launchd, volitelně instalovaný z desktopu přes SSH. Environment vlastní mirrory, providery a jejich přihlášení.
+- **Bez párování, přes central.** Host se přihlásí device tokenem a drží odchozí spojení k centralu, klient mluví jen s centralem. Host nepotřebuje otevřený port ani tunel. Chat úkolu teče přes central. V lokálním módu je klient a host jeden proces.
+- **Jedno rozhraní runner, pod ním adaptéry**: Claude Agent SDK, Codex app-server, OpenCode, ACP pro ostatní. ACP samotné nestačí, oba hlavní runnery mají vlastní bohatší kanál.
+- **Kanonický model událostí.** UI nekreslí výstup providera, ale vlastní události (zpráva, tool call, změna souboru, žádost o schválení, otázka, kompakce), na které adaptéry překládají. Proto UI vypadá stejně bez ohledu na runner.
+- **Práva runneru = práva zadavatele.** Runner vidí to, k čemu je node propojený, a jedná s právy člověka, který úkol zadal, nikdy víc. Týmový host dostane k úkolu token na jméno zadavatele a po skončení ho zahodí. Kernelový sandbox není; write-scope se vynucuje schvalovacím callbackem adaptéru a guard hookem, čtení mimo scope hlídá MCP scope a `portuni_read_file`.
+- **Relace je vázaná na host, ale přenosná.** Handoff umožní pokračovat na jiném hostu novou konverzací.
+- **Riziko, které nezmizí:** Anthropic v roce 2026 dvakrát změnil postoj k použití předplatného z cizích klientů; dnes to funguje, právní text říká „použijte API klíč". OpenAI to výslovně povoluje. Volba adaptérů to nemění.
+
+## Asana
+
+Asana je koordinační plocha týmu. Portuni funguje i bez ní.
+
+- Node (kromě organizace) může mít Asana projekt: založit nebo napojit existující. Vazba jde přes dnešní tools, které už na Asana projekty odkazují. Organizace odpovídá Asana týmu (otevřeno).
+- Úkol lze zadat z Portuni (prompt, vložený link na task) i z Asany (přiřazení agentovi). Obě cesty jsou rovnocenné; trigger z Asany je stretch, firma nemůže překopat Asanu ani Drive ze dne na den.
+- Pole, která lidé čtou a mění (název, zadání, přiřazení, stav, komentáře), žijí v Asaně, když je node napojený; jinak v Portuni. Pravda o běhu žije v Portuni.
+- Nic se nezrcadlí automaticky. Interaktivní relace žije v chatu v Portuni, komentář do Asany je rozhodnutí agenta nebo člověka. Úkol zadaný v Asaně běží headless a odpovídá komentářem v Asaně (model AIQ).
+- Asana je první adaptér rozhraní „task surface", stejný vzor jako `FileAdapter`. Změna Asana API nesmí vynutit lock-step update core.
+
+## Skills, rutiny, nadhled
+
+- **Skill je node zabalený pro agenta.** Znalost nodu (popis, principy, soubory, postupy, rozhodnutí) se zkompiluje do jednoho nebo více skills a agent node invokuje, když ho potřebuje. Skill nepíše člověk, píše ho agent v běhu na nodu; Portuni ten běh spouští jako rutinu při změně obsahu nodu, výsledek balí a distribuuje do týmu: do sessions runnerů i do ručně otevřených CLI. Invokace nodu je rozšíření scope plus načtení jeho skillu, jedna akce.
+- **Rutina je úkol s rozvrhem a politikou.** Každý běh je relace na nodu, headless na některém hostu; handoff mezi běhy je paměť rutiny. Politika říká, co se stane s výsledkem: `auto` zapíše a odešle, `review` nechá v „čeká na mě". Node má vedle relací záložku se svými rutinami (poslední běh, příští běh, stav), Přehled má sekci „Na pozadí". Když rutina něco potřebuje, jde to stejným kanálem jako každý úkol.
+- **Agent nadhledu je rutina na organizaci.** Scope celé firmy, pravidelně projde graf a navrhne chybějící nody, úpravy a slepá místa. Navrhuje, člověk přijímá.
+- **Kontext firmy a člověka je skill organizace a skill aktéra.** Aktéři v grafu ponesou roli, vztah k organizacím a entity, které dnes žijí mimo Portuni. Skill organizace vzniká stejným mechanismem jako skill procesu.
+- **Šablony projektů** jsou zatím myšlenka. Návrh bez nového typu: proces nese, jak se z něj zakládá projekt, a založení je skill toho procesu.
 
 ## Proč agent-native matters
 
@@ -124,12 +137,12 @@ Důsledky:
 
 ## Otevřené otázky
 
-1. **Editor implementace.** Tauri webview s CodeMirror? Native via SwiftUI / GTK? Jak markdown render? Jak performance při 1000+ souborech v node?
-2. **Multi-window.** Jeden node per okno? Tabs? Split view (edit + preview + terminal v jednom)?
-3. **Offline mode.** Když Drive není dostupný, UI by mělo fungovat. Sync indikátory zachycují stav.
-4. **Search.** Cross-node fulltextový hledač přes všechny markdown soubory. Tantivy? Vector embeddings (semantic search)? Obojí?
-5. **Tasks integrace.** "Tady linkujeme na Asana task" = je to MCP tool, nebo je to entity v Portuni? Pravděpodobně tool — Asana zůstává source of truth.
-6. **Mobile.** Portuni iOS / iPadOS = read-only viewer + napsání rychlé poznámky? Plný editor? Long-term, nepotřebujeme řešit teď.
+1. **Offline mode.** Když Drive není dostupný, UI by mělo fungovat. Sync indikátory zachycují stav.
+2. **Search.** Cross-node fulltextový hledač přes všechny markdown soubory. Tantivy? Vector embeddings (semantic search)? Obojí?
+3. **Organizace ↔ Asana tým.** Jak se mapuje organizace, když nemá vlastní Asana projekt.
+4. **Missing pieces.** Portuni loguje, když někdo narazí na chybějící node, hlasy se sčítají a Přehled pomáhá prioritizovat. Vztah k agentovi nadhledu.
+5. **Šablony projektů.** Viz Skills, rutiny, nadhled.
+6. **Mobile.** Read-only viewer + rychlá poznámka? Long-term, neřešíme teď.
 
 ## Co je v core, co ne
 
@@ -138,9 +151,13 @@ Důsledky:
 Portuni poskytuje **primitiva**. Aplikace nad nimi patří mimo core.
 
 **V core:**
-- Graf (POPP nodes, edges, lifecycle, events)
+- Graf (POPP nodes, edges, lifecycle, events, aktéři)
 - File sync s remote drivery + mirrors
 - Scope model + audit (impl: `apps/server/mcp/scope.ts`, `apps/server/mcp/tools/scope.ts`)
+- Relace, úkoly, rutiny, handoff
+- Rozhraní runner + adaptéry, runner host
+- Rozhraní task surface + Asana adaptér
+- Skills z nodů (generování, distribuce)
 - MCP server s tools, REST endpoints (např. `/context`)
 - Referenční React UI
 
@@ -148,12 +165,12 @@ Portuni poskytuje **primitiva**. Aplikace nad nimi patří mimo core.
 - Chat boti (Google Chat, Signal, Slack adaptéry)
 - Organizační templates (specifické šablony pro typ firmy / odvětví)
 - Custom CLI nástroje napojené na Portuni MCP
-- Integrace s konkrétními SaaS (Asana, Notion, Linear, atd. – linkujeme, neintegrujeme)
+- Integrace s dalšími SaaS (Notion, Linear, atd.) – linkujeme, neintegrujeme; Asana je výjimka jako koordinační plocha týmu
 - Vendor-specific automatizace (Acme / Globex workflowy)
 
 **Test, jestli něco patří do core:**
 
-Pokud změna v API třetí strany (vendor SaaS, chat platform, LLM provider) by si vyžádala lock-step update v Portuni core, **dané X nepatří do core**. Core musí přežít vendor changes bez release.
+Pokud změna v API třetí strany (vendor SaaS, chat platform, LLM provider) by si vyžádala lock-step update v Portuni core, **dané X nepatří do core**. Core musí přežít vendor changes bez release. Asana a runnery jsou za adaptérem právě proto.
 
 **Konkrétní rozhodnutí (2026-04-25):**
 
@@ -171,138 +188,9 @@ Pokud změna v API třetí strany (vendor SaaS, chat platform, LLM provider) by 
 - **Plugin systém.** Lákavé, ale fragmentuje produkt a generuje supply chain bezpečnostní dluh. Better: jasný integrační API přes MCP.
 - **Realtime collaboration.** CRDTs, OT, Y.js. Jiný problém, jiný produkt. Portuni je single-author per file s lock-free Drive sync.
 - **Roundtrip native formátů.** Editovat Google Doc v Portuni = open Drive UI. Snapshot je explicit operation. Native formats jsou linky, ne content.
-- **Integration sprawl.** "100+ skills connected to apps" (à la OpenClaw). Každá integrace = maintenance burden + leak surface. Linkujeme, neintegrujeme. Adapters mimo core (viz sekce výš).
+- **Integration sprawl.** "100+ skills connected to apps" (à la OpenClaw). Každá integrace = maintenance burden + leak surface. Linkujeme, neintegrujeme; Asana a runnery jdou přes adaptér s jedním rozhraním.
+- **Vlastní agent loop.** Portuni nevlastní transkript, tooly ani kompakci transkriptu. Runner je cizí a jen se připojí; když přijde lepší, vymění se adaptér.
+- **Vestavěný terminál jako UI.** Surový výstup CLI je technický, každý runner vypadá jinak a nic z něj nejde strukturovaně vyčíst. UI stojí nad kanonickými událostmi.
 - **Feature counting jako marketing.** "X+ MCP tools and growing" je past – nutí počítat místo navrhovat. Portuni positioning = "úzký, hluboký, kontrolovaný", ne "wide and growing".
 - **Multi-platform frontend sprawl.** Chat na Signal + Telegram + Discord + WhatsApp paralelně = 4× povrch pro bugy a abuse. Jeden kanonický frontend (React UI + MCP), ostatní jako tenké adaptéry mimo core.
-- **Chat-as-primary-UI.** Konverzační prompt-response je strukturálně chudé pro graf, scope, audit, files. Chat je legitimní jako sekundární access mode, **nikdy** jako primární.
-
-## Distribuční vrstva (Phase 1.5)
-
-> Doplněno 2026-04-25. Reframe: desktop není workspace evoluce, je to **distribuční nutnost** – bez něj nelze Portuni dát do ruky nikomu, kdo není vývojář.
-
-Před vším, co je v této vizi níž (workspace, agent terminál, editor), je jeden krok, který v původní formulaci chyběl: **zabalit současné Portuni jako desktop app, aby šlo distribuovat netechnickým uživatelům**.
-
-Argument: dnes spustit Portuni znamená Node.js, `npm install`, tmux session, `varlock`, `gcloud auth`, `localias`, ručně editovaný `~/.claude/settings.json`. Pro vývojáře 30 vteřin. Pro Marii z marketingu nemožné. A dokud nemáme Marii, nikdy nezjistíme, jestli Portuni řeší skutečnou znalostní práci, nebo jen tu naši.
-
-Druhý argument (od Honzy, 2026-04-25): "**Nedovedu si představit, že Portuni nebude desktop appka, když pracuje s lokálními soubory.**" Mirrors fyzicky existují na disku, ale dnes nejsou v Portuni "vidět" – uživatel vztah node↔soubor zažívá přes Finder a Drive UI, ne přes Portuni samotné. Desktop shell ten chybějící člen rovnice dosazuje.
-
-Phase 1.5 distribuční shell obsahuje:
-
-- **Tauri shell** (Rust + native webview, ~10 MB binary), embed současný React/Vite frontend (`app/`)
-- **MCP server jako sidecar** – Node proces spuštěný appkou (Tauri sidecar API), žádný tmux, žádný ruční port management
-- **Settings UI** místo CLI: form na Drive Service Account / OAuth popup, dropdown na token store, drag-drop routing rules, "Test connection" tlačítka
-- **Lokální SQLite** v aplikační datové složce (`~/Library/Application Support/Portuni/...`), sync layer řeší cloud
-- **Drive auth** přes OAuth popup, ne `gcloud auth application-default login`
-- **Auto-update** přes GitHub releases / Tauri updater
-
-Co Phase 1.5 **není**: terminál, markdown editor, agent integrace, "graf jako shell" UX. To je workspace evoluce (Phase 3–5). Phase 1.5 je čistě **transport**: dostat existující Portuni do rukou netech uživatelů beze změny kontraktu, který Portuni dnes uživateli dává.
-
-**Multi-user / per-user auth v Phase 1.5 (vyřešeno 2026-05-05):** Každý
-si nainstaluje Portuni se sdíleným Turso service tokenem (funguje pro
-uzavřený okruh důvěryhodných lidí, např. Globex tým). Token je v OS
-keychainu (macOS Keychain, Linux Secret Service, Windows Credential
-Manager), nikdy ne v `config.json`. První spuštění ukáže modal,
-který token přebere a uloží – další spuštění už je tichá.
-Webview JS se k tokenu nedostane: HTTP volání mezi React frontendem
-a Node sidecarem teče přes Tauri command (`api_request`), který
-hlavičku `Authorization` injektuje až v Rust hostitelovi. Detaily v
-`docs/archive/auth-refactor-plan.md`. Pluggable identity adapters (Google
-první) + per-user permissions zůstávají Phase 2 territory – referenční
-model viz `docs/specs.md` → "Security model".
-
-## Phasing intuice
-
-Bez závaznosti:
-
-**Phase 1 (hotovo)** – MCP server, file sync, graph backend, Drive integration, React/Vite frontend (`app/`). Spustitelné jen vývojářsky.
-
-**Phase 1.5 – distribuční desktop shell.** Viz sekce výš. Cíl: `.dmg`/`.exe`, double-click, používá. Žádné nové funkce, jen balení existujícího.
-
-**Phase 2** – větší MCP surface: search (semantic + fulltext nad markdown soubory v mirrors), snapshot, organization scaffolding (bootstrap nové org s default projekty/procesy/areas ze šablony), Notion adapter. Použitelné headless i přes desktop appku.
-
-**Phase 3 – workspace shell rozšíření.** Nadstavba nad Phase 1.5 shellem: embedded terminál s `cwd` = mirror aktivního node, předem spuštěný Claude Code s Portuni MCP konfigurací, "Open Terminal" akce z node detail panelu. **Žádný markdown editor.** Editor zůstává externí.
-
-**Phase 4 – markdown editor.** CodeMirror + preview side-by-side, auto-store on save, `[[Node Name]]` linkování s autocomplete z grafu. Tady se Portuni stává plnohodnotný workspace.
-
-**Phase 5 – agent-native loop.** Tighter integration. Live updates v UI z agent akcí. Kontextové promptování. Macros / shortcuts.
-
-**Each phase ships standalone value.** Phase 1.5 sám o sobě = "Portuni jde nainstalovat netech uživateli" – obrovský posun v dosahu i bez dalších featur. Phase 3 bez Phase 4 = pohodlnější Portuni s terminálem. Phase 4 bez Phase 5 = workspace bez kouzel. Phase 5 závisí na 4.
-
-## Triggery pro start
-
-### Phase 1.5 (distribuční shell)
-
-Začít, když:
-- ✓ Phase 1 sync má známé bugy / drift v produkci pod kontrolou (žádný major outstanding)
-- ✓ Existuje aspoň jeden konkrétní netech kandidát na onboarding (druhá organizace, nebo netech člověk v Globex)
-- ✓ Tým má kapacitu na 4–6 týdnů desktop balení (cca 0.5–1 FTE)
-
-Trigger je primárně **produktově-distribuční, ne technický** – jakmile máme komu Portuni dát a sync drží, jdeme do toho.
-
-### Phase 3+ (workspace evoluce: terminál, editor, agent loop)
-
-Nezačít, dokud:
-- ✗ Phase 1.5 desktop shell není v rukou aspoň 3–5 uživatelů a používá se denně
-- ✗ MCP surface je tenká – chybí věci jako search, scaffolding, snapshot (= Phase 2)
-- ✗ Globex team praktikuje znalostní práci přes Portuni denně, vidí konkrétní UX bolesti
-
-Začít, když:
-- ✓ Phase 1.5 je v produkci, lidi ji používají, máme reálný feedback
-- ✓ Phase 2 MCP surface ships a stabilizuje se
-- ✓ Tým má kapacitu na 3–6 měsíční workspace projekt (cca 1.5 FTE)
-
-## Aktuální strategie (2026-04-25)
-
-> Snapshot rozhodnutí v daném okamžiku. Aktualizovat při každém významném přerámování. Nepřepisuje phasing výš – říká, **co se dělá teď** a **co se odsouvá**.
-
-### Co se odsouvá
-
-- **Phase 1.5 desktop shell** – odsunut. Důvod: distribuční friction není ten skutečný bottleneck pro testování shared-context teze; ta teze nikdy nebyla pořádně postavena na test (jeden subject, sólo pracovník, žádný success kritérium předem). Stavět distribuci pro nedokázanou tezi = předčasné.
-- **Globex team rollout** – odsunut. Důvod: dokud nemám ostrý a daty podložený value proposition, tahat lidi do něčeho, co sám neumím obhájit, není fér ani efektivní.
-
-### Co se staví teď: Self-test "scope-model + dvě zařízení" (~3 týdny)
-
-Logika: **Než stavím distribuci pro tezi, potřebuju mít ostrý value proposition s daty z vlastního použití.** Self-test je nejlevnější způsob, jak ho získat.
-
-1. **Scope-model Phase A** (read scope core) – session scope set, `portuni_expand_scope`, `portuni_session_log`, session type odvozený serverem z auth cesty (žádný `PORTUNI_SCOPE_MODE` env přepínač). Implementace v `apps/server/mcp/scope.ts` + `apps/server/mcp/tools/scope.ts`. **Hodnota teď:** ochrana před context poisoning a leakem ve vlastní práci. **Hodnota později:** ready pro multi-user.
-2. **Filesystem write-scope** (druhá půlka scope-modelu) – generuje `.claude/settings.json` + `.codex/config.toml` s tier 1/2/3 deny rules na úrovni mirror. **Hodnota teď:** přestane se stávat, že agent edituje sourozeneckou mirror. **Hodnota později:** to samé pro tým a klientské oddělení.
-3. **Druhé zařízení s opencode** – Portuni mirror, scope-model aktivní, reálná práce na obou strojích po dobu týdne+. Testuje cross-device hodnotu (tu auto mode strukturálně neumí).
-4. **Měření** během celého období:
-   - **Token spotřeba** pro typické úkoly: před scope-modelem vs. po (precízní kontext = méně search calls = méně tokens).
-   - **Write leak incidents**: kolikrát se agent pokusil zapsat mimo current mirror.
-   - **Read scope expansions**: kolikrát chtěl agent rozšířit kontext, čím (= mapa, kde je current scope set příliš úzký).
-   - **Cross-device wins**: kolikrát ti přišlo vhod, že druhé zařízení vidí stejný graf.
-5. **Po 3–4 týdnech review** – data, ne dojmy. Pak teprve rozhodnutí o desktop / Globex / dalším směru.
-
-### Decision criteria po self-testu
-
-**Pokračovat v invest (= jít do Phase 1.5 / Phase 2 nebo Globex testu):**
-- Token economy je měřitelně lepší (cca 30 %+ pokles na ekvivalentní úkoly)
-- Scope-model reálně zachytil neoprávněný read/write 5+ krát
-- Cross-device sync ti aspoň jednou týdně reálně pomohl
-- Aspoň jeden externí (post-konferenční) zájemce dotáhl instalaci a vrací feedback
-
-**Strategický restart:**
-- Token economy bez znatelného rozdílu (= hodnota Portuni je jinde, než jsem myslel)
-- Scope-model nezachytil nic reálně problematického (= kontrolní teze není v praxi cítit)
-- Cross-device sync ti mockrát nepomohl (= pracuješ stejně na jednom stroji)
-- Žádný external interest po konferenci
-
-### Konferenční kontext (2026-04-27, Po)
-
-Konference je v pondělí 2026-04-27, dva dny po tomto rozhodnutí. Scope-model do té doby nestihneme – ten přijde po konferenci jako primary work track.
-
-Konsekvence pro konferenci:
-- **Zmínka jen krátká, žádné demo.** Pozicování v zmínce: "control plane pro agentní práci se znalostmi, ne lepší auto mode."
-- Pokud někdo z attendees projeví zájem, **současná instalace zůstává jak je** (vývojářská: Node.js + tmux + varlock + gcloud). Pošleme link na repo s jasným upozorněním "vyžaduje technical comfort, do týdnů přijde lepší."
-- Po self-testu (3–4 týdny po konferenci) bude install path stále vývojářský, ale scope-model bude ready a value claims dokázané daty. **V ten moment** má smysl follow-up komunikace s konferenčními kontakty.
-
-Kontakty z konference jsou tedy první reálný "external single-user" testbed po self-testu, ne během něj. Konference není deadline pro produkt, je to **trigger pro identifikaci kandidátů** na pozdější self-onboarding.
-
-## Otevřená otázka pro budoucnost
-
-> "Když si představím sebe za 6 měsíců, otevřu Claude Code a píšu agentovi, nebo otevřu Portuni okno a kliknu?"
-
-Honza (2026-04-25): "**Já bych Claude Code otevřel v Portuni a vše by bylo jednodušší.**"
-
-To je validace agent-native směru. Desktop není místo, kde se klika místo agenta. Desktop je **kontejner pro agenta + nutné UI** (sync state, editor preview, settings).
+- **Chat-as-primary-UI.** Chat je kanál úkolu, ne UI nad grafem, scope, auditem a soubory. Ty mají vlastní pohledy.
