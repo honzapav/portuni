@@ -10,7 +10,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
 import {
   SessionScope,
   guardNodeRead,
@@ -20,7 +20,7 @@ import {
 } from "../apps/server/mcp/scope.js";
 
 async function freshDb() {
-  const db = createClient({ url: ":memory:" });
+  const db = await openTestDb();
   await db.execute(
     `CREATE TABLE nodes (id TEXT PRIMARY KEY, type TEXT, name TEXT, owner_id TEXT, created_by TEXT, visibility TEXT NOT NULL DEFAULT 'team', meta TEXT)`,
   );

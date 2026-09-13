@@ -7,6 +7,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardNodeRead } from "../scope.js";
 import { logAudit } from "../../infra/audit.js";
 import { classifyNodeVisibility, type GroupIdentityView } from "../../auth/node-access.js";
+import { tableExistsSql } from "../../infra/sql.js";
 import type { SessionCtx } from "../server.js";
 
 // --- Task E3: enriched context payload shape ---
@@ -104,10 +105,7 @@ const tableExistsCache = new WeakMap<DbClient, Map<string, boolean>>();
 async function tableExists(db: DbClient, name: string): Promise<boolean> {
   let perDb = tableExistsCache.get(db);
   if (perDb?.has(name)) return perDb.get(name)!;
-  const res = await db.execute({
-    sql: "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
-    args: [name],
-  });
+  const res = await db.execute({ sql: tableExistsSql(db.dialect), args: [name] });
   const exists = res.rows.length > 0;
   if (!perDb) {
     perDb = new Map();

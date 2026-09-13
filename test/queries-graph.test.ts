@@ -5,16 +5,17 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
+import { insertIgnore } from "../apps/server/infra/sql.js";
 import { ulid } from "ulid";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { loadGraph } from "../apps/server/domain/queries/graph.js";
 
 async function freshEnv() {
-  const db = createClient({ url: ":memory:" });
+  const db = await openTestDb();
   await ensureSchemaOn(db);
   await db.execute({
-    sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+    sql: insertIgnore(db.dialect, "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)"),
     args: ["U1", "a@b", "A"],
   });
   return db;

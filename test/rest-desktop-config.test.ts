@@ -10,7 +10,8 @@ delete process.env.PORTUNI_DESKTOP_GOOGLE_CLIENT_SECRET;
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { createClient, type Client } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
+import type { DbClient as Client } from "../apps/server/infra/db.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
@@ -23,7 +24,7 @@ let db: Client;
 
 before(async () => {
   resetGateCachesForTesting();
-  db = createClient({ url: ":memory:" });
+  db = await openTestDb();
   await ensureSchemaOn(db);
   setDbForTesting(db);
   handle = startHttpServer({ port: 14927, host: "127.0.0.1", registerSigint: false });

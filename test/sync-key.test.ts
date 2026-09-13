@@ -1,10 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createClient, type Client } from "@libsql/client";
+// Pinned to libsql: this file builds its own SQLite DDL and/or drives the
+// libsql migration path (runMigrationNNN) directly -- neither has a
+// Postgres form (schema.pg.ts's baseline already carries the end state).
+import { openTestDb } from "./helpers/db.js";
+import type { DbClient as Client } from "../apps/server/infra/db.js";
 import { generateSyncKey, slugifyForSyncKey } from "../apps/server/domain/sync/sync-key.js";
 
 async function freshDb(): Promise<Client> {
-  const db = createClient({ url: ":memory:" });
+  const db = await openTestDb("libsql");
   await db.execute(`CREATE TABLE nodes (
     id TEXT PRIMARY KEY, type TEXT, name TEXT, sync_key TEXT UNIQUE,
     created_by TEXT, created_at DATETIME, updated_at DATETIME

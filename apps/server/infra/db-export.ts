@@ -105,11 +105,14 @@ export async function exportTable(db: DbClient, table: string): Promise<DbRow[]>
 }
 
 export async function exportDb(db: DbClient, outDir: string): Promise<ExportManifest> {
-  await mkdir(outDir, { recursive: true });
+  // The dump carries everything the database does -- audit_log, e-mail
+  // addresses, session transcripts -- so it is owner-readable only, the
+  // directory included (mkdir's mode applies to the leaf it creates).
+  await mkdir(outDir, { recursive: true, mode: 0o700 });
   const tables: Record<string, TableManifestEntry> = {};
   for (const table of TABLE_ORDER) {
     const rows = await exportTable(db, table);
-    await writeFile(join(outDir, `${table}.json`), JSON.stringify(rows, null, 2));
+    await writeFile(join(outDir, `${table}.json`), JSON.stringify(rows, null, 2), { mode: 0o600 });
     tables[table] = { rows: rows.length, sha256: checksumOf(rows) };
   }
 
@@ -128,6 +131,6 @@ export async function exportDb(db: DbClient, outDir: string): Promise<ExportMani
     tables,
     source_migrations: sourceMigrations,
   };
-  await writeFile(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2));
+  await writeFile(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
   return manifest;
 }

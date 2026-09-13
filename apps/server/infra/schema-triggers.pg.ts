@@ -38,6 +38,7 @@ BEGIN
 END;
 $fn$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS prevent_multi_parent_org ON edges;
 CREATE TRIGGER prevent_multi_parent_org
   BEFORE INSERT ON edges
   FOR EACH ROW
@@ -64,6 +65,7 @@ BEGIN
 END;
 $fn$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS prevent_orphan_on_edge_delete ON edges;
 CREATE TRIGGER prevent_orphan_on_edge_delete
   BEFORE DELETE ON edges
   FOR EACH ROW
@@ -80,6 +82,7 @@ BEGIN
 END;
 $fn$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS responsibilities_valid_node_type ON responsibilities;
 CREATE TRIGGER responsibilities_valid_node_type
   BEFORE INSERT ON responsibilities
   FOR EACH ROW
@@ -96,6 +99,7 @@ BEGIN
 END;
 $fn$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS data_sources_valid_node_type ON data_sources;
 CREATE TRIGGER data_sources_valid_node_type
   BEFORE INSERT ON data_sources
   FOR EACH ROW
@@ -112,6 +116,7 @@ BEGIN
 END;
 $fn$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS tools_valid_node_type ON tools;
 CREATE TRIGGER tools_valid_node_type
   BEFORE INSERT ON tools
   FOR EACH ROW
@@ -135,6 +140,7 @@ BEGIN
 END;
 $fn$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS nodes_owner_must_be_real_person ON nodes;
 CREATE TRIGGER nodes_owner_must_be_real_person
   BEFORE UPDATE OF owner_id ON nodes
   FOR EACH ROW
@@ -161,6 +167,7 @@ BEGIN
 END;
 $fn$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS nodes_derive_status_from_lifecycle ON nodes;
 CREATE TRIGGER nodes_derive_status_from_lifecycle
   AFTER UPDATE OF lifecycle_state ON nodes
   FOR EACH ROW
@@ -183,6 +190,7 @@ BEGIN
 END;
 $fn$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS nodes_validate_lifecycle_state ON nodes;
 CREATE TRIGGER nodes_validate_lifecycle_state
   BEFORE UPDATE OF lifecycle_state ON nodes
   FOR EACH ROW
@@ -201,11 +209,13 @@ BEGIN
 END;
 $fn$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS nodes_sync_key_not_null_insert ON nodes;
 CREATE TRIGGER nodes_sync_key_not_null_insert
   BEFORE INSERT ON nodes
   FOR EACH ROW
   EXECUTE FUNCTION nodes_sync_key_not_null_fn();
 
+DROP TRIGGER IF EXISTS nodes_sync_key_not_null_update ON nodes;
 CREATE TRIGGER nodes_sync_key_not_null_update
   BEFORE UPDATE OF sync_key ON nodes
   FOR EACH ROW

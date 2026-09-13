@@ -12,6 +12,8 @@ import assert from "node:assert/strict";
 import { ulid } from "ulid";
 import { createPgliteDbClient } from "../apps/server/infra/db-pglite.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
+import { PG_BASELINE_DDL } from "../apps/server/infra/schema.pg.js";
+import { PG_BASELINE_TRIGGERS } from "../apps/server/infra/schema-triggers.pg.js";
 import type { DbClient } from "../apps/server/infra/db.js";
 
 async function freshPgDb(): Promise<DbClient> {
@@ -80,6 +82,24 @@ describe("Postgres baseline (PGlite): tables", () => {
     await ensureSchemaOn(db);
     const res = await db.execute("SELECT id FROM migrations");
     assert.deepEqual(res.rows.map((r) => r.id), ["pg-001"]);
+  });
+
+  it("recovers when the baseline DDL applied but its marker row never landed", async () => {
+    // The marker is now written inside the same script as the DDL, so this
+    // state cannot arise from a crash anymore -- but a baseline applied by
+    // an older build (marker written separately, process killed in
+    // between) must still boot: every statement is idempotent, triggers
+    // included (DROP TRIGGER IF EXISTS precedes each CREATE TRIGGER).
+    const db = createPgliteDbClient();
+    await db.execute(
+      "CREATE TABLE IF NOT EXISTS migrations (id TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+    );
+    await db.executeMultiple([...PG_BASELINE_DDL, ...PG_BASELINE_TRIGGERS].join(";\n"));
+    const before = await db.execute("SELECT id FROM migrations");
+    assert.equal(before.rows.length, 0);
+    await ensureSchemaOn(db);
+    const after = await db.execute("SELECT id FROM migrations");
+    assert.deepEqual(after.rows.map((r) => r.id), ["pg-001"]);
   });
 });
 

@@ -25,7 +25,8 @@ import assert from "node:assert/strict";
 import { Readable, Writable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ulid } from "ulid";
-import { createClient, type Client } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
+import type { DbClient as Client } from "../apps/server/infra/db.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { replaceRules } from "../apps/server/domain/sync/routing.js";
 import { insertRemoteForTests } from "./helpers/shared-db.js";
@@ -120,7 +121,7 @@ beforeEach(async () => {
   resetLocalDbForTests();
   resetAdapterCacheForTests();
 
-  db = createClient({ url: ":memory:" });
+  db = await openTestDb();
   await ensureSchemaOn(db);
   await db.execute({
     sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",

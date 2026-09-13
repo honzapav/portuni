@@ -461,13 +461,18 @@ export async function getSessionScope(db: DbClient, sessionId: string): Promise<
 // creating user could since have lost access via a visibility change).
 export async function listConnectorCreatedWritableNodes(db: DbClient, userId: string): Promise<string[]> {
   const res = await db.execute({
-    sql: `SELECT DISTINCT ss.node_id
+    // GROUP BY rather than SELECT DISTINCT: Postgres refuses to order a
+    // DISTINCT projection by a column that is not itself selected, and the
+    // node must appear once even when several connector sessions created
+    // it. MIN(added_at) is then the first time any of them did.
+    sql: `SELECT ss.node_id
           FROM session_scope ss
           JOIN sessions s ON s.id = ss.session_id
           JOIN nodes n ON n.id = ss.node_id
           WHERE s.user_id = ? AND s.session_type = 'interactive_chat'
             AND ss.added_via = 'created' AND ss.writable = 1
-          ORDER BY ss.added_at`,
+          GROUP BY ss.node_id
+          ORDER BY MIN(ss.added_at)`,
     args: [userId],
   });
   return res.rows.map((r) => r.node_id as string);

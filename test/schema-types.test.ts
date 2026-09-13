@@ -5,12 +5,15 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createClient } from "@libsql/client";
+// Pinned to libsql: this file builds its own SQLite DDL and/or drives the
+// libsql migration path (runMigrationNNN) directly -- neither has a
+// Postgres form (schema.pg.ts's baseline already carries the end state).
+import { openTestDb } from "./helpers/db.js";
 import { UserRow, NodeRow, EdgeRow, AuditLogRow, FileRow, EventRow } from "../apps/server/shared/types.js";
 import { ulid } from "ulid";
 
 async function createTestDb() {
-  const db = createClient({ url: ":memory:" });
+  const db = await openTestDb("libsql");
 
   // Run DDL from schema.ts (duplicated here to test against actual DDL)
   // If schema.ts DDL changes, this test must be updated -- that's the point.

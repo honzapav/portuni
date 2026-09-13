@@ -10,7 +10,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable, Writable } from "node:stream";
-import { createClient as createDbClient, type Client as DbClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
+import { nowExpr } from "../apps/server/infra/sql.js";
+import type { DbClient } from "../apps/server/infra/db.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
@@ -31,7 +33,7 @@ const SOLO = "01SOLO0000000000000000000";
 // ---------------------------------------------------------------------------
 
 async function makeTestDb() {
-  const db = createDbClient({ url: ":memory:" });
+  const db = await openTestDb();
   await ensureSchemaOn(db);
   return db;
 }
@@ -56,7 +58,7 @@ function makeRacyDbForConcurrentInsert(realDb: DbClient, raceEmail: string): DbC
             args.includes(raceEmail)
           ) {
             await target.execute({
-              sql: "INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, datetime('now'))",
+              sql: `INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, ${nowExpr(target.dialect)})`,
               args: [`racer-${raceEmail}`, raceEmail, "racer"],
             });
           }

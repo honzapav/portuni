@@ -16,7 +16,7 @@ import {
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createClient as createDbClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
@@ -582,7 +582,7 @@ test("portuni_get_node: outsider gets not-found for a node_access-restricted nod
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
   resetLocalDbForTests();
 
-  const db = createDbClient({ url: ":memory:" });
+  const db = await openTestDb();
   await ensureSchemaOn(db);
   setDbForTesting(db);
 

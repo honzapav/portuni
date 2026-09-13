@@ -8,12 +8,16 @@
 // way schema.ts has one for libsql; applying every known migration in
 // order against an empty database *is* the fresh-install path here.
 //
-// The whole baseline runs as ONE `executeMultiple` call: Postgres's simple
-// query protocol implicitly wraps a multi-statement script in a single
-// transaction (no explicit BEGIN/COMMIT needed), so a mid-baseline failure
-// (a typo'd CREATE FUNCTION, say) leaves nothing committed and no `pg-001`
-// marker row -- the next boot retries cleanly instead of hitting
-// "relation already exists" against a half-applied schema.
+// Each migration runs as ONE `executeMultiple` call, with its own marker
+// INSERT appended to the same script: Postgres's simple query protocol
+// implicitly wraps a multi-statement script in a single transaction (no
+// explicit BEGIN/COMMIT needed), so a mid-migration failure (a typo'd
+// CREATE FUNCTION, say) leaves nothing committed and no marker row, and a
+// crash between the DDL and the marker cannot happen either -- the next
+// boot retries cleanly instead of hitting "already exists" against a
+// half-applied schema. The baseline's own statements are idempotent on top
+// of that (IF NOT EXISTS, CREATE OR REPLACE FUNCTION, DROP TRIGGER IF
+// EXISTS before every CREATE TRIGGER).
 
 import type { DbClient } from "../db.js";
 import { PG_BASELINE_DDL } from "../schema.pg.js";
@@ -21,14 +25,14 @@ import { PG_BASELINE_TRIGGERS } from "../schema-triggers.pg.js";
 
 interface PgMigration {
   id: string;
-  up: (db: DbClient) => Promise<void>;
+  // The migration's statements, without the marker INSERT -- ensurePgSchema
+  // appends that itself so DDL and marker always commit together.
+  statements: readonly string[];
 }
 
 const BASELINE: PgMigration = {
   id: "pg-001",
-  async up(db) {
-    await db.executeMultiple([...PG_BASELINE_DDL, ...PG_BASELINE_TRIGGERS].join(";\n"));
-  },
+  statements: [...PG_BASELINE_DDL, ...PG_BASELINE_TRIGGERS],
 };
 
 // Append here as the Postgres schema evolves post-baseline -- same pattern
@@ -46,7 +50,10 @@ export async function ensurePgSchema(db: DbClient): Promise<void> {
 
   for (const migration of PG_MIGRATIONS) {
     if (applied.has(migration.id)) continue;
-    await migration.up(db);
-    await db.execute({ sql: "INSERT INTO migrations (id) VALUES (?)", args: [migration.id] });
+    // Marker in the same script (same implicit transaction) as the DDL;
+    // the id is a compile-time constant of this module, never user input.
+    await db.executeMultiple(
+      [...migration.statements, `INSERT INTO migrations (id) VALUES ('${migration.id}')`].join(";\n"),
+    );
   }
 }

@@ -15,7 +15,8 @@ import { readFile, readdir, mkdtemp, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { createClient as createDbClient, type Client as DbClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
+import type { DbClient } from "../apps/server/infra/db.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
@@ -40,7 +41,7 @@ before(async () => {
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
   resetLocalDbForTests();
 
-  db = createDbClient({ url: ":memory:" });
+  db = await openTestDb();
   await ensureSchemaOn(db);
   setDbForTesting(db);
 

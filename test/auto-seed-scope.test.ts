@@ -6,7 +6,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
 import { SessionScope } from "../apps/server/mcp/scope.js";
 import {
   parseHomeNodeIdFromUrl,
@@ -14,7 +14,7 @@ import {
 } from "../apps/server/mcp/auto-seed.js";
 
 async function freshGraph() {
-  const db = createClient({ url: ":memory:" });
+  const db = await openTestDb();
   await db.execute(
     `CREATE TABLE nodes (id TEXT PRIMARY KEY, type TEXT, name TEXT, owner_id TEXT, visibility TEXT, meta TEXT)`,
   );

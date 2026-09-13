@@ -18,7 +18,11 @@
 // DDL_AFTER_MIGRATIONS is the one point where a single statement covers both.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createClient, type Client } from "@libsql/client";
+// Pinned to libsql: this file builds its own SQLite DDL and/or drives the
+// libsql migration path (runMigrationNNN) directly -- neither has a
+// Postgres form (schema.pg.ts's baseline already carries the end state).
+import { openTestDb } from "./helpers/db.js";
+import type { DbClient as Client } from "../apps/server/infra/db.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { DDL, DDL_AFTER_MIGRATIONS } from "../apps/server/infra/schema-triggers.js";
 
@@ -69,7 +73,7 @@ describe("schema upgrade ordering", () => {
   });
 
   it("upgrades a database whose sessions table predates terminal_id", async () => {
-    const db = createClient({ url: ":memory:" });
+    const db = await openTestDb("libsql");
     // Bring up everything EXCEPT sessions, then plant the old shape so the
     // DDL replay's `IF NOT EXISTS` leaves it alone -- exactly production's
     // position before the deploy.
@@ -93,7 +97,7 @@ describe("schema upgrade ordering", () => {
   });
 
   it("a fresh install gets the same index, where the migration is skipped", async () => {
-    const db = createClient({ url: ":memory:" });
+    const db = await openTestDb("libsql");
     await ensureSchemaOn(db);
     const cols = await db.execute("PRAGMA table_info(sessions)");
     assert.ok(cols.rows.some((r) => r.name === "terminal_id"));

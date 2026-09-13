@@ -17,7 +17,7 @@ process.env.PORTUNI_RATE_LIMIT_PER_MIN = "3";
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { createClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
@@ -143,7 +143,7 @@ before(async () => {
   // limiter from another test module that imported the module first.
   resetRateLimiterForTesting();
 
-  const db = createClient({ url: ":memory:" });
+  const db = await openTestDb();
   await ensureSchemaOn(db);
   setDbForTesting(db);
 

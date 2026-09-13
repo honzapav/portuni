@@ -9,7 +9,7 @@ process.env.PORTUNI_AUTH_TOKEN = "";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { connect, type Socket } from "node:net";
-import { createClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
@@ -22,7 +22,7 @@ let handle: HttpServerHandle;
 
 before(async () => {
   resetGateCachesForTesting();
-  const db = createClient({ url: ":memory:" });
+  const db = await openTestDb();
   await ensureSchemaOn(db);
   setDbForTesting(db);
   handle = startHttpServer({ port: PORT, host: "127.0.0.1", registerSigint: false });

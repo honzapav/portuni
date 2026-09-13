@@ -4,13 +4,16 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createClient } from "@libsql/client";
+// Pinned to libsql: this file builds its own SQLite DDL and/or drives the
+// libsql migration path (runMigrationNNN) directly -- neither has a
+// Postgres form (schema.pg.ts's baseline already carries the end state).
+import { openTestDb } from "./helpers/db.js";
 import { EventRow } from "../apps/server/shared/types.js";
 
 const SOLO_USER = "U1";
 
 async function createTestDb() {
-  const db = createClient({ url: ":memory:" });
+  const db = await openTestDb("libsql");
 
   const ddl = [
     `CREATE TABLE users (

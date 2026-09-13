@@ -11,7 +11,7 @@ import {
   tryCleanStaleMirrors,
   onMirrorRegistryChange,
 } from "../apps/server/domain/sync/mirror-registry.js";
-import { createClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 
 let workspace: string;
@@ -57,7 +57,7 @@ describe("mirror-registry change notifications", () => {
   it("notifies once when stale cleanup removes mirrors, not when it removes none", async () => {
     await registerMirror("U1", "N_exists", "/a");
     await registerMirror("U1", "N_gone", "/b");
-    const shared = createClient({ url: ":memory:" });
+    const shared = await openTestDb();
     await shared.execute("CREATE TABLE nodes (id TEXT PRIMARY KEY)");
     await shared.execute("INSERT INTO nodes (id) VALUES ('N_exists')");
     let fired = 0;
@@ -76,7 +76,7 @@ describe("mirror-registry stale cleanup", () => {
   it("removes rows whose node_id no longer exists in shared DB", async () => {
     await registerMirror("U1", "N_exists", "/a");
     await registerMirror("U1", "N_gone", "/b");
-    const shared = createClient({ url: ":memory:" });
+    const shared = await openTestDb();
     await shared.execute("CREATE TABLE nodes (id TEXT PRIMARY KEY)");
     await shared.execute("INSERT INTO nodes (id) VALUES ('N_exists')");
     const report = await tryCleanStaleMirrors(shared, "U1");

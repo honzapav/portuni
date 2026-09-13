@@ -65,7 +65,9 @@ class FakeSessionsServer {
   }
 }
 
-async function waitUntil(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+// Generous deadline: the whole suite runs many files in parallel, and a
+// loaded CI runner can delay a 10 ms reconnect timer well past 2 s.
+async function waitUntil(predicate: () => boolean, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error("waitUntil: condition never became true within " + timeoutMs + "ms");
@@ -74,9 +76,25 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 2000): Promise<vo
 }
 
 const servers: FakeSessionsServer[] = [];
+// Every client is disconnected here as well as at the end of its own test:
+// a client left connected after a failed assertion would otherwise keep
+// reconnecting to the closed fake server forever (10 ms backoff, a live
+// socket handle each time) and the test process would never exit --
+// which node:test reports as nothing at all, not as a failure.
+const clients: Array<{ disconnect(): void }> = [];
 after(async () => {
+  for (const c of clients) c.disconnect();
   await Promise.all(servers.map((s) => s.close()));
 });
+
+function testTransport(server: FakeSessionsServer) {
+  return createDirectWsTransport(server.url, {
+    minBackoffMs: 10,
+    maxBackoffMs: 50,
+    connectTimeoutMs: 500,
+    WebSocket: WsClient,
+  });
+}
 
 async function fakeServer(): Promise<FakeSessionsServer> {
   const server = new FakeSessionsServer();
@@ -88,8 +106,9 @@ async function fakeServer(): Promise<FakeSessionsServer> {
 describe("sessions-client: direct-WS transport", () => {
   it("subscribes with no `after` on a fresh subscribe, then delivers events in order", async () => {
     const server = await fakeServer();
-    const transport = createDirectWsTransport(server.url, { minBackoffMs: 10, maxBackoffMs: 50, WebSocket: WsClient });
+    const transport = testTransport(server);
     const client = createSessionsClient({ transport });
+    clients.push(client);
     const received: number[] = [];
     client.onEvent("S1", (event) => received.push(event.seq));
 
@@ -111,8 +130,9 @@ describe("sessions-client: direct-WS transport", () => {
 
   it("re-subscribes with the last seq it saw per session after a dropped connection", async () => {
     const server = await fakeServer();
-    const transport = createDirectWsTransport(server.url, { minBackoffMs: 10, maxBackoffMs: 50, WebSocket: WsClient });
+    const transport = testTransport(server);
     const client = createSessionsClient({ transport });
+    clients.push(client);
     const statuses: string[] = [];
     client.onConnectionStatus((s) => statuses.push(s));
 
@@ -132,8 +152,9 @@ describe("sessions-client: direct-WS transport", () => {
 
   it("delta frames never touch the tracked seq, so a resubscribe after a drop still uses the last real event's seq", async () => {
     const server = await fakeServer();
-    const transport = createDirectWsTransport(server.url, { minBackoffMs: 10, maxBackoffMs: 50, WebSocket: WsClient });
+    const transport = testTransport(server);
     const client = createSessionsClient({ transport });
+    clients.push(client);
     const deltas: string[] = [];
     client.onDelta("S1", (d) => deltas.push(d.text));
 
@@ -153,8 +174,9 @@ describe("sessions-client: direct-WS transport", () => {
 
   it("dispatches session_state frames globally, not scoped to a subscribed session", async () => {
     const server = await fakeServer();
-    const transport = createDirectWsTransport(server.url, { minBackoffMs: 10, maxBackoffMs: 50, WebSocket: WsClient });
+    const transport = testTransport(server);
     const client = createSessionsClient({ transport });
+    clients.push(client);
     const states: string[] = [];
     client.onSessionState((s) => states.push(s.state));
     const statuses: string[] = [];

@@ -86,6 +86,11 @@ type ClientFrame =
 // which transport is live.
 const MIN_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
+// A socket that never leaves CONNECTING within this is abandoned and
+// retried (see DirectWsTransportOptions.connectTimeoutMs).
+const CONNECT_TIMEOUT_MS = 10_000;
+// How long a request frame waits for its own reply before rejecting.
+const REQUEST_TIMEOUT_MS = 30_000;
 
 export function nextBackoffMs(currentMs: number): number {
   return Math.min(currentMs * 2, MAX_BACKOFF_MS);
@@ -112,6 +117,12 @@ export interface DirectWsTransportOptions {
   // server-side test runner (CI is Node 20, which has no global WebSocket)
   // passes the `ws` package's class instead.
   WebSocket?: WebSocketLike;
+  // How long a socket may sit in CONNECTING before this transport gives up
+  // on it and schedules a reconnect. A TCP connect to a host that accepts
+  // the packet but never completes the upgrade (a sidecar mid-restart, a
+  // laptop that just woke) otherwise leaves the transport "reconnecting"
+  // forever with no further attempt, since onclose never fires.
+  connectTimeoutMs?: number;
 }
 
 // The subset of the WHATWG WebSocket surface this transport uses; the `ws`
@@ -124,6 +135,9 @@ export interface WebSocketInstance {
   readyState: number;
   send(data: string): void;
   close(): void;
+  // `ws`'s own hard close (no handshake); absent on the browser class, in
+  // which case close() is all there is.
+  terminate?: () => void;
   onopen: ((ev: unknown) => void) | null;
   onmessage: ((ev: { data: unknown }) => void) | null;
   onclose: ((ev: unknown) => void) | null;
@@ -139,11 +153,13 @@ export function createDirectWsTransport(url: string, options: DirectWsTransportO
   const minBackoffMs = options.minBackoffMs ?? MIN_BACKOFF_MS;
   const maxBackoffMs = options.maxBackoffMs ?? MAX_BACKOFF_MS;
   const WebSocketCtor: WebSocketLike = options.WebSocket ?? (globalThis.WebSocket as unknown as WebSocketLike);
+  const connectTimeoutMs = options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
   const frameListeners = new Set<(frame: ServerFrame) => void>();
   const statusListeners = new Set<(status: ConnectionStatus) => void>();
   let socket: WebSocketInstance | null = null;
   let backoffMs = minBackoffMs;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let connectTimer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
   // A caller (createSessionsClient's own subscribe/message/etc.) can send
   // before the just-opened socket finishes its handshake -- WebSocket's
@@ -154,6 +170,30 @@ export function createDirectWsTransport(url: string, options: DirectWsTransportO
 
   function emitStatus(status: ConnectionStatus): void {
     for (const cb of statusListeners) cb(status);
+  }
+
+  // Detaches every handler and hard-closes a socket this transport is done
+  // with, so a late handshake or close event from it can never re-enter the
+  // reconnect loop (or, in a test process, keep a half-open connect handle
+  // alive after the last assertion).
+  function abandon(ws: WebSocketInstance): void {
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onclose = null;
+    ws.onerror = null;
+    try {
+      if (ws.terminate) ws.terminate();
+      else ws.close();
+    } catch {
+      // Already closing/closed -- nothing left to do.
+    }
+  }
+
+  function clearConnectTimer(): void {
+    if (connectTimer) {
+      clearTimeout(connectTimer);
+      connectTimer = null;
+    }
   }
 
   function scheduleReconnect(): void {
@@ -169,7 +209,14 @@ export function createDirectWsTransport(url: string, options: DirectWsTransportO
     if (stopped) return;
     const ws = new WebSocketCtor(url);
     socket = ws;
+    connectTimer = setTimeout(() => {
+      if (socket !== ws) return;
+      socket = null;
+      abandon(ws);
+      scheduleReconnect();
+    }, connectTimeoutMs);
     ws.onopen = () => {
+      clearConnectTimer();
       backoffMs = minBackoffMs;
       while (sendQueue.length > 0 && socket === ws) {
         ws.send(sendQueue.shift() as string);
@@ -187,6 +234,8 @@ export function createDirectWsTransport(url: string, options: DirectWsTransportO
       }
     };
     ws.onclose = () => {
+      if (socket !== ws) return;
+      clearConnectTimer();
       socket = null;
       scheduleReconnect();
     };
@@ -220,8 +269,10 @@ export function createDirectWsTransport(url: string, options: DirectWsTransportO
     disconnect() {
       stopped = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      clearConnectTimer();
       sendQueue.length = 0;
-      socket?.close();
+      if (socket) abandon(socket);
       socket = null;
       emitStatus("closed");
     },
@@ -321,13 +372,39 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
   const lastSeq = new Map<string, number>();
   let wasOpen = false;
 
+  // Every request frame carries an id the server echoes on its reply, and
+  // the caller awaits that reply (the composer stays disabled until
+  // `message()` resolves). A reply can legitimately never arrive -- the
+  // socket dropped after the frame went out, the server restarted, the
+  // run ended mid-request -- so a pending entry that is never answered
+  // rejects on a timer instead of leaving the caller awaiting forever.
+  // Cleared on disconnect, where every outstanding request is rejected at
+  // once.
   function send<T>(frame: Omit<ClientFrame, "id">): Promise<T> {
     const id = randomFrameId();
     const full = { ...frame, id } as ClientFrame;
     return new Promise<T>((resolve, reject) => {
-      pendingReplies.set(id, { resolve: resolve as (v: unknown) => void, reject });
+      const timer = setTimeout(() => {
+        pendingReplies.delete(id);
+        reject(new Error(`request_timeout: ${frame.type} got no reply within ${REQUEST_TIMEOUT_MS} ms`));
+      }, REQUEST_TIMEOUT_MS);
+      pendingReplies.set(id, {
+        resolve: (v) => {
+          clearTimeout(timer);
+          (resolve as (v: unknown) => void)(v);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      });
       transport.send(full);
     });
+  }
+
+  function rejectAllPending(reason: string): void {
+    for (const [, pending] of pendingReplies) pending.reject(new Error(reason));
+    pendingReplies.clear();
   }
 
   transport.onFrame((frame) => {
@@ -437,6 +514,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
       return () => connectionStatusListeners.delete(cb);
     },
     disconnect() {
+      rejectAllPending("disconnected: the session channel was closed before the reply arrived");
       transport.disconnect();
     },
   };

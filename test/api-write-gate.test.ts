@@ -17,7 +17,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable, Writable } from "node:stream";
 import { ulid } from "ulid";
-import { createClient as createDbClient, type Client as DbClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
+import type { DbClient } from "../apps/server/infra/db.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
@@ -126,7 +127,7 @@ describe("REST write gate: graph-plane mutations", () => {
     process.env.PORTUNI_WORKSPACE_ROOT = workspace;
     resetLocalDbForTests();
 
-    db = createDbClient({ url: ":memory:" });
+    db = await openTestDb();
     await ensureSchemaOn(db);
     setDbForTesting(db);
 
@@ -370,7 +371,7 @@ describe("REST write gate: env-mode spawn-id scoping (#210 point 2)", () => {
     process.env.PORTUNI_WORKSPACE_ROOT = workspace;
     resetLocalDbForTests();
 
-    db = createDbClient({ url: ":memory:" });
+    db = await openTestDb();
     await ensureSchemaOn(db);
     setDbForTesting(db);
 
@@ -481,7 +482,7 @@ describe("REST write gate: headless device-token file-plane gating (#212)", () =
     process.env.PORTUNI_WORKSPACE_ROOT = workspace;
     resetLocalDbForTests();
 
-    db = createDbClient({ url: ":memory:" });
+    db = await openTestDb();
     await ensureSchemaOn(db);
     setDbForTesting(db);
 

@@ -61,6 +61,21 @@ its connection string, and SSH access to the VPS
    nodes/sessions/files through the app against what the pre-cutover
    Turso database had, beyond the export manifest's row counts.
 
+7. **Delete the export directory** once the cutover is verified:
+   `rm -rf /path/to/export-$(date +%Y%m%d)`. It holds the whole database
+   in plaintext (audit log, e-mail addresses, session transcripts); the
+   export tool writes it owner-only (`0700`/`0600`), but nothing else
+   removes it. Keep the Turso backup from step 2 as the rollback copy
+   instead — it lives where `scripts/backup-turso.ts` already stores
+   backups.
+8. **Turn on provider-side backups** for the managed Postgres instance
+   (point-in-time recovery or daily snapshots, whichever the provider
+   offers). `scripts/backup-turso.ts` / `apps/server/infra/backup.ts` dump
+   through `sqlite_master` and have no Postgres form; from this point on
+   the pre-deploy safety net `docs/lessons-learned.md` §7 describes is the
+   provider's backup, not that script — `deploy-vps.sh` keeps running it
+   against the now-idle Turso database until B4 removes it.
+
 ### Rollback
 
 Until B4 removes libsql, rolling back is one env var: remove

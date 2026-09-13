@@ -16,7 +16,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
-import { createClient, type Client } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
+import type { DbClient as Client } from "../apps/server/infra/db.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import {
@@ -143,7 +144,7 @@ before(async () => {
   workspace = await mkdtemp(join(tmpdir(), "portuni-oauth-routes-"));
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
   resetLocalDbForTests();
-  db = createClient({ url: ":memory:" });
+  db = await openTestDb();
   await ensureSchemaOn(db);
   setDbForTesting(db);
   setIdentityContextForTesting({

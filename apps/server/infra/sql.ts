@@ -36,6 +36,18 @@ export function insertIgnore(dialect: DbDialect, sql: string): string {
   return `${sql.replace(/INSERT\s+OR\s+IGNORE\s+INTO/i, "INSERT INTO")} ON CONFLICT DO NOTHING`;
 }
 
+// "Does this table exist?" -- `sqlite_master` (SQLite) vs `pg_tables`
+// (Postgres). One `?` placeholder for the table name in both forms, and
+// both project a single `name` column, so the caller only checks
+// `rows.length`. Portuni's Postgres baseline lives in the connection's
+// default schema, hence `current_schema()` rather than a hardcoded
+// "public".
+export function tableExistsSql(dialect: DbDialect): string {
+  return dialect === "postgres"
+    ? "SELECT tablename AS name FROM pg_tables WHERE schemaname = current_schema() AND tablename = ?"
+    : "SELECT name FROM sqlite_master WHERE type='table' AND name = ?";
+}
+
 // A recursive CTE's seed, expanding a JSON array parameter (`args: [JSON
 // .stringify(ids)]`) into one row per string element -- SQLite's
 // `json_each(?)` (a table-valued function; its `value` column is what the

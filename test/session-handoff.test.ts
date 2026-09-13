@@ -8,7 +8,7 @@ import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
-import { createClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
 import { ulid } from "ulid";
 import {
   writeHandoffAndSuspend,
@@ -134,7 +134,7 @@ describe("writeHandoffAndSuspend", () => {
     // resolveRemote throws "No remote routing configured" before it does
     // anything else. The local write and the state transition must not
     // depend on that upload succeeding.
-    const db = createClient({ url: ":memory:" });
+    const db = await openTestDb();
     await ensureSchemaOn(db);
     await db.execute({
       sql: insertIgnore(db.dialect, "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)"),
