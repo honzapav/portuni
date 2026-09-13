@@ -1771,28 +1771,55 @@ fn showtime_open_url(deck: &std::path::Path, portuni_base: &str, code: &str) -> 
     )
 }
 
+/// The directory „Nová prezentace" hands Showtime: the node's mirror plus
+/// `wip/` (a mirror is created with wip/outputs/resources), inside the
+/// workspace root and there on disk. Refused before any link opens.
+fn showtime_new_dir(root: &std::path::Path, mirror: &str) -> Result<std::path::PathBuf, String> {
+    let dir = std::path::PathBuf::from(mirror).join("wip");
+    if !path_within_root(root, &dir) {
+        return Err("mirror out of workspace scope".into());
+    }
+    if !dir.is_dir() {
+        return Err(format!("mirror has no wip/ directory: {}", dir.display()));
+    }
+    Ok(dir)
+}
+
+/// `showtime://new?dir=<directory>&portuni=<sidecar base>&code=<code>`, every
+/// value percent-encoded (spec: 2026-09-13-showtime-new-deck-design.md).
+/// Showtime opens its New Deck screen with that directory fixed and binds
+/// the node to the deck it creates there. The bearer is never part of this
+/// URL -- only the one-time code is.
+fn showtime_new_url(dir: &std::path::Path, portuni_base: &str, code: &str) -> String {
+    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+    let enc = |v: &str| utf8_percent_encode(v, NON_ALPHANUMERIC).to_string();
+    format!(
+        "showtime://new?dir={}&portuni={}&code={}",
+        enc(&dir.to_string_lossy()),
+        enc(portuni_base),
+        enc(code)
+    )
+}
+
 #[derive(serde::Deserialize)]
 struct HandoffMinted {
     code: String,
+    /// The node's mirror on this device, when it has one.
+    #[serde(default)]
+    mirror: Option<String>,
 }
 
-/// „Otevřít v Showtime": mints a one-time handoff code on the active
-/// workspace's sidecar (POST /auth/handoff, authenticated with the terminal
-/// token this host already holds for pty_spawn -- never through the webview)
-/// and opens the deck through the `showtime://open` deep link carrying the
-/// deck path, the sidecar base URL and that code. Showtime exchanges the
-/// code over loopback for the bearer, the node's MCP URL and its mirror.
-#[tauri::command]
-async fn open_in_showtime(app: AppHandle, node_id: String, path: String) -> Result<(), String> {
-    let (ws_id, cfg) = active_workspace(&app)?;
-    let raw_root = cfg.effective_workspace_root();
-    let root = match app.path().home_dir() {
-        Ok(h) => expand_tilde(&h, &raw_root),
-        Err(_) => std::path::PathBuf::from(&raw_root),
-    };
-    let deck = showtime_deck_path(&root, &path)?;
-
-    let (port, token) = sidecar_port_and_token(&app, &ws_id)?;
+/// Mint a one-time handoff code on a workspace's sidecar (POST /auth/handoff,
+/// authenticated with the terminal token this host already holds for
+/// pty_spawn -- never through the webview). Answers the sidecar's base URL,
+/// which the link carries so Showtime knows where to exchange the code, and
+/// what was minted.
+async fn mint_showtime_handoff(
+    app: &AppHandle,
+    ws_id: &str,
+    node_id: &str,
+) -> Result<(String, HandoffMinted), String> {
+    let (port, token) = sidecar_port_and_token(app, ws_id)?;
     let base = format!("http://127.0.0.1:{port}");
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -1819,9 +1846,62 @@ async fn open_in_showtime(app: AppHandle, node_id: String, path: String) -> Resu
         .json()
         .await
         .map_err(|e| format!("invalid handoff response: {e}"))?;
+    Ok((base, minted))
+}
 
+/// „Otevřít v Showtime": mints a one-time handoff code on this window's
+/// workspace sidecar and opens the deck through the `showtime://open` deep
+/// link carrying the deck path, the sidecar base URL and that code. Showtime
+/// exchanges the code over loopback for the bearer, the node's MCP URL and
+/// its mirror.
+#[tauri::command]
+async fn open_in_showtime(
+    window: tauri::Window,
+    node_id: String,
+    path: String,
+) -> Result<(), String> {
+    let ws_id = ws_of(&window)?;
+    let app = window.app_handle().clone();
+    let cfg = workspace_config_for(&app, &ws_id)?;
+    let raw_root = cfg.effective_workspace_root();
+    let root = match app.path().home_dir() {
+        Ok(h) => expand_tilde(&h, &raw_root),
+        Err(_) => std::path::PathBuf::from(&raw_root),
+    };
+    let deck = showtime_deck_path(&root, &path)?;
+
+    let (base, minted) = mint_showtime_handoff(&app, &ws_id, &node_id).await?;
     let url = showtime_open_url(&deck, &base, &minted.code);
     info!("open_in_showtime: {path} (node {node_id})");
+    open::that(&url).map_err(|e| {
+        format!("Showtime neumí přijmout deck z Portuni, aktualizujte Showtime ({e})")
+    })
+}
+
+/// „Nová prezentace": mints a one-time handoff code on this window's
+/// workspace sidecar and opens Showtime's New Deck screen through the
+/// `showtime://new` deep link, carrying the node's `wip/` directory, the
+/// sidecar base URL and that code. Showtime creates the deck there and binds
+/// the node to it; the mirror watcher registers the bundle. A node without a
+/// mirror on this device has nowhere to put a deck and is refused here.
+#[tauri::command]
+async fn new_in_showtime(window: tauri::Window, node_id: String) -> Result<(), String> {
+    let ws_id = ws_of(&window)?;
+    let app = window.app_handle().clone();
+    let cfg = workspace_config_for(&app, &ws_id)?;
+    let raw_root = cfg.effective_workspace_root();
+    let root = match app.path().home_dir() {
+        Ok(h) => expand_tilde(&h, &raw_root),
+        Err(_) => std::path::PathBuf::from(&raw_root),
+    };
+
+    let (base, minted) = mint_showtime_handoff(&app, &ws_id, &node_id).await?;
+    let mirror = minted
+        .mirror
+        .ok_or_else(|| "Uzel nemá na tomto počítači mirror".to_string())?;
+    let dir = showtime_new_dir(&root, &mirror)?;
+    let url = showtime_new_url(&dir, &base, &minted.code);
+    info!("new_in_showtime: {} (node {node_id})", dir.display());
     open::that(&url).map_err(|e| {
         format!("Showtime neumí přijmout deck z Portuni, aktualizujte Showtime ({e})")
     })
@@ -1882,8 +1962,8 @@ fn showtime_installed(app: tauri::AppHandle) -> bool {
 #[cfg(test)]
 mod showtime_preview_tests {
     use super::{
-        is_html_ext, is_previewable_ext, is_showtime_ext, showtime_deck_path, showtime_open_url,
-        showtime_preview_bytes, SHOWTIME_PREVIEW_ENTRY,
+        is_html_ext, is_previewable_ext, is_showtime_ext, showtime_deck_path, showtime_new_dir,
+        showtime_new_url, showtime_open_url, showtime_preview_bytes, SHOWTIME_PREVIEW_ENTRY,
     };
     use std::io::Write;
     use std::path::Path;
@@ -1950,6 +2030,44 @@ mod showtime_preview_tests {
         assert_eq!(
             url,
             "showtime://open?deck=%2Fws%2FM%C5%AFj%20projekt%2Foutputs%2Fdeck%20%26%20more%2Eshowtime\
+             &portuni=http%3A%2F%2F127%2E0%2E0%2E1%3A47011&code=ab%2Dc%5FD%3D"
+        );
+        assert!(!url.contains("Bearer"));
+    }
+
+    // The directory „Nová prezentace" hands Showtime: the mirror's wip/,
+    // inside the workspace root and there on disk. A mirror registered
+    // elsewhere, or one whose wip/ is gone, is refused before any link opens.
+    #[test]
+    fn showtime_new_dir_is_the_mirrors_wip_inside_the_root() {
+        let root = tempfile::tempdir().unwrap();
+        let mirror = root.path().join("org").join("projects").join("x");
+        std::fs::create_dir_all(mirror.join("wip")).unwrap();
+
+        assert_eq!(
+            showtime_new_dir(root.path(), &mirror.to_string_lossy()).unwrap(),
+            mirror.join("wip")
+        );
+        assert!(showtime_new_dir(Path::new("/elsewhere"), &mirror.to_string_lossy())
+            .unwrap_err()
+            .contains("workspace scope"));
+        let no_wip = root.path().join("org").join("projects").join("y");
+        std::fs::create_dir_all(&no_wip).unwrap();
+        assert!(showtime_new_dir(root.path(), &no_wip.to_string_lossy())
+            .unwrap_err()
+            .contains("wip"));
+    }
+
+    #[test]
+    fn showtime_new_url_percent_encodes_every_value() {
+        let url = showtime_new_url(
+            Path::new("/ws/Můj projekt/wip"),
+            "http://127.0.0.1:47011",
+            "ab-c_D=",
+        );
+        assert_eq!(
+            url,
+            "showtime://new?dir=%2Fws%2FM%C5%AFj%20projekt%2Fwip\
              &portuni=http%3A%2F%2F127%2E0%2E0%2E1%3A47011&code=ab%2Dc%5FD%3D"
         );
         assert!(!url.contains("Bearer"));
@@ -3327,6 +3445,7 @@ pub fn run() {
             open_in_finder,
             open_path_external,
             open_in_showtime,
+            new_in_showtime,
             showtime_installed,
             clipboard_file_path,
             copy_text,

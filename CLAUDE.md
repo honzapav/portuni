@@ -400,8 +400,17 @@ symlink to this file.
   `router.ts`, agent `agent-router.ts`) share the handlers in
   `api/auth.ts`, codes live in `domain/handoff.ts`. The agent Showtime
   spawns connects with the node as home, so its session shows up under
-  the node's Relace. Spec:
-  `docs/superpowers/specs/2026-09-02-showtime-handoff-design.md`.
+  the node's Relace. **„Nová prezentace" is the same handoff before there
+  is a deck** (spec: `docs/superpowers/specs/2026-09-13-showtime-new-deck-design.md`).
+  `POST /auth/handoff` answers `mirror` next to the code; the desktop
+  `new_in_showtime { node_id }` (`ws_of`, shared `mint_showtime_handoff`)
+  refuses without a mirror, checks `<mirror>/wip` is inside the root
+  (`showtime_new_dir`) and opens `showtime://new?dir=…&portuni=…&code=…`
+  (`showtime_new_url`). The web's split (`NewFileSplitButton`, decided by
+  the pure `lib/new-file-menu.ts`) exists only with the integration on and
+  Showtime found, and is disabled without a mirror. Portuni does nothing
+  after the link: Showtime creates the bundle, the watcher registers it.
+  Spec: `docs/superpowers/specs/2026-09-02-showtime-handoff-design.md`.
 - **Mistral Vibe needs `--trust`.** Vibe only loads the per-mirror
   `.vibe/config.toml` (and thus auto-seeds) when the folder is trusted, so
   the desktop "Mistral Vibe" preset launches `vibe --trust`
