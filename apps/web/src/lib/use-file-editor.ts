@@ -88,6 +88,7 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
     if (nodeId == null || relPath == null) return;
     const r = await fetchFileContent(nodeId, relPath);
     setContent(r.content);
+    setLocalPath(r.local_path);
     setVersion(r.version);
     setDirty(false);
     setConflict(null);
@@ -126,6 +127,9 @@ export function useFileEditor(nodeId: string | null, relPath: string | null) {
     keepMine,
     reloadTheirs,
     localPath,
+    // sha256 of the loaded bytes. HtmlPreview keys the desktop iframe URL
+    // on it so a reload actually re-fetches the file (see protocolUrl).
+    version,
   };
 }
 

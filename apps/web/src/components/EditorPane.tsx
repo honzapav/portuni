@@ -170,11 +170,12 @@ export function EditorBody({
               <HtmlPreview
                 content={ed.content}
                 localPath={ed.localPath}
+                version={ed.version}
                 kind="showtime"
                 nodeId={ed.nodeId}
               />
             ) : isHtmlPath(relPath) ? (
-              <HtmlPreview content={ed.content} localPath={ed.localPath} />
+              <HtmlPreview content={ed.content} localPath={ed.localPath} version={ed.version} />
             ) : (
               <MarkdownPreview value={ed.content} />
             )}
