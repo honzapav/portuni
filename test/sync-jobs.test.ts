@@ -61,7 +61,9 @@ afterEach(async () => {
   resetLocalDbForTests();
   resetAdapterCacheForTests();
   delete process.env.PORTUNI_AGENT_MODE;
-  await rm(workspace, { recursive: true, force: true });
+  // A job's background node runs can still be touching .portuni/ when the
+  // test ends -- retry the tree removal instead of failing on ENOTEMPTY.
+  await rm(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 async function waitUntil(cond: () => boolean, timeoutMs = 5000): Promise<void> {

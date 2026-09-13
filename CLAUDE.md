@@ -920,51 +920,26 @@ symlink to this file.
   settings.ts`); `TerminalPane.tsx` times spawn phases (provisioning ->
   `pty_spawn` -> CLI boot to first byte) and prints/logs a one-line
   breakdown on first output.
-- **CLI spawn profiles are a desktop `config.json` registry, opt-in and
-  invisible until populated.** Settings → Profily (`ProfilesSection.tsx`,
-  `lib/profiles.ts`) manages `profiles`/`default_profile_by_org` on
-  `WorkspacesFile` (`apps/desktop/src/workspace.rs` `ProfileConfig`) via
-  the `list_profiles`/`create_profile`/`update_profile`/`delete_profile`/
-  `set_default_profile_for_org` Tauri commands — non-secret, so it lives
-  alongside the workspace registry rather than Keychain. Portuni never
-  detects or parses the user's own profile mechanism (shell aliases, rc
-  files); a profile is just env vars (typically `CLAUDE_CONFIG_DIR=…`) and
-  an optional command override, merged into the shell by `pty_spawn`
-  (`apps/desktop/src/pty.rs`) when the caller passes a `profile_id`. With
-  zero profiles registered the feature is invisible everywhere; the
-  per-spawn picker (`TerminalSplitButton` in `DetailPane.files.tsx`) only
-  renders once >=2 exist, defaulting to the node's organization's
-  configured profile (derived from `belongs_to` in `node.edges`) — with
-  exactly one profile and no org default set, spawns still carry no
-  profile. `pty_spawn` also exports `PORTUNI_PROFILE_ID` into the shell
-  whenever a profile id was requested (even one since deleted from the
-  registry, so the session record still reflects intent); the per-mirror
-  `.mcp.json`'s `X-Portuni-Profile` header (`buildClaudeMcpJson`,
-  `write-scope.ts`) expands it at Claude Code's config-load time the same
-  way the bearer token is — Claude only for now (Codex/Vibe's config
-  formats have no equivalent runtime expansion for a second header).
-  `transport.ts` reads that header and threads it through
-  `createMcpServer`/`bindSessionPersistence` into the session row's
-  `profile_id` column (`domain/sessions.ts`, columns pre-provisioned since
-  #189). Profile threading stops at the embedded terminal: `TerminalSplitButton`'s
-  external-launch path (`launch_claude_for_node`) has no `profile_id`
-  parameter at all, so picking a profile and choosing "Otevřít v externím
-  terminálu" spawns without it (#207) — deliberately not extended, since
-  that command doesn't inject even the MCP-token/`PORTUNI_PROFILE_ID` env
-  `pty_spawn` does either. **Env values never reach the webview** (#207):
-  `list_profiles` returns `env_keys` (names only), never the map itself, so
-  editing an existing profile is a partial update (`update_profile` treats
-  an empty submitted value for an already-known key as "leave unchanged" —
-  `ProfilesSection.tsx` pre-fills existing keys with an empty value for
-  exactly this reason). `create_profile`/`update_profile` also reject
-  secret-shaped keys outright (`*_TOKEN`/`*_KEY`/`*_SECRET`/`*PASSWORD*`,
-  `workspace::is_secret_shaped_env_key`) — Keychain is where a secret
-  belongs, not this plaintext registry. `pty_spawn`'s merge
-  (`resolve_profile_env`) drops any `PORTUNI_*` key from a profile's env
-  (it must never be able to override the token/profile-id env already set)
-  and expands a leading `~` in each value to `$HOME` (reusing lib.rs's
-  `expand_tilde`, `pub(crate)` for this) — portable-pty passes values to the
-  child verbatim, no shell involved, so `~` is otherwise left literal.
+- **Provider instances (Settings → Runnery) are a sidecar `runners.json`
+  registry; the desktop's old `config.json` profiles registry is dormant
+  until phase 4 removes it.** `domain/runner/instances.ts` owns
+  `<dataDir>/runners.json` (create/update/delete/`setOrgDefault`), served
+  over `api/runners.ts` (`GET /runners`, `/runners/instances` CRUD, `PUT
+  …/org-default`, `DELETE /runners/org-defaults/:orgId`); the web side is
+  `RunnersSection.tsx` + `lib/runners.ts` over the ordinary REST proxy,
+  `ProfilesSection.tsx` is gone. **The file is device-local**: `lib.rs`'s
+  `is_local_only_path` routes every `/runners*` call to the sync agent
+  (`agent-router.ts`, mutations behind `guardAgentRestWrite`), never to
+  central. Env values never reach a client (`env_keys` only; an empty
+  submitted value for a known key means "leave unchanged"), secret-shaped
+  keys (`shared/runner-env.ts`'s `isSecretShapedEnvKey`, the same rule as
+  `workspace::is_secret_shaped_env_key`) and `PORTUNI_*` keys are refused
+  with `INSTANCE_ENV_KEY_REFUSED`, and a leading `~` expands to `$HOME`
+  only when `getInstanceEnv` reads the value for a run. The Rust profile
+  commands, `lib/profiles.ts` and `pty_spawn`'s `PORTUNI_PROFILE_ID`/
+  `X-Portuni-Profile` threading (now landing in the session row's
+  `instance_id` column, renamed from `profile_id` by migration 034) still
+  exist for the embedded terminal and are removed with it (#345).
 - **A durable session row learns its PTY died via a server call, not a
   local signal.** `pty_spawn` exports `PORTUNI_TERMINAL_ID=<terminal id>`
   (the frontend's `term_<node>_<ts>_<rand>`, i.e. `args.session_id` — no
@@ -998,8 +973,42 @@ symlink to this file.
   (`client-name.ts`) -- not from a header, which Codex and Vibe cannot send.
   `wireOngoingSync` persists the session's home node as `writable=1`, since
   `guardWrite` allows it implicitly and `getSessionWriteCount` counts only
-  persisted rows. `boot/session-sweep.ts` closes any row left `running` by a
-  process that died, on every boot.
+  persisted rows. **A dropped connection, the transport's own idle GC, a
+  PTY exiting, or `boot/session-sweep.ts` finding a row left `running` by a
+  process that died all suspend the session now, never close it (#329)** --
+  `domain/session-handoff.ts`'s `suspendSessionServerSide(db, sessionId,
+  reason)` (`reason` one of `disconnect | idle | terminal_exit |
+  boot_sweep`) writes a minimal handoff itself, into the session's home
+  mirror when one exists on this device (same path
+  `writeHandoffAndSuspend` uses) or into the new `sessions.handoff_inline`
+  column when it doesn't (central mode, or simply no mirror registered
+  here) -- `getResumeInfo` reads whichever one is populated. The handoff
+  content carries an invisible marker recording its own reason;
+  `parseServerHandoffReason` reads it back so `GET /sessions/:id/resume-info`
+  can report `generated_by: "server"` and the reason (the Relace row shows
+  e.g. "pozastaveno serverem (nečinnost 30 min)") instead of looking like an
+  ordinary agent-written handoff. `domain/sessions.ts`'s
+  `closeSessionIfRunning`/`closeSessionsByTerminalId`/
+  `closeStaleRunningSessionsOnBoot` kept their names and call sites (a
+  transport-close reason of `disconnect` vs `idle` is decided by
+  `mcp/transport.ts` itself, since its own idle-GC timer and a genuine
+  client disconnect both fire the same `transport.onclose` handler) but now
+  delegate to `suspendSessionServerSide` -- `closed` is reached only by the
+  user's explicit Uzavřít or the auto-archive sweep. This is the interim
+  fix for hand-opened CLIs; the runner spec's own `suspend()`
+  (`session-runtime.ts`, #320) is the equivalent for runner-managed runs.
+  **The runner batch adds a task layer
+  underneath this row** (migration 034,
+  `docs/superpowers/specs/2026-09-12-runner-and-session-design.md`):
+  `sessions` gains `brief`/`runner`/`host_id`/`waiting_since`, `profile_id`
+  is renamed `instance_id` (same column, now a runner provider instance
+  rather than a desktop spawn-env profile), and each attempt to run the
+  session's task is a row in the new `session_runs` table, with its
+  canonical, append-only transcript in `session_events`
+  (`apps/server/domain/runner/store.ts`'s `SessionStore`/`DbSessionStore` --
+  the only writer of runs and events once the runtime issue lands). Every
+  event kind and its payload shape are in `apps/server/domain/runner/
+  types.ts`'s `CanonicalEvent` union.
 - **Bulk sync is a server-side job; the pending aggregate separates
   actionable work from decisions.**
   - **Job**: `POST /nodes/:id/sync` (one node, synchronous) is what the

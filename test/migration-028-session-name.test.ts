@@ -70,9 +70,12 @@ test("migration 028 backfills name for pre-existing rows on upgrade", async () =
     handoff_path TEXT, handoff_hash TEXT, created_at DATETIME NOT NULL, last_active_at DATETIME NOT NULL,
     closed_at DATETIME
   )`);
+  // sessions_old is a copy of the CURRENT (post-034) sessions table, so its
+  // column is instance_id, not profile_id -- the legacy shape being rebuilt
+  // here predates that rename, hence the alias.
   await db.execute(`INSERT INTO sessions (id, node_id, user_id, session_type, cli, profile_id,
       agent_session_id, state, handoff_path, handoff_hash, created_at, last_active_at, closed_at)
-    SELECT id, node_id, user_id, session_type, cli, profile_id, agent_session_id, state,
+    SELECT id, node_id, user_id, session_type, cli, instance_id, agent_session_id, state,
       handoff_path, handoff_hash, created_at, last_active_at, closed_at FROM sessions_old`);
   await db.execute("DROP TABLE sessions_old");
   await db.execute("PRAGMA foreign_keys = ON");

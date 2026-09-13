@@ -46,12 +46,10 @@ import type { Theme } from "./lib/theme";
 import { loadTheme, saveTheme, THEME_STORAGE_KEY } from "./lib/theme";
 import {
   loadAgentCommand,
-  saveAgentCommand,
   loadTerminalLaunch,
   saveTerminalLaunch,
   loadOpenNodes,
   saveOpenNodes,
-  AGENT_COMMAND_KEY,
   TERMINAL_LAUNCH_KEY,
 } from "./lib/settings";
 import { isShowtimePath } from "./lib/showtime";
@@ -125,14 +123,12 @@ export default function App() {
   }, []);
 
   const [theme, setTheme] = useState<Theme>(() => loadTheme());
-  const [agentCommand, setAgentCommandRaw] = useState<string>(() =>
-    loadAgentCommand(),
-  );
-
-  const setAgentCommand = useCallback((value: string) => {
-    setAgentCommandRaw(value);
-    saveAgentCommand(value);
-  }, []);
+  // No setter: Nastavení > Runnery (#344) replaced the "Příkaz agenta"
+  // panel that used to let the user edit this, since it has no meaning
+  // without an embedded terminal. The stored value/localStorage key stay
+  // untouched (still read for spawning below) until phase 4 removes the
+  // terminal entirely.
+  const [agentCommand] = useState<string>(() => loadAgentCommand());
 
   const [terminalLaunch, setTerminalLaunchRaw] = useState<string>(() =>
     loadTerminalLaunch(),
@@ -154,8 +150,6 @@ export default function App() {
     const onStorage = (e: StorageEvent) => {
       if (e.key === THEME_STORAGE_KEY) {
         setTheme(loadTheme());
-      } else if (e.key === AGENT_COMMAND_KEY) {
-        setAgentCommandRaw(loadAgentCommand());
       } else if (e.key === TERMINAL_LAUNCH_KEY) {
         setTerminalLaunchRaw(loadTerminalLaunch());
       }
@@ -1177,8 +1171,6 @@ export default function App() {
         )}
         {view === "settings" && (
           <SettingsPage
-            agentCommand={agentCommand}
-            onAgentCommandChange={setAgentCommand}
             terminalLaunch={terminalLaunch}
             onTerminalLaunchChange={setTerminalLaunch}
             appUpdate={appUpdate}

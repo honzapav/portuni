@@ -1258,12 +1258,18 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
     // footer's "Synchronizovat vše" starts -- it fans out into per-node
     // POST /nodes/:id/sync calls, which are themselves already local-only
     // below, so the job driving them must run on this device too.
+    // /runners (+ /runners/instances..., /runners/org-defaults/...) is the
+    // runner registry and provider instances (runners.json), a file on THIS
+    // device's sidecar -- the central server's own registry would describe
+    // the central host, not the machine the task actually runs on.
     if p == "/scope"
         || p == "/sandbox-profile"
         || p == "/sync/pending"
         || p == "/sync/health"
         || p == "/sync/jobs"
         || p.starts_with("/sync/jobs/")
+        || p == "/runners"
+        || p.starts_with("/runners/")
     {
         return true;
     }
@@ -4098,6 +4104,18 @@ mod local_only_path_tests {
         assert!(is_local_only_path("/sync/jobs/current"));
         assert!(is_local_only_path("/sync/jobs/01ABCDEF"));
         assert!(is_local_only_path("/sync/jobs/01ABCDEF?x=1"));
+    }
+
+    #[test]
+    fn runners_registry_is_local_only() {
+        // runners.json lives on this device's sidecar; the Runnery tab in
+        // central mode must read and write it there, not on central.
+        assert!(is_local_only_path("/runners"));
+        assert!(is_local_only_path("/runners/instances"));
+        assert!(is_local_only_path("/runners/instances/01ABCDEF"));
+        assert!(is_local_only_path("/runners/instances/01ABCDEF/org-default"));
+        assert!(is_local_only_path("/runners/org-defaults/01ORG"));
+        assert!(!is_local_only_path("/runnersx"));
     }
 
     #[test]
