@@ -411,10 +411,10 @@ export async function materializeAllRegisteredMirrors(opts?: {
   // the local db (dataSourcesForNode).
   dataSourcesFor?: (nodeId: string) => Promise<DataSourceRow[]>;
   // Alternate orientation resolver, same reasoning as dataSourcesFor. The
-  // central-mode agent has no local db AND the central client has no
-  // orientation endpoint yet, so its caller passes a resolver that always
-  // returns null (deliberate scope cut, not an oversight) instead of the
-  // default (orientationForNode).
+  // central-mode agent has no local db, so its caller (desktop.ts) passes a
+  // resolver backed by CentralClient.orientation (GET /nodes/:id/orientation
+  // on central, #323) instead of the default (orientationForNode, a direct
+  // db read).
   orientationFor?: (nodeId: string) => Promise<OrientationSummary | null>;
 }): Promise<MaterializeResult> {
   const aggregated: MaterializeResult = { written: [], errors: [] };

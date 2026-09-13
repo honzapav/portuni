@@ -156,7 +156,10 @@ export function parseServerHandoffReason(content: string | null): ServerHandoffR
     : null;
 }
 
-function buildServerHandoffContent(input: {
+// Exported for domain/runner/suspend-fallback-central.ts (#323): the
+// agent-mode counterpart of suspendSessionServerSide below reuses this same
+// content format so a handoff written by either mode looks identical.
+export function buildServerHandoffContent(input: {
   nodeName: string | null;
   sessionName: string;
   reason: ServerHandoffReason;

@@ -1311,6 +1311,35 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
         }
     }
 
+    // Sessions/tasks (runner batch, #323): bare POST /sessions starts a
+    // task on THIS device's own session runtime. Per-session action verbs
+    // that drive that same local run/device sidecar also stay local; the
+    // record half (bare /sessions/<id>, /state, /resume-info, /runs...,
+    // /sessions/record) stays central -- NOT matched here on purpose, same
+    // as /nodes/<id>/file-url above.
+    if p == "/sessions" {
+        return true;
+    }
+    if let Some(rest) = p.strip_prefix("/sessions/") {
+        if let Some(slash) = rest.find('/') {
+            let sub = &rest[slash + 1..];
+            if sub == "messages"
+                || sub == "interrupt"
+                || sub == "suspend"
+                || sub == "resume"
+                || sub == "close"
+                || sub == "events"
+            {
+                return true;
+            }
+            if let Some(request_id) = sub.strip_prefix("questions/") {
+                if !request_id.is_empty() && !request_id.contains('/') {
+                    return true;
+                }
+            }
+        }
+    }
+
     false
 }
 
@@ -4159,6 +4188,41 @@ mod local_only_path_tests {
         // file-url stays central even though it shares the /file prefix.
         assert!(!is_local_only_path("/nodes/abc/file-url?file_id=xyz"));
         assert!(is_local_only_path("/nodes/abc/files/fileid?confirmed=true"));
+    }
+
+    // Sessions/tasks (runner batch, #323).
+    #[test]
+    fn bare_post_sessions_is_local_only() {
+        assert!(is_local_only_path("/sessions"));
+    }
+
+    #[test]
+    fn session_action_verbs_are_local_only() {
+        assert!(is_local_only_path("/sessions/abc123/messages"));
+        assert!(is_local_only_path("/sessions/abc123/interrupt"));
+        assert!(is_local_only_path("/sessions/abc123/suspend"));
+        assert!(is_local_only_path("/sessions/abc123/resume"));
+        assert!(is_local_only_path("/sessions/abc123/close"));
+        assert!(is_local_only_path("/sessions/abc123/events"));
+        assert!(is_local_only_path("/sessions/abc123/events?after=5"));
+    }
+
+    #[test]
+    fn session_question_answer_is_local_only() {
+        assert!(is_local_only_path("/sessions/abc123/questions/req-1"));
+    }
+
+    #[test]
+    fn session_record_half_stays_central() {
+        // Bare record fetch/patch, state, resume-info, record-create and
+        // run records are all central record-half routes, deliberately NOT
+        // matched here (see api/sessions.ts's header comment).
+        assert!(!is_local_only_path("/sessions/abc123"));
+        assert!(!is_local_only_path("/sessions/abc123/state"));
+        assert!(!is_local_only_path("/sessions/abc123/resume-info"));
+        assert!(!is_local_only_path("/sessions/abc123/runs"));
+        assert!(!is_local_only_path("/sessions/abc123/runs/run1"));
+        assert!(!is_local_only_path("/sessions/record"));
     }
 }
 

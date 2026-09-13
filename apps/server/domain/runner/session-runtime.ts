@@ -14,7 +14,7 @@
 
 import { getDb } from "../../infra/db.js";
 import { getSessionScope } from "../sessions.js";
-import { suspendSessionServerSide } from "../session-handoff.js";
+import { suspendSessionServerSide, type ServerHandoffReason } from "../session-handoff.js";
 import type { SessionRow } from "../../shared/types.js";
 import type { ListEventsOptions, SessionEventRow, SessionRunRow, SessionStore } from "./store.js";
 import { getInstanceEnv } from "./instances.js";
@@ -63,6 +63,13 @@ export interface CreateSessionRuntimeDeps {
   // these at their 1s/30s defaults.
   suspendPollIntervalMs?: number;
   suspendTimeoutMs?: number;
+  // What suspend() falls back to when no handoff arrived in time (spec:
+  // "the server generates one from the session record"). Defaults to the
+  // local-mode implementation (suspendSessionServerSide against the graph
+  // db); boot/session-runtime.ts's createAgentSessionRuntime supplies
+  // domain/runner/suspend-fallback-central.ts's version instead, since
+  // agent mode has no graph db to write against.
+  suspendFallback?: (sessionId: string, reason: ServerHandoffReason) => Promise<SessionRow | null>;
 }
 
 export interface StartTaskInput {
@@ -88,6 +95,12 @@ type QuestionPayload = Extract<CanonicalEvent, { kind: "question" }>["payload"];
 
 export interface SessionRuntime {
   startTask(input: StartTaskInput): Promise<{ session: SessionRow; run: SessionRunRow }>;
+  // Plain read-through to the store -- agent-router.ts's REST handlers have
+  // no local db of their own to re-fetch a session row from after a
+  // mutation the way api/sessions.ts's handlers do, so they go through this
+  // instead (local mode's own handlers still use domain/sessions.ts's
+  // getSession directly; this exists for the agent-mode caller).
+  getSession(sessionId: string): Promise<SessionRow | null>;
   sendMessage(sessionId: string, text: string): Promise<void>;
   answer(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void>;
   interrupt(sessionId: string): Promise<void>;
@@ -123,6 +136,8 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   const { store, registry, provision } = deps;
   const suspendPollIntervalMs = deps.suspendPollIntervalMs ?? DEFAULT_SUSPEND_POLL_INTERVAL_MS;
   const suspendTimeoutMs = deps.suspendTimeoutMs ?? DEFAULT_SUSPEND_TIMEOUT_MS;
+  const suspendFallback =
+    deps.suspendFallback ?? ((sessionId: string, reason: ServerHandoffReason) => suspendSessionServerSide(getDb(), sessionId, reason));
 
   const liveRuns = new Map<string, LiveRun>();
   // The still-open question for a session, keyed by session id -- captured
@@ -144,6 +159,18 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   function publish(sessionId: string, event: PublishedEvent): void {
     for (const listener of subscribers.get(sessionId) ?? []) listener(sessionId, event);
     for (const listener of subscribers.get("*") ?? []) listener(sessionId, event);
+  }
+
+  // session_scope only exists on the local graph db; agent mode has none.
+  // Degrades to 0 (empty scope) rather than failing the caller -- this
+  // feeds the restart indicator's "expansions since run start" signal
+  // only, never a correctness-load-bearing decision.
+  async function readSessionScopeSize(sessionId: string): Promise<number> {
+    try {
+      return (await getSessionScope(getDb(), sessionId)).length;
+    } catch {
+      return 0;
+    }
   }
 
   // Returns the task's own promise (rejecting when it fails) so a caller
@@ -275,7 +302,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const adapter = registry.getAdapter(run.runner);
     if (!adapter) throw new Error(`startRun: unknown runner '${run.runner}'`);
 
-    runStartScopeSize.set(run.id, (await getSessionScope(getDb(), session.id)).length);
+    // session_scope is a local graph-db table; agent mode has none, so the
+    // restart indicator's "expansions since run start" signal degrades to 0
+    // there rather than failing the whole run start.
+    runStartScopeSize.set(run.id, await readSessionScopeSize(session.id));
 
     await appendAndPublish(session.id, run.id, [
       {
@@ -432,9 +462,11 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
         };
       } else {
         // The same server-written fallback every other server-side suspend
-        // uses (#329): a file in the mirror when this device has one,
-        // handoff_inline otherwise, marked with its reason either way.
-        const session = await suspendSessionServerSide(getDb(), sessionId, "suspend_timeout");
+        // uses locally (#329): a file in the mirror when this device has
+        // one, handoff_inline otherwise, marked with its reason either
+        // way. suspendFallback is the agent-mode-aware seam (default:
+        // suspendSessionServerSide against the graph db).
+        const session = await suspendFallback(sessionId, "suspend_timeout");
         if (!session) throw new Error(`suspend: session ${sessionId} not found`);
         handoffEvent = {
           kind: "handoff",
@@ -512,7 +544,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   }
 
   async function sessionSignals(sessionId: string): Promise<SessionSignals> {
-    const scope = await getSessionScope(getDb(), sessionId);
+    const scope = await getSessionScope(getDb(), sessionId).catch(() => []);
     const writeSetSize = scope.filter((s) => s.writable === 1).length;
     const readSetSize = scope.length;
     const live = liveRuns.get(sessionId);
@@ -554,6 +586,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
   return {
     startTask,
+    getSession: (sessionId: string) => store.getSession(sessionId),
     sendMessage,
     answer,
     interrupt,

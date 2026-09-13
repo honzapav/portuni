@@ -77,6 +77,7 @@ import {
   handleFileUrl,
   handleFolderUrl,
   handleGetNode,
+  handleGetNodeOrientation,
   handleMoveNode,
   handleNodeSandboxProfile,
   handlePatchNode,
@@ -107,12 +108,18 @@ import {
 } from "./events.js";
 import {
   handleAnswerSessionQuestion,
+  handleAppendSessionEvents,
   handleCloseSession,
+  handleCreateSessionRecord,
+  handleCreateSessionRun,
+  handleGetSession,
   handleGetSessionResumeInfo,
   handleInterruptSession,
   handleListNodeSessions,
   handleListSessionEvents,
-  handleRenameSession,
+  handleListSessionRuns,
+  handlePatchSession,
+  handlePatchSessionRun,
   handleResumeSession,
   handleSendSessionMessage,
   handleStartSession,
@@ -582,6 +589,11 @@ async function routeNodes(
     await handleFolderUrl(req, res, identity, decodeURIComponent(folderUrlMatch[1]));
     return true;
   }
+  const orientationMatch = pathname.match(/^\/nodes\/([^/]+)\/orientation$/);
+  if (orientationMatch && method === "GET") {
+    await handleGetNodeOrientation(req, res, identity, decodeURIComponent(orientationMatch[1]));
+    return true;
+  }
   const fileUrlMatch = pathname.match(/^\/nodes\/([^/]+)\/file-url$/);
   if (fileUrlMatch && method === "GET") {
     await handleFileUrl(req, res, identity, decodeURIComponent(fileUrlMatch[1]));
@@ -743,6 +755,14 @@ async function routeSessions(
     await handleStartSession(req, res, identity);
     return true;
   }
+  // Central record half (#323): record-only create, distinct from POST
+  // /sessions (which also starts a run) -- the literal "record" segment
+  // never collides with a real session id path (those all end at
+  // /sessions/:id with no further segment, or use a different sub-path).
+  if (pathname === "/sessions/record" && method === "POST") {
+    await handleCreateSessionRecord(req, res, identity);
+    return true;
+  }
   const stateMatch = pathname.match(/^\/sessions\/([^/]+)\/state$/);
   if (stateMatch && method === "POST") {
     await handleTransitionSessionState(req, res, identity, decodeURIComponent(stateMatch[1]));
@@ -794,9 +814,35 @@ async function routeSessions(
     await handleListSessionEvents(req, res, identity, decodeURIComponent(eventsMatch[1]), url);
     return true;
   }
+  // Central record half (#323): batch event append, alongside the GET above.
+  if (eventsMatch && method === "POST") {
+    await handleAppendSessionEvents(req, res, identity, decodeURIComponent(eventsMatch[1]));
+    return true;
+  }
+  // Central record half (#323): run records. /runs/:run_id MUST match
+  // before the bare /runs match for the same prefix reason as elsewhere in
+  // this file, though the trailing $ anchors already make them disjoint.
+  const runMatch = pathname.match(/^\/sessions\/([^/]+)\/runs\/([^/]+)$/);
+  if (runMatch && method === "PATCH") {
+    await handlePatchSessionRun(req, res, identity, decodeURIComponent(runMatch[1]), decodeURIComponent(runMatch[2]));
+    return true;
+  }
+  const runsMatch = pathname.match(/^\/sessions\/([^/]+)\/runs$/);
+  if (runsMatch && method === "POST") {
+    await handleCreateSessionRun(req, res, identity, decodeURIComponent(runsMatch[1]));
+    return true;
+  }
+  if (runsMatch && method === "GET") {
+    await handleListSessionRuns(req, res, identity, decodeURIComponent(runsMatch[1]));
+    return true;
+  }
   const sessionMatch = pathname.match(/^\/sessions\/([^/]+)$/);
+  if (sessionMatch && method === "GET") {
+    await handleGetSession(req, res, identity, decodeURIComponent(sessionMatch[1]));
+    return true;
+  }
   if (sessionMatch && method === "PATCH") {
-    await handleRenameSession(req, res, identity, decodeURIComponent(sessionMatch[1]));
+    await handlePatchSession(req, res, identity, decodeURIComponent(sessionMatch[1]));
     return true;
   }
   return false;

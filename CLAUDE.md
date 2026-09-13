@@ -913,13 +913,16 @@ symlink to this file.
   instead (`domain/write-scope.ts` `buildOrientationHint`,
   `domain/scope-materialize.ts` `orientationForNode`) — appended there only,
   never into `.cursor/rules` or the `CLAUDE.md`/`AGENTS.md` marker blocks,
-  which stay on the terser write-scope hint. Central-mode mirrors get the
-  write-scope hint but no orientation section: `CentralClient` has no
-  endpoint for it yet, a deliberate scope cut, not a bug. Agent-command
-  presets carry no `{prompt}` placeholder anymore (`apps/web/src/lib/
-  settings.ts`); `TerminalPane.tsx` times spawn phases (provisioning ->
-  `pty_spawn` -> CLI boot to first byte) and prints/logs a one-line
-  breakdown on first output.
+  which stay on the terser write-scope hint. **Central-mode mirrors get a
+  real orientation section too now (#323 ends the cut):**
+  `CentralClient.orientation` (`GET /nodes/:id/orientation`, computed on
+  central, which has the real graph db) backs
+  `materializeAllRegisteredMirrors`'s `orientationFor` resolver in
+  `desktop.ts`'s agent-mode boot, in place of the local `orientationForNode`
+  (a direct db read agent mode can't make). Agent-command presets carry no
+  `{prompt}` placeholder anymore (`apps/web/src/lib/settings.ts`);
+  `TerminalPane.tsx` times spawn phases (provisioning -> `pty_spawn` -> CLI
+  boot to first byte) and prints/logs a one-line breakdown on first output.
 - **Provider instances (Settings → Runnery) are a sidecar `runners.json`
   registry; the desktop's old `config.json` profiles registry is dormant
   until phase 4 removes it.** `domain/runner/instances.ts` owns
@@ -1077,6 +1080,58 @@ symlink to this file.
   gained `subscriberCount(target)` (test-only visibility that a closed
   socket's subscriptions were actually dropped, not leaked) and
   `pendingQuestion`/`recordStoppedBy`, shared with the REST routes (#321).
+- **A task's session runtime always runs on the device; only its
+  `SessionStore` changes between local and agent mode (#323, "one
+  implementation").** `agent-router.ts`'s `createAgentRouter(client)` builds
+  its own runtime (`boot/session-runtime.ts`'s `createAgentSessionRuntime`)
+  bound to `CentralSessionStore` (`domain/runner/store-central.ts`) instead
+  of the local singleton's `DbSessionStore` — every `SessionStore` call
+  becomes a REST round trip to central's "central record half"
+  (`api/sessions.ts`: `POST /sessions/record`, `GET`/`PATCH /sessions/:id`,
+  `POST /sessions/:id/runs`, `PATCH /sessions/:id/runs/:run_id`,
+  `GET /sessions/:id/runs`, `POST`/`GET /sessions/:id/events`), all thin
+  wrappers over `DbSessionStore` bound to THAT server's own db, so central's
+  real `auth/session-access.ts` checks apply exactly once, on central, no
+  matter which device's sidecar is driving the task. `CentralSessionStore`
+  batches `appendEvents` calls within a 50ms window into one POST (a burst
+  of `tool_call` events is one round trip) and keeps an in-process
+  `runId -> sessionId` map (populated by `createRun`/`listRuns`) since
+  `SessionStore.patchRun(runId, patch)` carries no session id but the REST
+  shape needs one. `PATCH /sessions/:id` is doubly-shaped: a plain rename
+  (`{name}` alone) keeps its historical `SessionSummary` response and
+  `renameSession`'s own audit action; any other field
+  (`state`/`waiting_since`/`handoff_path`/`handoff_hash`, what
+  `CentralSessionStore.patchSession` sends) returns the raw `SessionRow`
+  instead, since `session-runtime.ts` reads columns (`handoff_hash` in
+  `suspend()`, `host_id` in `resume()`) the curated summary doesn't carry.
+  `domain/runner/provision-central.ts` is `provision.ts`'s counterpart:
+  `createMirrorForNodeCentral` instead of `createMirrorForNode`, and
+  `CentralClient.orientation` (`GET /nodes/:id/orientation`, backed by
+  `orientationForNode` run on central, which has the real graph db) instead
+  of a direct db read. **`session-runtime.ts` itself needed a seam for the
+  one thing it still did unconditionally: `session_scope` is a local
+  graph-db table**, so `startRun`'s/`sessionSignals`'s restart-indicator
+  reads (`getSessionScope`) now degrade to an empty scope instead of
+  throwing when there is no graph db, and the suspend-timeout fallback
+  (`suspendSessionServerSide` locally) is a new injectable
+  `CreateSessionRuntimeDeps.suspendFallback`, defaulting to the local
+  implementation; `createAgentSessionRuntime` supplies
+  `domain/runner/suspend-fallback-central.ts` instead, which writes the
+  handoff file straight to the device's own mirror (mirrors exist in every
+  mode) and patches the session record over the same REST route rather than
+  the graph db directly — a deliberate simplification for this phase: the
+  write/read-set sections of that handoff are always empty (central mode
+  has no local `session_scope` to read them from), and the file is not
+  registered as a tracked file the way the local path's
+  `writeHandoffAndSuspend` does (the next sync run's untracked-file
+  discovery picks it up instead of it appearing immediately in Files).
+  `is_local_only_path` (`apps/desktop/src/lib.rs`) routes the bare
+  `POST /sessions` and every per-session action verb
+  (`messages`/`interrupt`/`suspend`/`resume`/`close`/`events`/
+  `questions/:request_id`) to the sync agent — deliberately NOT the record
+  half (`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`, `/runs...`,
+  `/sessions/record`), which stays central, and not `GET /nodes/:id/
+  sessions` or `/overview` either.
 - **Bulk sync is a server-side job; the pending aggregate separates
   actionable work from decisions.**
   - **Job**: `POST /nodes/:id/sync` (one node, synchronous) is what the
