@@ -3,7 +3,7 @@
 // index.css so it tracks the design tokens / theme.
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { openExternal } from "../lib/backend-url";
+import { externalLinkProps } from "../lib/external-link";
 import { safeHref } from "../lib/safe-url";
 
 export default function MarkdownPreview({ value }: { value: string }) {
@@ -12,26 +12,15 @@ export default function MarkdownPreview({ value }: { value: string }) {
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          // A plain <a target="_blank"> is a silent no-op inside the Tauri
-          // webview, so external links go through openExternal (native
-          // open_external command; window.open fallback in the browser).
-          // Unsafe/relative hrefs render as inert text-colored anchors.
+          // External links go through externalLinkProps: native anchor in
+          // the browser, the `open_external` command in Tauri (see
+          // lib/external-link.ts for why the anchor must not carry
+          // target="_blank" there). Unsafe/relative hrefs render as inert
+          // text-colored anchors.
           a: ({ href, children }) => {
             const safe = safeHref(href ?? null);
             if (!safe) return <span>{children}</span>;
-            return (
-              <a
-                href={safe}
-                target="_blank"
-                rel="noreferrer"
-                onClick={(e) => {
-                  e.preventDefault();
-                  void openExternal(safe);
-                }}
-              >
-                {children}
-              </a>
-            );
+            return <a {...externalLinkProps(safe)}>{children}</a>;
           },
         }}
       >

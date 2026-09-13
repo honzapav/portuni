@@ -57,6 +57,7 @@ export async function guardNodeWrite(
 ): Promise<WriteGateResult> {
   const outcome = guardWrite(writeContextFromScope(scope), nodeId);
   if (outcome.kind === "allow") return { kind: "ok" };
+  let elicitationSupported: boolean | undefined;
   if (outcome.kind === "elicit" && elicitor !== undefined) {
     // The dialog gets the node's name and type; the agent-facing hint, with
     // its expand_scope instructions, goes to the structured error below. The
@@ -70,12 +71,23 @@ export async function guardNodeWrite(
       scope.addWritable(nodeId);
       return { kind: "ok" };
     }
+    // "unsupported" = the client never declared the elicitation capability
+    // (or the request itself errored). The default agentHint would point
+    // the agent at portuni_expand_scope(writable: true), which is refused
+    // on exactly such a client -- writeGuardError swaps in an honest hint
+    // and flags the payload (elicitation_supported: false) instead.
+    elicitationSupported = dialogOutcome !== "unsupported";
   }
   return {
     kind: "error",
     response: {
       content: [
-        { type: "text", text: JSON.stringify(writeGuardError(nodeId, outcome.kind, outcome.agentHint)) },
+        {
+          type: "text",
+          text: JSON.stringify(
+            writeGuardError(nodeId, outcome.kind, outcome.agentHint, { elicitationSupported }),
+          ),
+        },
       ],
       isError: true,
     },

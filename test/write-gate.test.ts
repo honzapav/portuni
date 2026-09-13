@@ -407,7 +407,30 @@ describe("write gate: protocol elicitation", () => {
       arguments: { node_id: otherId, name: "Should Not Apply Either" },
     })) as ToolResult;
     assert.equal(r.isError, true);
-    assert.equal(payloadOf(r).error, "write_expansion_required");
+    const payload = payloadOf(r);
+    assert.equal(payload.error, "write_expansion_required");
+    // The fallback is honest about being a dead end on this client
+    // (Asana 1218386301330150): expand_scope(writable) would be refused
+    // for the same missing capability, so the hint must not recommend it.
+    assert.equal(payload.elicitation_supported, false);
+    assert.match(String(payload.hint), /does not support MCP elicitation dialogs/);
+    assert.doesNotMatch(String(payload.hint), /then call portuni_expand_scope/);
+  });
+
+  it("capability-present, user declines: the payload keeps the expand_scope hint and no elicitation_supported flag", async () => {
+    const scope = new SessionScope("interactive_task");
+    scope.homeNodeId = homeId;
+    scope.addSeed(homeId);
+    scope.add(otherId);
+    const client = await connectWithElicitation(scope, identity({ via: "device_token" }), "decline");
+    const r = (await client.callTool({
+      name: "portuni_update_node",
+      arguments: { node_id: otherId, name: "Declined" },
+    })) as ToolResult;
+    const payload = payloadOf(r);
+    assert.equal(payload.error, "write_expansion_required");
+    assert.equal("elicitation_supported" in payload, false);
+    assert.match(String(payload.hint), /then call portuni_expand_scope/);
   });
 
   it("headless sessions never see a dialog, even when ctx.elicit and client capability are both present", async () => {

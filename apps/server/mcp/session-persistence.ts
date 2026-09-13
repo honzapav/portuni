@@ -23,6 +23,7 @@ import {
   createSession,
   getSession,
   getSessionScope,
+  listConnectorCreatedWritableNodes,
   loadResumableSession,
   setSessionCli,
   transitionSessionState,
@@ -31,6 +32,7 @@ import {
   touchSession,
 } from "../domain/sessions.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
+import { filterVisibleNodeIds, type GroupIdentityView } from "../auth/node-access.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import type { SessionRow } from "../shared/types.js";
 
@@ -343,4 +345,55 @@ export async function lookupSpawnSessionForBind(
   if (!row) return { kind: "not_found" };
   if (row.state !== "running" || row.user_id !== identity.userId) return { kind: "refused" };
   return { kind: "bindable", row };
+}
+
+// Connector sessions (interactive_chat) have no anchor and no resume path,
+// yet a connector client reopens its MCP session all the time: the
+// transport's 30-minute idle GC, a server deploy, or simply the client
+// reconnecting between two chat turns. Every one of those used to reset the
+// in-memory write set to empty, so a node the user created "a moment ago"
+// in the same chat was suddenly outside write scope -- and the only
+// expansion path (portuni_expand_scope with writable: true) is refused on
+// a client without the elicitation capability, which claude.ai web and
+// mobile are. The user could create and connect nodes, but never attach a
+// file to them (Asana 1218386301330150).
+//
+// This restores the one grant the spec already promises ("nodes created by
+// the session enter its read and write set") in durable form for that
+// session type: every node this user's earlier connector sessions
+// persisted as added_via='created' + writable=1 is writable again in this
+// one. Nothing else is rehydrated -- not elicited grants, not other users'
+// sessions, not nodes created from a task session or the desktop UI --
+// so the write set stays "what this user's chats created", never "what
+// this user can see". The rehydrated nodes are recorded as 'created' again,
+// so bindSessionPersistence's catch-up persists them under the new session
+// the same way and the chain survives the next reconnect too.
+//
+// Awaited by the caller (transport.ts), like resumeSessionPersistence:
+// it seeds a live write decision, so it must land before the first tool
+// call. A DB failure here is logged and degrades to the previous behavior
+// (empty write set, honest write_expansion_required hint) rather than
+// refusing the connection -- reads on a connector session never depend on
+// it. Returns the rehydrated node ids for the caller's audit/log.
+export async function rehydrateConnectorWriteGrants(
+  db: DbClient,
+  scope: SessionScope,
+  identity: GroupIdentityView,
+): Promise<string[]> {
+  if (scope.sessionType !== "interactive_chat") return [];
+  const created = await listConnectorCreatedWritableNodes(db, identity.userId);
+  if (created.length === 0) return [];
+  const visible = await filterVisibleNodeIds(db, identity, created);
+  const granted = created.filter((id) => visible.has(id));
+  for (const nodeId of granted) scope.addWritable(nodeId);
+  if (granted.length > 0) {
+    scope.recordExpansion({
+      at: new Date().toISOString(),
+      node_ids: granted,
+      reason: "created by an earlier connector session of this user (rehydrated write grant)",
+      triggered_by: "init",
+      addedVia: "created",
+    });
+  }
+  return granted;
 }

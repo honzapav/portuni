@@ -1335,7 +1335,7 @@ async function runDiscovery(db: DbClient, a: StatusArgs, out: StatusResult): Pro
   // "known" or they would all surface as new_remote.
   let filesSql = "SELECT node_id, remote_name, remote_path FROM files";
   let filesArgs: Array<string> = [];
-  if (a.nodeId && mirrors.length === 1) {
+  if (a.nodeId) {
     try {
       const info = await resolveNodeInfo(db, a.nodeId);
       const root = buildNodeRoot(info);
@@ -1388,32 +1388,66 @@ async function runDiscovery(db: DbClient, a: StatusArgs, out: StatusResult): Pro
       await walkMirror(out, m.node_id, m.local_path, section, localSet);
     }
 
-    // Discovery on remote: list adapter paths under buildNodeRoot, skip any
-    // file that is tracked anywhere in `files` (not just under this node id).
-    // Org nodes' nodeRoot expands to the whole org subtree, so per-node-only
-    // matching would falsely flag every child's file as new_remote.
     // Callers that don't consume new_remote (the unsynced aggregate) opt out
     // of this network round-trip via skipRemoteDiscovery.
     if (a.skipRemoteDiscovery) continue;
-    const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
-    if (!remoteName) continue;
+    await discoverRemote(db, m.node_id, info, knownRemoteGlobal, out);
+  }
+
+  // A single node with NO mirror on this device still has a routed remote
+  // to list: the connector (interactive_chat) case on the central server,
+  // and any device that simply never mirrored the node. The loop above is
+  // keyed on mirrors, so such a node used to get no discovery at all and
+  // portuni_status answered new_remote: [] for a file that was sitting
+  // right there on the remote (uploaded via a Drive connector, dropped in
+  // by a teammate) -- and portuni_adopt_files, the tool built for exactly
+  // that file, was never suggested (Asana 1218386301330150). Local
+  // discovery (new_local) genuinely needs a mirror; remote discovery does
+  // not. Only the single-node form: the all-mirrors scan is by definition
+  // "what this device mirrors".
+  if (a.nodeId && mirrors.length === 0 && !a.skipRemoteDiscovery) {
+    let info: NodeInfo;
     try {
-      const adapter = await getAdapter(db, remoteName);
-      const entries = await adapter.list(nodeRoot);
-      for (const e of entries) {
-        if (!knownRemoteGlobal.has(`${remoteName}::${e.path.normalize("NFC")}`)) {
-          out.new_remote.push({
-            node_id: m.node_id,
-            remote_name: remoteName,
-            remote_path: e.path,
-            filename: e.path.split("/").pop() ?? e.path,
-            hash: e.hash,
-          });
-        }
-      }
+      info = await resolveNodeInfo(db, a.nodeId);
     } catch {
-      // Adapter unavailable — skip quietly.
+      return;
     }
+    await discoverRemote(db, a.nodeId, info, knownRemoteGlobal, out);
+  }
+}
+
+// Discovery on remote: list adapter paths under buildNodeRoot, skip any
+// file that is tracked anywhere in `files` (not just under this node id).
+// Org nodes' nodeRoot expands to the whole org subtree, so per-node-only
+// matching would falsely flag every child's file as new_remote. No remote
+// routed for the node (a local workspace, or routing not configured) and
+// an unreachable adapter both contribute nothing, quietly -- same as the
+// tracked-file scan's own listing fallback.
+async function discoverRemote(
+  db: DbClient,
+  nodeId: string,
+  info: NodeInfo,
+  knownRemoteGlobal: ReadonlySet<string>,
+  out: StatusResult,
+): Promise<void> {
+  const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
+  if (!remoteName) return;
+  try {
+    const adapter = await getAdapter(db, remoteName);
+    const entries = await adapter.list(buildNodeRoot(info));
+    for (const e of entries) {
+      if (!knownRemoteGlobal.has(`${remoteName}::${e.path.normalize("NFC")}`)) {
+        out.new_remote.push({
+          node_id: nodeId,
+          remote_name: remoteName,
+          remote_path: e.path,
+          filename: e.path.split("/").pop() ?? e.path,
+          hash: e.hash,
+        });
+      }
+    }
+  } catch {
+    // Adapter unavailable — skip quietly.
   }
 }
 
