@@ -99,6 +99,11 @@ export interface MirrorWatcher {
   // (desktop.ts's backfillSweep) predates this and calls its central
   // backfill directly, independent of this method.
   sweep(): Promise<void>;
+  // Resolves once every debounce timer has fired and every per-mirror
+  // reconcile chain has drained -- "the watcher has processed everything it
+  // has seen so far". Tests wait on this instead of a fixed sleep; nothing
+  // in production needs it.
+  idle(): Promise<void>;
   stop(): void;
 }
 
@@ -302,6 +307,17 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
         });
       } finally {
         sweepRunning = false;
+      }
+    },
+    async idle(): Promise<void> {
+      // A chain can grow while awaited (a timer firing mid-drain), so loop
+      // until a full pass finds no pending timer and no chain that moved.
+      for (;;) {
+        while (timers.size > 0) await new Promise((r) => setTimeout(r, Math.max(debounceMs, 1)));
+        const snapshot = [...reconcileChains.entries()];
+        await Promise.all(snapshot.map(([, chain]) => chain));
+        const moved = timers.size > 0 || snapshot.some(([nodeId, chain]) => reconcileChains.get(nodeId) !== chain);
+        if (!moved) return;
       }
     },
     stop(): void {

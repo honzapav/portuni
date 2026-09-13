@@ -59,9 +59,11 @@ function manualWatch(): { factory: WatchFactory; fire: (absPath: string) => void
   };
 }
 
-async function settle(): Promise<void> {
-  // debounceMs is 0; the wait lets the serialized reconcileChain drain.
-  await new Promise((r) => setTimeout(r, 150));
+// Waits for the watcher to process everything it has seen: every debounce
+// timer fired and every reconcile chain drained. A fixed sleep used to
+// stand in for this and lost the race on a loaded CI runner under PGlite.
+async function settle(watcher: MirrorWatcher): Promise<void> {
+  await watcher.idle();
 }
 
 async function startWatcher(db: Client, factory: WatchFactory): Promise<MirrorWatcher> {
@@ -97,7 +99,7 @@ describe("sync lifecycle with an active watcher (fast-mode scan truth)", () => {
     const paths = ["t1.md", "t2.md", "t3.md"].map((f) => join(mirrorRoot, "wip", f));
     for (const [i, p] of paths.entries()) await writeFile(p, `obsah ${i}`);
     for (const p of paths) w.fire(p);
-    await settle();
+    await settle(watcher);
     watcher.stop();
 
     const rows = await db.execute({
@@ -132,7 +134,7 @@ describe("sync lifecycle with an active watcher (fast-mode scan truth)", () => {
     const watcher = await startWatcher(db, w.factory);
     await writeFile(abs, "v2 -- editor save");
     w.fire(abs);
-    await settle();
+    await settle(watcher);
     watcher.stop();
 
     const scan = await fastScan(db, nodeId);
@@ -159,7 +161,7 @@ describe("sync lifecycle with an active watcher (fast-mode scan truth)", () => {
     const watcher = await startWatcher(db, w.factory);
     await rm(abs);
     w.fire(abs);
-    await settle();
+    await settle(watcher);
     watcher.stop();
 
     const scan = await fastScan(db, nodeId);
@@ -183,11 +185,11 @@ describe("sync lifecycle with an active watcher (fast-mode scan truth)", () => {
     const watcher = await startWatcher(db, w.factory);
     await writeFile(abs, "docasny");
     w.fire(abs);
-    await settle();
+    await settle(watcher);
     // Registered by the watcher, never pushed -- now delete it again.
     await rm(abs);
     w.fire(abs);
-    await settle();
+    await settle(watcher);
     watcher.stop();
 
     const rows = await db.execute({
@@ -221,7 +223,7 @@ describe("sync lifecycle with an active watcher (fast-mode scan truth)", () => {
       const watcher = await startWatcher(db, w.factory);
       await writeFile(abs, "v2");
       w.fire(abs);
-      await settle();
+      await settle(watcher);
       watcher.stop();
       const scanA = await fastScan(db, nodeId);
       assert.ok(scanA.push_candidates.some((f) => f.file_id === file_id));
