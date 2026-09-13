@@ -27,13 +27,19 @@ headless task needs a host; central dispatches). Central only.
    agent chooses or a button a person presses. A dropped webhook is
    recovered by the next event on the same task or by the person
    re-assigning it, not by a sweep.
-4. **The bot is a user.** Asana writes come from one Asana account (the
-   "Portuni" user, a service account in the workspace) with a personal
-   access token on central. Two gestures address it, with different
-   roles: **assigning** a task to it hands over responsibility for
-   completing the task; **@mentioning** it in a comment asks for a
-   reaction on that task and nothing more. Comments say who asked
-   (`Za: Jan Páv`) because the bot writes on the requester's behalf.
+4. **Bots are users, one member and any number of guests.** The member
+   account (Samo Seto) is the structural account: it creates projects,
+   customizes them and is the fallback identity. Every further bot is a
+   free guest account bound to one automation actor, so its comments and
+   assignments appear under that actor's own name. What a guest cannot
+   do (create or customize a project) is done by the member account on
+   its behalf; the guest never needs more rights than a guest has. Two
+   gestures address any bot account, with different roles:
+   **assigning** a task to it hands over responsibility for completing
+   the task; **@mentioning** it in a comment asks for a reaction on that
+   task and nothing more. A comment written for a person says who asked
+   (`Za: Jan Páv`); a comment written by an automation actor's own guest
+   account carries no prefix.
 5. **The requester is the assigner.** A headless session started from
    Asana runs with the rights of the person who assigned the task
    (matched by Asana user email → Portuni user). Unknown assigner → the
@@ -90,10 +96,11 @@ Asana implementation: REST v1, PAT from `PORTUNI_ASANA_TOKEN`
 (`GET /users/me`). Webhooks per linked project (`POST /webhooks` with
 filters `task.assignee changed`, `story.added comment`, `task.completed
 changed`); `mentions_bot` is derived from the story text carrying the
-bot user's profile link, which is how Asana renders an @mention;
+profile link of a registered bot account, which is how Asana renders an
+@mention;
 handshake `X-Hook-Secret` echoed, every delivery verified with
 `X-Hook-Signature` (HMAC-SHA256 of the body with the stored secret).
-Stories from the bot user are ignored on the way in.
+Stories from any registered bot account are ignored on the way in.
 
 ## Bot account
 
@@ -101,21 +108,28 @@ What the Asana side needs, and who provides it:
 
 | requirement | how it is met |
 |---|---|
-| An Asana user "Portuni" in the workspace: a **guest** by default (an e-mail outside the organization's domain; free, can be assigned, comment, hold a PAT, sees only projects it is added to), a member seat or an Enterprise service account when project creation is wanted | created by a workspace admin once; e-mail and PAT stored in Bitwarden "Portuni Asana bot"; PAT into central's `PORTUNI_ASANA_TOKEN`. One account for the whole workspace regardless of how many hosts run tasks; hosts never talk to Asana |
+| The **member** account: the workspace's existing **Samo Seto** user. Creates and customizes projects, is the identity for tasks a person assigns to "Portuni" when no actor account is involved | PAT in Bitwarden "Portuni Asana bot"; central env `PORTUNI_ASANA_TOKEN`. One per workspace regardless of how many hosts run tasks; hosts never talk to Asana |
+| **Guest** accounts, one per automation actor that should have its own face in Asana (free: an e-mail outside the organization's domain; can be assigned, comment, hold a PAT, sees only projects it is added to) | created by a workspace admin per actor; PAT stored on central in `task_surface_accounts` (encrypted with the server's secret key, never in the webview) and bound to the actor (`actors.surface_account_id`, actors spec). Anything a guest cannot do is routed to the member account by the adapter (`createProject`, project customization, adding the guest itself to a project) |
 | Membership in every linked project (private projects are invisible to non-members; webhooks and comments need access) | the bot cannot add itself. **Napojit** verifies access with the bot token first (`GET /projects/:gid`); on 403 the dialog shows "Přidej uživatele Portuni (<e-mail>) do projektu" and refuses the link until access works. The same check runs on every webhook error and marks the link `access_lost` |
-| Membership in a team to create a project there | `listTeams()` returns only teams the bot belongs to; a team the bot is not in cannot be picked. A guest cannot create projects in teams at all: **Založit** is shown only when `GET /users/me` reports a workspace member (`is_guest` false, checked at boot and on the settings page); a guest bot offers **Napojit** only. Exact guest rights on the current plan: verify at implementation |
+| Membership in a team to create a project there | always the member account: `listTeams()` returns the teams Samo Seto belongs to. When a link is made for an actor with a guest account, the member account also adds that guest to the project (`POST /projects/:gid/addMembers`), so the guest can see it, be assigned and comment |
 | Assigners resolvable to Portuni users | matched by e-mail (`SurfaceEvent.by_email` against `users.email`); an unknown assigner gets a comment and no session |
 | A public HTTPS endpoint for webhooks | central's `POST /integrations/asana/webhook`; local mode has none |
 
 `task_surface_links` gains `access_state` (`ok \| access_lost`) and
 `access_checked_at`; `task_surface_subscriptions` records `last_delivery_at`
-and `last_error`.
+and `last_error`. `task_surface_accounts` (central): `id`, `surface`,
+`kind` (`member \| guest`), `external_user_id`, `email`, `label`,
+`token_encrypted`, `actor_id NULL` (a guest bound to an automation
+actor), `created_at`. Exactly one `member` row per surface; the env
+token `PORTUNI_ASANA_TOKEN` seeds it at boot when the table is empty.
 
 ### Nastavení › Integrace › Asana (central, admin)
 
-- Bot identity from `GET /users/me` with the token (name, e-mail,
-  workspace), token status (present, valid, last checked); the token
-  itself is never shown or entered here, it is central env.
+- Accounts: the member account from `GET /users/me` (name, e-mail,
+  workspace), token status (present, valid, last checked); the guest
+  accounts with their bound actor, token status and "Přidat guest účet"
+  (e-mail + PAT entered once by an admin, stored encrypted; never shown
+  again).
 - Linked projects: node, project, `access_state`, subscription health
   (last delivery, last error), "Ověřit přístup" and "Obnovit webhook"
   per row.
@@ -162,7 +176,11 @@ Two triggers, two roles:
 
 Assignment:
 
-1. Webhook `assigned` to the bot user on a task in a linked project.
+1. Webhook `assigned` to any registered bot account (the member or a
+   guest) on a task in a linked project. A guest account's assignment
+   runs as its automation actor (the actor's spec is the brief's
+   preamble, the actor's name is the author); the member account's
+   assignment runs as a plain task for the assigner.
 2. Central resolves the node from the project link, the requester from
    `by_email` (the person who assigned; they must have write access to
    the node), and the host: the organization's team default host, else
@@ -192,8 +210,9 @@ Assignment:
 
 Mention:
 
-1. Webhook `comment` with `mentions_bot` (the story text carries the bot
-   user's mention link) from a person, on a task in a linked project.
+1. Webhook `comment` with `mentions_bot` (the story text carries the
+   mention link of any registered bot account) from a person, on a task
+   in a linked project; a guest account's mention runs as its actor.
 2. If a session with that `task_ref` is `running` or `waiting`, the
    comment is delivered to it (`answer` when waiting, else
    `sendMessage`); no new session. Otherwise a new `headless` session
