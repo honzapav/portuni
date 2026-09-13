@@ -1649,6 +1649,12 @@ symlink to this file.
   `schema-triggers.pg.ts` is preceded by `DROP TRIGGER IF EXISTS`, so a
   baseline applied without its marker (older build, crash in between)
   boots instead of failing on "trigger already exists" forever.
+  **Both test scripts run with `--test-timeout=120000 --test-force-exit`**:
+  a test file whose process never exits (a leaked socket or timer after
+  its last assertion) used to hang the whole run with nothing reported --
+  a CI job once sat on `npm test` for an hour that way. A test that stalls
+  now fails with "test timed out", and each file's process is exited once
+  its tests are done; a leak is still a bug to fix, it just cannot hide.
   **`npm run test:pglite` caps `--test-concurrency=2`** (`node --test`'s
   default is `availableParallelism() - 1`, effectively "run most test files
   in parallel"): PGlite is a real WASM-compiled Postgres per instance, heavy
