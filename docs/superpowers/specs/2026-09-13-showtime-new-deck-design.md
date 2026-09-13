@@ -167,7 +167,8 @@ repositories.
 | Showtime not installed or integration off | plain „+ Nový soubor", no split |
 | node without a mirror on this device | „Nová prezentace" disabled, reason in its title |
 | sidecar refuses `/auth/handoff` | Portuni shows the error inline under the toolbar |
-| installed Showtime has no `new` action | `open::that` fails; „Showtime neumí přijmout deck z Portuni, aktualizujte Showtime" |
+| installed Showtime predates the `showtime://` scheme entirely | `open::that` fails; „Showtime neumí přijmout deck z Portuni, aktualizujte Showtime" |
+| installed Showtime has `open` but not `new` | the launch is accepted and Showtime drops it with a log line; nothing visible in either app — update Showtime first (Release order) |
 | code expired or sidecar not answering at exchange | New Deck opens with the directory, without context; Agent tab says so |
 | `dir` not under the exchanged mirror | context dropped with a log line; New Deck opens without it |
 | deck name already in `wip/` | Showtime refuses as today; the user picks another name |
@@ -192,13 +193,15 @@ Live on macOS (human): click „Nová prezentace" with Showtime running and
 not running; the New Deck screen shows the node and the locked directory;
 create; the bundle appears under the node's Files within seconds; the agent
 in Showtime calls `portuni_get_context` unprompted; the session appears
-under the node's Relace.
+under the node's Relace; with a Showtime that has `open` but not `new`, the
+click does nothing visible.
 
 ## Release order
 
 Showtime first (it must understand `new`), Portuni second. An old Showtime
-with a new Portuni answers with the „aktualizujte Showtime" line; a new
-Showtime with an old Portuni simply has no split button.
+with a new Portuni shows nothing (it drops the unknown action), which is why
+Showtime ships first; a new Showtime with an old Portuni simply has no split
+button.
 
 ## Out of scope
 
