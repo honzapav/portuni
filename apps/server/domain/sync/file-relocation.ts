@@ -5,7 +5,7 @@
 // re-doing a remote step that already landed on a previous, interrupted
 // attempt.
 
-import type { Client, InArgs, InStatement } from "@libsql/client";
+import type { DbClient, InArgs, InStatement } from "../../infra/db.js";
 import { getAdapter } from "./adapter-cache.js";
 import { getFileState, upsertFileState, deleteFileState } from "./local-db.js";
 
@@ -35,7 +35,7 @@ export type RelocateStatus = "moved" | "already_at_target";
 // sub-step it reached before failing (copy vs. delete-source), same
 // distinction moveFile's repair_hint already makes.
 export async function relocateRemoteObject(
-  db: Client,
+  db: DbClient,
   p: RelocateParams,
   onPhase?: (phase: "copy" | "delete_source") => void,
 ): Promise<{ status: RelocateStatus }> {
@@ -134,7 +134,7 @@ export interface WriteRelocatedRecordArgs {
 
 // Returns the shadow row's id when a merge happened, else null.
 export async function writeRelocatedRecord(
-  db: Client,
+  db: DbClient,
   a: WriteRelocatedRecordArgs,
 ): Promise<{ mergedShadowFileId: string | null }> {
   const existing = await db.execute({

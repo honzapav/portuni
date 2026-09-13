@@ -25,7 +25,7 @@
 
 import { dirname, join, relative, sep } from "node:path";
 import { copyFile, link, mkdir, readdir, rm, stat } from "node:fs/promises";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { loadMirrorIgnore } from "./sync/mirror-ignore.js";
 import { getMirrorPath } from "./sync/mirror-registry.js";
 
@@ -214,7 +214,7 @@ export async function cleanupSessionProjection(
 // keyed by user), matching this module's existing solo-only scope (see
 // boot/session-projection-sweep.ts).
 export async function sweepStaleSessionProjections(
-  db: Client,
+  db: DbClient,
   portuniRoot: string,
   userId: string,
 ): Promise<{ removed: string[] }> {

@@ -16,7 +16,7 @@
 // Byte transfer itself goes through file-content-remote.ts (GET/PUT
 // /nodes/:id/file with base64 for binary), so this module is metadata-only.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
 import { resolveNodeInfo } from "./node-info.js";
 import { resolveRemote, listRules, resolveRemoteFromRules } from "./routing.js";
@@ -91,7 +91,7 @@ const SYNC_INFO_BATCH = 500;
 // result map, matching the single-node endpoint's 404 semantics without
 // failing the whole batch.
 export async function getNodeSyncInfos(
-  db: Client,
+  db: DbClient,
   nodeIds: string[],
 ): Promise<Map<string, NodeSyncInfo>> {
   const out = new Map<string, NodeSyncInfo>();
@@ -205,7 +205,7 @@ export async function getNodeSyncInfos(
   return out;
 }
 
-export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeSyncInfo> {
+export async function getNodeSyncInfo(db: DbClient, nodeId: string): Promise<NodeSyncInfo> {
   // One JOIN gets the node row AND its belongs_to organization sync_key --
   // the same answer resolveNodeInfo assembles from two round-trips. The
   // agent hits this endpoint constantly (status polls, watcher, pending
@@ -334,7 +334,7 @@ export interface RegisterFileRecordResult {
 // all) still register successfully -- remote_name stays null until a
 // deliberate sync resolves routing and backfills it (#201).
 export async function registerFileRecordRemote(
-  db: Client,
+  db: DbClient,
   a: { userId: string; nodeId: string; relPath: string },
 ): Promise<RegisterFileRecordResult> {
   const info = await resolveNodeInfo(db, a.nodeId);
@@ -382,7 +382,7 @@ export async function registerFileRecordRemote(
 // dozens-to-hundreds of files at once. Same NULL-hash upsert semantics per
 // file as registerFileRecordRemote; one audit row for the whole batch.
 export async function registerFileRecordsRemote(
-  db: Client,
+  db: DbClient,
   a: { userId: string; nodeId: string; relPaths: string[] },
 ): Promise<RegisterFileRecordResult[]> {
   if (a.relPaths.length === 0) return [];

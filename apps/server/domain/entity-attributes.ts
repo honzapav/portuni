@@ -5,7 +5,7 @@
 
 import { z } from "zod";
 import { ulid } from "ulid";
-import type { Client, InValue } from "@libsql/client";
+import type { DbClient, InValue } from "../infra/db.js";
 import { DataSourceRow, ToolRow } from "../shared/types.js";
 import { isSafeExternalLink } from "../shared/safe-url.js";
 import { writeAudit } from "../infra/audit.js";
@@ -34,7 +34,7 @@ type AddEntityAttrInput = z.infer<typeof AddEntityAttrInput>;
 type EntityAttrTable = "data_sources" | "tools";
 
 async function addRow<T>(
-  db: Client,
+  db: DbClient,
   createdBy: string,
   table: EntityAttrTable,
   input: AddEntityAttrInput,
@@ -84,7 +84,7 @@ const UpdateEntityAttrInput = z.object({
 type UpdateEntityAttrInput = z.infer<typeof UpdateEntityAttrInput>;
 
 async function updateRow<T>(
-  db: Client,
+  db: DbClient,
   updatedBy: string,
   table: EntityAttrTable,
   id: string,
@@ -134,7 +134,7 @@ async function updateRow<T>(
 }
 
 async function removeRow(
-  db: Client,
+  db: DbClient,
   removedBy: string,
   table: EntityAttrTable,
   id: string,
@@ -157,7 +157,7 @@ async function removeRow(
 }
 
 async function listRows<T>(
-  db: Client,
+  db: DbClient,
   table: EntityAttrTable,
   nodeId: string,
   parser: (r: unknown) => T,
@@ -170,7 +170,7 @@ async function listRows<T>(
 }
 
 export async function addDataSource(
-  db: Client,
+  db: DbClient,
   createdBy: string,
   input: AddEntityAttrInput,
 ): Promise<DataSourceRow> {
@@ -178,7 +178,7 @@ export async function addDataSource(
 }
 
 export async function updateDataSource(
-  db: Client,
+  db: DbClient,
   updatedBy: string,
   id: string,
   patch: UpdateEntityAttrInput,
@@ -189,7 +189,7 @@ export async function updateDataSource(
 }
 
 export async function removeDataSource(
-  db: Client,
+  db: DbClient,
   removedBy: string,
   id: string,
 ): Promise<void> {
@@ -197,14 +197,14 @@ export async function removeDataSource(
 }
 
 export async function listDataSources(
-  db: Client,
+  db: DbClient,
   nodeId: string,
 ): Promise<DataSourceRow[]> {
   return listRows(db, "data_sources", nodeId, (r) => DataSourceRow.parse(r));
 }
 
 export async function addTool(
-  db: Client,
+  db: DbClient,
   createdBy: string,
   input: AddEntityAttrInput,
 ): Promise<ToolRow> {
@@ -212,7 +212,7 @@ export async function addTool(
 }
 
 export async function updateTool(
-  db: Client,
+  db: DbClient,
   updatedBy: string,
   id: string,
   patch: UpdateEntityAttrInput,
@@ -221,7 +221,7 @@ export async function updateTool(
 }
 
 export async function removeTool(
-  db: Client,
+  db: DbClient,
   removedBy: string,
   id: string,
 ): Promise<void> {
@@ -229,7 +229,7 @@ export async function removeTool(
 }
 
 export async function listTools(
-  db: Client,
+  db: DbClient,
   nodeId: string,
 ): Promise<ToolRow[]> {
   return listRows(db, "tools", nodeId, (r) => ToolRow.parse(r));

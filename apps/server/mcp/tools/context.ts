@@ -2,7 +2,7 @@ import { z } from "zod";
 import { getDb } from "../../infra/db.js";
 import { listUserMirrors, getMirrorPath } from "../../domain/sync/mirror-registry.js";
 import { readableMirrorRoot } from "../disk-projection.js";
-import type { Client, InValue } from "@libsql/client";
+import type { DbClient, InValue } from "../../infra/db.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardNodeRead } from "../scope.js";
 import { logAudit } from "../../infra/audit.js";
@@ -94,14 +94,14 @@ export type ContextPayload = {
   connected: ContextConnectedNode[];
 };
 
-// --- Helpers (pure, take Client) ---
+// --- Helpers (pure, take DbClient) ---
 
 // Cached per client: tables are only ever created (by migrations at boot),
 // never dropped at runtime, and this used to be re-queried for every
 // connected node on the hot get-context path -- one Turso round trip each.
-const tableExistsCache = new WeakMap<Client, Map<string, boolean>>();
+const tableExistsCache = new WeakMap<DbClient, Map<string, boolean>>();
 
-async function tableExists(db: Client, name: string): Promise<boolean> {
+async function tableExists(db: DbClient, name: string): Promise<boolean> {
   let perDb = tableExistsCache.get(db);
   if (perDb?.has(name)) return perDb.get(name)!;
   const res = await db.execute({
@@ -119,7 +119,7 @@ async function tableExists(db: Client, name: string): Promise<boolean> {
   return exists;
 }
 
-async function fetchOwner(db: Client, ownerId: string | null): Promise<ContextOwner | null> {
+async function fetchOwner(db: DbClient, ownerId: string | null): Promise<ContextOwner | null> {
   if (!ownerId) return null;
   const hasActors = await tableExists(db, "actors");
   if (!hasActors) return null;
@@ -134,7 +134,7 @@ async function fetchOwner(db: Client, ownerId: string | null): Promise<ContextOw
   };
 }
 
-async function fetchResponsibilities(db: Client, nodeId: string): Promise<ContextResponsibility[]> {
+async function fetchResponsibilities(db: DbClient, nodeId: string): Promise<ContextResponsibility[]> {
   const hasResp = await tableExists(db, "responsibilities");
   if (!hasResp) return [];
   const rRes = await db.execute({
@@ -182,7 +182,7 @@ async function fetchResponsibilities(db: Client, nodeId: string): Promise<Contex
   }));
 }
 
-async function fetchAttrRows(db: Client, table: "data_sources" | "tools", nodeId: string): Promise<ContextAttrRow[]> {
+async function fetchAttrRows(db: DbClient, table: "data_sources" | "tools", nodeId: string): Promise<ContextAttrRow[]> {
   const has = await tableExists(db, table);
   if (!has) return [];
   const res = await db.execute({
@@ -204,7 +204,7 @@ async function fetchAttrRows(db: Client, table: "data_sources" | "tools", nodeId
 // --- Main entry point ---
 
 export async function buildContextPayload(
-  db: Client,
+  db: DbClient,
   nodeId: string,
   depth: number,
   userId: string,

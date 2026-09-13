@@ -13,7 +13,7 @@
 // over it, not a second writer.
 
 import { ulid } from "ulid";
-import type { Client, InStatement, InValue } from "@libsql/client";
+import type { DbClient, InStatement, InValue } from "../../infra/db.js";
 import { z } from "zod";
 import {
   createSession as createSessionRow,
@@ -152,7 +152,7 @@ export interface SessionStore {
 // --- DbSessionStore: the local-mode implementation over libsql -----------
 
 export class DbSessionStore implements SessionStore {
-  constructor(private readonly db: Client) {}
+  constructor(private readonly db: DbClient) {}
 
   async createSession(input: CreateRunnerSessionInput): Promise<SessionRow> {
     return createSessionRow(this.db, input.user_id, {

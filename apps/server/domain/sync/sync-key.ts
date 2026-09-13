@@ -1,4 +1,4 @@
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
 
 export function slugifyForSyncKey(name: string): string {
@@ -10,12 +10,12 @@ export function slugifyForSyncKey(name: string): string {
     .replace(/^-|-$/g, "");
 }
 
-async function isTaken(db: Client, key: string): Promise<boolean> {
+async function isTaken(db: DbClient, key: string): Promise<boolean> {
   const r = await db.execute({ sql: "SELECT 1 FROM nodes WHERE sync_key = ? LIMIT 1", args: [key] });
   return r.rows.length > 0;
 }
 
-export async function generateSyncKey(db: Client, name: string): Promise<string> {
+export async function generateSyncKey(db: DbClient, name: string): Promise<string> {
   const base = slugifyForSyncKey(name);
   if (base.length > 0 && !(await isTaken(db, base))) return base;
   const suffix = ulid().toLowerCase().slice(-8);

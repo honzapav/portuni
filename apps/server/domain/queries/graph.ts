@@ -1,10 +1,10 @@
 // Read projection: full graph payload (nodes + edges) for the frontend.
-// Pure: takes a libsql Client, no HTTP/MCP coupling.
+// Pure: takes a libsql DbClient, no HTTP/MCP coupling.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import type { GraphPayload } from "../../shared/api-types.js";
 
-export async function loadGraph(db: Client): Promise<GraphPayload> {
+export async function loadGraph(db: DbClient): Promise<GraphPayload> {
   // Return all nodes regardless of status. The frontend filters by
   // completed/archived on the client so toggles are instantaneous and
   // completed work stays visible by default.

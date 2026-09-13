@@ -26,7 +26,7 @@
 
 import { stat as fsStat, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { getMirrorPath } from "./mirror-registry.js";
 import { resolveNodeInfo } from "./node-info.js";
 import {
@@ -74,7 +74,7 @@ async function statKind(path: string): Promise<{ exists: boolean; isFile: boolea
 }
 
 export async function reconcilePath(
-  db: Client,
+  db: DbClient,
   a: { userId: string; nodeId: string; absPath: string },
 ): Promise<ReconcileResult> {
   const mirrorRoot = await getMirrorPath(a.userId, a.nodeId);
@@ -196,7 +196,7 @@ export async function reconcilePath(
 // subdirectory (raced delete, permissions) is skipped rather than aborting
 // the whole walk.
 async function reconcileDirectory(
-  db: Client,
+  db: DbClient,
   a: { userId: string; nodeId: string; absPath: string },
   mirrorRoot: string,
   isIgnored: (p: string) => boolean,
@@ -230,7 +230,7 @@ async function reconcileDirectory(
 // was never pushed (no remote object to move). Cross-volume mv changes the
 // inode and falls through to plain registration by construction.
 async function tryApplyDiskMove(
-  db: Client,
+  db: DbClient,
   a: { userId: string; nodeId: string; absPath: string },
   sub: { section: Section; subpath: string | null; filename: string },
 ): Promise<ReconcileResult | null> {

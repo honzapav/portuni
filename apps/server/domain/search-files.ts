@@ -5,8 +5,7 @@
 // Callers apply scope + group visibility on the returned node ids -- this
 // module knows nothing about the session.
 
-import type { Client } from "@libsql/client";
-import type { InValue } from "@libsql/client";
+import type { DbClient, InValue } from "../infra/db.js";
 import { getAdapter } from "./sync/adapter-cache.js";
 import { buildNodeRoot } from "./sync/remote-path.js";
 import { mimeFor } from "./sync/engine.js";
@@ -53,7 +52,7 @@ interface FileRow {
   status: string;
 }
 
-async function remoteNamesFor(db: Client, nodeId: string | undefined): Promise<string[]> {
+async function remoteNamesFor(db: DbClient, nodeId: string | undefined): Promise<string[]> {
   const r = nodeId === undefined
     ? await db.execute("SELECT DISTINCT remote_name FROM files WHERE remote_name IS NOT NULL ORDER BY remote_name")
     : await db.execute({
@@ -64,7 +63,7 @@ async function remoteNamesFor(db: Client, nodeId: string | undefined): Promise<s
 }
 
 async function recordsFor(
-  db: Client,
+  db: DbClient,
   remoteName: string,
   paths: string[],
   a: SearchFilesArgs,
@@ -152,7 +151,7 @@ function toRecord(row: FileRow, remoteName: string, hit: SearchHit): SearchFileR
 // skipped. Hits are returned in the order the backend produced them, one
 // remote after another; the caller trims to its own limit after visibility
 // filtering.
-export async function searchFiles(db: Client, a: SearchFilesArgs): Promise<SearchFileRecord[]> {
+export async function searchFiles(db: DbClient, a: SearchFilesArgs): Promise<SearchFileRecord[]> {
   const query = a.query.trim();
   if (query.length === 0) return [];
   const remotes = await remoteNamesFor(db, a.nodeId);

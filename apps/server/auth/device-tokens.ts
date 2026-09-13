@@ -3,7 +3,7 @@
 // shown exactly once at mint time. Spec §2 "Auth pro agenty".
 
 import { createHash, randomBytes } from "node:crypto";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { ulid } from "ulid";
 
 const DEFAULT_TTL_DAYS = 180;
@@ -19,7 +19,7 @@ export interface MintedDeviceToken {
 }
 
 export async function mintDeviceToken(
-  db: Client,
+  db: DbClient,
   userId: string,
   label: string,
   opts: { ttlDays?: number; headless?: boolean } = {},
@@ -50,7 +50,7 @@ export interface DeviceTokenHit {
 }
 
 export async function verifyDeviceToken(
-  db: Client,
+  db: DbClient,
   token: string,
 ): Promise<DeviceTokenHit | null> {
   const r = await db.execute({
@@ -74,7 +74,7 @@ export async function verifyDeviceToken(
 }
 
 export async function revokeDeviceToken(
-  db: Client,
+  db: DbClient,
   userId: string,
   tokenId: string,
 ): Promise<boolean> {
@@ -96,7 +96,7 @@ export interface DeviceTokenRow {
 }
 
 export async function listDeviceTokens(
-  db: Client,
+  db: DbClient,
   userId: string,
 ): Promise<DeviceTokenRow[]> {
   const r = await db.execute({

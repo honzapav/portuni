@@ -15,7 +15,7 @@
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { basename, dirname } from "node:path";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { getMirrorPath } from "./mirror-registry.js";
 import { mimeFor, storeFile, registerLocalFile } from "./engine.js";
 import { resolveNodeInfo } from "./node-info.js";
@@ -69,7 +69,7 @@ export function resolveMirrorAbs(mirrorRoot: string, relPath: string): string {
 }
 
 export async function readFileContent(
-  _db: Client,
+  _db: DbClient,
   a: { userId: string; nodeId: string; relPath: string },
 ): Promise<{
   content: string;
@@ -106,7 +106,7 @@ export async function readFileContent(
 }
 
 export async function writeFileContent(
-  _db: Client,
+  _db: DbClient,
   a: {
     userId: string;
     nodeId: string;
@@ -153,7 +153,7 @@ export async function writeFileContent(
 }
 
 export async function createFile(
-  db: Client,
+  db: DbClient,
   a: {
     userId: string;
     nodeId: string;

@@ -11,7 +11,7 @@ import { mkdir, writeFile, readFile, access } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { sha256Buffer } from "./sync/hash.js";
 import { registerLocalFile, storeFile } from "./sync/engine.js";
 import { getMirrorPath } from "./sync/mirror-registry.js";
@@ -60,7 +60,7 @@ export interface WriteHandoffResult {
 // exists. `PendingOp` (domain/sync/pending-ops.ts) only models move/delete
 // today, not a first store -- extending it is out of scope here.
 export async function writeHandoffAndSuspend(
-  db: Client,
+  db: DbClient,
   actorUserId: string,
   session: { id: string; nodeId: string; mirrorRoot: string },
   content: string,
@@ -188,7 +188,7 @@ export function buildServerHandoffContent(input: {
   ].join("\n");
 }
 
-async function nodeNameForHandoff(db: Client, nodeId: string): Promise<string | null> {
+async function nodeNameForHandoff(db: DbClient, nodeId: string): Promise<string | null> {
   const res = await db.execute({ sql: "SELECT name FROM nodes WHERE id = ?", args: [nodeId] });
   return res.rows.length > 0 ? String(res.rows[0].name) : null;
 }
@@ -200,7 +200,7 @@ async function nodeNameForHandoff(db: Client, nodeId: string): Promise<string | 
 // the row unchanged) for any state other than 'running': already-suspended
 // or terminal sessions have nothing for this to do.
 export async function suspendSessionServerSide(
-  db: Client,
+  db: DbClient,
   sessionId: string,
   reason: ServerHandoffReason,
 ): Promise<SessionRow | null> {

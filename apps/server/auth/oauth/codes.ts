@@ -6,7 +6,7 @@
 // ("Data model").
 
 import { createHash, randomBytes } from "node:crypto";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
 
 const CODE_TTL_MS = 60 * 1000;
@@ -34,7 +34,7 @@ export interface MintedCode {
 }
 
 export async function mintAuthorizationCode(
-  db: Client,
+  db: DbClient,
   input: MintCodeInput,
 ): Promise<MintedCode> {
   const id = ulid();
@@ -80,7 +80,7 @@ export type RedeemResult =
 // redemption; the caller still needs to verify PKCE against codeChallenge
 // before trusting the result.
 export async function redeemAuthorizationCode(
-  db: Client,
+  db: DbClient,
   code: string,
 ): Promise<RedeemResult> {
   const hash = hashCode(code);
@@ -146,7 +146,7 @@ export async function redeemAuthorizationCode(
 }
 
 export async function attachGrantToCode(
-  db: Client,
+  db: DbClient,
   codeId: string,
   grantId: string,
 ): Promise<void> {

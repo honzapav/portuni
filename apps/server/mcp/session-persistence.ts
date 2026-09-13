@@ -17,7 +17,7 @@
 // that seeds a live decision (guardNodeRead consults the rehydrated
 // in-memory scope), so it is awaited by the caller instead.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import type { SessionScope, AddedVia } from "./scope.js";
 import {
   createSession,
@@ -64,7 +64,7 @@ function classifyNode(scope: SessionScope, nodeId: string): { addedVia: AddedVia
 // current. Only this listener's own timing is deferred; SessionScope's
 // firing mechanism itself (used synchronously by the disk projector too) is
 // untouched.
-function syncRead(db: Client, sessionId: string, scope: SessionScope, nodeId: string): void {
+function syncRead(db: DbClient, sessionId: string, scope: SessionScope, nodeId: string): void {
   queueMicrotask(() => {
     const { addedVia, reason } = classifyNode(scope, nodeId);
     safe(upsertSessionScopeRead(db, sessionId, nodeId, addedVia, reason), `scope(${nodeId})`);
@@ -78,7 +78,7 @@ function syncRead(db: Client, sessionId: string, scope: SessionScope, nodeId: st
 // before the writable flip inside the SAME deferred, sequenced promise
 // makes this listener self-contained instead of depending on the separate
 // onAdd listener's unsequenced timing.
-function syncWritable(db: Client, sessionId: string, scope: SessionScope, nodeId: string): void {
+function syncWritable(db: DbClient, sessionId: string, scope: SessionScope, nodeId: string): void {
   queueMicrotask(() => {
     const { addedVia, reason } = classifyNode(scope, nodeId);
     safe(
@@ -106,7 +106,7 @@ function syncWritable(db: Client, sessionId: string, scope: SessionScope, nodeId
 // fresh session, since auto-seed races this call -- see
 // bindSessionPersistence's own doc).
 function wireOngoingSync(
-  db: Client,
+  db: DbClient,
   scope: SessionScope,
   sessionId: string,
   homeNodeId: string | null,
@@ -170,7 +170,7 @@ function wireOngoingSync(
 // rather than a custom header, since Codex and Vibe have no way to relay
 // one at all.
 export function bindSessionPersistence(
-  db: Client,
+  db: DbClient,
   scope: SessionScope,
   identity: Pick<RequestIdentity, "userId">,
   profileId: string | null = null,
@@ -225,7 +225,7 @@ export function bindSessionPersistence(
 // silently falling back to a fresh session, which would look like a
 // successful resume to the agent while actually starting from empty scope.
 export async function resumeSessionPersistence(
-  db: Client,
+  db: DbClient,
   scope: SessionScope,
   identity: Pick<RequestIdentity, "userId">,
   resumeSessionId: string,
@@ -281,7 +281,7 @@ export async function resumeSessionPersistence(
 // transition (the row is already running) and the homeNodeId parameter
 // (taken from the row itself, since a task's anchor node never changes).
 export async function bindExistingSessionPersistence(
-  db: Client,
+  db: DbClient,
   scope: SessionScope,
   identity: Pick<RequestIdentity, "userId">,
   row: SessionRow,
@@ -315,7 +315,7 @@ export async function bindExistingSessionPersistence(
 // bump last_active_at the same way a fresh connection's createSession would
 // have. Fire-and-forget like bindSessionPersistence: a DB hiccup here must
 // never break a live MCP tool call.
-export function bindExistingSessionHandshake(db: Client, sessionId: string, cli?: string | null): void {
+export function bindExistingSessionHandshake(db: DbClient, sessionId: string, cli?: string | null): void {
   safe(touchSession(db, sessionId), "touchSession");
   if (cli) safe(setSessionCli(db, sessionId, cli), "setSessionCli");
 }
@@ -335,7 +335,7 @@ export type SpawnSessionLookup =
 // connection predating the runner batch (or any hand-opened CLI spawned
 // outside a task) -- todays's create-with-preassigned-id behaviour.
 export async function lookupSpawnSessionForBind(
-  db: Client,
+  db: DbClient,
   identity: Pick<RequestIdentity, "userId">,
   spawnSessionId: string,
 ): Promise<SpawnSessionLookup> {

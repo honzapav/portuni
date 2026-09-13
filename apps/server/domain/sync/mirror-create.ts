@@ -16,7 +16,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { logAudit } from "../../infra/audit.js";
 import { SOLO_USER } from "../../infra/schema.js";
 import {
@@ -84,7 +84,7 @@ export type CreateMirrorResult = {
 };
 
 async function scaffoldRemoteStructure(
-  db: Client,
+  db: DbClient,
   nodeId: string,
 ): Promise<{
   scaffolded: string[];
@@ -180,7 +180,7 @@ async function materializeAndRegen(
 // the same leaf and would silently register one directory for two nodes --
 // every status scan afterwards cross-attributes their files.
 async function resolveMirrorPath(
-  db: Client,
+  db: DbClient,
   nodeId: string,
   nodeSyncKey: string,
   nodeType: string,
@@ -220,7 +220,7 @@ async function resolveMirrorPath(
 // Idempotent. If a mirror is already registered for (userId, nodeId), the
 // returned `created` flag is false and the directory is not re-touched.
 export async function createMirrorForNode(
-  db: Client,
+  db: DbClient,
   userId: string,
   args: { nodeId: string; customPath?: string },
 ): Promise<CreateMirrorResult> {

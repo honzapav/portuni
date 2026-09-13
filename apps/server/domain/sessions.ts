@@ -1,12 +1,12 @@
 // Domain: persistent sessions + session_scope (phase 2 of
 // docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md,
-// "Persistent sessions"). Pure functions over a libsql Client. No MCP / HTTP
+// "Persistent sessions"). Pure functions over a libsql DbClient. No MCP / HTTP
 // coupling -- the live wiring that keeps a session's in-memory SessionScope
 // (mcp/scope.ts) synced with these rows lives in mcp/session-persistence.ts.
 
 import { z } from "zod";
 import { ulid } from "ulid";
-import type { Client, InValue } from "@libsql/client";
+import type { DbClient, InValue } from "../infra/db.js";
 import {
   SessionRow,
   SessionScopeRow,
@@ -39,7 +39,7 @@ const ListSessionsInput = z.object({
 });
 type ListSessionsInput = z.infer<typeof ListSessionsInput>;
 
-async function loadSession(db: Client, id: string): Promise<SessionRow | null> {
+async function loadSession(db: DbClient, id: string): Promise<SessionRow | null> {
   const res = await db.execute({ sql: "SELECT * FROM sessions WHERE id = ?", args: [id] });
   if (res.rows.length === 0) return null;
   return SessionRow.parse(res.rows[0]);
@@ -76,7 +76,7 @@ export function computeDefaultSessionName(nodeName: string | null, createdAtIso:
 // supplies it, sourced from a header the server itself put in the per-mirror
 // .mcp.json, never from raw client input.
 export async function createSession(
-  db: Client,
+  db: DbClient,
   userId: string,
   input: CreateSessionInput,
   preassignedId?: string | null,
@@ -127,7 +127,7 @@ export async function createSession(
 // later suspend (session-handoff.ts's title enrichment) never overwrites a
 // deliberate human choice.
 export async function renameSession(
-  db: Client,
+  db: DbClient,
   actorUserId: string,
   sessionId: string,
   name: string,
@@ -152,7 +152,7 @@ export async function renameSession(
   return row;
 }
 
-export async function getSession(db: Client, id: string): Promise<SessionRow | null> {
+export async function getSession(db: DbClient, id: string): Promise<SessionRow | null> {
   return loadSession(db, id);
 }
 
@@ -167,7 +167,7 @@ export async function getSession(db: Client, id: string): Promise<SessionRow | n
 // bypassing the other. Mirrors api/sessions.ts's loadOwnSession plus the
 // anchor/state checks resume specifically needs.
 export async function loadResumableSession(
-  db: Client,
+  db: DbClient,
   userId: string,
   nodeId: string,
   sessionId: string,
@@ -181,7 +181,7 @@ export async function loadResumableSession(
 }
 
 export async function listSessions(
-  db: Client,
+  db: DbClient,
   filters: ListSessionsInput = {},
 ): Promise<SessionRow[]> {
   const parsed = ListSessionsInput.parse(filters);
@@ -212,7 +212,7 @@ export async function listSessions(
 // Bump last_active_at without changing state -- called on every tool call
 // (or at minimum on scope changes) so an idle-but-open session doesn't look
 // abandoned next to one still doing work.
-export async function touchSession(db: Client, id: string): Promise<void> {
+export async function touchSession(db: DbClient, id: string): Promise<void> {
   await db.execute({
     sql: "UPDATE sessions SET last_active_at = ? WHERE id = ?",
     args: [new Date().toISOString(), id],
@@ -226,7 +226,7 @@ export async function touchSession(db: Client, id: string): Promise<void> {
 // runtime (domain/runner/store.ts's createSession, via startTask) without a
 // CLI attached -- this fills it in once the handshake's own clientInfo.name
 // is known, same as createSession would have done for a fresh row.
-export async function setSessionCli(db: Client, id: string, cli: string): Promise<void> {
+export async function setSessionCli(db: DbClient, id: string, cli: string): Promise<void> {
   await db.execute({
     sql: "UPDATE sessions SET cli = ? WHERE id = ?",
     args: [cli, id],
@@ -245,7 +245,7 @@ const ALLOWED_TRANSITIONS: Record<SessionState, readonly SessionState[]> = {
 };
 
 export async function transitionSessionState(
-  db: Client,
+  db: DbClient,
   actorUserId: string,
   sessionId: string,
   toState: SessionState,
@@ -290,7 +290,7 @@ export async function transitionSessionState(
 // suspendSessionServerSide (domain/session-handoff.ts) -- kept here, under
 // its original name, so call sites and tests don't need to change.
 export async function closeSessionsByTerminalId(
-  db: Client,
+  db: DbClient,
   actorUserId: string,
   terminalId: string,
 ): Promise<number> {
@@ -314,7 +314,7 @@ export async function closeSessionsByTerminalId(
 // suspendSessionServerSide only acts on 'running'. Thin wrapper, see
 // closeSessionsByTerminalId's comment.
 export async function closeSessionIfRunning(
-  db: Client,
+  db: DbClient,
   sessionId: string,
   reason: ServerHandoffReason,
 ): Promise<void> {
@@ -332,7 +332,7 @@ export async function closeSessionIfRunning(
 // with a server-generated handoff instead, so a session interrupted only by
 // a restart stays resumable. Not scoped to a single user: this is a
 // process-wide maintenance sweep, same as autoArchiveClosedSessions above.
-export async function closeStaleRunningSessionsOnBoot(db: Client): Promise<number> {
+export async function closeStaleRunningSessionsOnBoot(db: DbClient): Promise<number> {
   const res = await db.execute({ sql: "SELECT id, user_id FROM sessions WHERE state = 'running'" });
   for (const row of res.rows) {
     await suspendSessionServerSide(db, String(row.id), "boot_sweep");
@@ -353,7 +353,7 @@ const DEFAULT_ARCHIVE_AFTER_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const DEFAULT_EVENTS_RETENTION_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
 
 export async function autoArchiveClosedSessions(
-  db: Client,
+  db: DbClient,
   olderThanMs: number = DEFAULT_ARCHIVE_AFTER_MS,
   eventsRetentionMs: number = DEFAULT_EVENTS_RETENTION_MS,
 ): Promise<number> {
@@ -405,7 +405,7 @@ function rankExpr(column: string): string {
 // that dimension is set independently via setSessionScopeWritable, matching
 // SessionScope.add() vs .addWritable() in mcp/scope.ts.
 export async function upsertSessionScopeRead(
-  db: Client,
+  db: DbClient,
   sessionId: string,
   nodeId: string,
   addedVia: SessionScopeAddedVia,
@@ -426,7 +426,7 @@ export async function upsertSessionScopeRead(
 // Marks a node writable. The row must already exist (a node cannot be
 // writable without being readable -- see SessionScope.addWritable).
 export async function setSessionScopeWritable(
-  db: Client,
+  db: DbClient,
   sessionId: string,
   nodeId: string,
 ): Promise<void> {
@@ -436,7 +436,7 @@ export async function setSessionScopeWritable(
   });
 }
 
-export async function getSessionScope(db: Client, sessionId: string): Promise<SessionScopeRow[]> {
+export async function getSessionScope(db: DbClient, sessionId: string): Promise<SessionScopeRow[]> {
   const res = await db.execute({
     sql: "SELECT * FROM session_scope WHERE session_id = ? ORDER BY added_at",
     args: [sessionId],
@@ -450,7 +450,7 @@ export async function getSessionScope(db: Client, sessionId: string): Promise<Se
 // of write operations: no per-write audit trail keyed by session exists yet,
 // while the write set itself is already tracked here and is a reasonable,
 // honest proxy ("how much can/did this session write to").
-export async function getSessionWriteCount(db: Client, sessionId: string): Promise<number> {
+export async function getSessionWriteCount(db: DbClient, sessionId: string): Promise<number> {
   const res = await db.execute({
     sql: "SELECT COUNT(*) AS c FROM session_scope WHERE session_id = ? AND writable = 1",
     args: [sessionId],
@@ -486,7 +486,7 @@ export interface SuspendSessionInput {
 // from a terminal state (closed/archived): those have no live terminal left
 // to have produced a fresh handoff from.
 export async function suspendSession(
-  db: Client,
+  db: DbClient,
   actorUserId: string,
   sessionId: string,
   input: SuspendSessionInput,

@@ -1375,6 +1375,52 @@ symlink to this file.
   or a per-file `repair_needed` in `renameFolder`'s batch -- widening the
   public `remote_name` fields to nullable is a riskier change than the
   narrow scenario warrants).
+- **The Postgres cutover (infra batch, `docs/superpowers/plans/2026-09-12-infra-batch.md`,
+  batch B) starts with a dialect-neutral client interface, not a dialect
+  switch (B1).** `apps/server/infra/db.ts`'s `DbClient` (`execute`/`batch`/
+  `executeMultiple`/`close`, `InValue`/`InArgs`/`InStatement` keep their
+  libsql names and shapes) is what every domain/api/mcp file is written
+  against now — `import type { Client } from "@libsql/client"` became
+  `import type { DbClient } from ".../infra/db.js"` everywhere (a rename,
+  not a behavior change: every `db.execute({sql, args})`/`db.batch([...],
+  mode)` call site is byte-for-byte unchanged). Three implementations:
+  `db-libsql.ts` (near-passthrough over a real libsql `Client`, just
+  shallow-copying libsql's hybrid array/object `Row` into a plain object,
+  since `DbClient`'s contract is plain objects), `db-pglite.ts`
+  (`@electric-sql/pglite`, embedded Postgres — the local-mode driver from
+  B4) and `db-pg.ts` (`pg` Pool — the central driver from B4/B5), both
+  pinned exact in `package.json` like the Claude SDK. `getDb()` picks the
+  driver from `PORTUNI_DATABASE_URL` (`postgres://`/`postgresql://` → pg,
+  `pglite:<dir>` or bare `pglite:` → PGlite, `file:`/`libsql:` → libsql);
+  unset falls back to the existing `TURSO_URL`/local-file default, so
+  nothing in production actually switches driver yet — this step is pure
+  plumbing. `domain/sync/local-db.ts` (the per-device `.portuni/sync.db`,
+  unrelated to the graph db) keeps calling libsql's own `createClient`
+  directly, just wrapped in `createLibsqlDbClient` and typed `DbClient` —
+  it moves to PGlite in B4 alongside the graph db, not here.
+  `infra/backup.ts` (Turso-only SQL dump, used by `scripts/backup-turso.ts`,
+  removed in B4) is the one file deliberately left on the raw libsql
+  `Client`/`Transaction` types — porting a tool that's about to be deleted
+  would be wasted work. **`?` → `$1, $2, ...` placeholder rewriting lives
+  inside the pg/PGlite drivers** (`infra/sql-placeholders.ts`'s
+  `rewritePositionalPlaceholders`, quote-aware so a literal `?` inside a
+  string/identifier literal is never touched) precisely so B3's
+  dialect-neutral SQL pass never has to touch call sites for this reason —
+  only SQLite-specific *syntax* (`PRAGMA`, `datetime('now')`,
+  `INSERT OR IGNORE`, `json_extract`) is B3's actual job. Named (`Record`)
+  SQL args are never used anywhere in this codebase (checked at B1 time) —
+  both new drivers throw if one ever shows up, rather than silently
+  mishandling it. `test/helpers/db.ts`'s `openTestDb()` (env
+  `PORTUNI_TEST_DB=libsql|pglite`, default libsql) is what B3 will point
+  the whole suite at twice; for now only `test/db-client-conformance.test.ts`
+  uses it directly (positional-arg execute, batch atomicity — a failing
+  statement rolls back the whole batch — and `executeMultiple`, run against
+  all three drivers). **The `pg` driver is not exercised against a live
+  server by the automated gate** (the plan's own "CI adds no services"
+  constraint — PGlite is in-process, a real Postgres is not): its
+  conformance suite is skipped unless `PORTUNI_TEST_PG_URL` is set, real
+  verification waiting on an actual deployed Postgres in a later batch-B
+  step.
 
 ## Security rules (from the auth refactor post-mortem)
 

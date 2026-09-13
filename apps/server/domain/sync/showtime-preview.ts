@@ -13,7 +13,7 @@
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { inflateRawSync } from "node:zlib";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { FileContentError, resolveMirrorAbs } from "./file-content.js";
 import { readFileBytesRemote } from "./file-content-remote.js";
 import { sha256Buffer } from "./hash.js";
@@ -93,7 +93,7 @@ function findEocd(zip: Buffer): number {
 // filename and, from a local mirror, its absolute path (the desktop preview
 // hands that path to the portuni-html protocol, which unzips it itself).
 export async function readShowtimePreview(
-  db: Client,
+  db: DbClient,
   a: { userId: string; nodeId: string; relPath: string },
 ): Promise<{
   content: string;

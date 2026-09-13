@@ -18,7 +18,7 @@
 // cannot see at all is SESSION_NOT_FOUND for every action instead, manage
 // scope included -- manage does not see past a node's own ACL.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { getSession } from "../domain/sessions.js";
 import { nodeVisibleTo } from "./node-access.js";
 import { scopeAtLeast } from "./roles.js";
@@ -44,7 +44,7 @@ export class SessionAccessError extends Error {
 // knows it exists (it shows up in the node's Relace tab), it just can't do
 // this particular thing to it.
 export async function sessionAccess(
-  db: Client,
+  db: DbClient,
   identity: RequestIdentity,
   sessionId: string,
   action: SessionAccessAction,

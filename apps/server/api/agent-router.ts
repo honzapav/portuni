@@ -15,7 +15,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { mkdir, rename as fsRename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { z } from "zod";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { parseBody, parseJsonBody, respondError, respondJson } from "../http/middleware.js";
@@ -86,7 +86,7 @@ import type {
 // The sandbox resolvers take a db parameter their implementations no longer
 // touch (mirror registry + env only). The agent has no graph db; passing
 // this sentinel documents the contract instead of hiding it.
-const NO_DB = null as unknown as Client;
+const NO_DB = null as unknown as DbClient;
 
 // Central-mode read-grant set: the local graph replica is empty in central
 // mode, so depth-1 neighbours come from central node-detail, then map to

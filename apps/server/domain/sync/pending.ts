@@ -2,7 +2,7 @@
 // the global "unsynced overview" and the quit guard. Best-effort: a mirror
 // that fails to scan is skipped, never aborts the whole aggregate.
 import { stat } from "node:fs/promises";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { listUserMirrors } from "./mirror-registry.js";
 import { statusScan } from "./engine.js";
 import { filterVisibleNodeIds, type GroupIdentityView } from "../../auth/node-access.js";
@@ -14,7 +14,7 @@ import type { SyncPendingNode, SyncPendingResponse } from "../../shared/api-type
 const SCAN_CONCURRENCY = 8;
 
 export async function computeSyncPending(
-  db: Client,
+  db: DbClient,
   identity: GroupIdentityView,
 ): Promise<SyncPendingResponse> {
   const allMirrors = await listUserMirrors(identity.userId);

@@ -6,7 +6,7 @@
 // - schema-migrations.ts: numbered migrations + the migration runner
 
 import { createHash } from "node:crypto";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "./db.js";
 import { getDb } from "./db.js";
 import {
   NODE_TYPES,
@@ -60,7 +60,7 @@ const SOLO_USER_ID = "01SOLO0000000000000000000";
 
 export const SOLO_USER = SOLO_USER_ID;
 
-async function seedSoloUser(db: Client): Promise<void> {
+async function seedSoloUser(db: DbClient): Promise<void> {
   const email = process.env.PORTUNI_USER_EMAIL ?? "solo@localhost";
   const name = process.env.PORTUNI_USER_NAME ?? "Solo User";
   await db.execute({
@@ -116,7 +116,7 @@ export interface EnsureSchemaOptions {
 // on a fully migrated database: 91 execute calls, 1.82 s at 20 ms per call.
 // The fast path below is three.
 export async function ensureSchemaOn(
-  db: Client,
+  db: DbClient,
   options: EnsureSchemaOptions = {},
 ): Promise<void> {
   // SQLite defaults to foreign_keys OFF per connection, which silently
@@ -173,6 +173,6 @@ export async function ensureSchema(): Promise<void> {
 // Explicit schema repair: full DDL replay plus the migration pass, regardless
 // of recorded version. The escape hatch for a database whose schema was
 // damaged out from under it.
-export async function repairSchemaOn(db: Client): Promise<void> {
+export async function repairSchemaOn(db: DbClient): Promise<void> {
   await ensureSchemaOn(db, { repair: true });
 }

@@ -17,7 +17,7 @@
 // this one touched is no longer one of them.
 
 import { execFile as nodeExecFile } from "node:child_process";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { suspendSessionServerSide } from "../session-handoff.js";
 import { DbSessionStore } from "./store.js";
 import { isProcessAlive } from "./process-liveness.js";
@@ -62,7 +62,7 @@ function commandLineContainsClaude(pid: number, execFile: typeof nodeExecFile): 
   });
 }
 
-async function loadRun(db: Client, runId: string): Promise<{ id: string; session_id: string; ended_at: string | null } | null> {
+async function loadRun(db: DbClient, runId: string): Promise<{ id: string; session_id: string; ended_at: string | null } | null> {
   const res = await db.execute({ sql: "SELECT id, session_id, ended_at FROM session_runs WHERE id = ?", args: [runId] });
   if (res.rows.length === 0) return null;
   const row = res.rows[0];
@@ -73,7 +73,7 @@ async function loadRun(db: Client, runId: string): Promise<{ id: string; session
   };
 }
 
-async function sweepOne(db: Client, entry: PidFileEntry, deps: Required<RunSweepDeps>, result: RunSweepResult): Promise<void> {
+async function sweepOne(db: DbClient, entry: PidFileEntry, deps: Required<RunSweepDeps>, result: RunSweepResult): Promise<void> {
   const content = await readPidFile(entry.path);
   if (!content) {
     await removePidFileAt(entry.path);
@@ -121,7 +121,7 @@ async function sweepOne(db: Client, entry: PidFileEntry, deps: Required<RunSweep
   result.cleaned++;
 }
 
-export async function sweepOrphanedRuns(db: Client, dataDir: string, deps: RunSweepDeps = {}): Promise<RunSweepResult> {
+export async function sweepOrphanedRuns(db: DbClient, dataDir: string, deps: RunSweepDeps = {}): Promise<RunSweepResult> {
   const resolved: Required<RunSweepDeps> = {
     execFile: deps.execFile ?? nodeExecFile,
     isAlive: deps.isAlive ?? isProcessAlive,

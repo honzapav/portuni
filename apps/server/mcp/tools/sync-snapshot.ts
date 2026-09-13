@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { writeFile, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -30,7 +30,7 @@ export interface SnapshotResult {
 }
 
 async function defaultExport(
-  db: Client,
+  db: DbClient,
   nodeId: string,
   docUrl: string,
   format: "pdf" | "markdown" | "docx",
@@ -49,7 +49,7 @@ async function defaultExport(
 }
 
 type ExporterFn = (
-  db: Client,
+  db: DbClient,
   nodeId: string,
   docUrl: string,
   format: "pdf" | "markdown" | "docx",
@@ -69,7 +69,7 @@ export function __resetSnapshotExporterForTests(): void {
 // (central server serving a teammate) it is created remote-direct via
 // createFileRemote (upload + record). A teammate's device pulls the new file
 // into its own mirror in the agent front door's post-proxy hook.
-export async function snapshotService(db: Client, a: SnapshotArgs): Promise<SnapshotResult> {
+export async function snapshotService(db: DbClient, a: SnapshotArgs): Promise<SnapshotResult> {
   assertRemoteCapable();
   const format = a.format ?? "pdf";
   const buf = await exporter(db, a.nodeId, a.docUrl, format);

@@ -1,6 +1,6 @@
 // Read projections for the Přehled (overview) tab (phase 4 of
 // docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md,
-// "Přehled (overview tab)"). Pure: takes a libsql Client, no HTTP/MCP
+// "Přehled (overview tab)"). Pure: takes a libsql DbClient, no HTTP/MCP
 // coupling, no permission filtering -- that happens in api/overview.ts,
 // same split as loadGraph/GET /graph.
 //
@@ -8,7 +8,7 @@
 // nodes the caller cannot see via filterVisibleNodeIds. Caps below are
 // generous but finite -- this is a dashboard, not an export.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import type {
   OverviewAttentionNode,
   OverviewDisconnectedJump,
@@ -20,7 +20,7 @@ import type {
 } from "../../shared/api-types.js";
 
 export async function loadOverviewSessions(
-  db: Client,
+  db: DbClient,
 ): Promise<OverviewSessionRow[]> {
   const res = await db.execute({
     sql: `SELECT s.*, n.name AS node_name, n.type AS node_type
@@ -57,7 +57,7 @@ export async function loadOverviewSessions(
 // (session_scope.added_via = 'disconnected'), never agent-claimed. See
 // "Read scope" in the design spec.
 export async function loadOverviewDisconnectedJumps(
-  db: Client,
+  db: DbClient,
 ): Promise<OverviewDisconnectedJump[]> {
   const res = await db.execute({
     sql: `SELECT ss.session_id, s.name AS session_name, ss.node_id,
@@ -85,7 +85,7 @@ export async function loadOverviewDisconnectedJumps(
 // Organization and principle carry no attention state, so they never
 // appear here.
 export async function loadOverviewAttentionNodes(
-  db: Client,
+  db: DbClient,
 ): Promise<OverviewAttentionNode[]> {
   const res = await db.execute({
     sql: `SELECT id, type, name, lifecycle_state, health
@@ -116,7 +116,7 @@ export async function loadOverviewAttentionNodes(
 // human look, even though it is not the "two versions conflict" sense of
 // the word.
 export async function loadOverviewSyncIssues(
-  db: Client,
+  db: DbClient,
 ): Promise<OverviewSyncIssue[]> {
   const res = await db.execute({
     sql: `SELECT p.id, p.node_id, n.name AS node_name, p.file_id, p.last_error, p.updated_at
@@ -136,7 +136,7 @@ export async function loadOverviewSyncIssues(
   }));
 }
 
-export async function loadOverviewEvents(db: Client): Promise<OverviewEvent[]> {
+export async function loadOverviewEvents(db: DbClient): Promise<OverviewEvent[]> {
   const res = await db.execute({
     sql: `SELECT e.id, e.node_id, n.name AS node_name, n.type AS node_type,
                  e.type, e.content, e.created_at
@@ -162,7 +162,7 @@ export async function loadOverviewEvents(db: Client): Promise<OverviewEvent[]> {
 // yet) -- the write-set membership itself, same honest proxy as
 // getSessionWriteCount in domain/sessions.ts.
 export async function loadOverviewSessionWrites(
-  db: Client,
+  db: DbClient,
 ): Promise<OverviewSessionWrite[]> {
   const res = await db.execute({
     sql: `SELECT ss.session_id, s.name AS session_name, ss.node_id,
@@ -183,7 +183,7 @@ export async function loadOverviewSessionWrites(
   }));
 }
 
-export async function loadOverviewNewNodes(db: Client): Promise<OverviewNewNode[]> {
+export async function loadOverviewNewNodes(db: DbClient): Promise<OverviewNewNode[]> {
   const res = await db.execute({
     sql: `SELECT n.id, n.type, n.name, n.created_at, u.name AS created_by_name
             FROM nodes n

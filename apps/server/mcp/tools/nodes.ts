@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { getDb } from "../../infra/db.js";
+import { getDb, type InValue } from "../../infra/db.js";
 import { logAudit } from "../../infra/audit.js";
 import {
   NODE_TYPES,
@@ -12,7 +12,6 @@ import {
 import { HEALTH_STATES } from "../../shared/popp.js";
 import { getMirrorPath } from "../../domain/sync/mirror-registry.js";
 import { NodeRow, NodeSummaryRow } from "../../shared/types.js";
-import type { InValue } from "@libsql/client";
 import {
   createNodeInternal,
   purgeNodeLocalCleanup,

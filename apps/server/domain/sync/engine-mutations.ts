@@ -11,7 +11,7 @@
 
 import { mkdir, rename as fsRename } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { Client, InStatement } from "@libsql/client";
+import type { DbClient, InStatement } from "../../infra/db.js";
 import type { FileRef } from "./types.js";
 import { assertRemoteCapable } from "./types.js";
 import { isLocalWorkspace } from "../../infra/server-config.js";
@@ -102,7 +102,7 @@ function inferSectionFromPath(p: string): Section {
 }
 
 export async function moveFile(
-  db: Client,
+  db: DbClient,
   a: MoveFileArgs,
 ): Promise<MoveFilePreview | MoveFileSuccess> {
   const row = await db.execute({
@@ -472,7 +472,7 @@ export type RenameFolderResult =
 const DEFAULT_RENAME_FOLDER_LIMIT = 20;
 
 export async function renameFolder(
-  db: Client,
+  db: DbClient,
   a: RenameFolderArgs,
 ): Promise<RenameFolderResult> {
   const info = await resolveNodeInfo(db, a.nodeId);
@@ -729,7 +729,7 @@ export interface AdoptFilesResult {
 }
 
 export async function adoptFiles(
-  db: Client,
+  db: DbClient,
   a: AdoptFilesArgs,
 ): Promise<AdoptFilesResult> {
   assertRemoteCapable();
@@ -871,7 +871,7 @@ export interface DeleteFileRepairNeeded {
 }
 
 export async function deleteFile(
-  db: Client,
+  db: DbClient,
   a: DeleteFileArgs,
 ): Promise<DeleteFilePreview | DeleteFileSuccess | DeleteFileRepairNeeded> {
   const r = await db.execute({
@@ -1057,7 +1057,7 @@ export interface RenameFileResult {
 // and node. Computed by swapping the basename of remote_path so the location
 // is preserved exactly (unlike moveFile, which is about relocation).
 export async function renameFile(
-  db: Client,
+  db: DbClient,
   a: RenameFileArgs,
 ): Promise<RenameFileResult> {
   const fn = a.newFilename;

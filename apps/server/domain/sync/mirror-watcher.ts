@@ -11,7 +11,7 @@
 
 import { watch as fsWatch } from "node:fs";
 import { join } from "node:path";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { listLocalMirrors, type LocalMirrorRow } from "./local-db.js";
 import { listUntrackedLocal } from "./discover-local.js";
 import { onMirrorRegistryChange } from "./mirror-registry.js";
@@ -59,7 +59,7 @@ export interface MirrorWatcherDeps {
   // Graph db for the default reconcile/backfill wiring. Optional: the
   // central-mode agent injects its own reconcile and disables backfill, so
   // it runs the watcher with no db at all.
-  db?: Client;
+  db?: DbClient;
   userId: string;
   // Injectable seams (production defaults wire the real sync stack).
   listMirrors?: (userId: string) => Promise<LocalMirrorRow[]>;

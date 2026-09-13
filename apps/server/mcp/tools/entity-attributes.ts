@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { getDb } from "../../infra/db.js";
 import {
   ExternalLinkSchema,
@@ -19,7 +19,7 @@ import { guardNodeWrite } from "../write-gate.js";
 import type { SessionCtx } from "../server.js";
 
 async function guardNodeAccess(
-  db: Client,
+  db: DbClient,
   nodeId: string,
   identity: SessionCtx["identity"],
 ): Promise<{ allowed: true } | { allowed: false; error: string }> {
@@ -32,7 +32,7 @@ async function guardNodeAccess(
 // node_id for an existing data_sources/tools row, for the write-gate check
 // on remove -- both tables share the same (id, node_id) shape.
 async function attrNodeId(
-  db: Client,
+  db: DbClient,
   table: "data_sources" | "tools",
   id: string,
 ): Promise<string | null> {

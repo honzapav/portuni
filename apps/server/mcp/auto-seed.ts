@@ -7,7 +7,7 @@
 // transport extracts the id and calls `autoSeedFromHome` so the session's
 // scope is ready before the first tool call.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { type SessionScope, seedScopeFromHome } from "./scope.js";
 import type { GroupIdentityView } from "../auth/node-access.js";
 
@@ -70,7 +70,7 @@ export function parseResumeSessionIdFromUrl(
 interface AutoSeedArgs {
   scope: SessionScope;
   homeNodeId: string | null;
-  db: Client;
+  db: DbClient;
   auditFn: AuditFn;
   identity?: GroupIdentityView;
 }

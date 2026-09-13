@@ -2,7 +2,7 @@
 // google_sub, then email (enriches the pre-multi-user SOLO_USER row so
 // history stays attributed), then insert.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { ulid } from "ulid";
 import type { Identity } from "./adapter.js";
 
@@ -32,7 +32,7 @@ export interface UserAdminRow {
 }
 
 export async function upsertUserFromIdentity(
-  db: Client,
+  db: DbClient,
   identity: Identity,
   avatarUrl: string | null
 ): Promise<string> {
@@ -92,7 +92,7 @@ export async function upsertUserFromIdentity(
 
 // GET /auth/users (manage scope): ACL picker shape -- just enough to render
 // a user in a share dialog, no admin-only fields (invited, global_scope).
-export async function listUsers(db: Client): Promise<UserPickerRow[]> {
+export async function listUsers(db: DbClient): Promise<UserPickerRow[]> {
   const rows = await db.execute(
     "SELECT id, name, email, avatar_url FROM users ORDER BY name",
   );
@@ -108,7 +108,7 @@ export async function listUsers(db: Client): Promise<UserPickerRow[]> {
 // derived here (google_sub IS NULL); `global_scope` is resolved by the
 // handler via adapter.resolveAccess, since that requires the identity
 // adapter which lives at the API layer, not this domain module.
-export async function listUsersAdmin(db: Client): Promise<UserAdminRow[]> {
+export async function listUsersAdmin(db: DbClient): Promise<UserAdminRow[]> {
   const rows = await db.execute(
     "SELECT id, name, email, avatar_url, last_login_at, google_sub FROM users ORDER BY name",
   );
@@ -126,7 +126,7 @@ export async function listUsersAdmin(db: Client): Promise<UserAdminRow[]> {
 // google_sub) so it can be shared/assigned before the invitee ever logs in.
 // upsertUserFromIdentity's byEmail branch pairs this row on first login.
 export async function inviteUser(
-  db: Client,
+  db: DbClient,
   email: string,
 ): Promise<{ id: string; email: string; name: string }> {
   const normalized = email.trim().toLowerCase();

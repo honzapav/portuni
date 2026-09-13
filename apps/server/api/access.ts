@@ -5,7 +5,7 @@
 // the new entry set is empty.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { z } from "zod";
 import { getDb } from "../infra/db.js";
 import { logAudit } from "../infra/audit.js";
@@ -63,7 +63,7 @@ interface AccessView {
 // Shared by GET and the post-PUT response: resolves the effective ACL for
 // nodeId (walking up the belongs_to chain when the node has no ACL of its
 // own) and joins display data (user name/email/avatar) for the UI.
-async function buildAccessView(db: Client, nodeId: string): Promise<AccessView> {
+async function buildAccessView(db: DbClient, nodeId: string): Promise<AccessView> {
   const [{ sourceNodeId, entries, mode, implicitPrivate }, ownVisRow] = await Promise.all([
     resolveAccessChain(db, nodeId),
     db.execute({ sql: "SELECT visibility FROM nodes WHERE id = ?", args: [nodeId] }),

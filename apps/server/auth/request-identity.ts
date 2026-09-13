@@ -2,7 +2,7 @@
 // header. Pure function over an injected context so tests need no env
 // mutation. The http middleware builds the context once per process.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import type { IdentityAdapter } from "./adapter.js";
 import type { GlobalScope } from "./roles.js";
 import { verifyDeviceToken } from "./device-tokens.js";
@@ -27,7 +27,7 @@ export interface RequestIdentity {
 }
 
 export interface IdentityContext {
-  db: Client;
+  db: DbClient;
   mode: "env" | "google";
   jwtSecret: string;
   adapter: IdentityAdapter;

@@ -6,7 +6,7 @@
 
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { getMirrorPath } from "./mirror-registry.js";
 import { resolveNodeInfo } from "./node-info.js";
 import {
@@ -26,7 +26,7 @@ export interface UntrackedLocalEntry {
 }
 
 export async function listUntrackedLocal(
-  db: Client,
+  db: DbClient,
   a: { userId: string; nodeId: string },
 ): Promise<UntrackedLocalEntry[]> {
   const mirrorRoot = await getMirrorPath(a.userId, a.nodeId);

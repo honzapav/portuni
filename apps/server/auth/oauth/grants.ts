@@ -7,7 +7,7 @@
 // ("Decisions", "Data model").
 
 import { createHash, randomBytes } from "node:crypto";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
 
 const ACCESS_TTL_MS = 60 * 60 * 1000; // 1h
@@ -38,7 +38,7 @@ export interface MintedGrant {
 }
 
 export async function mintGrant(
-  db: Client,
+  db: DbClient,
   input: MintGrantInput,
 ): Promise<MintedGrant> {
   const id = ulid();
@@ -82,7 +82,7 @@ export interface OAuthGrantHit {
 // (apps/server/auth/request-identity.ts, issue #173) since this module has
 // no notion of "canonical". Bumps last_used_at on success.
 export async function verifyAccessToken(
-  db: Client,
+  db: DbClient,
   token: string,
 ): Promise<OAuthGrantHit | null> {
   const r = await db.execute({
@@ -129,7 +129,7 @@ export type RefreshResult =
 // invalid_grant returned. Older generations match neither column and fall
 // through to a plain invalid_grant without revocation.
 export async function rotateRefreshToken(
-  db: Client,
+  db: DbClient,
   refreshToken: string,
 ): Promise<RefreshResult> {
   const hash = hashToken(refreshToken);
@@ -194,7 +194,7 @@ export async function rotateRefreshToken(
 // Owner-scoped revoke, for the "Odpojit" button (issue #174) and for theft
 // detection above. Invalidates access and refresh immediately.
 export async function revokeGrant(
-  db: Client,
+  db: DbClient,
   userId: string,
   grantId: string,
 ): Promise<boolean> {
@@ -215,7 +215,7 @@ export interface OAuthGrantRow {
 }
 
 export async function listGrantsForUser(
-  db: Client,
+  db: DbClient,
   userId: string,
 ): Promise<OAuthGrantRow[]> {
   const r = await db.execute({

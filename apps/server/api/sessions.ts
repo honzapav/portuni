@@ -42,7 +42,7 @@
 // following the anchor node's own read gate (handleListNodeSessions).
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { z } from "zod";
 import { getDb } from "../infra/db.js";
 import {
@@ -127,7 +127,7 @@ export async function handleListNodeSessions(
 // for SESSION_FORBIDDEN) and returns null so the caller can just `return`.
 async function guardSessionAccess(
   res: ServerResponse,
-  db: Client,
+  db: DbClient,
   identity: RequestIdentity,
   sessionId: string,
   action: SessionAccessAction,

@@ -1,4 +1,4 @@
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import type { FileAdapter } from "./types.js";
 import { assertRemoteCapable } from "./types.js";
 import { getRemote } from "./routing.js";
@@ -10,7 +10,7 @@ const cache = new Map<string, FileAdapter>();
 
 // Backstop for the routing guard: a local workspace never reaches a backend,
 // whatever remote_name a legacy row still carries.
-export async function getAdapter(db: Client, remoteName: string): Promise<FileAdapter> {
+export async function getAdapter(db: DbClient, remoteName: string): Promise<FileAdapter> {
   assertRemoteCapable();
   const hit = cache.get(remoteName);
   if (hit) return hit;

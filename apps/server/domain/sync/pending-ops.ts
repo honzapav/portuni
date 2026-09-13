@@ -12,7 +12,7 @@
 // (both source and destination present, or neither) fails the op with
 // that message instead of guessing.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
 import { getAdapter } from "./adapter-cache.js";
 import { relocateRemoteObject, writeRelocatedRecord } from "./file-relocation.js";
@@ -65,7 +65,7 @@ export interface PendingOpRow {
 }
 
 export async function enqueuePendingOp(
-  db: Client,
+  db: DbClient,
   a: { userId: string; nodeId: string; fileId: string; payload: PendingOp },
 ): Promise<string> {
   const id = ulid();
@@ -76,14 +76,14 @@ export async function enqueuePendingOp(
   return id;
 }
 
-export async function completePendingOp(db: Client, id: string): Promise<void> {
+export async function completePendingOp(db: DbClient, id: string): Promise<void> {
   await db.execute({ sql: "DELETE FROM pending_file_ops WHERE id = ?", args: [id] });
 }
 
 // Records that this move's cross-remote copy landed, so the retry can
 // finish the source delete instead of reading both-present as an ambiguity.
 // Called before failPendingOp, on the one failure path that knows it.
-export async function markPendingMoveSourceCopied(db: Client, id: string): Promise<void> {
+export async function markPendingMoveSourceCopied(db: DbClient, id: string): Promise<void> {
   const r = await db.execute({
     sql: "SELECT payload FROM pending_file_ops WHERE id = ?",
     args: [id],
@@ -97,14 +97,14 @@ export async function markPendingMoveSourceCopied(db: Client, id: string): Promi
   });
 }
 
-export async function failPendingOp(db: Client, id: string, error: string): Promise<void> {
+export async function failPendingOp(db: DbClient, id: string, error: string): Promise<void> {
   await db.execute({
     sql: `UPDATE pending_file_ops SET attempts = attempts + 1, last_error = ?, updated_at = datetime('now') WHERE id = ?`,
     args: [error, id],
   });
 }
 
-export async function listPendingOps(db: Client, nodeId: string): Promise<PendingOpRow[]> {
+export async function listPendingOps(db: DbClient, nodeId: string): Promise<PendingOpRow[]> {
   const r = await db.execute({
     sql: "SELECT id, user_id, node_id, file_id, payload, attempts, last_error FROM pending_file_ops WHERE node_id = ? ORDER BY created_at",
     args: [nodeId],
@@ -132,7 +132,7 @@ export async function listPendingOps(db: Client, nodeId: string): Promise<Pendin
 // has since claimed any of those paths; otherwise fail with an ambiguity
 // message instead of guessing, exactly like the both-present branch below.
 async function assertRecordStillMatches(
-  db: Client,
+  db: DbClient,
   row: PendingOpRow,
   candidates: Array<{ remote_name: string; remote_path: string }>,
 ): Promise<void> {
@@ -170,7 +170,7 @@ async function assertRecordStillMatches(
 // steps that are still missing, then fixes the record and audits the outcome
 // with the same rows the first-time path writes (tombstones included).
 async function runMove(
-  db: Client,
+  db: DbClient,
   row: PendingOpRow,
   p: Extract<PendingOp, { op: "move" }>,
 ): Promise<void> {
@@ -213,7 +213,7 @@ async function runMove(
 }
 
 async function runDelete(
-  db: Client,
+  db: DbClient,
   row: PendingOpRow,
   p: Extract<PendingOp, { op: "delete" }>,
 ): Promise<void> {
@@ -308,7 +308,7 @@ export interface RetryResult {
 }
 
 export async function retryPendingFileOps(
-  db: Client,
+  db: DbClient,
   a: { userId: string; nodeId: string },
 ): Promise<RetryResult> {
   const out: RetryResult = { repaired: [], pending_repairs: [] };

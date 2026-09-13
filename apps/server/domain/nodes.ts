@@ -1,12 +1,12 @@
 // Domain: node CRUD over the POPP graph.
 //
-// Pure functions over a libsql Client. Validation, lifecycle/status derivation,
+// Pure functions over a libsql DbClient. Validation, lifecycle/status derivation,
 // and the organization invariant live here. Both REST (src/api/nodes.ts) and
 // MCP (src/mcp/tools/nodes.ts) call into these.
 
 import { z } from "zod";
 import { ulid } from "ulid";
-import type { Client, InValue } from "@libsql/client";
+import type { DbClient, InValue } from "../infra/db.js";
 import {
   NODE_TYPES,
   NODE_STATUSES,
@@ -49,7 +49,7 @@ export class NodeVisibilityManagedError extends Error {
 // _db is unused today (the per-device sync.db is reached via PORTUNI_WORKSPACE_ROOT)
 // but kept in the signature for future-proofing.
 export async function purgeNodeLocalCleanup(
-  _db: Client,
+  _db: DbClient,
   userId: string,
   nodeId: string,
 ): Promise<void> {
@@ -67,7 +67,7 @@ export async function purgeNodeLocalCleanup(
 // node gone the trigger's type-subquery is NULL and stays quiet. The explicit
 // child deletes back up the FK CASCADEs for connections where the
 // foreign_keys pragma is not (yet) enabled.
-export async function purgeNodeRows(db: Client, nodeId: string): Promise<void> {
+export async function purgeNodeRows(db: DbClient, nodeId: string): Promise<void> {
   await db.batch(
     [
       { sql: "DELETE FROM nodes WHERE id = ?", args: [nodeId] },
@@ -118,7 +118,7 @@ const UpdateNodeInput = z.object({
 type UpdateNodeInput = z.infer<typeof UpdateNodeInput>;
 
 export async function updateNodeInternal(
-  db: Client,
+  db: DbClient,
   updatedBy: string,
   input: UpdateNodeInput,
 ): Promise<void> {
@@ -229,7 +229,7 @@ export async function updateNodeInternal(
 }
 
 export async function createNodeInternal(
-  db: Client,
+  db: DbClient,
   createdBy: string,
   input: CreateNodeInput,
 ): Promise<string> {

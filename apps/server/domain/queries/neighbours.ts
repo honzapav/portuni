@@ -3,13 +3,13 @@
 // the Seatbelt read-grant set (apps/server/domain/sandbox-profile.ts), so the
 // disk grant can never diverge from the seeded session scope.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 
 // Distinct peer ids across every edge touching nodeId, in either direction.
 // Raw (no visibility filtering) -- callers that need group visibility layer
 // filterVisibleNodeIds on top; the sandbox grant does not (it only ever
 // grants the caller's own locally-mirrored nodes).
-export async function nodeNeighbourIds(db: Client, nodeId: string): Promise<string[]> {
+export async function nodeNeighbourIds(db: DbClient, nodeId: string): Promise<string[]> {
   const res = await db.execute({
     sql: `SELECT DISTINCT
             CASE WHEN e.source_id = ? THEN e.target_id ELSE e.source_id END AS peer_id

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getDb } from "../../infra/db.js";
+import { getDb, type DbClient, type InValue } from "../../infra/db.js";
 import { logAudit } from "../../infra/audit.js";
 import { FILE_STATUSES } from "../../infra/schema.js";
 import {
@@ -13,7 +13,6 @@ import {
 } from "../../domain/sync/engine.js";
 import { getMirrorPath } from "../../domain/sync/mirror-registry.js";
 import { buildNodeRoot, deriveLocalPath } from "../../domain/sync/remote-path.js";
-import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardListScope } from "../list-scope-gate.js";
 import { filterVisibleNodeIds, nodeVisibleTo } from "../../auth/node-access.js";
@@ -25,12 +24,11 @@ import { readNodeFileRaw } from "../../domain/read-node-file.js";
 import { searchFiles } from "../../domain/search-files.js";
 import { SEARCH_HITS_DEFAULT_LIMIT, SEARCH_HITS_MAX_LIMIT, SEARCH_SNIPPET_MAX_CHARS } from "../../domain/sync/types.js";
 import type { SessionCtx } from "../server.js";
-import type { Client } from "@libsql/client";
 
 // Resolves a file's owning node so callers can run the same visibility
 // guard as node-targeted tools. Returns null when the file row is missing
 // (callers fall through to the domain function's own not-found error).
-async function fileNodeId(db: Client, fileId: string): Promise<string | null> {
+async function fileNodeId(db: DbClient, fileId: string): Promise<string | null> {
   const row = await db.execute({
     sql: "SELECT node_id FROM files WHERE id = ?",
     args: [fileId],
