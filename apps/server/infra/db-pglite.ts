@@ -28,15 +28,23 @@ function toDbResultSet(res: Results<unknown>): DbResultSet {
 
 export function createPgliteDbClient(dataDir?: string): DbClient {
   const db = new PGlite(dataDir);
+  // Session time zone pinned to UTC, same as db-pg.ts: normalizePgRow
+  // renders TIMESTAMPTZ as UTC text without a zone suffix, and that text
+  // comes back in as a bare literal (db-import, string-compared filters),
+  // which Postgres reads in the session zone -- with the host's zone every
+  // round trip shifted timestamps by the local offset.
+  const ready = db.waitReady.then(() => db.exec("SET TIME ZONE 'UTC'"));
   return {
     dialect: "postgres",
     async execute(stmt: InStatement): Promise<DbResultSet> {
+      await ready;
       const { sql, args } = normalizeStmt(stmt);
       const res = await db.query(rewritePositionalPlaceholders(sql), args as unknown[]);
       return toDbResultSet(res);
     },
     async batch(stmts: InStatement[], mode?: DbTransactionMode): Promise<DbResultSet[]> {
       void mode; // PGlite's transaction() has no separate read/write/deferred modes.
+      await ready;
       return db.transaction(async (tx) => {
         const out: DbResultSet[] = [];
         for (const stmt of stmts) {
@@ -48,9 +56,11 @@ export function createPgliteDbClient(dataDir?: string): DbClient {
       });
     },
     async executeMultiple(sql: string): Promise<void> {
+      await ready;
       await db.exec(sql);
     },
     async close(): Promise<void> {
+      await ready;
       await db.close();
     },
   };

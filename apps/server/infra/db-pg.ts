@@ -27,7 +27,9 @@ function toDbResultSet(res: QueryResult): DbResultSet {
 }
 
 export function createPgDbClient(connectionString: string): DbClient {
-  const pool = new Pool({ connectionString });
+  // Session time zone pinned to UTC on every connection (see db-pglite.ts):
+  // normalizePgRow's zone-less UTC text must read back as UTC.
+  const pool = new Pool({ connectionString, options: "-c timezone=UTC" });
   return {
     dialect: "postgres",
     async execute(stmt: InStatement): Promise<DbResultSet> {
