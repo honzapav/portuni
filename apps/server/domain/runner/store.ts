@@ -21,7 +21,14 @@ import {
   transitionSessionState,
 } from "../sessions.js";
 import type { SessionRow, SessionState } from "../../shared/types.js";
+import type { SessionRunRow, SessionEventRow } from "../../shared/api-types.js";
 import type { CanonicalEvent, RunEndReason } from "./types.js";
+
+// SessionRunRow/SessionEventRow are defined in shared/api-types.ts (so the
+// web can type the REST responses without importing server domain code);
+// re-exported here so existing call sites importing them from this module
+// keep working unchanged.
+export type { SessionRunRow, SessionEventRow } from "../../shared/api-types.js";
 
 // --- Payload caps (spec: "Payload caps") ---------------------------------
 
@@ -60,10 +67,10 @@ function capEventPayload(event: CanonicalEvent): CanonicalEvent {
   return event;
 }
 
-// --- Row types (kept next to the store, not shared/types.ts -- these are
-// runner-batch-internal shapes, not part of the graph/node domain) --------
+// --- Row validators (runtime shape check for what comes back off the DB;
+// the TS types themselves live in shared/api-types.ts, re-exported above) --
 
-export const SessionRunRow = z.object({
+const SessionRunRowSchema = z.object({
   id: z.string(),
   session_id: z.string(),
   runner: z.string(),
@@ -78,10 +85,9 @@ export const SessionRunRow = z.object({
     z.null(),
   ]),
   usage: z.union([z.string(), z.null()]),
-});
-export type SessionRunRow = z.infer<typeof SessionRunRow>;
+}) satisfies z.ZodType<SessionRunRow>;
 
-export const SessionEventRow = z.object({
+const SessionEventRowSchema = z.object({
   id: z.string(),
   session_id: z.string(),
   run_id: z.union([z.string(), z.null()]),
@@ -89,8 +95,7 @@ export const SessionEventRow = z.object({
   kind: z.string(),
   payload: z.string(),
   created_at: z.string(),
-});
-export type SessionEventRow = z.infer<typeof SessionEventRow>;
+}) satisfies z.ZodType<SessionEventRow>;
 
 // --- SessionStore interface -----------------------------------------------
 
@@ -251,7 +256,7 @@ export class DbSessionStore implements SessionStore {
       sql: "SELECT * FROM session_runs WHERE session_id = ? ORDER BY started_at ASC",
       args: [sessionId],
     });
-    return res.rows.map((r) => SessionRunRow.parse(r));
+    return res.rows.map((r) => SessionRunRowSchema.parse(r));
   }
 
   async liveRun(sessionId: string): Promise<SessionRunRow | null> {
@@ -260,7 +265,7 @@ export class DbSessionStore implements SessionStore {
       args: [sessionId],
     });
     if (res.rows.length === 0) return null;
-    return SessionRunRow.parse(res.rows[0]);
+    return SessionRunRowSchema.parse(res.rows[0]);
   }
 
   // seq is assigned inside this one transaction: each INSERT's own
@@ -310,12 +315,12 @@ export class DbSessionStore implements SessionStore {
       args.push(opts.limit);
     }
     const res = await this.db.execute({ sql, args });
-    return res.rows.map((r) => SessionEventRow.parse(r));
+    return res.rows.map((r) => SessionEventRowSchema.parse(r));
   }
 
   private async mustGetRun(id: string): Promise<SessionRunRow> {
     const res = await this.db.execute({ sql: "SELECT * FROM session_runs WHERE id = ?", args: [id] });
     if (res.rows.length === 0) throw new Error(`session_runs: ${id} not found`);
-    return SessionRunRow.parse(res.rows[0]);
+    return SessionRunRowSchema.parse(res.rows[0]);
   }
 }

@@ -94,6 +94,35 @@ The detail pane on the right is editable in both Graph and Workspace views:
 
 Every mutating action calls back through `onMutate` which refetches the graph and the node detail, so the rest of the UI stays consistent.
 
+### Task API (server-side; no chat UI yet)
+
+A session can now be started as a task directly over REST, ahead of the
+web chat UI that will replace the embedded terminal: `POST /sessions`
+(`{ node_id, brief, runner, instance_id?, policy? }`) creates the session
+and starts its first run. From there: `POST /sessions/:id/messages`
+(send a chat message), `POST /sessions/:id/questions/:request_id`
+(answer an open question), `POST /sessions/:id/interrupt`,
+`POST /sessions/:id/suspend` (waits up to 30s for the agent's own handoff
+before the server writes one), `POST /sessions/:id/resume`
+(`{ mode: "conversation" | "handoff" }`), `POST /sessions/:id/close`, and
+`GET /sessions/:id/events?after&limit` for the canonical event log a
+future chat view renders from.
+
+Who may call what follows one access table across every task route: **read**
+(`GET /sessions/:id/events`) is anyone who can see the session's anchor
+node; **message** (send a message, answer a question, rename) and
+**resume** are the owner only; **stop** (interrupt/suspend/close) is the
+owner or anyone with `manage` scope. A session anchored to a node you
+cannot see reads as a plain 404, same as the node itself being invisible;
+a node-less session (a plain interactive chat, not a task) is 404 for
+everyone but the owner. An interrupt/suspend/close by someone other than
+the owner is recorded in the event log with who did it.
+
+A task's own MCP connection (the one the runner spawns to talk back to
+Portuni) binds to the session `POST /sessions` already created instead of
+minting a second row — this is why a task's Relace row appears the moment
+you start it, not only once its first tool call lands.
+
 ## Settings
 
 Sections worth highlighting:

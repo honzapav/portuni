@@ -94,7 +94,12 @@ export interface HandoffEvent {
 
 export interface StateChangedEvent {
   kind: "state_changed";
-  payload: { from: string; to: string; waiting: boolean };
+  // `by` (docs/superpowers/specs/2026-09-12-remote-hosts-and-task-queue-design.md,
+  // "Visibility and control"): set only when a stop action (interrupt/
+  // suspend/close) was taken by someone other than the session's owner --
+  // "the chat shows who stopped it". Absent for every ordinary transition
+  // (question opened/answered, run ended), which have no such actor to name.
+  payload: { from: string; to: string; waiting: boolean; by?: string };
 }
 
 export interface ErrorEvent {

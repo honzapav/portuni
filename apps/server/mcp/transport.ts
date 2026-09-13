@@ -9,13 +9,18 @@ import { createMcpServer } from "./server.js";
 import { parseBody, RequestBodyTooLargeError } from "../http/middleware.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { autoSeedFromHome, parseHomeNodeIdFromUrl, parseResumeSessionIdFromUrl } from "./auto-seed.js";
-import { resumeSessionPersistence } from "./session-persistence.js";
+import {
+  bindExistingSessionPersistence,
+  lookupSpawnSessionForBind,
+  resumeSessionPersistence,
+} from "./session-persistence.js";
 import { disposeSessionProjection } from "./disk-projection.js";
 import { spawnSessionIdFromHeader } from "../domain/session-projection.js";
 import { extractClientNameFromInitializeBody } from "./client-name.js";
 import { logAudit } from "../infra/audit.js";
 import { getDb } from "../infra/db.js";
 import { closeSessionIfRunning } from "../domain/sessions.js";
+import type { SessionRow } from "../shared/types.js";
 
 const MAX_SESSIONS = Number(process.env.PORTUNI_MAX_SESSIONS ?? 100);
 const SESSION_TTL_MS = Number(process.env.PORTUNI_SESSION_TTL_MS ?? 30 * 60 * 1000);
@@ -149,6 +154,35 @@ export function createMcpTransport(): McpTransport {
         return;
       }
 
+      // Rule 2 (runner-and-session-design spec, "The session exists before
+      // the runner"): a fresh (non-resume) connection whose X-Portuni-Spawn-Id
+      // names a row the session runtime already created BINDS to that row
+      // instead of creating a second one under the same id -- checked before
+      // createMcpServer even runs, same as the capacity/headless checks
+      // above, since a refusal here must reject the whole connection. A row
+      // that exists but is not running or not owned by this identity is
+      // refused outright (SESSION_BIND_REFUSED): silently creating a fresh
+      // session under the same spawn id would desync the task's own row from
+      // the connection that was supposed to drive it. No row at all is the
+      // ordinary case for a hand-opened CLI or any connection predating the
+      // runner batch -- createMcpServer's own bindSession still creates one.
+      let boundExistingSession: SessionRow | null = null;
+      if (spawnSessionId && !resumeSessionId) {
+        const lookup = await lookupSpawnSessionForBind(getDb(), identity, spawnSessionId);
+        if (lookup.kind === "refused") {
+          res.writeHead(503, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              error: "session is not accepting new connections",
+              code: "SESSION_BIND_REFUSED",
+              reason: "X-Portuni-Spawn-Id names a session that is not running or not owned by this identity",
+            }),
+          );
+          return;
+        }
+        if (lookup.kind === "bindable") boundExistingSession = lookup.row;
+      }
+
       const { server, scope, bindSession } = createMcpServer(
         identity,
         homeNodeId,
@@ -156,7 +190,12 @@ export function createMcpTransport(): McpTransport {
         resumeSessionId,
         spawnSessionId,
         terminalId,
+        boundExistingSession?.id ?? null,
       );
+
+      if (boundExistingSession) {
+        await bindExistingSessionPersistence(getDb(), scope, identity, boundExistingSession);
+      }
 
       // Resume (#204): must be authorized and rehydrated before any tool
       // call is served, so it is awaited here -- before auto-seed and

@@ -16,7 +16,7 @@ import { getDb } from "../../infra/db.js";
 import { getSessionScope } from "../sessions.js";
 import { suspendSessionServerSide } from "../session-handoff.js";
 import type { SessionRow } from "../../shared/types.js";
-import type { SessionRunRow, SessionStore } from "./store.js";
+import type { ListEventsOptions, SessionEventRow, SessionRunRow, SessionStore } from "./store.js";
 import { getInstanceEnv } from "./instances.js";
 import type { ProvisionRunInput, ProvisionRunResult, ProvisionRunResumeInfo } from "./provision.js";
 import type {
@@ -79,6 +79,8 @@ export interface SessionSignals {
   expansionsSinceRunStart: number;
 }
 
+type QuestionPayload = Extract<CanonicalEvent, { kind: "question" }>["payload"];
+
 export interface SessionRuntime {
   startTask(input: StartTaskInput): Promise<{ session: SessionRow; run: SessionRunRow }>;
   sendMessage(sessionId: string, text: string): Promise<void>;
@@ -89,6 +91,17 @@ export interface SessionRuntime {
   closeSession(sessionId: string): Promise<SessionRow>;
   subscribe(target: string, listener: RuntimeListener): () => void;
   sessionSignals(sessionId: string): Promise<SessionSignals>;
+  // The session's currently open question, or null -- lets a caller (the
+  // REST answer route) validate a request_id against the actually-pending
+  // question before forwarding a decision to the adapter.
+  pendingQuestion(sessionId: string): QuestionPayload | null;
+  // Access table (remote-hosts-and-task-queue-design spec, "Visibility and
+  // control"): appends a state_changed event naming the actor for an
+  // interrupt/suspend/close performed by someone other than the session's
+  // owner -- called by the REST route right after the action succeeds, so
+  // "from"/"to" reflect the actor, not a real state transition.
+  recordStoppedBy(sessionId: string, by: string): Promise<void>;
+  listEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]>;
 }
 
 interface LiveRun {
@@ -502,6 +515,27 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     return { runAgeMs, writeSetSize, readSetSize, expansionsSinceRunStart };
   }
 
+  function pendingQuestion(sessionId: string): QuestionPayload | null {
+    return pendingQuestions.get(sessionId) ?? null;
+  }
+
+  async function recordStoppedBy(sessionId: string, by: string): Promise<void> {
+    const session = await mustGetSession(sessionId);
+    const runId = liveRuns.get(sessionId)?.runId ?? (await store.liveRun(sessionId))?.id ?? null;
+    await enqueue(sessionId, () =>
+      appendAndPublish(sessionId, runId, [
+        {
+          kind: "state_changed",
+          payload: { from: session.state, to: session.state, waiting: session.waiting_since !== null, by },
+        },
+      ]),
+    );
+  }
+
+  function listEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]> {
+    return store.listEvents(sessionId, opts);
+  }
+
   return {
     startTask,
     sendMessage,
@@ -509,6 +543,9 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     interrupt,
     suspend,
     resume,
+    pendingQuestion,
+    recordStoppedBy,
+    listEvents,
     closeSession,
     subscribe,
     sessionSignals,

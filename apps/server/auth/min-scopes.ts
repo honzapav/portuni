@@ -214,12 +214,22 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
 
   // --- Sessions (#192) --- List follows the anchor node's own read gate
   // (handleListNodeSessions additionally filters by nodeVisibleTo); the
-  // single-session mutating/resume-info routes are further scoped to the
-  // caller's own sessions inside the handler (apps/server/api/sessions.ts).
+  // single-session mutating/resume-info/task routes are further scoped by
+  // auth/session-access.ts's sessionAccess table inside the handler
+  // (apps/server/api/sessions.ts) -- this matcher only sets the coarse
+  // read/write floor every authenticated caller must clear first.
   if (/^\/nodes\/[^/]+\/sessions$/.test(pathname) && m === "GET") return "read";
+  if (pathname === "/sessions" && m === "POST") return "write";
   if (/^\/sessions\/[^/]+$/.test(pathname) && m === "PATCH") return "write";
   if (/^\/sessions\/[^/]+\/state$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/resume-info$/.test(pathname) && m === "GET") return "read";
+  if (/^\/sessions\/[^/]+\/messages$/.test(pathname) && m === "POST") return "write";
+  if (/^\/sessions\/[^/]+\/questions\/[^/]+$/.test(pathname) && m === "POST") return "write";
+  if (/^\/sessions\/[^/]+\/interrupt$/.test(pathname) && m === "POST") return "write";
+  if (/^\/sessions\/[^/]+\/suspend$/.test(pathname) && m === "POST") return "write";
+  if (/^\/sessions\/[^/]+\/resume$/.test(pathname) && m === "POST") return "write";
+  if (/^\/sessions\/[^/]+\/close$/.test(pathname) && m === "POST") return "write";
+  if (/^\/sessions\/[^/]+\/events$/.test(pathname) && m === "GET") return "read";
   // Terminal PTY-exit correlation (#218): pty.rs calls this whenever a
   // spawned CLI's terminal exits. Same tier as the state-transition route
   // above -- closing a session is a write, and the handler itself scopes

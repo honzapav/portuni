@@ -21,8 +21,10 @@ import type { Client } from "@libsql/client";
 import type { SessionScope, AddedVia } from "./scope.js";
 import {
   createSession,
+  getSession,
   getSessionScope,
   loadResumableSession,
+  setSessionCli,
   transitionSessionState,
   upsertSessionScopeRead,
   setSessionScopeWritable,
@@ -30,6 +32,7 @@ import {
 } from "../domain/sessions.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
+import type { SessionRow } from "../shared/types.js";
 
 function safe(promise: Promise<unknown>, what: string): void {
   promise.catch((err) => {
@@ -262,4 +265,82 @@ export async function resumeSessionPersistence(
 
   wireOngoingSync(db, scope, row.id, homeNodeId);
   return row.id;
+}
+
+// Rule 2 (runner-and-session-design spec, "The session exists before the
+// runner"): a fresh MCP connection whose X-Portuni-Spawn-Id names a session
+// row the runtime already created (domain/runner/session-runtime.ts's
+// startTask/resume, via RunStart.mcp.headers) binds to that row instead of
+// minting a new one -- the row is the task, the connection is just this
+// run's own agent talking back over MCP.
+//
+// Split from the refusal check the caller (transport.ts) makes first: by
+// the time this runs, the row is already known to be `running` and owned by
+// `identity`, so this only does the rehydration half -- same shape as
+// resumeSessionPersistence's accumulated-scope replay, minus the state
+// transition (the row is already running) and the homeNodeId parameter
+// (taken from the row itself, since a task's anchor node never changes).
+export async function bindExistingSessionPersistence(
+  db: Client,
+  scope: SessionScope,
+  identity: Pick<RequestIdentity, "userId">,
+  row: SessionRow,
+): Promise<void> {
+  scope.sessionId = row.id;
+  scope.homeNodeId = row.node_id;
+
+  const accumulated = await getSessionScope(db, row.id);
+  for (const scopeRow of accumulated) {
+    const hasLocalMirror = (await getMirrorPath(identity.userId, scopeRow.node_id)) !== null;
+    if (hasLocalMirror) scope.addSeed(scopeRow.node_id);
+    else scope.add(scopeRow.node_id);
+    if (scopeRow.writable) scope.addWritable(scopeRow.node_id);
+  }
+  if (accumulated.length > 0) {
+    scope.recordExpansion({
+      at: new Date().toISOString(),
+      node_ids: accumulated.map((r) => r.node_id),
+      reason: "session bound: rehydrated from persisted session_scope",
+      triggered_by: "init",
+    });
+  }
+
+  wireOngoingSync(db, scope, row.id, row.node_id);
+}
+
+// Companion to bindExistingSessionPersistence: called at the handshake's own
+// completion point (onsessioninitialized, same timing as bindSessionPersistence
+// for a fresh row -- see createMcpServer's `bindSession` doc) to fill in the
+// CLI name now that the connecting client's own clientInfo.name is known, and
+// bump last_active_at the same way a fresh connection's createSession would
+// have. Fire-and-forget like bindSessionPersistence: a DB hiccup here must
+// never break a live MCP tool call.
+export function bindExistingSessionHandshake(db: Client, sessionId: string, cli?: string | null): void {
+  safe(touchSession(db, sessionId), "touchSession");
+  if (cli) safe(setSessionCli(db, sessionId, cli), "setSessionCli");
+}
+
+export type SpawnSessionLookup =
+  | { kind: "not_found" }
+  | { kind: "refused" }
+  | { kind: "bindable"; row: SessionRow };
+
+// Pre-flight check the caller (transport.ts) makes BEFORE constructing the
+// scope/transport for a fresh connection carrying X-Portuni-Spawn-Id: a row
+// under that id that is not `running`, or not owned by this identity, must
+// refuse the whole connection (SESSION_BIND_REFUSED) rather than silently
+// falling back to creating a second, unrelated row under a different id --
+// that would look like an ordinary fresh session to the agent while orphaning
+// the task's own row. No row at all is the ordinary case for every
+// connection predating the runner batch (or any hand-opened CLI spawned
+// outside a task) -- todays's create-with-preassigned-id behaviour.
+export async function lookupSpawnSessionForBind(
+  db: Client,
+  identity: Pick<RequestIdentity, "userId">,
+  spawnSessionId: string,
+): Promise<SpawnSessionLookup> {
+  const row = await getSession(db, spawnSessionId);
+  if (!row) return { kind: "not_found" };
+  if (row.state !== "running" || row.user_id !== identity.userId) return { kind: "refused" };
+  return { kind: "bindable", row };
 }

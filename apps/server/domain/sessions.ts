@@ -219,6 +219,20 @@ export async function touchSession(db: Client, id: string): Promise<void> {
   });
 }
 
+// Rule 2 (runner-and-session-design spec): a fresh MCP connection whose
+// X-Portuni-Spawn-Id names an existing, running, own session BINDS to that
+// row instead of creating a new one (mcp/session-persistence.ts's
+// bindExistingSessionPersistence). The row was created by the session
+// runtime (domain/runner/store.ts's createSession, via startTask) without a
+// CLI attached -- this fills it in once the handshake's own clientInfo.name
+// is known, same as createSession would have done for a fresh row.
+export async function setSessionCli(db: Client, id: string, cli: string): Promise<void> {
+  await db.execute({
+    sql: "UPDATE sessions SET cli = ? WHERE id = ?",
+    args: [cli, id],
+  });
+}
+
 // State machine. running/suspended are the live states (a session can
 // bounce between them via suspend/resume, #190); closed is terminal from the
 // user's point of view but auto-archives (a view filter, never a delete) as

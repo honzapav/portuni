@@ -960,17 +960,46 @@ symlink to this file.
   when the hardened posture (#213) is active for that workspace — it
   originates from the same trusted Tauri host process, not a spawned
   terminal.
-- **A `sessions` row exists only for a completed MCP handshake.**
-  `createMcpServer` returns `bindSession(cli?)` instead of inserting the row
-  itself; callers invoke it at their own post-handshake signal --
-  `transport.ts`'s `onsessioninitialized`, `stdio-entry.ts`'s
-  `server.server.oninitialized`. A resumed connection's `bindSession` is a
-  no-op (`resumeSessionPersistence` already created the row). Agent mode
-  opens its upstream connection to central only for a request that carries a
-  valid `initialize`, so a probe at the local front door burns no row on
-  central either. `cli` comes from the handshake's own
-  `params.clientInfo.name`, normalized to `claude|codex|vibe`
-  (`client-name.ts`) -- not from a header, which Codex and Vibe cannot send.
+- **A `sessions` row exists once a task is started OR a handshake completes
+  (runner batch, Rule 2 "The session exists before the runner").** A task
+  started through `POST /sessions` (`domain/runner/session-runtime.ts`'s
+  `startTask`) creates the row FIRST, then starts a run whose MCP connection
+  carries the row's own id in `X-Portuni-Spawn-Id`
+  (`RunStart.mcp.headers`) -- the handshake that connection makes BINDS to
+  that existing row instead of creating a second one. `createMcpServer`
+  returns `bindSession(cli?)` instead of inserting the row itself; callers
+  invoke it at their own post-handshake signal -- `transport.ts`'s
+  `onsessioninitialized`, `stdio-entry.ts`'s `server.server.oninitialized`.
+  For a hand-opened CLI (no task, no pre-existing row) `bindSession` still
+  creates one there, same as before the runner batch. Binding is decided
+  BEFORE `createMcpServer` runs (`mcp/session-persistence.ts`'s
+  `lookupSpawnSessionForBind`, called the same way `transport.ts` already
+  gates on session capacity/headless): a row under `X-Portuni-Spawn-Id`
+  that is `running` and owned by the connecting identity is bound
+  (`bindExistingSessionPersistence` rehydrates `session_scope` into the
+  connection's `SessionScope`, same shape as a resume's rehydration but
+  without the state transition); a row that exists but is not running or
+  belongs to someone else refuses the whole connection with the existing
+  503-with-reason shape and code `SESSION_BIND_REFUSED`; no row at all keeps
+  today's create-with-preassigned-id behaviour. `bindExistingSessionHandshake`
+  is the bound-row equivalent of `bindSession`'s own row creation: it fills
+  in `cli` and touches `last_active_at` instead. A resumed connection's
+  `bindSession` is a no-op either way (`resumeSessionPersistence` already
+  created/attached the row). Agent mode opens its upstream connection to
+  central only for a request that carries a valid `initialize`, so a probe
+  at the local front door burns no row on central either. `cli` comes from
+  the handshake's own `params.clientInfo.name`, normalized to
+  `claude|codex|vibe` (`client-name.ts`) -- not from a header, which Codex
+  and Vibe cannot send. Task REST routes and who may call them (read/
+  message/stop/resume tiers) are `auth/session-access.ts`'s `sessionAccess`
+  table (spec: `docs/superpowers/specs/2026-09-12-remote-hosts-and-task-queue-design.md`,
+  "Visibility and control"): a node-anchored session hidden from the caller
+  reads `SESSION_NOT_FOUND` (404) for every action, manage scope included;
+  a visible session with an insufficient action tier reads
+  `SESSION_FORBIDDEN` (403); a node-less (`interactive_chat`) session is
+  `SESSION_FORBIDDEN` for anyone but the owner. An interrupt/suspend/close
+  by someone other than the owner appends a `state_changed` event carrying
+  `by` (`SessionRuntime.recordStoppedBy`) so the chat shows who stopped it.
   `wireOngoingSync` persists the session's home node as `writable=1`, since
   `guardWrite` allows it implicitly and `getSessionWriteCount` counts only
   persisted rows. **A dropped connection, the transport's own idle GC, a

@@ -177,8 +177,34 @@ describe("session REST endpoints", () => {
     assert.equal(body.name_is_custom, true);
   });
 
-  test("PATCH /sessions/:id 404s for a session owned by someone else", async () => {
+  // Renaming is owner-only (auth/session-access.ts's sessionAccess "message"
+  // tier); a session owned by someone else on a node the caller CAN see
+  // (the fixture's project node has no ACL) is visible but forbidden --
+  // 403, not 404, since the caller already knows it exists (it shows up in
+  // the node's Relace tab).
+  test("PATCH /sessions/:id 403s for a session owned by someone else on a visible node", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
+    const res = await call(makeIdentity("U2"), "PATCH", `/sessions/${session.id}`, { name: "Nope" });
+    assert.equal(res.statusCode, 403);
+  });
+
+  // A session anchored to a node the caller cannot see at all is hidden
+  // entirely -- 404, same "non-members do not see it AT ALL" rule
+  // auth/node-access.ts applies to the node itself.
+  test("PATCH /sessions/:id 404s for a session anchored to a node the caller cannot see", async () => {
+    const restrictedNodeId = ulid();
+    await db.execute({
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by, visibility) VALUES (?, 'project', 'Hidden', 'hidden', ?, 'group')",
+      args: [restrictedNodeId, SOLO],
+    });
+    await db.execute({
+      sql: "INSERT INTO node_access (node_id, kind, principal, display_email, added_by) VALUES (?, 'user', ?, NULL, ?)",
+      args: [restrictedNodeId, SOLO, SOLO],
+    });
+    const session = await createSession(db, SOLO, {
+      node_id: restrictedNodeId,
+      session_type: "interactive_task",
+    });
     const res = await call(makeIdentity("U2"), "PATCH", `/sessions/${session.id}`, { name: "Nope" });
     assert.equal(res.statusCode, 404);
   });
@@ -203,10 +229,21 @@ describe("session REST endpoints", () => {
     assert.equal(res.statusCode, 409);
   });
 
-  test("POST /sessions/:id/state 404s for a session owned by someone else", async () => {
+  // State transitions are the "stop" tier (owner or manage scope);
+  // makeIdentity's default scope is "write", below manage, so a visible
+  // session owned by someone else is forbidden, not hidden.
+  test("POST /sessions/:id/state 403s for a session owned by someone else without manage scope", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
     const res = await call(makeIdentity("U2"), "POST", `/sessions/${session.id}/state`, { state: "closed" });
-    assert.equal(res.statusCode, 404);
+    assert.equal(res.statusCode, 403);
+  });
+
+  test("POST /sessions/:id/state succeeds for someone else with manage scope", async () => {
+    const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
+    const res = await call(makeIdentity("U2", "manage"), "POST", `/sessions/${session.id}/state`, {
+      state: "closed",
+    });
+    assert.equal(res.statusCode, 200);
   });
 
   test("GET /sessions/:id/resume-info reports conversationResumable false with no mirror on this machine", async () => {
@@ -234,10 +271,13 @@ describe("session REST endpoints", () => {
     assert.equal(body.conversation_resumable, false);
   });
 
-  test("GET /sessions/:id/resume-info 404s for a session owned by someone else", async () => {
+  // Reading is the "read" tier: anyone who can see the anchor node may read
+  // resume-info for a session owned by someone else (same rule as reading
+  // the chat/events) -- the fixture's project node has no ACL.
+  test("GET /sessions/:id/resume-info is readable by anyone who can see the anchor node", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
     const res = await call(makeIdentity("U2"), "GET", `/sessions/${session.id}/resume-info`);
-    assert.equal(res.statusCode, 404);
+    assert.equal(res.statusCode, 200);
   });
 
   // #329: a server-generated suspend (here via the terminal-exit path)

@@ -492,6 +492,38 @@ export type SessionResumeInfo = {
   reason: "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | "suspend_timeout" | null;
 };
 
+// Runner batch (docs/superpowers/specs/2026-09-12-runner-and-session-design.md):
+// session_runs / session_events row shapes, defined here (rather than only in
+// apps/server/domain/runner/store.ts, which re-exports them) so the web can
+// type the REST responses without importing server domain code. RunEndReason
+// duplicates domain/runner/types.ts's own union rather than importing it --
+// same "shared has no domain imports" precedent as SessionState above.
+export type RunEndReason = "completed" | "interrupted" | "suspended" | "error" | "limit" | "host_lost";
+
+export type SessionRunRow = {
+  id: string;
+  session_id: string;
+  runner: string;
+  instance_id: string | null;
+  host_id: string | null;
+  agent_session_id: string | null;
+  resumed_from_run_id: string | null;
+  started_at: string;
+  ended_at: string | null;
+  end_reason: RunEndReason | null;
+  usage: string | null;
+};
+
+export type SessionEventRow = {
+  id: string;
+  session_id: string;
+  run_id: string | null;
+  seq: number;
+  kind: string;
+  payload: string;
+  created_at: string;
+};
+
 // GET /overview -- Přehled tab (phase 4, "Přehled (overview tab)" of the
 // scope/sessions redesign spec). One aggregate, permission-filtered
 // endpoint composing four deterministic sections. Every node reference is

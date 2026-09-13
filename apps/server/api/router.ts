@@ -106,9 +106,17 @@ import {
   handleUpdateEvent,
 } from "./events.js";
 import {
+  handleAnswerSessionQuestion,
+  handleCloseSession,
   handleGetSessionResumeInfo,
+  handleInterruptSession,
   handleListNodeSessions,
+  handleListSessionEvents,
   handleRenameSession,
+  handleResumeSession,
+  handleSendSessionMessage,
+  handleStartSession,
+  handleSuspendSession,
   handleTerminalExit,
   handleTransitionSessionState,
 } from "./sessions.js";
@@ -712,11 +720,12 @@ async function routeAccessRequests(
   return false;
 }
 
-// --- Sessions (node-detail sessions list, rename, state transitions) and
-// terminals (PTY-exit correlation, #218). /sessions/:id/state and
-// /sessions/:id/resume-info MUST match before the bare /sessions/:id PATCH
-// handler for the same reason as /responsibilities' assignments precedence
-// -- they're longer paths under the same prefix. ---
+// --- Sessions (node-detail sessions list, rename, state transitions), tasks
+// (runner batch: start/message/answer/interrupt/suspend/resume/close/events)
+// and terminals (PTY-exit correlation, #218). Every /sessions/:id/<verb>
+// route MUST match before the bare /sessions/:id PATCH handler for the same
+// reason as /responsibilities' assignments precedence -- they're longer
+// paths under the same prefix. ---
 async function routeSessions(
   req: IncomingMessage,
   res: ServerResponse,
@@ -730,6 +739,10 @@ async function routeSessions(
     await handleTerminalExit(req, res, identity, decodeURIComponent(terminalExitMatch[1]));
     return true;
   }
+  if (pathname === "/sessions" && method === "POST") {
+    await handleStartSession(req, res, identity);
+    return true;
+  }
   const stateMatch = pathname.match(/^\/sessions\/([^/]+)\/state$/);
   if (stateMatch && method === "POST") {
     await handleTransitionSessionState(req, res, identity, decodeURIComponent(stateMatch[1]));
@@ -738,6 +751,47 @@ async function routeSessions(
   const resumeInfoMatch = pathname.match(/^\/sessions\/([^/]+)\/resume-info$/);
   if (resumeInfoMatch && method === "GET") {
     await handleGetSessionResumeInfo(req, res, identity, decodeURIComponent(resumeInfoMatch[1]), url);
+    return true;
+  }
+  const messagesMatch = pathname.match(/^\/sessions\/([^/]+)\/messages$/);
+  if (messagesMatch && method === "POST") {
+    await handleSendSessionMessage(req, res, identity, decodeURIComponent(messagesMatch[1]));
+    return true;
+  }
+  const questionMatch = pathname.match(/^\/sessions\/([^/]+)\/questions\/([^/]+)$/);
+  if (questionMatch && method === "POST") {
+    await handleAnswerSessionQuestion(
+      req,
+      res,
+      identity,
+      decodeURIComponent(questionMatch[1]),
+      decodeURIComponent(questionMatch[2]),
+    );
+    return true;
+  }
+  const interruptMatch = pathname.match(/^\/sessions\/([^/]+)\/interrupt$/);
+  if (interruptMatch && method === "POST") {
+    await handleInterruptSession(req, res, identity, decodeURIComponent(interruptMatch[1]));
+    return true;
+  }
+  const suspendMatch = pathname.match(/^\/sessions\/([^/]+)\/suspend$/);
+  if (suspendMatch && method === "POST") {
+    await handleSuspendSession(req, res, identity, decodeURIComponent(suspendMatch[1]));
+    return true;
+  }
+  const resumeMatch = pathname.match(/^\/sessions\/([^/]+)\/resume$/);
+  if (resumeMatch && method === "POST") {
+    await handleResumeSession(req, res, identity, decodeURIComponent(resumeMatch[1]));
+    return true;
+  }
+  const closeMatch = pathname.match(/^\/sessions\/([^/]+)\/close$/);
+  if (closeMatch && method === "POST") {
+    await handleCloseSession(req, res, identity, decodeURIComponent(closeMatch[1]));
+    return true;
+  }
+  const eventsMatch = pathname.match(/^\/sessions\/([^/]+)\/events$/);
+  if (eventsMatch && method === "GET") {
+    await handleListSessionEvents(req, res, identity, decodeURIComponent(eventsMatch[1]), url);
     return true;
   }
   const sessionMatch = pathname.match(/^\/sessions\/([^/]+)$/);
