@@ -25,6 +25,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.270",
     "@libsql/client": "^0.17.4",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "google-auth-library": "^10.9.0",

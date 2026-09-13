@@ -9,9 +9,11 @@ import { startMirrorWatcher } from "./boot/mirror-watch.js";
 import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
 import { sweepStaleRunningSessionsOnBoot } from "./boot/session-sweep.js";
 import { warnIfLocalWorkspaceHasStaleRemotesOnBoot } from "./boot/local-mode-remote-warning.js";
+import { registerRunnerAdapters } from "./boot/register-runner-adapters.js";
 
 async function main() {
   await ensureSchema();
+  registerRunnerAdapters();
   startHttpServer();
   // Standalone server: opt in with PORTUNI_WATCH_MIRRORS=1. Default off so it
   // never double-reconciles against a desktop sidecar sharing the same

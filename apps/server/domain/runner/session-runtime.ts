@@ -334,6 +334,8 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       instance: { id: run.instance_id, env: instanceEnv },
       mcp: { ...provisioned.mcp, headers: { "X-Portuni-Spawn-Id": session.id } },
       policy: opts.policy,
+      portuniRoot: provisioned.portuniRoot,
+      mirrors: provisioned.mirrors,
     };
 
     const handle = await adapter.start(runStart, makeSink(session.id, run.id));

@@ -166,6 +166,12 @@ export interface RunStart {
   // (the REST/MCP issue makes the transport honour it).
   mcp: { url: string; token: string; homeNodeId: string; headers: Record<string, string> };
   policy: PermissionPolicy;
+  // permissions.ts's decidePermission needs these to classify a write tool's
+  // target path (classifyWrite) -- provision.ts/provision-central.ts already
+  // compute both, they just weren't threaded onto RunStart until the Claude
+  // adapter (#324) needed them.
+  portuniRoot: string;
+  mirrors: readonly string[];
 }
 
 export interface RunHandle {
@@ -176,6 +182,11 @@ export interface RunHandle {
   // Graceful end of the run's process.
   close(): Promise<void>;
   agentSessionId(): string | null;
+  // The runner's own child process id, or null when the adapter has none
+  // (the fake adapter, or a real one that hasn't captured it yet) -- the
+  // pid-file boot sweep (#325) uses this to notice and clean up a run whose
+  // process outlived the sidecar that started it.
+  pid(): number | null;
 }
 
 export type EventSink = (event: CanonicalEvent | DeltaFrame) => void;

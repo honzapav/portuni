@@ -27,6 +27,7 @@ import { createAgentMcpTransport } from "./mcp/agent-transport.js";
 import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
 import { sweepStaleRunningSessionsOnBoot } from "./boot/session-sweep.js";
 import { warnIfLocalWorkspaceHasStaleRemotesOnBoot } from "./boot/local-mode-remote-warning.js";
+import { registerRunnerAdapters } from "./boot/register-runner-adapters.js";
 import {
   backoffMsFor,
   initialBackoff,
@@ -305,6 +306,7 @@ async function main(): Promise<void> {
     throw new Error("PORTUNI_DATA_DIR must be set in desktop mode");
   }
   mkdirSync(dataDir, { recursive: true });
+  registerRunnerAdapters();
 
   // Central-mode sync agent: PORTUNI_AGENT_MODE=1 (plus central URL+token)
   // branches before any Turso/graph-db wiring.

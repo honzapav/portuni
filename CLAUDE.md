@@ -1132,6 +1132,52 @@ symlink to this file.
   half (`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`, `/runs...`,
   `/sessions/record`), which stays central, and not `GET /nodes/:id/
   sessions` or `/overview` either.
+- **The Claude adapter (`domain/runner/adapters/claude.ts`, #324) drives
+  `@anthropic-ai/claude-agent-sdk` in streaming-input mode always**, even
+  for a fresh, brief-only run — `query()`'s `prompt` is never a plain
+  string, it's a small push queue (`createPushQueue`) this module feeds,
+  since that's the only mode the SDK supports `interrupt()`, queued
+  messages and `answer()` in. `@anthropic-ai/claude-agent-sdk` is pinned
+  **exact, no caret** (`package.json`) — it releases daily and has broken
+  embedding before; bump it deliberately, never let `npm update` touch it.
+  Permission decisions delegate entirely to the ALREADY-SHIPPED
+  `permissions.ts` (#320's own phase-1 scope) — `decidePermission` needed
+  `portuniRoot`/`mirrors` to classify a write's target, which `RunStart`
+  didn't carry until this issue widened it (`session-runtime.ts`'s
+  `startRun` now threads `provisioned.portuniRoot`/`.mirrors` onto it) --
+  an "ask" decision emits a `question` event and leaves the `canUseTool`
+  promise unresolved until `RunHandle.answer()` (called by the runtime,
+  which itself is invoked by the REST/WS `answer` route) resolves it:
+  `true`/`false` become plain allow/deny, any other value (an
+  `AskUserQuestion` free-text answer) becomes `{behavior: "allow",
+  updatedInput: {...originalInput, answer}}`. A completed write tool's
+  `file_change` (`op: "create" | "edit"`) needs to know whether the target
+  existed BEFORE the tool ran — captured via `fs.stat` at `tool_call
+  started` time (when the tool_use block is translated, before its
+  `tool_result` ever arrives) and carried on the pending-tool-call
+  snapshot, since the result itself never carries the original arguments
+  back. **`RunHandle` gained `pid()`** (the pid-file boot sweep, #325,
+  needs it) — the SDK's public surface has no official way to read the
+  underlying CLI subprocess's pid back off `query()`'s return value, so the
+  adapter supplies its own `spawnClaudeCodeProcess` override purely to
+  capture `child.pid` into a closure variable at spawn time; the fake
+  adapter's `pid()` is always `null`. `close()` is just "end the prompt
+  queue and await the translate loop's own completion" — the SDK's
+  documented stdin-EOF → ~2s grace → SIGTERM → SIGKILL sequence runs
+  entirely on its own, no client-side timeout needed. `interrupt()` also
+  ends the queue (unlike a bare `q.interrupt()`, which only cancels the
+  CURRENT turn and would leave the process alive for a next one) so the
+  translate loop's natural completion reports `reason: "interrupted"`
+  instead of `"completed"`, matching the fake adapter's own semantics.
+  `hooks.PreCompact` and the `system/compact_boundary` message BOTH
+  translate to a `compaction` event (the hook fires with the real
+  trigger reason before compaction happens; the message translation is a
+  fixed `trigger: "auto"` backstop) — accepted as possible double emission
+  for a purely cosmetic chat marker, not verified against a real run.
+  `detect()` (`claude --version` / `claude auth status`, 5s timeout each)
+  and the whole message-translation surface are tested against an injected
+  fake `query`/`exec` (`test/runner-claude-adapter.test.ts`); a real,
+  logged-in run is a macOS-only human verification step, not in the gate.
 - **Bulk sync is a server-side job; the pending aggregate separates
   actionable work from decisions.**
   - **Job**: `POST /nodes/:id/sync` (one node, synchronous) is what the
