@@ -385,20 +385,28 @@ function buildAgentServer(
         // This front door has no graph DB (see the note above), so the
         // prompt cannot name the node -- but it still must not show the
         // human the agent-facing expand_scope instructions.
-        if (
-          outcome.kind === "elicit" &&
-          (await elicitor.confirm(
+        let elicitationSupported: boolean | undefined;
+        if (outcome.kind === "elicit") {
+          const dialogOutcome = await elicitor.confirm(
             nodeConsentPrompt("write to", nodeId, { name: null, type: null }, WRITE_SCOPE_WHY),
-          )) === "accept"
-        ) {
-          writableNodes.add(nodeId);
-          continue;
+          );
+          if (dialogOutcome === "accept") {
+            writableNodes.add(nodeId);
+            continue;
+          }
+          // Same honest-hint rule as guardNodeWrite (mcp/write-gate.ts): a
+          // client without the elicitation capability must not be told to
+          // call portuni_expand_scope(writable: true), which is refused
+          // for it.
+          elicitationSupported = dialogOutcome !== "unsupported";
         }
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify(writeGuardError(nodeId, outcome.kind, outcome.agentHint)),
+              text: JSON.stringify(
+                writeGuardError(nodeId, outcome.kind, outcome.agentHint, { elicitationSupported }),
+              ),
             },
           ],
           isError: true,

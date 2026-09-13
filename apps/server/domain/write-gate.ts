@@ -15,8 +15,13 @@
 //   - `interactive_task` / `headless`: write set = home node, plus nodes
 //     created by this session or explicitly granted (SessionScope's write
 //     set). Anything else requires the user's confirmation.
-//   - `interactive_chat`: write set starts and stays empty (no home node)
-//     -- every write needs confirmation.
+//   - `interactive_chat`: no home node, so the write set starts with only
+//     the nodes this user's earlier connector sessions created (rehydrated
+//     from session_scope by mcp/session-persistence.ts's
+//     rehydrateConnectorWriteGrants -- a connector client reconnects
+//     constantly, so an in-memory-only "created by this session" grant
+//     would be gone by the time the user asks to attach a file to the node
+//     they just created) -- every other write needs confirmation.
 //   - `headless` has no elicitation channel and no deferred-review path for
 //     writes mid-run: anything outside the write set is refused outright,
 //     never merely deferred (mirrors the hard-floor read behavior).
@@ -72,14 +77,46 @@ export function guardWrite(ctx: WriteContext, nodeId: string): WriteGuardOutcome
   };
 }
 
+// Hint for an "elicit" outcome whose dialog could not be shown because the
+// client never declared the MCP elicitation capability (claude.ai web and
+// mobile, Codex CLI): the default agentHint above tells the agent to call
+// portuni_expand_scope with writable: true, but that call is refused
+// outright on such a client (no honor-system fallback for writes) -- the
+// hint would send the agent down a path that cannot ever succeed. Say so
+// directly, and name the two paths that do work.
+export function noElicitationWriteHint(nodeId: string): string {
+  return (
+    `Node ${nodeId} is outside this session's write scope, and this client does not support ` +
+    `MCP elicitation dialogs, so write access cannot be granted from this session -- do NOT call ` +
+    `portuni_expand_scope with writable: true, it will be refused for the same reason. ` +
+    `Either continue from a client with confirmation dialogs (Claude Code, the Portuni desktop app) ` +
+    `or, for new work, create the node from this chat: nodes created by a connector session stay ` +
+    `writable in this user's later connector sessions.`
+  );
+}
+
+export interface WriteGuardErrorPayload {
+  error: string;
+  node_id: string;
+  hint: string;
+  // Present (false) only when the dialog was skipped because the client
+  // has no elicitation capability -- the one case where the usual
+  // "confirm, then expand_scope" contract cannot be completed from this
+  // session. Absent otherwise, so existing payload shapes stay unchanged.
+  elicitation_supported?: false;
+}
+
 export function writeGuardError(
   nodeId: string,
   kind: "elicit" | "refused",
   hint: string,
-): { error: string; node_id: string; hint: string } {
-  return {
+  opts: { elicitationSupported?: boolean } = {},
+): WriteGuardErrorPayload {
+  const payload: WriteGuardErrorPayload = {
     error: kind === "refused" ? "write_refused" : "write_expansion_required",
     node_id: nodeId,
-    hint,
+    hint: opts.elicitationSupported === false ? noElicitationWriteHint(nodeId) : hint,
   };
+  if (opts.elicitationSupported === false) payload.elicitation_supported = false;
+  return payload;
 }

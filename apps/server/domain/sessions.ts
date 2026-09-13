@@ -430,6 +430,35 @@ export async function getSessionScope(db: Client, sessionId: string): Promise<Se
   return res.rows.map((r) => SessionScopeRow.parse(r));
 }
 
+// Nodes this user's connector (interactive_chat) sessions created, i.e.
+// session_scope rows a connector session persisted as added_via='created'
+// AND writable=1 -- the durable form of "a node created by the session
+// enters its write set" (spec, "Read scope") for the one session type that
+// has no anchor and no resume path. A connector client (claude.ai web /
+// mobile) reopens its MCP session constantly (every reconnect, the 30-min
+// idle GC in mcp/transport.ts, a server restart), so an in-memory-only
+// grant was gone by the time the user asked to attach a file to the node
+// they had just created -- and the fallback, portuni_expand_scope with
+// writable: true, is refused on such a client (no elicitation capability).
+// Consumed by mcp/session-persistence.ts's rehydrateConnectorWriteGrants,
+// which re-persists the grant under the new session as 'created' again, so
+// the chain survives any number of reconnects. Joined on nodes so a node
+// deleted since simply drops out; visibility is the caller's job (the
+// creating user could since have lost access via a visibility change).
+export async function listConnectorCreatedWritableNodes(db: Client, userId: string): Promise<string[]> {
+  const res = await db.execute({
+    sql: `SELECT DISTINCT ss.node_id
+          FROM session_scope ss
+          JOIN sessions s ON s.id = ss.session_id
+          JOIN nodes n ON n.id = ss.node_id
+          WHERE s.user_id = ? AND s.session_type = 'interactive_chat'
+            AND ss.added_via = 'created' AND ss.writable = 1
+          ORDER BY ss.added_at`,
+    args: [userId],
+  });
+  return res.rows.map((r) => r.node_id as string);
+}
+
 // "Write count" for the node-detail sessions row (spec, "Naming & UI": "Row
 // shows state, last activity, CLI + profile, write count") -- the size of
 // the session's write set (session_scope rows with writable=1), not a count

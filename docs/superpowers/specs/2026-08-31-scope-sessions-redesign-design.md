@@ -59,7 +59,21 @@ drop `mode` and gain `session_type`.
 - `interactive_task` / `headless`: write set = home node (its files, edges,
   events, responsibilities, attributes). Expansion of the write set is only
   via elicitation (interactive) and impossible for headless mid-run.
-- `interactive_chat`: write set starts empty; every write elicits.
+- `interactive_chat`: write set starts with the nodes this user's earlier
+  connector sessions created (the durable form of "created by the session
+  enters its write set" — persisted `session_scope` rows with
+  `added_via: created`, `writable: 1`, rehydrated on every new connector
+  session by `mcp/session-persistence.ts`'s `rehydrateConnectorWriteGrants`
+  and re-persisted under the new session so the chain survives any
+  reconnect); every other write elicits. Rationale: a connector client
+  reopens its MCP session constantly (idle GC, deploy, client re-init) and
+  has no anchor or resume path, and claude.ai web/mobile declare no
+  elicitation capability — so an in-memory-only grant left the "create a
+  node in chat, then attach the output to it" flow with no working path at
+  all (Asana 1218386301330150). A client without the elicitation
+  capability gets `elicitation_supported: false` on the
+  `write_expansion_required` payload and a hint that does not recommend
+  `portuni_expand_scope(writable: true)` (refused for the same reason).
 - Enforcement lives in the **domain layer**, not the MCP tool layer —
   otherwise it is bypassed by REST (the sidecar's `LOCAL_TOOLS` in central
   mode reach central through the same REST routes) — see Enforcement
