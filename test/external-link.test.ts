@@ -23,29 +23,25 @@ describe("externalLinkProps", () => {
     assert.equal(props.onClick, undefined);
   });
 
-  it("tauri: no target attribute, click goes through open_external exactly once", async () => {
-    const calls: Array<{ cmd: string; args: unknown }> = [];
-    (globalThis as { window?: unknown }).window = {
-      __TAURI_INTERNALS__: {
-        invoke: async (cmd: string, args: unknown) => {
-          calls.push({ cmd, args });
-        },
+  it("tauri: no target attribute, click goes through the opener exactly once", () => {
+    const calls: string[] = [];
+    (globalThis as { window?: unknown }).window = { __TAURI_INTERNALS__: {} };
+    const props = externalLinkProps(URL, {
+      open: async (u) => {
+        calls.push(u);
       },
-    };
-    const props = externalLinkProps(URL);
+    });
     assert.equal(props.href, URL);
     assert.equal(props.target, undefined, "target=_blank would trigger the shell plugin's own opener");
     assert.equal(typeof props.onClick, "function");
 
     let prevented = 0;
     props.onClick?.({ preventDefault: () => { prevented += 1; } } as never);
-    // openExternal awaits a dynamic import before invoking; let it settle.
-    await new Promise((r) => setTimeout(r, 50));
     assert.equal(prevented, 1);
-    assert.deepEqual(calls, [{ cmd: "open_external", args: { url: URL } }]);
+    assert.deepEqual(calls, [URL]);
   });
 
-  it("caller onClick runs first in both builds", async () => {
+  it("caller onClick runs first in both builds", () => {
     let order: string[] = [];
     const browser = externalLinkProps(URL, { onClick: () => order.push("caller") });
     assert.equal(browser.target, "_blank");
@@ -53,13 +49,15 @@ describe("externalLinkProps", () => {
     assert.deepEqual(order, ["caller"]);
 
     order = [];
-    (globalThis as { window?: unknown }).window = {
-      __TAURI_INTERNALS__: { invoke: async () => { order.push("invoke"); } },
-    };
-    const tauri = externalLinkProps(URL, { onClick: () => order.push("caller") });
+    (globalThis as { window?: unknown }).window = { __TAURI_INTERNALS__: {} };
+    const tauri = externalLinkProps(URL, {
+      onClick: () => order.push("caller"),
+      open: async () => {
+        order.push("open");
+      },
+    });
     assert.equal(tauri.target, undefined);
     tauri.onClick?.({ preventDefault: () => order.push("prevent") } as never);
-    await new Promise((r) => setTimeout(r, 50));
-    assert.deepEqual(order, ["caller", "prevent", "invoke"]);
+    assert.deepEqual(order, ["caller", "prevent", "open"]);
   });
 });

@@ -28,11 +28,13 @@ type ClickHandler = (e: MouseEvent<HTMLAnchorElement>) => void;
 
 // `onClick` lets a caller run its own logic (e.g. stopPropagation for a link
 // nested in a clickable row) before the opener; it runs in both builds.
+// `open` is the Tauri-side opener; the default is openExternal, tests inject
+// a recorder (the server-side test runner has no @tauri-apps/api to import).
 export function externalLinkProps(
   url: string,
-  opts: { onClick?: ClickHandler } = {},
+  opts: { onClick?: ClickHandler; open?: (url: string) => Promise<void> } = {},
 ): ExternalLinkProps {
-  const { onClick } = opts;
+  const { onClick, open = openExternal } = opts;
   if (isTauri()) {
     return {
       href: url,
@@ -40,7 +42,7 @@ export function externalLinkProps(
       onClick: (e) => {
         onClick?.(e);
         e.preventDefault();
-        void openExternal(url);
+        void open(url);
       },
     };
   }
