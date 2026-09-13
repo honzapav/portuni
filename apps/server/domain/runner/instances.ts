@@ -16,6 +16,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ulid } from "ulid";
 import { isPortuniEnvKey, isSecretShapedEnvKey } from "../../shared/runner-env.js";
+import { resolveRunnerDataDir } from "./data-dir.js";
 
 export interface StoredInstance {
   id: string;
@@ -84,13 +85,8 @@ function expandTilde(value: string): string {
   return value;
 }
 
-function resolveDataDir(): string {
-  const explicit = process.env.PORTUNI_DATA_DIR;
-  return explicit && explicit.trim() !== "" ? explicit : process.cwd();
-}
-
 function instancesFilePath(dataDir: string | undefined): string {
-  return join(dataDir ?? resolveDataDir(), "runners.json");
+  return join(dataDir ?? resolveRunnerDataDir(), "runners.json");
 }
 
 async function loadInstancesFile(dataDir: string | undefined): Promise<InstancesFile> {
@@ -110,7 +106,7 @@ async function loadInstancesFile(dataDir: string | undefined): Promise<Instances
 // Atomic write: temp file in the same directory, then rename over -- same
 // pattern as apps/desktop/src/workspace.rs's save().
 async function saveInstancesFile(file: InstancesFile, dataDir: string | undefined): Promise<void> {
-  const dir = dataDir ?? resolveDataDir();
+  const dir = dataDir ?? resolveRunnerDataDir();
   await mkdir(dir, { recursive: true });
   const path = join(dir, "runners.json");
   const tmp = `${path}.tmp`;

@@ -7,6 +7,7 @@ import { ensureSchema } from "./infra/schema.js";
 import { startHttpServer } from "./http/server.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
 import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
+import { sweepOrphanedRunsOnBoot } from "./boot/run-sweep.js";
 import { sweepStaleRunningSessionsOnBoot } from "./boot/session-sweep.js";
 import { warnIfLocalWorkspaceHasStaleRemotesOnBoot } from "./boot/local-mode-remote-warning.js";
 import { registerRunnerAdapters } from "./boot/register-runner-adapters.js";
@@ -21,7 +22,11 @@ async function main() {
   const watcher = startMirrorWatcher(process.env.PORTUNI_WATCH_MIRRORS === "1");
   if (watcher) process.on("SIGINT", () => watcher.stop());
   void sweepStaleSessionProjectionsOnBoot();
-  void sweepStaleRunningSessionsOnBoot();
+  // Must finish before sweepStaleRunningSessionsOnBoot: this sweep already
+  // resolves any 'running' session a runner task was driving, so the other
+  // sweep's own query for stale 'running' rows sees an already-correct
+  // picture instead of racing it.
+  void sweepOrphanedRunsOnBoot().then(() => sweepStaleRunningSessionsOnBoot());
   void warnIfLocalWorkspaceHasStaleRemotesOnBoot();
 }
 

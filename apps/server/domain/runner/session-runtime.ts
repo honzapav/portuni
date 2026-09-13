@@ -18,6 +18,8 @@ import { suspendSessionServerSide, type ServerHandoffReason } from "../session-h
 import type { SessionRow } from "../../shared/types.js";
 import type { ListEventsOptions, SessionEventRow, SessionRunRow, SessionStore } from "./store.js";
 import { getInstanceEnv } from "./instances.js";
+import { resolveRunnerDataDir } from "./data-dir.js";
+import { removePidFile, writePidFile } from "./pid-file.js";
 import type { ProvisionRunInput, ProvisionRunResult, ProvisionRunResumeInfo } from "./provision.js";
 import type {
   CanonicalEvent,
@@ -265,6 +267,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
         usage: canonical.payload.usage,
         ...(agentSessionId ? { agent_session_id: agentSessionId } : {}),
       });
+      await removePidFile(resolveRunnerDataDir(), runId).catch(() => undefined);
       await clearWaitingIfPending(sessionId, runId);
     }
   }
@@ -340,6 +343,13 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
     const handle = await adapter.start(runStart, makeSink(session.id, run.id));
     liveRuns.set(session.id, { handle, runId: run.id });
+    // Written before drain() lets any already-queued run_ended handler
+    // remove it, so write-then-remove ordering always holds even for a
+    // wait-free script. A null pid (the fake adapter, or a real one that
+    // hasn't spawned yet) means the boot sweep simply has nothing to find
+    // for this run -- best-effort, not a correctness requirement.
+    const pid = handle.pid();
+    if (pid !== null) await writePidFile(resolveRunnerDataDir(), run.id, pid).catch(() => undefined);
     // A script-driven (or otherwise fast) adapter may already have emitted
     // events synchronously during start() -- e.g. a wait-free fake script
     // runs to completion, including its own run_ended, before start()

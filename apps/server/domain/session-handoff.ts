@@ -128,7 +128,10 @@ export function extractHandoffTitle(content: string): string | null {
 // suspend_timeout: the runner runtime's own suspend() (session-runtime.ts,
 // #320) asked the agent to write a handoff and it never did within the
 // poll window -- the same server-written fallback, one more reason.
-export type ServerHandoffReason = "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | "suspend_timeout";
+// host_lost: the boot orphaned-run sweep (domain/runner/run-sweep.ts, #325)
+// found a run whose child process this device can no longer be tracking
+// after a sidecar restart/crash.
+export type ServerHandoffReason = "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | "suspend_timeout" | "host_lost";
 
 const SERVER_HANDOFF_REASONS: readonly ServerHandoffReason[] = [
   "disconnect",
@@ -136,6 +139,7 @@ const SERVER_HANDOFF_REASONS: readonly ServerHandoffReason[] = [
   "terminal_exit",
   "boot_sweep",
   "suspend_timeout",
+  "host_lost",
 ];
 
 // A leading HTML-comment marker rather than a new column for `generated_by`/

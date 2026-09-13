@@ -43,6 +43,7 @@ const SERVER_SUSPEND_REASON_LABEL: Record<string, string> = {
   terminal_exit: "ukončení terminálu",
   boot_sweep: "restart serveru",
   suspend_timeout: "agent nestihl předání",
+  host_lost: "proces osiřel po restartu",
 };
 
 export const STATE_COLOR: Record<SessionState, string> = {
@@ -237,7 +238,7 @@ function SessionRow({
     handoff_changed: boolean;
     handoff_checkable: boolean;
     generated_by: "server" | null;
-    reason: "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | "suspend_timeout" | null;
+    reason: "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | "suspend_timeout" | "host_lost" | null;
   } | null>(null);
 
   // Resumability is only meaningful (and only worth the round trip) for a

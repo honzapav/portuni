@@ -8,10 +8,12 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import process from "node:process";
 import {
   categorizeTool,
   createClaudeAdapter,
   toolTitle,
+  waitForPidDeadOrTimeout,
   type CreateClaudeAdapterDeps,
 } from "../apps/server/domain/runner/adapters/claude.js";
 import type { CanonicalEvent, DeltaFrame, RunStart } from "../apps/server/domain/runner/types.js";
@@ -502,5 +504,70 @@ describe("Claude adapter: detect()", () => {
     const availability = await adapter.detect();
     assert.equal(availability.installed, true);
     assert.equal(availability.logged_in, false);
+  });
+});
+
+describe("Claude adapter: pid-death race (#325)", () => {
+  // A real spawn-then-kill dance is flaky under a container's own zombie-
+  // reaping timing (the whole reason this bound exists in the first place
+  // is uncertainty about exactly when a dead process is noticed) -- tested
+  // directly against waitForPidDeadOrTimeout with synthetic pids instead,
+  // which is deterministic: no such pid was ever allocated, so it never
+  // needs the OS to reap anything.
+  const NEVER_ALLOCATED_PID = 999_999_999;
+
+  it("resolves quickly for a pid that was never alive", async () => {
+    const startedAt = Date.now();
+    await waitForPidDeadOrTimeout(NEVER_ALLOCATED_PID, 20, 2000);
+    const elapsedMs = Date.now() - startedAt;
+    assert.ok(elapsedMs < 200, `expected an immediate resolution, took ${elapsedMs}ms`);
+  });
+
+  it("waits out the full timeout for a pid that stays alive", async () => {
+    const startedAt = Date.now();
+    await waitForPidDeadOrTimeout(process.pid, 20, 100);
+    const elapsedMs = Date.now() - startedAt;
+    assert.ok(elapsedMs >= 90, `expected to wait out the timeout, resolved after ${elapsedMs}ms`);
+  });
+
+  it("waits out the full timeout when no pid was captured at all", async () => {
+    const startedAt = Date.now();
+    await waitForPidDeadOrTimeout(null, 20, 100);
+    const elapsedMs = Date.now() - startedAt;
+    assert.ok(elapsedMs >= 90, `expected to wait out the timeout, resolved after ${elapsedMs}ms`);
+  });
+
+  it("RunHandle.close() resolves quickly when the run's captured pid is already dead", async () => {
+    // A script that never completes on its own -- simulates a real CLI
+    // process that crashed/was killed before the SDK's own iterator
+    // noticed, the exact case close()'s pid-based race exists for.
+    let releaseIterator: (() => void) | null = null;
+    const hangingQuery = ((params: { prompt: unknown; options?: Options }) => {
+      async function* gen(): AsyncGenerator<SDKMessage, void> {
+        await new Promise<void>((resolve) => {
+          releaseIterator = resolve;
+        });
+      }
+      const iterator = gen() as unknown as Query;
+      (iterator as unknown as { interrupt: () => Promise<undefined> }).interrupt = async () => undefined;
+      void params;
+      return iterator;
+    }) as CreateClaudeAdapterDeps["query"];
+
+    const adapter = createClaudeAdapter({ query: hangingQuery, closePollIntervalMs: 20, closeTimeoutMs: 300 });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    // pid() is null here (spawnClaudeCodeProcess was never invoked by this
+    // fake query) -- close() must still resolve, just via the full timeout
+    // bound rather than an early pid-death detection.
+    assert.equal(handle.pid(), null);
+
+    const startedAt = Date.now();
+    await handle.close();
+    assert.ok(Date.now() - startedAt >= 280, "a null pid must wait out the full close timeout, not return early");
+
+    // Let the background translate loop actually finish (independent of
+    // close()'s own race) so no pending promise chain outlives this test.
+    releaseIterator?.();
+    await new Promise((resolve) => setTimeout(resolve, 10));
   });
 });

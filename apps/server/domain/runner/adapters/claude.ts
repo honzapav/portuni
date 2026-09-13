@@ -27,6 +27,7 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { isPortuniEnvKey } from "../../../shared/runner-env.js";
 import { decidePermission } from "../permissions.js";
+import { isProcessAlive } from "../process-liveness.js";
 import type {
   DeltaFrame,
   EventSink,
@@ -39,6 +40,8 @@ import type {
 } from "../types.js";
 
 const DETECT_TIMEOUT_MS = 5_000;
+const DEFAULT_CLOSE_POLL_INTERVAL_MS = 500;
+const DEFAULT_CLOSE_TIMEOUT_MS = 10_000;
 
 type ExecFile = typeof nodeExecFile;
 type SdkQuery = typeof sdkQuery;
@@ -46,6 +49,59 @@ type SdkQuery = typeof sdkQuery;
 export interface CreateClaudeAdapterDeps {
   query?: SdkQuery;
   exec?: ExecFile;
+  // Test-only overrides for close()/interrupt()'s "the pid is already dead"
+  // safety net -- production leaves these at their 500ms/10s defaults.
+  closePollIntervalMs?: number;
+  closeTimeoutMs?: number;
+}
+
+// `signal` lets a caller cancel a still-pending sleep the instant it no
+// longer cares about the result -- used by close()/interrupt() to tear down
+// the "losing" branch of a Promise.race against state.endedPromise as soon
+// as the race is decided, instead of leaving a timer to fire (and, if
+// unref'd, risking it never firing at all once nothing else keeps the event
+// loop alive -- exactly what a plain `await` on this function in a test
+// depends on).
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+}
+
+// Resolves once `pid` is confirmed dead, after `timeoutMs` either way, or as
+// soon as `signal` aborts -- a safety net for close()/interrupt() not
+// hanging forever waiting for the SDK's own iterator to notice a process
+// that already exited/crashed. A null pid (not captured yet) can't be
+// polled at all, so this just waits out the full timeout as the bound.
+export async function waitForPidDeadOrTimeout(
+  pid: number | null,
+  pollIntervalMs: number,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) return;
+  if (pid === null) {
+    await sleep(timeoutMs, signal);
+    return;
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) return;
+    if (signal?.aborted) return;
+    await sleep(Math.min(pollIntervalMs, Math.max(deadline - Date.now(), 0)), signal);
+  }
 }
 
 // --- Push queue feeding query()'s streaming prompt -------------------------
@@ -328,6 +384,8 @@ function translateStreamEvent(msg: Extract<SDKMessage, { type: "stream_event" }>
 export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerAdapter {
   const query = deps.query ?? sdkQuery;
   const exec = deps.exec ?? nodeExecFile;
+  const closePollIntervalMs = deps.closePollIntervalMs ?? DEFAULT_CLOSE_POLL_INTERVAL_MS;
+  const closeTimeoutMs = deps.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
 
   async function runExec(args: string[]): Promise<{ ok: boolean; stdout: string }> {
     return new Promise((resolve) => {
@@ -512,12 +570,31 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
           // Best-effort -- the process may already be gone.
         }
         promptQueue.end();
-        await state.endedPromise;
+        const abort = new AbortController();
+        try {
+          await Promise.race([
+            state.endedPromise,
+            waitForPidDeadOrTimeout(state.capturedPid, closePollIntervalMs, closeTimeoutMs, abort.signal),
+          ]);
+        } finally {
+          abort.abort();
+        }
       },
       async close(): Promise<void> {
         if (state.ended) return;
         promptQueue.end();
-        await state.endedPromise;
+        // A run whose child is already gone (crashed, killed out of band)
+        // must not hang here waiting for the SDK's own iterator to notice --
+        // resolve as soon as the pid is confirmed dead, bounded either way.
+        const abort = new AbortController();
+        try {
+          await Promise.race([
+            state.endedPromise,
+            waitForPidDeadOrTimeout(state.capturedPid, closePollIntervalMs, closeTimeoutMs, abort.signal),
+          ]);
+        } finally {
+          abort.abort();
+        }
       },
       agentSessionId(): string | null {
         return state.agentSessionId;

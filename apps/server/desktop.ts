@@ -25,6 +25,7 @@ import { listUserMirrors } from "./domain/sync/mirror-registry.js";
 import { createAgentRouter } from "./api/agent-router.js";
 import { createAgentMcpTransport } from "./mcp/agent-transport.js";
 import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
+import { sweepOrphanedRunsOnBoot } from "./boot/run-sweep.js";
 import { sweepStaleRunningSessionsOnBoot } from "./boot/session-sweep.js";
 import { warnIfLocalWorkspaceHasStaleRemotesOnBoot } from "./boot/local-mode-remote-warning.js";
 import { registerRunnerAdapters } from "./boot/register-runner-adapters.js";
@@ -337,7 +338,11 @@ async function main(): Promise<void> {
   const watcher = startMirrorWatcher(process.env.PORTUNI_WATCH_MIRRORS !== "0");
 
   void sweepStaleSessionProjectionsOnBoot();
-  void sweepStaleRunningSessionsOnBoot();
+  // Must finish before sweepStaleRunningSessionsOnBoot: this sweep already
+  // resolves any 'running' session a runner task was driving, so the other
+  // sweep's own query for stale 'running' rows sees an already-correct
+  // picture instead of racing it.
+  void sweepOrphanedRunsOnBoot().then(() => sweepStaleRunningSessionsOnBoot());
   void warnIfLocalWorkspaceHasStaleRemotesOnBoot();
 
   // Refresh every registered mirror's harness configs so any .mcp.json

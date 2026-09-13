@@ -1178,6 +1178,45 @@ symlink to this file.
   and the whole message-translation surface are tested against an injected
   fake `query`/`exec` (`test/runner-claude-adapter.test.ts`); a real,
   logged-in run is a macOS-only human verification step, not in the gate.
+  **`close()`/`interrupt()` cannot hang on a pid that is already dead**
+  (#325): both race `state.endedPromise` against
+  `waitForPidDeadOrTimeout(state.capturedPid, closePollIntervalMs,
+  closeTimeoutMs, signal)` (500ms poll / 10s bound, test-overridable), and
+  `abort()` the losing branch's `AbortController` the instant the race
+  settles — a bare `setTimeout` left running past that point would (a) leak
+  past the common case where the run ends normally on its own, and (b), if
+  `unref()`'d to avoid that leak, risk never firing at all once nothing else
+  keeps a bare test's event loop alive (Node drops an unref'd timer outright
+  rather than firing it late). A null pid (not captured yet) just waits out
+  the full timeout, since there is nothing to poll.
+- **A sidecar restart or crash leaves runner children alive and their runs
+  open — `boot/run-sweep.ts` reaps both, run BEFORE
+  `sweepStaleRunningSessionsOnBoot` (#325).** `session-runtime.ts` writes
+  `<dataDir>/runs/<runId>.pid` (`domain/runner/pid-file.ts`: pid +
+  started_at) right after `adapter.start()` and removes it in the
+  `run_ended` branch of `handleAdapterEvent` — `resolveRunnerDataDir()`
+  (`domain/runner/data-dir.ts`) is `PORTUNI_DATA_DIR` or `cwd()`, matching
+  `instances.ts`'s `runners.json` location. `domain/runner/run-sweep.ts`'s
+  `sweepOrphanedRuns(db, dataDir)` walks every pid file at boot: a run
+  already `ended_at` (a race with the file's own removal) or an unreadable
+  file just gets the stale pid file deleted; otherwise, if the pid is alive
+  AND `ps -o command= -p <pid>` contains `claude` (a pid can be reused by an
+  unrelated process across a crash — the command-line check is what tells
+  "still our child" from "someone else's process now"), SIGTERM, wait 5s,
+  SIGKILL if still alive — then, regardless of whether anything needed
+  killing, `patchRun(end_reason: "host_lost")`, append `run_ended {reason:
+  "host_lost"}`, and `suspendSessionServerSide(db, sessionId, "host_lost")`
+  (one more `ServerHandoffReason`, alongside `boot_sweep`/`suspend_timeout`
+  — Relace label "proces osiřel po restartu") followed by its own `handoff
+  {generated_by: "server"}` event, same shape `session-runtime.ts`'s own
+  `suspend()` produces for a live run. Local mode only: a pid file is only
+  ever written by the process that spawned the child, on this same machine,
+  so only that process's own next boot can find it — wired into `index.ts`
+  unconditionally and `desktop.ts`'s non-agent branch, the same two call
+  sites as `sweepStaleRunningSessionsOnBoot`, chained (`.then(...)`) ahead
+  of it rather than fired independently, since this sweep's own
+  `suspendSessionServerSide` call already resolves a session the other
+  sweep's `'running'`-row query would otherwise race.
 - **Bulk sync is a server-side job; the pending aggregate separates
   actionable work from decisions.**
   - **Job**: `POST /nodes/:id/sync` (one node, synchronous) is what the
