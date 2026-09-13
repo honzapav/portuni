@@ -72,12 +72,20 @@ export class CentralSessionStore implements SessionStore {
     if (!sessionId) {
       throw new Error(`CentralSessionStore.patchRun: unknown run ${runId} (never created or listed by this store)`);
     }
-    return this.client.patchSessionRun(sessionId, runId, patch);
+    const row = await this.client.patchSessionRun(sessionId, runId, patch);
+    // An ended run is never patched again (the runtime's own contract), so
+    // its map entry can go -- the map otherwise grows by one per run for
+    // the life of the sidecar process.
+    if (row.ended_at !== null) this.runSession.delete(runId);
+    return row;
   }
 
   async listRuns(sessionId: string): Promise<SessionRunRow[]> {
     const runs = await this.client.listSessionRuns(sessionId);
-    for (const run of runs) this.runSession.set(run.id, run.session_id);
+    // Only runs that can still be patched need the reverse lookup.
+    for (const run of runs) {
+      if (run.ended_at === null) this.runSession.set(run.id, run.session_id);
+    }
     return runs;
   }
 

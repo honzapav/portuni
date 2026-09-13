@@ -42,6 +42,11 @@ import type {
 const DETECT_TIMEOUT_MS = 5_000;
 const DEFAULT_CLOSE_POLL_INTERVAL_MS = 500;
 const DEFAULT_CLOSE_TIMEOUT_MS = 10_000;
+// close()'s escalation (spec, "Process lifecycle": end stdin, 2 s, SIGTERM,
+// 5 s, SIGKILL) -- how long the child gets to finish on its own after its
+// prompt stream ends, then after SIGTERM, before the next step.
+const DEFAULT_CLOSE_GRACE_MS = 2_000;
+const DEFAULT_CLOSE_TERM_MS = 5_000;
 
 type ExecFile = typeof nodeExecFile;
 type SdkQuery = typeof sdkQuery;
@@ -53,6 +58,8 @@ export interface CreateClaudeAdapterDeps {
   // safety net -- production leaves these at their 500ms/10s defaults.
   closePollIntervalMs?: number;
   closeTimeoutMs?: number;
+  closeGraceMs?: number;
+  closeTermMs?: number;
 }
 
 // `signal` lets a caller cancel a still-pending sleep the instant it no
@@ -370,13 +377,37 @@ function translateUserMessage(
   }
 }
 
-function translateStreamEvent(msg: Extract<SDKMessage, { type: "stream_event" }>, sink: EventSink): void {
+function translateStreamEvent(
+  msg: Extract<SDKMessage, { type: "stream_event" }>,
+  runId: string,
+  sink: EventSink,
+): void {
   const event = msg.event;
   if (event.type !== "content_block_delta") return;
   const delta = event.delta;
   if (delta.type !== "text_delta" || typeof delta.text !== "string") return;
-  const frame: DeltaFrame = { type: "delta", run_id: "", text: delta.text };
+  const frame: DeltaFrame = { type: "delta", run_id: runId, text: delta.text };
   sink(frame);
+}
+
+// Signals the child's whole process group (it is spawned detached, i.e. as
+// its own group leader, so `-pid` reaches every helper it forked too);
+// falls back to the pid alone when the group is already gone. Never
+// throws: a process that exited between the liveness check and the signal
+// is exactly the outcome wanted.
+function signalProcessGroup(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(-pid, signal);
+    return;
+  } catch {
+    // No such group (or not a group leader on this platform) -- try the
+    // process itself.
+  }
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // Already gone.
+  }
 }
 
 // --- adapter ---------------------------------------------------------------
@@ -386,6 +417,8 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
   const exec = deps.exec ?? nodeExecFile;
   const closePollIntervalMs = deps.closePollIntervalMs ?? DEFAULT_CLOSE_POLL_INTERVAL_MS;
   const closeTimeoutMs = deps.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
+  const closeGraceMs = deps.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
+  const closeTermMs = deps.closeTermMs ?? DEFAULT_CLOSE_TERM_MS;
 
   async function runExec(args: string[]): Promise<{ ok: boolean; stdout: string }> {
     return new Promise((resolve) => {
@@ -426,6 +459,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       if (decision.kind === "allow") return { behavior: "allow", updatedInput: input };
       if (decision.kind === "deny") return { behavior: "deny", message: decision.message };
 
+      // The run is already over (the SDK can still call this from a turn
+      // that was in flight when the iterator finished): nobody is left to
+      // answer, so deny instead of parking a promise nothing will resolve.
+      if (state.ended) return { behavior: "deny", message: "Běh skončil dřív, než přišla odpověď." };
       const requestId = options.requestId;
       sink({
         kind: "question",
@@ -451,10 +488,17 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       return {};
     }
 
+    // Overrides the SDK's own spawn for two reasons: to capture the pid
+    // (the runtime's pid file, close()'s liveness race) and to put the
+    // child in its own process group (spec, "Process lifecycle"), so
+    // close()'s SIGTERM/SIGKILL reaches the CLI and every helper it forked,
+    // never this sidecar's own group. `detached` on its own does not
+    // unref the child -- the SDK still owns its stdio and lifetime.
     function spawnClaudeCodeProcess(spawnOptions: SpawnOptions): SpawnedProcess {
       const child = nodeSpawn(spawnOptions.command, spawnOptions.args, {
         cwd: spawnOptions.cwd,
         env: spawnOptions.env,
+        detached: process.platform !== "win32",
       });
       state.capturedPid = child.pid ?? null;
       return child as unknown as SpawnedProcess;
@@ -505,7 +549,7 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         return;
       }
       if (msg.type === "stream_event") {
-        translateStreamEvent(msg, sink);
+        translateStreamEvent(msg, run.runId, sink);
         return;
       }
       if (msg.type === "result") {
@@ -539,9 +583,31 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         sink({ kind: "run_ended", payload: { run_id: run.runId, reason: "error", usage: state.latestUsage } });
       } finally {
         state.ended = true;
+        // A question the run never got an answer to: the SDK's canUseTool
+        // promise would otherwise stay pending forever (spec: "blocks ...
+        // until answered or the run ends"). Deny, so the SDK-side awaiter
+        // settles too.
+        for (const [requestId, pending] of state.pendingPermissions) {
+          state.pendingPermissions.delete(requestId);
+          pending.resolve({ behavior: "deny", message: "Běh skončil dřív, než přišla odpověď." });
+        }
         state.endedResolve();
       }
     })();
+
+    // Waits up to `ms` for the run to end on its own; true when it did.
+    async function endedWithin(ms: number): Promise<boolean> {
+      const abort = new AbortController();
+      try {
+        await Promise.race([
+          state.endedPromise,
+          waitForPidDeadOrTimeout(state.capturedPid, closePollIntervalMs, ms, abort.signal),
+        ]);
+      } finally {
+        abort.abort();
+      }
+      return state.ended || (state.capturedPid !== null && !isProcessAlive(state.capturedPid));
+    }
 
     const handle: RunHandle = {
       async send(text: string): Promise<void> {
@@ -580,21 +646,26 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
           abort.abort();
         }
       },
+      // Spec, "Process lifecycle": end stdin (the prompt stream), 2 s,
+      // SIGTERM, 5 s, SIGKILL. Each step is skipped as soon as the run
+      // ends on its own or the child is confirmed dead; a run whose child
+      // is already gone (crashed, killed out of band) therefore returns
+      // almost immediately instead of waiting for the SDK's own iterator
+      // to notice.
       async close(): Promise<void> {
         if (state.ended) return;
         promptQueue.end();
-        // A run whose child is already gone (crashed, killed out of band)
-        // must not hang here waiting for the SDK's own iterator to notice --
-        // resolve as soon as the pid is confirmed dead, bounded either way.
-        const abort = new AbortController();
-        try {
-          await Promise.race([
-            state.endedPromise,
-            waitForPidDeadOrTimeout(state.capturedPid, closePollIntervalMs, closeTimeoutMs, abort.signal),
-          ]);
-        } finally {
-          abort.abort();
+        if (await endedWithin(closeGraceMs)) return;
+        if (state.capturedPid === null) {
+          // Nothing to signal (the pid was never captured): fall back to
+          // the bounded wait for the SDK to finish.
+          await endedWithin(closeTimeoutMs);
+          return;
         }
+        signalProcessGroup(state.capturedPid, "SIGTERM");
+        if (await endedWithin(closeTermMs)) return;
+        signalProcessGroup(state.capturedPid, "SIGKILL");
+        await endedWithin(closeTimeoutMs);
       },
       agentSessionId(): string | null {
         return state.agentSessionId;

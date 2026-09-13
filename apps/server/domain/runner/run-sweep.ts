@@ -49,17 +49,73 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ps's command line is the only cheap way from Node to tell "this pid is
-// still the process we started" from "this pid was reused by something
-// else entirely" -- a pid file surviving a crash names a pid that may, by
-// the time this sweep runs, belong to an unrelated process the OS handed
-// the same number back out to.
-function commandLineContainsClaude(pid: number, execFile: typeof nodeExecFile): Promise<boolean> {
+// A pid file surviving a crash names a pid that may, by the time this
+// sweep runs, belong to an unrelated process the OS handed the same number
+// back out to -- including the user's own interactive Claude Code session,
+// whose command line contains "claude" just like the child did. Two checks
+// from one `ps` call decide whether the pid is still OUR child: the
+// command line names claude, AND the process started no later than the
+// pid file was written (a reused pid was necessarily started after the
+// original died, i.e. after the file). An unparseable start time falls
+// back to the command-line check alone rather than skipping the kill.
+export interface ProcessIdentity {
+  commandLine: string;
+  startedAt: Date | null;
+}
+
+export function readProcessIdentity(pid: number, execFile: typeof nodeExecFile): Promise<ProcessIdentity | null> {
   return new Promise((resolve) => {
-    execFile("ps", ["-o", "command=", "-p", String(pid)], (err, stdout) => {
-      resolve(!err && typeof stdout === "string" && stdout.includes("claude"));
+    execFile("ps", ["-o", "lstart=", "-o", "command=", "-p", String(pid)], (err, stdout) => {
+      if (err || typeof stdout !== "string" || stdout.trim() === "") {
+        resolve(null);
+        return;
+      }
+      resolve(parseProcessIdentity(stdout));
     });
   });
+}
+
+// `lstart=` renders as e.g. "Sat Sep 13 20:15:03 2026" (five space-separated
+// fields, fixed by ps on both macOS and Linux), followed by the command
+// line on the same row. Exported for its own unit test.
+export function parseProcessIdentity(psRow: string): ProcessIdentity {
+  const line = psRow.trim().split("\n")[0] ?? "";
+  const fields = line.split(/\s+/);
+  const stamp = fields.slice(0, 5).join(" ");
+  const parsed = Date.parse(stamp);
+  const startedAt = fields.length >= 5 && !Number.isNaN(parsed) ? new Date(parsed) : null;
+  const commandLine = startedAt ? fields.slice(5).join(" ") : line;
+  return { commandLine, startedAt };
+}
+
+// Tolerates ps's whole-second start time against the file's millisecond
+// stamp, plus a little clock slop.
+const START_TOLERANCE_MS = 5_000;
+
+export function isOurChild(identity: ProcessIdentity | null, pidFileStartedAt: string): boolean {
+  if (!identity) return false;
+  if (!identity.commandLine.includes("claude")) return false;
+  if (identity.startedAt === null) return true;
+  const recorded = Date.parse(pidFileStartedAt);
+  if (Number.isNaN(recorded)) return true;
+  return identity.startedAt.getTime() <= recorded + START_TOLERANCE_MS;
+}
+
+// The child was spawned as its own process-group leader
+// (adapters/claude.ts); signal the group so its helpers go with it, then
+// the pid itself as a fallback.
+function signalGroup(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(-pid, signal);
+    return;
+  } catch {
+    // Not a group leader here (or already gone) -- the pid alone.
+  }
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // Already gone.
+  }
 }
 
 async function loadRun(db: DbClient, runId: string): Promise<{ id: string; session_id: string; ended_at: string | null } | null> {
@@ -87,20 +143,10 @@ async function sweepOne(db: DbClient, entry: PidFileEntry, deps: Required<RunSwe
     return;
   }
 
-  if (deps.isAlive(content.pid) && (await commandLineContainsClaude(content.pid, deps.execFile))) {
-    try {
-      process.kill(content.pid, "SIGTERM");
-    } catch {
-      // Already gone between the isAlive check and here.
-    }
+  if (deps.isAlive(content.pid) && isOurChild(await readProcessIdentity(content.pid, deps.execFile), content.started_at)) {
+    signalGroup(content.pid, "SIGTERM");
     await deps.sleep(deps.sigtermGraceMs);
-    if (deps.isAlive(content.pid)) {
-      try {
-        process.kill(content.pid, "SIGKILL");
-      } catch {
-        // Already gone.
-      }
-    }
+    if (deps.isAlive(content.pid)) signalGroup(content.pid, "SIGKILL");
     result.killed++;
   }
 

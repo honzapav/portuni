@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { DbSessionStore } from "../apps/server/domain/runner/store.js";
-import { sweepOrphanedRuns } from "../apps/server/domain/runner/run-sweep.js";
+import { isOurChild, parseProcessIdentity, sweepOrphanedRuns } from "../apps/server/domain/runner/run-sweep.js";
 import { writePidFile, readPidFile } from "../apps/server/domain/runner/pid-file.js";
 import { isProcessAlive } from "../apps/server/domain/runner/process-liveness.js";
 import { getSession } from "../apps/server/domain/sessions.js";
@@ -128,5 +128,50 @@ describe("sweepOrphanedRuns (#325)", () => {
 
     const suspended = await getSession(shared.db, session.id);
     assert.equal(suspended?.state, "suspended");
+  });
+});
+
+describe("run sweep: pid identity (a reused pid is never killed)", () => {
+  it("parses ps's lstart + command row", () => {
+    const id = parseProcessIdentity("Sat Sep 13 20:15:03 2026 /usr/local/bin/claude --print\n");
+    assert.equal(id.commandLine, "/usr/local/bin/claude --print");
+    assert.equal(id.startedAt?.getFullYear(), 2026);
+    // No parseable stamp: the whole row is the command line, start unknown.
+    const bare = parseProcessIdentity("claude");
+    assert.equal(bare.startedAt, null);
+    assert.equal(bare.commandLine, "claude");
+  });
+
+  it("a claude process that started AFTER the pid file was written is someone else's", () => {
+    const fileWritten = "2026-09-13T18:15:03.000Z";
+    assert.equal(isOurChild({ commandLine: "claude", startedAt: new Date("2026-09-13T18:15:02.000Z") }, fileWritten), true);
+    assert.equal(isOurChild({ commandLine: "claude", startedAt: new Date("2026-09-13T18:20:00.000Z") }, fileWritten), false);
+    assert.equal(isOurChild({ commandLine: "sleep 300", startedAt: new Date("2026-09-13T18:15:02.000Z") }, fileWritten), false);
+    assert.equal(isOurChild({ commandLine: "claude", startedAt: null }, fileWritten), true);
+    assert.equal(isOurChild(null, fileWritten), false);
+  });
+
+  it("leaves a live pid alone when ps says it started after the pid file, and still closes the run", async () => {
+    const shared = await sharedDb();
+    const dataDir = await mkdtemp(join(tmpdir(), "portuni-run-sweep-"));
+    const { store, session, run } = await startSessionAndRun(shared.db);
+    const child = await spawnSleeper();
+    await writePidFile(dataDir, run.id, child.pid!);
+    // ps reports a claude process that started well after the file: a
+    // reused pid, e.g. the user's own interactive Claude Code.
+    const later = new Date(Date.now() + 60_000);
+    const fakeExecFile = ((_cmd: string, _args: string[], cb: (err: Error | null, stdout: string) => void) => {
+      // Real lstart shape: "Sat Sep 13 20:15:03 2026".
+      const d = later.toDateString().split(" ");
+      cb(null, `${d[0]} ${d[1]} ${d[2]} ${later.toTimeString().slice(0, 8)} ${d[3]} claude`);
+    }) as unknown as typeof import("node:child_process").execFile;
+
+    const result = await sweepOrphanedRuns(shared.db, dataDir, { execFile: fakeExecFile, sigtermGraceMs: 10 });
+    assert.equal(result.killed, 0);
+    assert.equal(result.cleaned, 1);
+    assert.equal(isProcessAlive(child.pid!), true, "a reused pid must not be signalled");
+    child.kill("SIGKILL");
+    const endedRun = (await store.listRuns(session.id))[0];
+    assert.equal(endedRun.end_reason, "host_lost");
   });
 });

@@ -9,6 +9,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import process from "node:process";
+import { isProcessAlive } from "../apps/server/domain/runner/process-liveness.js";
 import {
   categorizeTool,
   createClaudeAdapter,
@@ -40,13 +41,21 @@ function makeRunStart(overrides: Partial<RunStart> = {}): RunStart {
 // captures the `options` object so tests can invoke `canUseTool` directly
 // (the real SDK invokes it internally when a tool call needs a decision;
 // nothing in this fake simulates that plumbing, so tests call it themselves).
-function makeFakeQuery(script: readonly SDKMessage[]) {
+// `hold: true` keeps the iterator open after the script (the run stays
+// live, as it is while a real turn is in flight) until `release()` is
+// called -- canUseTool only means something on a live run.
+function makeFakeQuery(script: readonly SDKMessage[], opts: { hold?: boolean } = {}) {
   let capturedOptions: Options | undefined;
   const interruptCalls: number[] = [];
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   const fakeQuery = ((_params: { prompt: unknown; options?: Options }) => {
     capturedOptions = _params.options;
     async function* gen(): AsyncGenerator<SDKMessage, void> {
       for (const msg of script) yield msg;
+      if (opts.hold) await held;
     }
     const iterator = gen() as unknown as Query;
     (iterator as unknown as { interrupt: () => Promise<undefined> }).interrupt = async () => {
@@ -59,6 +68,7 @@ function makeFakeQuery(script: readonly SDKMessage[]) {
     query: fakeQuery,
     options: () => capturedOptions,
     interruptCalls,
+    release: () => release(),
   };
 }
 
@@ -389,7 +399,7 @@ describe("Claude adapter: canUseTool", () => {
   });
 
   it("an ask (portuni_expand_scope) emits a question and round-trips through answer()", async () => {
-    const { query, options } = makeFakeQuery([]);
+    const { query, options, release } = makeFakeQuery([], { hold: true });
     const adapter = createClaudeAdapter({ query });
     const events: (CanonicalEvent | DeltaFrame)[] = [];
     const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
@@ -408,11 +418,12 @@ describe("Claude adapter: canUseTool", () => {
     await handle.answer("req-3", { by: "U1", value: true, at: new Date().toISOString() });
     const result = (await pending) as PermissionResult;
     assert.equal(result.behavior, "allow");
+    release();
     await handle.close();
   });
 
   it("rejecting an ask denies with the Czech refusal message", async () => {
-    const { query, options } = makeFakeQuery([]);
+    const { query, options, release } = makeFakeQuery([], { hold: true });
     const adapter = createClaudeAdapter({ query });
     const events: (CanonicalEvent | DeltaFrame)[] = [];
     const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
@@ -426,7 +437,85 @@ describe("Claude adapter: canUseTool", () => {
     const result = (await pending) as PermissionResult;
     assert.equal(result.behavior, "deny");
     assert.equal((result as { message: string }).message, "Zamítnuto uživatelem.");
+    release();
     await handle.close();
+  });
+});
+
+describe("Claude adapter: close() escalation (end stdin, SIGTERM, SIGKILL)", () => {
+  // A fake query that spawns a REAL child through the adapter's own
+  // spawnClaudeCodeProcess seam (so the pid is captured and the child sits
+  // in its own process group, exactly as with the SDK) and whose iterator
+  // only finishes once that child has exited -- a CLI that ignores the end
+  // of its prompt stream, which is what close() must be able to end.
+  function childBackedQuery(command: string, args: string[]) {
+    let exitCode: number | null = null;
+    const fakeQuery = ((params: { prompt: unknown; options?: Options }) => {
+      const spawnSeam = params.options?.spawnClaudeCodeProcess;
+      assert.ok(spawnSeam, "the adapter must install spawnClaudeCodeProcess");
+      const child = spawnSeam({ command, args, cwd: process.cwd(), env: process.env as Record<string, string> }) as unknown as import("node:child_process").ChildProcess;
+      async function* gen(): AsyncGenerator<SDKMessage, void> {
+        await new Promise<void>((resolve) => {
+          child.once("exit", (code) => {
+            exitCode = code;
+            resolve();
+          });
+        });
+      }
+      const iterator = gen() as unknown as Query;
+      (iterator as unknown as { interrupt: () => Promise<undefined> }).interrupt = async () => undefined;
+      return iterator;
+    }) as CreateClaudeAdapterDeps["query"];
+    return { query: fakeQuery, exitCode: () => exitCode };
+  }
+
+  it("a child that outlives the end of its prompt stream is SIGTERMed, and close() resolves once it is gone", async () => {
+    const { query } = childBackedQuery("sleep", ["30"]);
+    const adapter = createClaudeAdapter({ query, closePollIntervalMs: 10, closeGraceMs: 50, closeTermMs: 5_000, closeTimeoutMs: 5_000 });
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    const pid = handle.pid();
+    assert.ok(pid !== null && isProcessAlive(pid), "the child must be running before close()");
+
+    const startedAt = Date.now();
+    await handle.close();
+    const elapsed = Date.now() - startedAt;
+    assert.ok(!isProcessAlive(pid), "the child must be dead after close()");
+    assert.ok(elapsed < 3_000, `SIGTERM must have ended it well before the SIGKILL step, took ${elapsed}ms`);
+    assert.ok(events.some((e) => "kind" in e && e.kind === "run_ended"), "run_ended must follow the child's exit");
+  });
+
+  it("a child that ignores SIGTERM is SIGKILLed after the term window", async () => {
+    const { query } = childBackedQuery("sh", ["-c", "trap '' TERM; sleep 30"]);
+    const adapter = createClaudeAdapter({ query, closePollIntervalMs: 10, closeGraceMs: 50, closeTermMs: 150, closeTimeoutMs: 5_000 });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    const pid = handle.pid();
+    assert.ok(pid !== null);
+    // Give the shell a moment to install its trap before we start signalling.
+    await new Promise((r) => setTimeout(r, 150));
+
+    const startedAt = Date.now();
+    await handle.close();
+    const elapsed = Date.now() - startedAt;
+    assert.ok(!isProcessAlive(pid), "the child must be dead after SIGKILL");
+    assert.ok(elapsed >= 150, `must have waited out the SIGTERM window first, took ${elapsed}ms`);
+    assert.ok(elapsed < 3_000, `SIGKILL must have ended it promptly, took ${elapsed}ms`);
+  });
+
+  it("a question still open when the run ends is denied, so the SDK-side awaiter settles", async () => {
+    const { query, options } = makeFakeQuery([]);
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    const canUseTool = options()!.canUseTool!;
+    const pending = canUseTool(
+      "AskUserQuestion",
+      { questions: [{ question: "Continue?", options: [{ label: "Yes" }] }] },
+      { requestId: "req-late", signal: new AbortController().signal } as never,
+    );
+    // The empty script ends the run on its own; close() just waits for it.
+    await handle.close();
+    const result = (await pending) as PermissionResult;
+    assert.equal(result.behavior, "deny");
   });
 });
 
@@ -554,7 +643,12 @@ describe("Claude adapter: pid-death race (#325)", () => {
       return iterator;
     }) as CreateClaudeAdapterDeps["query"];
 
-    const adapter = createClaudeAdapter({ query: hangingQuery, closePollIntervalMs: 20, closeTimeoutMs: 300 });
+    const adapter = createClaudeAdapter({
+      query: hangingQuery,
+      closePollIntervalMs: 20,
+      closeTimeoutMs: 300,
+      closeGraceMs: 20,
+    });
     const handle = await adapter.start(makeRunStart(), () => undefined);
     // pid() is null here (spawnClaudeCodeProcess was never invoked by this
     // fake query) -- close() must still resolve, just via the full timeout
