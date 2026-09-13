@@ -1038,6 +1038,45 @@ symlink to this file.
   the only writer of runs and events once the runtime issue lands). Every
   event kind and its payload shape are in `apps/server/domain/runner/
   types.ts`'s `CanonicalEvent` union.
+- **One WebSocket, `GET /sessions/ws`, is the live channel for tasks (runner
+  batch phase 1, `apps/server/api/sessions-ws.ts`) -- there is no other
+  WebSocket anywhere in this codebase.** Auth happens once, at the
+  `http.Server`'s `"upgrade"` event in `http/server.ts`, via
+  `checkUpgradeAuth` (`http/middleware.ts`): the host allowlist + bearer/JWT
+  identity resolution half of `applyGates`, adapted for a raw socket (no
+  `ServerResponse` exists yet, so a refusal is a hand-written HTTP response
+  written to the socket before it is destroyed) -- CORS/origin/OPTIONS don't
+  apply to an upgrade. A plain `GET /sessions/ws` without an `Upgrade`
+  header never reaches that event at all; `http/server.ts`'s normal request
+  path answers it 426 directly. Mounted whenever the DEFAULT router is in
+  use (`mountSessionsWs` defaults to `opts.router === undefined`) -- the
+  central-mode sync agent (`agentMain` in `desktop.ts`, custom router) gets
+  it off by default, since its sidecar has no session runtime wiring yet
+  (#323's job). Every client action (`message`/`answer`/`interrupt`/
+  `suspend`/`close`) is gated by the exact same `sessionAccess` tier the
+  REST route uses and calls the exact same `SessionRuntime` method; a
+  refused action is an `{id,type:"error",payload:{code,message}}` frame,
+  never a closed socket. `subscribe` replays `store.listEvents(after)` in
+  pages of 200 -- it subscribes to the runtime FIRST, buffers whatever
+  arrives live during the replay, then flushes the buffer skipping any
+  event whose `seq` the replay already covered, so nothing emitted in that
+  window is lost or duplicated. **A published canonical event now carries
+  the `seq` the store assigned it** (`session-runtime.ts`'s `PublishedEvent
+  = (CanonicalEvent & {seq}) | DeltaFrame`, `appendAndPublish` attaches it
+  from `store.appendEvents`'s own return value) -- the live channel is what
+  needed this; nothing else reads it. `session_state` fans out to every
+  connection that can see the session (the same node-visibility rule
+  `api/overview.ts`'s `filterSessions` applies) via ONE server-lifetime
+  subscription per `WebSocketServer` (`subscribe("*", …)`, lazily created on
+  the first successful connection, not per-connection) -- a test that swaps
+  in a fresh `SessionRuntime` per test case rather than a fresh fake
+  *adapter* under the registry's stable id will find that subscription
+  stuck on an abandoned instance; `test/api-sessions-ws.test.ts` builds the
+  runtime once and only re-registers the fake adapter between cases, same
+  as `boot/session-runtime.ts`'s own production wiring. `SessionRuntime`
+  gained `subscriberCount(target)` (test-only visibility that a closed
+  socket's subscriptions were actually dropped, not leaked) and
+  `pendingQuestion`/`recordStoppedBy`, shared with the REST routes (#321).
 - **Bulk sync is a server-side job; the pending aggregate separates
   actionable work from decisions.**
   - **Job**: `POST /nodes/:id/sync` (one node, synchronous) is what the

@@ -123,6 +123,39 @@ Portuni) binds to the session `POST /sessions` already created instead of
 minting a second row — this is why a task's Relace row appears the moment
 you start it, not only once its first tool call lands.
 
+### Live channel: `GET /sessions/ws`
+
+The REST task routes above are for scripts and tests; the desktop window
+itself talks to one WebSocket, `GET /sessions/ws` (upgrade, same bearer/
+JWT auth as every other route — an upgrade that fails auth is refused with
+401 and the socket is closed; a plain `GET` without an `Upgrade` header
+answers 426). Every frame is JSON `{ id?, type, payload }`; a frame
+carrying `id` gets `{ id, type: "reply", payload }` on success or
+`{ id, type: "error", payload: { code, message } }` on failure — the same
+codes the REST routes answer with (`SESSION_FORBIDDEN`,
+`SESSION_NOT_FOUND`, `NO_LIVE_RUN`, `NO_PENDING_QUESTION`, …). A refused
+action is always an error frame, never a closed socket.
+
+Client → server: `subscribe { session_id, after }` (replays the persisted
+event log after `after`, then streams live), `unsubscribe { session_id }`,
+`message { session_id, text }`, `answer { session_id, request_id, decision }`,
+`interrupt | suspend | close { session_id }` — each mapped to the same
+runtime call and access tier the REST route uses.
+
+Server → client: `event { session_id, event }` — a persisted canonical
+event, carrying the `seq` the store assigned it; `delta { session_id,
+run_id, text }` — streamed text, never persisted, never replayed; and
+`session_state { session_id, state, waiting_since, node_id }` — sent for
+every session you can see the moment you connect, and again on every
+`state_changed`, `question` or `run_ended` anywhere, with no subscription
+needed. This is what lets the Relace tab, the Práce sidebar and Přehled
+update live instead of polling.
+
+Reconnect rule: a client that drops and reconnects re-subscribes to each
+session it cares about with the last `seq` it actually saw — nothing is
+lost, because events are the durable record and deltas were always
+disposable.
+
 ## Settings
 
 Sections worth highlighting:

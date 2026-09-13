@@ -48,7 +48,12 @@ export interface RunnerRegistryLookup {
   getAdapter(id: string): RunnerAdapter | null;
 }
 
-export type RuntimeListener = (sessionId: string, event: CanonicalEvent | DeltaFrame) => void;
+// A published canonical event carries the seq the store assigned it (the
+// live channel, api/sessions-ws.ts, needs this to reconcile a buffered live
+// event against the replay-from-`after` it raced) -- a delta never persists,
+// so it never gets one.
+export type PublishedEvent = (CanonicalEvent & { seq: number }) | DeltaFrame;
+export type RuntimeListener = (sessionId: string, event: PublishedEvent) => void;
 
 export interface CreateSessionRuntimeDeps {
   store: SessionStore;
@@ -102,6 +107,11 @@ export interface SessionRuntime {
   // "from"/"to" reflect the actor, not a real state transition.
   recordStoppedBy(sessionId: string, by: string): Promise<void>;
   listEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]>;
+  // Number of live listeners currently registered for `target` (a session
+  // id, or "*" for the global one) -- the live channel (api/sessions-ws.ts)
+  // uses this only in tests, to assert a closed socket's subscription was
+  // actually dropped rather than leaked.
+  subscriberCount(target: string): number;
 }
 
 interface LiveRun {
@@ -131,7 +141,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // adapter's own "completed" -- the adapter cannot know why it was closed.
   const suspending = new Set<string>();
 
-  function publish(sessionId: string, event: CanonicalEvent | DeltaFrame): void {
+  function publish(sessionId: string, event: PublishedEvent): void {
     for (const listener of subscribers.get(sessionId) ?? []) listener(sessionId, event);
     for (const listener of subscribers.get("*") ?? []) listener(sessionId, event);
   }
@@ -158,8 +168,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     runId: string | null,
     events: CanonicalEvent[],
   ): Promise<void> {
-    await store.appendEvents(sessionId, runId, events);
-    for (const event of events) publish(sessionId, event);
+    const seqs = await store.appendEvents(sessionId, runId, events);
+    events.forEach((event, i) => {
+      publish(sessionId, { ...event, seq: seqs[i] });
+    });
   }
 
   function subscribe(target: string, listener: RuntimeListener): () => void {
@@ -536,6 +548,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     return store.listEvents(sessionId, opts);
   }
 
+  function subscriberCount(target: string): number {
+    return subscribers.get(target)?.size ?? 0;
+  }
+
   return {
     startTask,
     sendMessage,
@@ -545,6 +561,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     resume,
     pendingQuestion,
     recordStoppedBy,
+    subscriberCount,
     listEvents,
     closeSession,
     subscribe,

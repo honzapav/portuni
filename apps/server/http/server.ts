@@ -11,10 +11,12 @@ import {
 import { createMcpTransport, type McpTransport } from "../mcp/transport.js";
 import { routeApiRequest } from "../api/router.js";
 import { routeOAuthRequest } from "../api/oauth.js";
+import { createSessionsWsServer } from "../api/sessions-ws.js";
 import {
   AUTH_ENABLED,
   applyGates,
   assertAuthRequiredIfNotLoopback,
+  checkUpgradeAuth,
   respondError,
 } from "./middleware.js";
 import { getOrCreateLimiter, rateLimitKey } from "./rate-limit.js";
@@ -41,6 +43,12 @@ export interface StartHttpServerOptions {
   // front door from agent-transport.ts). Wins over the internally-built
   // Turso-backed transport; mountMcp is ignored when this is set.
   mcpTransport?: McpTransport;
+  // GET /sessions/ws (runner batch, phase 1, local mode only -- the
+  // central-mode sync agent has no session runtime wiring yet, #323's job).
+  // Defaults to mounted whenever the default router is in use (i.e. no
+  // custom `router` was supplied); an agent-mode boot passing its own
+  // router gets it off by default. An explicit value always wins.
+  mountSessionsWs?: boolean;
 }
 
 export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHandle {
@@ -52,6 +60,9 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
   assertAuthRequiredIfNotLoopback(host);
 
   const mcp = opts.mcpTransport ?? (opts.mountMcp === false ? null : createMcpTransport());
+
+  const mountSessionsWs = opts.mountSessionsWs ?? opts.router === undefined;
+  const sessionsWs = mountSessionsWs ? createSessionsWsServer() : null;
 
   // PORTUNI_LOG_REQUESTS=1 enables a single-line access log per request.
   // Used for diagnosing desktop-mode CORS / auth / route problems where
@@ -143,11 +154,51 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
       return;
     }
 
+    // A plain GET without an `Upgrade` header never reaches the "upgrade"
+    // event below -- reject it explicitly rather than 404ing or falling
+    // into the REST router, which has no handler for this path.
+    if (url.pathname === "/sessions/ws") {
+      res.writeHead(426, { "Content-Type": "application/json", Upgrade: "websocket" });
+      res.end(JSON.stringify({ error: "this endpoint is a WebSocket upgrade" }));
+      return;
+    }
+
     const handled = await route(req, res, url, identity);
     if (!handled) {
       res.writeHead(404);
       res.end("Not found");
     }
+  }
+
+  if (sessionsWs) {
+    httpServer.on("upgrade", (req, socket, head) => {
+      void (async () => {
+        let pathname: string;
+        try {
+          const hostHeader = (req.headers.host ?? "").toLowerCase();
+          pathname = new URL(req.url ?? "/", `http://${hostHeader || "localhost"}`).pathname;
+        } catch {
+          socket.destroy();
+          return;
+        }
+        if (pathname !== "/sessions/ws") {
+          socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        const auth = await checkUpgradeAuth(req);
+        if (!auth.ok || !auth.identity) {
+          const statusText = auth.status === 401 ? "Unauthorized" : "Forbidden";
+          socket.write(`HTTP/1.1 ${auth.status} ${statusText}\r\nConnection: close\r\n\r\n`);
+          socket.destroy();
+          return;
+        }
+        sessionsWs.handleUpgrade(req, socket, head, auth.identity);
+      })().catch((err) => {
+        console.error("[portuni:sessions-ws] upgrade failed:", err);
+        socket.destroy();
+      });
+    });
   }
 
   httpServer.listen(port, host, () => {
@@ -162,6 +213,7 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
 
   const shutdown = async (): Promise<void> => {
     mcp?.shutdown();
+    sessionsWs?.closeAll();
     await new Promise<void>((resolve) => {
       httpServer.close(() => resolve());
     });
