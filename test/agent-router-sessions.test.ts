@@ -18,6 +18,9 @@ import { createAgentRouter } from "../apps/server/api/agent-router.js";
 import { createAgentSessionRuntime } from "../apps/server/boot/session-runtime.js";
 import { createAgentSessionsWsDeps, createSessionsWsServer } from "../apps/server/api/sessions-ws.js";
 import WebSocket from "ws";
+import { createClient } from "@libsql/client";
+import { createLibsqlDbClient } from "../apps/server/infra/db-libsql.js";
+import { setDbForTesting } from "../apps/server/infra/db.js";
 import { CentralHttpError, type CentralClient } from "../apps/server/domain/sync/central/client.js";
 import type { NodeSyncInfo, RegisterFileRecordResult } from "../apps/server/domain/sync/sync-remote-api.js";
 import type { RemoteSweepResult } from "../apps/server/domain/sync/remote-sweep.js";
@@ -251,6 +254,7 @@ function stubScript(script: readonly FakeScriptStep[] = []): void {
 }
 
 let workspace: string;
+let emptyDb: ReturnType<typeof createLibsqlDbClient>;
 
 describe("agent-router: sessions/tasks", () => {
   before(async () => {
@@ -262,6 +266,13 @@ describe("agent-router: sessions/tasks", () => {
     resetLocalDbForTests();
 
     fake = new FakeCentral();
+    // The agent sidecar has no graph db: make getDb() answer an EMPTY
+    // in-memory client for the duration, so anything in the agent's socket
+    // or routes that reaches for the local db (audit_log, say) fails here
+    // the way it would in the real sidecar, instead of hitting whatever
+    // portuni.db happens to sit in cwd.
+    emptyDb = createLibsqlDbClient(createClient({ url: ":memory:" }));
+    setDbForTesting(emptyDb);
     // Exactly desktop.ts's agent-mode wiring: one runtime shared by the
     // REST routes and the live channel.
     const sessionRuntime = createAgentSessionRuntime(fake, { suspendPollIntervalMs: 10, suspendTimeoutMs: 100 });
@@ -288,6 +299,7 @@ describe("agent-router: sessions/tasks", () => {
     resetGateCachesForTesting();
     clearRegistryForTests();
     resetLocalDbForTests();
+    setDbForTesting(null);
     delete process.env.PORTUNI_WORKSPACE_ROOT;
     await rm(workspace, { recursive: true, force: true });
   });
@@ -446,13 +458,19 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(res.status, 201);
     const { session } = (await res.json()) as { session: SessionRow };
 
+    // A reply OR an error settles the wait; the assertion then says which.
+    const replyTo = async (id: string) => {
+      await waitFor((f) => f.id === id);
+      const frame = frames.find((f) => f.id === id)!;
+      assert.equal(frame.type, "reply", `${id}: ${JSON.stringify(frame.payload)}`);
+    };
     ws.send(JSON.stringify({ id: "sub", type: "subscribe", payload: { session_id: session.id, after: 0 } }));
-    await waitFor((f) => f.id === "sub" && f.type === "reply");
+    await replyTo("sub");
     // run_started + the brief replayed from the fake central's own log.
     assert.ok(frames.some((f) => f.type === "event" && (f.payload as { event: { kind: string } }).event.kind === "user_message"));
 
     ws.send(JSON.stringify({ id: "msg", type: "message", payload: { session_id: session.id, text: "go on" } }));
-    await waitFor((f) => f.id === "msg" && f.type === "reply");
+    await replyTo("msg");
     await waitFor(
       (f) => f.type === "event" && (f.payload as { event: { kind: string } }).event.kind === "assistant_message",
     );

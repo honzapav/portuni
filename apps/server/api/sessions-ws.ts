@@ -120,6 +120,10 @@ export interface SessionsWsDeps {
   access(identity: RequestIdentity, sessionId: string, action: SessionAccessAction): Promise<SessionRow>;
   snapshot(identity: RequestIdentity): Promise<SessionRow[]>;
   canSee(identity: RequestIdentity, row: SessionRow): Promise<boolean>;
+  // Records a performed action. Local mode writes audit_log; the agent has
+  // no graph db, and central already audits the record calls the runtime
+  // makes on its behalf.
+  audit(identity: RequestIdentity, action: string, sessionId: string, detail: Record<string, unknown>): Promise<void>;
 }
 
 // Bounds the initial session_state burst: running + suspended sessions,
@@ -145,6 +149,7 @@ export function createLocalSessionsWsDeps(): SessionsWsDeps {
       return visible;
     },
     canSee: (identity, row) => canSeeSession(identity, row),
+    audit: (identity, action, sessionId, detail) => logAudit(identity.userId, action, "session", sessionId, detail),
   };
 }
 
@@ -171,6 +176,7 @@ export function createAgentSessionsWsDeps(client: CentralClient, runtime: Sessio
     // here is for a session this runtime itself is running or just
     // touched, which it could only have done as the device's own user.
     canSee: async () => true,
+    audit: async () => undefined,
   };
 }
 
@@ -359,7 +365,7 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
       }
       throw err;
     }
-    await logAudit(conn.identity.userId, "session_message", "session", sessionId, {});
+    await deps.audit(conn.identity, "session_message", sessionId, {});
     sendReply(conn.ws, frame.id, { ok: true });
   }
 
@@ -383,7 +389,7 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     }
     const decision: QuestionDecision = { by: conn.identity.userId, value: frame.payload.decision.value, at: new Date().toISOString() };
     await runtime.answer(sessionId, requestId, decision);
-    await logAudit(conn.identity.userId, "session_answer", "session", sessionId, { request_id: requestId });
+    await deps.audit(conn.identity, "session_answer", sessionId, { request_id: requestId });
     sendReply(conn.ws, frame.id, { ok: true });
   }
 
@@ -410,7 +416,7 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     if (frame.type === "interrupt") await runtime.interrupt(sessionId);
     else if (frame.type === "suspend") await runtime.suspend(sessionId);
     else await runtime.closeSession(sessionId);
-    await logAudit(conn.identity.userId, `session_${frame.type}`, "session", sessionId, {});
+    await deps.audit(conn.identity, `session_${frame.type}`, sessionId, {});
     if (existing.user_id !== conn.identity.userId) {
       await runtime.recordStoppedBy(sessionId, conn.identity.userId);
     }
