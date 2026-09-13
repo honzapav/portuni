@@ -49,6 +49,15 @@ import {
 import { findEntryByFileId } from "../mcp/agent-tools.js";
 import { guardAgentRestWrite } from "./write-gate.js";
 import { startSyncJob, getSyncJob, getCurrentSyncJob } from "../domain/sync/sync-jobs.js";
+import {
+  handleClearRunnerOrgDefault,
+  handleCreateRunnerInstance,
+  handleDeleteRunnerInstance,
+  handleListRunnerInstances,
+  handleListRunners,
+  handleSetRunnerInstanceOrgDefault,
+  handleUpdateRunnerInstance,
+} from "./runners.js";
 import { mimeFor, localHashFor, PullDirtyLocalError } from "../domain/sync/engine.js";
 import { safeMirrorJoin, deriveLocalPath, type Section } from "../domain/sync/remote-path.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
@@ -382,6 +391,44 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
         return true;
       }
       respondJson(res, 200, job);
+      return true;
+    }
+
+    // Runner registry + provider instances (#319): runners.json is this
+    // device's own file, so the same handlers local mode's router.ts uses
+    // serve it here -- no central round trip. Mutations carry the webview
+    // proxy posture like every other REST write on the sync agent.
+    if (pathname === "/runners" && method === "GET") {
+      await handleListRunners(req, res);
+      return true;
+    }
+    if (pathname === "/runners/instances" && method === "GET") {
+      await handleListRunnerInstances(req, res);
+      return true;
+    }
+    if (pathname === "/runners/instances" && method === "POST") {
+      if (!guardAgentRestWrite(req, res, identity, "runners")) return true;
+      await handleCreateRunnerInstance(req, res);
+      return true;
+    }
+    const runnerOrgDefaultMatch = pathname.match(/^\/runners\/instances\/([^/]+)\/org-default$/);
+    if (runnerOrgDefaultMatch && method === "PUT") {
+      if (!guardAgentRestWrite(req, res, identity, "runners")) return true;
+      await handleSetRunnerInstanceOrgDefault(req, res, decodeURIComponent(runnerOrgDefaultMatch[1]));
+      return true;
+    }
+    const runnerClearOrgDefaultMatch = pathname.match(/^\/runners\/org-defaults\/([^/]+)$/);
+    if (runnerClearOrgDefaultMatch && method === "DELETE") {
+      if (!guardAgentRestWrite(req, res, identity, "runners")) return true;
+      await handleClearRunnerOrgDefault(req, res, decodeURIComponent(runnerClearOrgDefaultMatch[1]));
+      return true;
+    }
+    const runnerInstanceMatch = pathname.match(/^\/runners\/instances\/([^/]+)$/);
+    if (runnerInstanceMatch && (method === "PATCH" || method === "DELETE")) {
+      if (!guardAgentRestWrite(req, res, identity, "runners")) return true;
+      const id = decodeURIComponent(runnerInstanceMatch[1]);
+      if (method === "PATCH") await handleUpdateRunnerInstance(req, res, id);
+      else await handleDeleteRunnerInstance(req, res, id);
       return true;
     }
 

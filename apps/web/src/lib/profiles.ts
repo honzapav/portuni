@@ -19,7 +19,7 @@ export interface ProfileInfo {
   // no way to enforce that a value someone pastes in isn't one). Editing an
   // existing profile is therefore a partial update: update_profile treats
   // an empty submitted value for a key that already exists as "leave
-  // unchanged" (see ProfilesSection.tsx).
+  // unchanged" (the same rule RunnersSection.tsx's instance form follows).
   env_keys: string[];
   command: string | null;
 }

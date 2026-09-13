@@ -240,6 +240,33 @@ describe("session REST endpoints", () => {
     assert.equal(res.statusCode, 404);
   });
 
+  // #329: a server-generated suspend (here via the terminal-exit path)
+  // must be distinguishable from an agent-written one at resume time.
+  test("GET /sessions/:id/resume-info reports generated_by 'server' and the reason after a server-side suspend", async () => {
+    const session = await createSession(db, SOLO, {
+      node_id: nodeId,
+      session_type: "interactive_task",
+      terminal_id: "term-resume-info",
+    });
+    await call(makeIdentity(SOLO), "POST", "/terminals/term-resume-info/exit");
+
+    const res = await call(makeIdentity(SOLO), "GET", `/sessions/${session.id}/resume-info`);
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body) as SessionResumeInfo;
+    assert.equal(body.generated_by, "server");
+    assert.equal(body.reason, "terminal_exit");
+  });
+
+  test("GET /sessions/:id/resume-info reports generated_by null for an ordinary (non-server) suspend", async () => {
+    const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
+    await call(makeIdentity(SOLO), "POST", `/sessions/${session.id}/state`, { state: "suspended" });
+
+    const res = await call(makeIdentity(SOLO), "GET", `/sessions/${session.id}/resume-info`);
+    const body = JSON.parse(res.body) as SessionResumeInfo;
+    assert.equal(body.generated_by, null);
+    assert.equal(body.reason, null);
+  });
+
   test("POST /terminals/:id/exit closes only running sessions sharing the terminal id", async () => {
     const running = await createSession(db, SOLO, {
       node_id: nodeId,
@@ -259,7 +286,10 @@ describe("session REST endpoints", () => {
     const closedBody = JSON.parse(closedRes.body) as { sessions: SessionSummary[] };
     const runningRow = closedBody.sessions.find((s) => s.id === running.id);
     const otherRow = closedBody.sessions.find((s) => s.id === other.id);
-    assert.equal(runningRow?.state, "closed");
+    // #329: a terminal exit suspends (server-generated handoff) rather
+    // than closing outright -- closed is reached only by an explicit
+    // Uzavřít or the auto-archive sweep.
+    assert.equal(runningRow?.state, "suspended");
     assert.equal(otherRow?.state, "running");
   });
 

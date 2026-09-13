@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.0](https://github.com/honzapav/portuni/compare/v0.14.0...v0.15.0) (2026-09-13)
+
+
+### Features
+
+* new Showtime presentation from a node ([#353](https://github.com/honzapav/portuni/issues/353)) ([39e44dc](https://github.com/honzapav/portuni/commit/39e44dcb26c27ac0c66f106fe852ec9838fa183a))
+* **runner:** server storage/runtime, web Runnery settings; fix(sessions): suspend not close ([#349](https://github.com/honzapav/portuni/issues/349)) ([d3eee4d](https://github.com/honzapav/portuni/commit/d3eee4d5e74346457fd9bc44536b0388b4945d97))
+
 ## [0.14.0](https://github.com/honzapav/portuni/compare/v0.13.10...v0.14.0) (2026-09-12)
 
 

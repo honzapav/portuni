@@ -36,12 +36,18 @@ export interface McpTransport {
 
 export function createMcpTransport(): McpTransport {
   const sessions = new Map<string, SessionEntry>();
+  // Set right before a GC-forced close, read (and cleared) by onclose --
+  // the only way to tell "the idle GC closed this transport" apart from
+  // "the client disconnected on its own", since both paths end up calling
+  // the same transport.onclose handler.
+  const idleGcClosing = new Set<string>();
 
   const sessionGc = setInterval(() => {
     const cutoff = Date.now() - SESSION_TTL_MS;
     for (const [id, entry] of sessions) {
       if (entry.lastUsedAt < cutoff) {
         sessions.delete(id);
+        idleGcClosing.add(id);
         entry.transport.close().catch(() => undefined);
       }
     }
@@ -234,6 +240,7 @@ export function createMcpTransport(): McpTransport {
       });
 
       transport.onclose = () => {
+        const wasIdleGc = transport.sessionId ? idleGcClosing.delete(transport.sessionId) : false;
         if (transport.sessionId) {
           sessions.delete(transport.sessionId);
         }
@@ -241,11 +248,11 @@ export function createMcpTransport(): McpTransport {
         // format cannot carry X-Portuni-Terminal (Codex, Vibe) or a crash
         // that never reaches POST /terminals/:terminal_id/exit would
         // otherwise leave its session row stuck 'running' until the
-        // 30-minute idle GC. closeSessionIfRunning never touches
-        // 'suspended' -- an agent that called portuni_session_suspend
-        // before disconnecting must stay resumable.
+        // 30-minute idle GC. closeSessionIfRunning (#329: suspends, not
+        // closes) never touches 'suspended' -- an agent that called
+        // portuni_session_suspend before disconnecting must stay resumable.
         if (scope.sessionId) {
-          closeSessionIfRunning(getDb(), scope.sessionId).catch((err) => {
+          closeSessionIfRunning(getDb(), scope.sessionId, wasIdleGc ? "idle" : "disconnect").catch((err) => {
             console.error("closeSessionIfRunning on transport close failed:", err);
           });
         }
