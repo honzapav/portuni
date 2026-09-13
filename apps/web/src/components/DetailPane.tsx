@@ -51,7 +51,8 @@ import {
 } from "../types";
 import { safeHref } from "../lib/safe-url";
 import { groupEventsByDate } from "../lib/events";
-import { isTauri, openExternal, openInFinder } from "../lib/backend-url";
+import { isTauri, openInFinder } from "../lib/backend-url";
+import { externalLinkProps } from "../lib/external-link";
 import type { TerminalSession } from "../lib/sessions";
 import type { Actor } from "../api";
 import {
@@ -3307,18 +3308,7 @@ function EntityAttributeItem<TItem extends EntityAttributeItem>({
       <div className="flex-1">
         {safeLink ? (
           <a
-            href={safeLink}
-            target="_blank"
-            rel="noreferrer"
-            onClick={(e) => {
-              // In the Tauri webview a target="_blank" click is a no-op;
-              // route through the OS handler instead. The browser build
-              // keeps native anchor behaviour (middle-click, cmd-click).
-              if (isTauri()) {
-                e.preventDefault();
-                void openExternal(safeLink);
-              }
-            }}
+            {...externalLinkProps(safeLink)}
             className="text-[var(--color-accent)] hover:underline"
           >
             {item.name}
@@ -3649,18 +3639,7 @@ function FolderLink({ nodeId }: { nodeId: string }) {
   if (!info) return null;
   return (
     <a
-      href={info.url}
-      target="_blank"
-      rel="noopener noreferrer"
-      onClick={(e) => {
-        e.stopPropagation();
-        // Tauri webview swallows target="_blank"; hand the Drive URL to
-        // the OS handler. Browser build keeps the native anchor.
-        if (isTauri()) {
-          e.preventDefault();
-          void openExternal(info.url);
-        }
-      }}
+      {...externalLinkProps(info.url, { onClick: (e) => e.stopPropagation() })}
       title={`Otevřít na ${info.remote_name ?? "remote"}`}
       className="inline-flex items-center justify-center rounded text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text-muted)]"
     >
