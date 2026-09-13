@@ -1119,6 +1119,10 @@ function DetailPaneBody({
                       setPresentationError(null);
                       setCreatingFile((v) => !v);
                     }}
+                    onOpenNewFile={() => {
+                      setPresentationError(null);
+                      setCreatingFile(true);
+                    }}
                     onNewPresentation={handleNewPresentation}
                   />
                 </div>

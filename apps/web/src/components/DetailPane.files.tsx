@@ -299,10 +299,15 @@ export function NewFileForm({
 export function NewFileSplitButton({
   hasMirror,
   onNewFile,
+  onOpenNewFile,
   onNewPresentation,
 }: {
   hasMirror: boolean;
   onNewFile: () => void;
+  // Used by the menu's "Nový soubor" item only. onNewFile toggles the form
+  // (the primary button's own behaviour); with the form already open, the
+  // menu item must open it (stay open), not close it.
+  onOpenNewFile: () => void;
   onNewPresentation: () => Promise<void>;
 }) {
   const [installed, setInstalled] = useState(false);
@@ -391,7 +396,7 @@ export function NewFileSplitButton({
             type="button"
             onClick={() => {
               setOpen(false);
-              onNewFile();
+              onOpenNewFile();
             }}
             className="flex w-full items-center px-3 py-2 text-left text-[13px] text-[var(--color-text)] hover:bg-[var(--color-surface)]"
           >
