@@ -98,9 +98,11 @@ test("google mode rejects an expired poa_ token", async () => {
   process.env.PORTUNI_PUBLIC_URL = ISSUER;
   try {
     const minted = await mintGrant(db, GRANT_INPUT);
+    // SQLite-shaped "YYYY-MM-DD HH:MM:SS" -- see the comment in
+    // test/auth-oauth-grants.test.ts's own use of this same shape.
     await db.execute({
-      sql: "UPDATE oauth_grants SET access_expires_at = datetime('now', '-1 second') WHERE id = ?",
-      args: [minted.grantId],
+      sql: "UPDATE oauth_grants SET access_expires_at = ? WHERE id = ?",
+      args: [new Date(Date.now() - 1000).toISOString().replace("T", " ").slice(0, 19), minted.grantId],
     });
     assert.equal(await resolveRequestIdentity(ctx(db, "google"), `Bearer ${minted.accessToken}`), null);
   } finally {

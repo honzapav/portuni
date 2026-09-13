@@ -254,12 +254,12 @@ export async function buildContextPayload(
             JOIN edges e ON e.source_id = gw.node_id OR e.target_id = gw.node_id
             WHERE gw.d < ?
           )
-          SELECT gw.node_id, MIN(gw.d) AS d,
+          SELECT n.id AS node_id, MIN(gw.d) AS d,
                  n.type, n.name, n.description, n.status,
                  n.owner_id, n.lifecycle_state, n.health
           FROM graph_walk gw
           JOIN nodes n ON n.id = gw.node_id
-          GROUP BY gw.node_id
+          GROUP BY n.id
           ORDER BY d, n.name`,
       args: [nodeId, depth],
     });

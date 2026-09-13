@@ -41,7 +41,7 @@ describe("migration 029 nodes.health", () => {
 // against a DB that pre-dates health, and confirm the ALTER TABLE
 // backfills the column with the default on existing rows too.
 test("migration 029 adds health to an existing nodes table with default 'on_track'", async () => {
-  const { db, orgId } = await makeSharedDb();
+  const { db, orgId } = await makeSharedDb("libsql");
 
   const info = await db.execute("PRAGMA table_info(nodes)");
   const hasColumn = info.rows.some((r) => r.name === "health");

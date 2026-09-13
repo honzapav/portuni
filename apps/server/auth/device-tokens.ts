@@ -5,6 +5,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DbClient } from "../infra/db.js";
 import { ulid } from "ulid";
+import { nowExpr } from "../infra/sql.js";
 
 const DEFAULT_TTL_DAYS = 180;
 
@@ -57,13 +58,13 @@ export async function verifyDeviceToken(
     sql: `SELECT id, user_id, headless FROM device_tokens
           WHERE token_hash = ?
             AND revoked_at IS NULL
-            AND (expires_at IS NULL OR expires_at > datetime('now'))`,
+            AND (expires_at IS NULL OR expires_at > ${nowExpr(db.dialect)})`,
     args: [hashToken(token)],
   });
   if (r.rows.length === 0) return null;
   const row = r.rows[0];
   await db.execute({
-    sql: "UPDATE device_tokens SET last_used_at = datetime('now') WHERE id = ?",
+    sql: `UPDATE device_tokens SET last_used_at = ${nowExpr(db.dialect)} WHERE id = ?`,
     args: [row.id],
   });
   return {
@@ -79,7 +80,7 @@ export async function revokeDeviceToken(
   tokenId: string,
 ): Promise<boolean> {
   const r = await db.execute({
-    sql: `UPDATE device_tokens SET revoked_at = datetime('now')
+    sql: `UPDATE device_tokens SET revoked_at = ${nowExpr(db.dialect)}
           WHERE id = ? AND user_id = ? AND revoked_at IS NULL`,
     args: [tokenId, userId],
   });

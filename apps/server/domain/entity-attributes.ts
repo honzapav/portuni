@@ -9,6 +9,7 @@ import type { DbClient, InValue } from "../infra/db.js";
 import { DataSourceRow, ToolRow } from "../shared/types.js";
 import { isSafeExternalLink } from "../shared/safe-url.js";
 import { writeAudit } from "../infra/audit.js";
+import { nowExpr } from "../infra/sql.js";
 
 export const ExternalLinkSchema = z
   .string()
@@ -114,7 +115,7 @@ async function updateRow<T>(
     if (current.rows.length === 0) throw new Error(`update_${table}: ${id} not found`);
     return parser(current.rows[0]);
   }
-  sets.push("updated_at = datetime('now')");
+  sets.push(`updated_at = ${nowExpr(db.dialect)}`);
   args.push(id);
   const result = await db.execute({
     sql: `UPDATE ${table} SET ${sets.join(", ")} WHERE id = ?`,

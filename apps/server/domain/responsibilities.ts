@@ -7,6 +7,7 @@ import { ulid } from "ulid";
 import type { DbClient, InValue } from "../infra/db.js";
 import { ActorRow, ResponsibilityRow } from "../shared/types.js";
 import { writeAudit } from "../infra/audit.js";
+import { insertIgnore } from "../infra/sql.js";
 
 export type ResponsibilityWithAssignees = ResponsibilityRow & {
   assignees: ActorRow[];
@@ -90,8 +91,11 @@ export async function createResponsibility(
   if (parsed.assignees && parsed.assignees.length > 0) {
     for (const actorId of parsed.assignees) {
       await db.execute({
-        sql: `INSERT OR IGNORE INTO responsibility_assignments (responsibility_id, actor_id, created_at)
+        sql: insertIgnore(
+          db.dialect,
+          `INSERT OR IGNORE INTO responsibility_assignments (responsibility_id, actor_id, created_at)
               VALUES (?, ?, ?)`,
+        ),
         args: [id, actorId, now],
       });
     }
@@ -229,8 +233,11 @@ export async function assignResponsibility(
   const now = new Date().toISOString();
 
   await db.execute({
-    sql: `INSERT OR IGNORE INTO responsibility_assignments (responsibility_id, actor_id, created_at)
+    sql: insertIgnore(
+      db.dialect,
+      `INSERT OR IGNORE INTO responsibility_assignments (responsibility_id, actor_id, created_at)
           VALUES (?, ?, ?)`,
+    ),
     args: [parsed.responsibility_id, parsed.actor_id, now],
   });
 

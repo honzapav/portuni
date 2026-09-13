@@ -8,6 +8,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
+import { nowExpr } from "../../infra/sql.js";
 
 const CODE_TTL_MS = 60 * 1000;
 
@@ -87,7 +88,7 @@ export async function redeemAuthorizationCode(
   const r = await db.execute({
     sql: `SELECT id, user_id, client_id, redirect_uri, code_challenge, resource, scope,
                  grant_id, (used_at IS NOT NULL) AS is_used,
-                 (expires_at <= datetime('now')) AS is_expired
+                 (expires_at <= ${nowExpr(db.dialect)}) AS is_expired
           FROM oauth_codes WHERE code_hash = ?`,
     args: [hash],
   });
@@ -97,7 +98,7 @@ export async function redeemAuthorizationCode(
   if (Number(row.is_used) === 1) {
     if (row.grant_id != null) {
       await db.execute({
-        sql: "UPDATE oauth_grants SET revoked_at = datetime('now') WHERE id = ?",
+        sql: `UPDATE oauth_grants SET revoked_at = ${nowExpr(db.dialect)} WHERE id = ?`,
         args: [row.grant_id],
       });
     }
@@ -113,7 +114,7 @@ export async function redeemAuthorizationCode(
   // stamped used_at, rowsAffected is 0 -- treat it the same as the
   // already-used branch above (replay, revoke any attached grant).
   const stamp = await db.execute({
-    sql: "UPDATE oauth_codes SET used_at = datetime('now') WHERE id = ? AND used_at IS NULL",
+    sql: `UPDATE oauth_codes SET used_at = ${nowExpr(db.dialect)} WHERE id = ? AND used_at IS NULL`,
     args: [row.id],
   });
   if (stamp.rowsAffected === 0) {
@@ -124,7 +125,7 @@ export async function redeemAuthorizationCode(
     const grantId = race.rows[0]?.grant_id;
     if (grantId != null) {
       await db.execute({
-        sql: "UPDATE oauth_grants SET revoked_at = datetime('now') WHERE id = ?",
+        sql: `UPDATE oauth_grants SET revoked_at = ${nowExpr(db.dialect)} WHERE id = ?`,
         args: [grantId],
       });
     }

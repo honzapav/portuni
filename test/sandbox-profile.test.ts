@@ -27,6 +27,7 @@ import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
+import { insertIgnore } from "../apps/server/infra/sql.js";
 
 describe("buildSeatbeltProfile (real-path model)", () => {
   it("grants rw on the home mirror and denies the rest of the root", () => {
@@ -265,7 +266,7 @@ describe("resolveSandboxScopeForNode", () => {
     await mkdir(homeDir, { recursive: true });
     await registerMirror(SOLO_USER, nodeId, homeDir);
     await db.execute({
-      sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+      sql: insertIgnore(db.dialect, "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)"),
       args: ["someone-else", "else@x.com", "Someone Else"],
     });
 

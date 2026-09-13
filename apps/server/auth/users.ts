@@ -5,6 +5,7 @@
 import type { DbClient } from "../infra/db.js";
 import { ulid } from "ulid";
 import type { Identity } from "./adapter.js";
+import { nowExpr, isUniqueViolation } from "../infra/sql.js";
 
 // Thrown by inviteUser() when the email is already registered (paired or
 // invited). Handlers map this to 409.
@@ -54,13 +55,13 @@ export async function upsertUserFromIdentity(
       // Another row owns the email — update everything except email.
       await db.execute({
         sql: `UPDATE users SET name = ?, avatar_url = COALESCE(?, avatar_url),
-                     last_login_at = datetime('now') WHERE id = ?`,
+                     last_login_at = ${nowExpr(db.dialect)} WHERE id = ?`,
         args: [identity.name, avatarUrl, id],
       });
     } else {
       await db.execute({
         sql: `UPDATE users SET email = ?, name = ?, avatar_url = COALESCE(?, avatar_url),
-                     last_login_at = datetime('now') WHERE id = ?`,
+                     last_login_at = ${nowExpr(db.dialect)} WHERE id = ?`,
         args: [identity.email, identity.name, avatarUrl, id],
       });
     }
@@ -75,7 +76,7 @@ export async function upsertUserFromIdentity(
     const id = String(byEmail.rows[0].id);
     await db.execute({
       sql: `UPDATE users SET google_sub = ?, name = ?, avatar_url = COALESCE(?, avatar_url),
-                   last_login_at = datetime('now') WHERE id = ?`,
+                   last_login_at = ${nowExpr(db.dialect)} WHERE id = ?`,
       args: [identity.sub, identity.name, avatarUrl, id],
     });
     return id;
@@ -84,7 +85,7 @@ export async function upsertUserFromIdentity(
   const id = ulid();
   await db.execute({
     sql: `INSERT INTO users (id, email, name, google_sub, avatar_url, last_login_at, created_at)
-          VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+          VALUES (?, ?, ?, ?, ?, ${nowExpr(db.dialect)}, ${nowExpr(db.dialect)})`,
     args: [id, identity.email, identity.name, identity.sub, avatarUrl],
   });
   return id;
@@ -139,7 +140,7 @@ export async function inviteUser(
   const name = normalized.split("@")[0];
   try {
     await db.execute({
-      sql: "INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, datetime('now'))",
+      sql: `INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, ${nowExpr(db.dialect)})`,
       args: [id, normalized, name],
     });
   } catch (err) {
@@ -150,7 +151,7 @@ export async function inviteUser(
     // empirically -- see the constraint-race test). Re-throw as the same
     // UserExistsError the pre-check throws so the handler's existing 409
     // mapping covers the race too, instead of a generic 500.
-    if (err instanceof Error && err.message.includes("UNIQUE constraint failed: users.email")) {
+    if (isUniqueViolation(err)) {
       throw new UserExistsError(normalized);
     }
     throw err;

@@ -24,6 +24,7 @@ import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 import type { SessionSummary, SessionRunRow, SessionEventRow } from "../apps/server/shared/api-types.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { insertIgnore } from "../apps/server/infra/sql.js";
 
 function makeIdentity(userId: string, scope: RequestIdentity["globalScope"] = "write"): RequestIdentity {
   return {
@@ -130,7 +131,7 @@ describe("task REST endpoints under /sessions", () => {
   beforeEach(async () => {
     dbFixture = await makeSharedDb();
     await dbFixture.db.execute({
-      sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+      sql: insertIgnore(dbFixture.db.dialect, "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)"),
       args: ["U2", "u2@x.com", "U2"],
     });
     setDbForTesting(dbFixture.db);

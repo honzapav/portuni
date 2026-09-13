@@ -14,6 +14,7 @@
 
 import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
+import { nowExpr } from "../../infra/sql.js";
 import { getAdapter } from "./adapter-cache.js";
 import { relocateRemoteObject, writeRelocatedRecord } from "./file-relocation.js";
 import { removeLocalCopyAndState } from "./local-cleanup.js";
@@ -99,7 +100,7 @@ export async function markPendingMoveSourceCopied(db: DbClient, id: string): Pro
 
 export async function failPendingOp(db: DbClient, id: string, error: string): Promise<void> {
   await db.execute({
-    sql: `UPDATE pending_file_ops SET attempts = attempts + 1, last_error = ?, updated_at = datetime('now') WHERE id = ?`,
+    sql: `UPDATE pending_file_ops SET attempts = attempts + 1, last_error = ?, updated_at = ${nowExpr(db.dialect)} WHERE id = ?`,
     args: [error, id],
   });
 }

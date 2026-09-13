@@ -1490,6 +1490,112 @@ symlink to this file.
   `pg-001`). `seedSoloUser` also branched: `INSERT OR IGNORE ...
   datetime('now')` has a `postgres` counterpart using `ON CONFLICT (id) DO
   NOTHING` and `now()`.
+- **B3 (`docs/superpowers/plans/2026-09-12-infra-batch.md`) made every
+  runtime query dialect-neutral and the whole suite genuinely passes on
+  both drivers — `npm run test:pglite` alongside the default `npm test`.**
+  `infra/sql.ts` holds the fragment helpers every non-exempt call site
+  under `apps/server/{domain,api,mcp,auth,infra}` now goes through:
+  `nowExpr(dialect)` (`datetime('now')` vs `CURRENT_TIMESTAMP`),
+  `jsonField(dialect, col, key)` (`json_extract(col,'$.key')` vs
+  `(col::jsonb ->> 'key')`), `jsonArrayElementsText(dialect)` (SQLite's
+  `json_each(?)` table-valued function, seeding `auth/node-access.ts`'s
+  recursive ACL-chain CTE from a JSON array of ids, vs Postgres's
+  `jsonb_array_elements_text(?::jsonb) AS value`), and `insertIgnore(dialect,
+  sql)` (rewrites a SQL string's own `INSERT OR IGNORE INTO ...` into
+  `INSERT INTO ... ON CONFLICT DO NOTHING` — a bare `ON CONFLICT DO NOTHING`
+  needs no conflict target, matching `OR IGNORE`'s "any violation" scope).
+  `?` stays the placeholder everywhere (B1's drivers already rewrite it);
+  `ON CONFLICT ... DO UPDATE` and `ROW_NUMBER() OVER` needed no translation
+  at all. **`PRAGMA` needed no per-call-site fix, because it has no runtime
+  call sites**: every occurrence outside `infra/schema.ts` (whose own
+  `PRAGMA foreign_keys` sits after B2's `dialect === "postgres"` early
+  return, so the postgres path never reaches it), `infra/schema-migrations.ts`
+  and `infra/backup.ts` is libsql-migration/Turso-tool-only, already exempt.
+  **Exempted by design, not fixed**: `infra/schema.ts`/`schema-migrations.ts`/
+  `schema-triggers.ts` (the libsql-only fresh-install DDL + migration
+  runner — schema.pg.ts is its Postgres counterpart, not a shared code
+  path), `infra/backup.ts` (Turso-only, removed in B4), and
+  `domain/sync/local-db.ts` (the per-device sync.db always calls
+  `createClient` directly regardless of `getDb()`'s driver — moves to
+  PGlite in B4 alongside the graph db, not here).
+  **Two dialect-sensitive bugs beyond the plan's named constructs**, found
+  only by actually running the suite against PGlite: (1) `mcp/tools/scope.ts`
+  and `mcp/tools/get-node.ts`'s `WHERE name = ? COLLATE NOCASE` (a SQLite
+  named collation Postgres doesn't have) became `WHERE lower(name) =
+  lower(?)`, identical case-insensitive semantics on both dialects; (2)
+  `mcp/tools/context.ts`'s recursive graph-walk query's
+  `GROUP BY gw.node_id` selected `n.*` columns un-aggregated, which SQLite's
+  lenient GROUP BY allows but Postgres rejects outright — fixed by grouping
+  on `n.id` (`nodes`' own primary key) instead, which qualifies for
+  Postgres's functional-dependency exception (selecting any other column of
+  a table already grouped by its own PK is allowed), and selecting
+  `n.id AS node_id` to match; produces identical rows on both dialects
+  since `n.id = gw.node_id` always holds through the JOIN. **The
+  constraint-violation detectors were also dialect-specific string
+  matching**: `auth/users.ts`'s `err.message.includes("UNIQUE constraint
+  failed: users.email")` (a concurrent-invite race → `UserExistsError`) and
+  `http/middleware.ts`'s `respondError`'s `err.message.includes
+  ("SQLITE_CONSTRAINT")` (a DB-trigger rejection → friendly 409) both only
+  ever matched libsql's own error shape. `infra/sql.ts`'s
+  `isUniqueViolation(err)` and `constraintViolationMessage(err)` check both:
+  libsql's `LibsqlError.code`/message text, and pg/PGlite's real SQLSTATE
+  `.code` (`23505` unique violation; `P0001` — `RAISE EXCEPTION`'s own code
+  — or any `23xxx` class for the friendly-message path, where Postgres's
+  message is already the trigger's raw text or a reasonably readable
+  constraint message, unlike libsql's wrapped "SQLite error: ..." which
+  still needs the existing regex extraction).
+  **The single largest fix, found only empirically**: pg/PGlite return
+  `TIMESTAMPTZ` columns as native JS `Date` objects, not strings — `DbClient`'s
+  contract is `DbValue` (`null | string | number | bigint | ArrayBuffer`,
+  no `Date`), and every Zod row schema in the codebase types a
+  `*_at`/`timestamp` column `z.string()`, so literally every read of a row
+  with a timestamp column failed validation under Postgres until this was
+  fixed. `infra/pg-row-normalize.ts`'s `normalizePgRow`, called from both
+  `db-pg.ts` and `db-pglite.ts`'s `toDbResultSet`, converts any `Date` value
+  in a row to the same text shape SQLite's own `datetime('now')` produces
+  (`"YYYY-MM-DD HH:MM:SS"`, second precision, no timezone suffix) —
+  chosen deliberately over ISO so the handful of call sites that still
+  string-*compare* two timestamps (rather than letting the DB compare them)
+  keep sorting correctly regardless of dialect; two tests
+  (`test/auth-oauth-grants.test.ts` et al.) that used to write an expiry
+  timestamp via SQLite's own `datetime('now', '-1 second')` were rewritten
+  to compute the same shape in JS (`new Date(...).toISOString().replace("T",
+  " ").slice(0, 19)`) and bind it as a plain parameter — SQL-side relative-
+  date arithmetic has no portable form across dialects at all.
+  **Test-file fixture conversion**: `test/helpers/shared-db.ts`'s
+  `makeSharedDb()` now builds its db via `test/helpers/db.ts`'s
+  `openTestDb()` (driver from `PORTUNI_TEST_DB`) instead of a hardcoded
+  libsql `createClient` — every one of the ~80 test files built on it
+  became dialect-parametrized for free. `makeSharedDb(driver?)` takes an
+  explicit override for the files that call `schema-migrations.ts`'s
+  `runMigrationNNN`/`runMigrations` directly against the returned db, or
+  otherwise poke libsql-only internals (`sqlite_master`, `PRAGMA
+  foreign_keys` to force an impossible FK state) — every `test/migration-
+  *.test.ts` file, plus the specific tests in `test/files-unique-remote
+  .test.ts` and `test/events-supersede.test.ts` that do the same, pass
+  `"libsql"` explicitly regardless of which driver the rest of the matrix
+  run is exercising, since those ARE the libsql migration path and have no
+  Postgres equivalent — schema.pg.ts's baseline already carries whatever
+  they migrate an old DB towards, applied as a single step. A handful of
+  test files that build their own **raw libsql `createClient` directly**
+  (never touching `makeSharedDb`/`openTestDb` at all — e.g. a fixed
+  `TURSO_URL=file:...` temp path, or hand-rolled pre-migration DDL to test
+  a specific migration's `up()` in isolation) needed no change at all:
+  they're unconditionally libsql regardless of `PORTUNI_TEST_DB`, by
+  construction.
+  **`npm run test:pglite` caps `--test-concurrency=2`** (`node --test`'s
+  default is `availableParallelism() - 1`, effectively "run most test files
+  in parallel"): PGlite is a real WASM-compiled Postgres per instance, heavy
+  enough that the full ~2000-test suite's default concurrency reliably
+  OOM-kills several of the heavier test files partway through a run (every
+  one of those files passes cleanly, fast, in isolation or under this cap —
+  confirmed empirically, not a logic bug). `scripts/agent-gate.sh` runs
+  `npm run qa` (libsql, fast — unchanged, still what the pre-push hook and
+  local iteration use) then `npm run test:pglite` as a separate step;
+  `ci.yml`'s `server` job runs both `npm test` and `npm run test:pglite`
+  as two ordinary sequential steps in the same job rather than a literal
+  GitHub Actions `strategy: matrix:` — cheaper (one `npm ci`/build/lint
+  pass, not two) for the same "green on both" guarantee the plan asks for.
 
 ## Security rules (from the auth refactor post-mortem)
 

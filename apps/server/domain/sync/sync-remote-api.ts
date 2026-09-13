@@ -18,6 +18,7 @@
 
 import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
+import { jsonField } from "../../infra/sql.js";
 import { resolveNodeInfo } from "./node-info.js";
 import { resolveRemote, listRules, resolveRemoteFromRules } from "./routing.js";
 import { mimeFor } from "./engine.js";
@@ -101,6 +102,8 @@ export async function getNodeSyncInfos(
   const cutoff = new Date(Date.now() - TOMBSTONE_WINDOW_DAYS * 86_400_000)
     .toISOString()
     .slice(0, 10);
+  const remotePathField = jsonField(db.dialect, "detail", "remote_path");
+  const oldRemotePathField = jsonField(db.dialect, "detail", "old_remote_path");
 
   for (let i = 0; i < distinct.length; i += SYNC_INFO_BATCH) {
     const chunk = distinct.slice(i, i + SYNC_INFO_BATCH);
@@ -133,8 +136,7 @@ export async function getNodeSyncInfos(
         sql: `SELECT node_id, target_id, action, remote_path FROM (
                 SELECT audit_node_id AS node_id,
                        target_id, action,
-                       COALESCE(json_extract(detail, '$.remote_path'),
-                                json_extract(detail, '$.old_remote_path')) AS remote_path,
+                       COALESCE(${remotePathField}, ${oldRemotePathField}) AS remote_path,
                        ROW_NUMBER() OVER (
                          PARTITION BY audit_node_id
                          ORDER BY timestamp DESC
@@ -256,10 +258,11 @@ export async function getNodeSyncInfo(db: DbClient, nodeId: string): Promise<Nod
   const cutoff = new Date(Date.now() - TOMBSTONE_WINDOW_DAYS * 86_400_000)
     .toISOString()
     .slice(0, 10);
+  const remotePathField = jsonField(db.dialect, "detail", "remote_path");
+  const oldRemotePathField = jsonField(db.dialect, "detail", "old_remote_path");
   const tombRes = await db.execute({
     sql: `SELECT target_id, action,
-                 COALESCE(json_extract(detail, '$.remote_path'),
-                          json_extract(detail, '$.old_remote_path')) AS remote_path
+                 COALESCE(${remotePathField}, ${oldRemotePathField}) AS remote_path
           FROM audit_log
           WHERE target_type = 'file'
             AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename', 'sync_rename_remote')

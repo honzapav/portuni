@@ -25,6 +25,7 @@ import {
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
+import { insertIgnore } from "../apps/server/infra/sql.js";
 
 async function waitUntil(cond: () => boolean | Promise<boolean>, timeoutMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -298,7 +299,7 @@ describe("resumeSessionPersistence: graph-plane reattach on resume (#204)", () =
   it("returns null and leaves the session row untouched when the resume id is unauthorized", async () => {
     const shared = await makeSharedDb();
     await shared.db.execute({
-      sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+      sql: insertIgnore(shared.db.dialect, "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)"),
       args: ["someone-else", "else@x.com", "Someone Else"],
     });
     const suspended = await createSession(shared.db, "someone-else", {

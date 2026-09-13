@@ -8,6 +8,7 @@ import type { ZodType } from "zod";
 import { authMode, checkAuthRequiredForConfig } from "../infra/server-config.js";
 import { LocalModeNoRemoteError } from "../domain/sync/types.js";
 import { getDb } from "../infra/db.js";
+import { constraintViolationMessage } from "../infra/sql.js";
 import { SOLO_USER } from "../infra/schema.js";
 import { EnvAdapter } from "../auth/env-adapter.js";
 import { createGoogleAdapter } from "../auth/google-adapter.js";
@@ -267,9 +268,8 @@ export function respondError(res: ServerResponse, ctx: string, err: unknown): vo
     res.end(JSON.stringify({ error: err.message, code: err.code, request_id: id }));
     return;
   }
-  if (err instanceof Error && err.message.includes("SQLITE_CONSTRAINT")) {
-    const m = err.message.match(/SQLite error:\s*([^\n]+)/);
-    const friendly = m ? m[1].trim() : "constraint violation";
+  const friendly = err instanceof Error ? constraintViolationMessage(err) : null;
+  if (friendly !== null) {
     res.writeHead(409, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: friendly, request_id: id }));
     return;

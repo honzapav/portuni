@@ -22,6 +22,7 @@ jobs:
       - run: npm run lint:strict
       - run: npx tsc --noEmit
       - run: npm test
+      - run: npm run test:pglite
       - run: npm run build
 
   app:

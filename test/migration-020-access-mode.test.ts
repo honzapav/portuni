@@ -41,7 +41,7 @@ describe("migration 020 nodes.access_mode", () => {
 // against a DB that pre-dates access_mode, and confirm the ALTER TABLE
 // backfills the column with the default on existing rows too.
 test("migration 020 adds access_mode to an existing nodes table with default 'private'", async () => {
-  const { db, orgId } = await makeSharedDb();
+  const { db, orgId } = await makeSharedDb("libsql");
 
   // Simulate a pre-migration DB: drop the column by rebuilding the table
   // without it, then remove the marker so runMigrations redoes the work.

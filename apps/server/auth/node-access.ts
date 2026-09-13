@@ -10,6 +10,7 @@
 // specs.md:203).
 
 import type { DbClient } from "../infra/db.js";
+import { jsonArrayElementsText } from "../infra/sql.js";
 import type { GlobalScope } from "./roles.js";
 
 export interface AccessEntry {
@@ -65,7 +66,7 @@ async function loadChains(db: DbClient, nodeIds: string[]): Promise<Map<string, 
     const batch = distinct.slice(i, i + CHAIN_BATCH);
     const r = await db.execute({
       sql: `WITH RECURSIVE chain(root, id, depth) AS (
-              SELECT value, value, 0 FROM json_each(?)
+              SELECT value, value, 0 FROM ${jsonArrayElementsText(db.dialect)}
               UNION ALL
               SELECT c.root,
                      (SELECT e.target_id FROM edges e

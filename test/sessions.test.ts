@@ -22,6 +22,7 @@ import {
 } from "../apps/server/domain/sessions.js";
 import { parseServerHandoffReason } from "../apps/server/domain/session-handoff.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
+import { insertIgnore } from "../apps/server/infra/sql.js";
 
 describe("createSession / getSession / listSessions", () => {
   it("creates a session row and reads it back", async () => {
@@ -266,7 +267,7 @@ describe("closeSessionsByTerminalId (#218, PTY exit; #329 suspends)", () => {
   it("never touches another user's session sharing the same terminal id", async () => {
     const { db, nodeId } = await makeSharedDb();
     await db.execute({
-      sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+      sql: insertIgnore(db.dialect, "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)"),
       args: ["U2", "u2@b", "B"],
     });
     const row = await createSession(db, "U2", {

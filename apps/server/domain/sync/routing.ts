@@ -2,6 +2,7 @@ import type { DbClient } from "../../infra/db.js";
 import type { RemoteConfig, RemoteType } from "./types.js";
 import { assertRemoteCapable } from "./types.js";
 import { isLocalWorkspace } from "../../infra/server-config.js";
+import { nowExpr } from "../../infra/sql.js";
 
 export interface RemoteRow extends RemoteConfig {
   created_by: string;
@@ -19,7 +20,7 @@ export async function upsertRemote(db: DbClient, a: UpsertRemoteArgs): Promise<v
   assertRemoteCapable();
   await db.execute({
     sql: `INSERT INTO remotes (name, type, config_json, created_by, created_at)
-          VALUES (?, ?, ?, ?, datetime('now'))
+          VALUES (?, ?, ?, ?, ${nowExpr(db.dialect)})
           ON CONFLICT(name) DO UPDATE SET
             type = excluded.type,
             config_json = excluded.config_json`,

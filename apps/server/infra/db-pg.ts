@@ -6,8 +6,9 @@
 // unit tests db-pglite.ts's pure helpers get, and by a real Postgres
 // deployment once central cuts over (B4/B5).
 import { Pool, type QueryResult } from "pg";
-import type { DbClient, DbResultSet, DbRow, DbTransactionMode, InStatement, InValue } from "./db.js";
+import type { DbClient, DbResultSet, DbTransactionMode, InStatement, InValue } from "./db.js";
 import { rewritePositionalPlaceholders } from "./sql-placeholders.js";
+import { normalizePgRow } from "./pg-row-normalize.js";
 
 function normalizeStmt(stmt: InStatement): { sql: string; args: InValue[] } {
   if (typeof stmt === "string") return { sql: stmt, args: [] };
@@ -19,7 +20,7 @@ function normalizeStmt(stmt: InStatement): { sql: string; args: InValue[] } {
 function toDbResultSet(res: QueryResult): DbResultSet {
   return {
     columns: res.fields.map((f) => f.name),
-    rows: res.rows as DbRow[],
+    rows: res.rows.map(normalizePgRow),
     rowsAffected: res.rowCount ?? 0,
     lastInsertRowid: undefined,
   };

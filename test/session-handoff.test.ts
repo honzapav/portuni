@@ -28,6 +28,7 @@ import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
+import { insertIgnore } from "../apps/server/infra/sql.js";
 
 function sha256(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
@@ -136,7 +137,7 @@ describe("writeHandoffAndSuspend", () => {
     const db = createClient({ url: ":memory:" });
     await ensureSchemaOn(db);
     await db.execute({
-      sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+      sql: insertIgnore(db.dialect, "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)"),
       args: ["U1", "a@b", "A"],
     });
     const noRouteNodeId = ulid();

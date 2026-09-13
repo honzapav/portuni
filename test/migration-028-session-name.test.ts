@@ -22,13 +22,13 @@ describe("migration 028 sessions.name / name_is_custom", () => {
   });
 
   it("is idempotent across re-runs", async () => {
-    const { db } = await makeSharedDb();
+    const { db } = await makeSharedDb("libsql");
     await runMigration028(db);
     await runMigration028(db);
   });
 
   it("name_is_custom CHECK rejects a value outside {0,1}", async () => {
-    const { db, nodeId } = await makeSharedDb();
+    const { db, nodeId } = await makeSharedDb("libsql");
     const id = ulid();
     await db.execute({
       sql: "INSERT INTO sessions (id, node_id, user_id, session_type) VALUES (?, ?, ?, 'interactive_task')",
@@ -45,7 +45,7 @@ describe("migration 028 sessions.name / name_is_custom", () => {
 // the 028 marker, and confirm runMigrations backfills existing rows with
 // '<node name> · <date>' / 'Chat · <date>'.
 test("migration 028 backfills name for pre-existing rows on upgrade", async () => {
-  const { db, nodeId } = await makeSharedDb();
+  const { db, nodeId } = await makeSharedDb("libsql");
   const anchoredId = ulid();
   const chatId = ulid();
   const createdAt = "2026-05-01T10:00:00.000Z";

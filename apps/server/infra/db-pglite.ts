@@ -6,8 +6,9 @@
 // this reason. Named (`Record`) args are never used anywhere in this
 // codebase (checked at B1 time) -- only positional arrays are supported.
 import { PGlite, type Results } from "@electric-sql/pglite";
-import type { DbClient, DbResultSet, DbRow, DbTransactionMode, InStatement, InValue } from "./db.js";
+import type { DbClient, DbResultSet, DbTransactionMode, InStatement, InValue } from "./db.js";
 import { rewritePositionalPlaceholders } from "./sql-placeholders.js";
+import { normalizePgRow } from "./pg-row-normalize.js";
 
 function normalizeStmt(stmt: InStatement): { sql: string; args: InValue[] } {
   if (typeof stmt === "string") return { sql: stmt, args: [] };
@@ -19,7 +20,7 @@ function normalizeStmt(stmt: InStatement): { sql: string; args: InValue[] } {
 function toDbResultSet(res: Results<unknown>): DbResultSet {
   return {
     columns: res.fields.map((f) => f.name),
-    rows: res.rows as DbRow[],
+    rows: (res.rows as Record<string, unknown>[]).map(normalizePgRow),
     rowsAffected: res.affectedRows ?? 0,
     lastInsertRowid: undefined,
   };

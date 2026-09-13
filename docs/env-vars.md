@@ -12,7 +12,8 @@ rest are optional tunables with code defaults. Grep check:
 | `TURSO_URL` | libsql database URL; empty = local `file:./portuni.db` (or `$PORTUNI_DATA_DIR/portuni.db` in sidecar/stdio mode) |
 | `TURSO_AUTH_TOKEN` | Turso token (sensitive) |
 | `PORTUNI_DATABASE_URL` | Infra batch B1 (`docs/superpowers/plans/2026-09-12-infra-batch.md`): dialect-neutral `getDb()` driver selection -- `postgres://`/`postgresql://` → `pg` (managed Postgres), `pglite:<dir>` (or bare `pglite:` for in-memory) → `@electric-sql/pglite` (embedded Postgres), `file:`/`libsql:` → libsql. Unset falls back to `TURSO_URL`/the local-file default -- nothing reads this yet in production, added for the upcoming Postgres cutover |
-| `PORTUNI_TEST_DB` | `libsql` (default) or `pglite` -- which `DbClient` driver `test/helpers/db.ts`'s `openTestDb()` builds. Both are in-memory/in-process |
+| `PORTUNI_TEST_DB` | `libsql` (default) or `pglite` -- which `DbClient` driver `test/helpers/db.ts`'s `openTestDb()` builds. Both are in-memory/in-process. `npm run test:pglite` sets this (and caps `--test-concurrency=2` -- PGlite's WASM Postgres is heavy enough per instance that the full suite's default concurrency exhausts memory) |
+| `PORTUNI_TEST_PG_URL` | Live Postgres connection string for `test/db-client-conformance.test.ts`'s `pg` driver leg; unset (the default -- no live Postgres in CI or this repo's dev loop) skips just that one suite |
 | `PORTUNI_WORKSPACE_ROOT` | Root for local mirrors; also anchors the per-device `.portuni/sync.db` |
 | `PORTUNI_USER_EMAIL`, `PORTUNI_USER_NAME` | Solo-user identity seeded at boot |
 | `PORTUNI_AUTH_TOKEN` | Bearer for HTTP/MCP auth (sensitive); required for non-loopback bind or remote Turso |

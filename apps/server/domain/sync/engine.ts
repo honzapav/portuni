@@ -1,6 +1,7 @@
 import { copyFile, mkdir, readFile, readdir, rm, stat as fsStat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import type { DbClient } from "../../infra/db.js";
+import { jsonField } from "../../infra/sql.js";
 import { ulid } from "ulid";
 import { md5Buffer, sha256Buffer, sha256File, statForCache } from "./hash.js";
 import { getAdapter } from "./adapter-cache.js";
@@ -1196,19 +1197,19 @@ export async function matchDeleteTombstones<
     // Chunked so a folder-sized candidate set stays well under any SQL
     // variable limit.
     const allPaths = [...expectedRemotePaths];
+    const remotePathField = jsonField(db.dialect, "detail", "remote_path");
+    const oldRemotePathField = jsonField(db.dialect, "detail", "old_remote_path");
     for (let i = 0; i < allPaths.length; i += 300) {
       const chunk = allPaths.slice(i, i + 300);
       const placeholders = chunk.map(() => "?").join(", ");
       const res = await db.execute({
         sql: `SELECT target_id, action,
-                     COALESCE(json_extract(detail, '$.remote_path'),
-                              json_extract(detail, '$.old_remote_path')) AS remote_path
+                     COALESCE(${remotePathField}, ${oldRemotePathField}) AS remote_path
               FROM audit_log
               WHERE target_type = 'file'
                 AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename')
                 AND audit_node_id = ?
-                AND COALESCE(json_extract(detail, '$.remote_path'),
-                             json_extract(detail, '$.old_remote_path')) IN (${placeholders})
+                AND COALESCE(${remotePathField}, ${oldRemotePathField}) IN (${placeholders})
               ORDER BY timestamp DESC`,
         args: [nodeId, ...chunk],
       });

@@ -9,6 +9,7 @@ import { sessionAccess, SessionAccessError } from "../apps/server/auth/session-a
 import { createSession } from "../apps/server/domain/sessions.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
+import { insertIgnore } from "../apps/server/infra/sql.js";
 
 const OWNER = "U1";
 const OTHER = "U2";
@@ -32,7 +33,7 @@ function identity(userId: string, globalScope: RequestIdentity["globalScope"] = 
 async function shared(): Promise<SharedDb> {
   const s = await makeSharedDb();
   await s.db.execute({
-    sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+    sql: insertIgnore(s.db.dialect, "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)"),
     args: [OTHER, "u2@x.com", "U2"],
   });
   setDbForTesting(s.db);

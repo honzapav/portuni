@@ -66,7 +66,9 @@ describe("files (node_id, remote_path) uniqueness", () => {
   });
 
   it("migration dedupes pre-existing duplicates keeping the newest row", async () => {
-    const { db, nodeId } = await makeSharedDb();
+    // libsql only: simulates an old DB and repairs it via runMigrations,
+    // both SQLite-migration-specific machinery with no Postgres analog.
+    const { db, nodeId } = await makeSharedDb("libsql");
     // Simulate an old DB: drop the index, plant duplicates, clear the
     // migration marker, and let runMigrations repair it.
     await db.execute("DROP INDEX IF EXISTS idx_files_unique_remote");
@@ -99,7 +101,8 @@ describe("files (node_id, remote_path) uniqueness", () => {
   });
 
   it("migration 031 dedupes a NULL-remote row against a resolved-remote row for the same path, keeping the resolved one", async () => {
-    const { db, nodeId } = await makeSharedDb();
+    // libsql only: same reason as the test above.
+    const { db, nodeId } = await makeSharedDb("libsql");
     // Simulate a pre-031 DB: rebuild the index in its OLD (node_id,
     // remote_name, remote_path) shape, plant a NULL-remote row (registered
     // before any remote existed -- possible pre-fix, if a race ever slipped

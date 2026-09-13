@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile, mkdir, rename, readFile } from "node:fs/promise
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeSharedDb } from "./helpers/shared-db.js";
+import { jsonField } from "../apps/server/infra/sql.js";
 import { storeFile } from "../apps/server/domain/sync/engine.js";
 import { remoteSweep } from "../apps/server/domain/sync/remote-sweep.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
@@ -90,7 +91,7 @@ describe("remoteSweep", () => {
     const row = await db.execute({ sql: "SELECT id FROM files WHERE id = ?", args: [r.file_id] });
     assert.equal(row.rows.length, 0);
     const tomb = await db.execute({
-      sql: `SELECT json_extract(detail, '$.node_id') AS n, json_extract(detail, '$.remote_path') AS p, json_extract(detail, '$.reason') AS reason
+      sql: `SELECT ${jsonField(db.dialect, "detail", "node_id")} AS n, ${jsonField(db.dialect, "detail", "remote_path")} AS p, ${jsonField(db.dialect, "detail", "reason")} AS reason
             FROM audit_log WHERE action = 'sync_delete_remote' AND target_id = ?`,
       args: [r.file_id],
     });

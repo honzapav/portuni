@@ -44,7 +44,11 @@ describe("supersedeEventInternal", () => {
   });
 
   it("leaves the old event active when the replacement insert fails", async () => {
-    const { db, nodeId } = await makeSharedDb();
+    // libsql only: PRAGMA foreign_keys is the SQLite-specific mechanism
+    // this test uses to force an impossible state (an orphaned event) on
+    // purpose; Postgres has no drop-in equivalent for toggling FK
+    // enforcement mid-session the same way.
+    const { db, nodeId } = await makeSharedDb("libsql");
     const oldId = await seedEvent(db, nodeId);
 
     // Orphan the event (pre-FK-era data): with foreign_keys back ON the

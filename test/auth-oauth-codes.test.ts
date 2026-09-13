@@ -40,9 +40,11 @@ test("unknown code fails to redeem", async () => {
 test("expired code fails to redeem", async () => {
   const { db } = await makeSharedDb();
   const minted = await mintAuthorizationCode(db, CODE_INPUT);
+  // SQLite-shaped "YYYY-MM-DD HH:MM:SS" -- see the comment in
+  // test/auth-oauth-grants.test.ts's own use of this same shape.
   await db.execute({
-    sql: "UPDATE oauth_codes SET expires_at = datetime('now', '-1 second') WHERE id = ?",
-    args: [minted.codeId],
+    sql: "UPDATE oauth_codes SET expires_at = ? WHERE id = ?",
+    args: [new Date(Date.now() - 1000).toISOString().replace("T", " ").slice(0, 19), minted.codeId],
   });
   const result = await redeemAuthorizationCode(db, minted.code);
   assert.equal(result.ok, false);

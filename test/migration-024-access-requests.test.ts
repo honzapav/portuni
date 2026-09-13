@@ -42,7 +42,7 @@ describe("migration 024 access_requests", () => {
   });
 
   it("allows one pending request per (node, user) but keeps resolved history", async () => {
-    const { db, nodeId } = await makeSharedDb();
+    const { db, nodeId } = await makeSharedDb("libsql");
     const insert = (status: string) =>
       db.execute({
         sql: "INSERT INTO access_requests (id, node_id, user_id, status) VALUES (?, ?, ?, ?)",
@@ -57,7 +57,7 @@ describe("migration 024 access_requests", () => {
   });
 
   it("CHECK rejects a status outside pending/approved/denied", async () => {
-    const { db, nodeId } = await makeSharedDb();
+    const { db, nodeId } = await makeSharedDb("libsql");
     await assert.rejects(
       db.execute({
         sql: "INSERT INTO access_requests (id, node_id, user_id, status) VALUES (?, ?, ?, 'junk')",
@@ -67,7 +67,7 @@ describe("migration 024 access_requests", () => {
   });
 
   it("cascades on node delete", async () => {
-    const { db, nodeId } = await makeSharedDb();
+    const { db, nodeId } = await makeSharedDb("libsql");
     await db.execute({
       sql: "INSERT INTO access_requests (id, node_id, user_id) VALUES (?, ?, ?)",
       args: [ulid(), nodeId, "U1"],
@@ -82,7 +82,7 @@ describe("migration 024 access_requests", () => {
 // 024 marker, and confirm the migrations loop recreates it -- same trick as
 // migration-019/020's tests.
 test("migration 024 adds access_requests to an existing DB", async () => {
-  const { db, nodeId } = await makeSharedDb();
+  const { db, nodeId } = await makeSharedDb("libsql");
   await db.execute("DROP TABLE access_requests");
   await db.execute({ sql: "DELETE FROM migrations WHERE id = ?", args: ["024_access_requests"] });
   assert.equal(await tableExists(db, "access_requests"), false);
