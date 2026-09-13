@@ -14,7 +14,10 @@ import {
   createNodeMirror,
   fetchSandboxProfile,
   fetchMe,
+  fetchNodePersistentSessions,
 } from "./api";
+import type { SessionSummary } from "./types";
+import { createSessionsClient } from "./lib/sessions-client";
 import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
 import { useFileEditor } from "./lib/use-file-editor";
 import { buildAgentCommand } from "./lib/prompt";
@@ -539,6 +542,38 @@ export default function App() {
     } catch (err) {
       setWorkspaceDetailError(String(err));
     }
+  }, [selectedWorkspaceNodeId]);
+
+  // --- Runner batch (#342): SessionChat in Práce ---
+  //
+  // One WebSocket bridge for the whole app -- created lazily, kept for the
+  // life of this component (createSessionsClient() opens the transport
+  // immediately, so this must not run more than once).
+  const [sessionsClient] = useState(() => createSessionsClient());
+
+  // The selected node's own persistent session, when it has one that's
+  // running/waiting/suspended -- drives whether WorkspaceView's detail
+  // surface shows SessionChat instead of DetailPane. Refetched whenever the
+  // workspace selection changes, same pattern as workspaceNodeDetail above.
+  const [workspaceOpenSession, setWorkspaceOpenSession] = useState<SessionSummary | null>(null);
+  useEffect(() => {
+    if (!selectedWorkspaceNodeId) {
+      setWorkspaceOpenSession(null);
+      return;
+    }
+    let cancelled = false;
+    fetchNodePersistentSessions(selectedWorkspaceNodeId, false)
+      .then((res) => {
+        if (cancelled) return;
+        const live = res.sessions.find((s) => s.state === "running" || s.state === "suspended");
+        setWorkspaceOpenSession(live ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setWorkspaceOpenSession(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedWorkspaceNodeId]);
 
   // --- Source editor state ---
@@ -1166,6 +1201,10 @@ export default function App() {
               onOpenFile={openFileInEditor}
               onCloseEditor={closeEditor}
               onExpandEditor={() => setEditorFullscreen(true)}
+              openSession={workspaceOpenSession}
+              sessionsClient={sessionsClient}
+              onSessionUpdated={setWorkspaceOpenSession}
+              onSessionStarted={(result) => setWorkspaceOpenSession(result.session)}
             />
           </div>
         )}

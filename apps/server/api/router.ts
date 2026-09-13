@@ -114,6 +114,7 @@ import {
   handleCreateSessionRun,
   handleGetSession,
   handleGetSessionResumeInfo,
+  handleGetSessionSignals,
   handleInterruptSession,
   handleListNodeSessions,
   handleListSessionEvents,
@@ -771,6 +772,11 @@ async function routeSessions(
   const resumeInfoMatch = pathname.match(/^\/sessions\/([^/]+)\/resume-info$/);
   if (resumeInfoMatch && method === "GET") {
     await handleGetSessionResumeInfo(req, res, identity, decodeURIComponent(resumeInfoMatch[1]), url);
+    return true;
+  }
+  const signalsMatch = pathname.match(/^\/sessions\/([^/]+)\/signals$/);
+  if (signalsMatch && method === "GET") {
+    await handleGetSessionSignals(req, res, identity, decodeURIComponent(signalsMatch[1]));
     return true;
   }
   const messagesMatch = pathname.match(/^\/sessions\/([^/]+)\/messages$/);

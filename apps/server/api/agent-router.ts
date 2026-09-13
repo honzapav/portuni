@@ -624,6 +624,18 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       return true;
     }
 
+    const sessionSignalsMatch = pathname.match(/^\/sessions\/([^/]+)\/signals$/);
+    if (sessionSignalsMatch && method === "GET") {
+      const sessionId = decodeURIComponent(sessionSignalsMatch[1]);
+      try {
+        const signals = await sessionRuntime.sessionSignals(sessionId);
+        respondJson(res, 200, signals);
+      } catch (err) {
+        respondError(res, `GET /sessions/${sessionId}/signals`, err);
+      }
+      return true;
+    }
+
     const sessionEventsMatch = pathname.match(/^\/sessions\/([^/]+)\/events$/);
     if (sessionEventsMatch && method === "GET") {
       const sessionId = decodeURIComponent(sessionEventsMatch[1]);

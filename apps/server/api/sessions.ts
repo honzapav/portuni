@@ -8,6 +8,7 @@
 //                                                      state/waiting_since/handoff_* (owner only)
 //   POST  /sessions/:id/state              write   -> state transition (owner or manage)
 //   GET   /sessions/:id/resume-info        read    -> conversation-resumable? handoff changed?
+//   GET   /sessions/:id/signals            read    -> restart indicator (run age, read/write set)
 //   POST  /sessions                        write   -> start a task (session + first run)
 //   POST  /sessions/record                 write   -> central record half (#323): create the row
 //                                                      only, no run -- the agent-mode sidecar's own
@@ -308,6 +309,27 @@ export async function handleGetSessionResumeInfo(
     respondJson(res, 200, payload);
   } catch (err) {
     respondError(res, `${req.method} /sessions/${sessionId}/resume-info`, err);
+  }
+}
+
+// The restart indicator (SessionChat header, #342): run age, write/read-set
+// size, and read-set growth since the live run started -- purely a signals
+// read, no session-runtime mutation, so it follows the same read-tier gate
+// resume-info does rather than needing its own action in session-access.ts.
+export async function handleGetSessionSignals(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const existing = await guardSessionAccess(res, db, identity, sessionId, "read");
+    if (!existing) return;
+    const signals = await getSessionRuntime().sessionSignals(sessionId);
+    respondJson(res, 200, signals);
+  } catch (err) {
+    respondError(res, `${req.method} /sessions/${sessionId}/signals`, err);
   }
 }
 

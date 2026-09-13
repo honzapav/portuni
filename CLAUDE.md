@@ -1127,11 +1127,18 @@ symlink to this file.
   discovery picks it up instead of it appearing immediately in Files).
   `is_local_only_path` (`apps/desktop/src/lib.rs`) routes the bare
   `POST /sessions` and every per-session action verb
-  (`messages`/`interrupt`/`suspend`/`resume`/`close`/`events`/
+  (`messages`/`interrupt`/`suspend`/`resume`/`close`/`events`/`signals`/
   `questions/:request_id`) to the sync agent — deliberately NOT the record
   half (`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`, `/runs...`,
   `/sessions/record`), which stays central, and not `GET /nodes/:id/
-  sessions` or `/overview` either.
+  sessions` or `/overview` either. `signals` (#342, the SessionChat restart
+  indicator) joined this local set rather than the record half: it reads
+  `sessionSignals`'s in-memory live-run state (`liveRuns`/
+  `runStartScopeSize` inside `session-runtime.ts`), which only exists on
+  whichever process is actually running the task — the device, in every
+  mode, per the "one implementation" rule above — so `agent-router.ts`
+  mounts the same handler shape as `/events` does (a plain read through its
+  own `sessionRuntime`, no write guard).
 - **The Claude adapter (`domain/runner/adapters/claude.ts`, #324) drives
   `@anthropic-ai/claude-agent-sdk` in streaming-input mode always**, even
   for a fresh, brief-only run — `query()`'s `prompt` is never a plain
@@ -1697,6 +1704,71 @@ symlink to this file.
   correlation, in-order event delivery, the resubscribe-with-`after`
   behavior across a forced connection drop, and that a `delta` frame never
   moves the tracked seq.
+- **SessionChat + "Nový úkol" (#342, runner batch phase 3, second issue)
+  replace the embedded terminal as Práce's primary path, not yet its only
+  one.** `apps/web/src/lib/session-chat.ts` mirrors
+  `domain/runner/types.ts`'s `CanonicalEvent` union by hand (that module is
+  server-only, deliberately not shared — same boundary `shared/api-types.ts`
+  exists to keep) and holds every pure helper `test/session-chat-helpers.test.ts`
+  exercises: `sessionStatusChip` (state + `waiting_since` ->
+  label/color/pulsing, "Čeká na mě" overriding plain "Běží"),
+  `latestQuestionEvent`, `appendDelta`/`clearDeltaBuffer` (per-`run_id`
+  streaming buffers — `CanonicalEventEnvelope` itself carries no `run_id`,
+  so `SessionChat.tsx` tracks the live run's id separately off
+  `run_started`/`run_ended` payloads), `collapseToolCalls` (a `started` ->
+  `completed`/`failed` pair sharing `tool_use_id` collapses to the later
+  row, in place, so the event list shows one row per invocation not two),
+  and `formatRestartHint` (the `GET /sessions/:id/signals` payload into the
+  Czech "Běží N min · zápis W · čtení R (+G od startu běhu)" string,
+  polled every 15s only while `state === "running"`).
+  `apps/web/src/components/SessionChat.tsx` backfills
+  `GET /sessions/:id/events` once on mount, then hands off to the shared
+  `sessionsClient` (#341) for live `event`/`delta`/`session_state` frames;
+  actions (Přerušit/Pozastavit/Uzavřít/Nahodit) call the client directly
+  and rely on the server's own 403 for anyone lacking access — there is no
+  client-side prediction of the access table from #321, deliberately, to
+  avoid duplicating permission logic the server already enforces.
+  `NewTaskDialog.tsx` is the "Nový úkol" form (brief, a `GET /runners`
+  picker filtered to `installed && logged_in`, an instance picker shown
+  only at >=2 instances for the runner with the calling node's
+  organization default preselected via `RunnerInstanceSummary.org_defaults`
+  — the same `instances.find(i => i.org_defaults.includes(orgId))` lookup
+  `RunnersSection.tsx` already used) that calls `POST /sessions` and hands
+  the fresh `{session, run}` back to its caller.
+  **`TerminalSplitButton` (`DetailPane.files.tsx`) is renamed
+  `NewTaskButton` and its primary/dropdown roles swap**: the primary
+  action is now "Nový úkol" (opens `NewTaskDialog`); the two terminal
+  launch paths that used to be the primary action and the dropdown's only
+  item ("Otevřít terminál v Portuni", "Otevřít v externím terminálu") both
+  move into the dropdown, unchanged otherwise — kept reachable
+  deliberately (per the issue: "the terminal canvas stays reachable behind
+  the old button during this phase so both can be compared on a real
+  node"; removal is phase 4). `onSessionStarted` threads from there up
+  through `DetailPane`'s two-layer prop passthrough (`DetailPane` ->
+  `DetailPaneBody`) as an optional callback — present when `DetailPane` is
+  rendered inside `WorkspaceView` (which needs to know), absent for the
+  graph view's own `DetailPane` (which has no chat surface to hand the new
+  session to; starting a task there still works, its session just is not
+  visible until the node is later selected in Práce).
+  **`WorkspaceView`'s detail surface gained a third branch, alongside
+  DetailPane/EditorPane**: `SessionChat` renders whenever the selected
+  node's `openSession` is `running` or `suspended` (closed/archived fall
+  through to the plain node detail — those are history, not something to
+  keep steering), in EITHER the centre slot (no terminal open for that
+  node) or the aside slot (a terminal IS open) — the existing
+  `detailSurface(collapsible)` function already unified those two
+  placements for DetailPane/EditorPane, so this is one more branch there,
+  not new outer-layout code. `App.tsx` owns the state this depends on:
+  ONE `SessionsClient` for the app's lifetime (`useState(() =>
+  createSessionsClient())`, since the client opens its transport
+  immediately — creating it lazily on first render, never per-render, is
+  load-bearing), and `workspaceOpenSession` (`SessionSummary | null`),
+  refetched via `fetchNodePersistentSessions(id, false)` whenever
+  `selectedWorkspaceNodeId` changes (same `cancelled`-guard pattern as the
+  neighboring `workspaceNodeDetail` effect), picking the first
+  running/suspended row. `onSessionStarted`/`onSessionUpdated` both just
+  set this same state, so starting a task or SessionChat reporting a
+  `session_state` change both flow through the identical path.
 
 ## Security rules (from the auth refactor post-mortem)
 

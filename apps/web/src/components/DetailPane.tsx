@@ -41,6 +41,8 @@ import type {
   SyncRunResponse,
   WatcherErrorEntry,
   UntrackedFile,
+  SessionSummary,
+  SessionRunRow,
 } from "../types";
 import {
   RELATION_TYPES,
@@ -93,7 +95,7 @@ import {
   NewFileForm,
   SyncBar,
   NoMirrorBanner,
-  TerminalSplitButton,
+  NewTaskButton,
   WatcherErrorBanner,
   syncRunErrorsByFile,
 } from "./DetailPane.files";
@@ -164,6 +166,10 @@ type Props = {
   // terminal, same mechanism as the window close dialog's Pozastavit
   // (#231). Absent in contexts with no terminal concept (none today).
   terminalSessions?: TerminalSession[];
+  // NewTaskButton's "Nový úkol" success (#342) -- provided by the
+  // workspace, which owns the open-session state SessionChat renders from.
+  // Absent in contexts with no chat surface (none today).
+  onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow }) => void;
 };
 
 // Memoized: 3.5k lines of pane re-rendered wholesale on every App render
@@ -186,6 +192,7 @@ function DetailPane({
   onCollapse,
   onOpenFile,
   terminalSessions,
+  onSessionStarted,
 }: Props) {
   // Fetched once and cached for the lifetime of this component instance
   // (this outer DetailPane stays mounted across node selections -- only
@@ -262,6 +269,7 @@ function DetailPane({
       onCollapse={onCollapse}
       onOpenFile={onOpenFile}
       terminalSessions={terminalSessions}
+      onSessionStarted={onSessionStarted}
     />
   );
 }
@@ -281,6 +289,7 @@ function DetailPaneBody({
   onCollapse,
   onOpenFile,
   terminalSessions,
+  onSessionStarted,
 }: {
   node: NodeDetail;
   graph: GraphPayload | null;
@@ -296,6 +305,7 @@ function DetailPaneBody({
   onCollapse?: () => void;
   onOpenFile?: (nodeId: string, relPath: string) => void;
   terminalSessions?: TerminalSession[];
+  onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow }) => void;
 }) {
 
   const [editing, setEditing] = useState(false);
@@ -1223,12 +1233,13 @@ function DetailPaneBody({
         ) : (
           <div className="flex flex-col gap-2">
             {node.type !== "organization" ? (
-              <TerminalSplitButton
+              <NewTaskButton
                 node={node}
                 agentCommand={agentCommand}
                 terminalLaunch={terminalLaunch}
                 onEmbeddedOpen={openEmbeddedTerminal}
                 embeddedPending={launchingTerminal}
+                onSessionStarted={onSessionStarted}
               />
             ) : null}
           </div>

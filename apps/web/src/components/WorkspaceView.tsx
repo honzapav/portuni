@@ -12,14 +12,16 @@
 
 import { useState } from "react";
 import { ChevronLeft } from "lucide-react";
-import type { GraphPayload, GraphNode, NodeDetail } from "../types";
+import type { GraphPayload, GraphNode, NodeDetail, SessionRunRow, SessionSummary } from "../types";
 import type { TerminalSession } from "../lib/sessions";
+import type { SessionsClient } from "../lib/sessions-client";
 import type { Theme } from "../lib/theme";
 import type { FileEditor } from "../lib/use-file-editor";
 import { scopedKey } from "../lib/workspace-storage";
 import TerminalTabs from "./TerminalTabs";
 import WorkspaceEmpty from "./WorkspaceEmpty";
 import DetailPane from "./DetailPane";
+import SessionChat from "./SessionChat";
 import EditorPane, { type EditorMode } from "./EditorPane";
 
 type Props = {
@@ -63,6 +65,15 @@ type Props = {
   onOpenFile: (nodeId: string, relPath: string) => void;
   onCloseEditor: () => void;
   onExpandEditor: () => void;
+  // Runner batch (#342): the selected node's persistent session, when one
+  // is running/waiting/suspended -- SessionChat then takes over the detail
+  // surface (centre when no terminal is open, aside otherwise) instead of
+  // DetailPane. Fetched by App.tsx alongside nodeDetail; null when the
+  // node has no live session or nothing is selected.
+  openSession: SessionSummary | null;
+  sessionsClient: SessionsClient;
+  onSessionUpdated: (session: SessionSummary) => void;
+  onSessionStarted: (result: { session: SessionSummary; run: SessionRunRow }) => void;
 };
 
 export default function WorkspaceView({
@@ -90,6 +101,10 @@ export default function WorkspaceView({
   onOpenFile,
   onCloseEditor,
   onExpandEditor,
+  openSession,
+  sessionsClient,
+  onSessionUpdated,
+  onSessionStarted,
 }: Props) {
   const [detailVisible, setDetailVisible] = useState<boolean>(() => {
     return localStorage.getItem(scopedKey("workspace.detailVisible")) !== "false";
@@ -116,9 +131,18 @@ export default function WorkspaceView({
     selectedNodeId != null &&
     editorFile.nodeId === selectedNodeId;
 
-  // The detail surface (DetailPane, or EditorPane when a file is open),
-  // rendered either center-stage (no terminal) or in the right aside (with a
-  // terminal). `collapsible` adds the collapse chevron used only in the aside.
+  // A running/waiting session renders as chat; a suspended one still does
+  // (the composer just disables, with a Nahodit affordance) -- closed and
+  // archived fall through to the plain node detail, since those are
+  // history, not something to keep steering. Matches #342's "when the
+  // selected node has an open session (running/waiting/suspended)".
+  const hasOpenSession =
+    openSession != null && (openSession.state === "running" || openSession.state === "suspended");
+
+  // The detail surface (DetailPane, SessionChat, or EditorPane when a file
+  // is open), rendered either center-stage (no terminal) or in the right
+  // aside (with a terminal). `collapsible` adds the collapse chevron used
+  // only in the aside.
   const detailSurface = (collapsible: boolean) =>
     showEditor && editorFile ? (
       <EditorPane
@@ -128,6 +152,13 @@ export default function WorkspaceView({
         onModeChange={onEditorModeChange}
         onClose={onCloseEditor}
         onExpand={onExpandEditor}
+      />
+    ) : hasOpenSession && openSession ? (
+      <SessionChat
+        session={openSession}
+        onSessionUpdated={onSessionUpdated}
+        sessionsClient={sessionsClient}
+        onOpenFile={openSession.node_id ? (relPath) => onOpenFile(openSession.node_id!, relPath) : undefined}
       />
     ) : (
       <DetailPane
@@ -148,6 +179,7 @@ export default function WorkspaceView({
         embedded
         onCollapse={collapsible ? toggleDetail : undefined}
         terminalSessions={sessions}
+        onSessionStarted={onSessionStarted}
       />
     );
 

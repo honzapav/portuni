@@ -59,7 +59,9 @@ The three-column daily-driver layout:
 
 - **Node list** (left) — every node that has at least one terminal session, plus the currently selected one. Each row shows an activity dot when the session has emitted output recently.
 - **Terminal tabs** (middle) — per-node tab strip; `+` opens a new session attached to that node. See [Embedded terminals](#embedded-terminals) below.
-- **Detail pane** (right) — the same `DetailPane` the graph view uses, in "embedded" mode. Click the chevron at the top to collapse it; the state persists in `localStorage` under `portuni:workspace.detailVisible`.
+- **Detail pane** (right) — the same `DetailPane` the graph view uses, in "embedded" mode, or [the task chat](#task-chat-práce) when the selected node has a running/suspended session. Click the chevron at the top to collapse it; the state persists in `localStorage` under `portuni:workspace.detailVisible`.
+
+When the selected node has an open runner-managed session (started via "Nový úkol", below), it takes over the centre column instead of the node detail — the terminal canvas above still exists behind the same node's tab strip, so both can be open side by side during this transition phase.
 
 ## Embedded terminals
 
@@ -92,21 +94,55 @@ The detail pane on the right is editable in both Graph and Workspace views:
 - **Events** — recent timeline; resolve / supersede inline.
 - **Relace (Sessions)** — persistent sessions anchored to this node (`GET /nodes/:id/sessions`), newest-active first: state (running/suspended/closed/archived, archived hidden behind a "Zobrazit archivované" filter), last activity, CLI + instance (CLI is read from the MCP handshake itself, not a header — populated for Claude Code, Codex and Mistral Vibe alike), the task `brief` and `runner` when the session was started as a task, `waiting_since` when its run is blocked on a question, and write count (size of the session's write scope, which always includes the session's own home node — a session that only ever wrote there still reports 1, not 0). Name defaults to `<node> · <date> <time>` (the time component keeps two same-day sessions on the same node distinguishable) and is enriched from the handoff's title at suspend, but is always renamable inline. A `sessions` row is only ever created once a connection completes its MCP handshake — a client's protocol probe, an aborted connection, or any other non-`initialize` first request never leaves a row behind. A `running` row is never simply dropped: a dropped MCP connection, the transport's own 30-minute idle GC, the desktop terminal that spawned its CLI exiting (Claude Code only, via the correlated terminal id), or a startup sweep finding a row from a process that no longer exists (crash, restart) all *suspend* it instead, with a minimal handoff the server writes itself — `closed` is reached only by explicitly clicking Uzavřít or by the auto-archive sweep of old closed sessions. Such a row shows "pozastaveno serverem" with the reason (odpojení, nečinnost, ukončení terminálu, restart serveru, or agent nestihl předání when a runner-driven Pozastavit timed out) so it reads differently from a handoff the agent wrote on purpose. A suspended row shows whether the underlying CLI conversation is still resumable or will fall back to the handoff, and links to the handoff file when one exists (or, when this device has no local mirror for the node, the handoff text is still resumable from — it was simply never written to a file here). Resuming re-attaches the same durable session record (not a new one) and reauthorizes the resume id server-side (must be owned by you, anchored to this node, and still suspended — otherwise it's refused); handoff-change detection only works from a device that has a local mirror for this node, so a device with none shows neither "changed" nor "unchanged", just that it can't be checked from here. A `running` row whose terminal is a live, agent-launched tab in this window also offers "Pozastavit": it asks the agent to save a handoff and stop, waits up to 30s, then closes that terminal either way — the same mechanism the window-close dialog's own Pozastavit uses.
 
+The action bar below the pane (non-organization nodes) is "Nový úkol" — see [Task chat (Práce)](#task-chat-práce) — with a dropdown for the two terminal-launch paths ("Otevřít terminál v Portuni", "Otevřít v externím terminálu") that used to be the primary action; those stay reachable during this transition phase.
+
 Every mutating action calls back through `onMutate` which refetches the graph and the node detail, so the rest of the UI stays consistent.
 
-### Task API (server-side; no chat UI yet)
+### Task chat (Práce)
 
-A session can now be started as a task directly over REST, ahead of the
-web chat UI that will replace the embedded terminal: `POST /sessions`
-(`{ node_id, brief, runner, instance_id?, policy? }`) creates the session
-and starts its first run. From there: `POST /sessions/:id/messages`
-(send a chat message), `POST /sessions/:id/questions/:request_id`
-(answer an open question), `POST /sessions/:id/interrupt`,
-`POST /sessions/:id/suspend` (waits up to 30s for the agent's own handoff
-before the server writes one), `POST /sessions/:id/resume`
-(`{ mode: "conversation" | "handoff" }`), `POST /sessions/:id/close`, and
-`GET /sessions/:id/events?after&limit` for the canonical event log a
-future chat view renders from.
+"Nový úkol" on a node's detail pane opens `NewTaskDialog`: a brief
+textarea, a runner picker (`GET /runners`, only entries with
+`installed && logged_in` are selectable), and an instance picker shown
+once a runner has two or more registered instances (Settings → Runnery),
+preselecting the calling node's organization default when one is set.
+Submitting calls `POST /sessions` (`{ node_id, brief, runner,
+instance_id?, policy? }`), which creates the session and starts its first
+run, then switches Práce's centre column to `SessionChat` for that
+session.
+
+`SessionChat`'s header shows the session name, a status chip derived from
+`state` and `waiting_since` ("Běží", "Čeká na mě" when a question is
+open, "Pozastaveno", "Uzavřeno", "Archivováno"), the runner/instance, and
+a restart indicator (`GET /sessions/:id/signals`: how long the current
+run has been alive, its read/write set size) while a run is live. Actions
+— Přerušit, Pozastavit, Uzavřít, and Nahodit once suspended (offering
+both resume modes from `GET /sessions/:id/resume-info`) — follow the same
+access table below; a refused action surfaces the server's own error,
+there is no client-side prediction of who may do what.
+
+The event list renders the session's canonical log
+(`GET /sessions/:id/events`, backfilled once on mount, then the live
+WebSocket below): user and assistant messages as chat bubbles, reasoning
+as a muted aside, `tool_call` collapsed from its `started` and
+`completed`/`failed` pair into one row (expandable for the output
+excerpt), `file_change` linking into the Files tab, and `compaction`,
+`handoff`, `state_changed` and `run_ended` as centered system markers.
+Assistant text streams in from `delta` frames before its `assistant_message`
+event lands, then the buffer clears. A question panel appears above the
+composer while `waiting_since` is set — option buttons for an approval,
+a text field for free-form input — and the composer itself disables
+while suspended, closed or archived.
+
+A session can also be driven directly over REST, ahead of or instead of
+the chat UI above: the same `POST /sessions` plus `POST
+/sessions/:id/messages` (send a chat message), `POST
+/sessions/:id/questions/:request_id` (answer an open question), `POST
+/sessions/:id/interrupt`, `POST /sessions/:id/suspend` (waits up to 30s
+for the agent's own handoff before the server writes one), `POST
+/sessions/:id/resume` (`{ mode: "conversation" | "handoff" }`), `POST
+/sessions/:id/close`, `GET /sessions/:id/signals`, and `GET
+/sessions/:id/events?after&limit` for the canonical event log the chat
+view above renders from.
 
 Who may call what follows one access table across every task route: **read**
 (`GET /sessions/:id/events`) is anyone who can see the session's anchor

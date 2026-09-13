@@ -297,6 +297,36 @@ describe("session REST endpoints", () => {
     assert.equal(body.reason, "terminal_exit");
   });
 
+  // The restart indicator (#342, SessionChat header): GET /sessions/:id/
+  // signals is a plain read of sessionSignals, gated by the same "read"
+  // tier as resume-info (auth/session-access.ts).
+  test("GET /sessions/:id/signals reports zeros/null for a session with no live run", async () => {
+    const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
+    const res = await call(makeIdentity(SOLO), "GET", `/sessions/${session.id}/signals`);
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body) as {
+      runAgeMs: number | null;
+      writeSetSize: number;
+      readSetSize: number;
+      expansionsSinceRunStart: number;
+    };
+    assert.equal(body.runAgeMs, null);
+    assert.equal(body.writeSetSize, 0);
+    assert.equal(body.readSetSize, 0);
+    assert.equal(body.expansionsSinceRunStart, 0);
+  });
+
+  test("GET /sessions/:id/signals is readable by anyone who can see the anchor node", async () => {
+    const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
+    const res = await call(makeIdentity("U2"), "GET", `/sessions/${session.id}/signals`);
+    assert.equal(res.statusCode, 200);
+  });
+
+  test("GET /sessions/:id/signals 404s for an unknown session id", async () => {
+    const res = await call(makeIdentity(SOLO), "GET", `/sessions/${ulid()}/signals`);
+    assert.equal(res.statusCode, 404);
+  });
+
   test("GET /sessions/:id/resume-info reports generated_by null for an ordinary (non-server) suspend", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
     await call(makeIdentity(SOLO), "POST", `/sessions/${session.id}/state`, { state: "suspended" });

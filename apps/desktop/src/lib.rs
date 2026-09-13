@@ -1330,6 +1330,7 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
                 || sub == "resume"
                 || sub == "close"
                 || sub == "events"
+                || sub == "signals"
             {
                 return true;
             }
@@ -4215,6 +4216,10 @@ mod local_only_path_tests {
         assert!(is_local_only_path("/sessions/abc123/close"));
         assert!(is_local_only_path("/sessions/abc123/events"));
         assert!(is_local_only_path("/sessions/abc123/events?after=5"));
+        // The restart indicator (#342) reads the local SessionRuntime's own
+        // in-memory live-run state (liveRuns/runStartScopeSize) -- there is
+        // nothing for the central server to answer this from.
+        assert!(is_local_only_path("/sessions/abc123/signals"));
     }
 
     #[test]

@@ -22,6 +22,7 @@ import type {
   SessionState,
   SessionSummary,
   SessionResumeInfo,
+  SessionRunRow,
   OverviewPayload,
 } from "./types";
 import { apiFetch } from "./lib/backend-url";
@@ -193,6 +194,81 @@ export function fetchPersistentSessionResumeInfo(
 ): Promise<SessionResumeInfo> {
   const qs = configDir ? `?config_dir=${encodeURIComponent(configDir)}` : "";
   return jsonRequest<SessionResumeInfo>("GET", `/sessions/${encodeURIComponent(id)}/resume-info${qs}`);
+}
+
+// The restart indicator (SessionChat header, #342) -- GET /sessions/:id/signals.
+export type SessionSignals = {
+  runAgeMs: number | null;
+  writeSetSize: number;
+  readSetSize: number;
+  expansionsSinceRunStart: number;
+};
+
+export function fetchSessionSignals(id: string): Promise<SessionSignals> {
+  return jsonRequest<SessionSignals>("GET", `/sessions/${encodeURIComponent(id)}/signals`);
+}
+
+// GET /sessions/:id -- the raw session record (apps/server/shared/types.ts's
+// SessionRow, a zod schema server-side, deliberately not imported here so
+// this stays web-safe). SessionSummary's fields are a strict subset of that
+// row with matching names/types, so typing the response as SessionSummary
+// is accurate -- every field SessionChat's header needs is already there.
+export function fetchSession(id: string): Promise<SessionSummary> {
+  return jsonRequest<SessionSummary>("GET", `/sessions/${encodeURIComponent(id)}`);
+}
+
+// POST /sessions/:id/resume -- owner-only, not part of the live WS channel
+// (sessions-client.ts's ClientFrame union has no resume frame, matching the
+// server's own protocol -- resume starts a NEW run, it isn't an action on
+// the live one). "Nahodit": conversation-resume when the underlying CLI
+// transcript still exists, handoff-resume otherwise (GET /sessions/:id/
+// resume-info decides which is offered).
+export function resumeSession(id: string, mode: "conversation" | "handoff"): Promise<{ run: SessionRunRow }> {
+  return jsonRequest<{ run: SessionRunRow }>("POST", `/sessions/${encodeURIComponent(id)}/resume`, { mode });
+}
+
+// POST /sessions -- starts a task (session + first run). Replaces
+// TerminalSplitButton's direct embedded-terminal spawn with a server-driven
+// run (#342, NewTaskDialog).
+export function startSession(input: {
+  node_id: string;
+  brief: string;
+  runner: string;
+  instance_id?: string | null;
+  policy?: "default" | "auto";
+}): Promise<{ session: SessionSummary; run: SessionRunRow }> {
+  return jsonRequest<{ session: SessionSummary; run: SessionRunRow }>("POST", "/sessions", input);
+}
+
+// GET /sessions/:id/events -- the canonical event log SessionChat backfills
+// from on mount, before switching to the live WebSocket (sessions-client.ts)
+// for anything after. The wire response's `payload` is already the parsed
+// object (apps/server/api/sessions.ts's handleListSessionEvents does the
+// JSON.parse server-side), unlike SessionEventRow's own `payload: string`
+// (the raw DB column shape) -- CanonicalEventRow reflects the actual wire
+// shape.
+export type CanonicalEventRow = {
+  id: string;
+  session_id: string;
+  run_id: string | null;
+  seq: number;
+  kind: string;
+  payload: unknown;
+  created_at: string;
+};
+
+export function fetchSessionEvents(
+  id: string,
+  opts: { after?: number; limit?: number } = {},
+): Promise<{ events: CanonicalEventRow[] }> {
+  const params = new URLSearchParams();
+  if (opts.after !== undefined) params.set("after", String(opts.after));
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  const qs = params.toString();
+  return jsonRequest<{ events: CanonicalEventRow[] }>(
+    "GET",
+    `/sessions/${encodeURIComponent(id)}/events${qs ? `?${qs}` : ""}`,
+  );
 }
 
 // GET /overview -- Přehled tab (#196). One aggregate, permission-filtered
