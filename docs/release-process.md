@@ -206,6 +206,13 @@ and update any concept page whose model changed. Fold the docs-site edits into
 the feature branch (a `docs:` commit) so they ship in the same release — not a
 follow-up.
 
+**Postgres cutover (batch B, `docs/superpowers/plans/2026-09-12-infra-batch.md`):**
+central leaving Turso, and each local workspace leaving its SQLite, is a
+one-off data migration, not part of the ordinary release flow above —
+`scripts/db-export.ts`/`scripts/db-import.ts` and the full step-by-step
+sequence (stop, export, import, cut over, verify, rollback) live in
+`docs/runbooks/postgres-cutover.md`.
+
 For the user the path is: download DMG → drag to /Applications →
 right-click → Open (one-time Gatekeeper dance) → onboarding wizard
 (URL + token, or "start locally") → done.
