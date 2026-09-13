@@ -14,25 +14,24 @@
 // and the handoff carries the node with it (`openInShowtime`).
 import { useEffect, useState } from "react";
 import { isTauri, openPathExternal } from "../lib/backend-url";
+import { protocolUrl } from "../lib/html-preview-url";
 import { copyText } from "../lib/clipboard";
 import { openInShowtime, showtimeInstalled } from "../lib/showtime";
 
 export type HtmlPreviewKind = "html" | "showtime";
 
-// Build the protocol URL for the desktop webview. The absolute path is
-// percent-encoded as the URL path; the Rust handler decodes + scope-checks it.
-function protocolUrl(absPath: string): string {
-  return `portuni-html://localhost/${encodeURIComponent(absPath)}`;
-}
-
 export default function HtmlPreview({
   content,
   localPath,
+  version = null,
   kind = "html",
   nodeId = null,
 }: {
   content: string;
   localPath: string | null;
+  // Version of `content` as loaded (sha256 from the file API). Changes on
+  // every reload; the desktop iframe URL is keyed on it.
+  version?: string | null;
   kind?: HtmlPreviewKind;
   // The node the file belongs to; a Showtime deck is handed over with it.
   nodeId?: string | null;
@@ -123,7 +122,7 @@ export default function HtmlPreview({
         title={kind === "showtime" ? "Náhled prezentace" : "HTML náhled"}
         sandbox="allow-scripts"
         {...(useProtocol
-          ? { src: protocolUrl(localPath as string) }
+          ? { src: protocolUrl(localPath as string, version) }
           : { srcDoc: content })}
         className="min-h-0 flex-1 border-0 bg-white"
       />
