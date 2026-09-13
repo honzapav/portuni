@@ -315,10 +315,12 @@ export async function handleMintHandoff(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
-    const minted = mintHandoff({ token, nodeId: body.node_id, userId: identity.userId });
     // The mirror rides along so a caller that needs a directory before
     // Showtime is asked (a new deck) has it; the exchange answers it too.
+    // Looked up before minting: a thrown lookup must answer 500 with no
+    // live code left behind.
     const mirror = await getMirrorPath(identity.userId, body.node_id);
+    const minted = mintHandoff({ token, nodeId: body.node_id, userId: identity.userId });
     respondJson(res, 200, { code: minted.code, expires_in: minted.expiresIn, mirror });
   } catch (err) {
     respondError(res, "POST /auth/handoff", err);

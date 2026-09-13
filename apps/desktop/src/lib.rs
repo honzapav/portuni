@@ -1849,14 +1849,20 @@ async fn mint_showtime_handoff(
     Ok((base, minted))
 }
 
-/// „Otevřít v Showtime": mints a one-time handoff code on the active
-/// workspace's sidecar and opens the deck through the `showtime://open` deep
+/// „Otevřít v Showtime": mints a one-time handoff code on this window's
+/// workspace sidecar and opens the deck through the `showtime://open` deep
 /// link carrying the deck path, the sidecar base URL and that code. Showtime
 /// exchanges the code over loopback for the bearer, the node's MCP URL and
 /// its mirror.
 #[tauri::command]
-async fn open_in_showtime(app: AppHandle, node_id: String, path: String) -> Result<(), String> {
-    let (ws_id, cfg) = active_workspace(&app)?;
+async fn open_in_showtime(
+    window: tauri::Window,
+    node_id: String,
+    path: String,
+) -> Result<(), String> {
+    let ws_id = ws_of(&window)?;
+    let app = window.app_handle().clone();
+    let cfg = workspace_config_for(&app, &ws_id)?;
     let raw_root = cfg.effective_workspace_root();
     let root = match app.path().home_dir() {
         Ok(h) => expand_tilde(&h, &raw_root),
