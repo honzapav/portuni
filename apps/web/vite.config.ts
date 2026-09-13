@@ -37,6 +37,16 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: "http://localhost:4011",
+        // The session live channel (#341, GET /sessions/ws) is a plain
+        // WebSocket upgrade under this same /api prefix. Browsers cannot
+        // set an Authorization header on a WS handshake at all, so the
+        // desktop app's "Rust host holds the bearer" story has no direct
+        // browser equivalent -- ws: true here plus the proxyReqWs handler
+        // below is the dev-mode stand-in, injecting the token into the
+        // proxied UPGRADE request server-side exactly like proxyReq
+        // already does for ordinary REST calls. http-proxy fires a
+        // separate "proxyReqWs" event for upgrades, not "proxyReq".
+        ws: true,
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ""),
         configure: (proxy) => {
@@ -47,6 +57,15 @@ export default defineConfig({
             // Drop any client-supplied marker before deciding whether to
             // set our own, so client JS can never forward one through
             // unmodified (mirrors the Rust proxy's own filtering).
+            proxyReq.removeHeader("X-Portuni-Webview-Proxy");
+            if (WEBVIEW_PROXY_SECRET) {
+              proxyReq.setHeader("X-Portuni-Webview-Proxy", WEBVIEW_PROXY_SECRET);
+            }
+          });
+          proxy.on("proxyReqWs", (proxyReq) => {
+            if (AUTH_TOKEN) {
+              proxyReq.setHeader("Authorization", `Bearer ${AUTH_TOKEN}`);
+            }
             proxyReq.removeHeader("X-Portuni-Webview-Proxy");
             if (WEBVIEW_PROXY_SECRET) {
               proxyReq.setHeader("X-Portuni-Webview-Proxy", WEBVIEW_PROXY_SECRET);

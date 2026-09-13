@@ -1637,6 +1637,66 @@ symlink to this file.
   in practice but not a guarantee the importer enforces. Inserted NULL in
   the main pass, backfilled in a second UPDATE pass once every
   `session_runs` row exists.
+- **The live channel's desktop bridge (#341, runner batch phase 3, first
+  issue) holds the WebSocket in Rust, never the webview (security rule
+  3).** `apps/desktop/src/sessions_ws.rs`'s `sessions_connect`/
+  `sessions_send`/`sessions_disconnect` commands open ONE connection per
+  window to that window's own sidecar (`ws_of(&window)` +
+  `sidecar_port_and_token`, the exact same bearer source `api_request`
+  already uses — `Authorization: Bearer` attached on the WS handshake
+  request itself, which Rust can do and a browser cannot) and re-emit
+  every server frame as a per-window `session-event`
+  (`app.emit_to("ws:<id>", ...)`, same idiom as `backend-ready`), plus a
+  `session-connection {status}` (`open|reconnecting|closed`). Reconnect
+  backoff is 1s→30s, doubling (`next_backoff_ms`, a pure function unit
+  tested in isolation — `sessions_ws::backoff_tests`); the connection
+  registry (`SessionsWsState`, keyed by workspace id like
+  `BackendPorts`/`AuthTokens`, not by an opaque session id the way PTY's
+  own registry is) carries a `generation` counter bumped on every connect/
+  disconnect so a background task from a superseded connect (e.g. sleeping
+  out a backoff when a fresh `sessions_connect` or a `sessions_disconnect`
+  arrives) recognizes it no longer owns the entry and exits instead of
+  resurrecting a connection nothing wants. **Unlike PTY sessions (which
+  are NOT torn down on window close today — a known gap), this one is**:
+  `disconnect_for_ws` is called both from `sessions_disconnect` and from
+  `on_window_event`'s `Destroyed` arm, since a force-closed window never
+  gets to call the command itself. `tokio-tungstenite`/`tokio`/
+  `futures-util` are new direct dependencies (default features only, no
+  TLS backend — every connection target is loopback `ws://127.0.0.1`,
+  never `wss://`); `tokio` was already present transitively via Tauri's
+  own async runtime. No change needed to `capabilities/default.json`:
+  custom app commands need no per-command capability entry in this
+  codebase (confirmed against the existing, equally un-listed
+  `api_request`/`pty_spawn`), only the `windows: ["bootstrap", "ws:*"]`
+  scope already covers every command.
+  **`apps/web/src/lib/sessions-client.ts`** is the typed client the two
+  transports share one interface for: Tauri mode invokes those three
+  commands and listens for the two events; **Vite dev mode opens a real
+  `WebSocket` directly** against `/api/sessions/ws` — `vite.config.ts`'s
+  existing `/api` proxy gained `ws: true` plus a `proxyReqWs` handler
+  (http-proxy fires a *different* event for upgrades than `proxyReq`)
+  injecting the bearer the exact same way the REST proxy already does, so
+  the token still never reaches client JS even in this mode; reconnect-
+  with-backoff is reimplemented in TS here since there is no Rust bridge
+  to do it for a plain browser tab. `createDirectWsTransport`'s own `send`
+  queues a frame until the socket's `onopen` fires rather than silently
+  dropping one sent immediately after `connect()` (the common case, not a
+  rare race — a caller's very first `subscribe()` call always races the
+  handshake). The client tracks the highest `seq` it has seen **per
+  session** (never touched by `delta` frames, which carry no `seq` and are
+  never persisted server-side either) and resubscribes every still-wanted
+  session with `after: <that seq>` the moment the transport reports
+  `"open"` again after having been open before — the server's own replay
+  (`sessions-ws.ts`) fills exactly that gap, so a reconnect loses nothing
+  and re-delivers nothing. `session_state` frames dispatch to a single
+  global listener set (`onSessionState`, no session-id key), matching the
+  server fanning them to every connection that can see the session
+  regardless of subscription. `test/sessions-client.test.ts` exercises the
+  direct-WS transport end-to-end against a small fake `ws` server (the
+  Tauri transport has no runtime to test against here) — subscribe/reply
+  correlation, in-order event delivery, the resubscribe-with-`after`
+  behavior across a forced connection drop, and that a `delta` frame never
+  moves the tracked seq.
 
 ## Security rules (from the auth refactor post-mortem)
 

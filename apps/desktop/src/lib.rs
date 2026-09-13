@@ -14,6 +14,7 @@ use std::sync::Mutex;
 mod auth;
 mod mcp_install;
 mod pty;
+mod sessions_ws;
 mod updater;
 mod workspace;
 
@@ -3247,6 +3248,7 @@ pub fn run() {
         .manage(PendingBackendErrors(Mutex::new(HashMap::new())))
         .manage(QuitQueue(Mutex::new(None)))
         .manage(pty::PtyState::default())
+        .manage(sessions_ws::SessionsWsState::default())
         .manage(updater::PendingUpdate::default())
         .register_uri_scheme_protocol("portuni-html", |ctx, request| {
             use tauri::http::Response;
@@ -3363,6 +3365,9 @@ pub fn run() {
             pty::pty_write,
             pty::pty_resize,
             pty::pty_kill,
+            sessions_ws::sessions_connect,
+            sessions_ws::sessions_disconnect,
+            sessions_ws::sessions_send,
             auth::auth_status,
             auth::google_login,
             auth::auth_refresh,
@@ -3462,6 +3467,11 @@ pub fn run() {
                         }
                     }
                     persist_open_windows(app);
+                    // A force-closed window never gets to call
+                    // sessions_disconnect itself -- close its live-channel
+                    // socket here so the background task doesn't outlive
+                    // the window (#341).
+                    sessions_ws::disconnect_for_ws(app, &ws_id);
                 }
                 // #229: this window's turn in a sequential quit (if one is
                 // running) is done -- close the next queued window, or
