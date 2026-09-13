@@ -28,6 +28,7 @@ function toDbResultSet(res: QueryResult): DbResultSet {
 export function createPgDbClient(connectionString: string): DbClient {
   const pool = new Pool({ connectionString });
   return {
+    dialect: "postgres",
     async execute(stmt: InStatement): Promise<DbResultSet> {
       const { sql, args } = normalizeStmt(stmt);
       const res = await pool.query(rewritePositionalPlaceholders(sql), args);

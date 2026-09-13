@@ -35,7 +35,16 @@ export interface DbResultSet {
 
 export type DbTransactionMode = "write" | "read" | "deferred";
 
+// SQLite-family (libsql) vs Postgres-family (pg/PGlite) -- the only thing
+// ensureSchemaOn (B2, schema.ts) needs to pick which baseline/migration
+// path applies. Everything else about DbClient is dialect-neutral by
+// design; this is the one deliberate exception, since schema application
+// itself cannot be (two genuinely different DDL dialects, not just two
+// wire protocols).
+export type DbDialect = "sqlite" | "postgres";
+
 export interface DbClient {
+  readonly dialect: DbDialect;
   execute(stmt: InStatement): Promise<DbResultSet>;
   batch(stmts: InStatement[], mode?: DbTransactionMode): Promise<DbResultSet[]>;
   executeMultiple(sql: string): Promise<void>;

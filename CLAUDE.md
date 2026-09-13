@@ -1421,6 +1421,75 @@ symlink to this file.
   conformance suite is skipped unless `PORTUNI_TEST_PG_URL` is set, real
   verification waiting on an actual deployed Postgres in a later batch-B
   step.
+- **The Postgres baseline (B2) is one migration, not a fresh-install DDL
+  path plus 35 upgrade steps.** `DbClient` gained a `dialect: "sqlite" |
+  "postgres"` tag (the one dialect-aware seam in an otherwise dialect-
+  neutral interface) so `ensureSchemaOn` (`infra/schema.ts`) can branch: the
+  libsql path is untouched, the postgres path calls
+  `infra/migrations/pg.ts`'s `ensurePgSchema`, a tiny framework of its own
+  (`migrations` table, same shape as the libsql one, disjoint id space --
+  `pg-NNN` vs `NNN_name`, never both populated in the same database) whose
+  first and so-far-only entry, `pg-001`, IS the whole baseline (every
+  table from `schema.pg.ts`'s `PG_BASELINE_DDL` + every trigger from
+  `schema-triggers.pg.ts`'s `PG_BASELINE_TRIGGERS`) applied in one
+  `executeMultiple` call -- Postgres's simple-query protocol wraps a multi-
+  statement script in an implicit transaction on its own, so a mid-baseline
+  failure leaves nothing committed and no `pg-001` marker, and the next
+  boot retries cleanly rather than hitting "relation already exists".
+  **The baseline mirrors what a FRESH libsql install ends up with** (DDL +
+  DDL_MIGRATION_006 + DDL_AFTER_MIGRATIONS + every migration whose `up()`
+  still does something on an empty database, e.g. migration 002's org-
+  invariant triggers, migration 013's `idx_nodes_sync_key` + sync_key
+  guard triggers, migration 016's `users.google_sub`/`avatar_url`/
+  `last_login_at`, migration 033's `idx_audit_file_node_ts`) -- not a
+  literal replay of all 35 migrations, most of which exist only to bring
+  an OLD sqlite database up to that same shape. Translation rules, applied
+  uniformly: `DATETIME` → `TIMESTAMPTZ`, `DEFAULT (datetime('now'))` →
+  `DEFAULT now()`; `REAL` → `DOUBLE PRECISION` (SQLite's REAL is already
+  8-byte, same as Postgres double precision); boolean-shaped
+  `INTEGER ... CHECK(x IN (0,1))` columns are kept as-is, not converted to
+  `BOOLEAN` (that conversion is B3's dialect-neutral-SQL job, since every
+  call site still writes/reads 0/1); `INTEGER PRIMARY KEY AUTOINCREMENT` →
+  `INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY` (`remote_routing.id`,
+  the only site); `CHECK(json_valid(x))` → `CHECK(x::jsonb IS NOT NULL)`
+  (invalid JSON fails the INSERT with a cast error instead of a constraint
+  violation -- same net effect, the row is rejected either way); a SQLite
+  `GENERATED ... VIRTUAL` column (`audit_log.audit_node_id`, source
+  `json_extract(detail, '$.node_id')`) becomes `GENERATED ALWAYS AS
+  ((detail::jsonb ->> 'node_id')) STORED` (Postgres has no virtual
+  generated columns before PG18; STORED is transparent to every reader
+  either way). **One deliberate schema difference, per the issue:**
+  `session_events`' primary key is `(session_id, seq)` here, not a bare
+  `id` — efficient per-session retention deletes and the natural read
+  order both the live channel and the 90-day event-retention sweep want;
+  `id` (still `ulid()`-generated, still read by `SessionEventRow`) is a
+  plain `NOT NULL` column now, never looked up by itself so dropping its
+  own uniqueness constraint costs nothing. **10 SQLite triggers ported to
+  PL/pgSQL, same trigger names, 9 actually applied**: `RAISE(ABORT, 'msg')`
+  → `RAISE EXCEPTION 'msg'`; a SQLite `WHEN <cond> BEGIN...END` guard
+  becomes an `IF <cond> THEN...END IF;` inside the function body (Postgres
+  triggers have no WHEN-guard for a condition referencing other tables);
+  `UPDATE OF col` column-scoped triggers are natively supported by
+  Postgres's own `CREATE TRIGGER`, unchanged. `nodes_owner_must_be_real_person`
+  is ported for parity (`PG_TRIGGER_NODES_OWNER_MUST_BE_REAL_PERSON`,
+  exported) but deliberately excluded from `PG_BASELINE_TRIGGERS` — same as
+  `DDL_MIGRATION_006`'s own exclusion on the libsql side: migration 014
+  drops it there and a fresh install never creates it in the first place,
+  owners may be any actor now, the FK on `owner_id` already guarantees
+  existence. **No FK on `nodes.owner_id` at all**, matching the fresh
+  libsql DDL exactly (only migration 006's ALTER on an *upgraded* libsql DB
+  adds one) — a faithful port of an existing inconsistency, not a place to
+  fix it in this batch. Tests (`test/schema-pg-baseline.test.ts`) boot a
+  PGlite `:memory:` DB, apply the baseline, and exercise the same behaviors
+  the libsql trigger tests cover for that dialect: org invariant (both
+  directions), per-type attachment validation, lifecycle derivation +
+  validation, sync_key non-empty + uniqueness, the `sessions.terminal_id`
+  index, `idx_files_unique_remote`, the generated column, and the
+  `session_events` composite key — plus idempotency (a second
+  `ensureSchemaOn` call is a no-op, `migrations` still holds exactly
+  `pg-001`). `seedSoloUser` also branched: `INSERT OR IGNORE ...
+  datetime('now')` has a `postgres` counterpart using `ON CONFLICT (id) DO
+  NOTHING` and `now()`.
 
 ## Security rules (from the auth refactor post-mortem)
 

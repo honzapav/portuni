@@ -17,6 +17,7 @@ function toDbResultSet(rs: ResultSet): DbResultSet {
 
 export function createLibsqlDbClient(client: Client): DbClient {
   return {
+    dialect: "sqlite",
     async execute(stmt: InStatement): Promise<DbResultSet> {
       return toDbResultSet(await client.execute(stmt));
     },

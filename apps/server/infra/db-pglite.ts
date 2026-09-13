@@ -28,6 +28,7 @@ function toDbResultSet(res: Results<unknown>): DbResultSet {
 export function createPgliteDbClient(dataDir?: string): DbClient {
   const db = new PGlite(dataDir);
   return {
+    dialect: "postgres",
     async execute(stmt: InStatement): Promise<DbResultSet> {
       const { sql, args } = normalizeStmt(stmt);
       const res = await db.query(rewritePositionalPlaceholders(sql), args as unknown[]);
