@@ -108,6 +108,26 @@ export interface DirectWsTransportOptions {
   // scenario doesn't have to wait out a real 1s-30s schedule.
   minBackoffMs?: number;
   maxBackoffMs?: number;
+  // The WebSocket constructor to use; defaults to the global one. The
+  // server-side test runner (CI is Node 20, which has no global WebSocket)
+  // passes the `ws` package's class instead.
+  WebSocket?: WebSocketLike;
+}
+
+// The subset of the WHATWG WebSocket surface this transport uses; the `ws`
+// package's class satisfies it too.
+export interface WebSocketLike {
+  new (url: string): WebSocketInstance;
+  readonly OPEN: number;
+}
+export interface WebSocketInstance {
+  readyState: number;
+  send(data: string): void;
+  close(): void;
+  onopen: ((ev: unknown) => void) | null;
+  onmessage: ((ev: { data: unknown }) => void) | null;
+  onclose: ((ev: unknown) => void) | null;
+  onerror: ((ev: unknown) => void) | null;
 }
 
 // Browser/Vite dev-mode transport: a real WebSocket with its own
@@ -118,9 +138,10 @@ export interface DirectWsTransportOptions {
 export function createDirectWsTransport(url: string, options: DirectWsTransportOptions = {}): Transport {
   const minBackoffMs = options.minBackoffMs ?? MIN_BACKOFF_MS;
   const maxBackoffMs = options.maxBackoffMs ?? MAX_BACKOFF_MS;
+  const WebSocketCtor: WebSocketLike = options.WebSocket ?? (globalThis.WebSocket as unknown as WebSocketLike);
   const frameListeners = new Set<(frame: ServerFrame) => void>();
   const statusListeners = new Set<(status: ConnectionStatus) => void>();
-  let socket: WebSocket | null = null;
+  let socket: WebSocketInstance | null = null;
   let backoffMs = minBackoffMs;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
@@ -146,7 +167,7 @@ export function createDirectWsTransport(url: string, options: DirectWsTransportO
 
   function open(): void {
     if (stopped) return;
-    const ws = new WebSocket(url);
+    const ws = new WebSocketCtor(url);
     socket = ws;
     ws.onopen = () => {
       backoffMs = minBackoffMs;
@@ -178,7 +199,7 @@ export function createDirectWsTransport(url: string, options: DirectWsTransportO
   return {
     send(frame) {
       const text = JSON.stringify(frame);
-      if (socket?.readyState === WebSocket.OPEN) {
+      if (socket?.readyState === WebSocketCtor.OPEN) {
         socket.send(text);
       } else {
         sendQueue.push(text);

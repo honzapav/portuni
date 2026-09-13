@@ -5,7 +5,7 @@
 // for apps/server/api/sessions-ws.ts.
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { WebSocketServer, type WebSocket as WsSocket } from "ws";
+import { WebSocket as WsClient, WebSocketServer, type WebSocket as WsSocket } from "ws";
 import type { AddressInfo } from "node:net";
 import { createSessionsClient, createDirectWsTransport } from "../apps/web/src/lib/sessions-client.js";
 
@@ -88,7 +88,7 @@ async function fakeServer(): Promise<FakeSessionsServer> {
 describe("sessions-client: direct-WS transport", () => {
   it("subscribes with no `after` on a fresh subscribe, then delivers events in order", async () => {
     const server = await fakeServer();
-    const transport = createDirectWsTransport(server.url, { minBackoffMs: 10, maxBackoffMs: 50 });
+    const transport = createDirectWsTransport(server.url, { minBackoffMs: 10, maxBackoffMs: 50, WebSocket: WsClient });
     const client = createSessionsClient({ transport });
     const received: number[] = [];
     client.onEvent("S1", (event) => received.push(event.seq));
@@ -111,7 +111,7 @@ describe("sessions-client: direct-WS transport", () => {
 
   it("re-subscribes with the last seq it saw per session after a dropped connection", async () => {
     const server = await fakeServer();
-    const transport = createDirectWsTransport(server.url, { minBackoffMs: 10, maxBackoffMs: 50 });
+    const transport = createDirectWsTransport(server.url, { minBackoffMs: 10, maxBackoffMs: 50, WebSocket: WsClient });
     const client = createSessionsClient({ transport });
     const statuses: string[] = [];
     client.onConnectionStatus((s) => statuses.push(s));
@@ -132,7 +132,7 @@ describe("sessions-client: direct-WS transport", () => {
 
   it("delta frames never touch the tracked seq, so a resubscribe after a drop still uses the last real event's seq", async () => {
     const server = await fakeServer();
-    const transport = createDirectWsTransport(server.url, { minBackoffMs: 10, maxBackoffMs: 50 });
+    const transport = createDirectWsTransport(server.url, { minBackoffMs: 10, maxBackoffMs: 50, WebSocket: WsClient });
     const client = createSessionsClient({ transport });
     const deltas: string[] = [];
     client.onDelta("S1", (d) => deltas.push(d.text));
@@ -153,7 +153,7 @@ describe("sessions-client: direct-WS transport", () => {
 
   it("dispatches session_state frames globally, not scoped to a subscribed session", async () => {
     const server = await fakeServer();
-    const transport = createDirectWsTransport(server.url, { minBackoffMs: 10, maxBackoffMs: 50 });
+    const transport = createDirectWsTransport(server.url, { minBackoffMs: 10, maxBackoffMs: 50, WebSocket: WsClient });
     const client = createSessionsClient({ transport });
     const states: string[] = [];
     client.onSessionState((s) => states.push(s.state));
