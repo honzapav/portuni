@@ -120,18 +120,26 @@ both resume modes from `GET /sessions/:id/resume-info`) — follow the same
 access table below; a refused action surfaces the server's own error,
 there is no client-side prediction of who may do what.
 
-The event list renders the session's canonical log
-(`GET /sessions/:id/events`, backfilled once on mount, then the live
-WebSocket below): user and assistant messages as chat bubbles, reasoning
-as a muted aside, `tool_call` collapsed from its `started` and
-`completed`/`failed` pair into one row (expandable for the output
-excerpt), `file_change` linking into the Files tab, and `compaction`,
-`handoff`, `state_changed` and `run_ended` as centered system markers.
-Assistant text streams in from `delta` frames before its `assistant_message`
-event lands, then the buffer clears. A question panel appears above the
-composer while `waiting_since` is set — option buttons for an approval,
-a text field for free-form input — and the composer itself disables
-while suspended, closed or archived.
+The event list renders the session's canonical log, delivered entirely
+over the live WebSocket below (a subscribe replays the persisted log,
+then streams what follows): user and assistant messages as chat bubbles,
+reasoning as a muted aside, `tool_call` collapsed from its `started` and
+`completed`/`failed` pair into one row showing the title (click it to
+expand the input summary and output excerpt), `file_change` linking into
+the Files tab, and `compaction`, `handoff`, `state_changed` and
+`run_ended` as centered system markers. Assistant text streams in from
+`delta` frames before its `assistant_message` event lands, then the
+buffer clears. A question panel appears above the composer while
+`waiting_since` is set — option buttons for an approval, a text field for
+free-form input — and the composer itself disables while suspended,
+closed or archived, or when you are not the session's owner (messages
+and answers are owner-only; anyone who can see the node can read along).
+The header names the runner, instance and host, and while a run is live
+it shows the restart indicator (run age, write/read-set size, scope
+expansions since the run started) with a **Předat a začít znovu** action:
+suspend, then start a fresh run from the handoff. A suspended session
+offers **Pokračovat** when the CLI conversation can still be picked up
+and **Předat a začít znovu** always.
 
 A session can also be driven directly over REST, ahead of or instead of
 the chat UI above: the same `POST /sessions` plus `POST
@@ -165,7 +173,14 @@ The REST task routes above are for scripts and tests; the desktop window
 itself talks to one WebSocket, `GET /sessions/ws` (upgrade, same bearer/
 JWT auth as every other route — an upgrade that fails auth is refused with
 401 and the socket is closed; a plain `GET` without an `Upgrade` header
-answers 426). Every frame is JSON `{ id?, type, payload }`; a frame
+answers 426). The socket is mounted in both data modes: on the standalone
+/ local sidecar over its own database, and on the central-mode sync agent
+over the same runtime its REST task routes drive, so the window's
+connection always targets its own sidecar. Opening the socket needs
+`read` scope; `message`, `answer`, `interrupt`, `suspend` and `close`
+frames need `write` scope (`FORBIDDEN` otherwise) and, in the packaged
+app, an upgrade that carried the webview-proxy proof described above
+(`WEBVIEW_PROXY_REQUIRED` otherwise) — a `subscribe` works either way. Every frame is JSON `{ id?, type, payload }`; a frame
 carrying `id` gets `{ id, type: "reply", payload }` on success or
 `{ id, type: "error", payload: { code, message } }` on failure — the same
 codes the REST routes answer with (`SESSION_FORBIDDEN`,
@@ -182,9 +197,9 @@ Server → client: `event { session_id, event }` — a persisted canonical
 event, carrying the `seq` the store assigned it; `delta { session_id,
 run_id, text }` — streamed text, never persisted, never replayed; and
 `session_state { session_id, state, waiting_since, node_id }` — sent for
-every session you can see the moment you connect, and again on every
-`state_changed`, `question` or `run_ended` anywhere, with no subscription
-needed. This is what lets the Relace tab, the Práce sidebar and Přehled
+every running or suspended session you can see the moment you connect
+(newest activity first, at most 500), and again on every `state_changed`,
+`question` or `run_ended` anywhere, with no subscription needed. This is what lets the Relace tab, the Práce sidebar and Přehled
 update live instead of polling.
 
 Reconnect rule: a client that drops and reconnects re-subscribes to each

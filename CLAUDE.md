@@ -1060,15 +1060,36 @@ symlink to this file.
   written to the socket before it is destroyed) -- CORS/origin/OPTIONS don't
   apply to an upgrade. A plain `GET /sessions/ws` without an `Upgrade`
   header never reaches that event at all; `http/server.ts`'s normal request
-  path answers it 426 directly. Mounted whenever the DEFAULT router is in
-  use (`mountSessionsWs` defaults to `opts.router === undefined`) -- the
-  central-mode sync agent (`agentMain` in `desktop.ts`, custom router) gets
-  it off by default, since its sidecar has no session runtime wiring yet
-  (#323's job). Every client action (`message`/`answer`/`interrupt`/
-  `suspend`/`close`) is gated by the exact same `sessionAccess` tier the
-  REST route uses and calls the exact same `SessionRuntime` method; a
-  refused action is an `{id,type:"error",payload:{code,message}}` frame,
-  never a closed socket. `subscribe` replays `store.listEvents(after)` in
+  path answers it 426 directly. **Mounted in both data modes.** The
+  server takes its storage through `SessionsWsDeps` (`runtime`, `access`,
+  `snapshot`, `canSee`): `createLocalSessionsWsDeps()` (the default when
+  the default router is in use) answers over the graph db, and the
+  central-mode sync agent (`agentMain` in `desktop.ts`) passes
+  `sessionsWs: createSessionsWsServer(createAgentSessionsWsDeps(client,
+  runtime))` with the SAME runtime its `createAgentRouter(client, {
+  sessionRuntime })` drives -- the desktop's `sessions_connect` targets
+  its own sidecar, so without this the app's own mode had no live channel
+  (the Rust side just reconnected forever). Agent-mode access is what
+  central enforces on every store round trip (a central 404 is
+  `SESSION_NOT_FOUND`); its snapshot comes from the new `GET
+  /sessions?state=running,suspended&limit=500` (`handleListSessions`,
+  `CentralClient.listSessionRecords`), visibility-filtered like
+  `sessionAccess("read")`, bounded, newest activity first -- the local
+  snapshot is bounded the same way (`SNAPSHOT_LIMIT`), and a broadcast
+  resolves visibility once per identity, not per connection. The upgrade
+  applies `minScopeForRoute` like every REST route (`GET /sessions/ws` is
+  `read`); `message`/`answer`/`interrupt`/`suspend`/`close` frames need
+  `write` scope (`FORBIDDEN`) and, under the #213 hardened posture, an
+  upgrade that carried the proven `X-Portuni-Webview-Proxy` header
+  (`UpgradeContext.webviewProven`, `WEBVIEW_PROXY_REQUIRED` otherwise) --
+  `apps/desktop/src/sessions_ws.rs` sends it exactly as `api_request`
+  does, the vite dev proxy already did; the same posture gates every
+  mutating `/sessions*` REST route on the local router
+  (`guardRestSessionWrite`, applied once in `routeSessions`). Every client
+  action then goes through the exact same `sessionAccess` tier the REST
+  route uses and calls the exact same `SessionRuntime` method; a refused
+  action is an `{id,type:"error",payload:{code,message}}` frame, never a
+  closed socket. `subscribe` replays `store.listEvents(after)` in
   pages of 200 -- it subscribes to the runtime FIRST, buffers whatever
   arrives live during the replay, then flushes the buffer skipping any
   event whose `seq` the replay already covered, so nothing emitted in that
@@ -1204,7 +1225,16 @@ symlink to this file.
   `unref()`'d to avoid that leak, risk never firing at all once nothing else
   keeps a bare test's event loop alive (Node drops an unref'd timer outright
   rather than firing it late). A null pid (not captured yet) just waits out
-  the full timeout, since there is nothing to poll.
+  the full timeout, since there is nothing to poll. **`close()` also ends a
+  child that ignores the end of its prompt stream** (spec, "Process
+  lifecycle"): end the stream, `closeGraceMs` (2 s), `SIGTERM`,
+  `closeTermMs` (5 s), `SIGKILL`, each step skipped as soon as the run
+  ends or the pid is confirmed dead -- `test/runner-claude-adapter.test.ts`
+  proves it against a real `sleep 30` and a `trap '' TERM` shell. The child
+  is spawned `detached` (its own process group) so `signalProcessGroup`
+  reaches the CLI's helpers too; a `canUseTool` question still open when
+  the run ends is denied (and one raised after the end is denied outright)
+  so the SDK's own awaiter settles; delta frames carry the real `run_id`.
 - **A sidecar restart or crash leaves runner children alive and their runs
   open — `boot/run-sweep.ts` reaps both, run BEFORE
   `sweepStaleRunningSessionsOnBoot` (#325).** `session-runtime.ts` writes
@@ -1216,10 +1246,12 @@ symlink to this file.
   `sweepOrphanedRuns(db, dataDir)` walks every pid file at boot: a run
   already `ended_at` (a race with the file's own removal) or an unreadable
   file just gets the stale pid file deleted; otherwise, if the pid is alive
-  AND `ps -o command= -p <pid>` contains `claude` (a pid can be reused by an
-  unrelated process across a crash — the command-line check is what tells
-  "still our child" from "someone else's process now"), SIGTERM, wait 5s,
-  SIGKILL if still alive — then, regardless of whether anything needed
+  AND `ps -o lstart= -o command= -p <pid>` says it is still our child
+  (`readProcessIdentity`/`isOurChild`: the command line contains `claude`
+  AND the process started no later than the pid file was written -- a pid
+  reused across a crash by the user's own interactive Claude Code also
+  says `claude`, but necessarily started after the file), SIGTERM the
+  process group, wait 5s, SIGKILL if still alive — then, regardless of whether anything needed
   killing, `patchRun(end_reason: "host_lost")`, append `run_ended {reason:
   "host_lost"}`, and `suspendSessionServerSide(db, sessionId, "host_lost")`
   (one more `ServerHandoffReason`, alongside `boot_sweep`/`suspend_timeout`
@@ -1592,13 +1624,31 @@ symlink to this file.
   `"libsql"` explicitly regardless of which driver the rest of the matrix
   run is exercising, since those ARE the libsql migration path and have no
   Postgres equivalent — schema.pg.ts's baseline already carries whatever
-  they migrate an old DB towards, applied as a single step. A handful of
-  test files that build their own **raw libsql `createClient` directly**
-  (never touching `makeSharedDb`/`openTestDb` at all — e.g. a fixed
-  `TURSO_URL=file:...` temp path, or hand-rolled pre-migration DDL to test
-  a specific migration's `up()` in isolation) needed no change at all:
-  they're unconditionally libsql regardless of `PORTUNI_TEST_DB`, by
-  construction.
+  they migrate an old DB towards, applied as a single step. **Every other
+  test file opens its db through `openTestDb()` too** — 52 files used to
+  call libsql's `createClient({ url: ":memory:" })` directly, so `npm run
+  test:pglite` silently re-ran a quarter of the suite (router, MCP, auth,
+  scope, sync-routing) on libsql and two real Postgres breakers
+  (`sqlite_master` in `mcp/tools/context.ts`, `SELECT DISTINCT … ORDER BY`
+  on an unselected column in `domain/sessions.ts`) went unnoticed. The
+  files that hand-write SQLite DDL or drive `runMigrationNNN` are pinned
+  with `openTestDb("libsql")` and say so in a comment; the rest use
+  `insertIgnore`/`nowExpr` and skip `PRAGMA` on Postgres. A new test opens
+  its db with `openTestDb()`; a new query that introspects the schema uses
+  `tableExistsSql(dialect)` (`sqlite_master` vs `pg_tables`). **Both
+  Postgres drivers pin the session time zone to UTC** (`SET TIME ZONE
+  'UTC'` after PGlite's `waitReady`, `options: "-c timezone=UTC"` on the
+  pg Pool): `normalizePgRow` renders TIMESTAMPTZ as zone-less UTC text and
+  `db-import` feeds it back as a bare literal, which Postgres reads in the
+  session zone — on a host outside UTC every export/import round trip
+  shifted timestamps by the local offset (CI's UTC runner never saw it).
+  `sql-placeholders.ts` skips `--`/`/* */` comments and dollar-quoted
+  bodies as well as string literals. **A Postgres migration's marker row
+  is written inside the same `executeMultiple` script as its DDL** (one
+  implicit transaction), and every `CREATE TRIGGER` in
+  `schema-triggers.pg.ts` is preceded by `DROP TRIGGER IF EXISTS`, so a
+  baseline applied without its marker (older build, crash in between)
+  boots instead of failing on "trigger already exists" forever.
   **`npm run test:pglite` caps `--test-concurrency=2`** (`node --test`'s
   default is `availableParallelism() - 1`, effectively "run most test files
   in parallel"): PGlite is a real WASM-compiled Postgres per instance, heavy
