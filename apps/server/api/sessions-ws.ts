@@ -14,7 +14,21 @@
 // Auth happens once, at the "upgrade" event, before this module ever sees
 // the connection (http/server.ts's checkUpgradeAuth) -- every frame on an
 // open socket is already scoped to that one resolved identity for the life
-// of the connection.
+// of the connection. Two more facts are fixed there too and carried on the
+// connection: the identity's global scope (a `read`-scope caller may
+// subscribe but never send a mutating frame -- the same minScopeForRoute
+// tier the REST twins of these frames carry), and whether the upgrade
+// request proved it came from the desktop webview / dev proxy under the
+// hardened posture (PORTUNI_WEBVIEW_PROXY_SECRET, #213) -- a spawned
+// terminal holding the same loopback bearer can open the socket and
+// watch, but its message/answer/interrupt/suspend/close frames are
+// refused, exactly as its REST calls are.
+//
+// Everything that touches storage goes through `SessionsWsDeps`: local mode
+// (http/server.ts's default) resolves access and the initial snapshot
+// against the graph db; the central-mode sync agent (desktop.ts, which has
+// no graph db) plugs in its CentralClient-backed runtime and lets central
+// answer the same questions over REST (createAgentSessionsWsDeps).
 
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
@@ -22,9 +36,12 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { z } from "zod";
 import { getDb } from "../infra/db.js";
 import { getSessionRuntime } from "../boot/session-runtime.js";
-import { sessionAccess, SessionAccessError } from "../auth/session-access.js";
-import { getSession, listSessions } from "../domain/sessions.js";
+import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../auth/session-access.js";
+import { listSessions } from "../domain/sessions.js";
 import { nodeVisibleTo } from "../auth/node-access.js";
+import { scopeAtLeast } from "../auth/roles.js";
+import type { SessionRuntime } from "../domain/runner/session-runtime.js";
+import type { CentralClient } from "../domain/sync/central/client.js";
 import { logAudit } from "../infra/audit.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import type { DeltaFrame, QuestionDecision } from "../domain/runner/types.js";
@@ -78,12 +95,83 @@ const ClientFrameSchema = z.discriminatedUnion("type", [
 ]);
 type ClientFrame = z.infer<typeof ClientFrameSchema>;
 
+export interface UpgradeContext {
+  identity: RequestIdentity;
+  // False when the hardened posture is on and the upgrade request did not
+  // prove it came from the webview proxy -- mutating frames are refused.
+  webviewProven: boolean;
+}
+
 interface Connection {
   ws: WebSocket;
   identity: RequestIdentity;
+  webviewProven: boolean;
   // session_id -> the runtime's own unsubscribe callback for that target.
   subscriptions: Map<string, () => void>;
   missedPongs: number;
+}
+
+// What the socket needs from its environment. `access` resolves a session
+// for an action or throws SessionAccessError (the same codes REST answers
+// with); `snapshot` lists the sessions the initial session_state burst
+// covers; `canSee` gates every later broadcast.
+export interface SessionsWsDeps {
+  runtime(): SessionRuntime;
+  access(identity: RequestIdentity, sessionId: string, action: SessionAccessAction): Promise<SessionRow>;
+  snapshot(identity: RequestIdentity): Promise<SessionRow[]>;
+  canSee(identity: RequestIdentity, row: SessionRow): Promise<boolean>;
+}
+
+// Bounds the initial session_state burst: running + suspended sessions,
+// newest activity first, never more than this many. Terminal states
+// (closed/archived) are what the Relace tab pages through REST for.
+const SNAPSHOT_LIMIT = 500;
+
+export function createLocalSessionsWsDeps(): SessionsWsDeps {
+  return {
+    runtime: () => getSessionRuntime(),
+    access: (identity, sessionId, action) => sessionAccess(getDb(), identity, sessionId, action),
+    async snapshot(identity) {
+      const db = getDb();
+      const [running, suspended] = await Promise.all([
+        listSessions(db, { state: "running" }),
+        listSessions(db, { state: "suspended" }),
+      ]);
+      const visible: SessionRow[] = [];
+      for (const row of [...running, ...suspended]) {
+        if (visible.length >= SNAPSHOT_LIMIT) break;
+        if (await canSeeSession(identity, row)) visible.push(row);
+      }
+      return visible;
+    },
+    canSee: (identity, row) => canSeeSession(identity, row),
+  };
+}
+
+// Central-mode counterpart: the sidecar has no graph db, so "may this
+// identity read/act on this session" is answered by central on every store
+// call the runtime makes (each is a device-token REST round trip that runs
+// sessionAccess there). Locally the only thing to establish is that the
+// session exists for this device's user -- a central 404 is
+// SESSION_NOT_FOUND, anything the store lets through is allowed; a
+// non-owner action the runtime then attempts fails on central's own
+// access check and surfaces as an error frame.
+export function createAgentSessionsWsDeps(client: CentralClient, runtime: SessionRuntime): SessionsWsDeps {
+  return {
+    runtime: () => runtime,
+    async access(_identity, sessionId) {
+      const row = await runtime.getSession(sessionId);
+      if (!row) throw new SessionAccessError("SESSION_NOT_FOUND", `session ${sessionId} not found`);
+      return row;
+    },
+    async snapshot() {
+      return client.listSessionRecords({ states: ["running", "suspended"], limit: SNAPSHOT_LIMIT });
+    },
+    // Central already filtered what it handed this device; a broadcast
+    // here is for a session this runtime itself is running or just
+    // touched, which it could only have done as the device's own user.
+    canSee: async () => true,
+  };
 }
 
 function send(ws: WebSocket, frame: unknown): void {
@@ -130,11 +218,11 @@ function eventFrame(sessionId: string, event: PublishedEvent): { type: string; p
 }
 
 export interface SessionsWsServer {
-  handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, identity: RequestIdentity): void;
+  handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, ctx: UpgradeContext): void;
   closeAll(): void;
 }
 
-export function createSessionsWsServer(): SessionsWsServer {
+export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSessionsWsDeps()): SessionsWsServer {
   const wss = new WebSocketServer({ noServer: true });
   const connections = new Set<Connection>();
 
@@ -147,7 +235,7 @@ export function createSessionsWsServer(): SessionsWsServer {
   let globalUnsubscribe: (() => void) | null = null;
   function ensureGlobalSubscription(): void {
     if (globalUnsubscribe) return;
-    globalUnsubscribe = getSessionRuntime().subscribe("*", (sessionId, event) => {
+    globalUnsubscribe = deps.runtime().subscribe("*", (sessionId, event) => {
       if (isDeltaFrame(event)) return;
       if (event.kind === "state_changed" || event.kind === "question" || event.kind === "run_ended") {
         void broadcastSessionState(sessionId);
@@ -156,28 +244,49 @@ export function createSessionsWsServer(): SessionsWsServer {
   }
 
   async function broadcastSessionState(sessionId: string): Promise<void> {
-    const row = await getSession(getDb(), sessionId);
+    const row = await deps.runtime().getSession(sessionId);
     if (!row) return;
+    // One visibility answer per distinct identity, not per connection: a
+    // user with three windows open costs one node-access query, not three.
+    const verdicts = new Map<string, Promise<boolean>>();
     for (const conn of connections) {
-      if (await canSeeSession(conn.identity, row)) send(conn.ws, sessionStateFrame(row));
+      let verdict = verdicts.get(conn.identity.userId);
+      if (!verdict) {
+        verdict = deps.canSee(conn.identity, row);
+        verdicts.set(conn.identity.userId, verdict);
+      }
+      if (await verdict) send(conn.ws, sessionStateFrame(row));
     }
   }
 
   async function sendInitialSnapshot(conn: Connection): Promise<void> {
-    const db = getDb();
-    const [running, suspended] = await Promise.all([
-      listSessions(db, { state: "running" }),
-      listSessions(db, { state: "suspended" }),
-    ]);
-    for (const row of [...running, ...suspended]) {
-      if (await canSeeSession(conn.identity, row)) send(conn.ws, sessionStateFrame(row));
+    for (const row of await deps.snapshot(conn.identity)) send(conn.ws, sessionStateFrame(row));
+  }
+
+  // Mutating frames carry the same `write` tier their REST twins do
+  // (auth/min-scopes.ts), and under the hardened posture only a connection
+  // that proved itself at upgrade may send them at all.
+  function refuseUnlessMutationAllowed(conn: Connection, frame: { id?: string; type: string }): boolean {
+    if (!conn.webviewProven) {
+      sendErrorReply(
+        conn.ws,
+        frame.id,
+        "WEBVIEW_PROXY_REQUIRED",
+        "session actions over the socket are reserved for the desktop app; use the Portuni MCP tools from a terminal",
+      );
+      return false;
     }
+    if (!scopeAtLeast(conn.identity.globalScope, "write")) {
+      sendErrorReply(conn.ws, frame.id, "FORBIDDEN", `${frame.type} requires write scope`);
+      return false;
+    }
+    return true;
   }
 
   async function handleSubscribe(conn: Connection, frame: Extract<ClientFrame, { type: "subscribe" }>): Promise<void> {
     const { session_id: sessionId, after } = frame.payload;
     try {
-      await sessionAccess(getDb(), conn.identity, sessionId, "read");
+      await deps.access(conn.identity, sessionId, "read");
     } catch (err) {
       if (err instanceof SessionAccessError) {
         sendErrorReply(conn.ws, frame.id, err.code, err.message);
@@ -190,7 +299,7 @@ export function createSessionsWsServer(): SessionsWsServer {
     // `after`) is dropped first so the old listener never double-delivers.
     conn.subscriptions.get(sessionId)?.();
 
-    const runtime = getSessionRuntime();
+    const runtime = deps.runtime();
     // Subscribe to the runtime FIRST, buffering everything it emits, before
     // replaying the persisted log -- otherwise an event published between
     // the replay's last page and this subscribe call would be lost.
@@ -231,8 +340,9 @@ export function createSessionsWsServer(): SessionsWsServer {
 
   async function handleMessage(conn: Connection, frame: Extract<ClientFrame, { type: "message" }>): Promise<void> {
     const { session_id: sessionId, text } = frame.payload;
+    if (!refuseUnlessMutationAllowed(conn, frame)) return;
     try {
-      await sessionAccess(getDb(), conn.identity, sessionId, "message");
+      await deps.access(conn.identity, sessionId, "message");
     } catch (err) {
       if (err instanceof SessionAccessError) {
         sendErrorReply(conn.ws, frame.id, err.code, err.message);
@@ -241,7 +351,7 @@ export function createSessionsWsServer(): SessionsWsServer {
       throw err;
     }
     try {
-      await getSessionRuntime().sendMessage(sessionId, text);
+      await deps.runtime().sendMessage(sessionId, text);
     } catch (err) {
       if (err instanceof Error && err.message.includes("has no live run")) {
         sendErrorReply(conn.ws, frame.id, "NO_LIVE_RUN", err.message);
@@ -255,8 +365,9 @@ export function createSessionsWsServer(): SessionsWsServer {
 
   async function handleAnswer(conn: Connection, frame: Extract<ClientFrame, { type: "answer" }>): Promise<void> {
     const { session_id: sessionId, request_id: requestId } = frame.payload;
+    if (!refuseUnlessMutationAllowed(conn, frame)) return;
     try {
-      await sessionAccess(getDb(), conn.identity, sessionId, "message");
+      await deps.access(conn.identity, sessionId, "message");
     } catch (err) {
       if (err instanceof SessionAccessError) {
         sendErrorReply(conn.ws, frame.id, err.code, err.message);
@@ -264,7 +375,7 @@ export function createSessionsWsServer(): SessionsWsServer {
       }
       throw err;
     }
-    const runtime = getSessionRuntime();
+    const runtime = deps.runtime();
     const pending = runtime.pendingQuestion(sessionId);
     if (!pending || pending.request_id !== requestId) {
       sendErrorReply(conn.ws, frame.id, "NO_PENDING_QUESTION", "no pending question with this request_id");
@@ -284,9 +395,10 @@ export function createSessionsWsServer(): SessionsWsServer {
     frame: Extract<ClientFrame, { type: "interrupt" | "suspend" | "close" }>,
   ): Promise<void> {
     const sessionId = frame.payload.session_id;
+    if (!refuseUnlessMutationAllowed(conn, frame)) return;
     let existing: SessionRow;
     try {
-      existing = await sessionAccess(getDb(), conn.identity, sessionId, "stop");
+      existing = await deps.access(conn.identity, sessionId, "stop");
     } catch (err) {
       if (err instanceof SessionAccessError) {
         sendErrorReply(conn.ws, frame.id, err.code, err.message);
@@ -294,7 +406,7 @@ export function createSessionsWsServer(): SessionsWsServer {
       }
       throw err;
     }
-    const runtime = getSessionRuntime();
+    const runtime = deps.runtime();
     if (frame.type === "interrupt") await runtime.interrupt(sessionId);
     else if (frame.type === "suspend") await runtime.suspend(sessionId);
     else await runtime.closeSession(sessionId);
@@ -341,9 +453,15 @@ export function createSessionsWsServer(): SessionsWsServer {
     }
   }
 
-  wss.on("connection", (ws: WebSocket, _req: IncomingMessage, identity: RequestIdentity) => {
+  wss.on("connection", (ws: WebSocket, _req: IncomingMessage, ctx: UpgradeContext) => {
     ensureGlobalSubscription();
-    const conn: Connection = { ws, identity, subscriptions: new Map(), missedPongs: 0 };
+    const conn: Connection = {
+      ws,
+      identity: ctx.identity,
+      webviewProven: ctx.webviewProven,
+      subscriptions: new Map(),
+      missedPongs: 0,
+    };
     connections.add(conn);
 
     const pingTimer = setInterval(() => {
@@ -376,9 +494,9 @@ export function createSessionsWsServer(): SessionsWsServer {
     void sendInitialSnapshot(conn);
   });
 
-  function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, identity: RequestIdentity): void {
+  function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, ctx: UpgradeContext): void {
     wss.handleUpgrade(req, socket, head, (client) => {
-      wss.emit("connection", client, req, identity);
+      wss.emit("connection", client, req, ctx);
     });
   }
 

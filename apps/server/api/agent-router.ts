@@ -50,6 +50,7 @@ import { findEntryByFileId } from "../mcp/agent-tools.js";
 import { guardAgentRestWrite } from "./write-gate.js";
 import { startSyncJob, getSyncJob, getCurrentSyncJob } from "../domain/sync/sync-jobs.js";
 import { createAgentSessionRuntime } from "../boot/session-runtime.js";
+import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
 import type { QuestionDecision } from "../domain/runner/types.js";
@@ -238,6 +239,11 @@ export interface AgentRouterOpts {
   // Test-only: shortens suspend()'s poll loop so a suspend-timeout fallback
   // test doesn't take the real 30s. Production never sets this.
   sessionRuntimeOpts?: { suspendPollIntervalMs?: number; suspendTimeoutMs?: number };
+  // The runtime this router drives. desktop.ts builds one per agent-mode
+  // sidecar and hands the SAME instance to the live channel
+  // (createAgentSessionsWsDeps), so a task started over REST is the one the
+  // socket streams. Omitted: the router builds its own (tests).
+  sessionRuntime?: SessionRuntime;
 }
 
 export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts): AgentRouteFn {
@@ -250,7 +256,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
   // own identity resolved from the device token) -- guardAgentRestWrite
   // below is only the same local webview-proxy-trust posture every other
   // mutating route on this router already applies.
-  const sessionRuntime = createAgentSessionRuntime(client, opts?.sessionRuntimeOpts);
+  const sessionRuntime = opts?.sessionRuntime ?? createAgentSessionRuntime(client, opts?.sessionRuntimeOpts);
 
   return async (req, res, url, identity) => {
     const method = req.method ?? "GET";

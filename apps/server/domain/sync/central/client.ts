@@ -8,7 +8,7 @@
 // and global scopes on every call, so a compromised device can reach exactly
 // what its user could reach anyway.
 
-import type { DataSourceRow, SessionRow } from "../../../shared/types.js";
+import type { DataSourceRow, SessionRow, SessionState } from "../../../shared/types.js";
 import type { NodeSyncInfo, RegisterFileRecordResult } from "../sync-remote-api.js";
 import type { RemoteSweepResult } from "../remote-sweep.js";
 import type { OrientationSummary } from "../../write-scope.js";
@@ -117,6 +117,10 @@ export interface CentralClient {
   // methods, one per REST endpoint api/sessions.ts's "central record half"
   // section serves -- see that file's own header comment for the route list.
   getSessionRecord(id: string): Promise<SessionRow | null>;
+  // GET /sessions?state=a,b&limit=n -- the sessions this device's user can
+  // see in the given states (api/sessions.ts's handleListSessions); the
+  // agent-mode live channel's initial session_state snapshot.
+  listSessionRecords(opts: { states: readonly SessionState[]; limit?: number }): Promise<SessionRow[]>;
   createSessionRecord(input: CreateRunnerSessionInput): Promise<SessionRow>;
   patchSessionRecord(id: string, patch: PatchSessionInput): Promise<SessionRow>;
   createSessionRun(input: CreateRunInput): Promise<SessionRunRow>;
@@ -403,6 +407,15 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
       if (r.status === 404) return null;
       if (r.status !== 200) throwFor(r.status, p, r.json);
       return r.json as SessionRow;
+    },
+
+    async listSessionRecords(opts) {
+      const qs = new URLSearchParams({ state: opts.states.join(",") });
+      if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+      const p = `/sessions?${qs.toString()}`;
+      const r = await request("GET", p);
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      return (r.json as { sessions: SessionRow[] }).sessions;
     },
 
     async createSessionRecord(input) {

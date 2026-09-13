@@ -384,5 +384,61 @@ describe("GET /sessions/ws", () => {
     await new Promise((r) => setTimeout(r, 20));
     assert.equal(runtime.subscriberCount(session.id), 0);
   });
-});
+  test("a read-scope caller may subscribe but every mutating frame is refused with FORBIDDEN", async () => {
+    const runtime = currentRuntime;
+    const { session } = await runtime.startTask({ userId: U1, nodeId, brief: "go", runner: "fake" });
 
+    // U1 owns the session, so sessionAccess alone would allow message and
+    // stop -- the refusal must come from the scope tier, same as the REST
+    // twins' minScopeForRoute "write".
+    const ws = openSocket(base, await tokenFor(U1, "read"));
+    const collector = new FrameCollector(ws);
+    await waitOpen(ws);
+    ws.send(JSON.stringify({ id: "sub", type: "subscribe", payload: { session_id: session.id, after: 0 } }));
+    const sub = await collector.waitFor((f) => f.id === "sub");
+    assert.equal(sub.type, "reply");
+
+    for (const type of ["message", "interrupt", "suspend", "close"] as const) {
+      const payload = type === "message" ? { session_id: session.id, text: "hi" } : { session_id: session.id };
+      ws.send(JSON.stringify({ id: type, type, payload }));
+      const reply = await collector.waitFor((f) => f.id === type);
+      assert.equal(reply.type, "error", type);
+      assert.equal((reply.payload as { code: string }).code, "FORBIDDEN", type);
+    }
+    // Nothing reached the runtime: the session is still running with no
+    // user_message beyond the brief.
+    const events = await runtime.listEvents(session.id, {});
+    assert.equal(events.filter((e) => e.kind === "user_message").length, 1);
+    ws.close();
+    await waitClose(ws);
+  });
+
+  test("GET /sessions lists only the sessions the caller can see, newest activity first", async () => {
+    const runtime = currentRuntime;
+    const own = await runtime.startTask({ userId: U1, nodeId, brief: "mine", runner: "fake" });
+    // A chat session with no anchor node belongs to U2 alone: U1 never
+    // sees it, U2 does.
+    const db = getDb();
+    const chatId = ulid();
+    await db.execute({
+      sql: "INSERT INTO sessions (id, node_id, user_id, session_type, state) VALUES (?, NULL, ?, 'interactive_chat', 'running')",
+      args: [chatId, U2],
+    });
+
+    const asU1 = await fetch(`${base}/sessions?state=running`, { headers: { authorization: `Bearer ${await tokenFor(U1)}` } });
+    assert.equal(asU1.status, 200);
+    const u1Ids = ((await asU1.json()) as { sessions: Array<{ id: string }> }).sessions.map((s) => s.id);
+    assert.ok(u1Ids.includes(own.session.id));
+    assert.ok(!u1Ids.includes(chatId));
+
+    const asU2 = await fetch(`${base}/sessions?state=running,suspended`, { headers: { authorization: `Bearer ${await tokenFor(U2)}` } });
+    const u2Ids = ((await asU2.json()) as { sessions: Array<{ id: string }> }).sessions.map((s) => s.id);
+    assert.ok(u2Ids.includes(chatId));
+    // U2 can see the project node (org-visible by default), so U1's
+    // node-anchored task is listed for U2 too.
+    assert.ok(u2Ids.includes(own.session.id));
+
+    const bad = await fetch(`${base}/sessions?state=bogus`, { headers: { authorization: `Bearer ${await tokenFor(U1)}` } });
+    assert.equal(bad.status, 400);
+  });
+});

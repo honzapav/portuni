@@ -15,6 +15,9 @@ import type { AddressInfo } from "node:net";
 import { ulid } from "ulid";
 import { startHttpServer, type HttpServerHandle } from "../apps/server/http/server.js";
 import { createAgentRouter } from "../apps/server/api/agent-router.js";
+import { createAgentSessionRuntime } from "../apps/server/boot/session-runtime.js";
+import { createAgentSessionsWsDeps, createSessionsWsServer } from "../apps/server/api/sessions-ws.js";
+import WebSocket from "ws";
 import { CentralHttpError, type CentralClient } from "../apps/server/domain/sync/central/client.js";
 import type { NodeSyncInfo, RegisterFileRecordResult } from "../apps/server/domain/sync/sync-remote-api.js";
 import type { RemoteSweepResult } from "../apps/server/domain/sync/remote-sweep.js";
@@ -58,6 +61,10 @@ class FakeCentral implements CentralClient {
 
   async getSessionRecord(id: string): Promise<SessionRow | null> {
     return this.sessions.get(id) ?? null;
+  }
+
+  async listSessionRecords(opts: { states: readonly string[]; limit?: number }): Promise<SessionRow[]> {
+    return [...this.sessions.values()].filter((s) => opts.states.includes(s.state)).slice(0, opts.limit);
   }
 
   async createSessionRecord(input: CreateRunnerSessionInput): Promise<SessionRow> {
@@ -255,14 +262,17 @@ describe("agent-router: sessions/tasks", () => {
     resetLocalDbForTests();
 
     fake = new FakeCentral();
+    // Exactly desktop.ts's agent-mode wiring: one runtime shared by the
+    // REST routes and the live channel.
+    const sessionRuntime = createAgentSessionRuntime(fake, { suspendPollIntervalMs: 10, suspendTimeoutMs: 100 });
     handle = startHttpServer({
       port: 0,
       host: "127.0.0.1",
       registerSigint: false,
-      router: createAgentRouter(fake, {
-        sessionRuntimeOpts: { suspendPollIntervalMs: 10, suspendTimeoutMs: 100 },
-      }),
+      router: createAgentRouter(fake, { sessionRuntime }),
+      mcpTransport: undefined,
       mountMcp: false,
+      sessionsWs: createSessionsWsServer(createAgentSessionsWsDeps(fake, sessionRuntime)),
     });
     if (!handle.server.listening) {
       await new Promise<void>((r) => handle.server.once("listening", r));
@@ -407,5 +417,46 @@ describe("agent-router: sessions/tasks", () => {
     });
     assert.equal(answerRes.status, 202);
     assert.equal(fake.sessions.get(session.id)?.waiting_since, null);
+  });
+  it("GET /sessions/ws is mounted in agent mode: a task started over REST streams on the socket", async () => {
+    stubScript([{ wait: "message" }, { kind: "assistant_message", payload: { text: "done" } }]);
+    const ws = new WebSocket(`${base.replace(/^http/, "ws")}/sessions/ws`);
+    const frames: Array<{ id?: string; type: string; payload: unknown }> = [];
+    const waiters: Array<{ pred: (f: (typeof frames)[number]) => boolean; resolve: () => void }> = [];
+    ws.on("message", (data) => {
+      const frame = JSON.parse(data.toString("utf8")) as (typeof frames)[number];
+      frames.push(frame);
+      for (const w of waiters.splice(0)) {
+        if (w.pred(frame)) w.resolve();
+        else waiters.push(w);
+      }
+    });
+    const waitFor = (pred: (f: (typeof frames)[number]) => boolean): Promise<void> =>
+      frames.some(pred) ? Promise.resolve() : new Promise((resolve) => waiters.push({ pred, resolve }));
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", () => resolve());
+      ws.once("error", reject);
+    });
+
+    const res = await fetch(`${base}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ node_id: NODE_ID, brief: "stream me", runner: "fake" }),
+    });
+    assert.equal(res.status, 201);
+    const { session } = (await res.json()) as { session: SessionRow };
+
+    ws.send(JSON.stringify({ id: "sub", type: "subscribe", payload: { session_id: session.id, after: 0 } }));
+    await waitFor((f) => f.id === "sub" && f.type === "reply");
+    // run_started + the brief replayed from the fake central's own log.
+    assert.ok(frames.some((f) => f.type === "event" && (f.payload as { event: { kind: string } }).event.kind === "user_message"));
+
+    ws.send(JSON.stringify({ id: "msg", type: "message", payload: { session_id: session.id, text: "go on" } }));
+    await waitFor((f) => f.id === "msg" && f.type === "reply");
+    await waitFor(
+      (f) => f.type === "event" && (f.payload as { event: { kind: string } }).event.kind === "assistant_message",
+    );
+    ws.close();
+    await new Promise<void>((resolve) => ws.once("close", () => resolve()));
   });
 });

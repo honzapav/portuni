@@ -22,6 +22,8 @@ import {
 } from "./domain/sync/central/engine-central.js";
 import { createMirrorWatcher, type MirrorWatcher } from "./domain/sync/mirror-watcher.js";
 import { listUserMirrors } from "./domain/sync/mirror-registry.js";
+import { createAgentSessionRuntime } from "./boot/session-runtime.js";
+import { createAgentSessionsWsDeps, createSessionsWsServer } from "./api/sessions-ws.js";
 import { createAgentRouter } from "./api/agent-router.js";
 import { createAgentMcpTransport } from "./mcp/agent-transport.js";
 import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
@@ -172,12 +174,19 @@ async function agentMain(client: CentralClient): Promise<void> {
     centralUrl: requiredEnv("PORTUNI_CENTRAL_URL"),
     centralToken: requiredEnv("PORTUNI_CENTRAL_TOKEN"),
   });
+  // One session runtime for the whole agent process: the REST routes start
+  // and steer tasks on it, the live channel (GET /sessions/ws) streams
+  // from it -- the desktop's sessions_connect points at THIS sidecar, so
+  // without the socket mounted here central mode had no live channel at
+  // all (the Rust side just reconnected forever).
+  const sessionRuntime = createAgentSessionRuntime(client);
   const handle = startHttpServer({
     port,
     host: "127.0.0.1",
     registerSigint: false,
-    router: createAgentRouter(client),
+    router: createAgentRouter(client, { sessionRuntime }),
     mcpTransport,
+    sessionsWs: createSessionsWsServer(createAgentSessionsWsDeps(client, sessionRuntime)),
   });
   await bindAndAnnounce(handle);
   console.error("[boot] central-mode sync agent (no local graph db)");

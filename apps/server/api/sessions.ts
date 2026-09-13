@@ -96,6 +96,63 @@ async function toSummary(row: SessionRow): Promise<SessionSummary> {
   };
 }
 
+// GET /sessions?state=running,suspended&limit=500 -- every session the
+// caller can see in the given states, raw rows (the consumer is
+// CentralClient.listSessionRecords feeding the agent-mode live channel's
+// initial session_state burst, which needs state/waiting_since/node_id and
+// nothing curated). Visibility is the same rule sessionAccess("read")
+// applies: a node-anchored session iff its node is visible, a node-less
+// one only to its owner.
+const ListSessionsQuery = z.object({
+  state: z
+    .string()
+    .transform((v) => v.split(",").map((x) => x.trim()).filter(Boolean))
+    .pipe(z.array(z.enum(SESSION_STATES)).min(1)),
+  limit: z.coerce.number().int().min(1).max(1000).default(500),
+});
+
+export async function handleListSessions(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  url: URL,
+): Promise<void> {
+  try {
+    const parsed = ListSessionsQuery.safeParse({
+      state: url.searchParams.get("state") ?? "running,suspended",
+      limit: url.searchParams.get("limit") ?? undefined,
+    });
+    if (!parsed.success) {
+      respondJson(res, 400, { error: "invalid query", code: "INVALID_QUERY", issues: parsed.error.issues });
+      return;
+    }
+    const db = getDb();
+    const rows: SessionRow[] = [];
+    for (const state of parsed.data.state) rows.push(...(await listSessions(db, { state })));
+    rows.sort((a, b) => (a.last_active_at < b.last_active_at ? 1 : a.last_active_at > b.last_active_at ? -1 : 0));
+    const sessions: SessionRow[] = [];
+    // One visibility answer per node, not per row.
+    const nodeVerdicts = new Map<string, Promise<boolean>>();
+    for (const row of rows) {
+      if (sessions.length >= parsed.data.limit) break;
+      if (row.user_id === identity.userId) {
+        sessions.push(row);
+        continue;
+      }
+      if (row.node_id === null) continue;
+      let verdict = nodeVerdicts.get(row.node_id);
+      if (!verdict) {
+        verdict = nodeVisibleTo(db, identity, row.node_id);
+        nodeVerdicts.set(row.node_id, verdict);
+      }
+      if (await verdict) sessions.push(row);
+    }
+    respondJson(res, 200, { sessions });
+  } catch (err) {
+    respondError(res, `${req.method} /sessions`, err);
+  }
+}
+
 export async function handleListNodeSessions(
   req: IncomingMessage,
   res: ServerResponse,

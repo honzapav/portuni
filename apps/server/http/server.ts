@@ -11,7 +11,10 @@ import {
 import { createMcpTransport, type McpTransport } from "../mcp/transport.js";
 import { routeApiRequest } from "../api/router.js";
 import { routeOAuthRequest } from "../api/oauth.js";
-import { createSessionsWsServer } from "../api/sessions-ws.js";
+import { createSessionsWsServer, type SessionsWsServer } from "../api/sessions-ws.js";
+import { webviewMutationAllowed } from "../api/write-gate.js";
+import { minScopeForRoute } from "../auth/min-scopes.js";
+import { scopeAtLeast } from "../auth/roles.js";
 import {
   AUTH_ENABLED,
   applyGates,
@@ -43,12 +46,13 @@ export interface StartHttpServerOptions {
   // front door from agent-transport.ts). Wins over the internally-built
   // Turso-backed transport; mountMcp is ignored when this is set.
   mcpTransport?: McpTransport;
-  // GET /sessions/ws (runner batch, phase 1, local mode only -- the
-  // central-mode sync agent has no session runtime wiring yet, #323's job).
-  // Defaults to mounted whenever the default router is in use (i.e. no
-  // custom `router` was supplied); an agent-mode boot passing its own
-  // router gets it off by default. An explicit value always wins.
+  // GET /sessions/ws, the session live channel. Defaults to mounted over
+  // the local graph db whenever the default router is in use; an agent-mode
+  // boot (custom `router`, no graph db) gets it only by passing its own
+  // server built over createAgentSessionsWsDeps (desktop.ts) via
+  // `sessionsWs`, which always wins. `mountSessionsWs: false` turns it off.
   mountSessionsWs?: boolean;
+  sessionsWs?: SessionsWsServer;
 }
 
 export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHandle {
@@ -61,8 +65,8 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
 
   const mcp = opts.mcpTransport ?? (opts.mountMcp === false ? null : createMcpTransport());
 
-  const mountSessionsWs = opts.mountSessionsWs ?? opts.router === undefined;
-  const sessionsWs = mountSessionsWs ? createSessionsWsServer() : null;
+  const mountSessionsWs = opts.mountSessionsWs ?? (opts.sessionsWs !== undefined || opts.router === undefined);
+  const sessionsWs = mountSessionsWs ? (opts.sessionsWs ?? createSessionsWsServer()) : null;
 
   // PORTUNI_LOG_REQUESTS=1 enables a single-line access log per request.
   // Used for diagnosing desktop-mode CORS / auth / route problems where
@@ -193,7 +197,17 @@ export function startHttpServer(opts: StartHttpServerOptions = {}): HttpServerHa
           socket.destroy();
           return;
         }
-        sessionsWs.handleUpgrade(req, socket, head, auth.identity);
+        // Same global role gate every REST route passes through
+        // (api/router.ts): the upgrade itself is a read.
+        if (!scopeAtLeast(auth.identity.globalScope, minScopeForRoute("GET", pathname))) {
+          socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        sessionsWs.handleUpgrade(req, socket, head, {
+          identity: auth.identity,
+          webviewProven: webviewMutationAllowed(req, auth.identity),
+        });
       })().catch((err) => {
         console.error("[portuni:sessions-ws] upgrade failed:", err);
         socket.destroy();

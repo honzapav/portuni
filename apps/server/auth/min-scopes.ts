@@ -221,6 +221,10 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   // read/write floor every authenticated caller must clear first.
   if (/^\/nodes\/[^/]+\/sessions$/.test(pathname) && m === "GET") return "read";
   if (pathname === "/sessions" && m === "POST") return "write";
+  if (pathname === "/sessions" && m === "GET") return "read";
+  // The live channel's upgrade: opening the socket is a read; the mutating
+  // frames on it are gated per frame at the write tier (api/sessions-ws.ts).
+  if (pathname === "/sessions/ws" && m === "GET") return "read";
   if (pathname === "/sessions/record" && m === "POST") return "write";
   if (/^\/sessions\/[^/]+$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+$/.test(pathname) && m === "PATCH") return "write";

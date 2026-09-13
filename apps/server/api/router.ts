@@ -93,6 +93,7 @@ import {
   handleGetCurrentSyncJob,
 } from "./nodes.js";
 import { handleCreateEdge, handleDeleteEdge } from "./edges.js";
+import { guardRestSessionWrite } from "./write-gate.js";
 import { handleGetNodeAccess, handleListGroups, handlePutNodeAccess } from "./access.js";
 import {
   handleCountAccessRequests,
@@ -124,6 +125,7 @@ import {
   handleResumeSession,
   handleSendSessionMessage,
   handleStartSession,
+  handleListSessions,
   handleSuspendSession,
   handleTerminalExit,
   handleTransitionSessionState,
@@ -752,8 +754,19 @@ async function routeSessions(
     await handleTerminalExit(req, res, identity, decodeURIComponent(terminalExitMatch[1]));
     return true;
   }
+  // Every mutating /sessions route below is a session action or the central
+  // record half; under the hardened posture (#213) only the app itself may
+  // call them over REST -- a spawned terminal drives its session through
+  // the MCP tools. Reads are ungated here (sessionAccess still applies).
+  if (method !== "GET" && pathname.startsWith("/sessions") && !guardRestSessionWrite(req, res, identity)) {
+    return true;
+  }
   if (pathname === "/sessions" && method === "POST") {
     await handleStartSession(req, res, identity);
+    return true;
+  }
+  if (pathname === "/sessions" && method === "GET") {
+    await handleListSessions(req, res, identity, url);
     return true;
   }
   // Central record half (#323): record-only create, distinct from POST
