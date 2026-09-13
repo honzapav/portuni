@@ -1,58 +1,56 @@
-// Nastavení > Profily — desktop-only tab: CLI spawn profiles registry
-// (name + env vars to inject at spawn, optionally a custom command) plus
-// the per-organization default assignment. Spec: "Spawn UX" -- profiles
-// (docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md).
-// Mirrors the shape of WorkspacesSection.tsx (list state machine + inline
-// forms), driving Tauri commands instead of the REST API.
-//
-// Zero registered profiles keeps the whole feature invisible elsewhere in
-// the app (the per-spawn picker only renders when >=2 profiles exist) --
-// this section is the only place a profile is ever created.
+// Nastavení > Runnery (#344) -- replaces Profily and Příkaz agenta: detected
+// runner adapters (GET /runners) and provider instances (server-side
+// registry, apps/server/domain/runner/instances.ts, #319), editable through
+// REST. Keeps the list-state-machine + inline-form
+// shape, driving the REST API instead of Tauri commands -- the registry now
+// lives on the sidecar, not in the desktop's own config.json.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { MutableRefObject } from "react";
 import {
-  createProfile,
-  deleteProfile,
-  listProfiles,
-  notifyProfilesChanged,
-  setDefaultProfileForOrg,
-  updateProfile,
-  type ProfileInfo,
-  type ProfilesData,
-} from "../lib/profiles";
-import { slugify } from "../lib/workspaces";
+  createRunnerInstance,
+  deleteRunnerInstance,
+  envKeysToText,
+  listRunnerInstances,
+  listRunners,
+  parseEnvText,
+  setRunnerInstanceOrgDefault,
+  clearRunnerOrgDefault,
+  updateRunnerInstance,
+  validateEnvKeys,
+  type RunnerInfo,
+  type RunnerInstanceSummary,
+} from "../lib/runners";
 import { fetchGraph } from "../api";
 import type { GraphNode } from "../types";
 
 type ListState =
   | { kind: "loading" }
   | { kind: "error"; reason: string }
-  | { kind: "ok"; data: ProfilesData };
-
-function parseEnvText(text: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const rawLine of text.split("\n")) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) continue;
-    const eq = line.indexOf("=");
-    if (eq <= 0) continue;
-    out[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
-  }
-  return out;
-}
-
-// list_profiles never sends env VALUES back (#207) -- editing an existing
-// profile pre-fills each known key with an empty value instead. Backend
-// (update_profile) treats an empty value for a key that already exists as
-// "leave unchanged"; typing a new value there is what actually changes it.
-function envKeysToText(keys: string[]): string {
-  return keys.map((k) => `${k}=`).join("\n");
-}
+  | { kind: "ok"; instances: RunnerInstanceSummary[] };
 
 const DELETE_CONFIRM_MESSAGE =
-  "Profil se smaže z registru a přestane se nabízet při spouštění terminálu. Výchozí volby organizací, které na něj mířily, se zruší.";
+  "Instance se smaže z registru a přestane se nabízet při zakládání úkolu. Výchozí volby organizací, které na ni mířily, se zruší.";
 
-export default function ProfilesSection() {
+// React 18 StrictMode double-invokes effects in dev (setup -> cleanup ->
+// setup again) synchronously, before any fetch can possibly resolve --
+// resetting to true on setup (not just false on cleanup) is what keeps a
+// real async response after that dance from being silently dropped for the
+// rest of the mount's lifetime.
+function useMountedRef(): MutableRefObject<boolean> {
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  return mountedRef;
+}
+
+export default function RunnersSection() {
+  const [runners, setRunners] = useState<RunnerInfo[] | null>(null);
+  const [runnersError, setRunnersError] = useState<string | null>(null);
   const [state, setState] = useState<ListState>({ kind: "loading" });
   const [orgs, setOrgs] = useState<GraphNode[]>([]);
   const [rowError, setRowError] = useState<string | null>(null);
@@ -60,11 +58,16 @@ export default function ProfilesSection() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  const mountedRef = useRef(true);
+  const mountedRef = useMountedRef();
+
   useEffect(() => {
-    return () => {
-      mountedRef.current = false;
-    };
+    listRunners()
+      .then((r) => {
+        if (mountedRef.current) setRunners(r);
+      })
+      .catch((e) => {
+        if (mountedRef.current) setRunnersError(e instanceof Error ? e.message : String(e));
+      });
   }, []);
 
   const load = useCallback(async () => {
@@ -72,8 +75,8 @@ export default function ProfilesSection() {
     setConfirmDeleteId(null);
     setState({ kind: "loading" });
     try {
-      const data = await listProfiles();
-      if (mountedRef.current) setState({ kind: "ok", data });
+      const instances = await listRunnerInstances();
+      if (mountedRef.current) setState({ kind: "ok", instances });
     } catch (e) {
       if (mountedRef.current) {
         setState({ kind: "error", reason: e instanceof Error ? e.message : String(e) });
@@ -100,11 +103,6 @@ export default function ProfilesSection() {
       });
   }, []);
 
-  const reloadAfterMutation = useCallback(async () => {
-    await load();
-    notifyProfilesChanged();
-  }, [load]);
-
   function withPending<T>(id: string, fn: () => Promise<T>): Promise<T> {
     setPending((prev) => new Set([...prev, id]));
     return fn().finally(() => {
@@ -117,45 +115,108 @@ export default function ProfilesSection() {
     });
   }
 
-  async function handleDelete(p: ProfileInfo) {
+  async function handleDelete(instance: RunnerInstanceSummary) {
     setConfirmDeleteId(null);
     setRowError(null);
     try {
-      await withPending(p.id, () => deleteProfile(p.id));
-      await reloadAfterMutation();
+      await withPending(instance.id, () => deleteRunnerInstance(instance.id));
+      await load();
     } catch (e) {
       setRowError(e instanceof Error ? e.message : String(e));
     }
   }
 
-  async function handleSetDefault(orgId: string, profileId: string) {
+  // instanceId null: the org has no default instance anymore.
+  async function handleSetDefault(orgId: string, instanceId: string | null) {
     setRowError(null);
     try {
-      await withPending(orgId, () => setDefaultProfileForOrg(orgId, profileId || null));
-      await reloadAfterMutation();
+      await withPending(orgId, () =>
+        instanceId === null ? clearRunnerOrgDefault(orgId) : setRunnerInstanceOrgDefault(instanceId, orgId),
+      );
+      await load();
     } catch (e) {
       setRowError(e instanceof Error ? e.message : String(e));
     }
   }
 
-  const profiles = state.kind === "ok" ? state.data.profiles : [];
-  const defaultByOrg = state.kind === "ok" ? state.data.default_by_org : {};
+  const instances = state.kind === "ok" ? state.instances : [];
 
   return (
     <section className="flex flex-col gap-5">
       <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
         <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-          Profily
+          Runnery
         </div>
         <p className="mb-4 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-          Profil popisuje, co se má vložit do prostředí terminálu při
-          spuštění agenta — typicky{" "}
-          <code className="font-mono">CLAUDE_CONFIG_DIR=…</code>, volitelně i
-          vlastní příkaz. Portuni nijak nedetekuje ani neparsuje tvůj vlastní
-          mechanismus profilů (aliasy, rc soubory) — jen nastaví proměnné
-          prostředí, než se shell spustí. Bez registrovaného profilu zůstává
-          tahle funkce v appce neviditelná — terminál se spouští se zděděným
-          prostředím jako dřív.
+          Runner je nástroj (např. Claude Code), který server spustí a řídí
+          přes kanonický protokol událostí. Přihlášení zůstává na CLI
+          samotném — Portuni nikdy nenabízí vlastní přihlášení.
+        </p>
+
+        {runnersError && (
+          <div className="mb-3 rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
+            {runnersError}
+          </div>
+        )}
+        {runners === null && !runnersError && (
+          <div className="text-[13px] text-[var(--color-text-dim)]">Zjišťuji dostupné runnery…</div>
+        )}
+        {runners && runners.length === 0 && (
+          <div className="rounded-md border border-[var(--color-border)] px-3 py-3 text-[13px] text-[var(--color-text-dim)]">
+            Zatím žádný runner není na tomto zařízení zaregistrovaný.
+          </div>
+        )}
+        {runners && runners.length > 0 && (
+          <div className="flex flex-col gap-2">
+            {runners.map((r) => (
+              <div
+                key={r.id}
+                className="flex items-center justify-between gap-3 rounded-md border border-[var(--color-border)] px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-[var(--color-text)]">{r.id}</span>
+                    {r.availability.version && (
+                      <span className="font-mono text-[11px] text-[var(--color-text-dim)]">
+                        {r.availability.version}
+                      </span>
+                    )}
+                  </div>
+                  {!r.availability.installed && (
+                    <div className="mt-0.5 text-[12px] text-[var(--color-text-dim)]">
+                      Nenainstalováno na tomto zařízení.
+                    </div>
+                  )}
+                  {r.availability.installed && !r.availability.logged_in && (
+                    <div className="mt-0.5 text-[12px] text-[var(--color-text-dim)]">
+                      Nainstalováno, ale nepřihlášeno — přihlas se přímo v {r.id} CLI.
+                    </div>
+                  )}
+                </div>
+                <span
+                  className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                    r.availability.installed && r.availability.logged_in
+                      ? "bg-emerald-950/40 text-emerald-300"
+                      : "bg-[var(--color-bg)] text-[var(--color-text-dim)]"
+                  }`}
+                >
+                  {r.availability.installed && r.availability.logged_in ? "připraveno" : "nedostupné"}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
+        <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
+          Instance
+        </div>
+        <p className="mb-4 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
+          Instance popisuje, co se má vložit do prostředí spuštěného úkolu —
+          typicky <code className="font-mono">CLAUDE_CONFIG_DIR=…</code> pro
+          přepnutí účtu. Hodnoty se z bezpečnostních důvodů nikdy nenačítají
+          zpět z registru.
         </p>
 
         {rowError && (
@@ -172,7 +233,7 @@ export default function ProfilesSection() {
         )}
 
         {state.kind === "loading" && (
-          <div className="text-[13px] text-[var(--color-text-dim)]">Načítám profily…</div>
+          <div className="text-[13px] text-[var(--color-text-dim)]">Načítám instance…</div>
         )}
 
         {state.kind === "error" && (
@@ -188,71 +249,70 @@ export default function ProfilesSection() {
           </div>
         )}
 
-        {state.kind === "ok" && profiles.length === 0 && (
+        {state.kind === "ok" && instances.length === 0 && (
           <div className="rounded-md border border-[var(--color-border)] px-3 py-3 text-[13px] text-[var(--color-text-dim)]">
-            Zatím žádné profily.
+            Zatím žádné instance.
           </div>
         )}
 
-        {state.kind === "ok" && profiles.length > 0 && (
+        {state.kind === "ok" && instances.length > 0 && (
           <div className="flex flex-col gap-2">
-            {profiles.map((p) => (
-              <ProfileRow
-                key={p.id}
-                profile={p}
-                busy={pending.has(p.id)}
-                editing={editingId === p.id}
-                onEdit={() => setEditingId(p.id)}
+            {instances.map((instance) => (
+              <InstanceRow
+                key={instance.id}
+                instance={instance}
+                busy={pending.has(instance.id)}
+                editing={editingId === instance.id}
+                onEdit={() => setEditingId(instance.id)}
                 onCancelEdit={() => setEditingId(null)}
                 onSaved={() => {
                   setEditingId(null);
-                  void reloadAfterMutation();
+                  void load();
                 }}
                 onError={setRowError}
-                confirmDelete={confirmDeleteId === p.id}
-                onAskDelete={() => setConfirmDeleteId(p.id)}
+                confirmDelete={confirmDeleteId === instance.id}
+                onAskDelete={() => setConfirmDeleteId(instance.id)}
                 onCancelDelete={() => setConfirmDeleteId(null)}
-                onDelete={() => void handleDelete(p)}
+                onDelete={() => void handleDelete(instance)}
               />
             ))}
           </div>
         )}
       </div>
 
-      <CreateProfileForm
-        existingIds={profiles.map((p) => p.id)}
-        onCreated={() => void reloadAfterMutation()}
-      />
+      <CreateInstanceForm runners={runners ?? []} onCreated={() => void load()} />
 
-      {state.kind === "ok" && profiles.length > 0 && orgs.length > 0 && (
+      {state.kind === "ok" && instances.length > 0 && orgs.length > 0 && (
         <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
           <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-            Výchozí profil podle organizace
+            Výchozí instance podle organizace
           </div>
           <p className="mb-3 text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">
-            Při otevření terminálu z uzlu se jako výchozí nabídne profil
-            nastavený pro jeho organizaci — výběr se dá při spuštění změnit,
-            pokud je profilů víc.
+            Při založení úkolu z uzlu se jako výchozí nabídne instance
+            nastavená pro jeho organizaci.
           </p>
           <div className="flex flex-col gap-2">
-            {orgs.map((org) => (
-              <div key={org.id} className="flex items-center justify-between gap-3">
-                <span className="text-[13.5px] text-[var(--color-text)]">{org.name}</span>
-                <select
-                  value={defaultByOrg[org.id] ?? ""}
-                  disabled={pending.has(org.id)}
-                  onChange={(e) => void handleSetDefault(org.id, e.target.value)}
-                  className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[13px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)] disabled:opacity-50"
-                >
-                  <option value="">(žádný)</option>
-                  {profiles.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            ))}
+            {orgs.map((org) => {
+              const current = instances.find((i) => i.org_defaults.includes(org.id));
+              return (
+                <div key={org.id} className="flex items-center justify-between gap-3">
+                  <span className="text-[13.5px] text-[var(--color-text)]">{org.name}</span>
+                  <select
+                    value={current?.id ?? ""}
+                    disabled={pending.has(org.id)}
+                    onChange={(e) => void handleSetDefault(org.id, e.target.value || null)}
+                    className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[13px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)] disabled:opacity-50"
+                  >
+                    <option value="">(žádná)</option>
+                    {instances.map((i) => (
+                      <option key={i.id} value={i.id}>
+                        {i.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -260,10 +320,10 @@ export default function ProfilesSection() {
   );
 }
 
-// --- Profile row (view + inline edit) --------------------------------------
+// --- Instance row (view + inline edit) --------------------------------------
 
-function ProfileRow({
-  profile,
+function InstanceRow({
+  instance,
   busy,
   editing,
   onEdit,
@@ -275,7 +335,7 @@ function ProfileRow({
   onCancelDelete,
   onDelete,
 }: {
-  profile: ProfileInfo;
+  instance: RunnerInstanceSummary;
   busy: boolean;
   editing: boolean;
   onEdit: () => void;
@@ -287,32 +347,33 @@ function ProfileRow({
   onCancelDelete: () => void;
   onDelete: () => void;
 }) {
-  const [label, setLabel] = useState(profile.label);
-  const [envText, setEnvText] = useState(envKeysToText(profile.env_keys));
-  const [command, setCommand] = useState(profile.command ?? "");
+  const [name, setName] = useState(instance.name);
+  const [runner, setRunner] = useState(instance.runner);
+  const [envText, setEnvText] = useState(envKeysToText(instance.env_keys));
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (editing) {
-      setLabel(profile.label);
-      setEnvText(envKeysToText(profile.env_keys));
-      setCommand(profile.command ?? "");
+      setName(instance.name);
+      setRunner(instance.runner);
+      setEnvText(envKeysToText(instance.env_keys));
     }
-  }, [editing, profile]);
+  }, [editing, instance]);
 
   async function handleSave() {
-    if (!label.trim()) {
-      onError("Název profilu je povinný.");
+    if (!name.trim()) {
+      onError("Název instance je povinný.");
+      return;
+    }
+    const env = parseEnvText(envText);
+    const envIssue = validateEnvKeys(env);
+    if (envIssue) {
+      onError(envIssue);
       return;
     }
     setSaving(true);
     try {
-      await updateProfile({
-        id: profile.id,
-        label: label.trim(),
-        env: parseEnvText(envText),
-        command: command.trim() || undefined,
-      });
+      await updateRunnerInstance(instance.id, { name: name.trim(), runner: runner.trim(), env });
       onSaved();
     } catch (e) {
       onError(e instanceof Error ? e.message : String(e));
@@ -331,16 +392,34 @@ function ProfileRow({
             </label>
             <input
               type="text"
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
               disabled={saving}
               className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[13px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)] disabled:opacity-50"
             />
           </div>
           <div>
             <label className="mb-1 block text-[11.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+              Runner
+            </label>
+            <input
+              type="text"
+              value={runner}
+              onChange={(e) => setRunner(e.target.value)}
+              disabled={saving}
+              spellCheck={false}
+              className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 font-mono text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)] disabled:opacity-50"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-[11.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
               Proměnné prostředí (jedna na řádek, KLÍČ=hodnota)
             </label>
+            {instance.env_keys.length > 0 && (
+              <p className="mb-1 font-mono text-[11px] leading-snug text-[var(--color-text-dim)]">
+                {instance.env_keys.map((k) => `${k} (nastaveno)`).join(", ")}
+              </p>
+            )}
             <p className="mb-1 text-[11px] leading-snug text-[var(--color-text-dim)]">
               Hodnoty se z bezpečnostních důvodů nikdy nenačítají zpět — u
               existujícího klíče zůstane prázdná hodnota beze změny, zadej ji
@@ -354,19 +433,6 @@ function ProfileRow({
               spellCheck={false}
               placeholder="CLAUDE_CONFIG_DIR=/Users/vy/.claude-work"
               className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 font-mono text-[12.5px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] disabled:opacity-50"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-[11.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
-              Vlastní příkaz (volitelné — nahradí příkaz agenta z Obecné)
-            </label>
-            <input
-              type="text"
-              value={command}
-              onChange={(e) => setCommand(e.target.value)}
-              disabled={saving}
-              spellCheck={false}
-              className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 font-mono text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)] disabled:opacity-50"
             />
           </div>
           <div className="flex gap-1.5">
@@ -397,16 +463,11 @@ function ProfileRow({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="font-medium text-[var(--color-text)]">{profile.label}</span>
-            <span className="font-mono text-[11px] text-[var(--color-text-dim)]">{profile.id}</span>
+            <span className="font-medium text-[var(--color-text)]">{instance.name}</span>
+            <span className="font-mono text-[11px] text-[var(--color-text-dim)]">{instance.runner}</span>
           </div>
           <div className="mt-0.5 truncate font-mono text-[11.5px] text-[var(--color-text-dim)]">
-            {profile.env_keys.length > 0
-              ? `proměnné: ${profile.env_keys.join(", ")}`
-              : profile.command
-                ? "(bez env)"
-                : "(bez env, bez vlastního příkazu)"}
-            {profile.command ? `  · příkaz: ${profile.command}` : ""}
+            {instance.env_keys.length > 0 ? `proměnné: ${instance.env_keys.join(", ")}` : "(bez env)"}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -458,56 +519,45 @@ function ProfileRow({
   );
 }
 
-// --- Create profile form -----------------------------------------------------
+// --- Create instance form ----------------------------------------------------
 
-function CreateProfileForm({
-  existingIds,
+function CreateInstanceForm({
+  runners,
   onCreated,
 }: {
-  existingIds: string[];
+  runners: RunnerInfo[];
   onCreated: () => void;
 }) {
   const [name, setName] = useState("");
+  const [runner, setRunner] = useState("");
   const [envText, setEnvText] = useState("");
-  const [command, setCommand] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  const id = slugify(name);
-  const idTaken = id !== "" && existingIds.includes(id);
-
-  function reset() {
-    setName("");
-    setEnvText("");
-    setCommand("");
-  }
+  const mountedRef = useMountedRef();
 
   async function handleCreate() {
-    if (!id) {
-      setError("Zadej platné jméno profilu.");
+    if (!name.trim()) {
+      setError("Zadej název instance.");
       return;
     }
-    if (idTaken) {
-      setError(`Profil '${id}' už existuje.`);
+    if (!runner.trim()) {
+      setError("Zadej runner (např. claude).");
+      return;
+    }
+    const env = parseEnvText(envText);
+    const envIssue = validateEnvKeys(env);
+    if (envIssue) {
+      setError(envIssue);
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      await createProfile({
-        id,
-        label: name.trim(),
-        env: parseEnvText(envText),
-        command: command.trim() || undefined,
-      });
-      reset();
+      await createRunnerInstance({ name: name.trim(), runner: runner.trim(), env });
+      setName("");
+      setRunner("");
+      setEnvText("");
       onCreated();
     } catch (e) {
       if (mountedRef.current) setError(e instanceof Error ? e.message : String(e));
@@ -519,12 +569,12 @@ function CreateProfileForm({
   return (
     <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
       <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
-        Přidat profil
+        Přidat instanci
       </div>
       <div className="flex flex-col gap-3">
         <div>
           <label className="mb-1 block text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
-            Jméno
+            Název
           </label>
           <input
             type="text"
@@ -534,10 +584,27 @@ function CreateProfileForm({
             placeholder="Např. Práce"
             className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-[13.5px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] disabled:opacity-50"
           />
-          <div className="mt-1 text-[11.5px] text-[var(--color-text-dim)]">
-            ID: <span className="font-mono">{id || "(neplatné)"}</span>
-            {idTaken ? " — už existuje" : ""} – po vytvoření už nejde změnit.
-          </div>
+        </div>
+
+        <div>
+          <label className="mb-1 block text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+            Runner
+          </label>
+          <input
+            type="text"
+            list="runners-known-ids"
+            value={runner}
+            onChange={(e) => setRunner(e.target.value)}
+            disabled={busy}
+            spellCheck={false}
+            placeholder="claude"
+            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[13px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] disabled:opacity-50"
+          />
+          <datalist id="runners-known-ids">
+            {runners.map((r) => (
+              <option key={r.id} value={r.id} />
+            ))}
+          </datalist>
         </div>
 
         <div>
@@ -555,20 +622,6 @@ function CreateProfileForm({
           />
         </div>
 
-        <div>
-          <label className="mb-1 block text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
-            Vlastní příkaz (volitelné — nahradí příkaz agenta z Obecné)
-          </label>
-          <input
-            type="text"
-            value={command}
-            onChange={(e) => setCommand(e.target.value)}
-            disabled={busy}
-            spellCheck={false}
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)] disabled:opacity-50"
-          />
-        </div>
-
         {error && (
           <div className="rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
             {error}
@@ -578,11 +631,11 @@ function CreateProfileForm({
         <div>
           <button
             type="button"
-            disabled={busy || !id || idTaken}
+            disabled={busy}
             onClick={() => void handleCreate()}
             className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-4 py-2 text-[13.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {busy ? "Vytvářím…" : "Vytvořit profil"}
+            {busy ? "Vytvářím…" : "Vytvořit instanci"}
           </button>
         </div>
       </div>

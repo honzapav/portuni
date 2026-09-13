@@ -440,7 +440,11 @@ export type SessionSummary = {
   user_id: string;
   session_type: "interactive_task" | "interactive_chat" | "headless" | "env";
   cli: string | null;
-  profile_id: string | null;
+  // Runner provider instance (apps/server/domain/runner/instances.ts) --
+  // renamed from profile_id in the runner batch (migration 034); same
+  // column, now a provider instance id rather than a desktop spawn-env
+  // profile id.
+  instance_id: string | null;
   // Correlates to the desktop terminal that spawned this session's CLI
   // (apps/desktop/src/pty.rs's PORTUNI_TERMINAL_ID, threaded through the
   // X-Portuni-Terminal header, #218) -- Claude only; Codex/Vibe sessions
@@ -449,6 +453,14 @@ export type SessionSummary = {
   // IS the terminal id, see lib/sessions.ts) to their persistent session
   // rows without a second bespoke lookup (#231, close-dialog Pozastavit).
   terminal_id: string | null;
+  // The task as given (runner batch) -- the first user message on a fresh
+  // run, null for a session predating it or with no task text.
+  brief: string | null;
+  // Runner adapter id (e.g. "claude") this session's task runs under.
+  runner: string | null;
+  // Set while a `question` event is open (runner batch); cleared when it is
+  // answered or the run ends. Drives the "Čeká na mě" status label.
+  waiting_since: string | null;
   state: SessionState;
   name: string;
   name_is_custom: boolean;
@@ -473,6 +485,11 @@ export type SessionResumeInfo = {
   // found unchanged) -- see domain/session-handoff.ts's ResumeInfo.
   handoff_checkable: boolean;
   conversation_resumable: boolean;
+  // #329: set when the handoff was written by the server, not the agent
+  // (a dropped connection, idle GC, terminal exit, or the boot sweep) --
+  // lets the Relace row say e.g. "pozastaveno serverem (nečinnost 30 min)".
+  generated_by: "server" | null;
+  reason: "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | "suspend_timeout" | null;
 };
 
 // GET /overview -- Přehled tab (phase 4, "Přehled (overview tab)" of the
@@ -496,7 +513,10 @@ export type OverviewSessionRow = {
   user_id: string;
   session_type: "interactive_task" | "interactive_chat" | "headless" | "env";
   cli: string | null;
-  profile_id: string | null;
+  instance_id: string | null;
+  brief: string | null;
+  runner: string | null;
+  waiting_since: string | null;
   state: SessionState;
   name: string;
   name_is_custom: boolean;
@@ -635,4 +655,28 @@ export type NodeDetail = {
   // "on_track" | "at_risk" | "off_track" -- see HEALTH_STATES in popp.ts.
   // Meaningful for type='project' only.
   health: string;
+};
+
+// GET /runners -- detected adapters and their availability (runner batch,
+// docs/superpowers/specs/2026-09-12-runner-and-session-design.md).
+export type RunnerInfo = {
+  id: string;
+  availability: {
+    installed: boolean;
+    version: string | null;
+    logged_in: boolean;
+    instances_supported: boolean;
+  };
+};
+
+// GET/POST/PATCH /runners/instances -- provider instances (today's desktop
+// CLI spawn profiles, moved server-side). env values never appear here --
+// env_keys only; the values live in runners.json and are read server-side
+// only (domain/runner/instances.ts's getInstanceEnv).
+export type RunnerInstanceSummary = {
+  id: string;
+  name: string;
+  runner: string;
+  env_keys: string[];
+  org_defaults: string[];
 };

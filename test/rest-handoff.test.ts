@@ -116,14 +116,21 @@ function post(path: string, body: unknown, token?: string): Promise<Response> {
   });
 }
 
-async function mint(nodeId: string, token: string): Promise<string> {
+async function mintBody(
+  nodeId: string,
+  token: string,
+): Promise<{ code: string; expires_in: number; mirror: string | null }> {
   const res = await post("/auth/handoff", { node_id: nodeId }, token);
   const text = await res.text();
   assert.equal(res.status, 200, text);
-  const body = JSON.parse(text) as { code: string; expires_in: number };
+  const body = JSON.parse(text) as { code: string; expires_in: number; mirror: string | null };
   assert.equal(body.expires_in, 60);
   assert.ok(body.code.length >= 40, "32 random bytes, base64url");
-  return body.code;
+  return body;
+}
+
+async function mint(nodeId: string, token: string): Promise<string> {
+  return (await mintBody(nodeId, token)).code;
 }
 
 before(async () => {
@@ -206,6 +213,15 @@ describe("POST /auth/handoff + /auth/handoff/exchange", () => {
     assert.equal(body.home_node_id, openNodeId);
     assert.equal(body.node_name, "Open deck project");
     assert.equal(body.mirror, mirror);
+  });
+
+  // „Nová prezentace" needs the directory before Showtime is even asked, so
+  // the mint answers with the mirror the exchange would answer with.
+  it("mint answers with the node's mirror on this device, or null", async () => {
+    const mirror = join(workspace, "workflow", "projects", "open-deck");
+    await registerMirror(INSIDER, openNodeId, mirror);
+    assert.equal((await mintBody(openNodeId, insiderToken)).mirror, mirror);
+    assert.equal((await mintBody(restrictedNodeId, insiderToken)).mirror, null);
   });
 
   it("answers mirror: null for a node without a mirror on this device", async () => {

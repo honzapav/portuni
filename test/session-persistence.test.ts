@@ -92,7 +92,7 @@ describe("bindSessionPersistence: SessionScope as a cache over session_scope", (
 
     await waitUntil(() => scope.sessionId !== null);
     const sessionRow = await getSession(shared.db, scope.sessionId!);
-    assert.equal(sessionRow!.profile_id, "work");
+    assert.equal(sessionRow!.instance_id, "work");
   });
 
   it("stores the terminal id (#218) when the caller passes one", async () => {

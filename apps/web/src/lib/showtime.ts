@@ -42,3 +42,19 @@ export async function openInShowtime(nodeId: string, path: string): Promise<void
     throw new Error(typeof e === "string" ? e : e instanceof Error ? e.message : String(e));
   }
 }
+
+// „Nová prezentace": the desktop mints a one-time handoff code on the sidecar
+// and opens Showtime's New Deck screen through the showtime://new deep link
+// with the node's wip/ directory, so the deck Showtime creates there is this
+// node's and the agent beside it is a session on it. Rejects with a message
+// to show inline: the node has no mirror here, the sidecar refused the
+// handoff, or the installed Showtime has no `new` action.
+export async function newInShowtime(nodeId: string): Promise<void> {
+  if (!isTauri()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await invoke("new_in_showtime", { nodeId });
+  } catch (e) {
+    throw new Error(typeof e === "string" ? e : e instanceof Error ? e.message : String(e));
+  }
+}

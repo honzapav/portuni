@@ -34,6 +34,17 @@ export const STATE_LABEL: Record<SessionState, string> = {
   archived: "Archivováno",
 };
 
+// #329: labels for a session the server suspended (dropped connection,
+// idle GC, terminal exit, boot sweep) rather than the agent's own
+// portuni_session_suspend -- see SessionResumeInfo's generated_by/reason.
+const SERVER_SUSPEND_REASON_LABEL: Record<string, string> = {
+  disconnect: "odpojení",
+  idle: "nečinnost 30 min",
+  terminal_exit: "ukončení terminálu",
+  boot_sweep: "restart serveru",
+  suspend_timeout: "agent nestihl předání",
+};
+
 export const STATE_COLOR: Record<SessionState, string> = {
   running: "var(--color-status-active)",
   suspended: "var(--color-node-process)",
@@ -225,6 +236,8 @@ function SessionRow({
     conversation_resumable: boolean;
     handoff_changed: boolean;
     handoff_checkable: boolean;
+    generated_by: "server" | null;
+    reason: "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | "suspend_timeout" | null;
   } | null>(null);
 
   // Resumability is only meaningful (and only worth the round trip) for a
@@ -241,9 +254,9 @@ function SessionRow({
       // general never reach the webview, but this one well-known, never-
       // secret-shaped key is an explicit exception.
       let configDir: string | null = null;
-      if (session.profile_id) {
+      if (session.instance_id) {
         try {
-          configDir = await getProfileConfigDir(session.profile_id);
+          configDir = await getProfileConfigDir(session.instance_id);
         } catch {
           /* profiles registry is optional context -- fall back to the default location */
         }
@@ -259,7 +272,7 @@ function SessionRow({
     return () => {
       cancelled = true;
     };
-  }, [session.id, session.state, session.profile_id]);
+  }, [session.id, session.state, session.instance_id]);
 
   const save = async () => {
     const trimmed = draft.trim();
@@ -335,7 +348,7 @@ function SessionRow({
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-[var(--color-text-dim)]">
         <span>{STATE_LABEL[session.state]}</span>
         <span>{fmtDateTime(session.last_active_at)}</span>
-        <span>{session.cli ?? "cli neznámé"}{session.profile_id ? ` · ${session.profile_id}` : ""}</span>
+        <span>{session.cli ?? "cli neznámé"}{session.instance_id ? ` · ${session.instance_id}` : ""}</span>
         <span title="Počet uzlů v zápisovém rozsahu této relace">
           Zápis: {session.write_count}
         </span>
@@ -346,6 +359,7 @@ function SessionRow({
               : "spustí se z handoffu"}
             {resumeInfo.handoff_changed ? " (handoff upraven od pozastavení)" : ""}
             {!resumeInfo.handoff_checkable ? " (nelze ověřit handoff na tomto zařízení)" : ""}
+            {resumeInfo.generated_by === "server" ? ` (pozastaveno serverem${SERVER_SUSPEND_REASON_LABEL[resumeInfo.reason ?? ""] ? `, ${SERVER_SUSPEND_REASON_LABEL[resumeInfo.reason ?? ""]}` : ""})` : ""}
           </span>
         )}
       </div>

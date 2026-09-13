@@ -1386,6 +1386,48 @@ describe("agent-mode REST write gate (hardened posture)", () => {
   });
 });
 
+describe("agent router: /runners (device-local registry, #319)", () => {
+  it("serves the runner registry and provider instances from this device's sidecar, not central", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "portuni-agent-runners-"));
+    const previousDataDir = process.env.PORTUNI_DATA_DIR;
+    process.env.PORTUNI_DATA_DIR = dataDir;
+    try {
+      const runners = await fetch(`${base}/runners`);
+      assert.equal(runners.status, 200);
+      assert.ok(Array.isArray(((await runners.json()) as { runners: unknown[] }).runners));
+
+      const created = await fetch(`${base}/runners/instances`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Práce", runner: "claude", env: { CLAUDE_CONFIG_DIR: "~/.claude-work" } }),
+      });
+      assert.equal(created.status, 201);
+      const instance = (await created.json()) as { id: string; env_keys: string[] };
+      assert.deepEqual(instance.env_keys, ["CLAUDE_CONFIG_DIR"]);
+
+      const setDefault = await fetch(`${base}/runners/instances/${instance.id}/org-default`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ org_id: "org-1" }),
+      });
+      assert.equal(setDefault.status, 200);
+      const cleared = await fetch(`${base}/runners/org-defaults/org-1`, { method: "DELETE" });
+      assert.equal(cleared.status, 200);
+
+      const listed = await fetch(`${base}/runners/instances`);
+      const body = (await listed.json()) as { instances: { id: string; org_defaults: string[] }[] };
+      assert.deepEqual(body.instances.find((i) => i.id === instance.id)?.org_defaults, []);
+
+      const deleted = await fetch(`${base}/runners/instances/${instance.id}`, { method: "DELETE" });
+      assert.equal(deleted.status, 200);
+    } finally {
+      if (previousDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+      else process.env.PORTUNI_DATA_DIR = previousDataDir;
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("agent router: /auth/handoff", () => {
   const post = (path: string, body: unknown, token?: string) =>
     fetch(`${base}${path}`, {
