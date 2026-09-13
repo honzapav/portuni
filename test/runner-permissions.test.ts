@@ -133,7 +133,38 @@ describe("decidePermission: mcp__portuni__portuni_expand_scope", () => {
 });
 
 describe("decidePermission: AskUserQuestion", () => {
-  it("asks for input, carrying the tool's question text and options", async () => {
+  it("maps Claude Code's questions[] shape: first question's text and option labels", async () => {
+    const { portuniRoot, mirrorA, mirrors } = await setup();
+    const decision = decidePermission({
+      tool: "AskUserQuestion",
+      input: {
+        questions: [
+          {
+            question: "Which environment?",
+            header: "Env",
+            options: [
+              { label: "staging", description: "pre-prod" },
+              { label: "production", description: "live" },
+            ],
+            multiSelect: false,
+          },
+          { question: "Dry run first?", header: "Mode", options: [{ label: "yes" }, { label: "no" }] },
+        ],
+      },
+      cwd: mirrorA,
+      portuniRoot,
+      mirrors,
+      policy: "default",
+    });
+    assert.equal(decision.kind, "ask");
+    if (decision.kind === "ask") {
+      assert.equal(decision.question.type, "input");
+      assert.equal(decision.question.detail, "Which environment?\n\nDry run first?");
+      assert.deepEqual(decision.question.options, ["staging", "production"]);
+    }
+  });
+
+  it("accepts a pre-flattened { question, options } shape too", async () => {
     const { portuniRoot, mirrorA, mirrors } = await setup();
     const decision = decidePermission({
       tool: "AskUserQuestion",

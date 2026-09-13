@@ -121,18 +121,21 @@ export function extractHandoffTitle(content: string): string | null {
 // (a dropped MCP connection, the transport's idle GC, a PTY exit, the boot
 // sweep) now suspends it instead, with a minimal handoff the server writes
 // itself -- closed is terminal (no resume), and none of these are the
-// agent's own deliberate portuni_session_suspend. The runner spec's own
-// suspend() (session-runtime.ts, #320) has its own copy of this same idea
-// for runner-managed runs; this is the interim for hand-opened CLIs and
-// every session that predates the runner.
+// agent's own deliberate portuni_session_suspend. The runner runtime's
+// suspend() (session-runtime.ts, #320) calls this too, with reason
+// suspend_timeout, when the agent never wrote its own handoff in time.
 
-export type ServerHandoffReason = "disconnect" | "idle" | "terminal_exit" | "boot_sweep";
+// suspend_timeout: the runner runtime's own suspend() (session-runtime.ts,
+// #320) asked the agent to write a handoff and it never did within the
+// poll window -- the same server-written fallback, one more reason.
+export type ServerHandoffReason = "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | "suspend_timeout";
 
 const SERVER_HANDOFF_REASONS: readonly ServerHandoffReason[] = [
   "disconnect",
   "idle",
   "terminal_exit",
   "boot_sweep",
+  "suspend_timeout",
 ];
 
 // A leading HTML-comment marker rather than a new column for `generated_by`/

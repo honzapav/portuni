@@ -191,6 +191,24 @@ describe("runner registry REST endpoints", () => {
     assert.deepEqual(body.instances.find((i) => i.id === b.id)?.org_defaults, ["org-1"]);
   });
 
+  test("DELETE /runners/org-defaults/:orgId clears the org's default", async () => {
+    const aRes = await call(makeIdentity("write"), "POST", "/runners/instances", { name: "A", runner: "claude" });
+    const a = JSON.parse(aRes.body) as RunnerInstanceSummary;
+    await call(makeIdentity("write"), "PUT", `/runners/instances/${a.id}/org-default`, { org_id: "org-1" });
+
+    const cleared = await call(makeIdentity("write"), "DELETE", "/runners/org-defaults/org-1");
+    assert.equal(cleared.statusCode, 200);
+
+    const listRes = await call(makeIdentity("read"), "GET", "/runners/instances");
+    const body = JSON.parse(listRes.body) as { instances: RunnerInstanceSummary[] };
+    assert.deepEqual(body.instances.find((i) => i.id === a.id)?.org_defaults, []);
+  });
+
+  test("DELETE /runners/org-defaults/:orgId needs write scope", async () => {
+    const res = await call(makeIdentity("read"), "DELETE", "/runners/org-defaults/org-1");
+    assert.equal(res.statusCode, 403);
+  });
+
   test("PUT /runners/instances/:id/org-default for an unknown id is 404", async () => {
     const res = await call(makeIdentity("write"), "PUT", "/runners/instances/nonexistent/org-default", {
       org_id: "org-1",

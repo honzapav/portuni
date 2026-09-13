@@ -1443,7 +1443,10 @@ const MIGRATIONS: Migration[] = [
   // tables, so on both a fresh install and an upgrade the DDL replay in
   // ensureSchemaOn already creates them (CREATE TABLE IF NOT EXISTS) before
   // this migration runs -- only the ALTERs against the pre-existing sessions
-  // table need to happen here.
+  // table need to happen here. Batch B (the Postgres baseline, plan
+  // docs/superpowers/plans/2026-09-12-infra-batch.md B2) must carry
+  // session_runs and session_events, and these sessions columns, in its
+  // baseline schema.
   {
     id: "034_sessions_runner_columns",
     isApplied: async (db) => {

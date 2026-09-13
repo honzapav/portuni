@@ -7,9 +7,13 @@
 //   PATCH  /runners/instances/:id            write  -> update (partial; empty env value = unchanged)
 //   DELETE /runners/instances/:id            admin  -> delete
 //   PUT    /runners/instances/:id/org-default write -> set this instance as an org's default
+//   DELETE /runners/org-defaults/:orgId      write -> clear an org's default
 //
 // No ownership model here (unlike sessions): the registry is one shared,
-// device-wide file, same as the desktop's old profiles.json equivalent.
+// device-wide file, same as the desktop's old config.json profiles
+// registry. Device-wide also means device-LOCAL: in agent mode the desktop
+// routes every /runners* call to the sidecar (lib.rs's is_local_only_path,
+// agent-router.ts), never to central.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
@@ -137,5 +141,18 @@ export async function handleSetRunnerInstanceOrgDefault(
     respondJson(res, 200, { ok: true });
   } catch (err) {
     respondError(res, `${req.method} /runners/instances/${instanceId}/org-default`, err);
+  }
+}
+
+export async function handleClearRunnerOrgDefault(
+  req: IncomingMessage,
+  res: ServerResponse,
+  orgId: string,
+): Promise<void> {
+  try {
+    await setOrgDefault(orgId, null);
+    respondJson(res, 200, { ok: true });
+  } catch (err) {
+    respondError(res, `${req.method} /runners/org-defaults/${orgId}`, err);
   }
 }

@@ -7,26 +7,11 @@
 // client -- not just the desktop shell.
 
 import { jsonRequest } from "../api";
+import type { RunnerInfo, RunnerInstanceSummary } from "../../../server/shared/api-types";
+import { isPortuniEnvKey, isSecretShapedEnvKey } from "../../../server/shared/runner-env";
 
-export interface RunnerAvailability {
-  installed: boolean;
-  version: string | null;
-  logged_in: boolean;
-  instances_supported: boolean;
-}
-
-export interface RunnerInfo {
-  id: string;
-  availability: RunnerAvailability;
-}
-
-export interface RunnerInstanceSummary {
-  id: string;
-  name: string;
-  runner: string;
-  env_keys: string[];
-  org_defaults: string[];
-}
+export type { RunnerInfo, RunnerInstanceSummary };
+export { isPortuniEnvKey, isSecretShapedEnvKey };
 
 export async function listRunners(): Promise<RunnerInfo[]> {
   const res = await jsonRequest<{ runners: RunnerInfo[] }>("GET", "/runners");
@@ -63,22 +48,15 @@ export function setRunnerInstanceOrgDefault(id: string, orgId: string): Promise<
   });
 }
 
+export function clearRunnerOrgDefault(orgId: string): Promise<{ ok: true }> {
+  return jsonRequest<{ ok: true }>("DELETE", `/runners/org-defaults/${encodeURIComponent(orgId)}`);
+}
+
 // --- Pure form helpers (test/runners-form-helpers.test.ts) -----------------
 //
-// Mirrors apps/server/domain/runner/instances.ts's isSecretShapedEnvKey and
-// PORTUNI_* refusal so the form can reject an obviously-bad key before the
-// round trip that would come back as INSTANCE_ENV_KEY_REFUSED -- the server
-// stays the actual enforcement point; this is only a friendlier, immediate
-// echo of the same rule.
-
-export function isSecretShapedEnvKey(key: string): boolean {
-  const upper = key.toUpperCase();
-  return upper.endsWith("_TOKEN") || upper.endsWith("_KEY") || upper.endsWith("_SECRET") || upper.includes("PASSWORD");
-}
-
-export function isPortuniEnvKey(key: string): boolean {
-  return key.toUpperCase().startsWith("PORTUNI_");
-}
+// The key rules come from apps/server/shared/runner-env.ts, the same module
+// the server enforces with (INSTANCE_ENV_KEY_REFUSED) -- this is only a
+// friendlier, immediate echo before the round trip.
 
 // Returns a human message for the first refused key found, or null when
 // every key is fine to submit.
@@ -110,8 +88,8 @@ export function parseEnvText(text: string): Record<string, string> {
 // existing instance pre-fills each known key with an empty value instead.
 // The server (updateInstance's mergeEnvUpdate) treats an empty value for a
 // key that already exists as "leave unchanged"; typing a new value there is
-// what actually changes it. Mirrors apps/web/src/components/
-// ProfilesSection.tsx's envKeysToText exactly.
+// what actually changes it; the form lists the existing keys as
+// "(nastaveno)" next to the textarea.
 export function envKeysToText(keys: readonly string[]): string {
   return keys.map((k) => `${k}=`).join("\n");
 }

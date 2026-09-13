@@ -15,6 +15,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ulid } from "ulid";
+import { isPortuniEnvKey, isSecretShapedEnvKey } from "../../shared/runner-env.js";
 
 export interface StoredInstance {
   id: string;
@@ -51,9 +52,7 @@ export interface UpdateInstanceInput {
   env?: Record<string, string>;
 }
 
-// Ports apps/desktop/src/workspace.rs's is_secret_shaped_env_key: a value
-// this file would store in plaintext must never look like a secret --
-// those belong in the OS keychain, not this registry.
+// Key rules live in shared/runner-env.ts (the web form echoes them).
 export class InstanceEnvKeyRefusedError extends Error {
   readonly code = "INSTANCE_ENV_KEY_REFUSED" as const;
   constructor(
@@ -65,20 +64,15 @@ export class InstanceEnvKeyRefusedError extends Error {
   }
 }
 
-function isSecretShapedEnvKey(key: string): boolean {
-  const upper = key.toUpperCase();
-  return upper.endsWith("_TOKEN") || upper.endsWith("_KEY") || upper.endsWith("_SECRET") || upper.includes("PASSWORD");
-}
-
 function assertValidEnvKeys(env: Record<string, string>): void {
   for (const key of Object.keys(env)) {
     if (isSecretShapedEnvKey(key)) {
       throw new InstanceEnvKeyRefusedError(
         key,
-        "vypadá jako secret (*_TOKEN/*_KEY/*_SECRET/*PASSWORD*) -- ulož jej do OS klíčenky, ne do registru instancí",
+        "vypadá jako secret (*_TOKEN/*_KEY/*_SECRET/*PASSWORD*) – ulož jej do OS klíčenky, ne do registru instancí",
       );
     }
-    if (key.toUpperCase().startsWith("PORTUNI_")) {
+    if (isPortuniEnvKey(key)) {
       throw new InstanceEnvKeyRefusedError(key, "PORTUNI_* proměnné nelze nastavit z registru instancí");
     }
   }

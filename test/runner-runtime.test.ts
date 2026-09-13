@@ -192,6 +192,12 @@ describe("session runtime: suspend", () => {
     assert.equal(suspended.state, "suspended");
     assert.equal(suspended.handoff_path, "wip/sessions/agent-handoff.md");
 
+    // The run closed by suspend() ends as "suspended" -- the adapter's own
+    // close() reports "completed", which is not what happened.
+    const runs = await store.listRuns(session.id);
+    assert.equal(runs[0].end_reason, "suspended");
+    assert.ok(runs[0].ended_at);
+
     const events = await store.listEvents(session.id);
     const handoffEvent = events.find((e) => e.kind === "handoff");
     assert.ok(handoffEvent);
@@ -246,12 +252,112 @@ describe("session runtime: suspend", () => {
       const { readFile } = await import("node:fs/promises");
       const content = await readFile(join(mirrorRoot, suspended.handoff_path!), "utf8");
       assert.match(content, /Konverzace nebyla uložena/);
+      // Same generator as every other server-side suspend (#329): the file
+      // carries the reason marker resume-info reads back.
+      const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
+      assert.equal(parseServerHandoffReason(content), "suspend_timeout");
+
+      const runs = await store.listRuns(session.id);
+      assert.equal(runs[0].end_reason, "suspended");
     } finally {
       resetLocalDbForTests();
       delete process.env.PORTUNI_WORKSPACE_ROOT;
       await import("node:fs/promises").then((fs) => fs.rm(workspace, { recursive: true, force: true }));
       void remoteRoot;
     }
+  });
+});
+
+describe("session runtime: suspend without a mirror", () => {
+  it("falls back to handoff_inline when this device has no mirror for the node", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const adapter = new FakeRunnerAdapter({ script: [{ wait: "message" }] });
+    const runtime = createSessionRuntime({
+      store,
+      registry: registryOf(adapter),
+      provision: stubProvision(),
+      suspendPollIntervalMs: 5,
+      suspendTimeoutMs: 30,
+    });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    const suspended = await runtime.suspend(session.id);
+    assert.equal(suspended.state, "suspended");
+    assert.equal(suspended.handoff_path, null);
+    assert.ok(suspended.handoff_inline);
+    const { parseServerHandoffReason } = await import("../apps/server/domain/session-handoff.js");
+    assert.equal(parseServerHandoffReason(suspended.handoff_inline), "suspend_timeout");
+
+    const events = await store.listEvents(session.id);
+    const handoffEvent = events.find((e) => e.kind === "handoff");
+    assert.ok(handoffEvent);
+    const payload = JSON.parse(handoffEvent.payload);
+    assert.equal(payload.generated_by, "server");
+    assert.equal(payload.path, null);
+    assert.equal(payload.hash, suspended.handoff_hash);
+  });
+});
+
+describe("session runtime: event ordering", () => {
+  it("records the answered question before anything the adapter emits in reaction to the answer", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const script: FakeScriptStep[] = [
+      {
+        kind: "question",
+        payload: {
+          request_id: "q1",
+          type: "input",
+          tool: "AskUserQuestion",
+          title: "Otázka",
+          detail: "Which one?",
+          options: ["a", "b"],
+          decision: null,
+        },
+      },
+      { wait: "answer" },
+      { kind: "assistant_message", payload: { text: "ok, a" } },
+    ];
+    const adapter = new FakeRunnerAdapter({ script });
+    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    await runtime.answer(session.id, "q1", { by: "U1", value: "a", at: new Date().toISOString() });
+    await runtime.interrupt(session.id);
+
+    const kinds = (await store.listEvents(session.id)).map((e) => {
+      const payload = JSON.parse(e.payload);
+      if (e.kind === "question") return payload.decision ? "question:answered" : "question";
+      if (e.kind === "state_changed") return `state_changed:${payload.waiting}`;
+      return e.kind;
+    });
+    const answered = kinds.indexOf("question:answered");
+    const reaction = kinds.indexOf("assistant_message");
+    assert.ok(answered !== -1 && reaction !== -1, kinds.join(","));
+    assert.ok(answered < reaction, `answered question must precede the reaction: ${kinds.join(",")}`);
+    assert.equal(kinds[answered + 1], "state_changed:false");
+
+    const runs = await store.listRuns(session.id);
+    assert.equal(runs[0].end_reason, "completed");
+  });
+
+  it("hands the spawn id to the adapter as an MCP header", async () => {
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    let seenHeaders: Record<string, string> | null = null;
+    const inner = new FakeRunnerAdapter({ script: [] });
+    const adapter: RunnerAdapter = {
+      id: "fake",
+      detect: () => inner.detect(),
+      start: (run, sink) => {
+        seenHeaders = run.mcp.headers;
+        return inner.start(run, sink);
+      },
+    };
+    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+    const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+    assert.deepEqual(seenHeaders, { "X-Portuni-Spawn-Id": session.id });
   });
 });
 

@@ -1,11 +1,12 @@
 // Nastavení > Runnery (#344) -- replaces Profily and Příkaz agenta: detected
 // runner adapters (GET /runners) and provider instances (server-side
 // registry, apps/server/domain/runner/instances.ts, #319), editable through
-// REST. Mirrors ProfilesSection.tsx's list-state-machine + inline-form
+// REST. Keeps the list-state-machine + inline-form
 // shape, driving the REST API instead of Tauri commands -- the registry now
 // lives on the sidecar, not in the desktop's own config.json.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { MutableRefObject } from "react";
 import {
   createRunnerInstance,
   deleteRunnerInstance,
@@ -14,6 +15,7 @@ import {
   listRunners,
   parseEnvText,
   setRunnerInstanceOrgDefault,
+  clearRunnerOrgDefault,
   updateRunnerInstance,
   validateEnvKeys,
   type RunnerInfo,
@@ -30,6 +32,22 @@ type ListState =
 const DELETE_CONFIRM_MESSAGE =
   "Instance se smaže z registru a přestane se nabízet při zakládání úkolu. Výchozí volby organizací, které na ni mířily, se zruší.";
 
+// React 18 StrictMode double-invokes effects in dev (setup -> cleanup ->
+// setup again) synchronously, before any fetch can possibly resolve --
+// resetting to true on setup (not just false on cleanup) is what keeps a
+// real async response after that dance from being silently dropped for the
+// rest of the mount's lifetime.
+function useMountedRef(): MutableRefObject<boolean> {
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  return mountedRef;
+}
+
 export default function RunnersSection() {
   const [runners, setRunners] = useState<RunnerInfo[] | null>(null);
   const [runnersError, setRunnersError] = useState<string | null>(null);
@@ -40,18 +58,7 @@ export default function RunnersSection() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  // React 18 StrictMode double-invokes this effect in dev (setup -> cleanup
-  // -> setup again) synchronously, before any fetch below can possibly
-  // resolve -- resetting to true on setup (not just false on cleanup) is
-  // what keeps a real async response after that dance from being silently
-  // dropped for the rest of this mount's lifetime.
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
+  const mountedRef = useMountedRef();
 
   useEffect(() => {
     listRunners()
@@ -119,10 +126,13 @@ export default function RunnersSection() {
     }
   }
 
-  async function handleSetDefault(orgId: string, instanceId: string) {
+  // instanceId null: the org has no default instance anymore.
+  async function handleSetDefault(orgId: string, instanceId: string | null) {
     setRowError(null);
     try {
-      await withPending(orgId, () => setRunnerInstanceOrgDefault(instanceId, orgId));
+      await withPending(orgId, () =>
+        instanceId === null ? clearRunnerOrgDefault(orgId) : setRunnerInstanceOrgDefault(instanceId, orgId),
+      );
       await load();
     } catch (e) {
       setRowError(e instanceof Error ? e.message : String(e));
@@ -290,9 +300,7 @@ export default function RunnersSection() {
                   <select
                     value={current?.id ?? ""}
                     disabled={pending.has(org.id)}
-                    onChange={(e) => {
-                      if (e.target.value) void handleSetDefault(org.id, e.target.value);
-                    }}
+                    onChange={(e) => void handleSetDefault(org.id, e.target.value || null)}
                     className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[13px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)] disabled:opacity-50"
                   >
                     <option value="">(žádná)</option>
@@ -407,6 +415,11 @@ function InstanceRow({
             <label className="mb-1 block text-[11.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
               Proměnné prostředí (jedna na řádek, KLÍČ=hodnota)
             </label>
+            {instance.env_keys.length > 0 && (
+              <p className="mb-1 font-mono text-[11px] leading-snug text-[var(--color-text-dim)]">
+                {instance.env_keys.map((k) => `${k} (nastaveno)`).join(", ")}
+              </p>
+            )}
             <p className="mb-1 text-[11px] leading-snug text-[var(--color-text-dim)]">
               Hodnoty se z bezpečnostních důvodů nikdy nenačítají zpět — u
               existujícího klíče zůstane prázdná hodnota beze změny, zadej ji
@@ -521,18 +534,7 @@ function CreateInstanceForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // React 18 StrictMode double-invokes this effect in dev (setup -> cleanup
-  // -> setup again) synchronously, before any fetch below can possibly
-  // resolve -- resetting to true on setup (not just false on cleanup) is
-  // what keeps a real async response after that dance from being silently
-  // dropped for the rest of this mount's lifetime.
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
+  const mountedRef = useMountedRef();
 
   async function handleCreate() {
     if (!name.trim()) {

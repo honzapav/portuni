@@ -21,7 +21,7 @@ Requires `read` scope.
 
 ## Provider instances
 
-An **instance** is a named set of environment variables (and which runner they apply to) a task can be started under — most commonly `CLAUDE_CONFIG_DIR`, to run a task under a different Claude Code account. Instances are persisted in `<dataDir>/runners.json` on the sidecar (`PORTUNI_DATA_DIR`; the standalone server keeps it next to its database). This replaces the desktop's old `config.json` profiles registry (`apps/desktop/src/workspace.rs`), which is removed in a later step of the runner batch.
+An **instance** is a named set of environment variables (and which runner they apply to) a task can be started under — most commonly `CLAUDE_CONFIG_DIR`, to run a task under a different Claude Code account. Instances are persisted in `<dataDir>/runners.json` on the sidecar (`PORTUNI_DATA_DIR`; the standalone server keeps it next to its database). The file is device-local: in central mode the desktop routes every `/runners*` call to this device's own sync agent, never to the central server, so the Runnery tab always describes the machine a task would actually run on. This replaces the desktop's old `config.json` profiles registry (`apps/desktop/src/workspace.rs`), which is removed in a later step of the runner batch.
 
 Env values are never returned to any client — every response below carries `env_keys` (names only), not the values. A secret-shaped key (matching `*_TOKEN`, `*_KEY`, `*_SECRET`, or containing `PASSWORD`, case-insensitive) or any `PORTUNI_*` key is refused outright on create/update with a 400 and `code: "INSTANCE_ENV_KEY_REFUSED"` — secrets belong in the OS keychain, not this registry. A leading `~` in a value expands to the server process's home directory when the env is actually read (server-side only), never on disk.
 
@@ -50,3 +50,7 @@ Requires `admin` scope, same tier as deleting any other entity in this API (acto
 ### PUT /runners/instances/:id/org-default
 
 Body: `{ org_id: string }`. Sets this instance as the given organization's default — membership is exclusive, so the org is removed from every other instance's `org_defaults` first. Requires `write` scope; 404 for an unknown instance id.
+
+### DELETE /runners/org-defaults/:orgId
+
+Clears the given organization's default instance (no instance is the default for it afterwards). Requires `write` scope.

@@ -489,7 +489,7 @@ export type SessionResumeInfo = {
   // (a dropped connection, idle GC, terminal exit, or the boot sweep) --
   // lets the Relace row say e.g. "pozastaveno serverem (nečinnost 30 min)".
   generated_by: "server" | null;
-  reason: "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | null;
+  reason: "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | "suspend_timeout" | null;
 };
 
 // GET /overview -- Přehled tab (phase 4, "Přehled (overview tab)" of the

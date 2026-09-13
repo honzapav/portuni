@@ -57,8 +57,12 @@ export async function provisionRun(input: ProvisionRunInput): Promise<ProvisionR
     resolvePortuniRoot({ envValue: process.env.PORTUNI_ROOT ?? null, knownMirrors: mirrorPaths }) ?? cwd;
 
   const summary = await orientationForNode(input.nodeId);
-  let orientation = summary ? buildOrientationHint(summary) : "";
-  if (input.resume?.mode === "handoff" && input.resume.handoffPath) {
+  const handoffResume = input.resume?.mode === "handoff" && !!input.resume.handoffPath;
+  // orientationForNode points at the node's most recent suspended session's
+  // handoff on its own; on a handoff resume the pointer below names THIS
+  // session's, so the generic one is dropped rather than carried twice.
+  let orientation = summary ? buildOrientationHint(handoffResume ? { ...summary, handoff: null } : summary) : "";
+  if (handoffResume && input.resume?.handoffPath) {
     orientation +=
       `\n## Předání (obnovení z handoffu)\n\n` +
       `Konverzace se neobnovuje přímo; pokračuješ ze zápisu na \`${input.resume.handoffPath}\`. ` +

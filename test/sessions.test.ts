@@ -429,6 +429,82 @@ describe("autoArchiveClosedSessions", () => {
     const fetched = await getSession(db, row.id);
     assert.equal(fetched?.state, "running");
   });
+
+  // #317 retention: the event log of an archived session is dropped once
+  // closed_at is older than the retention window; runs, the row and the
+  // handoff stay, and a younger archived session or a merely closed one
+  // keeps its events.
+  it("deletes session_events only of archived sessions closed longer ago than the retention window", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const { DbSessionStore } = await import("../apps/server/domain/runner/store.js");
+    const store = new DbSessionStore(db);
+    const oldArchived = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
+    const youngArchived = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
+    const closedOnly = await createSession(db, "U1", { node_id: nodeId, session_type: "headless" });
+    for (const s of [oldArchived, youngArchived, closedOnly]) {
+      await store.appendEvents(s.id, null, [{ kind: "assistant_message", payload: { text: "hi" } }]);
+      await transitionSessionState(db, "U1", s.id, "closed");
+    }
+    const days = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
+    await db.execute({ sql: "UPDATE sessions SET closed_at = ? WHERE id = ?", args: [days(120), oldArchived.id] });
+    await db.execute({ sql: "UPDATE sessions SET closed_at = ? WHERE id = ?", args: [days(45), youngArchived.id] });
+    await db.execute({ sql: "UPDATE sessions SET closed_at = ? WHERE id = ?", args: [days(120), closedOnly.id] });
+    for (const id of [oldArchived.id, youngArchived.id]) {
+      await db.execute({ sql: "UPDATE sessions SET state = 'archived' WHERE id = ?", args: [id] });
+    }
+    // Archive window longer than any closed_at here, so this pass archives
+    // nothing and only the retention step acts.
+    await autoArchiveClosedSessions(db, 365 * 24 * 60 * 60 * 1000, 90 * 24 * 60 * 60 * 1000);
+
+    assert.equal((await getSession(db, oldArchived.id))?.state, "archived");
+    assert.equal((await getSession(db, youngArchived.id))?.state, "archived");
+    assert.equal((await getSession(db, closedOnly.id))?.state, "closed");
+    assert.equal((await store.listEvents(oldArchived.id)).length, 0);
+    assert.equal((await store.listEvents(youngArchived.id)).length, 1);
+    assert.equal((await store.listEvents(closedOnly.id)).length, 1);
+  });
+});
+
+// #329, the file branch: with a mirror registered on this device the
+// server-generated handoff is a real file at the same path the agent's own
+// portuni_session_suspend would use, not handoff_inline.
+describe("closeSessionIfRunning with a local mirror (#329)", () => {
+  it("writes the handoff file into the mirror and records its path and reason", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const { mkdtemp, mkdir, readFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { setDbForTesting } = await import("../apps/server/infra/db.js");
+    const { registerMirror } = await import("../apps/server/domain/sync/mirror-registry.js");
+    const { resetLocalDbForTests } = await import("../apps/server/domain/sync/local-db.js");
+    const workspace = await mkdtemp(join(tmpdir(), "portuni-sessions-handoff-"));
+    const previousRoot = process.env.PORTUNI_WORKSPACE_ROOT;
+    process.env.PORTUNI_WORKSPACE_ROOT = workspace;
+    resetLocalDbForTests();
+    setDbForTesting(db);
+    try {
+      const mirrorRoot = join(workspace, "mirror");
+      await mkdir(mirrorRoot, { recursive: true });
+      await registerMirror("U1", nodeId, mirrorRoot);
+      const row = await createSession(db, "U1", { node_id: nodeId, session_type: "interactive_task" });
+
+      await closeSessionIfRunning(db, row.id, "disconnect");
+
+      const after = await getSession(db, row.id);
+      assert.equal(after?.state, "suspended");
+      assert.ok(after?.handoff_path, "a mirror on this device means a real handoff file");
+      assert.equal(after?.handoff_inline, null);
+      const content = await readFile(join(mirrorRoot, after!.handoff_path!), "utf8");
+      assert.equal(parseServerHandoffReason(content), "disconnect");
+      assert.match(content, /Konverzace nebyla uložena/);
+    } finally {
+      setDbForTesting(null);
+      resetLocalDbForTests();
+      if (previousRoot === undefined) delete process.env.PORTUNI_WORKSPACE_ROOT;
+      else process.env.PORTUNI_WORKSPACE_ROOT = previousRoot;
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("session_scope: read cache + writable flag", () => {

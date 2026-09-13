@@ -13,9 +13,8 @@
 // persisted and published in emission order, never interleaved.
 
 import { getDb } from "../../infra/db.js";
-import { getMirrorPath } from "../sync/mirror-registry.js";
 import { getSessionScope } from "../sessions.js";
-import { writeHandoffAndSuspend } from "../session-handoff.js";
+import { suspendSessionServerSide } from "../session-handoff.js";
 import type { SessionRow } from "../../shared/types.js";
 import type { SessionRunRow, SessionStore } from "./store.js";
 import { getInstanceEnv } from "./instances.js";
@@ -114,21 +113,27 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // Per-session serial dispatch: every appendAndPublish for a session
   // chains onto this so emission order survives concurrent sink calls.
   const queues = new Map<string, Promise<void>>();
+  // Sessions a suspend() is in progress for: the run_ended the adapter's
+  // close() emits during a suspend is recorded as "suspended", not the
+  // adapter's own "completed" -- the adapter cannot know why it was closed.
+  const suspending = new Set<string>();
 
   function publish(sessionId: string, event: CanonicalEvent | DeltaFrame): void {
     for (const listener of subscribers.get(sessionId) ?? []) listener(sessionId, event);
     for (const listener of subscribers.get("*") ?? []) listener(sessionId, event);
   }
 
+  // Returns the task's own promise (rejecting when it fails) so a caller
+  // that awaits it -- sendMessage/answer -- sees the store error; the
+  // chain itself swallows the failure so events queued after it still run.
   function enqueue(sessionId: string, task: () => Promise<void>): Promise<void> {
     const prev = queues.get(sessionId) ?? Promise.resolve();
-    // A failed task must not break the chain for events queued after it,
-    // and must not surface as an unhandled rejection either -- the sink
-    // that calls this never awaits the result (EventSink is synchronous),
-    // so nothing else would ever observe it.
-    const next = prev.then(task, task).catch(() => undefined);
-    queues.set(sessionId, next);
-    return next;
+    const result = prev.then(task, task);
+    queues.set(
+      sessionId,
+      result.catch(() => undefined),
+    );
+    return result;
   }
 
   function drain(sessionId: string): Promise<void> {
@@ -212,9 +217,21 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     }
   }
 
+  // A run closed by suspend() ends as "suspended" whatever the adapter's
+  // close() reported (the fake, and any graceful close, says "completed").
+  function withSuspendReason(sessionId: string, event: CanonicalEvent | DeltaFrame): CanonicalEvent | DeltaFrame {
+    if ("kind" in event && event.kind === "run_ended" && suspending.has(sessionId)) {
+      return { kind: "run_ended", payload: { ...event.payload, reason: "suspended" } };
+    }
+    return event;
+  }
+
   function makeSink(sessionId: string, runId: string) {
     return (event: CanonicalEvent | DeltaFrame): void => {
-      void enqueue(sessionId, () => handleAdapterEvent(sessionId, runId, event));
+      // The chain has already swallowed the failure; nothing awaits a sink.
+      enqueue(sessionId, () => handleAdapterEvent(sessionId, runId, withSuspendReason(sessionId, event))).catch(
+        () => undefined,
+      );
     };
   }
 
@@ -260,7 +277,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       resume: opts.runStartResume,
       orientation: provisioned.orientation,
       instance: { id: run.instance_id, env: instanceEnv },
-      mcp: provisioned.mcp,
+      mcp: { ...provisioned.mcp, headers: { "X-Portuni-Spawn-Id": session.id } },
       policy: opts.policy,
     };
 
@@ -312,23 +329,32 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     return { session, run };
   }
 
+  // The user's own message goes through the same per-session queue as the
+  // adapter's events, and is handed to the adapter only once persisted --
+  // so whatever the runner emits in reaction to it can never land before it.
   async function sendMessage(sessionId: string, text: string): Promise<void> {
     const live = liveRuns.get(sessionId);
     if (!live) throw new Error(`sendMessage: session ${sessionId} has no live run`);
-    await appendAndPublish(sessionId, live.runId, [{ kind: "user_message", payload: { text, source: "chat" } }]);
+    await enqueue(sessionId, () =>
+      appendAndPublish(sessionId, live.runId, [{ kind: "user_message", payload: { text, source: "chat" } }]),
+    );
     await live.handle.send(text);
   }
 
+  // Same ordering rule: the answered question (and the waiting: false
+  // state) is recorded before the adapter learns the decision.
   async function answer(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void> {
     const live = liveRuns.get(sessionId);
     if (!live) throw new Error(`answer: session ${sessionId} has no live run`);
-    await live.handle.answer(requestId, decision);
 
     const pending = pendingQuestions.get(sessionId);
     if (pending && pending.request_id === requestId) {
-      await appendAndPublish(sessionId, live.runId, [{ kind: "question", payload: { ...pending, decision } }]);
-      await clearWaitingIfPending(sessionId, live.runId);
+      await enqueue(sessionId, async () => {
+        await appendAndPublish(sessionId, live.runId, [{ kind: "question", payload: { ...pending, decision } }]);
+        await clearWaitingIfPending(sessionId, live.runId);
+      });
     }
+    await live.handle.answer(requestId, decision);
   }
 
   async function interrupt(sessionId: string): Promise<void> {
@@ -347,54 +373,6 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     return store.patchSession(sessionId, { state: "closed" });
   }
 
-  function buildServerHandoffContent(input: {
-    sessionName: string;
-    nodeId: string;
-    writeSet: string[];
-    readSet: string[];
-    lastActiveAt: string;
-  }): string {
-    return [
-      `# ${input.sessionName}`,
-      "",
-      `Uzel: ${input.nodeId}`,
-      `Poslední aktivita: ${input.lastActiveAt}`,
-      "",
-      "## Zápisový rozsah",
-      input.writeSet.length > 0 ? input.writeSet.map((id) => `- ${id}`).join("\n") : "(žádný)",
-      "",
-      "## Čtecí rozsah",
-      input.readSet.length > 0 ? input.readSet.map((id) => `- ${id}`).join("\n") : "(žádný)",
-      "",
-      "Konverzace nebyla uložena; pokračuj z tohoto handoffu.",
-    ].join("\n");
-  }
-
-  async function generateServerHandoff(session: SessionRow): Promise<{ handoffPath: string; handoffHash: string }> {
-    if (!session.node_id) {
-      throw new Error(`suspend: session ${session.id} has no anchor node to write a handoff into`);
-    }
-    const mirrorRoot = await getMirrorPath(session.user_id, session.node_id);
-    if (!mirrorRoot) {
-      throw new Error(`suspend: no local mirror for node ${session.node_id} on this device`);
-    }
-    const scope = await getSessionScope(getDb(), session.id);
-    const content = buildServerHandoffContent({
-      sessionName: session.name,
-      nodeId: session.node_id,
-      writeSet: scope.filter((s) => s.writable === 1).map((s) => s.node_id),
-      readSet: scope.map((s) => s.node_id),
-      lastActiveAt: session.last_active_at,
-    });
-    const result = await writeHandoffAndSuspend(
-      getDb(),
-      session.user_id,
-      { id: session.id, nodeId: session.node_id, mirrorRoot },
-      content,
-    );
-    return { handoffPath: result.handoffPath, handoffHash: result.handoffHash };
-  }
-
   async function pollUntilSuspended(sessionId: string): Promise<boolean> {
     const deadline = Date.now() + suspendTimeoutMs;
     for (;;) {
@@ -409,35 +387,45 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const live = liveRuns.get(sessionId);
     const runId = live?.runId ?? (await store.liveRun(sessionId))?.id ?? null;
 
-    await appendAndPublish(sessionId, runId, [
-      { kind: "user_message", payload: { text: SUSPEND_INSTRUCTION, source: "system" } },
-    ]);
-    if (live) await live.handle.send(SUSPEND_INSTRUCTION);
+    suspending.add(sessionId);
+    try {
+      await enqueue(sessionId, () =>
+        appendAndPublish(sessionId, runId, [
+          { kind: "user_message", payload: { text: SUSPEND_INSTRUCTION, source: "system" } },
+        ]),
+      );
+      if (live) await live.handle.send(SUSPEND_INSTRUCTION);
 
-    const reachedSuspended = await pollUntilSuspended(sessionId);
+      const reachedSuspended = await pollUntilSuspended(sessionId);
 
-    let handoffEvent: CanonicalEvent;
-    if (reachedSuspended) {
-      const session = await mustGetSession(sessionId);
-      handoffEvent = {
-        kind: "handoff",
-        payload: { path: session.handoff_path, hash: session.handoff_hash, generated_by: "agent" },
-      };
-    } else {
-      const session = await mustGetSession(sessionId);
-      const written = await generateServerHandoff(session);
-      handoffEvent = {
-        kind: "handoff",
-        payload: { path: written.handoffPath, hash: written.handoffHash, generated_by: "server" },
-      };
+      let handoffEvent: CanonicalEvent;
+      if (reachedSuspended) {
+        const session = await mustGetSession(sessionId);
+        handoffEvent = {
+          kind: "handoff",
+          payload: { path: session.handoff_path, hash: session.handoff_hash, generated_by: "agent" },
+        };
+      } else {
+        // The same server-written fallback every other server-side suspend
+        // uses (#329): a file in the mirror when this device has one,
+        // handoff_inline otherwise, marked with its reason either way.
+        const session = await suspendSessionServerSide(getDb(), sessionId, "suspend_timeout");
+        if (!session) throw new Error(`suspend: session ${sessionId} not found`);
+        handoffEvent = {
+          kind: "handoff",
+          payload: { path: session.handoff_path, hash: session.handoff_hash, generated_by: "server" },
+        };
+      }
+
+      if (live) {
+        await live.handle.close();
+        await drain(sessionId);
+      }
+
+      await enqueue(sessionId, () => appendAndPublish(sessionId, runId, [handoffEvent]));
+    } finally {
+      suspending.delete(sessionId);
     }
-
-    if (live) {
-      await live.handle.close();
-      await drain(sessionId);
-    }
-
-    await appendAndPublish(sessionId, runId, [handoffEvent]);
     return mustGetSession(sessionId);
   }
 

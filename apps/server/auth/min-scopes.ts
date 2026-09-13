@@ -231,6 +231,7 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname === "/runners/instances" && m === "GET") return "read";
   if (pathname === "/runners/instances" && m === "POST") return "write";
   if (/^\/runners\/instances\/[^/]+\/org-default$/.test(pathname) && m === "PUT") return "write";
+  if (/^\/runners\/org-defaults\/[^/]+$/.test(pathname) && m === "DELETE") return "write";
   if (/^\/runners\/instances\/[^/]+$/.test(pathname) && m === "PATCH") return "write";
   // Same tier as deleting an actor/node/responsibility/tool/data source --
   // deletion is admin-only across every entity in this table.

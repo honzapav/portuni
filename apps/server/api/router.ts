@@ -119,6 +119,7 @@ import {
   handleListRunners,
   handleSetRunnerInstanceOrgDefault,
   handleUpdateRunnerInstance,
+  handleClearRunnerOrgDefault,
 } from "./runners.js";
 
 // A sub-router takes the request and returns true if it handled the route
@@ -774,6 +775,11 @@ async function routeRunners(
   const orgDefaultMatch = pathname.match(/^\/runners\/instances\/([^/]+)\/org-default$/);
   if (orgDefaultMatch && method === "PUT") {
     await handleSetRunnerInstanceOrgDefault(req, res, decodeURIComponent(orgDefaultMatch[1]));
+    return true;
+  }
+  const clearOrgDefaultMatch = pathname.match(/^\/runners\/org-defaults\/([^/]+)$/);
+  if (clearOrgDefaultMatch && method === "DELETE") {
+    await handleClearRunnerOrgDefault(req, res, decodeURIComponent(clearOrgDefaultMatch[1]));
     return true;
   }
   const instanceMatch = pathname.match(/^\/runners\/instances\/([^/]+)$/);

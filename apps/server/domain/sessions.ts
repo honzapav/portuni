@@ -333,15 +333,28 @@ export async function closeStaleRunningSessionsOnBoot(db: Client): Promise<numbe
 // action, so it would just add audit-log noise proportional to session
 // volume without a corresponding actor to attribute it to.
 const DEFAULT_ARCHIVE_AFTER_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+// Retention for session_events (runner batch, #317): the event log of an
+// archived session is dropped once closed_at is older than this -- the
+// session row, its runs, audit trail and handoff file all stay.
+const DEFAULT_EVENTS_RETENTION_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
 
 export async function autoArchiveClosedSessions(
   db: Client,
   olderThanMs: number = DEFAULT_ARCHIVE_AFTER_MS,
+  eventsRetentionMs: number = DEFAULT_EVENTS_RETENTION_MS,
 ): Promise<number> {
   const cutoff = new Date(Date.now() - olderThanMs).toISOString();
   const res = await db.execute({
     sql: "UPDATE sessions SET state = 'archived' WHERE state = 'closed' AND closed_at IS NOT NULL AND closed_at < ?",
     args: [cutoff],
+  });
+  const eventsCutoff = new Date(Date.now() - eventsRetentionMs).toISOString();
+  await db.execute({
+    sql: `DELETE FROM session_events
+           WHERE session_id IN (
+             SELECT id FROM sessions WHERE state = 'archived' AND closed_at IS NOT NULL AND closed_at < ?
+           )`,
+    args: [eventsCutoff],
   });
   return res.rowsAffected;
 }

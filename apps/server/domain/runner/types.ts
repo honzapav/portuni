@@ -156,7 +156,10 @@ export interface RunStart {
   // Appended to the runner's own system prompt.
   orientation: string;
   instance: { id: string | null; env: Record<string, string> };
-  mcp: { url: string; token: string; homeNodeId: string };
+  // headers always carries X-Portuni-Spawn-Id: <sessionId> so the runner's
+  // MCP handshake binds to the session row the runtime already created
+  // (the REST/MCP issue makes the transport honour it).
+  mcp: { url: string; token: string; homeNodeId: string; headers: Record<string, string> };
   policy: PermissionPolicy;
 }
 
