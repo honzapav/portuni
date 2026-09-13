@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   toCanonicalEvent,
   sessionStatusChip,
+  insertBySeq,
   latestQuestionEvent,
   appendDelta,
   clearDeltaBuffer,
@@ -135,5 +136,16 @@ describe("formatRestartHint", () => {
   it("rounds a sub-minute run age to 'méně než minutu'", () => {
     const text = formatRestartHint({ runAgeMs: 10_000, writeSetSize: 0, readSetSize: 0, expansionsSinceRunStart: 0 });
     assert.equal(text, "Běží méně než minutu · zápis 0 · čtení 0");
+  });
+});
+
+describe("insertBySeq", () => {
+  const ev = (seq: number) => ({ seq, event: { kind: "run_started", payload: { run_id: `r${seq}`, runner: "fake", instance_id: null, resume: null } } }) as ChatEvent;
+  it("appends in order, ignores a duplicate seq, and slots a late-arriving lower seq into place", () => {
+    let list = insertBySeq([], ev(1));
+    list = insertBySeq(list, ev(3));
+    list = insertBySeq(list, ev(3));
+    list = insertBySeq(list, ev(2));
+    assert.deepEqual(list.map((e) => e.seq), [1, 2, 3]);
   });
 });

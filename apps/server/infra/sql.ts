@@ -36,6 +36,15 @@ export function insertIgnore(dialect: DbDialect, sql: string): string {
   return `${sql.replace(/INSERT\s+OR\s+IGNORE\s+INTO/i, "INSERT INTO")} ON CONFLICT DO NOTHING`;
 }
 
+// The remote path an audit_log row about a file refers to: `remote_path`
+// in its detail JSON, or `old_remote_path` for a move/rename row (whose
+// `remote_path` is the destination). One expression for the tombstone
+// scans in sync/engine.ts and sync-remote-api.ts, so the three sites
+// cannot drift.
+export function auditRemotePathExpr(dialect: DbDialect): string {
+  return `COALESCE(${jsonField(dialect, "detail", "remote_path")}, ${jsonField(dialect, "detail", "old_remote_path")})`;
+}
+
 // "Does this table exist?" -- `sqlite_master` (SQLite) vs `pg_tables`
 // (Postgres). One `?` placeholder for the table name in both forms, and
 // both project a single `name` column, so the caller only checks

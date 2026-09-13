@@ -240,37 +240,6 @@ export function startSession(input: {
   return jsonRequest<{ session: SessionSummary; run: SessionRunRow }>("POST", "/sessions", input);
 }
 
-// GET /sessions/:id/events -- the canonical event log SessionChat backfills
-// from on mount, before switching to the live WebSocket (sessions-client.ts)
-// for anything after. The wire response's `payload` is already the parsed
-// object (apps/server/api/sessions.ts's handleListSessionEvents does the
-// JSON.parse server-side), unlike SessionEventRow's own `payload: string`
-// (the raw DB column shape) -- CanonicalEventRow reflects the actual wire
-// shape.
-export type CanonicalEventRow = {
-  id: string;
-  session_id: string;
-  run_id: string | null;
-  seq: number;
-  kind: string;
-  payload: unknown;
-  created_at: string;
-};
-
-export function fetchSessionEvents(
-  id: string,
-  opts: { after?: number; limit?: number } = {},
-): Promise<{ events: CanonicalEventRow[] }> {
-  const params = new URLSearchParams();
-  if (opts.after !== undefined) params.set("after", String(opts.after));
-  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
-  const qs = params.toString();
-  return jsonRequest<{ events: CanonicalEventRow[] }>(
-    "GET",
-    `/sessions/${encodeURIComponent(id)}/events${qs ? `?${qs}` : ""}`,
-  );
-}
-
 // GET /overview -- Přehled tab (#196). One aggregate, permission-filtered
 // snapshot; see apps/server/api/overview.ts for the section breakdown.
 export function fetchOverview(): Promise<OverviewPayload> {

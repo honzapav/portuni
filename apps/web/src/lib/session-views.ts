@@ -11,11 +11,13 @@ import type { SessionStateMessage } from "./sessions-client";
 
 export type SessionRowChip = { label: string; color: string; pulsing: boolean };
 
-const ROW_STATE_LABEL: Record<SessionState, string> = {
-  running: "Běží",
-  suspended: "Pozastaveno",
-  closed: "Hotovo",
-  archived: "Archiv",
+// Two wordings of the same chip: the compact one for list rows and
+// sub-rows, the full one for SessionChat's own header.
+export type SessionChipVariant = "row" | "header";
+
+const STATE_LABEL: Record<SessionChipVariant, Record<SessionState, string>> = {
+  row: { running: "Běží", suspended: "Pozastaveno", closed: "Hotovo", archived: "Archiv" },
+  header: { running: "Běží", suspended: "Pozastaveno", closed: "Uzavřeno", archived: "Archivováno" },
 };
 
 const ROW_STATE_COLOR: Record<SessionState, string> = {
@@ -25,14 +27,17 @@ const ROW_STATE_COLOR: Record<SessionState, string> = {
   archived: "var(--color-text-dim)",
 };
 
-// "Čeká na mě" overrides the plain "Běží" the same way SessionChat's own
-// header chip does -- a running session with an open question is blocked
-// on the user, not doing work.
-export function sessionRowChip(state: SessionState, waitingSince: string | null): SessionRowChip {
+// "Čeká na mě" (waiting_since set) overrides the plain "Běží" -- a running
+// session with an open question is blocked on the user, not doing work.
+export function sessionRowChip(
+  state: SessionState,
+  waitingSince: string | null,
+  variant: SessionChipVariant = "row",
+): SessionRowChip {
   if (state === "running" && waitingSince !== null) {
     return { label: "Čeká na mě", color: "var(--color-node-process)", pulsing: true };
   }
-  return { label: ROW_STATE_LABEL[state], color: ROW_STATE_COLOR[state], pulsing: state === "running" };
+  return { label: STATE_LABEL[variant][state], color: ROW_STATE_COLOR[state], pulsing: state === "running" };
 }
 
 // Client-side echo of #321's access table, for deciding which action
@@ -91,4 +96,39 @@ export function sortInboxSessions(
 // of whether this device has ever fetched their full SessionSummary.
 export function countRunningSessions(liveStates: Readonly<Record<string, SessionStateMessage>>): number {
   return Object.values(liveStates).filter((s) => s.state === "running").length;
+}
+
+// Folds one session_state frame into the per-session map App.tsx keeps.
+// A session that reached a terminal state (closed/archived) stays in the
+// map only while another live session still shares its node -- the
+// selected-node refresh needs to see the transition -- and is dropped
+// otherwise, so the map is bounded by what is currently running or
+// suspended, not by everything that ever ran while the window was open.
+export function applySessionStateFrame(
+  prev: Readonly<Record<string, SessionStateMessage>>,
+  frame: SessionStateMessage,
+): Record<string, SessionStateMessage> {
+  const next: Record<string, SessionStateMessage> = { ...prev, [frame.session_id]: frame };
+  for (const s of Object.values(next)) {
+    if (s.state !== "closed" && s.state !== "archived") continue;
+    const nodeStillLive = Object.values(next).some(
+      (o) => o.node_id === s.node_id && o.session_id !== s.session_id && (o.state === "running" || o.state === "suspended"),
+    );
+    if (!nodeStillLive || s.node_id === null) delete next[s.session_id];
+  }
+  return next;
+}
+
+// The persistent session Práce shows for a node: the requested one when
+// it is still live, else the newest live one, else nothing.
+export function pickOpenChatSession<T extends { id: string; state: SessionState }>(
+  sessions: readonly T[],
+  requestedId: string | null,
+): T | null {
+  const live = sessions.filter((s) => s.state === "running" || s.state === "suspended");
+  if (requestedId) {
+    const requested = live.find((s) => s.id === requestedId);
+    if (requested) return requested;
+  }
+  return live[0] ?? null;
 }

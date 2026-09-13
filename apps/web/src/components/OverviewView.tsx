@@ -7,7 +7,7 @@
 // in Práce. No auto-refresh; a manual "Obnovit" button matches
 // SyncOverview's pattern.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Clock, RefreshCw, Sparkles, Terminal } from "lucide-react";
 import type {
   AccessRequest,
@@ -21,9 +21,11 @@ import type {
   OverviewSyncIssue,
 } from "../types";
 import { HEALTH_COLORS, LIFECYCLE_COLORS } from "../types";
-import { fetchMe, fetchOverview } from "../api";
+import { fetchOverview } from "../api";
+import { useMe } from "../lib/use-me";
+import type { SessionStateMessage } from "../lib/sessions-client";
 import { fmtDateTime } from "./DetailPane.sessions";
-import { sessionRowChip, sortInboxSessions } from "../lib/session-views";
+import { mergeLiveSessionStates, sessionRowChip, sortInboxSessions } from "../lib/session-views";
 
 const TYPE_LABELS: Record<string, string> = {
   organization: "Organizace",
@@ -36,20 +38,20 @@ const TYPE_LABELS: Record<string, string> = {
 type Props = {
   onSelectNode: (nodeId: string) => void;
   onOpenSession: (nodeId: string, sessionId: string) => void;
+  // The window's live session_state map (App.tsx, from the socket): the
+  // Relace card's rows take state/waiting_since from it between loads,
+  // and a change in the set of live sessions reloads the whole overview
+  // (a new task shows up, a closed one leaves the inbox) -- no polling.
+  liveStates?: Readonly<Record<string, SessionStateMessage>>;
 };
 
-export default function OverviewView({ onSelectNode, onOpenSession }: Props) {
+export default function OverviewView({ onSelectNode, onOpenSession, liveStates }: Props) {
   const [data, setData] = useState<OverviewPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   // The Relace card is "my own inbox" (sortInboxSessions) -- needs the
-  // caller's own id, same fetchMe() call DetailPane.tsx already makes.
-  const [meId, setMeId] = useState<string | null>(null);
-  useEffect(() => {
-    void fetchMe()
-      .then((me) => setMeId(me.id))
-      .catch(() => undefined);
-  }, []);
+  // caller's own id.
+  const { meId } = useMe();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -63,9 +65,17 @@ export default function OverviewView({ onSelectNode, onOpenSession }: Props) {
     }
   }, []);
 
+  const liveStamp = useMemo(
+    () =>
+      Object.values(liveStates ?? {})
+        .map((s) => `${s.session_id}:${s.state}`)
+        .sort()
+        .join(","),
+    [liveStates],
+  );
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, liveStamp]);
 
   if (loading && !data) {
     return (
@@ -100,8 +110,8 @@ export default function OverviewView({ onSelectNode, onOpenSession }: Props) {
         {data && (
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
             <SessionsCard
-              running={data.sessions.running}
-              suspended={data.sessions.suspended}
+              running={liveStates ? mergeLiveSessionStates(data.sessions.running, liveStates) : data.sessions.running}
+              suspended={liveStates ? mergeLiveSessionStates(data.sessions.suspended, liveStates) : data.sessions.suspended}
               meId={meId}
               disconnectedJumps={data.sessions.disconnected_jumps}
               onOpenSession={onOpenSession}

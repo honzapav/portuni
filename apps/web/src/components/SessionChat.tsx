@@ -1,22 +1,21 @@
 // Live chat view of a runner-batch session (#342, docs/superpowers/specs/
 // 2026-09-12-runner-and-session-design.md "Web: Práce, New task"). Replaces
 // the terminal canvas in Práce's center pane when the selected node has an
-// open (running/suspended) persistent session. Backfills the canonical
-// event log once (GET /sessions/:id/events), then switches to the live
-// WebSocket (lib/sessions-client.ts) for anything after -- streamed
-// assistant text arrives as `delta` frames (never persisted, buffered here
-// until the matching canonical event lands), everything else as `event`
-// frames already carrying a monotonic `seq`.
+// open (running/suspended) persistent session. The whole log comes over
+// the live WebSocket (lib/sessions-client.ts): `subscribe(id, 0)` makes the
+// server replay the persisted events (it subscribes its own runtime
+// listener first and buffers, so nothing published during the replay is
+// lost -- api/sessions-ws.ts's handleSubscribe) and then stream anything
+// after. Streamed assistant text arrives as `delta` frames (never
+// persisted, buffered here until the matching canonical event lands),
+// everything else as `event` frames already carrying a monotonic `seq`,
+// which is what de-duplicates a replay against a frame that raced it.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionState, SessionSummary } from "../types";
-import {
-  fetchSessionEvents,
-  fetchSessionSignals,
-  fetchPersistentSessionResumeInfo,
-  resumeSession,
-  type SessionSignals,
-} from "../api";
+import { fetchSessionSignals, fetchPersistentSessionResumeInfo, resumeSession, type SessionSignals } from "../api";
+import { sessionRowAccess } from "../lib/session-views";
+import { useMe } from "../lib/use-me";
 import type { SessionsClient } from "../lib/sessions-client";
 import {
   toCanonicalEvent,
@@ -27,9 +26,13 @@ import {
   collapseToolCalls,
   formatRestartHint,
   type ChatEvent,
+  insertBySeq,
   type CanonicalEvent,
   type DeltaBuffers,
 } from "../lib/session-chat";
+
+// Floor between two restart-indicator reads (see the signals effect).
+const SIGNALS_MIN_INTERVAL_MS = 10_000;
 export default function SessionChat({
   session,
   onSessionUpdated,
@@ -53,8 +56,12 @@ export default function SessionChat({
   const [signals, setSignals] = useState<SessionSignals | null>(null);
   const [composerText, setComposerText] = useState("");
   const [sending, setSending] = useState(false);
-  const [actionPending, setActionPending] = useState<"interrupt" | "suspend" | "close" | "resume" | null>(null);
-  const [resumeMode, setResumeMode] = useState<"conversation" | "handoff" | null>(null);
+  const [actionPending, setActionPending] = useState<"interrupt" | "suspend" | "close" | "resume" | "restart" | null>(null);
+  // Whether the CLI conversation can still be picked up (GET
+  // /sessions/:id/resume-info); "Předat a začít znovu" is always offered.
+  const [conversationResumable, setConversationResumable] = useState(false);
+  const { meId, canManage } = useMe();
+  const access = sessionRowAccess(session.user_id, meId, canManage);
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
 
@@ -70,31 +77,12 @@ export default function SessionChat({
     setLiveRunId(null);
     setLive({ state: session.state, waiting_since: session.waiting_since });
 
-    void fetchSessionEvents(session.id)
-      .then((res) => {
-        if (cancelled) return;
-        const chatEvents = res.events.map((e) => ({ seq: e.seq, event: toCanonicalEvent(e.kind, e.payload) }));
-        setEvents(chatEvents);
-        const lastRunStarted = [...chatEvents].reverse().find((e) => e.event.kind === "run_started");
-        const lastRunEnded = [...chatEvents].reverse().find((e) => e.event.kind === "run_ended");
-        if (
-          lastRunStarted &&
-          (!lastRunEnded || lastRunEnded.seq < lastRunStarted.seq) &&
-          lastRunStarted.event.kind === "run_started"
-        ) {
-          setLiveRunId(lastRunStarted.event.payload.run_id);
-        }
-      })
-      .catch((e) => {
-        if (!cancelled) setError(String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
+    // Live run detection rides on the replayed/streamed events themselves
+    // (run_started without a later run_ended), so one code path covers
+    // both the backfill and everything after it.
     const offEvent = sessionsClient.onEvent(session.id, (envelope) => {
       const event = toCanonicalEvent(envelope.kind, envelope.payload);
-      setEvents((prev) => (prev.some((p) => p.seq === envelope.seq) ? prev : [...prev, { seq: envelope.seq, event }]));
+      setEvents((prev) => insertBySeq(prev, { seq: envelope.seq, event }));
       if (event.kind === "run_started") {
         setLiveRunId(event.payload.run_id);
       } else if (event.kind === "run_ended") {
@@ -116,7 +104,14 @@ export default function SessionChat({
       onSessionUpdated({ ...session, state: s.state, waiting_since: s.waiting_since });
     });
 
-    void sessionsClient.subscribe(session.id);
+    void sessionsClient
+      .subscribe(session.id, 0)
+      .catch((e) => {
+        if (!cancelled) setError(String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
 
     return () => {
       cancelled = true;
@@ -130,37 +125,57 @@ export default function SessionChat({
     // then owned by `live` (updated via onSessionState) from here on.
   }, [session.id, sessionsClient]);
 
-  // Restart indicator: polled lazily, not pushed live -- cheap enough to
-  // refresh on a plain interval while a run is live.
+  // Restart indicator (run age, write/read-set size, expansions since the
+  // run started): a REST read, refreshed when something happened on the
+  // session -- a new event arrived, or its state changed -- and at most
+  // once per SIGNALS_MIN_INTERVAL_MS, never on a timer of its own. The
+  // socket replaced polling; the indicator must not bring it back.
+  const lastSignalsAtRef = useRef(0);
+  const signalsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (live.state !== "running") {
       setSignals(null);
       return;
     }
     let cancelled = false;
-    const poll = () => {
-      void fetchSessionSignals(session.id).then((s) => {
-        if (!cancelled) setSignals(s);
-      }).catch(() => undefined);
+    const refresh = () => {
+      lastSignalsAtRef.current = Date.now();
+      void fetchSessionSignals(session.id)
+        .then((s) => {
+          if (!cancelled) setSignals(s);
+        })
+        .catch(() => undefined);
     };
-    poll();
-    const timer = setInterval(poll, 15_000);
+    const schedule = () => {
+      if (signalsTimerRef.current) return;
+      const wait = Math.max(0, SIGNALS_MIN_INTERVAL_MS - (Date.now() - lastSignalsAtRef.current));
+      signalsTimerRef.current = setTimeout(() => {
+        signalsTimerRef.current = null;
+        if (!cancelled) refresh();
+      }, wait);
+    };
+    refresh();
+    const offEvent = sessionsClient.onEvent(session.id, () => schedule());
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      offEvent();
+      if (signalsTimerRef.current) {
+        clearTimeout(signalsTimerRef.current);
+        signalsTimerRef.current = null;
+      }
     };
-  }, [session.id, live.state]);
+  }, [session.id, live.state, sessionsClient]);
 
   // Resume-mode offer, fetched once the session is suspended.
   useEffect(() => {
     if (live.state !== "suspended") {
-      setResumeMode(null);
+      setConversationResumable(false);
       return;
     }
     let cancelled = false;
     void fetchPersistentSessionResumeInfo(session.id)
       .then((info) => {
-        if (!cancelled) setResumeMode(info.conversation_resumable ? "conversation" : "handoff");
+        if (!cancelled) setConversationResumable(info.conversation_resumable);
       })
       .catch(() => undefined);
     return () => {
@@ -196,12 +211,28 @@ export default function SessionChat({
     }
   };
 
-  const handleResume = async () => {
-    if (!resumeMode) return;
+  const handleResume = async (mode: "conversation" | "handoff") => {
     setActionPending("resume");
     setError(null);
     try {
-      await resumeSession(session.id, resumeMode);
+      await resumeSession(session.id, mode);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setActionPending(null);
+    }
+  };
+
+  // The restart indicator's own action (spec, "Suspend and resume"):
+  // hand the context over and start a fresh run from the handoff --
+  // a suspend (which writes the handoff) followed by a handoff-mode
+  // resume, as one click.
+  const handleRestartFromHandoff = async () => {
+    setActionPending("restart");
+    setError(null);
+    try {
+      await sessionsClient.suspend(session.id);
+      await resumeSession(session.id, "handoff");
     } catch (e) {
       setError(String(e));
     } finally {
@@ -233,7 +264,9 @@ export default function SessionChat({
     }
   };
 
-  const composerDisabled = live.state === "closed" || live.state === "archived" || isWaiting;
+  // Messages and answers are owner-only (#321's access table); a
+  // non-owner who can see the node reads the chat but cannot type into it.
+  const composerDisabled = live.state === "closed" || live.state === "archived" || isWaiting || !access.canResume;
 
   return (
     <div className="flex h-full min-w-0 flex-col">
@@ -250,8 +283,9 @@ export default function SessionChat({
           <span>
             {session.runner ?? "runner neznámý"}
             {session.instance_id ? ` · ${session.instance_id}` : ""}
+            {session.host_id ? ` · ${session.host_id}` : ""}
           </span>
-          {live.state === "running" && (
+          {live.state === "running" && access.canPauseOrClose && (
             <>
               <ChatButton disabled={actionPending !== null} onClick={() => void runAction("interrupt")}>
                 {actionPending === "interrupt" ? "Přerušuji…" : "Přerušit"}
@@ -261,16 +295,19 @@ export default function SessionChat({
               </ChatButton>
             </>
           )}
-          {live.state === "suspended" && resumeMode && (
-            <ChatButton disabled={actionPending !== null} onClick={() => void handleResume()}>
-              {actionPending === "resume"
-                ? "Nahazuji…"
-                : resumeMode === "conversation"
-                  ? "Nahodit (pokračovat)"
-                  : "Nahodit (z handoffu)"}
-            </ChatButton>
+          {live.state === "suspended" && access.canResume && (
+            <>
+              {conversationResumable && (
+                <ChatButton disabled={actionPending !== null} onClick={() => void handleResume("conversation")}>
+                  {actionPending === "resume" ? "Nahazuji…" : "Pokračovat"}
+                </ChatButton>
+              )}
+              <ChatButton disabled={actionPending !== null} onClick={() => void handleResume("handoff")}>
+                {actionPending === "resume" ? "Nahazuji…" : "Předat a začít znovu"}
+              </ChatButton>
+            </>
           )}
-          {(live.state === "running" || live.state === "suspended") && (
+          {(live.state === "running" || live.state === "suspended") && access.canPauseOrClose && (
             <ChatButton disabled={actionPending !== null} onClick={() => void runAction("close")}>
               {actionPending === "close" ? "Zavírám…" : "Uzavřít"}
             </ChatButton>
@@ -279,8 +316,13 @@ export default function SessionChat({
       </div>
 
       {restartHint && (
-        <div className="border-b border-[var(--color-border)] px-4 py-1 text-[11px] text-[var(--color-text-dim)]">
-          {restartHint}
+        <div className="flex items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-1 text-[11px] text-[var(--color-text-dim)]">
+          <span>{restartHint}</span>
+          {access.canResume && (
+            <ChatButton disabled={actionPending !== null} onClick={() => void handleRestartFromHandoff()}>
+              {actionPending === "restart" ? "Předávám…" : "Předat a začít znovu"}
+            </ChatButton>
+          )}
         </div>
       )}
 
@@ -309,7 +351,7 @@ export default function SessionChat({
         )}
       </div>
 
-      {openQuestion && isWaiting && (
+      {openQuestion && isWaiting && access.canResume && (
         <QuestionPanel question={openQuestion} onAnswer={(v) => void handleAnswer(v)} />
       )}
 
@@ -326,13 +368,15 @@ export default function SessionChat({
             }}
             disabled={composerDisabled || sending}
             placeholder={
-              isWaiting
-                ? "Relace čeká na odpověď na otázku výše."
-                : live.state === "suspended"
-                  ? "Relace je pozastavena — nejdřív ji nahoď."
-                  : live.state === "closed" || live.state === "archived"
-                    ? "Relace je uzavřená."
-                    : "Napiš zprávu…"
+              !access.canResume
+                ? "Zprávy může posílat jen vlastník relace."
+                : isWaiting
+                  ? "Relace čeká na odpověď na otázku výše."
+                  : live.state === "suspended"
+                    ? "Relace je pozastavena — nejdřív ji nahoď."
+                    : live.state === "closed" || live.state === "archived"
+                      ? "Relace je uzavřená."
+                      : "Napiš zprávu…"
             }
             rows={2}
             className="min-w-0 flex-1 resize-none rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-[13px] text-[var(--color-text)] disabled:opacity-50"
@@ -421,24 +465,8 @@ function EventRow({
           {event.payload.summary}
         </ChatBubble>
       );
-    case "tool_call": {
-      const p = event.payload;
-      const statusLabel = p.status === "started" ? "běží" : p.status === "completed" ? "hotovo" : "selhalo";
-      return (
-        <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[12.5px]">
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-[var(--color-text)]">{p.title}</span>
-            <span className="text-[var(--color-text-dim)]">({statusLabel})</span>
-          </div>
-          {p.output_excerpt && (
-            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap text-[11px] text-[var(--color-text-dim)]">
-              {p.output_excerpt}
-              {p.truncated ? "\n…" : ""}
-            </pre>
-          )}
-        </div>
-      );
-    }
+    case "tool_call":
+      return <ToolCallRow payload={event.payload} />;
     case "file_change":
       return (
         <SystemMarker>
@@ -478,6 +506,37 @@ function EventRow({
     default:
       return null;
   }
+}
+
+// Collapsed to its title (spec: "tool calls collapsed to `title` with
+// expand"); the input summary and output excerpt open on click.
+function ToolCallRow({ payload: p }: { payload: Extract<CanonicalEvent, { kind: "tool_call" }>["payload"] }) {
+  const [open, setOpen] = useState(false);
+  const statusLabel = p.status === "started" ? "běží" : p.status === "completed" ? "hotovo" : "selhalo";
+  const hasDetail = Boolean(p.input_summary || p.output_excerpt);
+  return (
+    <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[12.5px]">
+      <button
+        type="button"
+        onClick={() => hasDetail && setOpen((v) => !v)}
+        className={`flex w-full items-center gap-2 text-left ${hasDetail ? "cursor-pointer" : "cursor-default"}`}
+        aria-expanded={open}
+      >
+        {hasDetail && <span className="text-[var(--color-text-dim)]">{open ? "▾" : "▸"}</span>}
+        <span className="font-medium text-[var(--color-text)]">{p.title || p.tool}</span>
+        <span className="text-[var(--color-text-dim)]">({statusLabel})</span>
+      </button>
+      {open && p.input_summary && (
+        <div className="mt-1 whitespace-pre-wrap text-[11px] text-[var(--color-text-dim)]">{p.input_summary}</div>
+      )}
+      {open && p.output_excerpt && (
+        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap text-[11px] text-[var(--color-text-dim)]">
+          {p.output_excerpt}
+          {p.truncated ? "\n…" : ""}
+        </pre>
+      )}
+    </div>
+  );
 }
 
 function QuestionPanel({

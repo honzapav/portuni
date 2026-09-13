@@ -84,6 +84,7 @@ async function toSummary(row: SessionRow): Promise<SessionSummary> {
     terminal_id: row.terminal_id,
     brief: row.brief,
     runner: row.runner,
+    host_id: row.host_id,
     waiting_since: row.waiting_since,
     state: row.state,
     name: row.name,
@@ -392,7 +393,8 @@ export async function handleGetSessionSignals(
 
 // --- Tasks (runner batch): starting a session's task and driving its run --
 
-const StartSessionBody = z.object({
+// Shared with api/agent-router.ts's POST /sessions: one schema, both routers.
+export const StartSessionBody = z.object({
   node_id: z.string().min(1),
   brief: z.string().trim().min(1),
   runner: z.string().min(1),

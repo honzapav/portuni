@@ -7,6 +7,8 @@ import {
   mergeLiveSessionStates,
   sortInboxSessions,
   countRunningSessions,
+  applySessionStateFrame,
+  pickOpenChatSession,
 } from "../apps/web/src/lib/session-views.js";
 import type { OverviewSessionRow } from "../apps/web/src/types.js";
 import type { SessionStateMessage } from "../apps/web/src/lib/sessions-client.js";
@@ -149,5 +151,38 @@ describe("countRunningSessions", () => {
 
   it("is zero for an empty map", () => {
     assert.equal(countRunningSessions({}), 0);
+  });
+});
+
+describe("applySessionStateFrame", () => {
+  const frame = (session_id: string, state: "running" | "suspended" | "closed", node_id: string | null = "N1") =>
+    ({ session_id, state, waiting_since: null, node_id }) as SessionStateMessage;
+
+  it("keeps live sessions and drops a closed one once nothing live shares its node", () => {
+    let map = applySessionStateFrame({}, frame("A", "running"));
+    map = applySessionStateFrame(map, frame("B", "running"));
+    map = applySessionStateFrame(map, frame("A", "closed"));
+    // B is still live on N1, so A's closed frame is kept (the selected-node
+    // refresh needs to see it)...
+    assert.deepEqual(Object.keys(map).sort(), ["A", "B"]);
+    // ...until B closes too, when both go.
+    map = applySessionStateFrame(map, frame("B", "closed"));
+    assert.deepEqual(Object.keys(map), []);
+  });
+
+  it("drops a closed node-less session immediately", () => {
+    const map = applySessionStateFrame({}, frame("C", "closed", null));
+    assert.deepEqual(Object.keys(map), []);
+  });
+});
+
+describe("pickOpenChatSession", () => {
+  const s = (id: string, state: "running" | "suspended" | "closed") => ({ id, state });
+  it("prefers the requested session while it is live, else the newest live one, else nothing", () => {
+    const list = [s("new", "running"), s("old", "suspended"), s("gone", "closed")];
+    assert.equal(pickOpenChatSession(list, "old")?.id, "old");
+    assert.equal(pickOpenChatSession(list, "gone")?.id, "new");
+    assert.equal(pickOpenChatSession(list, null)?.id, "new");
+    assert.equal(pickOpenChatSession([s("gone", "closed")], "gone"), null);
   });
 });

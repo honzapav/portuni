@@ -14,7 +14,7 @@ import { useState } from "react";
 import { ChevronLeft } from "lucide-react";
 import type { GraphPayload, GraphNode, NodeDetail, SessionRunRow, SessionSummary } from "../types";
 import type { TerminalSession } from "../lib/sessions";
-import type { SessionsClient } from "../lib/sessions-client";
+import type { SessionsClient, SessionStateMessage } from "../lib/sessions-client";
 import type { Theme } from "../lib/theme";
 import type { FileEditor } from "../lib/use-file-editor";
 import { scopedKey } from "../lib/workspace-storage";
@@ -75,7 +75,8 @@ type Props = {
   onSessionUpdated: (session: SessionSummary) => void;
   onSessionStarted: (result: { session: SessionSummary; run: SessionRunRow }) => void;
   // Relace tab's "Otevřít chat" (#343), threaded through to DetailPane.
-  onOpenChat: (nodeId: string) => void;
+  onOpenChat: (nodeId: string, sessionId: string) => void;
+  liveSessionStates: Readonly<Record<string, SessionStateMessage>>;
 };
 
 export default function WorkspaceView({
@@ -108,6 +109,7 @@ export default function WorkspaceView({
   onSessionUpdated,
   onSessionStarted,
   onOpenChat,
+  liveSessionStates,
 }: Props) {
   const [detailVisible, setDetailVisible] = useState<boolean>(() => {
     return localStorage.getItem(scopedKey("workspace.detailVisible")) !== "false";
@@ -184,6 +186,7 @@ export default function WorkspaceView({
         terminalSessions={sessions}
         onSessionStarted={onSessionStarted}
         onOpenChat={onOpenChat}
+        liveSessionStates={liveSessionStates}
       />
     );
 

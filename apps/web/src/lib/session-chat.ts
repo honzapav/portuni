@@ -13,6 +13,7 @@
 
 import type { SessionState } from "../types";
 import type { SessionSignals } from "../api";
+import { sessionRowChip } from "./session-views";
 
 export type RunEndReason = "completed" | "interrupted" | "suspended" | "error" | "limit" | "host_lost";
 export type ToolCallCategory = "command" | "file_read" | "file_change" | "mcp" | "other";
@@ -121,6 +122,18 @@ export function toCanonicalEvent(kind: string, payload: unknown): CanonicalEvent
   return { kind, payload } as CanonicalEvent;
 }
 
+// Inserts an event into a seq-ordered list, ignoring a seq already present:
+// a subscribe replay and a live frame published during it can both carry
+// the same event, and a resubscribe after a reconnect replays from the
+// last seq seen, so an event never lands twice and never out of order.
+export function insertBySeq(list: readonly ChatEvent[], item: ChatEvent): ChatEvent[] {
+  if (list.some((p) => p.seq === item.seq)) return list as ChatEvent[];
+  const last = list[list.length - 1];
+  if (!last || last.seq < item.seq) return [...list, item];
+  const idx = list.findIndex((p) => p.seq > item.seq);
+  return [...list.slice(0, idx), item, ...list.slice(idx)];
+}
+
 // --- Status chip -----------------------------------------------------------
 
 export interface StatusChip {
@@ -132,29 +145,10 @@ export interface StatusChip {
   pulsing: boolean;
 }
 
-const STATE_COLOR: Record<SessionState, string> = {
-  running: "var(--color-status-active)",
-  suspended: "var(--color-node-process)",
-  closed: "var(--color-text-dim)",
-  archived: "var(--color-text-dim)",
-};
-
-// "Čeká na mě" (waiting_since set) takes priority over the coarse "Běží" --
-// a running session with an open question is functionally blocked on the
-// user, not doing work, and the chip should say so (SessionSummary's own
-// comment: "Set while a question event is open ... Drives the 'Čeká na mě'
-// status label").
+// The header chip: the row chip's wording variant (lib/session-views.ts
+// owns the table).
 export function sessionStatusChip(state: SessionState, waitingSince: string | null): StatusChip {
-  if (state === "running" && waitingSince !== null) {
-    return { label: "Čeká na mě", color: "var(--color-node-process)", pulsing: true };
-  }
-  const label: Record<SessionState, string> = {
-    running: "Běží",
-    suspended: "Pozastaveno",
-    closed: "Uzavřeno",
-    archived: "Archivováno",
-  };
-  return { label: label[state], color: STATE_COLOR[state], pulsing: state === "running" };
+  return sessionRowChip(state, waitingSince, "header");
 }
 
 // --- Open question panel ----------------------------------------------------

@@ -458,6 +458,10 @@ export type SessionSummary = {
   brief: string | null;
   // Runner adapter id (e.g. "claude") this session's task runs under.
   runner: string | null;
+  // The host whose sidecar is (or last was) running the task -- null for a
+  // hand-opened CLI session or one predating the runner batch. Shown in
+  // the chat header and Relace rows.
+  host_id: string | null;
   // Set while a `question` event is open (runner batch); cleared when it is
   // answered or the run ends. Drives the "Čeká na mě" status label.
   waiting_since: string | null;

@@ -50,6 +50,7 @@ import { findEntryByFileId } from "../mcp/agent-tools.js";
 import { guardAgentRestWrite } from "./write-gate.js";
 import { startSyncJob, getSyncJob, getCurrentSyncJob } from "../domain/sync/sync-jobs.js";
 import { createAgentSessionRuntime } from "../boot/session-runtime.js";
+import { StartSessionBody } from "./sessions.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
@@ -217,15 +218,6 @@ const agentCreateFileSchema = z.object({
   section: z.enum(["wip", "outputs", "resources"]).optional(),
   subpath: z.string().nullish(),
   content: z.string().optional(),
-});
-
-// Same shape as api/sessions.ts's StartSessionBody -- kept in sync deliberately.
-const agentStartSessionSchema = z.object({
-  node_id: z.string().min(1),
-  brief: z.string().trim().min(1),
-  runner: z.string().min(1),
-  instance_id: z.string().min(1).nullable().optional(),
-  policy: z.enum(["default", "auto"]).optional(),
 });
 
 export type AgentRouteFn = (
@@ -495,7 +487,7 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
     // shares with the central "record half" -- central's own record
     // endpoint is POST /sessions/record so the two never collide.
     if (pathname === "/sessions" && method === "POST") {
-      const body = await parseJsonBody(req, res, agentStartSessionSchema);
+      const body = await parseJsonBody(req, res, StartSessionBody);
       if (!body) return true;
       if (!guardAgentRestWrite(req, res, identity, body.node_id)) return true;
       if (!getAdapter(body.runner)) {

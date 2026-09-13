@@ -338,6 +338,9 @@ export interface SessionsClient {
   onDelta(sessionId: string, cb: (delta: SessionDeltaMessage) => void): () => void;
   onSessionState(cb: (state: SessionStateMessage) => void): () => void;
   onConnectionStatus(cb: (status: ConnectionStatus) => void): () => void;
+  // Opens the transport (a no-op while already connected). Called for you
+  // unless the client was created with `autoConnect: false`.
+  connect(): void;
   disconnect(): void;
 }
 
@@ -355,6 +358,10 @@ export interface CreateSessionsClientOptions {
   // this to point a direct-WS transport at a fake `ws` server instead of
   // the real dev proxy.
   transport?: Transport;
+  // false: the caller connects itself (App.tsx does so from an effect with
+  // a disconnect cleanup, so React StrictMode's double mount opens exactly
+  // one live transport instead of leaking the first).
+  autoConnect?: boolean;
 }
 
 export function createSessionsClient(options: CreateSessionsClientOptions = {}): SessionsClient {
@@ -456,9 +463,16 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
     }
   });
 
-  transport.connect();
+  let connected = false;
+  function connect(): void {
+    if (connected) return;
+    connected = true;
+    transport.connect();
+  }
+  if (options.autoConnect !== false) connect();
 
   return {
+    connect,
     async subscribe(sessionId, afterSeq) {
       subscribedSessions.add(sessionId);
       const after = afterSeq ?? lastSeq.get(sessionId);
@@ -514,6 +528,7 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
       return () => connectionStatusListeners.delete(cb);
     },
     disconnect() {
+      connected = false;
       rejectAllPending("disconnected: the session channel was closed before the reply arrived");
       transport.disconnect();
     },

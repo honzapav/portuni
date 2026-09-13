@@ -27,7 +27,8 @@ import {
   suspendableTerminalIds,
   suspendTerminalsAndPoll,
 } from "../lib/session-suspend";
-import { sessionRowAccess, sessionRowChip, type SessionRowAccess } from "../lib/session-views";
+import { mergeLiveSessionStates, sessionRowAccess, sessionRowChip, type SessionRowAccess } from "../lib/session-views";
+import type { SessionStateMessage } from "../lib/sessions-client";
 
 // #329: labels for a session the server suspended (dropped connection,
 // idle GC, terminal exit, boot sweep) rather than the agent's own
@@ -73,15 +74,20 @@ type Props = {
   // Absent in contexts with no terminal concept (none today).
   terminalSessions?: TerminalSession[];
   // "Otevřít chat" (#343) -- jumps to Práce with this section's node
-  // selected. No session id: only one persistent session shows as a
-  // node's open chat at a time (#342's workspaceOpenSession), so the row
-  // clicked is a hint, not a selector. Absent in contexts with no chat
-  // surface.
-  onOpenChat?: () => void;
-  // #321's access table, echoed client-side for sessionRowAccess -- see
-  // DetailPane.tsx's own fetchMe() call.
+  // selected, with THIS row's session as the one Práce shows -- a node
+  // can have several running/suspended sessions, and the clicked row is
+  // the selector (App.tsx's requestedChatSession). Absent in contexts
+  // with no chat surface.
+  onOpenChat?: (sessionId: string) => void;
+  // #321's access table, echoed client-side for sessionRowAccess (useMe).
   canManage: boolean;
   meId: string | null;
+  // The window's live session_state map (App.tsx, from the socket) --
+  // overlaid onto the REST rows so state and "Čeká na mě" update without
+  // a reload, and a change on THIS node's sessions (one started, one
+  // closed) refetches the list so new rows appear. Absent where no socket
+  // exists.
+  liveStates?: Readonly<Record<string, SessionStateMessage>>;
 };
 
 export function SessionsSection({
@@ -92,6 +98,7 @@ export function SessionsSection({
   onOpenChat,
   canManage,
   meId,
+  liveStates,
 }: Props) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -128,9 +135,25 @@ export function SessionsSection({
     }
   }, [nodeId, includeArchived]);
 
+  // Every session id + state the socket reports for this node; a change
+  // means a row appeared or moved state, which the REST list must reflect.
+  const liveStamp = useMemo(
+    () =>
+      Object.values(liveStates ?? {})
+        .filter((s) => s.node_id === nodeId)
+        .map((s) => `${s.session_id}:${s.state}`)
+        .sort()
+        .join(","),
+    [liveStates, nodeId],
+  );
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, liveStamp]);
+
+  const liveSessions = useMemo(
+    () => (liveStates ? mergeLiveSessionStates(sessions, liveStates) : sessions),
+    [sessions, liveStates],
+  );
 
   const updateOne = (updated: SessionSummary) => {
     setSessions((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
@@ -215,7 +238,7 @@ export function SessionsSection({
         <div className="text-[14px] text-[var(--color-text-dim)]">Zatím žádné relace.</div>
       ) : (
         <div className="space-y-2">
-          {sessions.map((s) => (
+          {liveSessions.map((s) => (
             <SessionRow
               key={s.id}
               session={s}
@@ -262,7 +285,7 @@ function SessionRow({
   onRenamed: (updated: SessionSummary) => void;
   onClose: () => void;
   onOpenTerminal: () => void;
-  onOpenChat?: () => void;
+  onOpenChat?: (sessionId: string) => void;
   onResume: (mode: "conversation" | "handoff") => void;
   onOpenHandoff?: () => void;
   // #232: true when this row's terminal_id is a live, agent-launched
@@ -402,6 +425,7 @@ function SessionRow({
         <span>
           {session.runner ?? session.cli ?? "neznámý"}
           {session.instance_id ? ` · ${session.instance_id}` : ""}
+          {session.host_id ? ` · ${session.host_id}` : ""}
         </span>
         {ownerName && <span>Vlastník: {ownerName}</span>}
         <span title="Počet uzlů v zápisovém rozsahu této relace">
@@ -421,16 +445,19 @@ function SessionRow({
 
       <div className="mt-2 flex flex-wrap gap-2">
         {(session.state === "running" || session.state === "suspended") && onOpenChat && (
-          <RowButton onClick={onOpenChat}>Otevřít chat</RowButton>
+          <RowButton onClick={() => onOpenChat(session.id)}>Otevřít chat</RowButton>
         )}
         {(session.state === "running" || session.state === "suspended") && (
           <RowButton onClick={onOpenTerminal}>Otevřít terminál</RowButton>
         )}
         {onOpenHandoff && <RowButton onClick={onOpenHandoff}>Zobrazit handoff</RowButton>}
         {session.state === "suspended" && access.canResume && resumeInfo && (
-          <RowButton onClick={() => onResume(resumeInfo.conversation_resumable ? "conversation" : "handoff")}>
-            {resumeInfo.conversation_resumable ? "Nahodit (pokračovat)" : "Nahodit (z handoffu)"}
-          </RowButton>
+          <>
+            {resumeInfo.conversation_resumable && (
+              <RowButton onClick={() => onResume("conversation")}>Nahodit: pokračovat</RowButton>
+            )}
+            <RowButton onClick={() => onResume("handoff")}>Nahodit: předat a začít znovu</RowButton>
+          </>
         )}
         {session.state === "running" && suspendable && onSuspend && access.canPauseOrClose && (
           <RowButton
