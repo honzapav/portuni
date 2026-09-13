@@ -286,8 +286,9 @@ export function handleDesktopConfig(res: ServerResponse): void {
 // --- Showtime handoff ------------------------------------------------------
 //
 // POST /auth/handoff mints a one-time code bound to the caller's bearer and a
-// node; POST /auth/handoff/exchange (public, loopback only) trades it for the
-// bearer plus the node's MCP URL and mirror. Spec:
+// node and answers it with the node's mirror on this device; POST
+// /auth/handoff/exchange (public, loopback only) trades it for the bearer
+// plus the node's MCP URL and mirror. Spec:
 // docs/superpowers/specs/2026-09-02-showtime-handoff-design.md. The node
 // lookups are injected so the local router (graph db) and the agent router
 // (central client) share the handlers.
@@ -314,8 +315,13 @@ export async function handleMintHandoff(
       respondJson(res, 404, { error: "node not found" });
       return;
     }
+    // The mirror rides along so a caller that needs a directory before
+    // Showtime is asked (a new deck) has it; the exchange answers it too.
+    // Looked up before minting: a thrown lookup must answer 500 with no
+    // live code left behind.
+    const mirror = await getMirrorPath(identity.userId, body.node_id);
     const minted = mintHandoff({ token, nodeId: body.node_id, userId: identity.userId });
-    respondJson(res, 200, { code: minted.code, expires_in: minted.expiresIn });
+    respondJson(res, 200, { code: minted.code, expires_in: minted.expiresIn, mirror });
   } catch (err) {
     respondError(res, "POST /auth/handoff", err);
   }

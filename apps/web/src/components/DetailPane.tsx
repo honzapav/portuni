@@ -93,12 +93,14 @@ import {
   LocalWorkspaceFilesBanner,
   FileTree,
   NewFileForm,
+  NewFileSplitButton,
   SyncBar,
   NoMirrorBanner,
   NewTaskButton,
   WatcherErrorBanner,
   syncRunErrorsByFile,
 } from "./DetailPane.files";
+import { newInShowtime } from "../lib/showtime";
 import { AccessSection } from "./DetailPane.access";
 import { SessionsSection } from "./DetailPane.sessions";
 import { RequestAccessControl } from "./AccessRequests";
@@ -377,6 +379,9 @@ function DetailPaneBody({
   // create form itself, or the affected file's own row), via the handlers
   // below rethrowing instead of setting shared pane state.
   const [creatingFile, setCreatingFile] = useState(false);
+  // „Nová prezentace" failed: shown under the toolbar, where NewFileForm's
+  // own error would be (#267). Cleared by the next attempt or a new file.
+  const [presentationError, setPresentationError] = useState<string | null>(null);
   // Opening a terminal does two sequential round-trips (fetch node +
   // create mirror) before the view switches, so guard the button with a
   // visible pending state -- otherwise the click looks like a no-op.
@@ -678,6 +683,16 @@ function DetailPaneBody({
       if (onOpenFile && f.relative_path) onOpenFile(node.id, f.relative_path);
     } catch (e) {
       throw new Error(`Soubor se nepodařilo vytvořit: ${String(e)}`);
+    }
+  };
+
+  const handleNewPresentation = async () => {
+    setPresentationError(null);
+    setCreatingFile(false);
+    try {
+      await newInShowtime(node.id);
+    } catch (e) {
+      setPresentationError(`Prezentaci se nepodařilo založit: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -1126,14 +1141,24 @@ function DetailPaneBody({
                   ) : (
                     <span />
                   )}
-                  <button
-                    type="button"
-                    onClick={() => setCreatingFile((v) => !v)}
-                    className="ml-2 shrink-0 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text)] hover:border-[var(--color-border-strong)]"
-                  >
-                    + Nový soubor
-                  </button>
+                  <NewFileSplitButton
+                    hasMirror={!!node.local_mirror}
+                    onNewFile={() => {
+                      setPresentationError(null);
+                      setCreatingFile((v) => !v);
+                    }}
+                    onOpenNewFile={() => {
+                      setPresentationError(null);
+                      setCreatingFile(true);
+                    }}
+                    onNewPresentation={handleNewPresentation}
+                  />
                 </div>
+                {presentationError && (
+                  <div className="mb-3 text-[11px]" style={{ color: "var(--color-danger)" }}>
+                    {presentationError}
+                  </div>
+                )}
                 {creatingFile && (
                   <NewFileForm
                     onSubmit={handleCreateFile}

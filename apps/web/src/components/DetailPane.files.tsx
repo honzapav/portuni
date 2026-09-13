@@ -6,7 +6,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadShowtimeEnabled } from "../lib/settings";
-import { isShowtimePath } from "../lib/showtime";
+import { isShowtimePath, showtimeInstalled } from "../lib/showtime";
+import { newFileMenu } from "../lib/new-file-menu";
 import {
   Check,
   ChevronDown,
@@ -280,6 +281,144 @@ export function NewFileForm({
       {error && (
         <div className="mt-1 text-[11px]" style={{ color: "var(--color-danger)" }}>
           {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// "+ Nový soubor", and -- with the Showtime integration on and Showtime.app
+// found -- a chevron with "Nový soubor" / "Nová prezentace". The second item
+// starts a Showtime deck in the node's wip/ (spec: 2026-09-13-showtime-new-
+// deck-design.md) and is disabled without a mirror, with the reason as its
+// title. Same shape as TerminalSplitButton; its error is the caller's to
+// show, inline under the toolbar (#267), never in a tab-level box.
+//
+// The installed probe always runs on mount, integration on or off: the
+// component stays mounted across a trip to Settings (WorkspaceView), so a
+// guard on loadShowtimeEnabled() here would freeze `installed` at whatever
+// it was when the node was first opened -- turning the integration on
+// would then never flip the button from plain to split. `menu`'s own
+// loadShowtimeEnabled() read below stays live on every render either way.
+export function NewFileSplitButton({
+  hasMirror,
+  onNewFile,
+  onOpenNewFile,
+  onNewPresentation,
+}: {
+  hasMirror: boolean;
+  onNewFile: () => void;
+  // Used by the menu's "Nový soubor" item only. onNewFile toggles the form
+  // (the primary button's own behaviour); with the form already open, the
+  // menu item must open it (stay open), not close it.
+  onOpenNewFile: () => void;
+  onNewPresentation: () => Promise<void>;
+}) {
+  const [installed, setInstalled] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void showtimeInstalled().then((ok) => {
+      if (!cancelled) setInstalled(ok);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const onMouse = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onMouse);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onMouse);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const menu = newFileMenu({
+    showtimeEnabled: loadShowtimeEnabled(),
+    showtimeInstalled: installed,
+    hasMirror,
+  });
+
+  const primary =
+    "shrink-0 border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text)] hover:border-[var(--color-border-strong)]";
+
+  if (menu.kind === "plain") {
+    return (
+      <button type="button" onClick={onNewFile} className={`ml-2 rounded-md ${primary}`}>
+        + Nový soubor
+      </button>
+    );
+  }
+
+  const startPresentation = async () => {
+    setOpen(false);
+    setBusy(true);
+    try {
+      await onNewPresentation();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div ref={containerRef} className="relative ml-2 shrink-0">
+      <div className="flex">
+        <button
+          type="button"
+          onClick={onNewFile}
+          disabled={busy}
+          className={`rounded-l-md border-r-0 ${primary} disabled:opacity-60`}
+        >
+          + Nový soubor
+        </button>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          disabled={busy}
+          title="Další možnosti"
+          aria-label="Další možnosti"
+          className={`rounded-r-md px-2 ${primary} disabled:opacity-60`}
+        >
+          {busy ? <Loader2 size={12} className="animate-spin" /> : <ChevronDown size={12} />}
+        </button>
+      </div>
+      {open && (
+        <div className="absolute right-0 top-full z-10 mt-1 min-w-[180px] rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              onOpenNewFile();
+            }}
+            className="flex w-full items-center px-3 py-2 text-left text-[13px] text-[var(--color-text)] hover:bg-[var(--color-surface)]"
+          >
+            Nový soubor
+          </button>
+          <button
+            type="button"
+            onClick={() => void startPresentation()}
+            disabled={!menu.presentation.enabled}
+            title={
+              menu.presentation.enabled
+                ? "Založí novou prezentaci v Showtime ve složce wip/ tohoto uzlu"
+                : menu.presentation.reason
+            }
+            className="flex w-full items-center px-3 py-2 text-left text-[13px] text-[var(--color-text)] hover:bg-[var(--color-surface)] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent"
+          >
+            Nová prezentace
+          </button>
         </div>
       )}
     </div>
