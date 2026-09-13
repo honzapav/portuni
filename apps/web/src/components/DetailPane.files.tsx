@@ -289,6 +289,13 @@ export function NewFileForm({
 // deck-design.md) and is disabled without a mirror, with the reason as its
 // title. Same shape as TerminalSplitButton; its error is the caller's to
 // show, inline under the toolbar (#267), never in a tab-level box.
+//
+// The installed probe always runs on mount, integration on or off: the
+// component stays mounted across a trip to Settings (WorkspaceView), so a
+// guard on loadShowtimeEnabled() here would freeze `installed` at whatever
+// it was when the node was first opened -- turning the integration on
+// would then never flip the button from plain to split. `menu`'s own
+// loadShowtimeEnabled() read below stays live on every render either way.
 export function NewFileSplitButton({
   hasMirror,
   onNewFile,
@@ -305,7 +312,6 @@ export function NewFileSplitButton({
 
   useEffect(() => {
     let cancelled = false;
-    if (!loadShowtimeEnabled()) return;
     void showtimeInstalled().then((ok) => {
       if (!cancelled) setInstalled(ok);
     });
@@ -360,7 +366,12 @@ export function NewFileSplitButton({
   return (
     <div ref={containerRef} className="relative ml-2 shrink-0">
       <div className="flex">
-        <button type="button" onClick={onNewFile} className={`rounded-l-md border-r-0 ${primary}`}>
+        <button
+          type="button"
+          onClick={onNewFile}
+          disabled={busy}
+          className={`rounded-l-md border-r-0 ${primary} disabled:opacity-60`}
+        >
           + Nový soubor
         </button>
         <button
