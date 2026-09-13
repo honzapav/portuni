@@ -933,10 +933,10 @@ export async function fetchAccountUsers(): Promise<AccountUser[]> {
   return body.users;
 }
 
-// Only the field the sharing UI needs (canManage = global_scope 'manage' |
-// 'admin'). /me returns more (email, name, groups, via) but nothing else
-// here consumes it yet.
-export async function fetchMe(): Promise<{ global_scope: string }> {
+// canManage (global_scope 'manage' | 'admin') drives the sharing UI; `id`
+// drives #343's owner-only action gating (sessionRowAccess). /me returns
+// more (email, name, groups, via) but nothing else here consumes it yet.
+export async function fetchMe(): Promise<{ id: string; global_scope: string }> {
   const res = await apiFetch("/me");
   await throwForStatus(res, "me");
   return res.json();

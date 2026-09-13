@@ -17,7 +17,8 @@ import {
   fetchNodePersistentSessions,
 } from "./api";
 import type { SessionSummary } from "./types";
-import { createSessionsClient } from "./lib/sessions-client";
+import { createSessionsClient, type SessionStateMessage } from "./lib/sessions-client";
+import { countRunningSessions, mergeLiveSessionStates } from "./lib/session-views";
 import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
 import { useFileEditor } from "./lib/use-file-editor";
 import { buildAgentCommand } from "./lib/prompt";
@@ -462,12 +463,18 @@ export default function App() {
     [setSelectedId],
   );
 
-  const overviewOpenSession = useCallback(
-    (nodeId: string, sessionId: string) => {
+  // Also #343's "Otevřít chat" (Relace tab and Práce sidebar): jumps to
+  // Práce with the node selected; #342's own workspaceOpenSession effect
+  // then finds the session automatically, so no session id is needed here
+  // -- unlike a PTY terminal tab, a persistent session has no tab of its
+  // own for workspaceSelectSession's activeSessionIdByNode map to select
+  // (that map is PTY-only; writing a persistent session id into it would
+  // just steal focus from whatever real terminal tab the node already had).
+  const openSessionChat = useCallback(
+    (nodeId: string) => {
       openNode(nodeId);
-      workspaceSelectSession(nodeId, sessionId);
     },
-    [openNode, workspaceSelectSession],
+    [openNode],
   );
 
   // The workspace's left-column rows: open nodes ∪ nodes-with-sessions,
@@ -575,6 +582,56 @@ export default function App() {
       cancelled = true;
     };
   }, [selectedWorkspaceNodeId]);
+
+  // #343: every session_state frame this connection has ever received,
+  // keyed by session id -- sent for every session the caller can see the
+  // moment sessionsClient connects, and again on every state_changed/
+  // question/run_ended anywhere, no per-session subscribe needed. Drives
+  // StatusFooter's running-session count and the Práce sidebar's live
+  // status overlay (see openSessionsByNode below); #342's own
+  // workspaceOpenSession/onSessionUpdated above is unrelated and untouched
+  // -- SessionChat keeps its own onSessionState subscription for that.
+  const [sessionStates, setSessionStates] = useState<Record<string, SessionStateMessage>>({});
+  useEffect(() => {
+    return sessionsClient.onSessionState((s) => {
+      setSessionStates((prev) => ({ ...prev, [s.session_id]: s }));
+    });
+  }, [sessionsClient]);
+  const runningSessionCount = useMemo(() => countRunningSessions(sessionStates), [sessionStates]);
+
+  // #343's Práce sidebar: every OPEN node's own running/suspended
+  // persistent sessions, for WorkspaceNodeList's sub-rows. Refetched
+  // whenever the open-node set changes (a node opening/closing); live
+  // state (above) is overlaid at render time via mergeLiveSessionStates
+  // rather than duplicating the subscribe-per-session machinery
+  // SessionChat needs for its own event log.
+  const [openSessionsByNode, setOpenSessionsByNode] = useState<Record<string, SessionSummary[]>>({});
+  useEffect(() => {
+    if (openNodeIds.length === 0) {
+      setOpenSessionsByNode({});
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(
+      openNodeIds.map((id) =>
+        fetchNodePersistentSessions(id, false)
+          .then((res) => [id, res.sessions.filter((s) => s.state === "running" || s.state === "suspended")] as const)
+          .catch(() => [id, []] as const),
+      ),
+    ).then((entries) => {
+      if (!cancelled) setOpenSessionsByNode(Object.fromEntries(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [openNodeIds]);
+  const liveOpenSessionsByNode = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(openSessionsByNode).map(([id, list]) => [id, mergeLiveSessionStates(list, sessionStates)]),
+      ),
+    [openSessionsByNode, sessionStates],
+  );
 
   // --- Source editor state ---
   const [editorFile, setEditorFile] = useState<{ nodeId: string; relPath: string } | null>(null);
@@ -1087,6 +1144,8 @@ export default function App() {
           onWorkspaceCloseNode={closeNode}
           onWorkspaceNewSession={workspaceNewSession}
           onWorkspaceRenameSession={renameSessionTab}
+          workspaceOpenSessionsByNode={liveOpenSessionsByNode}
+          onWorkspaceOpenSessionChat={openSessionChat}
           onWorkspaceOpenNode={openNode}
           onWorkspaceCreateNode={workspaceCreateNode}
         />
@@ -1131,7 +1190,7 @@ export default function App() {
           </div>
         )}
         {view === "overview" && (
-          <OverviewView onSelectNode={overviewSelectNode} onOpenSession={overviewOpenSession} />
+          <OverviewView onSelectNode={overviewSelectNode} onOpenSession={openSessionChat} />
         )}
         {graph && view === "graph" && (
           <Suspense
@@ -1205,6 +1264,7 @@ export default function App() {
               sessionsClient={sessionsClient}
               onSessionUpdated={setWorkspaceOpenSession}
               onSessionStarted={(result) => setWorkspaceOpenSession(result.session)}
+              onOpenChat={openSessionChat}
             />
           </div>
         )}
@@ -1249,13 +1309,14 @@ export default function App() {
             onOpenTerminal={openSessionForNodeId}
             onOpenFile={openFileInEditor}
             terminalSessions={sessions}
+            onOpenChat={openSessionChat}
           />
         ))}
 
       </div>
       <StatusFooter
         onOpenSettings={openSettingsView}
-        sessionCount={sessions.length}
+        sessionCount={runningSessionCount}
         onOpenWorkspace={openWorkspaceView}
         pendingCount={syncPending.total}
         onOpenSyncOverview={() => setSyncOverviewOpen(true)}

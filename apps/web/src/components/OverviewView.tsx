@@ -21,8 +21,9 @@ import type {
   OverviewSyncIssue,
 } from "../types";
 import { HEALTH_COLORS, LIFECYCLE_COLORS } from "../types";
-import { fetchOverview } from "../api";
-import { STATE_COLOR, STATE_LABEL, fmtDateTime } from "./DetailPane.sessions";
+import { fetchMe, fetchOverview } from "../api";
+import { fmtDateTime } from "./DetailPane.sessions";
+import { sessionRowChip, sortInboxSessions } from "../lib/session-views";
 
 const TYPE_LABELS: Record<string, string> = {
   organization: "Organizace",
@@ -41,6 +42,14 @@ export default function OverviewView({ onSelectNode, onOpenSession }: Props) {
   const [data, setData] = useState<OverviewPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // The Relace card is "my own inbox" (sortInboxSessions) -- needs the
+  // caller's own id, same fetchMe() call DetailPane.tsx already makes.
+  const [meId, setMeId] = useState<string | null>(null);
+  useEffect(() => {
+    void fetchMe()
+      .then((me) => setMeId(me.id))
+      .catch(() => undefined);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -93,6 +102,7 @@ export default function OverviewView({ onSelectNode, onOpenSession }: Props) {
             <SessionsCard
               running={data.sessions.running}
               suspended={data.sessions.suspended}
+              meId={meId}
               disconnectedJumps={data.sessions.disconnected_jumps}
               onOpenSession={onOpenSession}
               onSelectNode={onSelectNode}
@@ -164,38 +174,45 @@ function Row({
 function SessionsCard({
   running,
   suspended,
+  meId,
   disconnectedJumps,
   onOpenSession,
   onSelectNode,
 }: {
   running: OverviewSessionRow[];
   suspended: OverviewSessionRow[];
+  meId: string | null;
   disconnectedJumps: OverviewDisconnectedJump[];
   onOpenSession: (nodeId: string, sessionId: string) => void;
   onSelectNode: (nodeId: string) => void;
 }) {
-  const sessions = [...running, ...suspended];
+  // The inbox: Čeká na mě first, then Běží, then Pozastaveno, restricted to
+  // the caller's own sessions -- the team-wide list is the hosts spec's job.
+  const sessions = sortInboxSessions(running, suspended, meId);
   return (
     <Card title="Relace" icon={<Terminal size={14} />}>
       {sessions.length === 0 ? (
         <Empty>Žádné běžící ani pozastavené relace.</Empty>
       ) : (
         <div className="space-y-0.5">
-          {sessions.map((s) => (
-            <Row key={s.id} onClick={s.node_id ? () => onOpenSession(s.node_id!, s.id) : undefined}>
-              <div className="flex items-center gap-1.5">
-                <span
-                  className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full"
-                  style={{ background: STATE_COLOR[s.state] }}
-                  title={STATE_LABEL[s.state]}
-                />
-                <span className="truncate text-[var(--color-text)]">{s.name}</span>
-              </div>
-              <div className="pl-3 text-[11px] text-[var(--color-text-dim)]">
-                {s.node_name ?? "Chat"} · {fmtDateTime(s.last_active_at)}
-              </div>
-            </Row>
-          ))}
+          {sessions.map((s) => {
+            const chip = sessionRowChip(s.state, s.waiting_since);
+            return (
+              <Row key={s.id} onClick={s.node_id ? () => onOpenSession(s.node_id!, s.id) : undefined}>
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${chip.pulsing ? "animate-pulse" : ""}`}
+                    style={{ background: chip.color }}
+                    title={chip.label}
+                  />
+                  <span className="truncate text-[var(--color-text)]">{s.name}</span>
+                </div>
+                <div className="pl-3 text-[11px] text-[var(--color-text-dim)]">
+                  {s.node_name ?? "Chat"} · {chip.label} · {fmtDateTime(s.last_active_at)}
+                </div>
+              </Row>
+            );
+          })}
         </div>
       )}
 

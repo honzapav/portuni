@@ -1769,6 +1769,77 @@ symlink to this file.
   running/suspended row. `onSessionStarted`/`onSessionUpdated` both just
   set this same state, so starting a task or SessionChat reporting a
   `session_state` change both flow through the identical path.
+- **#343 (runner batch phase 3, third issue) reads live session state in
+  the Relace tab, the Práce sidebar and Přehled — three call sites, one
+  shared helpers module.** `apps/web/src/lib/session-views.ts` is
+  deliberately separate from `lib/session-chat.ts` (#342's own helpers,
+  scoped to the chat surface itself): `sessionRowChip` uses different
+  Czech wording for the SAME five states than `session-chat.ts`'s
+  `sessionStatusChip` (Hotovo/Archiv here vs. Uzavřeno/Archivováno there)
+  because a compact list row and a chat header are different contexts, not
+  an inconsistency to fix. `sessionRowAccess(ownerId, meId, canManage)` is
+  a client-side echo of #321's access table (read = seeing the row at all,
+  since every caller here already fetched it via a node/list endpoint
+  gated on node visibility; message/resume = owner only; stop
+  (interrupt/suspend/close) = owner or manage) -- purely to avoid offering
+  a button that would always 403, the server remains the real gate.
+  `applyLiveSessionState`/`mergeLiveSessionStates` overlay a
+  `SessionStateMessage` (state + waiting_since only, all it carries) onto
+  a REST-fetched row. `sortInboxSessions` is Přehled's ordering: waiting
+  first, then running, then suspended, restricted to `user_id === meId`
+  -- `GET /overview`'s own `sessions.running`/`.suspended` are NOT
+  restricted to the caller (they're every session on a node the caller can
+  see, workspace-wide, per `apps/server/api/overview.ts`'s
+  `filterSessions`); the restriction is this helper's job, client-side,
+  matching the issue's "(the caller's own)" -- the team-wide view is later,
+  host-aware work, not this issue. `countRunningSessions` sums a
+  `session_state` map's `running` entries for `StatusFooter`'s count,
+  replacing the old PTY-tab count (`sessions.length`) -- a session can be
+  `running` with no terminal tab open for it in this window at all.
+  **`fetchMe()` widened to return `id`** (the server's `handleMe` already
+  sent it; only the client's return type was narrower) -- `sessionRowAccess`
+  needs the caller's own id, which `canManage` alone never carried.
+  **`DetailPane.sessions.tsx`** dropped its own `STATE_LABEL`/`STATE_COLOR`
+  exports (only ever used for one status dot each, both now `sessionRowChip`)
+  and gained real actions where the row used to only show informational
+  text: "Otevřít chat" (new `onOpenChat` prop, optional like
+  `onSessionStarted`), and "Nahodit" -- previously `resumeInfo` was
+  rendered as plain text with no button at all; now a single button whose
+  label reflects the mode the server already determined
+  (`resumeInfo.conversation_resumable ? "pokračovat" : "z handoffu"`),
+  calling the already-existing `resumeSession(id, mode)` from #342 and
+  re-`load()`ing the list after (no WS subscription in this REST-only
+  tab -- simpler than threading `sessionsClient` in just for one row's
+  refresh). "Owner name when not the caller" resolves through
+  `fetchUsers()` (`GET /users`, manage-scope-gated, degrades to `[]`
+  below that per its own doc comment) -- a plain teammate just never sees
+  a name, which is fine, the row still works without one. "Host label when
+  present" from the issue's own wording is a deliberate scope cut: `host_id`
+  lives on `SessionRunRow`, not `SessionSummary`, so showing it here would
+  mean an extra per-row `GET /sessions/:id/runs` fetch for a label the
+  Přehled bullet itself says belongs to "the hosts spec's job" later.
+  **`onOpenChat` threads from `App.tsx`'s new `openSessionChat(nodeId)`**
+  through both `DetailPane` instances (graph view directly, Workspace view
+  via `WorkspaceView.tsx`) and into `SessionsSection`. It replaces the
+  OverviewView-only `overviewOpenSession`, which used to also call
+  `workspaceSelectSession(nodeId, sessionId)` -- writing a PERSISTENT
+  session id into `activeSessionIdByNode` (the PTY terminal-tab selection
+  map) was always a latent mismatch: on a node that also has a real
+  terminal tab open, it would silently steal that tab's "active" pointer.
+  `openSessionChat` just opens/selects the node; #342's own
+  `workspaceOpenSession` fetch-on-select effect finds the session with no
+  id needed. **`WorkspaceNodeList.tsx`** renders persistent-session
+  sub-rows as a second `<ul>` alongside the existing PTY terminal sub-rows
+  (unchanged), fed by `App.tsx`'s `liveOpenSessionsByNode` -- one
+  `fetchNodePersistentSessions(id, false)` per entry in `openNodeIds`,
+  refetched whenever that set changes, live-overlaid via
+  `mergeLiveSessionStates` against the SAME app-wide `sessionStates` map
+  `countRunningSessions` reads (`sessionsClient.onSessionState`,
+  `Set`-backed so multiple listeners coexist -- SessionChat keeps its own
+  separate subscription for its own event log, untouched). Threading is
+  `App.tsx` -> `Sidebar.tsx` (`workspaceOpenSessionsByNode`/
+  `onWorkspaceOpenSessionChat`, new props alongside the existing PTY
+  `workspaceSessions`) -> `WorkspaceNodeList.tsx`.
 
 ## Security rules (from the auth refactor post-mortem)
 

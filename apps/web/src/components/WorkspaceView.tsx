@@ -74,6 +74,8 @@ type Props = {
   sessionsClient: SessionsClient;
   onSessionUpdated: (session: SessionSummary) => void;
   onSessionStarted: (result: { session: SessionSummary; run: SessionRunRow }) => void;
+  // Relace tab's "Otevřít chat" (#343), threaded through to DetailPane.
+  onOpenChat: (nodeId: string) => void;
 };
 
 export default function WorkspaceView({
@@ -105,6 +107,7 @@ export default function WorkspaceView({
   sessionsClient,
   onSessionUpdated,
   onSessionStarted,
+  onOpenChat,
 }: Props) {
   const [detailVisible, setDetailVisible] = useState<boolean>(() => {
     return localStorage.getItem(scopedKey("workspace.detailVisible")) !== "false";
@@ -180,6 +183,7 @@ export default function WorkspaceView({
         onCollapse={collapsible ? toggleDetail : undefined}
         terminalSessions={sessions}
         onSessionStarted={onSessionStarted}
+        onOpenChat={onOpenChat}
       />
     );
 

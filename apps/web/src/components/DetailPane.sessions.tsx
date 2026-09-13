@@ -10,11 +10,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, Pencil, X } from "lucide-react";
-import type { SessionState, SessionSummary } from "../types";
+import type { SessionSummary } from "../types";
 import {
   fetchNodePersistentSessions,
   fetchPersistentSessionResumeInfo,
+  fetchUsers,
   renamePersistentSession,
+  resumeSession,
   transitionPersistentSessionState,
 } from "../api";
 import { getProfileConfigDir } from "../lib/profiles";
@@ -25,14 +27,7 @@ import {
   suspendableTerminalIds,
   suspendTerminalsAndPoll,
 } from "../lib/session-suspend";
-
-// Exported for reuse by OverviewView's workspace-wide session rows (#196).
-export const STATE_LABEL: Record<SessionState, string> = {
-  running: "Běží",
-  suspended: "Pozastaveno",
-  closed: "Uzavřeno",
-  archived: "Archivováno",
-};
+import { sessionRowAccess, sessionRowChip, type SessionRowAccess } from "../lib/session-views";
 
 // #329: labels for a session the server suspended (dropped connection,
 // idle GC, terminal exit, boot sweep) rather than the agent's own
@@ -44,13 +39,6 @@ const SERVER_SUSPEND_REASON_LABEL: Record<string, string> = {
   boot_sweep: "restart serveru",
   suspend_timeout: "agent nestihl předání",
   host_lost: "proces osiřel po restartu",
-};
-
-export const STATE_COLOR: Record<SessionState, string> = {
-  running: "var(--color-status-active)",
-  suspended: "var(--color-node-process)",
-  closed: "var(--color-text-dim)",
-  archived: "var(--color-text-dim)",
 };
 
 export function fmtDateTime(value: string): string {
@@ -84,6 +72,16 @@ type Props = {
   // `running` row to a live agent terminal -- see suspendableTerminalIds.
   // Absent in contexts with no terminal concept (none today).
   terminalSessions?: TerminalSession[];
+  // "Otevřít chat" (#343) -- jumps to Práce with this section's node
+  // selected. No session id: only one persistent session shows as a
+  // node's open chat at a time (#342's workspaceOpenSession), so the row
+  // clicked is a hint, not a selector. Absent in contexts with no chat
+  // surface.
+  onOpenChat?: () => void;
+  // #321's access table, echoed client-side for sessionRowAccess -- see
+  // DetailPane.tsx's own fetchMe() call.
+  canManage: boolean;
+  meId: string | null;
 };
 
 export function SessionsSection({
@@ -91,11 +89,31 @@ export function SessionsSection({
   onOpenTerminal,
   onOpenFile,
   terminalSessions,
+  onOpenChat,
+  canManage,
+  meId,
 }: Props) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [includeArchived, setIncludeArchived] = useState(false);
+  // "owner name when not the caller" -- fetchUsers is manage-scope-gated
+  // and degrades to [] for anyone below that (see its own doc comment), so
+  // a plain teammate viewing this tab just never resolves a name; that's
+  // fine, the row still works without one.
+  const [userNames, setUserNames] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let cancelled = false;
+    void fetchUsers()
+      .then((users) => {
+        if (cancelled) return;
+        setUserNames(Object.fromEntries(users.map((u) => [u.id, u.name])));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -124,6 +142,16 @@ export function SessionsSection({
       updateOne(updated);
     } catch (e) {
       setError(String(e));
+    }
+  };
+
+  const handleResume = async (id: string, mode: "conversation" | "handoff") => {
+    try {
+      await resumeSession(id, mode);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      await load();
     }
   };
 
@@ -191,9 +219,13 @@ export function SessionsSection({
             <SessionRow
               key={s.id}
               session={s}
+              access={sessionRowAccess(s.user_id, meId, canManage)}
+              ownerName={s.user_id !== meId ? (userNames[s.user_id] ?? null) : null}
               onRenamed={updateOne}
               onClose={() => void handleClose(s.id)}
               onOpenTerminal={() => void onOpenTerminal()}
+              onOpenChat={onOpenChat}
+              onResume={(mode) => void handleResume(s.id, mode)}
               onOpenHandoff={
                 onOpenFile && s.handoff_path
                   ? () => onOpenFile(nodeId, s.handoff_path!)
@@ -211,17 +243,27 @@ export function SessionsSection({
 
 function SessionRow({
   session,
+  access,
+  ownerName,
   onRenamed,
   onClose,
   onOpenTerminal,
+  onOpenChat,
+  onResume,
   onOpenHandoff,
   suspendable,
   onSuspend,
 }: {
   session: SessionSummary;
+  access: SessionRowAccess;
+  // Resolved display name of the owner, only when it's NOT the caller
+  // (null either way otherwise) -- see SessionsSection's userNames map.
+  ownerName: string | null;
   onRenamed: (updated: SessionSummary) => void;
   onClose: () => void;
   onOpenTerminal: () => void;
+  onOpenChat?: () => void;
+  onResume: (mode: "conversation" | "handoff") => void;
   onOpenHandoff?: () => void;
   // #232: true when this row's terminal_id is a live, agent-launched
   // terminal in this window -- suspendableTerminalIds already narrowed it
@@ -294,13 +336,15 @@ function SessionRow({
     }
   };
 
+  const chip = sessionRowChip(session.state, session.waiting_since);
+
   return (
     <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5">
       <div className="flex items-center gap-2">
         <span
-          className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full"
-          style={{ background: STATE_COLOR[session.state] }}
-          title={STATE_LABEL[session.state]}
+          className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${chip.pulsing ? "animate-pulse" : ""}`}
+          style={{ background: chip.color }}
+          title={chip.label}
         />
         {editing ? (
           <>
@@ -346,10 +390,20 @@ function SessionRow({
         )}
       </div>
 
+      {session.brief && (
+        <div className="mt-1 truncate text-[12px] text-[var(--color-text-muted)]" title={session.brief}>
+          {session.brief.split("\n")[0]}
+        </div>
+      )}
+
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-[var(--color-text-dim)]">
-        <span>{STATE_LABEL[session.state]}</span>
+        <span>{chip.label}</span>
         <span>{fmtDateTime(session.last_active_at)}</span>
-        <span>{session.cli ?? "cli neznámé"}{session.instance_id ? ` · ${session.instance_id}` : ""}</span>
+        <span>
+          {session.runner ?? session.cli ?? "neznámý"}
+          {session.instance_id ? ` · ${session.instance_id}` : ""}
+        </span>
+        {ownerName && <span>Vlastník: {ownerName}</span>}
         <span title="Počet uzlů v zápisovém rozsahu této relace">
           Zápis: {session.write_count}
         </span>
@@ -365,12 +419,20 @@ function SessionRow({
         )}
       </div>
 
-      <div className="mt-2 flex gap-2">
+      <div className="mt-2 flex flex-wrap gap-2">
+        {(session.state === "running" || session.state === "suspended") && onOpenChat && (
+          <RowButton onClick={onOpenChat}>Otevřít chat</RowButton>
+        )}
         {(session.state === "running" || session.state === "suspended") && (
           <RowButton onClick={onOpenTerminal}>Otevřít terminál</RowButton>
         )}
         {onOpenHandoff && <RowButton onClick={onOpenHandoff}>Zobrazit handoff</RowButton>}
-        {session.state === "running" && suspendable && onSuspend && (
+        {session.state === "suspended" && access.canResume && resumeInfo && (
+          <RowButton onClick={() => onResume(resumeInfo.conversation_resumable ? "conversation" : "handoff")}>
+            {resumeInfo.conversation_resumable ? "Nahodit (pokračovat)" : "Nahodit (z handoffu)"}
+          </RowButton>
+        )}
+        {session.state === "running" && suspendable && onSuspend && access.canPauseOrClose && (
           <RowButton
             disabled={suspending}
             onClick={() => {
@@ -381,7 +443,7 @@ function SessionRow({
             {suspending ? "Pozastavuji…" : "Pozastavit"}
           </RowButton>
         )}
-        {(session.state === "running" || session.state === "suspended") && (
+        {(session.state === "running" || session.state === "suspended") && access.canPauseOrClose && (
           <RowButton onClick={onClose}>Uzavřít</RowButton>
         )}
       </div>

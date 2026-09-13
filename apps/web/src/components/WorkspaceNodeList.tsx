@@ -16,6 +16,8 @@ import {
   type WorkspaceNodeRow,
 } from "../lib/sessions";
 import { useNowTick } from "../lib/use-now-tick";
+import { sessionRowChip } from "../lib/session-views";
+import type { SessionSummary } from "../types";
 
 type Props = {
   // The open set: open nodes ∪ nodes-with-sessions, already ordered.
@@ -29,6 +31,14 @@ type Props = {
   onCloseNode: (id: string) => void;
   onNewSession: (nodeId: string) => void;
   onRenameSession: (sessionId: string, label: string) => void;
+  // #343: each open node's own running/suspended persistent (runner)
+  // sessions, already live-overlaid by the caller (mergeLiveSessionStates)
+  // -- rendered as a second, separate sub-row list alongside the PTY
+  // terminal tabs above. Status comes from state/waiting_since
+  // (session_state frames), never from PTY bytes -- these sessions have no
+  // PTY at all.
+  openSessionsByNode: Record<string, SessionSummary[]>;
+  onOpenSessionChat: (nodeId: string, sessionId: string) => void;
 };
 
 function nodeTypeVar(type: string): string {
@@ -47,6 +57,8 @@ export default function WorkspaceNodeList({
   onCloseNode,
   onNewSession,
   onRenameSession,
+  openSessionsByNode,
+  onOpenSessionChat,
 }: Props) {
   // Tick locally -- only this list needs a clock for the activity dots.
   // In App the same interval used to re-render the entire tree every second.
@@ -79,6 +91,7 @@ export default function WorkspaceNodeList({
     <ul className="flex flex-col gap-0.5 px-2 py-2">
       {rows.map((r) => {
         const nodeSessions = sessions.filter((s) => s.nodeId === r.id);
+        const persistentSessions = openSessionsByNode[r.id] ?? [];
         const active = nodeHasWorkingAgent(sessions, r.id, now);
         const selected = r.id === selectedNodeId;
         const activeSessionId = activeSessionIdByNode[r.id] ?? null;
@@ -292,6 +305,40 @@ export default function WorkspaceNodeList({
                         >
                           <X size={10} />
                         </span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : null}
+
+            {persistentSessions.length > 0 ? (
+              <ul className="ml-3 flex flex-col gap-0.5 border-l border-[var(--color-border)] py-0.5 pl-1">
+                {persistentSessions.map((s) => {
+                  const chip = sessionRowChip(s.state, s.waiting_since);
+                  return (
+                    <li key={s.id}>
+                      {/* biome-ignore lint/a11y/useSemanticElements: nested <button> is invalid HTML; role+tabIndex is the documented workaround */}
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => onOpenSessionChat(r.id, s.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            onOpenSessionChat(r.id, s.id);
+                          }
+                        }}
+                        title={chip.label}
+                        className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-[12.5px] text-[var(--color-text-dim)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
+                      >
+                        <span
+                          role="img"
+                          aria-label={chip.label}
+                          className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${chip.pulsing ? "animate-pulse" : ""}`}
+                          style={{ background: chip.color }}
+                        />
+                        <span className="min-w-0 flex-1 truncate text-[12px]">{s.name}</span>
                       </div>
                     </li>
                   );

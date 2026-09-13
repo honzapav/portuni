@@ -170,6 +170,12 @@ type Props = {
   // workspace, which owns the open-session state SessionChat renders from.
   // Absent in contexts with no chat surface (none today).
   onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow }) => void;
+  // Relace tab's "Otevřít chat" (#343) -- jumps to Práce with this node
+  // selected; #342's own workspaceOpenSession fetch then picks up the
+  // session automatically, so this needs no session id. Provided by App
+  // (works from both the graph and workspace views); absent nowhere today,
+  // but optional for the same reason onSessionStarted is.
+  onOpenChat?: (nodeId: string) => void;
 };
 
 // Memoized: 3.5k lines of pane re-rendered wholesale on every App render
@@ -193,23 +199,29 @@ function DetailPane({
   onOpenFile,
   terminalSessions,
   onSessionStarted,
+  onOpenChat,
 }: Props) {
   // Fetched once and cached for the lifetime of this component instance
   // (this outer DetailPane stays mounted across node selections -- only
   // DetailPaneBody remounts per node.id). Drives whether the sharing
-  // section is editable. Defaults to false (view-only) until the fetch
-  // resolves or if it fails -- never grants edit affordances optimistically.
+  // section is editable, and (canManage + meId together) the Relace tab's
+  // #321 action gating (sessionRowAccess). Defaults to false/null (view-
+  // only, no ownership) until the fetch resolves or if it fails -- never
+  // grants edit affordances optimistically.
   const [canManage, setCanManage] = useState(false);
+  const [meId, setMeId] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     void fetchMe()
       .then((me) => {
         if (!cancelled) {
           setCanManage(me.global_scope === "manage" || me.global_scope === "admin");
+          setMeId(me.id);
         }
       })
       .catch(() => {
-        /* stays false -- sharing section renders view-only */
+        /* stays false/null -- sharing section renders view-only, Relace
+           tab action buttons for ownership stay hidden */
       });
     return () => {
       cancelled = true;
@@ -258,6 +270,7 @@ function DetailPane({
       node={node}
       graph={graph}
       canManage={canManage}
+      meId={meId}
       onSelect={onSelect}
       canGoBack={canGoBack}
       onBack={onBack}
@@ -270,6 +283,7 @@ function DetailPane({
       onOpenFile={onOpenFile}
       terminalSessions={terminalSessions}
       onSessionStarted={onSessionStarted}
+      onOpenChat={onOpenChat}
     />
   );
 }
@@ -278,6 +292,7 @@ function DetailPaneBody({
   node,
   graph,
   canManage,
+  meId,
   onSelect,
   canGoBack,
   onBack,
@@ -290,10 +305,12 @@ function DetailPaneBody({
   onOpenFile,
   terminalSessions,
   onSessionStarted,
+  onOpenChat,
 }: {
   node: NodeDetail;
   graph: GraphPayload | null;
   canManage: boolean;
+  meId: string | null;
   onSelect: (id: string | null) => void;
   canGoBack: boolean;
   onBack: () => void;
@@ -306,6 +323,7 @@ function DetailPaneBody({
   onOpenFile?: (nodeId: string, relPath: string) => void;
   terminalSessions?: TerminalSession[];
   onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow }) => void;
+  onOpenChat?: (nodeId: string) => void;
 }) {
 
   const [editing, setEditing] = useState(false);
@@ -1195,6 +1213,9 @@ function DetailPaneBody({
             onOpenTerminal={openEmbeddedTerminal}
             onOpenFile={onOpenFile}
             terminalSessions={terminalSessions}
+            onOpenChat={onOpenChat ? () => onOpenChat(node.id) : undefined}
+            canManage={canManage}
+            meId={meId}
           />
         )}
 
