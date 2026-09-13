@@ -181,8 +181,13 @@ registries, explicitly exempt (permissions still apply).
   plus any node created by this session (`portuni_create_node` grants
   both read and write on the node it creates) or explicitly granted
   via `portuni_expand_scope(..., writable: true)`.
-- `interactive_chat`: the write set starts and stays empty (no home
-  node) -- every write needs confirmation.
+- `interactive_chat`: no home node, so the write set starts with only
+  the nodes this user's earlier connector sessions created
+  (`portuni_create_node` in any connector session of the same user --
+  a durable grant, rehydrated on every new connector session, because
+  a connector client reconnects constantly and an in-memory grant
+  would not survive to the moment the user asks to attach a file to
+  the node they just created). Every other write needs confirmation.
 
 A mutating tool call outside the write set returns one of:
 
@@ -202,7 +207,13 @@ text is never sufficient by itself. A client that has not declared the
 no honor-system fallback for writes the way there is for reads;
 `portuni_expand_scope(..., writable: true)` refuses outright
 (`refused_write` in its response) instead of silently trusting the
-call.
+call. On such a client the `write_expansion_required` payload carries
+`elicitation_supported: false` and its `hint` says so directly instead
+of recommending that call: continue from a client with confirmation
+dialogs (Claude Code, the Portuni desktop app), or -- for new work --
+create the node from the chat, since connector-created nodes stay
+writable in that user's later connector sessions (see above). Do NOT
+retry `portuni_expand_scope` with `writable: true` after that payload.
 
 ```json
 { "error": "write_refused", "node_id": "...", "hint": "..." }
