@@ -11,8 +11,9 @@
 
 import { execFile as nodeExecFile } from "node:child_process";
 import { spawn as nodeSpawn } from "node:child_process";
-import { stat } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { access, stat } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { delimiter, isAbsolute, join } from "node:path";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type {
   HookInput,
@@ -54,6 +55,8 @@ type SdkQuery = typeof sdkQuery;
 export interface CreateClaudeAdapterDeps {
   query?: SdkQuery;
   exec?: ExecFile;
+  // Where the `claude` binary is; defaults to `resolveClaudeExecutable`.
+  resolveExecutable?: () => Promise<string | null>;
   // Test-only overrides for close()/interrupt()'s "the pid is already dead"
   // safety net -- production leaves these at their 500ms/10s defaults.
   closePollIntervalMs?: number;
@@ -162,6 +165,46 @@ function userMessage(text: string): SDKUserMessage {
     message: { role: "user", content: text },
     parent_tool_use_id: null,
   };
+}
+
+// --- executable resolution ---------------------------------------------
+// The sidecar's PATH is whatever the host process handed it -- the desktop
+// (lib.rs) resolves a login shell's PATH for it, but a standalone server or
+// an older host may not -- so a bare `execFile("claude")` is not enough.
+// Walk PATH first, then the native installer's and Homebrew's usual
+// targets. The same absolute path then goes to the SDK as
+// `pathToClaudeCodeExecutable`: the compiled sidecar does not ship the
+// SDK's own optional native-binary package, so the SDK's default lookup
+// would fail there even with `claude` on PATH.
+
+const CLAUDE_FALLBACK_DIRS = [".local/bin", ".claude/local"];
+const CLAUDE_SYSTEM_DIRS = ["/opt/homebrew/bin", "/usr/local/bin"];
+
+export async function resolveClaudeExecutable(
+  env: NodeJS.ProcessEnv = process.env,
+  isExecutable: (path: string) => Promise<boolean> = canExecute,
+): Promise<string | null> {
+  const candidates: string[] = [];
+  for (const dir of (env.PATH ?? "").split(delimiter)) {
+    if (dir) candidates.push(join(dir, "claude"));
+  }
+  if (env.HOME) {
+    for (const dir of CLAUDE_FALLBACK_DIRS) candidates.push(join(env.HOME, dir, "claude"));
+  }
+  for (const dir of CLAUDE_SYSTEM_DIRS) candidates.push(join(dir, "claude"));
+  for (const candidate of candidates) {
+    if (await isExecutable(candidate)) return candidate;
+  }
+  return null;
+}
+
+async function canExecute(path: string): Promise<boolean> {
+  try {
+    await access(path, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // --- env composition ---------------------------------------------------
@@ -415,26 +458,34 @@ function signalProcessGroup(pid: number, signal: NodeJS.Signals): void {
 export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerAdapter {
   const query = deps.query ?? sdkQuery;
   const exec = deps.exec ?? nodeExecFile;
+  const resolveExecutable = deps.resolveExecutable ?? (() => resolveClaudeExecutable());
   const closePollIntervalMs = deps.closePollIntervalMs ?? DEFAULT_CLOSE_POLL_INTERVAL_MS;
   const closeTimeoutMs = deps.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
   const closeGraceMs = deps.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
   const closeTermMs = deps.closeTermMs ?? DEFAULT_CLOSE_TERM_MS;
 
-  async function runExec(args: string[]): Promise<{ ok: boolean; stdout: string }> {
+  async function runExec(executable: string, args: string[]): Promise<{ ok: boolean; stdout: string }> {
     return new Promise((resolve) => {
-      exec("claude", args, { timeout: DETECT_TIMEOUT_MS }, (err, stdout) => {
+      exec(executable, args, { timeout: DETECT_TIMEOUT_MS }, (err, stdout) => {
         resolve({ ok: !err, stdout: stdout?.toString() ?? "" });
       });
     });
   }
 
+  const notInstalled: RunnerAvailability = {
+    installed: false,
+    version: null,
+    logged_in: false,
+    instances_supported: true,
+  };
+
   async function detect(): Promise<RunnerAvailability> {
-    const versionResult = await runExec(["--version"]);
-    if (!versionResult.ok) {
-      return { installed: false, version: null, logged_in: false, instances_supported: true };
-    }
+    const executable = await resolveExecutable();
+    if (executable === null) return notInstalled;
+    const versionResult = await runExec(executable, ["--version"]);
+    if (!versionResult.ok) return notInstalled;
     const version = versionResult.stdout.trim().split("\n")[0] || null;
-    const authResult = await runExec(["auth", "status"]);
+    const authResult = await runExec(executable, ["auth", "status"]);
     return { installed: true, version, logged_in: authResult.ok, instances_supported: true };
   }
 
@@ -504,8 +555,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       return child as unknown as SpawnedProcess;
     }
 
+    const executable = await resolveExecutable();
     const options: Options = {
       cwd: run.cwd,
+      ...(executable !== null ? { pathToClaudeCodeExecutable: executable } : {}),
       systemPrompt: { type: "preset", preset: "claude_code", append: run.orientation },
       mcpServers: {
         portuni: {

@@ -2679,7 +2679,7 @@ pub(crate) fn spawn_sidecar_ws(
         ("PORTUNI_ALLOWED_ORIGINS".to_string(), allowed_origins),
         ("PORTUNI_LOG_REQUESTS".to_string(), "1".to_string()),
         ("HOME".to_string(), std::env::var("HOME").unwrap_or_default()),
-        ("PATH".to_string(), std::env::var("PATH").unwrap_or_default()),
+        ("PATH".to_string(), pty::login_shell_path()),
     ];
     // portuni-guard.sh is staged into sidecar-deps by build-sidecar.mjs. The
     // compiled sidecar cannot resolve it repo-relative, so hand it the staged
