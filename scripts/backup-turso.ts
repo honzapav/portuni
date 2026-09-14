@@ -8,7 +8,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getDb } from "../apps/server/infra/db.js";
+import { createClient } from "@libsql/client";
 import { dumpDatabaseSql } from "../apps/server/infra/backup.js";
 
 // getDb() falls back to `file:./portuni.db` when TURSO_URL is unset, which is
@@ -35,7 +35,10 @@ async function main(): Promise<void> {
   const target = requireRemoteTarget();
   // Host only -- the token never reaches the log.
   console.log(`Target: ${target.replace(/^(\w+:\/\/[^/?#]+).*$/, "$1")}`);
-  const db = getDb();
+  // backup.ts is the one Turso-only tool left on the raw libsql Client (it
+  // needs a read transaction, which DbClient does not expose), so build one
+  // directly instead of going through getDb().
+  const db = createClient({ url: target, authToken: process.env.TURSO_AUTH_TOKEN });
   const dir = join(homedir(), "backups");
   await mkdir(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
