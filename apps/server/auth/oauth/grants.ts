@@ -7,8 +7,9 @@
 // ("Decisions", "Data model").
 
 import { createHash, randomBytes } from "node:crypto";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
+import { nowExpr } from "../../infra/sql.js";
 
 const ACCESS_TTL_MS = 60 * 60 * 1000; // 1h
 const REFRESH_TTL_DAYS = 180; // absolute, from created_at, never sliding
@@ -38,7 +39,7 @@ export interface MintedGrant {
 }
 
 export async function mintGrant(
-  db: Client,
+  db: DbClient,
   input: MintGrantInput,
 ): Promise<MintedGrant> {
   const id = ulid();
@@ -82,19 +83,19 @@ export interface OAuthGrantHit {
 // (apps/server/auth/request-identity.ts, issue #173) since this module has
 // no notion of "canonical". Bumps last_used_at on success.
 export async function verifyAccessToken(
-  db: Client,
+  db: DbClient,
   token: string,
 ): Promise<OAuthGrantHit | null> {
   const r = await db.execute({
     sql: `SELECT id, user_id, resource, scope FROM oauth_grants
           WHERE access_token_hash = ? AND revoked_at IS NULL
-            AND access_expires_at > datetime('now')`,
+            AND access_expires_at > ${nowExpr(db.dialect)}`,
     args: [hashToken(token)],
   });
   if (r.rows.length === 0) return null;
   const row = r.rows[0];
   await db.execute({
-    sql: "UPDATE oauth_grants SET last_used_at = datetime('now') WHERE id = ?",
+    sql: `UPDATE oauth_grants SET last_used_at = ${nowExpr(db.dialect)} WHERE id = ?`,
     args: [row.id],
   });
   return {
@@ -129,7 +130,7 @@ export type RefreshResult =
 // invalid_grant returned. Older generations match neither column and fall
 // through to a plain invalid_grant without revocation.
 export async function rotateRefreshToken(
-  db: Client,
+  db: DbClient,
   refreshToken: string,
 ): Promise<RefreshResult> {
   const hash = hashToken(refreshToken);
@@ -141,7 +142,7 @@ export async function rotateRefreshToken(
   });
   if (prevMatch.rows.length > 0) {
     await db.execute({
-      sql: "UPDATE oauth_grants SET revoked_at = datetime('now') WHERE id = ?",
+      sql: `UPDATE oauth_grants SET revoked_at = ${nowExpr(db.dialect)} WHERE id = ?`,
       args: [prevMatch.rows[0].id],
     });
     return { ok: false, reason: "invalid_grant" };
@@ -150,7 +151,7 @@ export async function rotateRefreshToken(
   const r = await db.execute({
     sql: `SELECT id, user_id, resource, scope FROM oauth_grants
           WHERE refresh_token_hash = ? AND revoked_at IS NULL
-            AND refresh_expires_at > datetime('now')`,
+            AND refresh_expires_at > ${nowExpr(db.dialect)}`,
     args: [hash],
   });
   if (r.rows.length === 0) return { ok: false, reason: "invalid_grant" };
@@ -169,7 +170,7 @@ export async function rotateRefreshToken(
     sql: `UPDATE oauth_grants SET
       access_token_hash = ?, access_expires_at = ?,
       prev_refresh_token_hash = refresh_token_hash, refresh_token_hash = ?,
-      rotated_at = datetime('now')
+      rotated_at = ${nowExpr(db.dialect)}
       WHERE id = ? AND refresh_token_hash = ?`,
     args: [hashToken(accessToken), accessExpiresAt, hashToken(newRefreshToken), row.id, hash],
   });
@@ -194,12 +195,12 @@ export async function rotateRefreshToken(
 // Owner-scoped revoke, for the "Odpojit" button (issue #174) and for theft
 // detection above. Invalidates access and refresh immediately.
 export async function revokeGrant(
-  db: Client,
+  db: DbClient,
   userId: string,
   grantId: string,
 ): Promise<boolean> {
   const r = await db.execute({
-    sql: `UPDATE oauth_grants SET revoked_at = datetime('now')
+    sql: `UPDATE oauth_grants SET revoked_at = ${nowExpr(db.dialect)}
           WHERE id = ? AND user_id = ? AND revoked_at IS NULL`,
     args: [grantId, userId],
   });
@@ -215,7 +216,7 @@ export interface OAuthGrantRow {
 }
 
 export async function listGrantsForUser(
-  db: Client,
+  db: DbClient,
   userId: string,
 ): Promise<OAuthGrantRow[]> {
   const r = await db.execute({

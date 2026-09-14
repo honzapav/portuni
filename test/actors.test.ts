@@ -5,13 +5,16 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createClient } from "@libsql/client";
+// Pinned to libsql: this file builds its own SQLite DDL and/or drives the
+// libsql migration path (runMigrationNNN) directly -- neither has a
+// Postgres form (schema.pg.ts's baseline already carries the end state).
+import { openTestDb } from "./helpers/db.js";
 import { ulid } from "ulid";
 import { runMigration006 } from "../apps/server/infra/schema.js";
 import { createActor, listActors, getActor, updateActor, archiveActor } from "../apps/server/domain/actors.js";
 
 async function freshEnv() {
-  const db = createClient({ url: ":memory:" });
+  const db = await openTestDb("libsql");
   await db.execute(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE, name TEXT, created_at DATETIME DEFAULT (datetime('now')))`);
   await db.execute(`CREATE TABLE nodes (id TEXT PRIMARY KEY CHECK(length(id)=26), type TEXT NOT NULL, name TEXT NOT NULL, description TEXT, summary TEXT, summary_updated_at DATETIME, meta TEXT, status TEXT NOT NULL DEFAULT 'active', visibility TEXT NOT NULL DEFAULT 'team', pos_x REAL, pos_y REAL, created_by TEXT NOT NULL, created_at DATETIME DEFAULT (datetime('now')), updated_at DATETIME DEFAULT (datetime('now')))`);
   await db.execute(`CREATE TABLE edges (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, target_id TEXT NOT NULL, relation TEXT NOT NULL, meta TEXT, created_by TEXT NOT NULL, created_at DATETIME DEFAULT (datetime('now')))`);

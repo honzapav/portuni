@@ -23,7 +23,7 @@ describe("migration 019 node_access", () => {
 // loop with the 019 marker removed -- same trick as
 // files-unique-remote.test.ts's dedupe-repair case.
 test("migration 019 backfills meta.access_group into node_access and strips the key", async () => {
-  const { db } = await makeSharedDb();
+  const { db } = await makeSharedDb("libsql");
   const id = ulid();
   const email = "partners@tempo.ooo";
 
@@ -65,7 +65,7 @@ test("migration 019 backfills meta.access_group into node_access and strips the 
 // case-sensitively elsewhere, so a mixed-case leftover would silently break
 // group matching for every member).
 test("migration 019 lowercases a mixed-case access_group email on backfill", async () => {
-  const { db } = await makeSharedDb();
+  const { db } = await makeSharedDb("libsql");
   const id = ulid();
   const mixedCaseEmail = "Partners@Tempo.ooo";
 
@@ -90,7 +90,7 @@ test("migration 019 lowercases a mixed-case access_group email on backfill", asy
 // Task 14 point 5: a node with valid meta but no access_group key must not
 // be touched by the backfill (no node_access row created, meta untouched).
 test("migration 019 leaves a node with meta but no access_group untouched", async () => {
-  const { db } = await makeSharedDb();
+  const { db } = await makeSharedDb("libsql");
   const id = ulid();
 
   await db.execute({
@@ -119,7 +119,7 @@ test("migration 019 leaves a node with meta but no access_group untouched", asyn
 // exception propagates out of runMigrations() and no node gets backfilled,
 // not just the offending one.
 test("migration 019 skips a node with invalid JSON meta without aborting the backfill for others", async () => {
-  const { db } = await makeSharedDb();
+  const { db } = await makeSharedDb("libsql");
   const badId = ulid();
   const goodId = ulid();
   const goodEmail = "goodgroup@tempo.ooo";

@@ -1,11 +1,10 @@
 import { z } from "zod";
 import { ulid } from "ulid";
-import { getDb } from "../../infra/db.js";
+import { getDb, type InValue } from "../../infra/db.js";
 import { logAudit } from "../../infra/audit.js";
 import { EVENT_TYPES, EVENT_STATUSES } from "../../infra/schema.js";
 import { EventRow } from "../../shared/types.js";
 import { supersedeEventInternal } from "../../domain/events.js";
-import type { InValue } from "@libsql/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { guardListScope } from "../list-scope-gate.js";
 import { nodeVisibleTo, filterVisibleNodeIds } from "../../auth/node-access.js";

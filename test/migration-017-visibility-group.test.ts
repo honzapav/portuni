@@ -9,7 +9,7 @@ test("NODE_VISIBILITIES includes group", () => {
 });
 
 test("nodes accept visibility='group' after migration", async () => {
-  const { db, orgId } = await makeSharedDb();
+  const { db, orgId } = await makeSharedDb("libsql");
   const id = ulid();
   await db.execute({
     sql: `INSERT INTO nodes (id, type, name, status, visibility, sync_key, created_by)
@@ -29,7 +29,7 @@ test("nodes accept visibility='group' after migration", async () => {
 });
 
 test("invalid visibility still rejected", async () => {
-  const { db } = await makeSharedDb();
+  const { db } = await makeSharedDb("libsql");
   await assert.rejects(
     db.execute({
       sql: `INSERT INTO nodes (id, type, name, status, visibility, sync_key, created_by)
@@ -40,7 +40,7 @@ test("invalid visibility still rejected", async () => {
 });
 
 test("org-invariant triggers survive the rebuild", async () => {
-  const { db } = await makeSharedDb();
+  const { db } = await makeSharedDb("libsql");
   const r = await db.execute(
     "SELECT name FROM sqlite_master WHERE type='trigger'",
   );

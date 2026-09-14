@@ -27,7 +27,7 @@ async function loadNodeIdFromMaybeName(
   if (!args.home_node_name) return null;
   const db = getDb();
   const r = await db.execute({
-    sql: "SELECT id FROM nodes WHERE name = ? COLLATE NOCASE",
+    sql: "SELECT id FROM nodes WHERE lower(name) = lower(?)",
     args: [args.home_node_name],
   });
   if (r.rows.length !== 1) return null;

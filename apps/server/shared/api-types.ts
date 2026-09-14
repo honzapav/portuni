@@ -458,6 +458,10 @@ export type SessionSummary = {
   brief: string | null;
   // Runner adapter id (e.g. "claude") this session's task runs under.
   runner: string | null;
+  // The host whose sidecar is (or last was) running the task -- null for a
+  // hand-opened CLI session or one predating the runner batch. Shown in
+  // the chat header and Relace rows.
+  host_id: string | null;
   // Set while a `question` event is open (runner batch); cleared when it is
   // answered or the run ends. Drives the "Čeká na mě" status label.
   waiting_since: string | null;
@@ -489,7 +493,39 @@ export type SessionResumeInfo = {
   // (a dropped connection, idle GC, terminal exit, or the boot sweep) --
   // lets the Relace row say e.g. "pozastaveno serverem (nečinnost 30 min)".
   generated_by: "server" | null;
-  reason: "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | "suspend_timeout" | null;
+  reason: "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | "suspend_timeout" | "host_lost" | null;
+};
+
+// Runner batch (docs/superpowers/specs/2026-09-12-runner-and-session-design.md):
+// session_runs / session_events row shapes, defined here (rather than only in
+// apps/server/domain/runner/store.ts, which re-exports them) so the web can
+// type the REST responses without importing server domain code. RunEndReason
+// duplicates domain/runner/types.ts's own union rather than importing it --
+// same "shared has no domain imports" precedent as SessionState above.
+export type RunEndReason = "completed" | "interrupted" | "suspended" | "error" | "limit" | "host_lost";
+
+export type SessionRunRow = {
+  id: string;
+  session_id: string;
+  runner: string;
+  instance_id: string | null;
+  host_id: string | null;
+  agent_session_id: string | null;
+  resumed_from_run_id: string | null;
+  started_at: string;
+  ended_at: string | null;
+  end_reason: RunEndReason | null;
+  usage: string | null;
+};
+
+export type SessionEventRow = {
+  id: string;
+  session_id: string;
+  run_id: string | null;
+  seq: number;
+  kind: string;
+  payload: string;
+  created_at: string;
 };
 
 // GET /overview -- Přehled tab (phase 4, "Přehled (overview tab)" of the

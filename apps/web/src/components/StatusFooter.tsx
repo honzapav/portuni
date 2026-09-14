@@ -9,6 +9,9 @@ import type { AppUpdate } from "../lib/updater";
 
 type Props = {
   onOpenSettings: () => void;
+  // #343: the live running-session count from session_state frames
+  // (countRunningSessions), not the PTY terminal-tab count -- a session
+  // can be running without any terminal tab open for it in this window.
   sessionCount: number;
   onOpenWorkspace: () => void;
   pendingCount: number;

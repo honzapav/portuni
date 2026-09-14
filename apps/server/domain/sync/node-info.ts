@@ -1,10 +1,10 @@
 // resolveNodeInfo lives here (rather than engine.ts) so engine-mutations.ts
 // can use it without forming an import cycle with engine.ts.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import type { NodeInfo } from "./remote-path.js";
 
-export async function resolveNodeInfo(db: Client, nodeId: string): Promise<NodeInfo> {
+export async function resolveNodeInfo(db: DbClient, nodeId: string): Promise<NodeInfo> {
   const r = await db.execute({
     sql: "SELECT type, sync_key FROM nodes WHERE id = ?",
     args: [nodeId],

@@ -41,6 +41,7 @@ import type { SyncStatusResponse, UntrackedFile } from "../shared/api-types.js";
 import { computeSyncPending } from "../domain/sync/pending.js";
 import { startSyncJob, getSyncJob, getCurrentSyncJob } from "../domain/sync/sync-jobs.js";
 import { getWatcherErrors } from "../domain/sync/watcher-error-buffer.js";
+import { orientationForNode } from "../domain/scope-materialize.js";
 import { parseBody, parseJsonBody, respondError, respondJson, type RequestIdentity } from "../http/middleware.js";
 import { nodeVisibleTo, filterVisibleNodeIds } from "../auth/node-access.js";
 import { guardRestNodeWrite, filterRestWritableNodeIds, guardHeadlessFileWrite } from "./write-gate.js";
@@ -497,6 +498,32 @@ export async function handleGetCurrentSyncJob(
     respondJson(res, 200, { job: getCurrentSyncJob(identity.userId) });
   } catch (err) {
     respondError(res, `${req.method} /sync/jobs/current`, err);
+  }
+}
+
+// GET /nodes/:id/orientation (runner batch #323, "central record half"):
+// exactly what buildOrientationHint would render locally
+// (domain/scope-materialize.ts's orientationForNode), served over REST so
+// the agent-mode sidecar's CentralClient.orientation can provision a
+// task's runner with real node context -- the sidecar has no local graph
+// db to compute this itself. Reachable in every auth mode (harmless
+// outside agent mode, same as the rest of the "central record half").
+export async function handleGetNodeOrientation(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  nodeId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    if (!(await nodeVisibleTo(db, identity, nodeId))) {
+      respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+    const orientation = await orientationForNode(nodeId);
+    respondJson(res, 200, { orientation });
+  } catch (err) {
+    respondError(res, `${req.method} /nodes/${nodeId}/orientation`, err);
   }
 }
 

@@ -6,7 +6,7 @@
 //
 // See docs/superpowers/specs/2026-04-24-scope-model.md.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { nodeVisibleTo, filterVisibleNodeIds, type GroupIdentityView } from "../auth/node-access.js";
 import { nodeNeighbourIds } from "../domain/queries/neighbours.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
@@ -247,7 +247,7 @@ export class SessionScope {
 // filterVisibleNodeIds so restricted neighbors are never added to scope.
 // The home node itself is always added (it is the user's own mirror anchor).
 export async function seedScopeFromHome(
-  db: Client,
+  db: DbClient,
   scope: SessionScope,
   homeNodeId: string,
   identity?: GroupIdentityView,
@@ -473,7 +473,7 @@ export interface NodeScopeRow {
 // Returns exists=false when the node is missing so callers can produce
 // a friendly "node not found" rather than crashing.
 export async function loadNodeScopeMeta(
-  db: Client,
+  db: DbClient,
   nodeId: string,
 ): Promise<NodeScopeRow> {
   const r = await db.execute({
@@ -518,7 +518,7 @@ export async function loadNodeScopeMeta(
 // not a full multi-hop graph walk. A node two hops away becomes reachable
 // naturally once the one-hop node between them enters scope.
 export async function isEdgeReachable(
-  db: Client,
+  db: DbClient,
   scope: SessionScope,
   nodeId: string,
 ): Promise<boolean> {
@@ -554,7 +554,7 @@ export type ReadGuardOutcome =
 // client declares), an "elicit" classification tries a real protocol
 // dialog before falling back to the structured-refusal convention.
 export async function guardNodeRead(
-  db: Client,
+  db: DbClient,
   scope: SessionScope,
   nodeId: string,
   sessionUserId: string,

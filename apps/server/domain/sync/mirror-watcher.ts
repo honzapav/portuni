@@ -11,7 +11,7 @@
 
 import { watch as fsWatch } from "node:fs";
 import { join } from "node:path";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { listLocalMirrors, type LocalMirrorRow } from "./local-db.js";
 import { listUntrackedLocal } from "./discover-local.js";
 import { onMirrorRegistryChange } from "./mirror-registry.js";
@@ -59,7 +59,7 @@ export interface MirrorWatcherDeps {
   // Graph db for the default reconcile/backfill wiring. Optional: the
   // central-mode agent injects its own reconcile and disables backfill, so
   // it runs the watcher with no db at all.
-  db?: Client;
+  db?: DbClient;
   userId: string;
   // Injectable seams (production defaults wire the real sync stack).
   listMirrors?: (userId: string) => Promise<LocalMirrorRow[]>;
@@ -99,6 +99,11 @@ export interface MirrorWatcher {
   // (desktop.ts's backfillSweep) predates this and calls its central
   // backfill directly, independent of this method.
   sweep(): Promise<void>;
+  // Resolves once every debounce timer has fired and every per-mirror
+  // reconcile chain has drained -- "the watcher has processed everything it
+  // has seen so far". Tests wait on this instead of a fixed sleep; nothing
+  // in production needs it.
+  idle(): Promise<void>;
   stop(): void;
 }
 
@@ -302,6 +307,17 @@ export function createMirrorWatcher(deps: MirrorWatcherDeps): MirrorWatcher {
         });
       } finally {
         sweepRunning = false;
+      }
+    },
+    async idle(): Promise<void> {
+      // A chain can grow while awaited (a timer firing mid-drain), so loop
+      // until a full pass finds no pending timer and no chain that moved.
+      for (;;) {
+        while (timers.size > 0) await new Promise((r) => setTimeout(r, Math.max(debounceMs, 1)));
+        const snapshot = [...reconcileChains.entries()];
+        await Promise.all(snapshot.map(([, chain]) => chain));
+        const moved = timers.size > 0 || snapshot.some(([nodeId, chain]) => reconcileChains.get(nodeId) !== chain);
+        if (!moved) return;
       }
     },
     stop(): void {

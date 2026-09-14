@@ -15,7 +15,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { mkdir, rename as fsRename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { z } from "zod";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { parseBody, parseJsonBody, respondError, respondJson } from "../http/middleware.js";
@@ -49,6 +49,12 @@ import {
 import { findEntryByFileId } from "../mcp/agent-tools.js";
 import { guardAgentRestWrite } from "./write-gate.js";
 import { startSyncJob, getSyncJob, getCurrentSyncJob } from "../domain/sync/sync-jobs.js";
+import { createAgentSessionRuntime } from "../boot/session-runtime.js";
+import { StartSessionBody } from "./sessions.js";
+import type { SessionRuntime } from "../domain/runner/session-runtime.js";
+import { getAdapter } from "../domain/runner/registry.js";
+import { getInstanceEnv } from "../domain/runner/instances.js";
+import type { QuestionDecision } from "../domain/runner/types.js";
 import {
   handleClearRunnerOrgDefault,
   handleCreateRunnerInstance,
@@ -82,7 +88,7 @@ import type {
 // The sandbox resolvers take a db parameter their implementations no longer
 // touch (mirror registry + env only). The agent has no graph db; passing
 // this sentinel documents the contract instead of hiding it.
-const NO_DB = null as unknown as Client;
+const NO_DB = null as unknown as DbClient;
 
 // Central-mode read-grant set: the local graph replica is empty in central
 // mode, so depth-1 neighbours come from central node-detail, then map to
@@ -105,6 +111,26 @@ async function neighbourReadMirrorsCentral(
 function respondCentral404(res: ServerResponse, err: unknown): boolean {
   if (err instanceof CentralHttpError && err.status === 404) {
     respondJson(res, 404, { error: "node not found" });
+    return true;
+  }
+  return false;
+}
+
+// Same substring-matched runtime errors api/sessions.ts's REST routes map
+// to 409s -- the session runtime throws plain Errors, not typed ones, so
+// both callers key off the same message fragments.
+function respondAgentSessionError(res: ServerResponse, err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.message.includes("has no live run")) {
+    respondJson(res, 409, { error: err.message, code: "NO_LIVE_RUN" });
+    return true;
+  }
+  if (err.message.includes("already has a live run")) {
+    respondJson(res, 409, { error: err.message, code: "ALREADY_RUNNING" });
+    return true;
+  }
+  if (err.message.includes("no resumable conversation")) {
+    respondJson(res, 409, { error: err.message, code: "NOT_RESUMABLE" });
     return true;
   }
   return false;
@@ -201,7 +227,29 @@ export type AgentRouteFn = (
   identity: RequestIdentity,
 ) => Promise<boolean>;
 
-export function createAgentRouter(client: CentralClient): AgentRouteFn {
+export interface AgentRouterOpts {
+  // Test-only: shortens suspend()'s poll loop so a suspend-timeout fallback
+  // test doesn't take the real 30s. Production never sets this.
+  sessionRuntimeOpts?: { suspendPollIntervalMs?: number; suspendTimeoutMs?: number };
+  // The runtime this router drives. desktop.ts builds one per agent-mode
+  // sidecar and hands the SAME instance to the live channel
+  // (createAgentSessionsWsDeps), so a task started over REST is the one the
+  // socket streams. Omitted: the router builds its own (tests).
+  sessionRuntime?: SessionRuntime;
+}
+
+export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts): AgentRouteFn {
+  // One session runtime per agent process, built once here -- same
+  // lifetime as the process-wide local singleton (boot/session-runtime.ts's
+  // getSessionRuntime), just bound to this client's CentralSessionStore
+  // instead of the local db. Real authorization for every session action
+  // happens on central (each SessionStore call is a REST round trip that
+  // applies auth/session-access.ts's sessionAccess there, with central's
+  // own identity resolved from the device token) -- guardAgentRestWrite
+  // below is only the same local webview-proxy-trust posture every other
+  // mutating route on this router already applies.
+  const sessionRuntime = opts?.sessionRuntime ?? createAgentSessionRuntime(client, opts?.sessionRuntimeOpts);
+
   return async (req, res, url, identity) => {
     const method = req.method ?? "GET";
     const { pathname } = url;
@@ -429,6 +477,178 @@ export function createAgentRouter(client: CentralClient): AgentRouteFn {
       const id = decodeURIComponent(runnerInstanceMatch[1]);
       if (method === "PATCH") await handleUpdateRunnerInstance(req, res, id);
       else await handleDeleteRunnerInstance(req, res, id);
+      return true;
+    }
+
+    // Sessions/tasks (runner batch, #323): local-only per is_local_only_path
+    // (apps/desktop/src/lib.rs) -- PATCH /sessions/:id, GET /nodes/:id/
+    // sessions and /overview stay central (unaffected here). The bare
+    // POST /sessions is deliberately the ONLY session path this router
+    // shares with the central "record half" -- central's own record
+    // endpoint is POST /sessions/record so the two never collide.
+    if (pathname === "/sessions" && method === "POST") {
+      const body = await parseJsonBody(req, res, StartSessionBody);
+      if (!body) return true;
+      if (!guardAgentRestWrite(req, res, identity, body.node_id)) return true;
+      if (!getAdapter(body.runner)) {
+        respondJson(res, 400, { error: `unknown runner '${body.runner}'`, code: "UNKNOWN_RUNNER" });
+        return true;
+      }
+      if (body.instance_id != null && (await getInstanceEnv(body.instance_id)) === null) {
+        respondJson(res, 400, { error: `unknown instance '${body.instance_id}'`, code: "UNKNOWN_INSTANCE" });
+        return true;
+      }
+      try {
+        const { session, run } = await sessionRuntime.startTask({
+          userId: identity.userId,
+          nodeId: body.node_id,
+          brief: body.brief,
+          runner: body.runner,
+          instanceId: body.instance_id ?? null,
+          policy: body.policy,
+        });
+        // Same reason as the local route: startTask's own return value is
+        // the session row as of creation, before the run had a chance to
+        // open a question or even finish.
+        const updated = await sessionRuntime.getSession(session.id);
+        respondJson(res, 201, { session: updated ?? session, run });
+      } catch (err) {
+        if (respondCentral404(res, err)) return true;
+        respondError(res, "POST /sessions", err);
+      }
+      return true;
+    }
+
+    const sessionMessagesMatch = pathname.match(/^\/sessions\/([^/]+)\/messages$/);
+    if (sessionMessagesMatch && method === "POST") {
+      const sessionId = decodeURIComponent(sessionMessagesMatch[1]);
+      if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
+      const body = await parseJsonBody(req, res, z.object({ text: z.string().trim().min(1) }));
+      if (!body) return true;
+      try {
+        await sessionRuntime.sendMessage(sessionId, body.text);
+        respondJson(res, 202, { ok: true });
+      } catch (err) {
+        if (respondAgentSessionError(res, err)) return true;
+        respondError(res, `POST /sessions/${sessionId}/messages`, err);
+      }
+      return true;
+    }
+
+    const sessionQuestionMatch = pathname.match(/^\/sessions\/([^/]+)\/questions\/([^/]+)$/);
+    if (sessionQuestionMatch && method === "POST") {
+      const sessionId = decodeURIComponent(sessionQuestionMatch[1]);
+      const requestId = decodeURIComponent(sessionQuestionMatch[2]);
+      if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
+      const body = await parseJsonBody(
+        req,
+        res,
+        z.object({ decision: z.object({ value: z.union([z.string(), z.boolean()]) }) }),
+      );
+      if (!body) return true;
+      const pending = sessionRuntime.pendingQuestion(sessionId);
+      if (!pending || pending.request_id !== requestId) {
+        respondJson(res, 409, { error: "no pending question with this request_id", code: "NO_PENDING_QUESTION" });
+        return true;
+      }
+      try {
+        const decision: QuestionDecision = {
+          by: identity.userId,
+          value: body.decision.value,
+          at: new Date().toISOString(),
+        };
+        await sessionRuntime.answer(sessionId, requestId, decision);
+        respondJson(res, 202, { ok: true });
+      } catch (err) {
+        respondError(res, `POST /sessions/${sessionId}/questions/${requestId}`, err);
+      }
+      return true;
+    }
+
+    const sessionInterruptMatch = pathname.match(/^\/sessions\/([^/]+)\/interrupt$/);
+    if (sessionInterruptMatch && method === "POST") {
+      const sessionId = decodeURIComponent(sessionInterruptMatch[1]);
+      if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
+      try {
+        await sessionRuntime.interrupt(sessionId);
+        const session = await sessionRuntime.getSession(sessionId);
+        respondJson(res, 200, { session });
+      } catch (err) {
+        respondError(res, `POST /sessions/${sessionId}/interrupt`, err);
+      }
+      return true;
+    }
+
+    const sessionSuspendMatch = pathname.match(/^\/sessions\/([^/]+)\/suspend$/);
+    if (sessionSuspendMatch && method === "POST") {
+      const sessionId = decodeURIComponent(sessionSuspendMatch[1]);
+      if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
+      try {
+        // Same 30s-poll contract as the local REST route.
+        const session = await sessionRuntime.suspend(sessionId);
+        respondJson(res, 200, { session });
+      } catch (err) {
+        respondError(res, `POST /sessions/${sessionId}/suspend`, err);
+      }
+      return true;
+    }
+
+    const sessionResumeMatch = pathname.match(/^\/sessions\/([^/]+)\/resume$/);
+    if (sessionResumeMatch && method === "POST") {
+      const sessionId = decodeURIComponent(sessionResumeMatch[1]);
+      if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
+      const body = await parseJsonBody(req, res, z.object({ mode: z.enum(["conversation", "handoff"]) }));
+      if (!body) return true;
+      try {
+        const run = await sessionRuntime.resume(sessionId, body.mode);
+        respondJson(res, 200, { run });
+      } catch (err) {
+        if (respondAgentSessionError(res, err)) return true;
+        respondError(res, `POST /sessions/${sessionId}/resume`, err);
+      }
+      return true;
+    }
+
+    const sessionCloseMatch = pathname.match(/^\/sessions\/([^/]+)\/close$/);
+    if (sessionCloseMatch && method === "POST") {
+      const sessionId = decodeURIComponent(sessionCloseMatch[1]);
+      if (!guardAgentRestWrite(req, res, identity, "sessions")) return true;
+      try {
+        const session = await sessionRuntime.closeSession(sessionId);
+        respondJson(res, 200, { session });
+      } catch (err) {
+        respondError(res, `POST /sessions/${sessionId}/close`, err);
+      }
+      return true;
+    }
+
+    const sessionSignalsMatch = pathname.match(/^\/sessions\/([^/]+)\/signals$/);
+    if (sessionSignalsMatch && method === "GET") {
+      const sessionId = decodeURIComponent(sessionSignalsMatch[1]);
+      try {
+        const signals = await sessionRuntime.sessionSignals(sessionId);
+        respondJson(res, 200, signals);
+      } catch (err) {
+        respondError(res, `GET /sessions/${sessionId}/signals`, err);
+      }
+      return true;
+    }
+
+    const sessionEventsMatch = pathname.match(/^\/sessions\/([^/]+)\/events$/);
+    if (sessionEventsMatch && method === "GET") {
+      const sessionId = decodeURIComponent(sessionEventsMatch[1]);
+      const after = url.searchParams.get("after");
+      const limit = url.searchParams.get("limit");
+      try {
+        const rows = await sessionRuntime.listEvents(sessionId, {
+          after: after !== null ? Number(after) : undefined,
+          limit: limit !== null ? Number(limit) : undefined,
+        });
+        const events = rows.map((row) => ({ ...row, payload: JSON.parse(row.payload) as unknown }));
+        respondJson(res, 200, { events });
+      } catch (err) {
+        respondError(res, `GET /sessions/${sessionId}/events`, err);
+      }
       return true;
     }
 

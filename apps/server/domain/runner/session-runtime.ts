@@ -14,10 +14,12 @@
 
 import { getDb } from "../../infra/db.js";
 import { getSessionScope } from "../sessions.js";
-import { suspendSessionServerSide } from "../session-handoff.js";
+import { suspendSessionServerSide, type ServerHandoffReason } from "../session-handoff.js";
 import type { SessionRow } from "../../shared/types.js";
-import type { SessionRunRow, SessionStore } from "./store.js";
+import type { ListEventsOptions, SessionEventRow, SessionRunRow, SessionStore } from "./store.js";
 import { getInstanceEnv } from "./instances.js";
+import { resolveRunnerDataDir } from "./data-dir.js";
+import { removePidFile, writePidFile } from "./pid-file.js";
 import type { ProvisionRunInput, ProvisionRunResult, ProvisionRunResumeInfo } from "./provision.js";
 import type {
   CanonicalEvent,
@@ -48,7 +50,12 @@ export interface RunnerRegistryLookup {
   getAdapter(id: string): RunnerAdapter | null;
 }
 
-export type RuntimeListener = (sessionId: string, event: CanonicalEvent | DeltaFrame) => void;
+// A published canonical event carries the seq the store assigned it (the
+// live channel, api/sessions-ws.ts, needs this to reconcile a buffered live
+// event against the replay-from-`after` it raced) -- a delta never persists,
+// so it never gets one.
+export type PublishedEvent = (CanonicalEvent & { seq: number }) | DeltaFrame;
+export type RuntimeListener = (sessionId: string, event: PublishedEvent) => void;
 
 export interface CreateSessionRuntimeDeps {
   store: SessionStore;
@@ -58,6 +65,13 @@ export interface CreateSessionRuntimeDeps {
   // these at their 1s/30s defaults.
   suspendPollIntervalMs?: number;
   suspendTimeoutMs?: number;
+  // What suspend() falls back to when no handoff arrived in time (spec:
+  // "the server generates one from the session record"). Defaults to the
+  // local-mode implementation (suspendSessionServerSide against the graph
+  // db); boot/session-runtime.ts's createAgentSessionRuntime supplies
+  // domain/runner/suspend-fallback-central.ts's version instead, since
+  // agent mode has no graph db to write against.
+  suspendFallback?: (sessionId: string, reason: ServerHandoffReason) => Promise<SessionRow | null>;
 }
 
 export interface StartTaskInput {
@@ -79,8 +93,16 @@ export interface SessionSignals {
   expansionsSinceRunStart: number;
 }
 
+type QuestionPayload = Extract<CanonicalEvent, { kind: "question" }>["payload"];
+
 export interface SessionRuntime {
   startTask(input: StartTaskInput): Promise<{ session: SessionRow; run: SessionRunRow }>;
+  // Plain read-through to the store -- agent-router.ts's REST handlers have
+  // no local db of their own to re-fetch a session row from after a
+  // mutation the way api/sessions.ts's handlers do, so they go through this
+  // instead (local mode's own handlers still use domain/sessions.ts's
+  // getSession directly; this exists for the agent-mode caller).
+  getSession(sessionId: string): Promise<SessionRow | null>;
   sendMessage(sessionId: string, text: string): Promise<void>;
   answer(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void>;
   interrupt(sessionId: string): Promise<void>;
@@ -89,6 +111,22 @@ export interface SessionRuntime {
   closeSession(sessionId: string): Promise<SessionRow>;
   subscribe(target: string, listener: RuntimeListener): () => void;
   sessionSignals(sessionId: string): Promise<SessionSignals>;
+  // The session's currently open question, or null -- lets a caller (the
+  // REST answer route) validate a request_id against the actually-pending
+  // question before forwarding a decision to the adapter.
+  pendingQuestion(sessionId: string): QuestionPayload | null;
+  // Access table (remote-hosts-and-task-queue-design spec, "Visibility and
+  // control"): appends a state_changed event naming the actor for an
+  // interrupt/suspend/close performed by someone other than the session's
+  // owner -- called by the REST route right after the action succeeds, so
+  // "from"/"to" reflect the actor, not a real state transition.
+  recordStoppedBy(sessionId: string, by: string): Promise<void>;
+  listEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]>;
+  // Number of live listeners currently registered for `target` (a session
+  // id, or "*" for the global one) -- the live channel (api/sessions-ws.ts)
+  // uses this only in tests, to assert a closed socket's subscription was
+  // actually dropped rather than leaked.
+  subscriberCount(target: string): number;
 }
 
 interface LiveRun {
@@ -100,6 +138,8 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   const { store, registry, provision } = deps;
   const suspendPollIntervalMs = deps.suspendPollIntervalMs ?? DEFAULT_SUSPEND_POLL_INTERVAL_MS;
   const suspendTimeoutMs = deps.suspendTimeoutMs ?? DEFAULT_SUSPEND_TIMEOUT_MS;
+  const suspendFallback =
+    deps.suspendFallback ?? ((sessionId: string, reason: ServerHandoffReason) => suspendSessionServerSide(getDb(), sessionId, reason));
 
   const liveRuns = new Map<string, LiveRun>();
   // The still-open question for a session, keyed by session id -- captured
@@ -118,9 +158,21 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // adapter's own "completed" -- the adapter cannot know why it was closed.
   const suspending = new Set<string>();
 
-  function publish(sessionId: string, event: CanonicalEvent | DeltaFrame): void {
+  function publish(sessionId: string, event: PublishedEvent): void {
     for (const listener of subscribers.get(sessionId) ?? []) listener(sessionId, event);
     for (const listener of subscribers.get("*") ?? []) listener(sessionId, event);
+  }
+
+  // session_scope only exists on the local graph db; agent mode has none.
+  // Degrades to 0 (empty scope) rather than failing the caller -- this
+  // feeds the restart indicator's "expansions since run start" signal
+  // only, never a correctness-load-bearing decision.
+  async function readSessionScopeSize(sessionId: string): Promise<number> {
+    try {
+      return (await getSessionScope(getDb(), sessionId)).length;
+    } catch {
+      return 0;
+    }
   }
 
   // Returns the task's own promise (rejecting when it fails) so a caller
@@ -145,8 +197,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     runId: string | null,
     events: CanonicalEvent[],
   ): Promise<void> {
-    await store.appendEvents(sessionId, runId, events);
-    for (const event of events) publish(sessionId, event);
+    const seqs = await store.appendEvents(sessionId, runId, events);
+    events.forEach((event, i) => {
+      publish(sessionId, { ...event, seq: seqs[i] });
+    });
   }
 
   function subscribe(target: string, listener: RuntimeListener): () => void {
@@ -213,6 +267,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
         usage: canonical.payload.usage,
         ...(agentSessionId ? { agent_session_id: agentSessionId } : {}),
       });
+      await removePidFile(resolveRunnerDataDir(), runId).catch(() => undefined);
       await clearWaitingIfPending(sessionId, runId);
     }
   }
@@ -250,7 +305,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     const adapter = registry.getAdapter(run.runner);
     if (!adapter) throw new Error(`startRun: unknown runner '${run.runner}'`);
 
-    runStartScopeSize.set(run.id, (await getSessionScope(getDb(), session.id)).length);
+    // session_scope is a local graph-db table; agent mode has none, so the
+    // restart indicator's "expansions since run start" signal degrades to 0
+    // there rather than failing the whole run start.
+    runStartScopeSize.set(run.id, await readSessionScopeSize(session.id));
 
     await appendAndPublish(session.id, run.id, [
       {
@@ -279,10 +337,19 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       instance: { id: run.instance_id, env: instanceEnv },
       mcp: { ...provisioned.mcp, headers: { "X-Portuni-Spawn-Id": session.id } },
       policy: opts.policy,
+      portuniRoot: provisioned.portuniRoot,
+      mirrors: provisioned.mirrors,
     };
 
     const handle = await adapter.start(runStart, makeSink(session.id, run.id));
     liveRuns.set(session.id, { handle, runId: run.id });
+    // Written before drain() lets any already-queued run_ended handler
+    // remove it, so write-then-remove ordering always holds even for a
+    // wait-free script. A null pid (the fake adapter, or a real one that
+    // hasn't spawned yet) means the boot sweep simply has nothing to find
+    // for this run -- best-effort, not a correctness requirement.
+    const pid = handle.pid();
+    if (pid !== null) await writePidFile(resolveRunnerDataDir(), run.id, pid).catch(() => undefined);
     // A script-driven (or otherwise fast) adapter may already have emitted
     // events synchronously during start() -- e.g. a wait-free fake script
     // runs to completion, including its own run_ended, before start()
@@ -407,9 +474,11 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
         };
       } else {
         // The same server-written fallback every other server-side suspend
-        // uses (#329): a file in the mirror when this device has one,
-        // handoff_inline otherwise, marked with its reason either way.
-        const session = await suspendSessionServerSide(getDb(), sessionId, "suspend_timeout");
+        // uses locally (#329): a file in the mirror when this device has
+        // one, handoff_inline otherwise, marked with its reason either
+        // way. suspendFallback is the agent-mode-aware seam (default:
+        // suspendSessionServerSide against the graph db).
+        const session = await suspendFallback(sessionId, "suspend_timeout");
         if (!session) throw new Error(`suspend: session ${sessionId} not found`);
         handoffEvent = {
           kind: "handoff",
@@ -487,7 +556,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   }
 
   async function sessionSignals(sessionId: string): Promise<SessionSignals> {
-    const scope = await getSessionScope(getDb(), sessionId);
+    const scope = await getSessionScope(getDb(), sessionId).catch(() => []);
     const writeSetSize = scope.filter((s) => s.writable === 1).length;
     const readSetSize = scope.length;
     const live = liveRuns.get(sessionId);
@@ -502,13 +571,43 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     return { runAgeMs, writeSetSize, readSetSize, expansionsSinceRunStart };
   }
 
+  function pendingQuestion(sessionId: string): QuestionPayload | null {
+    return pendingQuestions.get(sessionId) ?? null;
+  }
+
+  async function recordStoppedBy(sessionId: string, by: string): Promise<void> {
+    const session = await mustGetSession(sessionId);
+    const runId = liveRuns.get(sessionId)?.runId ?? (await store.liveRun(sessionId))?.id ?? null;
+    await enqueue(sessionId, () =>
+      appendAndPublish(sessionId, runId, [
+        {
+          kind: "state_changed",
+          payload: { from: session.state, to: session.state, waiting: session.waiting_since !== null, by },
+        },
+      ]),
+    );
+  }
+
+  function listEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]> {
+    return store.listEvents(sessionId, opts);
+  }
+
+  function subscriberCount(target: string): number {
+    return subscribers.get(target)?.size ?? 0;
+  }
+
   return {
     startTask,
+    getSession: (sessionId: string) => store.getSession(sessionId),
     sendMessage,
     answer,
     interrupt,
     suspend,
     resume,
+    pendingQuestion,
+    recordStoppedBy,
+    subscriberCount,
+    listEvents,
     closeSession,
     subscribe,
     sessionSignals,

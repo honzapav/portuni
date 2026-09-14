@@ -9,7 +9,8 @@
 // 2026-06-09 design session, superseding the read-only fallback in
 // specs.md:203).
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
+import { jsonArrayElementsText } from "../infra/sql.js";
 import type { GlobalScope } from "./roles.js";
 
 export interface AccessEntry {
@@ -58,14 +59,14 @@ const CHAIN_BATCH = 500;
 // arbitrary-first edge the old loop did. A missing node yields no rows for
 // its root (the JOIN on nodes drops it), which callers treat as unrestricted
 // -- same contract as before.
-async function loadChains(db: Client, nodeIds: string[]): Promise<Map<string, ChainRow[]>> {
+async function loadChains(db: DbClient, nodeIds: string[]): Promise<Map<string, ChainRow[]>> {
   const byRoot = new Map<string, ChainRow[]>();
   const distinct = [...new Set(nodeIds)];
   for (let i = 0; i < distinct.length; i += CHAIN_BATCH) {
     const batch = distinct.slice(i, i + CHAIN_BATCH);
     const r = await db.execute({
       sql: `WITH RECURSIVE chain(root, id, depth) AS (
-              SELECT value, value, 0 FROM json_each(?)
+              SELECT value, value, 0 FROM ${jsonArrayElementsText(db.dialect)}
               UNION ALL
               SELECT c.root,
                      (SELECT e.target_id FROM edges e
@@ -102,7 +103,7 @@ async function loadChains(db: Client, nodeIds: string[]): Promise<Map<string, Ch
   return byRoot;
 }
 
-async function loadChain(db: Client, nodeId: string): Promise<ChainRow[]> {
+async function loadChain(db: DbClient, nodeId: string): Promise<ChainRow[]> {
   return (await loadChains(db, [nodeId])).get(nodeId) ?? [];
 }
 
@@ -120,7 +121,7 @@ interface ResolvedChain {
 // Resolves many nodes' ACLs with one chain query (see loadChains). Each
 // distinct id appears once in the result even if repeated in the input.
 async function resolveAccessChains(
-  db: Client,
+  db: DbClient,
   nodeIds: string[],
 ): Promise<Map<string, ResolvedChain>> {
   const chains = await loadChains(db, nodeIds);
@@ -136,7 +137,7 @@ async function resolveAccessChains(
 // node itself (depth 0) to the root, stopping at the first depth that is
 // authoritative for visibility.
 export async function resolveAccessChain(
-  db: Client,
+  db: DbClient,
   nodeId: string,
 ): Promise<ResolvedChain> {
   return resolveChainRows(await loadChain(db, nodeId));
@@ -200,7 +201,7 @@ function resolveChainRows(rows: ChainRow[]): ResolvedChain {
 }
 
 export async function effectiveAccessEntries(
-  db: Client,
+  db: DbClient,
   nodeId: string,
 ): Promise<AccessEntry[] | null> {
   return (await resolveAccessChain(db, nodeId)).entries;
@@ -222,7 +223,7 @@ export function canSeeNode(
 
 // Convenience one-shot used by guards and list filters.
 export async function nodeVisibleTo(
-  db: Client,
+  db: DbClient,
   identity: GroupIdentityView,
   nodeId: string,
 ): Promise<boolean> {
@@ -232,7 +233,7 @@ export async function nodeVisibleTo(
 // Batch filter for list paths: one chain query for the whole id set
 // (loadChains), each distinct id resolved once.
 export async function filterVisibleNodeIds(
-  db: Client,
+  db: DbClient,
   identity: GroupIdentityView,
   nodeIds: string[],
 ): Promise<Set<string>> {
@@ -257,7 +258,7 @@ export async function filterVisibleNodeIds(
 // resolving them one node at a time made GET /graph cost N Turso round
 // trips (~3 s at ~100 nodes).
 export async function visibilityWithRestriction(
-  db: Client,
+  db: DbClient,
   identity: GroupIdentityView,
   nodeIds: string[],
 ): Promise<Map<string, { visible: boolean; restricted: boolean }>> {
@@ -277,7 +278,7 @@ export async function visibilityWithRestriction(
 // entirely like a `private` one does. One chain query for the whole id set
 // (loadChains), each distinct id resolved once.
 export async function classifyNodeVisibility(
-  db: Client,
+  db: DbClient,
   identity: GroupIdentityView,
   nodeIds: string[],
 ): Promise<Map<string, "visible" | "request" | "hidden">> {

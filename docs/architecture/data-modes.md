@@ -106,6 +106,9 @@ to `501 {error:"local_only", detail:"sync agent not running"}` in central mode
 POST /nodes/:id/files
 DELETE /nodes/:id/files/:fileId
 POST /nodes/:id/files/:fileId/resolve
+POST /sessions
+POST /sessions/:id/{messages,interrupt,suspend,resume,close,events}
+POST /sessions/:id/questions/:request_id
 ```
 
 So `local_only` now means exactly **"the local sync agent isn't up — sign
@@ -191,6 +194,44 @@ Proxied tools with a device-side step (`apps/server/mcp/agent-tools.ts`):
   device mirror and adds `local_path` to the payload (`null` when the node is
   not mirrored here; `local_error` when the pull was refused, e.g. a dirty
   untracked file at that path).
+
+### Agent-mode sessions: the task runs on the device, the record lives on central
+
+The runner batch's session runtime (`docs/superpowers/specs/2026-09-12-runner-and-session-design.md`,
+rule 1 "one implementation") follows the same split as everything else on
+this page: the code that actually runs a task — spawning the runner
+adapter, provisioning its mirror and orientation, translating its events —
+is identical in both modes and always runs **on the device** (the sidecar,
+whichever mode it's in). What differs is only which `SessionStore` backs
+it. Locally, `boot/session-runtime.ts`'s `getSessionRuntime()` binds
+`DbSessionStore` straight to this server's own db. In agent mode,
+`agent-router.ts`'s `createAgentRouter(client)` builds its own runtime
+(`createAgentSessionRuntime`) bound to `CentralSessionStore`
+(`domain/runner/store-central.ts`) instead — every `SessionStore` call
+becomes a REST round trip to central's "central record half"
+(`api/sessions.ts`: `POST /sessions/record`, `PATCH /sessions/:id`,
+`POST /sessions/:id/runs`, `PATCH /sessions/:id/runs/:run_id`,
+`GET /sessions/:id/runs`, `POST`/`GET /sessions/:id/events`), which applies
+the exact same `auth/session-access.ts` ownership checks a local call would
+— central IS the graph db here, so it's the one place that can actually
+enforce them.
+
+Provisioning also needed a central-mode counterpart
+(`domain/runner/provision-central.ts`): the mirror is created via
+`createMirrorForNodeCentral` instead of the local `createMirrorForNode`,
+and the task's orientation text comes from `CentralClient.orientation`
+(`GET /nodes/:id/orientation`, computed on central, which has the real
+graph db) instead of `orientationForNode`'s direct db read — this is the
+one orientation gap central mode used to have (materializing a fresh
+mirror's `PORTUNI_SCOPE.md` still has no orientation section; that's a
+different code path, unrelated to a task's own runtime orientation, and
+still cut for the same "no endpoint" reason until it's wired through too).
+Suspend's server-generated-handoff fallback (spec: "Suspend and resume")
+similarly can't write straight to the graph db in agent mode —
+`domain/runner/suspend-fallback-central.ts` writes the handoff file to the
+device's own mirror (mirrors are a per-device concept in every mode) and
+then patches the session record over the same REST route, instead of
+`session-handoff.ts`'s local-db-only `suspendSessionServerSide`.
 
 ## An important subtlety: local-mode editing is mirror-local, central is Drive-direct
 

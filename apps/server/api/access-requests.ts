@@ -17,10 +17,11 @@
 // learn that a node hidden from them exists through its request queue.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Client, InStatement } from "@libsql/client";
+import type { DbClient, InStatement } from "../infra/db.js";
 import { ulid } from "ulid";
 import { z } from "zod";
 import { getDb } from "../infra/db.js";
+import { insertIgnore, nowExpr } from "../infra/sql.js";
 import { logAudit } from "../infra/audit.js";
 import {
   parseJsonBody,
@@ -70,7 +71,7 @@ function rowToRequest(row: Record<string, unknown>): AccessRequest {
   };
 }
 
-async function loadRequest(db: Client, id: string): Promise<AccessRequest | null> {
+async function loadRequest(db: DbClient, id: string): Promise<AccessRequest | null> {
   const r = await db.execute({ sql: `${SELECT_REQUESTS} WHERE r.id = ?`, args: [id] });
   return r.rows.length === 0 ? null : rowToRequest(r.rows[0] as Record<string, unknown>);
 }
@@ -79,7 +80,7 @@ async function loadRequest(db: Client, id: string): Promise<AccessRequest | null
 // the existence SELECT is load-bearing: nodeVisibleTo answers true for a
 // missing id (null ACL = unrestricted).
 async function nodeExistsAndVisible(
-  db: Client,
+  db: DbClient,
   identity: RequestIdentity,
   nodeId: string,
 ): Promise<boolean> {
@@ -169,7 +170,7 @@ export async function handleListNodeAccessRequests(
 // Exported for reuse by api/overview.ts's "pending access requests"
 // attention section (same "manage" gate, applied by that caller).
 export async function listVisibleRequests(
-  db: Client,
+  db: DbClient,
   identity: RequestIdentity,
   status: AccessRequestStatus,
 ): Promise<AccessRequest[]> {
@@ -253,8 +254,11 @@ export async function handleResolveAccessRequest(
         grantedOn = chain.sourceNodeId;
         statements.push(
           {
-            sql: `INSERT OR IGNORE INTO node_access (node_id, kind, principal, display_email, added_by)
+            sql: insertIgnore(
+              db.dialect,
+              `INSERT OR IGNORE INTO node_access (node_id, kind, principal, display_email, added_by)
                   VALUES (?, 'user', ?, NULL, ?)`,
+            ),
             args: [grantedOn, request.user_id, identity.userId],
           },
           {
@@ -269,7 +273,7 @@ export async function handleResolveAccessRequest(
       }
     }
     statements.push({
-      sql: `UPDATE access_requests SET status = ?, resolved_at = datetime('now'), resolved_by = ?
+      sql: `UPDATE access_requests SET status = ?, resolved_at = ${nowExpr(db.dialect)}, resolved_by = ?
             WHERE id = ? AND status = 'pending'`,
       args: [decision === "approve" ? "approved" : "denied", identity.userId, requestId],
     });

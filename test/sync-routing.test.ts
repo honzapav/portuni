@@ -1,11 +1,8 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { createClient, type Client } from "@libsql/client";
-import {
-  DDL_REMOTES_TABLE,
-  DDL_REMOTE_ROUTING_TABLE,
-  INDEX_REMOTE_ROUTING_PRIORITY,
-} from "../apps/server/infra/schema.js";
+import { openTestDb } from "./helpers/db.js";
+import type { DbClient as Client } from "../apps/server/infra/db.js";
+import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import {
   upsertRemote,
   getRemote,
@@ -18,12 +15,12 @@ import {
 } from "../apps/server/domain/sync/routing.js";
 import { LocalModeNoRemoteError } from "../apps/server/domain/sync/types.js";
 
+// The full schema on both drivers (the libsql DDL constants below have no
+// Postgres form; ensureSchemaOn applies whichever baseline the driver
+// needs). Only the remotes / remote_routing tables are exercised here.
 async function freshDb(): Promise<Client> {
-  const db = createClient({ url: ":memory:" });
-  await db.execute(DDL_REMOTES_TABLE);
-  await db.execute(DDL_REMOTE_ROUTING_TABLE);
-  await db.execute(INDEX_REMOTE_ROUTING_PRIORITY);
-  await db.execute("PRAGMA foreign_keys = ON");
+  const db = await openTestDb();
+  await ensureSchemaOn(db);
   return db;
 }
 

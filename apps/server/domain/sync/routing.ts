@@ -1,7 +1,8 @@
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import type { RemoteConfig, RemoteType } from "./types.js";
 import { assertRemoteCapable } from "./types.js";
 import { isLocalWorkspace } from "../../infra/server-config.js";
+import { nowExpr } from "../../infra/sql.js";
 
 export interface RemoteRow extends RemoteConfig {
   created_by: string;
@@ -15,11 +16,11 @@ export interface UpsertRemoteArgs {
   created_by: string;
 }
 
-export async function upsertRemote(db: Client, a: UpsertRemoteArgs): Promise<void> {
+export async function upsertRemote(db: DbClient, a: UpsertRemoteArgs): Promise<void> {
   assertRemoteCapable();
   await db.execute({
     sql: `INSERT INTO remotes (name, type, config_json, created_by, created_at)
-          VALUES (?, ?, ?, ?, datetime('now'))
+          VALUES (?, ?, ?, ?, ${nowExpr(db.dialect)})
           ON CONFLICT(name) DO UPDATE SET
             type = excluded.type,
             config_json = excluded.config_json`,
@@ -27,7 +28,7 @@ export async function upsertRemote(db: Client, a: UpsertRemoteArgs): Promise<voi
   });
 }
 
-export async function getRemote(db: Client, name: string): Promise<RemoteRow | null> {
+export async function getRemote(db: DbClient, name: string): Promise<RemoteRow | null> {
   const r = await db.execute({ sql: "SELECT * FROM remotes WHERE name = ?", args: [name] });
   if (r.rows.length === 0) return null;
   const row = r.rows[0];
@@ -45,7 +46,7 @@ export async function getRemote(db: Client, name: string): Promise<RemoteRow | n
 // takes "no remote" as the local-only branch, which is exactly the behaviour
 // those legacy rows must not override. The boot warning is the one reader
 // that wants the raw rows (legacyRemoteRowCounts).
-export async function listRemotes(db: Client): Promise<RemoteRow[]> {
+export async function listRemotes(db: DbClient): Promise<RemoteRow[]> {
   if (isLocalWorkspace()) return [];
   const r = await db.execute("SELECT * FROM remotes ORDER BY name ASC");
   return r.rows.map((row) => ({
@@ -58,7 +59,7 @@ export async function listRemotes(db: Client): Promise<RemoteRow[]> {
 }
 
 export async function legacyRemoteRowCounts(
-  db: Client,
+  db: DbClient,
 ): Promise<{ remotes: number; rules: number }> {
   const [remotes, rules] = await Promise.all([
     db.execute("SELECT COUNT(*) AS n FROM remotes"),
@@ -67,7 +68,7 @@ export async function legacyRemoteRowCounts(
   return { remotes: Number(remotes.rows[0].n), rules: Number(rules.rows[0].n) };
 }
 
-export async function deleteRemote(db: Client, name: string): Promise<void> {
+export async function deleteRemote(db: DbClient, name: string): Promise<void> {
   await db.execute({ sql: "DELETE FROM remotes WHERE name = ?", args: [name] });
 }
 
@@ -78,14 +79,14 @@ export interface RoutingRule {
   remote_name: string;
 }
 
-export async function addRule(db: Client, rule: RoutingRule): Promise<void> {
+export async function addRule(db: DbClient, rule: RoutingRule): Promise<void> {
   await db.execute({
     sql: "INSERT INTO remote_routing (priority, node_type, org_slug, remote_name) VALUES (?, ?, ?, ?)",
     args: [rule.priority, rule.node_type, rule.org_slug, rule.remote_name],
   });
 }
 
-export async function listRules(db: Client): Promise<RoutingRule[]> {
+export async function listRules(db: DbClient): Promise<RoutingRule[]> {
   if (isLocalWorkspace()) return [];
   const r = await db.execute(
     "SELECT priority, node_type, org_slug, remote_name FROM remote_routing ORDER BY priority ASC, id ASC",
@@ -98,7 +99,7 @@ export async function listRules(db: Client): Promise<RoutingRule[]> {
   }));
 }
 
-export async function replaceRules(db: Client, rules: RoutingRule[]): Promise<void> {
+export async function replaceRules(db: DbClient, rules: RoutingRule[]): Promise<void> {
   // One transaction: a failed insert (or a crash between statements) must
   // not leave the table empty -- resolveRemote on an empty table makes
   // every storeFile fail with "No remote routing configured".
@@ -143,7 +144,7 @@ export function resolveRemoteFromRules(
 }
 
 export async function resolveRemote(
-  db: Client,
+  db: DbClient,
   nodeType: string,
   orgSlug: string | null,
 ): Promise<string | null> {

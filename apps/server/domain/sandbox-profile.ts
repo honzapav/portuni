@@ -22,7 +22,7 @@
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { ulid } from "ulid";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { getMirrorPath, listUserMirrors } from "./sync/mirror-registry.js";
 import { nodeNeighbourIds } from "./queries/neighbours.js";
 import { getSessionScope, loadResumableSession } from "./sessions.js";
@@ -184,7 +184,7 @@ async function resolveReal(path: string): Promise<string> {
 // only has to cover whatever this widened readMirrors set cannot (nodes
 // with no local mirror on this device).
 export async function resolveSandboxScopeForNode(
-  db: Client,
+  db: DbClient,
   userId: string,
   nodeId: string,
   resumeSessionId?: string,
@@ -282,7 +282,7 @@ export async function resolveNeighbourReadMirrors(
 // implements for write classification). Returns null when cwd is outside
 // every mirror.
 export async function resolveSandboxScopeForCwd(
-  db: Client,
+  db: DbClient,
   userId: string,
   cwd: string,
   resumeSessionId?: string,

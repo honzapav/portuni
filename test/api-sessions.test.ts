@@ -11,7 +11,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable, Writable } from "node:stream";
 import { ulid } from "ulid";
-import { createClient as createDbClient, type Client as DbClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
+import type { DbClient } from "../apps/server/infra/db.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
@@ -95,7 +96,7 @@ describe("session REST endpoints", () => {
     process.env.PORTUNI_WORKSPACE_ROOT = workspace;
     resetLocalDbForTests();
 
-    db = createDbClient({ url: ":memory:" });
+    db = await openTestDb();
     await ensureSchemaOn(db);
     setDbForTesting(db);
 
@@ -177,8 +178,34 @@ describe("session REST endpoints", () => {
     assert.equal(body.name_is_custom, true);
   });
 
-  test("PATCH /sessions/:id 404s for a session owned by someone else", async () => {
+  // Renaming is owner-only (auth/session-access.ts's sessionAccess "message"
+  // tier); a session owned by someone else on a node the caller CAN see
+  // (the fixture's project node has no ACL) is visible but forbidden --
+  // 403, not 404, since the caller already knows it exists (it shows up in
+  // the node's Relace tab).
+  test("PATCH /sessions/:id 403s for a session owned by someone else on a visible node", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
+    const res = await call(makeIdentity("U2"), "PATCH", `/sessions/${session.id}`, { name: "Nope" });
+    assert.equal(res.statusCode, 403);
+  });
+
+  // A session anchored to a node the caller cannot see at all is hidden
+  // entirely -- 404, same "non-members do not see it AT ALL" rule
+  // auth/node-access.ts applies to the node itself.
+  test("PATCH /sessions/:id 404s for a session anchored to a node the caller cannot see", async () => {
+    const restrictedNodeId = ulid();
+    await db.execute({
+      sql: "INSERT INTO nodes (id, type, name, sync_key, created_by, visibility) VALUES (?, 'project', 'Hidden', 'hidden', ?, 'group')",
+      args: [restrictedNodeId, SOLO],
+    });
+    await db.execute({
+      sql: "INSERT INTO node_access (node_id, kind, principal, display_email, added_by) VALUES (?, 'user', ?, NULL, ?)",
+      args: [restrictedNodeId, SOLO, SOLO],
+    });
+    const session = await createSession(db, SOLO, {
+      node_id: restrictedNodeId,
+      session_type: "interactive_task",
+    });
     const res = await call(makeIdentity("U2"), "PATCH", `/sessions/${session.id}`, { name: "Nope" });
     assert.equal(res.statusCode, 404);
   });
@@ -203,10 +230,21 @@ describe("session REST endpoints", () => {
     assert.equal(res.statusCode, 409);
   });
 
-  test("POST /sessions/:id/state 404s for a session owned by someone else", async () => {
+  // State transitions are the "stop" tier (owner or manage scope);
+  // makeIdentity's default scope is "write", below manage, so a visible
+  // session owned by someone else is forbidden, not hidden.
+  test("POST /sessions/:id/state 403s for a session owned by someone else without manage scope", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
     const res = await call(makeIdentity("U2"), "POST", `/sessions/${session.id}/state`, { state: "closed" });
-    assert.equal(res.statusCode, 404);
+    assert.equal(res.statusCode, 403);
+  });
+
+  test("POST /sessions/:id/state succeeds for someone else with manage scope", async () => {
+    const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
+    const res = await call(makeIdentity("U2", "manage"), "POST", `/sessions/${session.id}/state`, {
+      state: "closed",
+    });
+    assert.equal(res.statusCode, 200);
   });
 
   test("GET /sessions/:id/resume-info reports conversationResumable false with no mirror on this machine", async () => {
@@ -234,10 +272,13 @@ describe("session REST endpoints", () => {
     assert.equal(body.conversation_resumable, false);
   });
 
-  test("GET /sessions/:id/resume-info 404s for a session owned by someone else", async () => {
+  // Reading is the "read" tier: anyone who can see the anchor node may read
+  // resume-info for a session owned by someone else (same rule as reading
+  // the chat/events) -- the fixture's project node has no ACL.
+  test("GET /sessions/:id/resume-info is readable by anyone who can see the anchor node", async () => {
     const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
     const res = await call(makeIdentity("U2"), "GET", `/sessions/${session.id}/resume-info`);
-    assert.equal(res.statusCode, 404);
+    assert.equal(res.statusCode, 200);
   });
 
   // #329: a server-generated suspend (here via the terminal-exit path)
@@ -255,6 +296,36 @@ describe("session REST endpoints", () => {
     const body = JSON.parse(res.body) as SessionResumeInfo;
     assert.equal(body.generated_by, "server");
     assert.equal(body.reason, "terminal_exit");
+  });
+
+  // The restart indicator (#342, SessionChat header): GET /sessions/:id/
+  // signals is a plain read of sessionSignals, gated by the same "read"
+  // tier as resume-info (auth/session-access.ts).
+  test("GET /sessions/:id/signals reports zeros/null for a session with no live run", async () => {
+    const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
+    const res = await call(makeIdentity(SOLO), "GET", `/sessions/${session.id}/signals`);
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body) as {
+      runAgeMs: number | null;
+      writeSetSize: number;
+      readSetSize: number;
+      expansionsSinceRunStart: number;
+    };
+    assert.equal(body.runAgeMs, null);
+    assert.equal(body.writeSetSize, 0);
+    assert.equal(body.readSetSize, 0);
+    assert.equal(body.expansionsSinceRunStart, 0);
+  });
+
+  test("GET /sessions/:id/signals is readable by anyone who can see the anchor node", async () => {
+    const session = await createSession(db, SOLO, { node_id: nodeId, session_type: "interactive_task" });
+    const res = await call(makeIdentity("U2"), "GET", `/sessions/${session.id}/signals`);
+    assert.equal(res.statusCode, 200);
+  });
+
+  test("GET /sessions/:id/signals 404s for an unknown session id", async () => {
+    const res = await call(makeIdentity(SOLO), "GET", `/sessions/${ulid()}/signals`);
+    assert.equal(res.statusCode, 404);
   });
 
   test("GET /sessions/:id/resume-info reports generated_by null for an ordinary (non-server) suspend", async () => {

@@ -41,6 +41,8 @@ import type {
   SyncRunResponse,
   WatcherErrorEntry,
   UntrackedFile,
+  SessionSummary,
+  SessionRunRow,
 } from "../types";
 import {
   RELATION_TYPES,
@@ -50,6 +52,8 @@ import {
   HEALTH_STATES,
 } from "../types";
 import { safeHref } from "../lib/safe-url";
+import { useMe } from "../lib/use-me";
+import type { SessionStateMessage } from "../lib/sessions-client";
 import { groupEventsByDate } from "../lib/events";
 import { isTauri, openInFinder } from "../lib/backend-url";
 import { externalLinkProps } from "../lib/external-link";
@@ -81,7 +85,6 @@ import {
   renameFile,
   deleteFile,
   resolveFileSync,
-  fetchMe,
   LocalOnlyError,
 } from "../api";
 import type { ResolveAction } from "../api";
@@ -95,7 +98,7 @@ import {
   NewFileSplitButton,
   SyncBar,
   NoMirrorBanner,
-  TerminalSplitButton,
+  NewTaskButton,
   WatcherErrorBanner,
   syncRunErrorsByFile,
 } from "./DetailPane.files";
@@ -167,6 +170,18 @@ type Props = {
   // terminal, same mechanism as the window close dialog's Pozastavit
   // (#231). Absent in contexts with no terminal concept (none today).
   terminalSessions?: TerminalSession[];
+  // NewTaskButton's "Nový úkol" success (#342) -- provided by the
+  // workspace, which owns the open-session state SessionChat renders from.
+  // Absent in contexts with no chat surface (none today).
+  onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow }) => void;
+  // Relace tab's "Otevřít chat" (#343) -- jumps to Práce with this node
+  // selected; #342's own workspaceOpenSession fetch then picks up the
+  // session automatically, so this needs no session id. Provided by App
+  // (works from both the graph and workspace views); absent nowhere today,
+  // but optional for the same reason onSessionStarted is.
+  onOpenChat?: (nodeId: string, sessionId: string) => void;
+  // Live session_state map for the Relace tab (see SessionsSection).
+  liveSessionStates?: Readonly<Record<string, SessionStateMessage>>;
 };
 
 // Memoized: 3.5k lines of pane re-rendered wholesale on every App render
@@ -189,28 +204,13 @@ function DetailPane({
   onCollapse,
   onOpenFile,
   terminalSessions,
+  onSessionStarted,
+  onOpenChat,
+  liveSessionStates,
 }: Props) {
-  // Fetched once and cached for the lifetime of this component instance
-  // (this outer DetailPane stays mounted across node selections -- only
-  // DetailPaneBody remounts per node.id). Drives whether the sharing
-  // section is editable. Defaults to false (view-only) until the fetch
-  // resolves or if it fails -- never grants edit affordances optimistically.
-  const [canManage, setCanManage] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    void fetchMe()
-      .then((me) => {
-        if (!cancelled) {
-          setCanManage(me.global_scope === "manage" || me.global_scope === "admin");
-        }
-      })
-      .catch(() => {
-        /* stays false -- sharing section renders view-only */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // Drives whether the sharing section is editable, and (canManage + meId
+  // together) the Relace tab's #321 action gating (sessionRowAccess).
+  const { meId, canManage } = useMe();
 
   if (loading && !node) {
     return (
@@ -254,6 +254,7 @@ function DetailPane({
       node={node}
       graph={graph}
       canManage={canManage}
+      meId={meId}
       onSelect={onSelect}
       canGoBack={canGoBack}
       onBack={onBack}
@@ -265,6 +266,9 @@ function DetailPane({
       onCollapse={onCollapse}
       onOpenFile={onOpenFile}
       terminalSessions={terminalSessions}
+      onSessionStarted={onSessionStarted}
+      onOpenChat={onOpenChat}
+      liveSessionStates={liveSessionStates}
     />
   );
 }
@@ -273,6 +277,7 @@ function DetailPaneBody({
   node,
   graph,
   canManage,
+  meId,
   onSelect,
   canGoBack,
   onBack,
@@ -284,10 +289,14 @@ function DetailPaneBody({
   onCollapse,
   onOpenFile,
   terminalSessions,
+  onSessionStarted,
+  onOpenChat,
+  liveSessionStates,
 }: {
   node: NodeDetail;
   graph: GraphPayload | null;
   canManage: boolean;
+  meId: string | null;
   onSelect: (id: string | null) => void;
   canGoBack: boolean;
   onBack: () => void;
@@ -299,6 +308,10 @@ function DetailPaneBody({
   onCollapse?: () => void;
   onOpenFile?: (nodeId: string, relPath: string) => void;
   terminalSessions?: TerminalSession[];
+  onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow }) => void;
+  onOpenChat?: (nodeId: string, sessionId: string) => void;
+  // Live session_state map for the Relace tab (see SessionsSection).
+  liveSessionStates?: Readonly<Record<string, SessionStateMessage>>;
 }) {
 
   const [editing, setEditing] = useState(false);
@@ -1211,6 +1224,10 @@ function DetailPaneBody({
             onOpenTerminal={openEmbeddedTerminal}
             onOpenFile={onOpenFile}
             terminalSessions={terminalSessions}
+            onOpenChat={onOpenChat ? (sessionId) => onOpenChat(node.id, sessionId) : undefined}
+            liveStates={liveSessionStates}
+            canManage={canManage}
+            meId={meId}
           />
         )}
 
@@ -1249,12 +1266,13 @@ function DetailPaneBody({
         ) : (
           <div className="flex flex-col gap-2">
             {node.type !== "organization" ? (
-              <TerminalSplitButton
+              <NewTaskButton
                 node={node}
                 agentCommand={agentCommand}
                 terminalLaunch={terminalLaunch}
                 onEmbeddedOpen={openEmbeddedTerminal}
                 embeddedPending={launchingTerminal}
+                onSessionStarted={onSessionStarted}
               />
             ) : null}
           </div>

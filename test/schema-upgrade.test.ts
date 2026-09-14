@@ -1,6 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createClient, type Client } from "@libsql/client";
+// Pinned to libsql: this file builds its own SQLite DDL and/or drives the
+// libsql migration path (runMigrationNNN) directly -- neither has a
+// Postgres form (schema.pg.ts's baseline already carries the end state).
+import { openTestDb } from "./helpers/db.js";
+import type { DbClient as Client } from "../apps/server/infra/db.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { DDL, DDL_MIGRATION_006 } from "../apps/server/infra/schema-triggers.js";
 
@@ -54,7 +58,7 @@ async function rollBackTo032(db: Client): Promise<void> {
 
 describe("ensureSchemaOn against an older database", () => {
   it("upgrades an audit_log that predates the audit_node_id column", async () => {
-    const db = createClient({ url: ":memory:" });
+    const db = await openTestDb("libsql");
     await ensureSchemaOn(db);
     await rollBackTo032(db);
     assert.equal(await columnExists(db, "audit_log", "audit_node_id"), false);
@@ -68,7 +72,7 @@ describe("ensureSchemaOn against an older database", () => {
   });
 
   it("creates idx_audit_file_node_ts on a fresh install too", async () => {
-    const db = createClient({ url: ":memory:" });
+    const db = await openTestDb("libsql");
     await ensureSchemaOn(db);
     assert.equal(await indexExists(db, "idx_audit_file_node_ts"), true);
     db.close();
@@ -78,7 +82,7 @@ describe("ensureSchemaOn against an older database", () => {
     // The general form of the same bug: DDL must never reference schema that
     // only a migration introduces. Replaying it against a rolled-back
     // database is what catches the next one.
-    const db = createClient({ url: ":memory:" });
+    const db = await openTestDb("libsql");
     await ensureSchemaOn(db);
     await rollBackTo032(db);
     for (const sql of [...DDL, ...DDL_MIGRATION_006]) {

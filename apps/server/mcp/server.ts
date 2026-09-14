@@ -22,7 +22,7 @@ import { registerResponsibilityTools } from "./tools/responsibilities.js";
 import { registerEntityAttributeTools } from "./tools/entity-attributes.js";
 import { createDiskProjector, type DiskProjector } from "./disk-projection.js";
 import { createElicitor, type Elicitor } from "./elicit.js";
-import { bindSessionPersistence } from "./session-persistence.js";
+import { bindExistingSessionHandshake, bindSessionPersistence } from "./session-persistence.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import { TOOL_MIN_SCOPE } from "../auth/min-scopes.js";
 import { scopeAtLeast } from "../auth/roles.js";
@@ -195,6 +195,14 @@ function registerSetupDriveRemotePrompt(server: McpServer): void {
 // before. A resumed connection's row already exists (resumeSessionPersistence,
 // awaited by the caller before the connection is allowed to proceed), so
 // bindSession is a no-op then.
+//
+// `boundExistingSessionId` (runner batch, Rule 2 "The session exists before
+// the runner"): set when the caller (transport.ts) already resolved
+// spawnSessionId to a `running` row this identity owns
+// (lookupSpawnSessionForBind) and awaited bindExistingSessionPersistence's
+// rehydration on `scope` before this function was even called -- bindSession
+// then only fills in the CLI name and touches last_active_at
+// (bindExistingSessionHandshake) instead of creating a second row.
 export function createMcpServer(
   identity: RequestIdentity,
   homeNodeId: string | null = null,
@@ -202,6 +210,7 @@ export function createMcpServer(
   resumeSessionId: string | null = null,
   spawnSessionId: string | null = null,
   terminalId: string | null = null,
+  boundExistingSessionId: string | null = null,
 ): { server: McpServer; scope: SessionScope; bindSession: (cli?: string | null) => void } {
   const scope = new SessionScope(deriveSessionType(identity, homeNodeId));
   // #211: resolved synchronously, before any tool call can race it (unlike
@@ -214,19 +223,22 @@ export function createMcpServer(
   scope.projectionSessionId = resumeSessionId ?? spawnSessionId ?? UNNARROWED_PROJECTION_ID;
   const projector = createDiskProjector({ userId: identity.userId, scope });
   scope.onAdd((nodeId) => projector.schedule(nodeId));
-  const bindSession = resumeSessionId
-    ? () => undefined
-    : (cli?: string | null) =>
-        bindSessionPersistence(
-          getDb(),
-          scope,
-          identity,
-          profileId,
-          homeNodeId,
-          spawnSessionId,
-          terminalId,
-          cli,
-        );
+  const bindSession =
+    resumeSessionId || boundExistingSessionId
+      ? boundExistingSessionId
+        ? (cli?: string | null) => bindExistingSessionHandshake(getDb(), boundExistingSessionId, cli)
+        : () => undefined
+      : (cli?: string | null) =>
+          bindSessionPersistence(
+            getDb(),
+            scope,
+            identity,
+            profileId,
+            homeNodeId,
+            spawnSessionId,
+            terminalId,
+            cli,
+          );
   const server = new McpServer(
     { name: "portuni", version: "0.1.0" },
     { instructions: INSTRUCTIONS },

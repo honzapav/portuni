@@ -114,6 +114,9 @@ export class FakeRunnerAdapter implements RunnerAdapter {
       agentSessionId(): string | null {
         return agentSessionIdValue;
       },
+      pid(): number | null {
+        return null;
+      },
     };
   }
 }

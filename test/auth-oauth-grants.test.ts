@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { makeSharedDb } from "./helpers/shared-db.js";
+import { insertIgnore } from "../apps/server/infra/sql.js";
 import {
   mintGrant,
   verifyAccessToken,
@@ -63,7 +64,7 @@ test("revoked grant stops verifying access", async () => {
 test("revoke is ownership-scoped", async () => {
   const { db } = await makeSharedDb();
   await db.execute({
-    sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+    sql: insertIgnore(db.dialect, "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)"),
     args: ["U2", "other@x.com", "Other"],
   });
   const minted = await mintGrant(db, INPUT);
@@ -125,10 +126,16 @@ test("older refresh generations fail without revoking the grant", async () => {
 test("expired refresh token fails absolute, regardless of activity", async () => {
   const { db } = await makeSharedDb();
   const minted = await mintGrant(db, INPUT);
-  // Simulate the 180-day absolute expiry having passed.
+  // Simulate the 180-day absolute expiry having passed. SQLite-shaped
+  // "YYYY-MM-DD HH:MM:SS", not ISO: the column is TEXT under libsql and the
+  // production code's own `expires_at > nowExpr(dialect)` comparison relies
+  // on this format string-sorting correctly against datetime('now')'s
+  // output (an ISO "...T..." value sorts ABOVE it same-day, which would
+  // make an "expired" row look not-yet-expired). Postgres parses either
+  // shape into the same real TIMESTAMPTZ regardless.
   await db.execute({
-    sql: "UPDATE oauth_grants SET refresh_expires_at = datetime('now', '-1 second') WHERE id = ?",
-    args: [minted.grantId],
+    sql: "UPDATE oauth_grants SET refresh_expires_at = ? WHERE id = ?",
+    args: [new Date(Date.now() - 1000).toISOString().replace("T", " ").slice(0, 19), minted.grantId],
   });
   const result = await rotateRefreshToken(db, minted.refreshToken);
   assert.equal(result.ok, false);
@@ -164,7 +171,7 @@ test("unknown refresh token fails without touching any grant", async () => {
 test("listGrantsForUser excludes revoked grants and scopes by user", async () => {
   const { db } = await makeSharedDb();
   await db.execute({
-    sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+    sql: insertIgnore(db.dialect, "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)"),
     args: ["U2", "other@x.com", "Other"],
   });
   const mine = await mintGrant(db, INPUT);

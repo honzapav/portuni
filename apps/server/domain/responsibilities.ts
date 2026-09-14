@@ -1,12 +1,13 @@
 // Domain: responsibilities and their M:N assignments to actors.
 //
-// Pure functions over a libsql Client. No MCP / HTTP coupling.
+// Pure functions over a libsql DbClient. No MCP / HTTP coupling.
 
 import { z } from "zod";
 import { ulid } from "ulid";
-import type { Client, InValue } from "@libsql/client";
+import type { DbClient, InValue } from "../infra/db.js";
 import { ActorRow, ResponsibilityRow } from "../shared/types.js";
 import { writeAudit } from "../infra/audit.js";
+import { insertIgnore } from "../infra/sql.js";
 
 export type ResponsibilityWithAssignees = ResponsibilityRow & {
   assignees: ActorRow[];
@@ -41,7 +42,7 @@ const AssignInput = z.object({
 });
 type AssignInput = z.infer<typeof AssignInput>;
 
-async function loadResponsibility(db: Client, id: string): Promise<ResponsibilityRow | null> {
+async function loadResponsibility(db: DbClient, id: string): Promise<ResponsibilityRow | null> {
   const res = await db.execute({
     sql: "SELECT * FROM responsibilities WHERE id = ?",
     args: [id],
@@ -50,7 +51,7 @@ async function loadResponsibility(db: Client, id: string): Promise<Responsibilit
   return ResponsibilityRow.parse(res.rows[0]);
 }
 
-async function loadAssignees(db: Client, responsibilityId: string): Promise<ActorRow[]> {
+async function loadAssignees(db: DbClient, responsibilityId: string): Promise<ActorRow[]> {
   const res = await db.execute({
     sql: `SELECT a.* FROM actors a
             JOIN responsibility_assignments ra ON ra.actor_id = a.id
@@ -62,7 +63,7 @@ async function loadAssignees(db: Client, responsibilityId: string): Promise<Acto
 }
 
 export async function createResponsibility(
-  db: Client,
+  db: DbClient,
   createdBy: string,
   input: CreateResponsibilityInput,
 ): Promise<ResponsibilityRow> {
@@ -90,8 +91,11 @@ export async function createResponsibility(
   if (parsed.assignees && parsed.assignees.length > 0) {
     for (const actorId of parsed.assignees) {
       await db.execute({
-        sql: `INSERT OR IGNORE INTO responsibility_assignments (responsibility_id, actor_id, created_at)
+        sql: insertIgnore(
+          db.dialect,
+          `INSERT OR IGNORE INTO responsibility_assignments (responsibility_id, actor_id, created_at)
               VALUES (?, ?, ?)`,
+        ),
         args: [id, actorId, now],
       });
     }
@@ -109,7 +113,7 @@ export async function createResponsibility(
 }
 
 export async function updateResponsibility(
-  db: Client,
+  db: DbClient,
   updatedBy: string,
   input: UpdateResponsibilityInput,
 ): Promise<ResponsibilityRow> {
@@ -161,7 +165,7 @@ export async function updateResponsibility(
 }
 
 export async function deleteResponsibility(
-  db: Client,
+  db: DbClient,
   deletedBy: string,
   responsibilityId: string,
 ): Promise<void> {
@@ -180,7 +184,7 @@ export async function deleteResponsibility(
 }
 
 export async function listResponsibilities(
-  db: Client,
+  db: DbClient,
   filters: ListResponsibilitiesInput = {},
 ): Promise<ResponsibilityWithAssignees[]> {
   const parsed = ListResponsibilitiesInput.parse(filters);
@@ -221,7 +225,7 @@ export async function listResponsibilities(
 }
 
 export async function assignResponsibility(
-  db: Client,
+  db: DbClient,
   assignedBy: string,
   input: AssignInput,
 ): Promise<void> {
@@ -229,8 +233,11 @@ export async function assignResponsibility(
   const now = new Date().toISOString();
 
   await db.execute({
-    sql: `INSERT OR IGNORE INTO responsibility_assignments (responsibility_id, actor_id, created_at)
+    sql: insertIgnore(
+      db.dialect,
+      `INSERT OR IGNORE INTO responsibility_assignments (responsibility_id, actor_id, created_at)
           VALUES (?, ?, ?)`,
+    ),
     args: [parsed.responsibility_id, parsed.actor_id, now],
   });
 
@@ -245,7 +252,7 @@ export async function assignResponsibility(
 }
 
 export async function unassignResponsibility(
-  db: Client,
+  db: DbClient,
   unassignedBy: string,
   input: AssignInput,
 ): Promise<void> {

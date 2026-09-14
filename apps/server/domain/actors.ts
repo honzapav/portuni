@@ -1,12 +1,12 @@
 // Domain: actor registry (person / automation).
 //
-// Pure functions over a libsql Client. No MCP / HTTP coupling. Both the
+// Pure functions over a libsql DbClient. No MCP / HTTP coupling. Both the
 // MCP tool layer (src/mcp/tools/actors.ts) and the REST layer
 // (src/api/actors.ts) call into these.
 
 import { z } from "zod";
 import { ulid } from "ulid";
-import type { Client, InValue } from "@libsql/client";
+import type { DbClient, InValue } from "../infra/db.js";
 import { ActorRow } from "../shared/types.js";
 import { writeAudit } from "../infra/audit.js";
 
@@ -38,7 +38,7 @@ const ListActorsInput = z.object({
 });
 type ListActorsInput = z.infer<typeof ListActorsInput>;
 
-async function loadActor(db: Client, actorId: string): Promise<ActorRow | null> {
+async function loadActor(db: DbClient, actorId: string): Promise<ActorRow | null> {
   const res = await db.execute({
     sql: "SELECT * FROM actors WHERE id = ?",
     args: [actorId],
@@ -48,7 +48,7 @@ async function loadActor(db: Client, actorId: string): Promise<ActorRow | null> 
 }
 
 export async function createActor(
-  db: Client,
+  db: DbClient,
   createdBy: string,
   input: CreateActorInput,
 ): Promise<ActorRow> {
@@ -97,7 +97,7 @@ export async function createActor(
 }
 
 export async function updateActor(
-  db: Client,
+  db: DbClient,
   updatedBy: string,
   input: UpdateActorInput,
 ): Promise<ActorRow> {
@@ -175,7 +175,7 @@ export async function updateActor(
 }
 
 export async function listActors(
-  db: Client,
+  db: DbClient,
   filters: ListActorsInput = {},
 ): Promise<ActorRow[]> {
   const parsed = ListActorsInput.parse(filters);
@@ -199,7 +199,7 @@ export async function listActors(
   return res.rows.map((r) => ActorRow.parse(r));
 }
 
-export async function getActor(db: Client, actorId: string): Promise<ActorRow | null> {
+export async function getActor(db: DbClient, actorId: string): Promise<ActorRow | null> {
   return loadActor(db, actorId);
 }
 
@@ -207,7 +207,7 @@ export async function getActor(db: Client, actorId: string): Promise<ActorRow | 
 // responsibility and its owning node. Returned shape is deliberately flat so
 // the MCP response is easy for the LLM to scan.
 export async function getActorAssignments(
-  db: Client,
+  db: DbClient,
   actorId: string,
 ): Promise<Array<{ id: string; title: string; node_id: string; node_name: string; node_type: string }>> {
   const res = await db.execute({
@@ -230,7 +230,7 @@ export async function getActorAssignments(
 }
 
 export async function archiveActor(
-  db: Client,
+  db: DbClient,
   archivedBy: string,
   actorId: string,
 ): Promise<void> {

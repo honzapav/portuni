@@ -6,7 +6,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
 import {
   SessionScope,
   decideRead,
@@ -29,7 +29,7 @@ function identity(overrides: Partial<RequestIdentity>): RequestIdentity {
 }
 
 async function freshGraph() {
-  const db = createClient({ url: ":memory:" });
+  const db = await openTestDb();
   await db.execute(
     `CREATE TABLE nodes (id TEXT PRIMARY KEY, type TEXT, name TEXT, owner_id TEXT, visibility TEXT, meta TEXT)`,
   );

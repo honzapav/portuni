@@ -20,7 +20,7 @@
 
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, extname } from "node:path";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { getMirrorPath } from "./sync/mirror-registry.js";
 import { readFileBytesRemote } from "./sync/file-content-remote.js";
 import { FileContentError } from "./sync/file-content.js";
@@ -88,7 +88,7 @@ async function rawFromMirror(
 // mirror of the node. Adapter/transport failures propagate; only the
 // "expected" outcomes are mapped onto RawResult.
 async function rawFromRemote(
-  db: Client,
+  db: DbClient,
   nodeId: string,
   relPath: string,
 ): Promise<Exclude<RawResult, { kind: "no_mirror" }>> {
@@ -127,7 +127,7 @@ export async function readNodeFileFromMirror(
 // reports them as an error result); only the "expected" outcomes are mapped
 // onto NodeFileContent.
 export async function readNodeFileFromRemote(
-  db: Client,
+  db: DbClient,
   nodeId: string,
   relPath: string,
 ): Promise<NodeFileContent> {
@@ -137,7 +137,7 @@ export async function readNodeFileFromRemote(
 
 // Mirror first, remote when this machine holds no mirror of the node.
 export async function readNodeFile(
-  db: Client,
+  db: DbClient,
   userId: string,
   nodeId: string,
   relPath: string,
@@ -152,7 +152,7 @@ export async function readNodeFile(
 // read-file spill path (mcp/read-file-spill.ts) to write a node's file to
 // disk when it has no local mirror to hardlink from.
 export async function readNodeFileRaw(
-  db: Client,
+  db: DbClient,
   userId: string,
   nodeId: string,
   relPath: string,

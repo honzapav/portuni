@@ -8,6 +8,7 @@ import type { ZodType } from "zod";
 import { authMode, checkAuthRequiredForConfig } from "../infra/server-config.js";
 import { LocalModeNoRemoteError } from "../domain/sync/types.js";
 import { getDb } from "../infra/db.js";
+import { constraintViolationMessage } from "../infra/sql.js";
 import { SOLO_USER } from "../infra/schema.js";
 import { EnvAdapter } from "../auth/env-adapter.js";
 import { createGoogleAdapter } from "../auth/google-adapter.js";
@@ -267,9 +268,8 @@ export function respondError(res: ServerResponse, ctx: string, err: unknown): vo
     res.end(JSON.stringify({ error: err.message, code: err.code, request_id: id }));
     return;
   }
-  if (err instanceof Error && err.message.includes("SQLITE_CONSTRAINT")) {
-    const m = err.message.match(/SQLite error:\s*([^\n]+)/);
-    const friendly = m ? m[1].trim() : "constraint violation";
+  const friendly = err instanceof Error ? constraintViolationMessage(err) : null;
+  if (friendly !== null) {
     res.writeHead(409, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: friendly, request_id: id }));
     return;
@@ -299,6 +299,41 @@ function respondUnauthorized(res: ServerResponse, ctx: IdentityContext, pathname
     "WWW-Authenticate": wwwAuthenticate,
   });
   res.end(JSON.stringify({ error: "Unauthorized" }));
+}
+
+export interface UpgradeAuthResult {
+  ok: boolean;
+  status: number;
+  identity: RequestIdentity | null;
+}
+
+// Host allowlist + bearer/JWT auth for a WebSocket upgrade request
+// (api/sessions-ws.ts, "the same bearer/JWT auth ... apply to the upgrade
+// request"). There is no ServerResponse on an "upgrade" event -- the caller
+// (http/server.ts) turns a refusal into a raw HTTP response written
+// directly to the socket, then destroys it. CORS/origin/OPTIONS are REST-
+// only concerns (no preflight, no browser-enforced CORS on a WebSocket
+// handshake), so this is the identity-resolution half of applyGates only,
+// not a full duplicate.
+export async function checkUpgradeAuth(req: IncomingMessage): Promise<UpgradeAuthResult> {
+  const hostHeader = (req.headers.host ?? "").toLowerCase();
+  if (!getAllowedHosts().has(hostHeader)) {
+    return { ok: false, status: 403, identity: null };
+  }
+
+  const ctx = getIdentityContext();
+  if (ctx.mode === "env" && AUTH_ENABLED) {
+    const presented = bearer(req);
+    if (presented === "" || !timingSafeStringEqual(presented, AUTH_TOKEN)) {
+      return { ok: false, status: 401, identity: null };
+    }
+  }
+  const identity = await resolveRequestIdentity(
+    ctx,
+    req.headers.authorization as string | undefined,
+  );
+  if (!identity) return { ok: false, status: 401, identity: null };
+  return { ok: true, status: 101, identity };
 }
 
 // Apply the global gates: host allowlist, origin allowlist, CORS headers,

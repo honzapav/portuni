@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile, readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+// The local sync.db is a libsql file database in its own right (domain/
+// sync/local-db.ts), independent of which driver the graph db runs on --
+// this test opens that file directly to seed a legacy schema.
 import { createClient } from "@libsql/client";
 import { makeSharedDb } from "./helpers/shared-db.js";
 import { storeFile, pullFile, statusScan } from "../apps/server/domain/sync/engine.js";

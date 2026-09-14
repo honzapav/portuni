@@ -22,6 +22,7 @@ import type {
   SessionState,
   SessionSummary,
   SessionResumeInfo,
+  SessionRunRow,
   OverviewPayload,
 } from "./types";
 import { apiFetch } from "./lib/backend-url";
@@ -193,6 +194,50 @@ export function fetchPersistentSessionResumeInfo(
 ): Promise<SessionResumeInfo> {
   const qs = configDir ? `?config_dir=${encodeURIComponent(configDir)}` : "";
   return jsonRequest<SessionResumeInfo>("GET", `/sessions/${encodeURIComponent(id)}/resume-info${qs}`);
+}
+
+// The restart indicator (SessionChat header, #342) -- GET /sessions/:id/signals.
+export type SessionSignals = {
+  runAgeMs: number | null;
+  writeSetSize: number;
+  readSetSize: number;
+  expansionsSinceRunStart: number;
+};
+
+export function fetchSessionSignals(id: string): Promise<SessionSignals> {
+  return jsonRequest<SessionSignals>("GET", `/sessions/${encodeURIComponent(id)}/signals`);
+}
+
+// GET /sessions/:id -- the raw session record (apps/server/shared/types.ts's
+// SessionRow, a zod schema server-side, deliberately not imported here so
+// this stays web-safe). SessionSummary's fields are a strict subset of that
+// row with matching names/types, so typing the response as SessionSummary
+// is accurate -- every field SessionChat's header needs is already there.
+export function fetchSession(id: string): Promise<SessionSummary> {
+  return jsonRequest<SessionSummary>("GET", `/sessions/${encodeURIComponent(id)}`);
+}
+
+// POST /sessions/:id/resume -- owner-only, not part of the live WS channel
+// (sessions-client.ts's ClientFrame union has no resume frame, matching the
+// server's own protocol -- resume starts a NEW run, it isn't an action on
+// the live one). "Nahodit": conversation-resume when the underlying CLI
+// transcript still exists, handoff-resume otherwise (GET /sessions/:id/
+// resume-info decides which is offered).
+export function resumeSession(id: string, mode: "conversation" | "handoff"): Promise<{ run: SessionRunRow }> {
+  return jsonRequest<{ run: SessionRunRow }>("POST", `/sessions/${encodeURIComponent(id)}/resume`, { mode });
+}
+
+// POST /sessions -- starts a task (session + first run). Replaces
+// TerminalSplitButton's direct embedded-terminal spawn with a server-driven
+// run (#342, NewTaskDialog).
+export function startSession(input: {
+  node_id: string;
+  brief: string;
+  runner: string;
+  instance_id?: string | null;
+  policy?: "default" | "auto";
+}): Promise<{ session: SessionSummary; run: SessionRunRow }> {
+  return jsonRequest<{ session: SessionSummary; run: SessionRunRow }>("POST", "/sessions", input);
 }
 
 // GET /overview -- Přehled tab (#196). One aggregate, permission-filtered
@@ -857,10 +902,10 @@ export async function fetchAccountUsers(): Promise<AccountUser[]> {
   return body.users;
 }
 
-// Only the field the sharing UI needs (canManage = global_scope 'manage' |
-// 'admin'). /me returns more (email, name, groups, via) but nothing else
-// here consumes it yet.
-export async function fetchMe(): Promise<{ global_scope: string }> {
+// canManage (global_scope 'manage' | 'admin') drives the sharing UI; `id`
+// drives #343's owner-only action gating (sessionRowAccess). /me returns
+// more (email, name, groups, via) but nothing else here consumes it yet.
+export async function fetchMe(): Promise<{ id: string; global_scope: string }> {
   const res = await apiFetch("/me");
   await throwForStatus(res, "me");
   return res.json();

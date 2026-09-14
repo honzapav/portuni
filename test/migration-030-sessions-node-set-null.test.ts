@@ -24,7 +24,7 @@ describe("migration 030 sessions.node_id ON DELETE SET NULL", () => {
   });
 
   it("is idempotent across re-runs", async () => {
-    const { db } = await makeSharedDb();
+    const { db } = await makeSharedDb("libsql");
     await runMigration030(db);
     await runMigration030(db);
   });
@@ -36,7 +36,7 @@ describe("migration 030 sessions.node_id ON DELETE SET NULL", () => {
 // proving the session (and its session_scope audit) now survives its
 // anchor node's deletion instead of being cascade-deleted with it.
 test("migration 030 preserves existing rows and stops cascading session deletes off the anchor node", async () => {
-  const { db, nodeId, orgId } = await makeSharedDb();
+  const { db, nodeId, orgId } = await makeSharedDb("libsql");
   const sessionId = ulid();
   await db.execute({
     sql: "INSERT INTO sessions (id, node_id, user_id, session_type, name) VALUES (?, ?, ?, 'interactive_task', 'pre-migration session')",

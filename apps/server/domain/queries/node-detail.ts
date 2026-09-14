@@ -1,7 +1,7 @@
 // Read projection: full node detail payload for the frontend's detail pane.
-// Pure: takes a libsql Client + a userId for mirror lookup.
+// Pure: takes a libsql DbClient + a userId for mirror lookup.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { NodeRow } from "../../shared/types.js";
 import type { NodeDetail } from "../../shared/api-types.js";
 import { listUserMirrors, unregisterMirror } from "../sync/mirror-registry.js";
@@ -10,7 +10,7 @@ import { deriveLocalPath, buildNodeRoot } from "../sync/remote-path.js";
 import { classifyNodeVisibility, type GroupIdentityView } from "../../auth/node-access.js";
 
 export async function loadNodeDetail(
-  db: Client,
+  db: DbClient,
   userId: string,
   nodeId: string,
   identity: GroupIdentityView,

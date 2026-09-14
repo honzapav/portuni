@@ -1,4 +1,6 @@
-import { createClient, type Client } from "@libsql/client";
+import { createClient } from "@libsql/client";
+import { createLibsqlDbClient } from "../../infra/db-libsql.js";
+import type { DbClient } from "../../infra/db.js";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -34,7 +36,7 @@ export interface LocalMirrorRow {
   registered_at: string;
 }
 
-let cached: Client | null = null;
+let cached: DbClient | null = null;
 let cachedPath: string | null = null;
 
 function workspaceRoot(): string {
@@ -43,7 +45,7 @@ function workspaceRoot(): string {
   return root.replace(/^~(?=$|\/)/, homedir());
 }
 
-async function ensureSchema(db: Client): Promise<void> {
+async function ensureSchema(db: DbClient): Promise<void> {
   await db.execute(`CREATE TABLE IF NOT EXISTS file_state (
     file_id TEXT PRIMARY KEY,
     last_synced_hash TEXT,
@@ -81,7 +83,7 @@ async function ensureSchema(db: Client): Promise<void> {
 // last_synced_at NOT NULL, which made it impossible to store a cache-only
 // row for a file this device has never synced. SQLite cannot drop NOT NULL
 // in place, so rebuild the table once, preserving rows.
-async function migrateFileStateNullableBaseline(db: Client): Promise<void> {
+async function migrateFileStateNullableBaseline(db: DbClient): Promise<void> {
   const info = await db.execute("PRAGMA table_info(file_state)");
   const col = info.rows.find((r) => r.name === "last_synced_hash");
   if (!col || Number(col.notnull) === 0) return;
@@ -107,19 +109,19 @@ async function migrateFileStateNullableBaseline(db: Client): Promise<void> {
 
 // sync.db files created before the inode columns landed lack them; SQLite
 // ALTER TABLE ADD COLUMN is additive and cheap, run once per column.
-async function migrateFileStateInode(db: Client): Promise<void> {
+async function migrateFileStateInode(db: DbClient): Promise<void> {
   const info = await db.execute("PRAGMA table_info(file_state)");
   if (info.rows.some((r) => r.name === "cached_ino")) return;
   await db.execute("ALTER TABLE file_state ADD COLUMN cached_ino INTEGER");
   await db.execute("ALTER TABLE file_state ADD COLUMN cached_dev INTEGER");
 }
 
-export async function getLocalDb(): Promise<Client> {
+export async function getLocalDb(): Promise<DbClient> {
   const dir = join(workspaceRoot(), ".portuni");
   const path = join(dir, "sync.db");
   if (cached && cachedPath === path) return cached;
   await mkdir(dir, { recursive: true });
-  const db = createClient({ url: `file:${path}` });
+  const db = createLibsqlDbClient(createClient({ url: `file:${path}` }));
   // Two processes share this file (desktop sidecar + tmux MCP server).
   // Without a busy timeout a write lock in one makes the other's reads
   // fail instantly with SQLITE_BUSY -- files then flicker to "remote_error".

@@ -180,15 +180,44 @@ export async function resolveRestWriteContext(
 // the same bearer and is refused -- those mutate through the MCP tools,
 // which central write-gates against the session's own scope. Unset (dev
 // loop, tests): legacy behavior, every write allowed.
+// The posture question on its own, with no response written: may a request
+// from this identity mutate through a channel that has no per-node write
+// set to check against (the sync agent's REST routes, the session routes,
+// the live socket's mutating frames)? Unset secret: always. Set: only an
+// env-mode request carrying the proven X-Portuni-Webview-Proxy header --
+// the desktop app or the dev proxy, never a spawned terminal holding the
+// same bearer. Non-env identities (a central deployment's session_jwt /
+// device_token) never see the secret set, so they pass unchanged.
+export function webviewMutationAllowed(req: Pick<IncomingMessage, "headers">, identity: RequestIdentity): boolean {
+  const webviewProxySecret = configuredWebviewProxySecret();
+  if (!webviewProxySecret) return true;
+  return identity.via === "env" && webviewProxyProven(req, webviewProxySecret);
+}
+
+// Session routes (api/sessions.ts: start/message/answer/interrupt/suspend/
+// resume/close and the central record half): the same posture as
+// guardAgentRestWrite below, on the local router. sessionAccess still runs
+// after it -- this only decides whether the caller is the app at all.
+export function guardRestSessionWrite(
+  req: Pick<IncomingMessage, "headers">,
+  res: ServerResponse,
+  identity: RequestIdentity,
+): boolean {
+  if (webviewMutationAllowed(req, identity)) return true;
+  respondJson(res, 403, {
+    error: "session actions over REST are reserved for the desktop app; drive a session through the Portuni MCP tools from a terminal",
+    code: "WEBVIEW_PROXY_REQUIRED",
+  });
+  return false;
+}
+
 export function guardAgentRestWrite(
   req: Pick<IncomingMessage, "headers">,
   res: ServerResponse,
   identity: RequestIdentity,
   nodeId: string,
 ): boolean {
-  const webviewProxySecret = configuredWebviewProxySecret();
-  if (!webviewProxySecret) return true;
-  if (identity.via === "env" && webviewProxyProven(req, webviewProxySecret)) return true;
+  if (webviewMutationAllowed(req, identity)) return true;
   respondJson(
     res,
     403,

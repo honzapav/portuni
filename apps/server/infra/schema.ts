@@ -6,7 +6,7 @@
 // - schema-migrations.ts: numbered migrations + the migration runner
 
 import { createHash } from "node:crypto";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "./db.js";
 import { getDb } from "./db.js";
 import {
   NODE_TYPES,
@@ -19,6 +19,7 @@ import {
 } from "../shared/popp.js";
 import { DDL, DDL_MIGRATION_006, DDL_AFTER_MIGRATIONS } from "./schema-triggers.js";
 import { runMigrations, appliedMigrationIds, MIGRATION_IDS } from "./schema-migrations.js";
+import { ensurePgSchema } from "./migrations/pg.js";
 
 // Re-export canonical sets so existing imports from "./schema.js" keep working.
 export {
@@ -60,9 +61,17 @@ const SOLO_USER_ID = "01SOLO0000000000000000000";
 
 export const SOLO_USER = SOLO_USER_ID;
 
-async function seedSoloUser(db: Client): Promise<void> {
+async function seedSoloUser(db: DbClient): Promise<void> {
   const email = process.env.PORTUNI_USER_EMAIL ?? "solo@localhost";
   const name = process.env.PORTUNI_USER_NAME ?? "Solo User";
+  if (db.dialect === "postgres") {
+    await db.execute({
+      sql: `INSERT INTO users (id, email, name, created_at)
+            VALUES (?, ?, ?, now()) ON CONFLICT (id) DO NOTHING`,
+      args: [SOLO_USER_ID, email, name],
+    });
+    return;
+  }
   await db.execute({
     sql: `INSERT OR IGNORE INTO users (id, email, name, created_at)
           VALUES (?, ?, ?, datetime('now'))`,
@@ -116,9 +125,19 @@ export interface EnsureSchemaOptions {
 // on a fully migrated database: 91 execute calls, 1.82 s at 20 ms per call.
 // The fast path below is three.
 export async function ensureSchemaOn(
-  db: Client,
+  db: DbClient,
   options: EnsureSchemaOptions = {},
 ): Promise<void> {
+  // Only the PGlite/pg drivers use the pg-native baseline + migration
+  // framework (infra/migrations/pg.ts) -- the libsql path below is
+  // untouched. `repair` (a full libsql DDL replay) has no pg-side
+  // equivalent yet: the baseline is one idempotent-by-marker migration,
+  // not 90-odd individually-idempotent statements to replay.
+  if (db.dialect === "postgres") {
+    await ensurePgSchema(db);
+    await seedSoloUser(db);
+    return;
+  }
   // SQLite defaults to foreign_keys OFF per connection, which silently
   // disables every ON DELETE CASCADE in the schema on local file:/:memory:
   // databases (Turso/sqld enforces FKs server-side regardless). The pragma
@@ -173,6 +192,6 @@ export async function ensureSchema(): Promise<void> {
 // Explicit schema repair: full DDL replay plus the migration pass, regardless
 // of recorded version. The escape hatch for a database whose schema was
 // damaged out from under it.
-export async function repairSchemaOn(db: Client): Promise<void> {
+export async function repairSchemaOn(db: DbClient): Promise<void> {
   await ensureSchemaOn(db, { repair: true });
 }

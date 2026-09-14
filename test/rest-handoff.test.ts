@@ -22,7 +22,8 @@ import { tmpdir } from "node:os";
 import { Readable, Writable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ulid } from "ulid";
-import { createClient, type Client } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
+import type { DbClient as Client } from "../apps/server/infra/db.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
@@ -139,7 +140,7 @@ before(async () => {
   workspace = await mkdtemp(join(tmpdir(), "portuni-handoff-"));
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
   resetLocalDbForTests();
-  db = createClient({ url: ":memory:" });
+  db = await openTestDb();
   await ensureSchemaOn(db);
   setDbForTesting(db);
   setIdentityContextForTesting({

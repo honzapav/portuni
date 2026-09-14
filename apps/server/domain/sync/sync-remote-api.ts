@@ -16,8 +16,9 @@
 // Byte transfer itself goes through file-content-remote.ts (GET/PUT
 // /nodes/:id/file with base64 for binary), so this module is metadata-only.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
+import { auditRemotePathExpr } from "../../infra/sql.js";
 import { resolveNodeInfo } from "./node-info.js";
 import { resolveRemote, listRules, resolveRemoteFromRules } from "./routing.js";
 import { mimeFor } from "./engine.js";
@@ -91,7 +92,7 @@ const SYNC_INFO_BATCH = 500;
 // result map, matching the single-node endpoint's 404 semantics without
 // failing the whole batch.
 export async function getNodeSyncInfos(
-  db: Client,
+  db: DbClient,
   nodeIds: string[],
 ): Promise<Map<string, NodeSyncInfo>> {
   const out = new Map<string, NodeSyncInfo>();
@@ -101,6 +102,7 @@ export async function getNodeSyncInfos(
   const cutoff = new Date(Date.now() - TOMBSTONE_WINDOW_DAYS * 86_400_000)
     .toISOString()
     .slice(0, 10);
+  const remotePathExpr = auditRemotePathExpr(db.dialect);
 
   for (let i = 0; i < distinct.length; i += SYNC_INFO_BATCH) {
     const chunk = distinct.slice(i, i + SYNC_INFO_BATCH);
@@ -133,8 +135,7 @@ export async function getNodeSyncInfos(
         sql: `SELECT node_id, target_id, action, remote_path FROM (
                 SELECT audit_node_id AS node_id,
                        target_id, action,
-                       COALESCE(json_extract(detail, '$.remote_path'),
-                                json_extract(detail, '$.old_remote_path')) AS remote_path,
+                       ${remotePathExpr} AS remote_path,
                        ROW_NUMBER() OVER (
                          PARTITION BY audit_node_id
                          ORDER BY timestamp DESC
@@ -205,7 +206,7 @@ export async function getNodeSyncInfos(
   return out;
 }
 
-export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeSyncInfo> {
+export async function getNodeSyncInfo(db: DbClient, nodeId: string): Promise<NodeSyncInfo> {
   // One JOIN gets the node row AND its belongs_to organization sync_key --
   // the same answer resolveNodeInfo assembles from two round-trips. The
   // agent hits this endpoint constantly (status polls, watcher, pending
@@ -256,10 +257,10 @@ export async function getNodeSyncInfo(db: Client, nodeId: string): Promise<NodeS
   const cutoff = new Date(Date.now() - TOMBSTONE_WINDOW_DAYS * 86_400_000)
     .toISOString()
     .slice(0, 10);
+  const remotePathExpr = auditRemotePathExpr(db.dialect);
   const tombRes = await db.execute({
     sql: `SELECT target_id, action,
-                 COALESCE(json_extract(detail, '$.remote_path'),
-                          json_extract(detail, '$.old_remote_path')) AS remote_path
+                 ${remotePathExpr} AS remote_path
           FROM audit_log
           WHERE target_type = 'file'
             AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename', 'sync_rename_remote')
@@ -334,7 +335,7 @@ export interface RegisterFileRecordResult {
 // all) still register successfully -- remote_name stays null until a
 // deliberate sync resolves routing and backfills it (#201).
 export async function registerFileRecordRemote(
-  db: Client,
+  db: DbClient,
   a: { userId: string; nodeId: string; relPath: string },
 ): Promise<RegisterFileRecordResult> {
   const info = await resolveNodeInfo(db, a.nodeId);
@@ -382,7 +383,7 @@ export async function registerFileRecordRemote(
 // dozens-to-hundreds of files at once. Same NULL-hash upsert semantics per
 // file as registerFileRecordRemote; one audit row for the whole batch.
 export async function registerFileRecordsRemote(
-  db: Client,
+  db: DbClient,
   a: { userId: string; nodeId: string; relPaths: string[] },
 ): Promise<RegisterFileRecordResult[]> {
   if (a.relPaths.length === 0) return [];

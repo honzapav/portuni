@@ -9,7 +9,7 @@
 
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { resolveProjectionRootForNode } from "../domain/sandbox-profile.js";
 import {
@@ -173,7 +173,7 @@ export function createDiskProjector(args: {
 // running session" check so a not-yet-updated row for the very session that
 // is closing right now never blocks the sweep.
 async function sweepSharedProjectionIfIdle(
-  db: Client,
+  db: DbClient,
   homeNodeId: string,
   userId: string,
   excludeSessionId: string | null,
@@ -207,7 +207,7 @@ async function sweepSharedProjectionIfIdle(
 export function disposeSessionProjection(
   scope: SessionScope,
   userId: string,
-  db: Client,
+  db: DbClient,
 ): Promise<void> {
   const projectionSessionId = scope.projectionSessionId;
   const homeNodeId = scope.homeNodeId;

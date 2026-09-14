@@ -7,6 +7,9 @@ cd "$(dirname "$0")/.."
 echo "== server: lint, typecheck, test, build"
 npm run qa
 
+echo "== server: test (pglite driver)"
+npm run test:pglite
+
 echo "== web: typecheck, build"
 npx --prefix apps/web tsc -b apps/web --noEmit
 npm --prefix apps/web run build

@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Search, Sun, Moon, X, Settings, Waypoints, Terminal, LayoutDashboard } from "lucide-react";
-import type { GraphPayload, GraphNode } from "../types";
+import type { GraphPayload, GraphNode, SessionSummary } from "../types";
 import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
 import type { Theme } from "../lib/theme";
@@ -56,6 +56,11 @@ type Props = {
   onWorkspaceCloseNode: (nodeId: string) => void;
   onWorkspaceNewSession: (nodeId: string) => void;
   onWorkspaceRenameSession: (sessionId: string, label: string) => void;
+  // #343: each open node's own running/suspended persistent sessions, for
+  // WorkspaceNodeList's sub-rows -- distinct from workspaceSessions (PTY
+  // terminal tabs) above.
+  workspaceOpenSessionsByNode: Record<string, SessionSummary[]>;
+  onWorkspaceOpenSessionChat: (nodeId: string, sessionId: string) => void;
   // Open an EXISTING node in the workspace (no terminal required -- the
   // primary workspace action). Driven by the inline search-first picker at
   // the top of the workspace column: type a node name, click it, it opens.
@@ -132,6 +137,8 @@ function Sidebar({
   onWorkspaceRenameSession,
   onWorkspaceOpenNode,
   onWorkspaceCreateNode,
+  workspaceOpenSessionsByNode,
+  onWorkspaceOpenSessionChat,
 }: Props) {
   return (
     <aside className="flex h-full w-[300px] shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-bg)]">
@@ -224,6 +231,8 @@ function Sidebar({
               onCloseNode={onWorkspaceCloseNode}
               onNewSession={onWorkspaceNewSession}
               onRenameSession={onWorkspaceRenameSession}
+              openSessionsByNode={workspaceOpenSessionsByNode}
+              onOpenSessionChat={onWorkspaceOpenSessionChat}
             />
           </div>
         </div>

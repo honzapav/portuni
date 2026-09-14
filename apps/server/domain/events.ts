@@ -3,7 +3,7 @@
 // replacement; nothing is ever rewritten in place.
 
 import { ulid } from "ulid";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { writeAudit } from "../infra/audit.js";
 
 export interface SupersedeEventResult {
@@ -13,7 +13,7 @@ export interface SupersedeEventResult {
 }
 
 export async function supersedeEventInternal(
-  db: Client,
+  db: DbClient,
   userId: string,
   args: {
     eventId: string;

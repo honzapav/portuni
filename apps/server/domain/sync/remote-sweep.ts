@@ -6,7 +6,7 @@
 //     edited copies come back as new_local and get pushed again)
 //   - a remote file under wip/outputs/resources that no record tracks ->
 //     adopted (devices pull it in the same run)
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
 import { getAdapter } from "./adapter-cache.js";
 import { resolveRemote } from "./routing.js";
@@ -56,7 +56,7 @@ function adoptableSection(nodeRoot: string, remotePath: string): "wip" | "output
   return section as "wip" | "outputs" | "resources";
 }
 
-export async function remoteSweep(db: Client, a: RemoteSweepArgs): Promise<RemoteSweepResult> {
+export async function remoteSweep(db: DbClient, a: RemoteSweepArgs): Promise<RemoteSweepResult> {
   // Nothing to sweep on a local workspace, and a leftover pending op there
   // must not be retried against a backend it can no longer reach.
   assertRemoteCapable();

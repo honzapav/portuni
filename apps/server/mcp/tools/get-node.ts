@@ -31,7 +31,7 @@ export function registerGetNodeTool(server: McpServer, ctx: SessionCtx): void {
         });
       } else if (args.name) {
         result = await db.execute({
-          sql: "SELECT * FROM nodes WHERE name = ? COLLATE NOCASE",
+          sql: "SELECT * FROM nodes WHERE lower(name) = lower(?)",
           args: [args.name],
         });
       } else {

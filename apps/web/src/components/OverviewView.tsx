@@ -7,7 +7,7 @@
 // in Práce. No auto-refresh; a manual "Obnovit" button matches
 // SyncOverview's pattern.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Clock, RefreshCw, Sparkles, Terminal } from "lucide-react";
 import type {
   AccessRequest,
@@ -22,7 +22,10 @@ import type {
 } from "../types";
 import { HEALTH_COLORS, LIFECYCLE_COLORS } from "../types";
 import { fetchOverview } from "../api";
-import { STATE_COLOR, STATE_LABEL, fmtDateTime } from "./DetailPane.sessions";
+import { useMe } from "../lib/use-me";
+import type { SessionStateMessage } from "../lib/sessions-client";
+import { fmtDateTime } from "./DetailPane.sessions";
+import { mergeLiveSessionStates, sessionRowChip, sortInboxSessions } from "../lib/session-views";
 
 const TYPE_LABELS: Record<string, string> = {
   organization: "Organizace",
@@ -35,12 +38,20 @@ const TYPE_LABELS: Record<string, string> = {
 type Props = {
   onSelectNode: (nodeId: string) => void;
   onOpenSession: (nodeId: string, sessionId: string) => void;
+  // The window's live session_state map (App.tsx, from the socket): the
+  // Relace card's rows take state/waiting_since from it between loads,
+  // and a change in the set of live sessions reloads the whole overview
+  // (a new task shows up, a closed one leaves the inbox) -- no polling.
+  liveStates?: Readonly<Record<string, SessionStateMessage>>;
 };
 
-export default function OverviewView({ onSelectNode, onOpenSession }: Props) {
+export default function OverviewView({ onSelectNode, onOpenSession, liveStates }: Props) {
   const [data, setData] = useState<OverviewPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // The Relace card is "my own inbox" (sortInboxSessions) -- needs the
+  // caller's own id.
+  const { meId } = useMe();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -54,9 +65,17 @@ export default function OverviewView({ onSelectNode, onOpenSession }: Props) {
     }
   }, []);
 
+  const liveStamp = useMemo(
+    () =>
+      Object.values(liveStates ?? {})
+        .map((s) => `${s.session_id}:${s.state}`)
+        .sort()
+        .join(","),
+    [liveStates],
+  );
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, liveStamp]);
 
   if (loading && !data) {
     return (
@@ -91,8 +110,9 @@ export default function OverviewView({ onSelectNode, onOpenSession }: Props) {
         {data && (
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
             <SessionsCard
-              running={data.sessions.running}
-              suspended={data.sessions.suspended}
+              running={liveStates ? mergeLiveSessionStates(data.sessions.running, liveStates) : data.sessions.running}
+              suspended={liveStates ? mergeLiveSessionStates(data.sessions.suspended, liveStates) : data.sessions.suspended}
+              meId={meId}
               disconnectedJumps={data.sessions.disconnected_jumps}
               onOpenSession={onOpenSession}
               onSelectNode={onSelectNode}
@@ -164,38 +184,45 @@ function Row({
 function SessionsCard({
   running,
   suspended,
+  meId,
   disconnectedJumps,
   onOpenSession,
   onSelectNode,
 }: {
   running: OverviewSessionRow[];
   suspended: OverviewSessionRow[];
+  meId: string | null;
   disconnectedJumps: OverviewDisconnectedJump[];
   onOpenSession: (nodeId: string, sessionId: string) => void;
   onSelectNode: (nodeId: string) => void;
 }) {
-  const sessions = [...running, ...suspended];
+  // The inbox: Čeká na mě first, then Běží, then Pozastaveno, restricted to
+  // the caller's own sessions -- the team-wide list is the hosts spec's job.
+  const sessions = sortInboxSessions(running, suspended, meId);
   return (
     <Card title="Relace" icon={<Terminal size={14} />}>
       {sessions.length === 0 ? (
         <Empty>Žádné běžící ani pozastavené relace.</Empty>
       ) : (
         <div className="space-y-0.5">
-          {sessions.map((s) => (
-            <Row key={s.id} onClick={s.node_id ? () => onOpenSession(s.node_id!, s.id) : undefined}>
-              <div className="flex items-center gap-1.5">
-                <span
-                  className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full"
-                  style={{ background: STATE_COLOR[s.state] }}
-                  title={STATE_LABEL[s.state]}
-                />
-                <span className="truncate text-[var(--color-text)]">{s.name}</span>
-              </div>
-              <div className="pl-3 text-[11px] text-[var(--color-text-dim)]">
-                {s.node_name ?? "Chat"} · {fmtDateTime(s.last_active_at)}
-              </div>
-            </Row>
-          ))}
+          {sessions.map((s) => {
+            const chip = sessionRowChip(s.state, s.waiting_since);
+            return (
+              <Row key={s.id} onClick={s.node_id ? () => onOpenSession(s.node_id!, s.id) : undefined}>
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${chip.pulsing ? "animate-pulse" : ""}`}
+                    style={{ background: chip.color }}
+                    title={chip.label}
+                  />
+                  <span className="truncate text-[var(--color-text)]">{s.name}</span>
+                </div>
+                <div className="pl-3 text-[11px] text-[var(--color-text-dim)]">
+                  {s.node_name ?? "Chat"} · {chip.label} · {fmtDateTime(s.last_active_at)}
+                </div>
+              </Row>
+            );
+          })}
         </div>
       )}
 

@@ -45,7 +45,7 @@ describe("migration 027 sessions + session_scope", () => {
   });
 
   it("CHECK rejects a session_type or state outside the closed sets", async () => {
-    const { db, nodeId } = await makeSharedDb();
+    const { db, nodeId } = await makeSharedDb("libsql");
     await assert.rejects(
       db.execute({
         sql: "INSERT INTO sessions (id, node_id, user_id, session_type) VALUES (?, ?, ?, 'junk')",
@@ -63,7 +63,7 @@ describe("migration 027 sessions + session_scope", () => {
   });
 
   it("session_scope CHECK rejects an added_via outside the closed set", async () => {
-    const { db, nodeId } = await makeSharedDb();
+    const { db, nodeId } = await makeSharedDb("libsql");
     const sessionId = ulid();
     await db.execute({
       sql: "INSERT INTO sessions (id, node_id, user_id, session_type) VALUES (?, ?, ?, 'interactive_task')",
@@ -78,7 +78,7 @@ describe("migration 027 sessions + session_scope", () => {
   });
 
   it("session_scope's composite PK rejects a duplicate (session_id, node_id)", async () => {
-    const { db, nodeId } = await makeSharedDb();
+    const { db, nodeId } = await makeSharedDb("libsql");
     const sessionId = ulid();
     await db.execute({
       sql: "INSERT INTO sessions (id, node_id, user_id, session_type) VALUES (?, ?, ?, 'interactive_task')",
@@ -97,7 +97,7 @@ describe("migration 027 sessions + session_scope", () => {
   });
 
   it("session_scope cascades on node delete; sessions.node_id is SET NULL, not cascade-deleted (#208)", async () => {
-    const { db, nodeId } = await makeSharedDb();
+    const { db, nodeId } = await makeSharedDb("libsql");
     const sessionId = ulid();
     await db.execute({
       sql: "INSERT INTO sessions (id, node_id, user_id, session_type) VALUES (?, ?, ?, 'interactive_task')",
@@ -121,7 +121,7 @@ describe("migration 027 sessions + session_scope", () => {
   });
 
   it("sessions.node_id is nullable (interactive_chat has no anchor)", async () => {
-    const { db } = await makeSharedDb();
+    const { db } = await makeSharedDb("libsql");
     const id = ulid();
     await db.execute({
       sql: "INSERT INTO sessions (id, node_id, user_id, session_type) VALUES (?, NULL, ?, 'interactive_chat')",
@@ -137,7 +137,7 @@ describe("migration 027 sessions + session_scope", () => {
 // the 027 marker, and confirm the migrations loop recreates them -- same
 // trick as migration-019/020/024's tests.
 test("migration 027 adds sessions + session_scope to an existing DB", async () => {
-  const { db, nodeId } = await makeSharedDb();
+  const { db, nodeId } = await makeSharedDb("libsql");
   await db.execute("DROP TABLE session_scope");
   await db.execute("DROP TABLE sessions");
   await db.execute({ sql: "DELETE FROM migrations WHERE id = ?", args: ["027_sessions"] });

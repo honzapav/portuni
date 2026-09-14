@@ -1,6 +1,7 @@
 import { copyFile, mkdir, readFile, readdir, rm, stat as fsStat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
+import { auditRemotePathExpr } from "../../infra/sql.js";
 import { ulid } from "ulid";
 import { md5Buffer, sha256Buffer, sha256File, statForCache } from "./hash.js";
 import { getAdapter } from "./adapter-cache.js";
@@ -93,7 +94,7 @@ export interface StoreFileResult {
   hash: string;
 }
 
-export async function storeFile(db: Client, a: StoreFileArgs): Promise<StoreFileResult> {
+export async function storeFile(db: DbClient, a: StoreFileArgs): Promise<StoreFileResult> {
   assertRemoteCapable();
   const info = await resolveNodeInfo(db, a.nodeId);
   const remoteName = await resolveRemote(db, info.nodeType, info.orgSyncKey);
@@ -330,7 +331,7 @@ export interface RegisterLocalFileResult {
 // re-registering an already-synced file refreshes the local-hash cache but
 // preserves its synced baseline.
 export async function registerLocalFile(
-  db: Client,
+  db: DbClient,
   a: RegisterLocalFileArgs,
 ): Promise<RegisterLocalFileResult> {
   const info = await resolveNodeInfo(db, a.nodeId);
@@ -486,7 +487,7 @@ export interface PullFileResult {
   hash: string;
 }
 
-export async function pullFile(db: Client, a: PullFileArgs): Promise<PullFileResult> {
+export async function pullFile(db: DbClient, a: PullFileArgs): Promise<PullFileResult> {
   assertRemoteCapable();
   const row = await db.execute({
     sql: "SELECT id, node_id, filename, remote_name, remote_path, current_remote_hash FROM files WHERE id = ?",
@@ -744,7 +745,7 @@ export async function localHashFor(
 // is a non-local, non-agent deployment (the central server itself, if it
 // happens to also carry a local mirror) with a real remote configured.
 async function remoteStatFor(
-  db: Client,
+  db: DbClient,
   remoteName: string,
   remotePath: string,
   // Positive-only view of one listing of the node's sections. A path found
@@ -789,7 +790,7 @@ interface ScanRowResult {
 }
 
 async function scanRow(
-  db: Client,
+  db: DbClient,
   localOnly: boolean,
   row: Record<string, unknown>,
   nodeInfoCache: Map<string, NodeInfo | null>,
@@ -971,7 +972,7 @@ const STATUS_SCAN_CONCURRENCY = Math.max(
   Number(process.env.PORTUNI_STATUS_SCAN_CONCURRENCY ?? 8),
 );
 
-export async function statusScan(db: Client, a: StatusArgs): Promise<StatusResult> {
+export async function statusScan(db: DbClient, a: StatusArgs): Promise<StatusResult> {
   // A local workspace never has a remote (#310): classification never
   // touches the adapter, and neither does the remote-listing block below.
   const localOnly = isLocalWorkspace();
@@ -1153,7 +1154,7 @@ export function takeUnmatched<E extends { local_path: string }>(
 export async function matchDeleteTombstones<
   T extends { node_id: string; local_path: string; filename: string; hash?: string },
 >(
-  db: Client,
+  db: DbClient,
   userId: string,
   entries: T[],
 ): Promise<{ deleted_remote: DeletedRemoteEntry[]; remaining: T[] }> {
@@ -1192,23 +1193,22 @@ export async function matchDeleteTombstones<
     }
     if (expectedRemotePaths.size === 0) continue;
     const entriesByLocalPath = indexEntriesByLocalPath(nodeEntries);
-    const tombRows: Awaited<ReturnType<Client["execute"]>>["rows"] = [];
+    const tombRows: Awaited<ReturnType<DbClient["execute"]>>["rows"] = [];
     // Chunked so a folder-sized candidate set stays well under any SQL
     // variable limit.
     const allPaths = [...expectedRemotePaths];
+    const remotePathExpr = auditRemotePathExpr(db.dialect);
     for (let i = 0; i < allPaths.length; i += 300) {
       const chunk = allPaths.slice(i, i + 300);
       const placeholders = chunk.map(() => "?").join(", ");
       const res = await db.execute({
         sql: `SELECT target_id, action,
-                     COALESCE(json_extract(detail, '$.remote_path'),
-                              json_extract(detail, '$.old_remote_path')) AS remote_path
+                     ${remotePathExpr} AS remote_path
               FROM audit_log
               WHERE target_type = 'file'
                 AND action IN ('sync_delete', 'sync_delete_remote', 'sync_move', 'sync_rename')
                 AND audit_node_id = ?
-                AND COALESCE(json_extract(detail, '$.remote_path'),
-                             json_extract(detail, '$.old_remote_path')) IN (${placeholders})
+                AND ${remotePathExpr} IN (${placeholders})
               ORDER BY timestamp DESC`,
         args: [nodeId, ...chunk],
       });
@@ -1311,7 +1311,7 @@ export async function cleanupDeletedRemote(
 }
 
 // discovery walks mirrors to find new_local files and lists adapters to find new_remote files.
-async function runDiscovery(db: Client, a: StatusArgs, out: StatusResult): Promise<void> {
+async function runDiscovery(db: DbClient, a: StatusArgs, out: StatusResult): Promise<void> {
   const mirrors = a.nodeId
     ? await (async () => {
         const one = await getMirrorPath(a.userId, a.nodeId!);
@@ -1423,7 +1423,7 @@ async function runDiscovery(db: Client, a: StatusArgs, out: StatusResult): Promi
 // an unreachable adapter both contribute nothing, quietly -- same as the
 // tracked-file scan's own listing fallback.
 async function discoverRemote(
-  db: Client,
+  db: DbClient,
   nodeId: string,
   info: NodeInfo,
   knownRemoteGlobal: ReadonlySet<string>,
@@ -1526,7 +1526,7 @@ export interface PreviewNodeResult {
 }
 
 export async function previewNode(
-  db: Client,
+  db: DbClient,
   a: PreviewNodeArgs,
 ): Promise<PreviewNodeResult> {
   const scan = await statusScan(db, {

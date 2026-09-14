@@ -100,3 +100,33 @@ A couple of useful modes worth knowing about:
 
 - **Plan mode** (default `Shift+Tab`) – read-only exploration. Useful when you're still figuring out what you want the agent to do and don't want it writing anything yet.
 - **Bypass mode** (`--dangerously-skip-permissions`) – skips every permission check. Handy inside ephemeral sandboxes (Docker, VMs); worth avoiding on a host machine with a populated Portuni mirror root.
+
+## Claude Code jako runner
+
+Everything above is about a hand-opened terminal. A **task** started from a
+node's "Nový úkol" button (or `POST /sessions`) runs Claude Code the same
+way, but Portuni drives it directly over
+[`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk)
+instead of spawning a terminal:
+
+- The node's mirror is the working directory, and the task's brief becomes
+  the first message — no manual `cd` or prompt needed.
+- The node's context (name, goal, recent events, a handoff pointer if
+  you're resuming) is appended to Claude Code's own system prompt, the same
+  content a hand-opened terminal gets in `PORTUNI_SCOPE.md`.
+- Permission decisions follow the same write-scope rules as the guard hook
+  (`.claude/settings.local.json`) — editing inside the current mirror is
+  allowed automatically, editing another node's mirror is refused, and a
+  scope-expanding or plan-approval request shows up as a question in the
+  task's chat instead of a terminal prompt.
+- **Login stays entirely in the CLI.** The task runner uses whatever
+  account `claude` is already logged into on this machine (`CLAUDE_CONFIG_DIR`,
+  set per Runnery instance in Settings → Runnery, selects which one) — Portuni
+  never asks for or stores Anthropic credentials of its own.
+- If nothing is logged in, the task's chat shows an error saying so instead
+  of quietly failing.
+
+Nastavení → Runnery shows whether `claude` is installed and logged in on
+this device (`claude --version` / `claude auth status`), and lets you
+manage the provider instances (name, environment, default per organization)
+a task's runner picks from when more than one exists.

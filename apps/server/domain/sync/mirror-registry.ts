@@ -1,4 +1,4 @@
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import {
   getLocalMirror,
   upsertLocalMirror,
@@ -59,7 +59,7 @@ export interface StaleCleanReport {
 }
 
 export async function tryCleanStaleMirrors(
-  shared: Client,
+  shared: DbClient,
   userId: string,
 ): Promise<StaleCleanReport> {
   const rows = await listLocalMirrors(userId);

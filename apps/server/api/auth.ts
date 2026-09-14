@@ -25,7 +25,7 @@ import { nodeVisibleTo } from "../auth/node-access.js";
 import { exchangeHandoff, isLoopbackAddress, mintHandoff } from "../domain/handoff.js";
 import { appendHomeNodeIdToUrl, resolvePortuniMcpUrl } from "../domain/write-scope.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 
 const LoginBody = z.object({ id_token: z.string().min(1) });
 
@@ -363,7 +363,7 @@ export async function handleExchangeHandoff(
 // Local-mode lookups for the handlers above. A missing node reads as not
 // accessible (nodeVisibleTo treats an unknown id as unrestricted).
 export async function localNodeAccessible(
-  db: Client,
+  db: DbClient,
   identity: RequestIdentity,
   nodeId: string,
 ): Promise<boolean> {
@@ -372,7 +372,7 @@ export async function localNodeAccessible(
   return nodeVisibleTo(db, identity, nodeId);
 }
 
-export async function localNodeName(db: Client, nodeId: string): Promise<string | null> {
+export async function localNodeName(db: DbClient, nodeId: string): Promise<string | null> {
   const r = await db.execute({ sql: "SELECT name FROM nodes WHERE id = ?", args: [nodeId] });
   return r.rows.length === 0 ? null : String(r.rows[0].name);
 }

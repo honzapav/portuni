@@ -922,13 +922,16 @@ symlink to this file.
   instead (`domain/write-scope.ts` `buildOrientationHint`,
   `domain/scope-materialize.ts` `orientationForNode`) — appended there only,
   never into `.cursor/rules` or the `CLAUDE.md`/`AGENTS.md` marker blocks,
-  which stay on the terser write-scope hint. Central-mode mirrors get the
-  write-scope hint but no orientation section: `CentralClient` has no
-  endpoint for it yet, a deliberate scope cut, not a bug. Agent-command
-  presets carry no `{prompt}` placeholder anymore (`apps/web/src/lib/
-  settings.ts`); `TerminalPane.tsx` times spawn phases (provisioning ->
-  `pty_spawn` -> CLI boot to first byte) and prints/logs a one-line
-  breakdown on first output.
+  which stay on the terser write-scope hint. **Central-mode mirrors get a
+  real orientation section too now (#323 ends the cut):**
+  `CentralClient.orientation` (`GET /nodes/:id/orientation`, computed on
+  central, which has the real graph db) backs
+  `materializeAllRegisteredMirrors`'s `orientationFor` resolver in
+  `desktop.ts`'s agent-mode boot, in place of the local `orientationForNode`
+  (a direct db read agent mode can't make). Agent-command presets carry no
+  `{prompt}` placeholder anymore (`apps/web/src/lib/settings.ts`);
+  `TerminalPane.tsx` times spawn phases (provisioning -> `pty_spawn` -> CLI
+  boot to first byte) and prints/logs a one-line breakdown on first output.
 - **Provider instances (Settings → Runnery) are a sidecar `runners.json`
   registry; the desktop's old `config.json` profiles registry is dormant
   until phase 4 removes it.** `domain/runner/instances.ts` owns
@@ -969,17 +972,46 @@ symlink to this file.
   when the hardened posture (#213) is active for that workspace — it
   originates from the same trusted Tauri host process, not a spawned
   terminal.
-- **A `sessions` row exists only for a completed MCP handshake.**
-  `createMcpServer` returns `bindSession(cli?)` instead of inserting the row
-  itself; callers invoke it at their own post-handshake signal --
-  `transport.ts`'s `onsessioninitialized`, `stdio-entry.ts`'s
-  `server.server.oninitialized`. A resumed connection's `bindSession` is a
-  no-op (`resumeSessionPersistence` already created the row). Agent mode
-  opens its upstream connection to central only for a request that carries a
-  valid `initialize`, so a probe at the local front door burns no row on
-  central either. `cli` comes from the handshake's own
-  `params.clientInfo.name`, normalized to `claude|codex|vibe`
-  (`client-name.ts`) -- not from a header, which Codex and Vibe cannot send.
+- **A `sessions` row exists once a task is started OR a handshake completes
+  (runner batch, Rule 2 "The session exists before the runner").** A task
+  started through `POST /sessions` (`domain/runner/session-runtime.ts`'s
+  `startTask`) creates the row FIRST, then starts a run whose MCP connection
+  carries the row's own id in `X-Portuni-Spawn-Id`
+  (`RunStart.mcp.headers`) -- the handshake that connection makes BINDS to
+  that existing row instead of creating a second one. `createMcpServer`
+  returns `bindSession(cli?)` instead of inserting the row itself; callers
+  invoke it at their own post-handshake signal -- `transport.ts`'s
+  `onsessioninitialized`, `stdio-entry.ts`'s `server.server.oninitialized`.
+  For a hand-opened CLI (no task, no pre-existing row) `bindSession` still
+  creates one there, same as before the runner batch. Binding is decided
+  BEFORE `createMcpServer` runs (`mcp/session-persistence.ts`'s
+  `lookupSpawnSessionForBind`, called the same way `transport.ts` already
+  gates on session capacity/headless): a row under `X-Portuni-Spawn-Id`
+  that is `running` and owned by the connecting identity is bound
+  (`bindExistingSessionPersistence` rehydrates `session_scope` into the
+  connection's `SessionScope`, same shape as a resume's rehydration but
+  without the state transition); a row that exists but is not running or
+  belongs to someone else refuses the whole connection with the existing
+  503-with-reason shape and code `SESSION_BIND_REFUSED`; no row at all keeps
+  today's create-with-preassigned-id behaviour. `bindExistingSessionHandshake`
+  is the bound-row equivalent of `bindSession`'s own row creation: it fills
+  in `cli` and touches `last_active_at` instead. A resumed connection's
+  `bindSession` is a no-op either way (`resumeSessionPersistence` already
+  created/attached the row). Agent mode opens its upstream connection to
+  central only for a request that carries a valid `initialize`, so a probe
+  at the local front door burns no row on central either. `cli` comes from
+  the handshake's own `params.clientInfo.name`, normalized to
+  `claude|codex|vibe` (`client-name.ts`) -- not from a header, which Codex
+  and Vibe cannot send. Task REST routes and who may call them (read/
+  message/stop/resume tiers) are `auth/session-access.ts`'s `sessionAccess`
+  table (spec: `docs/superpowers/specs/2026-09-12-remote-hosts-and-task-queue-design.md`,
+  "Visibility and control"): a node-anchored session hidden from the caller
+  reads `SESSION_NOT_FOUND` (404) for every action, manage scope included;
+  a visible session with an insufficient action tier reads
+  `SESSION_FORBIDDEN` (403); a node-less (`interactive_chat`) session is
+  `SESSION_FORBIDDEN` for anyone but the owner. An interrupt/suspend/close
+  by someone other than the owner appends a `state_changed` event carrying
+  `by` (`SessionRuntime.recordStoppedBy`) so the chat shows who stopped it.
   `wireOngoingSync` persists the session's home node as `writable=1`, since
   `guardWrite` allows it implicitly and `getSessionWriteCount` counts only
   persisted rows. **A dropped connection, the transport's own idle GC, a
@@ -1018,6 +1050,221 @@ symlink to this file.
   the only writer of runs and events once the runtime issue lands). Every
   event kind and its payload shape are in `apps/server/domain/runner/
   types.ts`'s `CanonicalEvent` union.
+- **One WebSocket, `GET /sessions/ws`, is the live channel for tasks (runner
+  batch phase 1, `apps/server/api/sessions-ws.ts`) -- there is no other
+  WebSocket anywhere in this codebase.** Auth happens once, at the
+  `http.Server`'s `"upgrade"` event in `http/server.ts`, via
+  `checkUpgradeAuth` (`http/middleware.ts`): the host allowlist + bearer/JWT
+  identity resolution half of `applyGates`, adapted for a raw socket (no
+  `ServerResponse` exists yet, so a refusal is a hand-written HTTP response
+  written to the socket before it is destroyed) -- CORS/origin/OPTIONS don't
+  apply to an upgrade. A plain `GET /sessions/ws` without an `Upgrade`
+  header never reaches that event at all; `http/server.ts`'s normal request
+  path answers it 426 directly. **Mounted in both data modes.** The
+  server takes its storage through `SessionsWsDeps` (`runtime`, `access`,
+  `snapshot`, `canSee`): `createLocalSessionsWsDeps()` (the default when
+  the default router is in use) answers over the graph db, and the
+  central-mode sync agent (`agentMain` in `desktop.ts`) passes
+  `sessionsWs: createSessionsWsServer(createAgentSessionsWsDeps(client,
+  runtime))` with the SAME runtime its `createAgentRouter(client, {
+  sessionRuntime })` drives -- the desktop's `sessions_connect` targets
+  its own sidecar, so without this the app's own mode had no live channel
+  (the Rust side just reconnected forever). Agent-mode access is what
+  central enforces on every store round trip (a central 404 is
+  `SESSION_NOT_FOUND`); its snapshot comes from the new `GET
+  /sessions?state=running,suspended&limit=500` (`handleListSessions`,
+  `CentralClient.listSessionRecords`), visibility-filtered like
+  `sessionAccess("read")`, bounded, newest activity first -- the local
+  snapshot is bounded the same way (`SNAPSHOT_LIMIT`), and a broadcast
+  resolves visibility once per identity, not per connection. The upgrade
+  applies `minScopeForRoute` like every REST route (`GET /sessions/ws` is
+  `read`); `message`/`answer`/`interrupt`/`suspend`/`close` frames need
+  `write` scope (`FORBIDDEN`) and, under the #213 hardened posture, an
+  upgrade that carried the proven `X-Portuni-Webview-Proxy` header
+  (`UpgradeContext.webviewProven`, `WEBVIEW_PROXY_REQUIRED` otherwise) --
+  `apps/desktop/src/sessions_ws.rs` sends it exactly as `api_request`
+  does, the vite dev proxy already did; the same posture gates every
+  mutating `/sessions*` REST route on the local router
+  (`guardRestSessionWrite`, applied once in `routeSessions`). Every client
+  action then goes through the exact same `sessionAccess` tier the REST
+  route uses and calls the exact same `SessionRuntime` method; a refused
+  action is an `{id,type:"error",payload:{code,message}}` frame, never a
+  closed socket. `subscribe` replays `store.listEvents(after)` in
+  pages of 200 -- it subscribes to the runtime FIRST, buffers whatever
+  arrives live during the replay, then flushes the buffer skipping any
+  event whose `seq` the replay already covered, so nothing emitted in that
+  window is lost or duplicated. **A published canonical event now carries
+  the `seq` the store assigned it** (`session-runtime.ts`'s `PublishedEvent
+  = (CanonicalEvent & {seq}) | DeltaFrame`, `appendAndPublish` attaches it
+  from `store.appendEvents`'s own return value) -- the live channel is what
+  needed this; nothing else reads it. `session_state` fans out to every
+  connection that can see the session (the same node-visibility rule
+  `api/overview.ts`'s `filterSessions` applies) via ONE server-lifetime
+  subscription per `WebSocketServer` (`subscribe("*", …)`, lazily created on
+  the first successful connection, not per-connection) -- a test that swaps
+  in a fresh `SessionRuntime` per test case rather than a fresh fake
+  *adapter* under the registry's stable id will find that subscription
+  stuck on an abandoned instance; `test/api-sessions-ws.test.ts` builds the
+  runtime once and only re-registers the fake adapter between cases, same
+  as `boot/session-runtime.ts`'s own production wiring. `SessionRuntime`
+  gained `subscriberCount(target)` (test-only visibility that a closed
+  socket's subscriptions were actually dropped, not leaked) and
+  `pendingQuestion`/`recordStoppedBy`, shared with the REST routes (#321).
+- **A task's session runtime always runs on the device; only its
+  `SessionStore` changes between local and agent mode (#323, "one
+  implementation").** `agent-router.ts`'s `createAgentRouter(client)` builds
+  its own runtime (`boot/session-runtime.ts`'s `createAgentSessionRuntime`)
+  bound to `CentralSessionStore` (`domain/runner/store-central.ts`) instead
+  of the local singleton's `DbSessionStore` — every `SessionStore` call
+  becomes a REST round trip to central's "central record half"
+  (`api/sessions.ts`: `POST /sessions/record`, `GET`/`PATCH /sessions/:id`,
+  `POST /sessions/:id/runs`, `PATCH /sessions/:id/runs/:run_id`,
+  `GET /sessions/:id/runs`, `POST`/`GET /sessions/:id/events`), all thin
+  wrappers over `DbSessionStore` bound to THAT server's own db, so central's
+  real `auth/session-access.ts` checks apply exactly once, on central, no
+  matter which device's sidecar is driving the task. `CentralSessionStore`
+  batches `appendEvents` calls within a 50ms window into one POST (a burst
+  of `tool_call` events is one round trip) and keeps an in-process
+  `runId -> sessionId` map (populated by `createRun`/`listRuns`) since
+  `SessionStore.patchRun(runId, patch)` carries no session id but the REST
+  shape needs one. `PATCH /sessions/:id` is doubly-shaped: a plain rename
+  (`{name}` alone) keeps its historical `SessionSummary` response and
+  `renameSession`'s own audit action; any other field
+  (`state`/`waiting_since`/`handoff_path`/`handoff_hash`, what
+  `CentralSessionStore.patchSession` sends) returns the raw `SessionRow`
+  instead, since `session-runtime.ts` reads columns (`handoff_hash` in
+  `suspend()`, `host_id` in `resume()`) the curated summary doesn't carry.
+  `domain/runner/provision-central.ts` is `provision.ts`'s counterpart:
+  `createMirrorForNodeCentral` instead of `createMirrorForNode`, and
+  `CentralClient.orientation` (`GET /nodes/:id/orientation`, backed by
+  `orientationForNode` run on central, which has the real graph db) instead
+  of a direct db read. **`session-runtime.ts` itself needed a seam for the
+  one thing it still did unconditionally: `session_scope` is a local
+  graph-db table**, so `startRun`'s/`sessionSignals`'s restart-indicator
+  reads (`getSessionScope`) now degrade to an empty scope instead of
+  throwing when there is no graph db, and the suspend-timeout fallback
+  (`suspendSessionServerSide` locally) is a new injectable
+  `CreateSessionRuntimeDeps.suspendFallback`, defaulting to the local
+  implementation; `createAgentSessionRuntime` supplies
+  `domain/runner/suspend-fallback-central.ts` instead, which writes the
+  handoff file straight to the device's own mirror (mirrors exist in every
+  mode) and patches the session record over the same REST route rather than
+  the graph db directly — a deliberate simplification for this phase: the
+  write/read-set sections of that handoff are always empty (central mode
+  has no local `session_scope` to read them from), and the file is not
+  registered as a tracked file the way the local path's
+  `writeHandoffAndSuspend` does (the next sync run's untracked-file
+  discovery picks it up instead of it appearing immediately in Files).
+  `is_local_only_path` (`apps/desktop/src/lib.rs`) routes the bare
+  `POST /sessions` and every per-session action verb
+  (`messages`/`interrupt`/`suspend`/`resume`/`close`/`events`/`signals`/
+  `questions/:request_id`) to the sync agent — deliberately NOT the record
+  half (`GET`/`PATCH /sessions/:id`, `/state`, `/resume-info`, `/runs...`,
+  `/sessions/record`), which stays central, and not `GET /nodes/:id/
+  sessions` or `/overview` either. `signals` (#342, the SessionChat restart
+  indicator) joined this local set rather than the record half: it reads
+  `sessionSignals`'s in-memory live-run state (`liveRuns`/
+  `runStartScopeSize` inside `session-runtime.ts`), which only exists on
+  whichever process is actually running the task — the device, in every
+  mode, per the "one implementation" rule above — so `agent-router.ts`
+  mounts the same handler shape as `/events` does (a plain read through its
+  own `sessionRuntime`, no write guard).
+- **The Claude adapter (`domain/runner/adapters/claude.ts`, #324) drives
+  `@anthropic-ai/claude-agent-sdk` in streaming-input mode always**, even
+  for a fresh, brief-only run — `query()`'s `prompt` is never a plain
+  string, it's a small push queue (`createPushQueue`) this module feeds,
+  since that's the only mode the SDK supports `interrupt()`, queued
+  messages and `answer()` in. `@anthropic-ai/claude-agent-sdk` is pinned
+  **exact, no caret** (`package.json`) — it releases daily and has broken
+  embedding before; bump it deliberately, never let `npm update` touch it.
+  Permission decisions delegate entirely to the ALREADY-SHIPPED
+  `permissions.ts` (#320's own phase-1 scope) — `decidePermission` needed
+  `portuniRoot`/`mirrors` to classify a write's target, which `RunStart`
+  didn't carry until this issue widened it (`session-runtime.ts`'s
+  `startRun` now threads `provisioned.portuniRoot`/`.mirrors` onto it) --
+  an "ask" decision emits a `question` event and leaves the `canUseTool`
+  promise unresolved until `RunHandle.answer()` (called by the runtime,
+  which itself is invoked by the REST/WS `answer` route) resolves it:
+  `true`/`false` become plain allow/deny, any other value (an
+  `AskUserQuestion` free-text answer) becomes `{behavior: "allow",
+  updatedInput: {...originalInput, answer}}`. A completed write tool's
+  `file_change` (`op: "create" | "edit"`) needs to know whether the target
+  existed BEFORE the tool ran — captured via `fs.stat` at `tool_call
+  started` time (when the tool_use block is translated, before its
+  `tool_result` ever arrives) and carried on the pending-tool-call
+  snapshot, since the result itself never carries the original arguments
+  back. **`RunHandle` gained `pid()`** (the pid-file boot sweep, #325,
+  needs it) — the SDK's public surface has no official way to read the
+  underlying CLI subprocess's pid back off `query()`'s return value, so the
+  adapter supplies its own `spawnClaudeCodeProcess` override purely to
+  capture `child.pid` into a closure variable at spawn time; the fake
+  adapter's `pid()` is always `null`. `close()` is just "end the prompt
+  queue and await the translate loop's own completion" — the SDK's
+  documented stdin-EOF → ~2s grace → SIGTERM → SIGKILL sequence runs
+  entirely on its own, no client-side timeout needed. `interrupt()` also
+  ends the queue (unlike a bare `q.interrupt()`, which only cancels the
+  CURRENT turn and would leave the process alive for a next one) so the
+  translate loop's natural completion reports `reason: "interrupted"`
+  instead of `"completed"`, matching the fake adapter's own semantics.
+  `hooks.PreCompact` and the `system/compact_boundary` message BOTH
+  translate to a `compaction` event (the hook fires with the real
+  trigger reason before compaction happens; the message translation is a
+  fixed `trigger: "auto"` backstop) — accepted as possible double emission
+  for a purely cosmetic chat marker, not verified against a real run.
+  `detect()` (`claude --version` / `claude auth status`, 5s timeout each)
+  and the whole message-translation surface are tested against an injected
+  fake `query`/`exec` (`test/runner-claude-adapter.test.ts`); a real,
+  logged-in run is a macOS-only human verification step, not in the gate.
+  **`close()`/`interrupt()` cannot hang on a pid that is already dead**
+  (#325): both race `state.endedPromise` against
+  `waitForPidDeadOrTimeout(state.capturedPid, closePollIntervalMs,
+  closeTimeoutMs, signal)` (500ms poll / 10s bound, test-overridable), and
+  `abort()` the losing branch's `AbortController` the instant the race
+  settles — a bare `setTimeout` left running past that point would (a) leak
+  past the common case where the run ends normally on its own, and (b), if
+  `unref()`'d to avoid that leak, risk never firing at all once nothing else
+  keeps a bare test's event loop alive (Node drops an unref'd timer outright
+  rather than firing it late). A null pid (not captured yet) just waits out
+  the full timeout, since there is nothing to poll. **`close()` also ends a
+  child that ignores the end of its prompt stream** (spec, "Process
+  lifecycle"): end the stream, `closeGraceMs` (2 s), `SIGTERM`,
+  `closeTermMs` (5 s), `SIGKILL`, each step skipped as soon as the run
+  ends or the pid is confirmed dead -- `test/runner-claude-adapter.test.ts`
+  proves it against a real `sleep 30` and a `trap '' TERM` shell. The child
+  is spawned `detached` (its own process group) so `signalProcessGroup`
+  reaches the CLI's helpers too; a `canUseTool` question still open when
+  the run ends is denied (and one raised after the end is denied outright)
+  so the SDK's own awaiter settles; delta frames carry the real `run_id`.
+- **A sidecar restart or crash leaves runner children alive and their runs
+  open — `boot/run-sweep.ts` reaps both, run BEFORE
+  `sweepStaleRunningSessionsOnBoot` (#325).** `session-runtime.ts` writes
+  `<dataDir>/runs/<runId>.pid` (`domain/runner/pid-file.ts`: pid +
+  started_at) right after `adapter.start()` and removes it in the
+  `run_ended` branch of `handleAdapterEvent` — `resolveRunnerDataDir()`
+  (`domain/runner/data-dir.ts`) is `PORTUNI_DATA_DIR` or `cwd()`, matching
+  `instances.ts`'s `runners.json` location. `domain/runner/run-sweep.ts`'s
+  `sweepOrphanedRuns(db, dataDir)` walks every pid file at boot: a run
+  already `ended_at` (a race with the file's own removal) or an unreadable
+  file just gets the stale pid file deleted; otherwise, if the pid is alive
+  AND `ps -o lstart= -o command= -p <pid>` says it is still our child
+  (`readProcessIdentity`/`isOurChild`: the command line contains `claude`
+  AND the process started no later than the pid file was written -- a pid
+  reused across a crash by the user's own interactive Claude Code also
+  says `claude`, but necessarily started after the file), SIGTERM the
+  process group, wait 5s, SIGKILL if still alive — then, regardless of whether anything needed
+  killing, `patchRun(end_reason: "host_lost")`, append `run_ended {reason:
+  "host_lost"}`, and `suspendSessionServerSide(db, sessionId, "host_lost")`
+  (one more `ServerHandoffReason`, alongside `boot_sweep`/`suspend_timeout`
+  — Relace label "proces osiřel po restartu") followed by its own `handoff
+  {generated_by: "server"}` event, same shape `session-runtime.ts`'s own
+  `suspend()` produces for a live run. Local mode only: a pid file is only
+  ever written by the process that spawned the child, on this same machine,
+  so only that process's own next boot can find it — wired into `index.ts`
+  unconditionally and `desktop.ts`'s non-agent branch, the same two call
+  sites as `sweepStaleRunningSessionsOnBoot`, chained (`.then(...)`) ahead
+  of it rather than fired independently, since this sweep's own
+  `suspendSessionServerSide` call already resolves a session the other
+  sweep's `'running'`-row query would otherwise race.
 - **Bulk sync is a server-side job; the pending aggregate separates
   actionable work from decisions.**
   - **Job**: `POST /nodes/:id/sync` (one node, synchronous) is what the
@@ -1176,6 +1423,488 @@ symlink to this file.
   or a per-file `repair_needed` in `renameFolder`'s batch -- widening the
   public `remote_name` fields to nullable is a riskier change than the
   narrow scenario warrants).
+- **The Postgres cutover (infra batch, `docs/superpowers/plans/2026-09-12-infra-batch.md`,
+  batch B) starts with a dialect-neutral client interface, not a dialect
+  switch (B1).** `apps/server/infra/db.ts`'s `DbClient` (`execute`/`batch`/
+  `executeMultiple`/`close`, `InValue`/`InArgs`/`InStatement` keep their
+  libsql names and shapes) is what every domain/api/mcp file is written
+  against now — `import type { Client } from "@libsql/client"` became
+  `import type { DbClient } from ".../infra/db.js"` everywhere (a rename,
+  not a behavior change: every `db.execute({sql, args})`/`db.batch([...],
+  mode)` call site is byte-for-byte unchanged). Three implementations:
+  `db-libsql.ts` (near-passthrough over a real libsql `Client`, just
+  shallow-copying libsql's hybrid array/object `Row` into a plain object,
+  since `DbClient`'s contract is plain objects), `db-pglite.ts`
+  (`@electric-sql/pglite`, embedded Postgres — the local-mode driver from
+  B4) and `db-pg.ts` (`pg` Pool — the central driver from B4/B5), both
+  pinned exact in `package.json` like the Claude SDK. `getDb()` picks the
+  driver from `PORTUNI_DATABASE_URL` (`postgres://`/`postgresql://` → pg,
+  `pglite:<dir>` or bare `pglite:` → PGlite, `file:`/`libsql:` → libsql);
+  unset falls back to the existing `TURSO_URL`/local-file default, so
+  nothing in production actually switches driver yet — this step is pure
+  plumbing. `domain/sync/local-db.ts` (the per-device `.portuni/sync.db`,
+  unrelated to the graph db) keeps calling libsql's own `createClient`
+  directly, just wrapped in `createLibsqlDbClient` and typed `DbClient` —
+  it moves to PGlite in B4 alongside the graph db, not here.
+  `infra/backup.ts` (Turso-only SQL dump, used by `scripts/backup-turso.ts`,
+  removed in B4) is the one file deliberately left on the raw libsql
+  `Client`/`Transaction` types — porting a tool that's about to be deleted
+  would be wasted work. **`?` → `$1, $2, ...` placeholder rewriting lives
+  inside the pg/PGlite drivers** (`infra/sql-placeholders.ts`'s
+  `rewritePositionalPlaceholders`, quote-aware so a literal `?` inside a
+  string/identifier literal is never touched) precisely so B3's
+  dialect-neutral SQL pass never has to touch call sites for this reason —
+  only SQLite-specific *syntax* (`PRAGMA`, `datetime('now')`,
+  `INSERT OR IGNORE`, `json_extract`) is B3's actual job. Named (`Record`)
+  SQL args are never used anywhere in this codebase (checked at B1 time) —
+  both new drivers throw if one ever shows up, rather than silently
+  mishandling it. `test/helpers/db.ts`'s `openTestDb()` (env
+  `PORTUNI_TEST_DB=libsql|pglite`, default libsql) is what B3 will point
+  the whole suite at twice; for now only `test/db-client-conformance.test.ts`
+  uses it directly (positional-arg execute, batch atomicity — a failing
+  statement rolls back the whole batch — and `executeMultiple`, run against
+  all three drivers). **The `pg` driver is not exercised against a live
+  server by the automated gate** (the plan's own "CI adds no services"
+  constraint — PGlite is in-process, a real Postgres is not): its
+  conformance suite is skipped unless `PORTUNI_TEST_PG_URL` is set, real
+  verification waiting on an actual deployed Postgres in a later batch-B
+  step.
+- **The Postgres baseline (B2) is one migration, not a fresh-install DDL
+  path plus 35 upgrade steps.** `DbClient` gained a `dialect: "sqlite" |
+  "postgres"` tag (the one dialect-aware seam in an otherwise dialect-
+  neutral interface) so `ensureSchemaOn` (`infra/schema.ts`) can branch: the
+  libsql path is untouched, the postgres path calls
+  `infra/migrations/pg.ts`'s `ensurePgSchema`, a tiny framework of its own
+  (`migrations` table, same shape as the libsql one, disjoint id space --
+  `pg-NNN` vs `NNN_name`, never both populated in the same database) whose
+  first and so-far-only entry, `pg-001`, IS the whole baseline (every
+  table from `schema.pg.ts`'s `PG_BASELINE_DDL` + every trigger from
+  `schema-triggers.pg.ts`'s `PG_BASELINE_TRIGGERS`) applied in one
+  `executeMultiple` call -- Postgres's simple-query protocol wraps a multi-
+  statement script in an implicit transaction on its own, so a mid-baseline
+  failure leaves nothing committed and no `pg-001` marker, and the next
+  boot retries cleanly rather than hitting "relation already exists".
+  **The baseline mirrors what a FRESH libsql install ends up with** (DDL +
+  DDL_MIGRATION_006 + DDL_AFTER_MIGRATIONS + every migration whose `up()`
+  still does something on an empty database, e.g. migration 002's org-
+  invariant triggers, migration 013's `idx_nodes_sync_key` + sync_key
+  guard triggers, migration 016's `users.google_sub`/`avatar_url`/
+  `last_login_at`, migration 033's `idx_audit_file_node_ts`) -- not a
+  literal replay of all 35 migrations, most of which exist only to bring
+  an OLD sqlite database up to that same shape. Translation rules, applied
+  uniformly: `DATETIME` → `TIMESTAMPTZ`, `DEFAULT (datetime('now'))` →
+  `DEFAULT now()`; `REAL` → `DOUBLE PRECISION` (SQLite's REAL is already
+  8-byte, same as Postgres double precision); boolean-shaped
+  `INTEGER ... CHECK(x IN (0,1))` columns are kept as-is, not converted to
+  `BOOLEAN` (that conversion is B3's dialect-neutral-SQL job, since every
+  call site still writes/reads 0/1); `INTEGER PRIMARY KEY AUTOINCREMENT` →
+  `INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY` (`remote_routing.id`,
+  the only site); `CHECK(json_valid(x))` → `CHECK(x::jsonb IS NOT NULL)`
+  (invalid JSON fails the INSERT with a cast error instead of a constraint
+  violation -- same net effect, the row is rejected either way); a SQLite
+  `GENERATED ... VIRTUAL` column (`audit_log.audit_node_id`, source
+  `json_extract(detail, '$.node_id')`) becomes `GENERATED ALWAYS AS
+  ((detail::jsonb ->> 'node_id')) STORED` (Postgres has no virtual
+  generated columns before PG18; STORED is transparent to every reader
+  either way). **One deliberate schema difference, per the issue:**
+  `session_events`' primary key is `(session_id, seq)` here, not a bare
+  `id` — efficient per-session retention deletes and the natural read
+  order both the live channel and the 90-day event-retention sweep want;
+  `id` (still `ulid()`-generated, still read by `SessionEventRow`) is a
+  plain `NOT NULL` column now, never looked up by itself so dropping its
+  own uniqueness constraint costs nothing. **10 SQLite triggers ported to
+  PL/pgSQL, same trigger names, 9 actually applied**: `RAISE(ABORT, 'msg')`
+  → `RAISE EXCEPTION 'msg'`; a SQLite `WHEN <cond> BEGIN...END` guard
+  becomes an `IF <cond> THEN...END IF;` inside the function body (Postgres
+  triggers have no WHEN-guard for a condition referencing other tables);
+  `UPDATE OF col` column-scoped triggers are natively supported by
+  Postgres's own `CREATE TRIGGER`, unchanged. `nodes_owner_must_be_real_person`
+  is ported for parity (`PG_TRIGGER_NODES_OWNER_MUST_BE_REAL_PERSON`,
+  exported) but deliberately excluded from `PG_BASELINE_TRIGGERS` — same as
+  `DDL_MIGRATION_006`'s own exclusion on the libsql side: migration 014
+  drops it there and a fresh install never creates it in the first place,
+  owners may be any actor now, the FK on `owner_id` already guarantees
+  existence. **No FK on `nodes.owner_id` at all**, matching the fresh
+  libsql DDL exactly (only migration 006's ALTER on an *upgraded* libsql DB
+  adds one) — a faithful port of an existing inconsistency, not a place to
+  fix it in this batch. Tests (`test/schema-pg-baseline.test.ts`) boot a
+  PGlite `:memory:` DB, apply the baseline, and exercise the same behaviors
+  the libsql trigger tests cover for that dialect: org invariant (both
+  directions), per-type attachment validation, lifecycle derivation +
+  validation, sync_key non-empty + uniqueness, the `sessions.terminal_id`
+  index, `idx_files_unique_remote`, the generated column, and the
+  `session_events` composite key — plus idempotency (a second
+  `ensureSchemaOn` call is a no-op, `migrations` still holds exactly
+  `pg-001`). `seedSoloUser` also branched: `INSERT OR IGNORE ...
+  datetime('now')` has a `postgres` counterpart using `ON CONFLICT (id) DO
+  NOTHING` and `now()`.
+- **B3 (`docs/superpowers/plans/2026-09-12-infra-batch.md`) made every
+  runtime query dialect-neutral and the whole suite genuinely passes on
+  both drivers — `npm run test:pglite` alongside the default `npm test`.**
+  `infra/sql.ts` holds the fragment helpers every non-exempt call site
+  under `apps/server/{domain,api,mcp,auth,infra}` now goes through:
+  `nowExpr(dialect)` (`datetime('now')` vs `CURRENT_TIMESTAMP`),
+  `jsonField(dialect, col, key)` (`json_extract(col,'$.key')` vs
+  `(col::jsonb ->> 'key')`), `jsonArrayElementsText(dialect)` (SQLite's
+  `json_each(?)` table-valued function, seeding `auth/node-access.ts`'s
+  recursive ACL-chain CTE from a JSON array of ids, vs Postgres's
+  `jsonb_array_elements_text(?::jsonb) AS value`), and `insertIgnore(dialect,
+  sql)` (rewrites a SQL string's own `INSERT OR IGNORE INTO ...` into
+  `INSERT INTO ... ON CONFLICT DO NOTHING` — a bare `ON CONFLICT DO NOTHING`
+  needs no conflict target, matching `OR IGNORE`'s "any violation" scope).
+  `?` stays the placeholder everywhere (B1's drivers already rewrite it);
+  `ON CONFLICT ... DO UPDATE` and `ROW_NUMBER() OVER` needed no translation
+  at all. **`PRAGMA` needed no per-call-site fix, because it has no runtime
+  call sites**: every occurrence outside `infra/schema.ts` (whose own
+  `PRAGMA foreign_keys` sits after B2's `dialect === "postgres"` early
+  return, so the postgres path never reaches it), `infra/schema-migrations.ts`
+  and `infra/backup.ts` is libsql-migration/Turso-tool-only, already exempt.
+  **Exempted by design, not fixed**: `infra/schema.ts`/`schema-migrations.ts`/
+  `schema-triggers.ts` (the libsql-only fresh-install DDL + migration
+  runner — schema.pg.ts is its Postgres counterpart, not a shared code
+  path), `infra/backup.ts` (Turso-only, removed in B4), and
+  `domain/sync/local-db.ts` (the per-device sync.db always calls
+  `createClient` directly regardless of `getDb()`'s driver — moves to
+  PGlite in B4 alongside the graph db, not here).
+  **Two dialect-sensitive bugs beyond the plan's named constructs**, found
+  only by actually running the suite against PGlite: (1) `mcp/tools/scope.ts`
+  and `mcp/tools/get-node.ts`'s `WHERE name = ? COLLATE NOCASE` (a SQLite
+  named collation Postgres doesn't have) became `WHERE lower(name) =
+  lower(?)`, identical case-insensitive semantics on both dialects; (2)
+  `mcp/tools/context.ts`'s recursive graph-walk query's
+  `GROUP BY gw.node_id` selected `n.*` columns un-aggregated, which SQLite's
+  lenient GROUP BY allows but Postgres rejects outright — fixed by grouping
+  on `n.id` (`nodes`' own primary key) instead, which qualifies for
+  Postgres's functional-dependency exception (selecting any other column of
+  a table already grouped by its own PK is allowed), and selecting
+  `n.id AS node_id` to match; produces identical rows on both dialects
+  since `n.id = gw.node_id` always holds through the JOIN. **The
+  constraint-violation detectors were also dialect-specific string
+  matching**: `auth/users.ts`'s `err.message.includes("UNIQUE constraint
+  failed: users.email")` (a concurrent-invite race → `UserExistsError`) and
+  `http/middleware.ts`'s `respondError`'s `err.message.includes
+  ("SQLITE_CONSTRAINT")` (a DB-trigger rejection → friendly 409) both only
+  ever matched libsql's own error shape. `infra/sql.ts`'s
+  `isUniqueViolation(err)` and `constraintViolationMessage(err)` check both:
+  libsql's `LibsqlError.code`/message text, and pg/PGlite's real SQLSTATE
+  `.code` (`23505` unique violation; `P0001` — `RAISE EXCEPTION`'s own code
+  — or any `23xxx` class for the friendly-message path, where Postgres's
+  message is already the trigger's raw text or a reasonably readable
+  constraint message, unlike libsql's wrapped "SQLite error: ..." which
+  still needs the existing regex extraction).
+  **The single largest fix, found only empirically**: pg/PGlite return
+  `TIMESTAMPTZ` columns as native JS `Date` objects, not strings — `DbClient`'s
+  contract is `DbValue` (`null | string | number | bigint | ArrayBuffer`,
+  no `Date`), and every Zod row schema in the codebase types a
+  `*_at`/`timestamp` column `z.string()`, so literally every read of a row
+  with a timestamp column failed validation under Postgres until this was
+  fixed. `infra/pg-row-normalize.ts`'s `normalizePgRow`, called from both
+  `db-pg.ts` and `db-pglite.ts`'s `toDbResultSet`, converts any `Date` value
+  in a row to the same text shape SQLite's own `datetime('now')` produces
+  (`"YYYY-MM-DD HH:MM:SS"`, second precision, no timezone suffix) —
+  chosen deliberately over ISO so the handful of call sites that still
+  string-*compare* two timestamps (rather than letting the DB compare them)
+  keep sorting correctly regardless of dialect; two tests
+  (`test/auth-oauth-grants.test.ts` et al.) that used to write an expiry
+  timestamp via SQLite's own `datetime('now', '-1 second')` were rewritten
+  to compute the same shape in JS (`new Date(...).toISOString().replace("T",
+  " ").slice(0, 19)`) and bind it as a plain parameter — SQL-side relative-
+  date arithmetic has no portable form across dialects at all.
+  **Test-file fixture conversion**: `test/helpers/shared-db.ts`'s
+  `makeSharedDb()` now builds its db via `test/helpers/db.ts`'s
+  `openTestDb()` (driver from `PORTUNI_TEST_DB`) instead of a hardcoded
+  libsql `createClient` — every one of the ~80 test files built on it
+  became dialect-parametrized for free. `makeSharedDb(driver?)` takes an
+  explicit override for the files that call `schema-migrations.ts`'s
+  `runMigrationNNN`/`runMigrations` directly against the returned db, or
+  otherwise poke libsql-only internals (`sqlite_master`, `PRAGMA
+  foreign_keys` to force an impossible FK state) — every `test/migration-
+  *.test.ts` file, plus the specific tests in `test/files-unique-remote
+  .test.ts` and `test/events-supersede.test.ts` that do the same, pass
+  `"libsql"` explicitly regardless of which driver the rest of the matrix
+  run is exercising, since those ARE the libsql migration path and have no
+  Postgres equivalent — schema.pg.ts's baseline already carries whatever
+  they migrate an old DB towards, applied as a single step. **Every other
+  test file opens its db through `openTestDb()` too** — 52 files used to
+  call libsql's `createClient({ url: ":memory:" })` directly, so `npm run
+  test:pglite` silently re-ran a quarter of the suite (router, MCP, auth,
+  scope, sync-routing) on libsql and two real Postgres breakers
+  (`sqlite_master` in `mcp/tools/context.ts`, `SELECT DISTINCT … ORDER BY`
+  on an unselected column in `domain/sessions.ts`) went unnoticed. The
+  files that hand-write SQLite DDL or drive `runMigrationNNN` are pinned
+  with `openTestDb("libsql")` and say so in a comment; the rest use
+  `insertIgnore`/`nowExpr` and skip `PRAGMA` on Postgres. A new test opens
+  its db with `openTestDb()`; a new query that introspects the schema uses
+  `tableExistsSql(dialect)` (`sqlite_master` vs `pg_tables`). **Both
+  Postgres drivers pin the session time zone to UTC** (`SET TIME ZONE
+  'UTC'` after PGlite's `waitReady`, `options: "-c timezone=UTC"` on the
+  pg Pool): `normalizePgRow` renders TIMESTAMPTZ as zone-less UTC text and
+  `db-import` feeds it back as a bare literal, which Postgres reads in the
+  session zone — on a host outside UTC every export/import round trip
+  shifted timestamps by the local offset (CI's UTC runner never saw it).
+  `sql-placeholders.ts` skips `--`/`/* */` comments and dollar-quoted
+  bodies as well as string literals. **A Postgres migration's marker row
+  is written inside the same `executeMultiple` script as its DDL** (one
+  implicit transaction), and every `CREATE TRIGGER` in
+  `schema-triggers.pg.ts` is preceded by `DROP TRIGGER IF EXISTS`, so a
+  baseline applied without its marker (older build, crash in between)
+  boots instead of failing on "trigger already exists" forever.
+  **Both test scripts run with `--test-timeout=120000 --test-force-exit`**:
+  a test file whose process never exits (a leaked socket or timer after
+  its last assertion) used to hang the whole run with nothing reported --
+  a CI job once sat on `npm test` for an hour that way. A test that stalls
+  now fails with "test timed out", and each file's process is exited once
+  its tests are done; a leak is still a bug to fix, it just cannot hide.
+  **`npm run test:pglite` caps `--test-concurrency=2`** (`node --test`'s
+  default is `availableParallelism() - 1`, effectively "run most test files
+  in parallel"): PGlite is a real WASM-compiled Postgres per instance, heavy
+  enough that the full ~2000-test suite's default concurrency reliably
+  OOM-kills several of the heavier test files partway through a run (every
+  one of those files passes cleanly, fast, in isolation or under this cap —
+  confirmed empirically, not a logic bug). `scripts/agent-gate.sh` runs
+  `npm run qa` (libsql, fast — unchanged, still what the pre-push hook and
+  local iteration use) then `npm run test:pglite` as a separate step;
+  `ci.yml`'s `server` job runs both `npm test` and `npm run test:pglite`
+  as two ordinary sequential steps in the same job rather than a literal
+  GitHub Actions `strategy: matrix:` — cheaper (one `npm ci`/build/lint
+  pass, not two) for the same "green on both" guarantee the plan asks for.
+- **B5 (`docs/superpowers/plans/2026-09-12-infra-batch.md`) is the actual
+  cutover tool, landing before B4 removes libsql so its own rollback still
+  works — full steps in `docs/runbooks/postgres-cutover.md`.**
+  `apps/server/infra/db-export.ts`/`db-import.ts` hold the testable logic
+  (`scripts/db-export.ts`/`db-import.ts` are thin CLI wrappers, same shape
+  as `scripts/backup-turso.ts`/`infra/backup.ts`). Export is
+  dialect-agnostic on purpose — `SELECT * FROM t ORDER BY <pk>` against any
+  `DbClient`, one JSON file per table in `TABLE_ORDER` (the same
+  topological/FK-safe order `schema.pg.ts`'s baseline creates tables in) —
+  so the same tool exports a Turso/libsql source (central's real use case)
+  or a Postgres one (round-trip testing) alike. **`migrations` is
+  deliberately not one of the exported/imported tables**: its rows are
+  dialect-specific bookkeeping (`NNN_name` libsql ids vs `pg-NNN`), not
+  user data — the import target already has its own correct state from
+  having the baseline applied before import ever runs; the source's ids
+  are recorded in `manifest.json` purely for reference.
+  `importDb` refuses a target with any data beyond the one row
+  `ensureSchemaOn` itself always seeds (`seedSoloUser`, unconditional
+  regardless of auth mode) — checked per-table, `users` specifically
+  excluding that one well-known id (`SOLO_USER`) from the count. The
+  `users` insert is an upsert (`ON CONFLICT (id) DO UPDATE`), not a plain
+  INSERT, specifically so a source whose own solo-user row shares that
+  same id replaces the target's placeholder instead of colliding with it;
+  every other table is genuinely empty at that point (the refusal above
+  already proved it) so a plain INSERT is correct there.
+  **`remote_routing.id` changed from `GENERATED ALWAYS AS IDENTITY` to
+  `GENERATED BY DEFAULT AS IDENTITY`** (a B2 baseline fix landing here,
+  since B5 is what first needed it): `ALWAYS` rejects any explicit value
+  outright, but the import inserts each row's own original id to keep
+  referential meaning — `BY DEFAULT` accepts one, matching SQLite's own
+  `AUTOINCREMENT` (which always allowed an explicit id too).
+  `resyncIdentitySequence` fast-forwards the sequence past the highest
+  imported id afterward (Postgres-only; a no-op on libsql, which has no
+  sequence to resync and just looks at the actual max rowid) so the next
+  ordinary insert doesn't collide with what was just imported.
+  **`session_runs.resumed_from_run_id` is the schema's one self-referencing
+  FK** — a row can reference another row of the same table not yet
+  inserted even in a correct table order, since ULID order is chronological
+  in practice but not a guarantee the importer enforces. Inserted NULL in
+  the main pass, backfilled in a second UPDATE pass once every
+  `session_runs` row exists.
+- **The live channel's desktop bridge (#341, runner batch phase 3, first
+  issue) holds the WebSocket in Rust, never the webview (security rule
+  3).** `apps/desktop/src/sessions_ws.rs`'s `sessions_connect`/
+  `sessions_send`/`sessions_disconnect` commands open ONE connection per
+  window to that window's own sidecar (`ws_of(&window)` +
+  `sidecar_port_and_token`, the exact same bearer source `api_request`
+  already uses — `Authorization: Bearer` attached on the WS handshake
+  request itself, which Rust can do and a browser cannot) and re-emit
+  every server frame as a per-window `session-event`
+  (`app.emit_to("ws:<id>", ...)`, same idiom as `backend-ready`), plus a
+  `session-connection {status}` (`open|reconnecting|closed`). Reconnect
+  backoff is 1s→30s, doubling (`next_backoff_ms`, a pure function unit
+  tested in isolation — `sessions_ws::backoff_tests`); the connection
+  registry (`SessionsWsState`, keyed by workspace id like
+  `BackendPorts`/`AuthTokens`, not by an opaque session id the way PTY's
+  own registry is) carries a `generation` counter bumped on every connect/
+  disconnect so a background task from a superseded connect (e.g. sleeping
+  out a backoff when a fresh `sessions_connect` or a `sessions_disconnect`
+  arrives) recognizes it no longer owns the entry and exits instead of
+  resurrecting a connection nothing wants. **Unlike PTY sessions (which
+  are NOT torn down on window close today — a known gap), this one is**:
+  `disconnect_for_ws` is called both from `sessions_disconnect` and from
+  `on_window_event`'s `Destroyed` arm, since a force-closed window never
+  gets to call the command itself. `tokio-tungstenite`/`tokio`/
+  `futures-util` are new direct dependencies (default features only, no
+  TLS backend — every connection target is loopback `ws://127.0.0.1`,
+  never `wss://`); `tokio` was already present transitively via Tauri's
+  own async runtime. No change needed to `capabilities/default.json`:
+  custom app commands need no per-command capability entry in this
+  codebase (confirmed against the existing, equally un-listed
+  `api_request`/`pty_spawn`), only the `windows: ["bootstrap", "ws:*"]`
+  scope already covers every command.
+  **`apps/web/src/lib/sessions-client.ts`** is the typed client the two
+  transports share one interface for: Tauri mode invokes those three
+  commands and listens for the two events; **Vite dev mode opens a real
+  `WebSocket` directly** against `/api/sessions/ws` — `vite.config.ts`'s
+  existing `/api` proxy gained `ws: true` plus a `proxyReqWs` handler
+  (http-proxy fires a *different* event for upgrades than `proxyReq`)
+  injecting the bearer the exact same way the REST proxy already does, so
+  the token still never reaches client JS even in this mode; reconnect-
+  with-backoff is reimplemented in TS here since there is no Rust bridge
+  to do it for a plain browser tab. `createDirectWsTransport`'s own `send`
+  queues a frame until the socket's `onopen` fires rather than silently
+  dropping one sent immediately after `connect()` (the common case, not a
+  rare race — a caller's very first `subscribe()` call always races the
+  handshake). The client tracks the highest `seq` it has seen **per
+  session** (never touched by `delta` frames, which carry no `seq` and are
+  never persisted server-side either) and resubscribes every still-wanted
+  session with `after: <that seq>` the moment the transport reports
+  `"open"` again after having been open before — the server's own replay
+  (`sessions-ws.ts`) fills exactly that gap, so a reconnect loses nothing
+  and re-delivers nothing. `session_state` frames dispatch to a single
+  global listener set (`onSessionState`, no session-id key), matching the
+  server fanning them to every connection that can see the session
+  regardless of subscription. `test/sessions-client.test.ts` exercises the
+  direct-WS transport end-to-end against a small fake `ws` server (the
+  Tauri transport has no runtime to test against here) — subscribe/reply
+  correlation, in-order event delivery, the resubscribe-with-`after`
+  behavior across a forced connection drop, and that a `delta` frame never
+  moves the tracked seq.
+- **SessionChat + "Nový úkol" (#342, runner batch phase 3, second issue)
+  replace the embedded terminal as Práce's primary path, not yet its only
+  one.** `apps/web/src/lib/session-chat.ts` mirrors
+  `domain/runner/types.ts`'s `CanonicalEvent` union by hand (that module is
+  server-only, deliberately not shared — same boundary `shared/api-types.ts`
+  exists to keep) and holds every pure helper `test/session-chat-helpers.test.ts`
+  exercises: `sessionStatusChip` (state + `waiting_since` ->
+  label/color/pulsing, "Čeká na mě" overriding plain "Běží"),
+  `latestQuestionEvent`, `appendDelta`/`clearDeltaBuffer` (per-`run_id`
+  streaming buffers — `CanonicalEventEnvelope` itself carries no `run_id`,
+  so `SessionChat.tsx` tracks the live run's id separately off
+  `run_started`/`run_ended` payloads), `collapseToolCalls` (a `started` ->
+  `completed`/`failed` pair sharing `tool_use_id` collapses to the later
+  row, in place, so the event list shows one row per invocation not two),
+  and `formatRestartHint` (the `GET /sessions/:id/signals` payload into the
+  Czech "Běží N min · zápis W · čtení R (+G od startu běhu)" string,
+  polled every 15s only while `state === "running"`).
+  `apps/web/src/components/SessionChat.tsx` backfills
+  `GET /sessions/:id/events` once on mount, then hands off to the shared
+  `sessionsClient` (#341) for live `event`/`delta`/`session_state` frames;
+  actions (Přerušit/Pozastavit/Uzavřít/Nahodit) call the client directly
+  and rely on the server's own 403 for anyone lacking access — there is no
+  client-side prediction of the access table from #321, deliberately, to
+  avoid duplicating permission logic the server already enforces.
+  `NewTaskDialog.tsx` is the "Nový úkol" form (brief, a `GET /runners`
+  picker filtered to `installed && logged_in`, an instance picker shown
+  only at >=2 instances for the runner with the calling node's
+  organization default preselected via `RunnerInstanceSummary.org_defaults`
+  — the same `instances.find(i => i.org_defaults.includes(orgId))` lookup
+  `RunnersSection.tsx` already used) that calls `POST /sessions` and hands
+  the fresh `{session, run}` back to its caller.
+  **`TerminalSplitButton` (`DetailPane.files.tsx`) is renamed
+  `NewTaskButton` and its primary/dropdown roles swap**: the primary
+  action is now "Nový úkol" (opens `NewTaskDialog`); the two terminal
+  launch paths that used to be the primary action and the dropdown's only
+  item ("Otevřít terminál v Portuni", "Otevřít v externím terminálu") both
+  move into the dropdown, unchanged otherwise — kept reachable
+  deliberately (per the issue: "the terminal canvas stays reachable behind
+  the old button during this phase so both can be compared on a real
+  node"; removal is phase 4). `onSessionStarted` threads from there up
+  through `DetailPane`'s two-layer prop passthrough (`DetailPane` ->
+  `DetailPaneBody`) as an optional callback — present when `DetailPane` is
+  rendered inside `WorkspaceView` (which needs to know), absent for the
+  graph view's own `DetailPane` (which has no chat surface to hand the new
+  session to; starting a task there still works, its session just is not
+  visible until the node is later selected in Práce).
+  **`WorkspaceView`'s detail surface gained a third branch, alongside
+  DetailPane/EditorPane**: `SessionChat` renders whenever the selected
+  node's `openSession` is `running` or `suspended` (closed/archived fall
+  through to the plain node detail — those are history, not something to
+  keep steering), in EITHER the centre slot (no terminal open for that
+  node) or the aside slot (a terminal IS open) — the existing
+  `detailSurface(collapsible)` function already unified those two
+  placements for DetailPane/EditorPane, so this is one more branch there,
+  not new outer-layout code. `App.tsx` owns the state this depends on:
+  ONE `SessionsClient` for the app's lifetime (`useState(() =>
+  createSessionsClient())`, since the client opens its transport
+  immediately — creating it lazily on first render, never per-render, is
+  load-bearing), and `workspaceOpenSession` (`SessionSummary | null`),
+  refetched via `fetchNodePersistentSessions(id, false)` whenever
+  `selectedWorkspaceNodeId` changes (same `cancelled`-guard pattern as the
+  neighboring `workspaceNodeDetail` effect), picking the first
+  running/suspended row. `onSessionStarted`/`onSessionUpdated` both just
+  set this same state, so starting a task or SessionChat reporting a
+  `session_state` change both flow through the identical path.
+- **#343 (runner batch phase 3, third issue) reads live session state in
+  the Relace tab, the Práce sidebar and Přehled — three call sites, one
+  shared helpers module.** `apps/web/src/lib/session-views.ts` is
+  deliberately separate from `lib/session-chat.ts` (#342's own helpers,
+  scoped to the chat surface itself): `sessionRowChip` uses different
+  Czech wording for the SAME five states than `session-chat.ts`'s
+  `sessionStatusChip` (Hotovo/Archiv here vs. Uzavřeno/Archivováno there)
+  because a compact list row and a chat header are different contexts, not
+  an inconsistency to fix. `sessionRowAccess(ownerId, meId, canManage)` is
+  a client-side echo of #321's access table (read = seeing the row at all,
+  since every caller here already fetched it via a node/list endpoint
+  gated on node visibility; message/resume = owner only; stop
+  (interrupt/suspend/close) = owner or manage) -- purely to avoid offering
+  a button that would always 403, the server remains the real gate.
+  `applyLiveSessionState`/`mergeLiveSessionStates` overlay a
+  `SessionStateMessage` (state + waiting_since only, all it carries) onto
+  a REST-fetched row. `sortInboxSessions` is Přehled's ordering: waiting
+  first, then running, then suspended, restricted to `user_id === meId`
+  -- `GET /overview`'s own `sessions.running`/`.suspended` are NOT
+  restricted to the caller (they're every session on a node the caller can
+  see, workspace-wide, per `apps/server/api/overview.ts`'s
+  `filterSessions`); the restriction is this helper's job, client-side,
+  matching the issue's "(the caller's own)" -- the team-wide view is later,
+  host-aware work, not this issue. `countRunningSessions` sums a
+  `session_state` map's `running` entries for `StatusFooter`'s count,
+  replacing the old PTY-tab count (`sessions.length`) -- a session can be
+  `running` with no terminal tab open for it in this window at all.
+  **`fetchMe()` widened to return `id`** (the server's `handleMe` already
+  sent it; only the client's return type was narrower) -- `sessionRowAccess`
+  needs the caller's own id, which `canManage` alone never carried.
+  **`DetailPane.sessions.tsx`** dropped its own `STATE_LABEL`/`STATE_COLOR`
+  exports (only ever used for one status dot each, both now `sessionRowChip`)
+  and gained real actions where the row used to only show informational
+  text: "Otevřít chat" (new `onOpenChat` prop, optional like
+  `onSessionStarted`), and "Nahodit" -- previously `resumeInfo` was
+  rendered as plain text with no button at all; now a single button whose
+  label reflects the mode the server already determined
+  (`resumeInfo.conversation_resumable ? "pokračovat" : "z handoffu"`),
+  calling the already-existing `resumeSession(id, mode)` from #342 and
+  re-`load()`ing the list after (no WS subscription in this REST-only
+  tab -- simpler than threading `sessionsClient` in just for one row's
+  refresh). "Owner name when not the caller" resolves through
+  `fetchUsers()` (`GET /users`, manage-scope-gated, degrades to `[]`
+  below that per its own doc comment) -- a plain teammate just never sees
+  a name, which is fine, the row still works without one. "Host label when
+  present" from the issue's own wording is a deliberate scope cut: `host_id`
+  lives on `SessionRunRow`, not `SessionSummary`, so showing it here would
+  mean an extra per-row `GET /sessions/:id/runs` fetch for a label the
+  Přehled bullet itself says belongs to "the hosts spec's job" later.
+  **`onOpenChat` threads from `App.tsx`'s new `openSessionChat(nodeId)`**
+  through both `DetailPane` instances (graph view directly, Workspace view
+  via `WorkspaceView.tsx`) and into `SessionsSection`. It replaces the
+  OverviewView-only `overviewOpenSession`, which used to also call
+  `workspaceSelectSession(nodeId, sessionId)` -- writing a PERSISTENT
+  session id into `activeSessionIdByNode` (the PTY terminal-tab selection
+  map) was always a latent mismatch: on a node that also has a real
+  terminal tab open, it would silently steal that tab's "active" pointer.
+  `openSessionChat` just opens/selects the node; #342's own
+  `workspaceOpenSession` fetch-on-select effect finds the session with no
+  id needed. **`WorkspaceNodeList.tsx`** renders persistent-session
+  sub-rows as a second `<ul>` alongside the existing PTY terminal sub-rows
+  (unchanged), fed by `App.tsx`'s `liveOpenSessionsByNode` -- one
+  `fetchNodePersistentSessions(id, false)` per entry in `openNodeIds`,
+  refetched whenever that set changes, live-overlaid via
+  `mergeLiveSessionStates` against the SAME app-wide `sessionStates` map
+  `countRunningSessions` reads (`sessionsClient.onSessionState`,
+  `Set`-backed so multiple listeners coexist -- SessionChat keeps its own
+  separate subscription for its own event log, untouched). Threading is
+  `App.tsx` -> `Sidebar.tsx` (`workspaceOpenSessionsByNode`/
+  `onWorkspaceOpenSessionChat`, new props alongside the existing PTY
+  `workspaceSessions`) -> `WorkspaceNodeList.tsx`.
 
 ## Security rules (from the auth refactor post-mortem)
 

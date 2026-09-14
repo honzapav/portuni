@@ -1,9 +1,9 @@
 // Domain: edge mutations enforcing the organization invariant.
 //
-// Pure functions over a libsql Client. Both REST (src/api/edges.ts) and
+// Pure functions over a libsql DbClient. Both REST (src/api/edges.ts) and
 // MCP (src/mcp/tools/edges.ts) call into these.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { writeAudit } from "../infra/audit.js";
 import { resolveNodeInfo } from "./sync/node-info.js";
 import { buildNodeRoot } from "./sync/remote-path.js";
@@ -30,7 +30,7 @@ export type MoveNodeResult = {
 // Returns { deleted: edge_id } on success; throws Error on validation
 // failure or "edge not found".
 export async function disconnectEdgeById(
-  db: Client,
+  db: DbClient,
   userId: string,
   edgeId: string,
 ): Promise<{ deleted: string }> {
@@ -93,7 +93,7 @@ export async function disconnectEdgeById(
 // edge id stays stable, so audit history attached to the membership is
 // continuous across the move.
 export async function moveNodeToOrganization(
-  db: Client,
+  db: DbClient,
   userId: string,
   nodeId: string,
   newOrgId: string,

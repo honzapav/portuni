@@ -8,9 +8,20 @@
 // and global scopes on every call, so a compromised device can reach exactly
 // what its user could reach anyway.
 
-import type { DataSourceRow } from "../../../shared/types.js";
+import type { DataSourceRow, SessionRow, SessionState } from "../../../shared/types.js";
 import type { NodeSyncInfo, RegisterFileRecordResult } from "../sync-remote-api.js";
 import type { RemoteSweepResult } from "../remote-sweep.js";
+import type { OrientationSummary } from "../../write-scope.js";
+import type {
+  CreateRunInput,
+  CreateRunnerSessionInput,
+  ListEventsOptions,
+  PatchRunInput,
+  PatchSessionInput,
+  SessionEventRow,
+  SessionRunRow,
+} from "../../runner/store.js";
+import type { CanonicalEvent } from "../../runner/types.js";
 
 export class CentralHttpError extends Error {
   constructor(
@@ -99,6 +110,32 @@ export interface CentralClient {
   // Drop any cached sync-info for the node (called automatically after
   // mutations through this client; exposed for external invalidation).
   invalidateSyncInfo(nodeId: string): void;
+
+  // Session/runner record half (docs/superpowers/specs/2026-09-12-runner-
+  // and-session-design.md, "Central (record half)"): domain/runner/
+  // store-central.ts's CentralSessionStore is built over exactly these
+  // methods, one per REST endpoint api/sessions.ts's "central record half"
+  // section serves -- see that file's own header comment for the route list.
+  getSessionRecord(id: string): Promise<SessionRow | null>;
+  // GET /sessions?state=a,b&limit=n -- the sessions this device's user can
+  // see in the given states (api/sessions.ts's handleListSessions); the
+  // agent-mode live channel's initial session_state snapshot.
+  listSessionRecords(opts: { states: readonly SessionState[]; limit?: number }): Promise<SessionRow[]>;
+  createSessionRecord(input: CreateRunnerSessionInput): Promise<SessionRow>;
+  patchSessionRecord(id: string, patch: PatchSessionInput): Promise<SessionRow>;
+  createSessionRun(input: CreateRunInput): Promise<SessionRunRow>;
+  patchSessionRun(sessionId: string, runId: string, patch: PatchRunInput): Promise<SessionRunRow>;
+  listSessionRuns(sessionId: string): Promise<SessionRunRow[]>;
+  appendSessionEvents(
+    sessionId: string,
+    runId: string | null,
+    events: CanonicalEvent[],
+  ): Promise<number[]>;
+  listSessionEvents(sessionId: string, opts?: ListEventsOptions): Promise<SessionEventRow[]>;
+  // GET /nodes/:id/orientation: what buildOrientationHint would render
+  // locally, computed by the central server (which has the real graph db)
+  // instead of the agent-mode sidecar (which does not).
+  orientation(nodeId: string): Promise<OrientationSummary | null>;
 }
 
 interface HttpClientArgs {
@@ -362,6 +399,91 @@ export function createHttpCentralClient(args: HttpClientArgs): CentralClient {
 
     invalidateSyncInfo(nodeId) {
       invalidate(nodeId);
+    },
+
+    async getSessionRecord(id) {
+      const p = `/sessions/${encodeURIComponent(id)}`;
+      const r = await request("GET", p);
+      if (r.status === 404) return null;
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      return r.json as SessionRow;
+    },
+
+    async listSessionRecords(opts) {
+      const qs = new URLSearchParams({ state: opts.states.join(",") });
+      if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+      const p = `/sessions?${qs.toString()}`;
+      const r = await request("GET", p);
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      return (r.json as { sessions: SessionRow[] }).sessions;
+    },
+
+    async createSessionRecord(input) {
+      const p = "/sessions/record";
+      const r = await request("POST", p, input);
+      if (r.status !== 201) throwFor(r.status, p, r.json);
+      return r.json as SessionRow;
+    },
+
+    async patchSessionRecord(id, patch) {
+      const p = `/sessions/${encodeURIComponent(id)}`;
+      const r = await request("PATCH", p, patch);
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      return r.json as SessionRow;
+    },
+
+    async createSessionRun(input) {
+      const p = `/sessions/${encodeURIComponent(input.session_id)}/runs`;
+      const r = await request("POST", p, {
+        runner: input.runner,
+        instance_id: input.instance_id,
+        host_id: input.host_id,
+        agent_session_id: input.agent_session_id ?? null,
+        resumed_from_run_id: input.resumed_from_run_id ?? null,
+      });
+      if (r.status !== 201) throwFor(r.status, p, r.json);
+      return (r.json as { run: SessionRunRow }).run;
+    },
+
+    async patchSessionRun(sessionId, runId, patch) {
+      const p = `/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}`;
+      const r = await request("PATCH", p, patch);
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      return (r.json as { run: SessionRunRow }).run;
+    },
+
+    async listSessionRuns(sessionId) {
+      const p = `/sessions/${encodeURIComponent(sessionId)}/runs`;
+      const r = await request("GET", p);
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      return (r.json as { runs: SessionRunRow[] }).runs;
+    },
+
+    async appendSessionEvents(sessionId, runId, events) {
+      const p = `/sessions/${encodeURIComponent(sessionId)}/events`;
+      const r = await request("POST", p, { run_id: runId, events });
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      return (r.json as { seqs: number[] }).seqs;
+    },
+
+    async listSessionEvents(sessionId, opts) {
+      const params = new URLSearchParams();
+      if (opts?.after !== undefined) params.set("after", String(opts.after));
+      if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+      const qs = params.toString();
+      const p = `/sessions/${encodeURIComponent(sessionId)}/events${qs ? `?${qs}` : ""}`;
+      const r = await request("GET", p);
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      const events = (r.json as { events: Array<{ payload: unknown } & Omit<SessionEventRow, "payload">> }).events;
+      return events.map((e) => ({ ...e, payload: JSON.stringify(e.payload) }));
+    },
+
+    async orientation(nodeId) {
+      const p = `/nodes/${encodeURIComponent(nodeId)}/orientation`;
+      const r = await request("GET", p);
+      if (r.status === 404) return null;
+      if (r.status !== 200) throwFor(r.status, p, r.json);
+      return (r.json as { orientation: OrientationSummary | null }).orientation;
     },
   };
 }

@@ -19,12 +19,15 @@ import {
   FolderOpen,
   Link2,
   Loader2,
+  Plus,
   RefreshCw,
   X,
 } from "lucide-react";
 import type {
   DetailFile,
   NodeDetail,
+  SessionRunRow,
+  SessionSummary,
   SyncClass,
   SyncRunResponse,
   SyncStatusFile,
@@ -41,6 +44,7 @@ import { listProfiles, type ProfileInfo } from "../lib/profiles";
 import { copyText } from "../lib/clipboard";
 import { summarizeSyncRun } from "../lib/sync-run-summary";
 import { syncBarState } from "../lib/sync-bar-state";
+import NewTaskDialog from "./NewTaskDialog";
 
 // ---------------------------------------------------------------------------
 // File tree (Files tab)
@@ -1318,10 +1322,17 @@ type LaunchState =
   | { kind: "copied" }
   | { kind: "error"; message: string };
 
-// Split button that merges two terminal-launch controls into one:
-//   - Left (primary): opens an embedded terminal inside Portuni.
-//   - Right (chevron): dropdown with "Otevřít v externím terminálu" that
-//     triggers the same external-launch flow as ActionButtons.
+// Split button, renamed from TerminalSplitButton (#342, runner batch phase
+// 3 -- docs/superpowers/specs/2026-09-12-runner-and-session-design.md "Web:
+// Práce, New task"):
+//   - Left (primary): "Nový úkol" opens NewTaskDialog (runner-managed
+//     session, POST /sessions), replacing the old primary "open an embedded
+//     terminal" action.
+//   - Right (chevron): dropdown with the two terminal-launch paths this
+//     button used to lead with -- "Otevřít terminál v Portuni" (embedded)
+//     and "Otevřít v externím terminálu". Kept reachable during this phase
+//     so the runner-driven chat and the terminal canvas can be compared on
+//     a real node; removal is phase 4.
 // Renders nothing for organization nodes (no working-folder concept there).
 //
 // selectedProfileId only reaches the embedded launch (onEmbeddedOpen) --
@@ -1335,20 +1346,23 @@ type LaunchState =
 // PORTUNI_PROFILE_ID env pty_spawn does, so wiring just the profile through
 // would be an inconsistent half-fix. Extending profile support to Codex/
 // Vibe and to this external-launch path is future work.
-export function TerminalSplitButton({
+export function NewTaskButton({
   node,
   agentCommand,
   terminalLaunch,
   onEmbeddedOpen,
   embeddedPending,
+  onSessionStarted,
 }: {
   node: NodeDetail;
   agentCommand: string;
   terminalLaunch: string;
   onEmbeddedOpen: (profileId?: string | null) => void | Promise<void>;
   embeddedPending: boolean;
+  onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow }) => void;
 }) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [taskDialogOpen, setTaskDialogOpen] = useState(false);
   const [externalState, setExternalState] = useState<LaunchState>({ kind: "idle" });
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -1487,28 +1501,18 @@ export function TerminalSplitButton({
   return (
     <div ref={containerRef} className="relative">
       <div className="flex">
-        {/* Primary action: open embedded terminal inside Portuni */}
+        {/* Primary action: start a runner-managed task (#342) */}
         <button
           type="button"
-          onClick={() => void onEmbeddedOpen(selectedProfileId)}
+          onClick={() => setTaskDialogOpen(true)}
           disabled={primaryDisabled}
-          title={`Otevře terminál v Práci a spustí v něm ${agentName}. Pracovní složka bude vytvořena, pokud ještě neexistuje.${
-            selectedProfileId
-              ? ` Profil: ${profiles.find((p) => p.id === selectedProfileId)?.label ?? selectedProfileId}.`
-              : ""
-          }`}
+          title="Zadá agentovi úkol, který poběží v Práci jako chat."
           className="flex flex-1 items-center justify-center gap-2 rounded-l-md border border-r-0 border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)] disabled:cursor-default disabled:opacity-60 disabled:hover:border-[var(--color-accent-dim)] disabled:hover:bg-[var(--color-accent-dim)]/15"
         >
-          {embeddedPending ? (
-            <>
-              <Loader2 size={13} className="animate-spin" />
-              Spouštím terminál…
-            </>
-          ) : (
-            "Otevřít terminál v Portuni"
-          )}
+          <Plus size={13} />
+          Nový úkol
         </button>
-        {/* Chevron trigger for the external-launch dropdown */}
+        {/* Chevron trigger for the embedded/external terminal dropdown */}
         <button
           type="button"
           onClick={() => setDropdownOpen((v) => !v)}
@@ -1544,6 +1548,25 @@ export function TerminalSplitButton({
           )}
           <button
             type="button"
+            onClick={() => {
+              setDropdownOpen(false);
+              void onEmbeddedOpen(selectedProfileId);
+            }}
+            disabled={embeddedPending}
+            title={`Otevře terminál v Práci a spustí v něm ${agentName}. Pracovní složka bude vytvořena, pokud ještě neexistuje.${
+              selectedProfileId
+                ? ` Profil: ${profiles.find((p) => p.id === selectedProfileId)?.label ?? selectedProfileId}.`
+                : ""
+            }`}
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-[var(--color-text)] hover:bg-[var(--color-surface)] disabled:opacity-60"
+          >
+            <span className="text-[var(--color-text-dim)]">
+              {embeddedPending ? <Loader2 size={12} className="animate-spin" /> : <ChevronRight size={12} />}
+            </span>
+            <span className="truncate">{embeddedPending ? "Spouštím terminál…" : "Otevřít terminál v Portuni"}</span>
+          </button>
+          <button
+            type="button"
             onClick={() => void handleExternalLaunch()}
             disabled={externalState.kind === "pending"}
             title={
@@ -1557,6 +1580,16 @@ export function TerminalSplitButton({
             <span className="truncate">{externalLabel}</span>
           </button>
         </div>
+      )}
+      {taskDialogOpen && (
+        <NewTaskDialog
+          node={node}
+          onClose={() => setTaskDialogOpen(false)}
+          onStarted={(result) => {
+            setTaskDialogOpen(false);
+            onSessionStarted?.(result);
+          }}
+        />
       )}
     </div>
   );

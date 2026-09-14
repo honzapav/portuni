@@ -14,7 +14,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
-import { createClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
+import { insertIgnore } from "../apps/server/infra/sql.js";
 import { ulid } from "ulid";
 import { ensureSchemaOn, SOLO_USER } from "../apps/server/infra/schema.js";
 import { getDb, setDbForTesting } from "../apps/server/infra/db.js";
@@ -37,7 +38,7 @@ before(async () => {
   workspace = await mkdtemp(join(tmpdir(), "portuni-rest-sbx-"));
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
   resetLocalDbForTests();
-  const db = createClient({ url: ":memory:" });
+  const db = await openTestDb();
   await ensureSchemaOn(db);
   setDbForTesting(db);
 
@@ -152,7 +153,7 @@ describe("GET /nodes/:id/sandbox-profile", () => {
 
   it("403s a resume_session_id owned by a different user (#204)", async () => {
     await getDb().execute({
-      sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+      sql: insertIgnore(getDb().dialect, "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)"),
       args: ["someone-else", "else@x.com", "Someone Else"],
     });
     const session = await createSession(getDb(), "someone-else", {

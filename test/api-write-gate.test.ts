@@ -17,7 +17,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable, Writable } from "node:stream";
 import { ulid } from "ulid";
-import { createClient as createDbClient, type Client as DbClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
+import type { DbClient } from "../apps/server/infra/db.js";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { resetLocalDbForTests } from "../apps/server/domain/sync/local-db.js";
@@ -126,7 +127,7 @@ describe("REST write gate: graph-plane mutations", () => {
     process.env.PORTUNI_WORKSPACE_ROOT = workspace;
     resetLocalDbForTests();
 
-    db = createDbClient({ url: ":memory:" });
+    db = await openTestDb();
     await ensureSchemaOn(db);
     setDbForTesting(db);
 
@@ -370,7 +371,7 @@ describe("REST write gate: env-mode spawn-id scoping (#210 point 2)", () => {
     process.env.PORTUNI_WORKSPACE_ROOT = workspace;
     resetLocalDbForTests();
 
-    db = createDbClient({ url: ":memory:" });
+    db = await openTestDb();
     await ensureSchemaOn(db);
     setDbForTesting(db);
 
@@ -416,6 +417,30 @@ describe("REST write gate: env-mode spawn-id scoping (#210 point 2)", () => {
       "x-portuni-webview-proxy": "not-the-secret",
     });
     assert.equal(r.statusCode, 403, r.body);
+  });
+
+  it("session routes: env identity without the proxy marker is refused, with it the gate passes (#213)", async () => {
+    // Every mutating /sessions route -- the actions and the record half --
+    // is app-only under the hardened posture; a spawned terminal holding
+    // the bearer steers its session through the MCP tools, never REST.
+    for (const [method, path] of [
+      ["POST", "/sessions"],
+      ["POST", `/sessions/${sessionId}/messages`],
+      ["POST", `/sessions/${sessionId}/interrupt`],
+      ["POST", `/sessions/${sessionId}/close`],
+      ["PATCH", `/sessions/${sessionId}`],
+      ["POST", "/sessions/record"],
+    ] as const) {
+      const r = await call(method, path, uiIdentity, { text: "x", name: "y" });
+      assert.equal(r.statusCode, 403, `${method} ${path}: ${r.body}`);
+      assert.equal((JSON.parse(r.body) as { code: string }).code, "WEBVIEW_PROXY_REQUIRED", `${method} ${path}`);
+    }
+    // Reads stay open to the same caller.
+    const read = await call("GET", `/sessions/${sessionId}`, uiIdentity);
+    assert.equal(read.statusCode, 200, read.body);
+    // With the marker the gate passes; the rename lands.
+    const renamed = await call("PATCH", `/sessions/${sessionId}`, uiIdentity, { name: "Renamed" }, WEBVIEW_PROXY_HEADERS);
+    assert.equal(renamed.statusCode, 200, renamed.body);
   });
 
   it("X-Portuni-Spawn-Id names a running session: write to its home node is allowed", async () => {
@@ -481,7 +506,7 @@ describe("REST write gate: headless device-token file-plane gating (#212)", () =
     process.env.PORTUNI_WORKSPACE_ROOT = workspace;
     resetLocalDbForTests();
 
-    db = createDbClient({ url: ":memory:" });
+    db = await openTestDb();
     await ensureSchemaOn(db);
     setDbForTesting(db);
 

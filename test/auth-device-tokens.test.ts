@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { makeSharedDb } from "./helpers/shared-db.js";
+import { insertIgnore } from "../apps/server/infra/sql.js";
 import {
   mintDeviceToken,
   verifyDeviceToken,
@@ -57,7 +58,7 @@ test("revoke is ownership-scoped", async () => {
   const { db } = await makeSharedDb();
   const minted = await mintDeviceToken(db, USER, "x");
   await db.execute({
-    sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)",
+    sql: insertIgnore(db.dialect, "INSERT OR IGNORE INTO users (id, email, name) VALUES (?, ?, ?)"),
     args: ["01OTHER000000000000000000", "other@x.com", "Other"],
   });
   const ok = await revokeDeviceToken(db, "01OTHER000000000000000000", minted.id);

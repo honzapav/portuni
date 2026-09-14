@@ -9,7 +9,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ulid } from "ulid";
-import { createClient as createDbClient, type Client as DbClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
+import type { DbClient } from "../apps/server/infra/db.js";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -119,7 +120,7 @@ describe("Access checks on the eight previously-unguarded write tools", () => {
     resetLocalDbForTests();
     resetAdapterCacheForTests();
 
-    db = createDbClient({ url: ":memory:" });
+    db = await openTestDb();
     await ensureSchemaOn(db);
     setDbForTesting(db);
 

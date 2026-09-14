@@ -89,6 +89,19 @@ toml_edit = "0.25"
 # Already present transitively (Cargo.lock pins 2.3.2); promoted to a
 # direct dep so the protocol handler can use it explicitly.
 percent-encoding = "2"
+# WebSocket client for sessions_connect (#341): the Rust host holds the one
+# live channel connection per window (security rule 3 -- the webview never
+# opens it directly) and bridges frames to session-event window events.
+# Default features only (connect/handshake/stream, no TLS backend) -- every
+# connection target is a loopback sidecar (ws://127.0.0.1:<port>), never
+# wss://, so no TLS implementation is needed. Runs on the same tokio runtime
+# tauri already pulls in transitively (Cargo.lock pins 1.52.x).
+tokio-tungstenite = "0.29"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# Already present transitively via tauri's own async runtime (Cargo.lock
+# pins 1.52.x); promoted to a direct dep for sessions_ws.rs's own use of
+# tokio::select!/tokio::sync::mpsc/tokio::time::sleep.
+tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }
 
 [dev-dependencies]
 # Scratch .showtime bundles for the preview protocol tests. Already in

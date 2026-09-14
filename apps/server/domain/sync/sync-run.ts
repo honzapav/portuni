@@ -8,7 +8,7 @@
 //     "Synchronizovat vše" is no longer a client-side blocking loop.
 // Authorization (node visibility, the headless write gate) stays in the
 // REST handler -- this function assumes the caller already checked it.
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import {
   statusScan,
   storeFile,
@@ -22,7 +22,7 @@ import { assertRemoteCapable } from "./types.js";
 import type { SyncRunResponse } from "../../shared/api-types.js";
 
 export async function runNodeSync(
-  db: Client,
+  db: DbClient,
   a: { userId: string; nodeId: string },
 ): Promise<SyncRunResponse> {
   // A local workspace never has a remote (#310) -- there is nothing for a

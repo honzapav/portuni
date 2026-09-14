@@ -10,7 +10,7 @@
 // Split off from schema.ts so the file that has to be edited every time
 // we change schema is not 1400 lines long.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "./db.js";
 import { ulid } from "ulid";
 import { slugifyForSyncKey } from "../domain/sync/sync-key.js";
 import {
@@ -69,12 +69,12 @@ interface Migration {
   id: string;
   // For legacy migrations: detect if already applied before the migrations
   // table existed. Return true to skip and just mark as applied.
-  isApplied?: (db: Client) => Promise<boolean>;
-  up: (db: Client) => Promise<void>;
+  isApplied?: (db: DbClient) => Promise<boolean>;
+  up: (db: DbClient) => Promise<void>;
 }
 
 // Migration 009 runner. Idempotent via IF NOT EXISTS clauses.
-export async function runMigration009(db: Client): Promise<void> {
+export async function runMigration009(db: DbClient): Promise<void> {
   await db.execute(DDL_REMOTES_TABLE);
   await db.execute(DDL_REMOTE_ROUTING_TABLE);
   await db.execute(INDEX_REMOTE_ROUTING_PRIORITY);
@@ -90,7 +90,7 @@ export async function runMigration009(db: Client): Promise<void> {
 //    rebuilding the table.
 //
 // Idempotent and recoverable: each step checks current state before acting.
-export async function runMigration013(db: Client): Promise<void> {
+export async function runMigration013(db: DbClient): Promise<void> {
   const info = await db.execute("PRAGMA table_info(nodes)");
   const cols = new Set(info.rows.map((r) => r.name as string));
 
@@ -134,7 +134,7 @@ export async function runMigration013(db: Client): Promise<void> {
 // Migration 011: drop the legacy Turso `local_mirrors` table. Per-device
 // mirror paths now live exclusively in the local sync.db. Safe to run on
 // any DB (DROP TABLE IF EXISTS is a no-op when the table is already gone).
-export async function runMigration011(db: Client): Promise<void> {
+export async function runMigration011(db: DbClient): Promise<void> {
   await db.execute("DROP TABLE IF EXISTS local_mirrors");
 }
 
@@ -145,7 +145,7 @@ export async function runMigration011(db: Client): Promise<void> {
 // redundant and (worse) goes stale across devices and renames. libSQL /
 // SQLite 3.35+ supports native ALTER TABLE DROP COLUMN; we gate on
 // PRAGMA table_info so the migration is idempotent.
-export async function runMigration012(db: Client): Promise<void> {
+export async function runMigration012(db: DbClient): Promise<void> {
   const info = await db.execute("PRAGMA table_info(files)");
   const cols = new Set(info.rows.map((r) => r.name as string));
   if (cols.has("local_path")) {
@@ -159,7 +159,7 @@ export async function runMigration012(db: Client): Promise<void> {
 // file's actual content. Removed in favour of no field at all. `description`
 // is in no index or CHECK, so a native DROP COLUMN is safe; gated on
 // PRAGMA table_info for idempotency (same shape as migration 012).
-export async function runMigration021(db: Client): Promise<void> {
+export async function runMigration021(db: DbClient): Promise<void> {
   const info = await db.execute("PRAGMA table_info(files)");
   const cols = new Set(info.rows.map((r) => r.name as string));
   if (cols.has("description")) {
@@ -171,7 +171,7 @@ export async function runMigration021(db: Client): Promise<void> {
 // pair was scaffolded for a node-summary feature that was never wired: no
 // code writes them and nothing reads them. Neither is in an index or CHECK,
 // so native DROP COLUMN is safe; gated on PRAGMA table_info for idempotency.
-export async function runMigration022(db: Client): Promise<void> {
+export async function runMigration022(db: DbClient): Promise<void> {
   const info = await db.execute("PRAGMA table_info(nodes)");
   const cols = new Set(info.rows.map((r) => r.name as string));
   if (cols.has("summary_updated_at")) {
@@ -186,7 +186,7 @@ export async function runMigration022(db: Client): Promise<void> {
 // the remote source-of-truth. Does NOT drop `local_path` — that happens in
 // a later plan (migration 012). Each ALTER is gated by a column-existence
 // check so the migration is safe to re-run.
-export async function runMigration010(db: Client): Promise<void> {
+export async function runMigration010(db: DbClient): Promise<void> {
   const info = await db.execute("PRAGMA table_info(files)");
   const existing = new Set(info.rows.map((r) => r.name as string));
   const additions: Array<[string, string]> = [
@@ -205,7 +205,7 @@ export async function runMigration010(db: Client): Promise<void> {
 // Migration 006: add actors, responsibilities, responsibility_assignments,
 // data_sources, tools; add owner_id/lifecycle_state/goal columns to nodes;
 // install validation + lifecycle-derivation triggers; seed lifecycle_state.
-export async function runMigration006(db: Client): Promise<void> {
+export async function runMigration006(db: DbClient): Promise<void> {
   // 1. actors table + indexes. Actors are global (no org_id, no description);
   // external_id is unique across the whole registry when set.
   await db.execute(DDL_ACTORS_TABLE);
@@ -1483,13 +1483,13 @@ const MIGRATIONS: Migration[] = [
   },
 ];
 
-export async function runMigration024(db: Client): Promise<void> {
+export async function runMigration024(db: DbClient): Promise<void> {
   await db.execute(DDL_ACCESS_REQUESTS);
   await db.execute(INDEX_ACCESS_REQUESTS_PENDING);
   await db.execute(INDEX_ACCESS_REQUESTS_STATUS);
 }
 
-export async function runMigration025(db: Client): Promise<void> {
+export async function runMigration025(db: DbClient): Promise<void> {
   await db.execute(DDL_OAUTH_GRANTS);
   await db.execute(INDEX_OAUTH_GRANTS_USER);
   await db.execute(INDEX_OAUTH_GRANTS_ACCESS_HASH);
@@ -1498,7 +1498,7 @@ export async function runMigration025(db: Client): Promise<void> {
   await db.execute(INDEX_OAUTH_CODES_HASH);
 }
 
-export async function runMigration027(db: Client): Promise<void> {
+export async function runMigration027(db: DbClient): Promise<void> {
   await db.execute(DDL_SESSIONS);
   await db.execute(INDEX_SESSIONS_NODE);
   await db.execute(INDEX_SESSIONS_USER);
@@ -1507,7 +1507,7 @@ export async function runMigration027(db: Client): Promise<void> {
   await db.execute(INDEX_SESSION_SCOPE_SESSION);
 }
 
-export async function runMigration028(db: Client): Promise<void> {
+export async function runMigration028(db: DbClient): Promise<void> {
   // Guarded (unlike the other ADD COLUMN steps here) because, unlike a
   // fresh install where isApplied() already prevents a second call, this
   // one is also called directly by tests exercising the up() function in
@@ -1553,7 +1553,7 @@ export async function runMigration028(db: Client): Promise<void> {
 // have produced anyway; profile_id/instance_id is a rename rather than an
 // addition, so the source list picks whichever name is actually present
 // instead of omitting it.
-export async function runMigration030(db: Client): Promise<void> {
+export async function runMigration030(db: DbClient): Promise<void> {
   // Resolve the branch BEFORE the script: the rebuild itself has to be a
   // single executeMultiple (below), so the shape check cannot sit between
   // two statements of it.
@@ -1629,7 +1629,7 @@ export const MIGRATION_IDS: readonly string[] = MIGRATIONS.map((m) => m.id);
 // Applied migration ids, or null when the migrations table does not exist yet
 // (a database created before it did). Null means "cannot tell" -- callers
 // must take the full path.
-export async function appliedMigrationIds(db: Client): Promise<Set<string> | null> {
+export async function appliedMigrationIds(db: DbClient): Promise<Set<string> | null> {
   try {
     const r = await db.execute("SELECT id FROM migrations");
     return new Set(r.rows.map((row) => String(row.id)));
@@ -1638,7 +1638,7 @@ export async function appliedMigrationIds(db: Client): Promise<Set<string> | nul
   }
 }
 
-export async function runMigrations(db: Client): Promise<void> {
+export async function runMigrations(db: DbClient): Promise<void> {
   // Ensure the migrations table exists (DDL already has it for fresh
   // installs, but this covers databases created before the table existed).
   await db.execute(

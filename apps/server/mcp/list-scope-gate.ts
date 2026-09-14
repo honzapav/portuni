@@ -10,7 +10,7 @@
 // docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md
 // "Search is discovery, not ingestion").
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import { guardNodeRead, type SessionScope } from "./scope.js";
 import type { GroupIdentityView } from "../auth/node-access.js";
 import type { Elicitor } from "./elicit.js";
@@ -25,7 +25,7 @@ export type ListScopeGateResult =
   | { kind: "error"; response: ToolErrorResponse };
 
 export async function guardListScope(
-  db: Client,
+  db: DbClient,
   scope: SessionScope,
   nodeId: string | undefined,
   userId: string,

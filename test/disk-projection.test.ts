@@ -8,7 +8,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, readFile, stat, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createClient as createDbClient, type Client as DbClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
+import { insertIgnore } from "../apps/server/infra/sql.js";
+import type { DbClient } from "../apps/server/infra/db.js";
 import { SessionScope } from "../apps/server/mcp/scope.js";
 import { readableMirrorRoot, createDiskProjector, disposeSessionProjection } from "../apps/server/mcp/disk-projection.js";
 import {
@@ -350,10 +352,10 @@ describe("disposeSessionProjection", () => {
   let db: DbClient;
 
   beforeEach(async () => {
-    db = createDbClient({ url: ":memory:" });
+    db = await openTestDb();
     await ensureSchemaOn(db);
     await db.execute({
-      sql: "INSERT OR IGNORE INTO users (id, email, name) VALUES ('u', 'u@x.com', 'U')",
+      sql: insertIgnore(db.dialect, "INSERT OR IGNORE INTO users (id, email, name) VALUES ('u', 'u@x.com', 'U')"),
       args: [],
     });
     await db.execute({

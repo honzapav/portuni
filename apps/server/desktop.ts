@@ -22,11 +22,15 @@ import {
 } from "./domain/sync/central/engine-central.js";
 import { createMirrorWatcher, type MirrorWatcher } from "./domain/sync/mirror-watcher.js";
 import { listUserMirrors } from "./domain/sync/mirror-registry.js";
+import { createAgentSessionRuntime } from "./boot/session-runtime.js";
+import { createAgentSessionsWsDeps, createSessionsWsServer } from "./api/sessions-ws.js";
 import { createAgentRouter } from "./api/agent-router.js";
 import { createAgentMcpTransport } from "./mcp/agent-transport.js";
 import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
+import { sweepOrphanedRunsOnBoot } from "./boot/run-sweep.js";
 import { sweepStaleRunningSessionsOnBoot } from "./boot/session-sweep.js";
 import { warnIfLocalWorkspaceHasStaleRemotesOnBoot } from "./boot/local-mode-remote-warning.js";
+import { registerRunnerAdapters } from "./boot/register-runner-adapters.js";
 import {
   backoffMsFor,
   initialBackoff,
@@ -170,12 +174,19 @@ async function agentMain(client: CentralClient): Promise<void> {
     centralUrl: requiredEnv("PORTUNI_CENTRAL_URL"),
     centralToken: requiredEnv("PORTUNI_CENTRAL_TOKEN"),
   });
+  // One session runtime for the whole agent process: the REST routes start
+  // and steer tasks on it, the live channel (GET /sessions/ws) streams
+  // from it -- the desktop's sessions_connect points at THIS sidecar, so
+  // without the socket mounted here central mode had no live channel at
+  // all (the Rust side just reconnected forever).
+  const sessionRuntime = createAgentSessionRuntime(client);
   const handle = startHttpServer({
     port,
     host: "127.0.0.1",
     registerSigint: false,
-    router: createAgentRouter(client),
+    router: createAgentRouter(client, { sessionRuntime }),
     mcpTransport,
+    sessionsWs: createSessionsWsServer(createAgentSessionsWsDeps(client, sessionRuntime)),
   });
   await bindAndAnnounce(handle);
   console.error("[boot] central-mode sync agent (no local graph db)");
@@ -271,9 +282,10 @@ async function agentMain(client: CentralClient): Promise<void> {
     try {
       const r = await materializeAllRegisteredMirrors({
         dataSourcesFor: (nodeId) => client.dataSources(nodeId).catch(() => []),
-        // No local db in agent mode, and CentralClient has no orientation
-        // endpoint yet -- PORTUNI_SCOPE.md falls back to the soft hint only.
-        orientationFor: () => Promise.resolve(null),
+        // #323 ends the "no orientation in central mode" cut: no local db
+        // in agent mode, but CentralClient.orientation now backs a real
+        // GET /nodes/:id/orientation on central.
+        orientationFor: (nodeId) => client.orientation(nodeId).catch(() => null),
       });
       if (r.errors.length > 0) {
         console.error(
@@ -304,6 +316,7 @@ async function main(): Promise<void> {
     throw new Error("PORTUNI_DATA_DIR must be set in desktop mode");
   }
   mkdirSync(dataDir, { recursive: true });
+  registerRunnerAdapters();
 
   // Central-mode sync agent: PORTUNI_AGENT_MODE=1 (plus central URL+token)
   // branches before any Turso/graph-db wiring.
@@ -334,7 +347,11 @@ async function main(): Promise<void> {
   const watcher = startMirrorWatcher(process.env.PORTUNI_WATCH_MIRRORS !== "0");
 
   void sweepStaleSessionProjectionsOnBoot();
-  void sweepStaleRunningSessionsOnBoot();
+  // Must finish before sweepStaleRunningSessionsOnBoot: this sweep already
+  // resolves any 'running' session a runner task was driving, so the other
+  // sweep's own query for stale 'running' rows sees an already-correct
+  // picture instead of racing it.
+  void sweepOrphanedRunsOnBoot().then(() => sweepStaleRunningSessionsOnBoot());
   void warnIfLocalWorkspaceHasStaleRemotesOnBoot();
 
   // Refresh every registered mirror's harness configs so any .mcp.json

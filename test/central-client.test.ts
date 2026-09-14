@@ -297,4 +297,111 @@ describe("createHttpCentralClient", () => {
       (e: unknown) => e instanceof CentralHttpError && e.status === 404 && e.code === "NOT_FOUND",
     );
   });
+
+  // Session/runner record half (#323).
+  it("getSessionRecord returns null on 404, the row otherwise", async () => {
+    const { fetchImpl, calls } = fakeFetch([{ status: 404, json: { error: "not found" } }]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    assert.equal(await c.getSessionRecord("S1"), null);
+    assert.equal(calls[0].url, "https://api.example.com/sessions/S1");
+    assert.equal(calls[0].method, "GET");
+  });
+
+  it("createSessionRecord posts to /sessions/record", async () => {
+    const { fetchImpl, calls } = fakeFetch([{ status: 201, json: { id: "S1", state: "running" } }]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    const row = await c.createSessionRecord({
+      node_id: "N1",
+      user_id: "U1",
+      brief: "go",
+      runner: "fake",
+      instance_id: null,
+      host_id: null,
+    });
+    assert.equal(row.id, "S1");
+    assert.equal(calls[0].url, "https://api.example.com/sessions/record");
+    assert.equal(calls[0].method, "POST");
+  });
+
+  it("patchSessionRecord PATCHes /sessions/:id", async () => {
+    const { fetchImpl, calls } = fakeFetch([{ status: 200, json: { id: "S1", state: "suspended" } }]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    const row = await c.patchSessionRecord("S1", { state: "suspended" });
+    assert.equal(row.state, "suspended");
+    assert.equal(calls[0].method, "PATCH");
+    assert.equal(calls[0].url, "https://api.example.com/sessions/S1");
+  });
+
+  it("createSessionRun posts to /sessions/:id/runs and unwraps { run }", async () => {
+    const { fetchImpl, calls } = fakeFetch([
+      { status: 201, json: { run: { id: "R1", session_id: "S1", runner: "fake" } } },
+    ]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    const run = await c.createSessionRun({ session_id: "S1", runner: "fake", instance_id: null, host_id: null });
+    assert.equal(run.id, "R1");
+    assert.equal(calls[0].url, "https://api.example.com/sessions/S1/runs");
+    assert.equal(calls[0].method, "POST");
+  });
+
+  it("patchSessionRun PATCHes /sessions/:id/runs/:run_id and unwraps { run }", async () => {
+    const { fetchImpl, calls } = fakeFetch([
+      { status: 200, json: { run: { id: "R1", session_id: "S1", ended_at: "t", end_reason: "completed" } } },
+    ]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    const run = await c.patchSessionRun("S1", "R1", { ended_at: "t", end_reason: "completed" });
+    assert.equal(run.end_reason, "completed");
+    assert.equal(calls[0].url, "https://api.example.com/sessions/S1/runs/R1");
+    assert.equal(calls[0].method, "PATCH");
+  });
+
+  it("listSessionRuns GETs /sessions/:id/runs and unwraps { runs }", async () => {
+    const { fetchImpl, calls } = fakeFetch([{ status: 200, json: { runs: [{ id: "R1" }, { id: "R2" }] } }]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    const runs = await c.listSessionRuns("S1");
+    assert.equal(runs.length, 2);
+    assert.equal(calls[0].url, "https://api.example.com/sessions/S1/runs");
+    assert.equal(calls[0].method, "GET");
+  });
+
+  it("appendSessionEvents posts run_id + events and returns the assigned seqs", async () => {
+    const { fetchImpl, calls } = fakeFetch([{ status: 200, json: { seqs: [1, 2] } }]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    const events = [
+      { kind: "user_message", payload: { text: "hi", source: "chat" } },
+      { kind: "assistant_message", payload: { text: "hello" } },
+    ];
+    const seqs = await c.appendSessionEvents("S1", "R1", events as never);
+    assert.deepEqual(seqs, [1, 2]);
+    assert.equal(calls[0].url, "https://api.example.com/sessions/S1/events");
+    assert.deepEqual(JSON.parse(calls[0].body ?? ""), { run_id: "R1", events });
+  });
+
+  it("listSessionEvents GETs /sessions/:id/events with after/limit and re-stringifies the payload", async () => {
+    const { fetchImpl, calls } = fakeFetch([
+      {
+        status: 200,
+        json: { events: [{ id: "E1", session_id: "S1", run_id: "R1", seq: 3, kind: "assistant_message", payload: { text: "hi" }, created_at: "t" }] },
+      },
+    ]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    const events = await c.listSessionEvents("S1", { after: 2, limit: 50 });
+    assert.equal(events.length, 1);
+    assert.equal(events[0].seq, 3);
+    assert.deepEqual(JSON.parse(events[0].payload), { text: "hi" });
+    assert.equal(calls[0].url, "https://api.example.com/sessions/S1/events?after=2&limit=50");
+  });
+
+  it("orientation GETs /nodes/:id/orientation and returns null on 404 or a null orientation", async () => {
+    const { fetchImpl, calls } = fakeFetch([
+      { status: 200, json: { orientation: { node: { name: "N", type: "project" } } } },
+    ]);
+    const c = createHttpCentralClient({ ...BASE, fetchImpl });
+    const o = await c.orientation("N1");
+    assert.equal((o as { node: { name: string } }).node.name, "N");
+    assert.equal(calls[0].url, "https://api.example.com/nodes/N1/orientation");
+
+    const { fetchImpl: fetchImpl404 } = fakeFetch([{ status: 404, json: { error: "not found" } }]);
+    const c2 = createHttpCentralClient({ ...BASE, fetchImpl: fetchImpl404 });
+    assert.equal(await c2.orientation("missing"), null);
+  });
 });

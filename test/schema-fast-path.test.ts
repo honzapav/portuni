@@ -1,6 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createClient, type Client } from "@libsql/client";
+// Pinned to libsql: this file builds its own SQLite DDL and/or drives the
+// libsql migration path (runMigrationNNN) directly -- neither has a
+// Postgres form (schema.pg.ts's baseline already carries the end state).
+import { openTestDb } from "./helpers/db.js";
+import type { DbClient as Client } from "../apps/server/infra/db.js";
 import { ensureSchemaOn, repairSchemaOn } from "../apps/server/infra/schema.js";
 
 // ensureSchemaOn used to replay all 56 CREATE ... IF NOT EXISTS statements and
@@ -36,7 +40,7 @@ async function tableExists(db: Client, name: string): Promise<boolean> {
 
 describe("ensureSchemaOn version fast path", () => {
   it("skips the DDL replay once every migration and the DDL fingerprint are recorded", async () => {
-    const raw = createClient({ url: ":memory:" });
+    const raw = await openTestDb("libsql");
     const c = counting(raw);
     await ensureSchemaOn(c.db);
     c.reset();
@@ -47,7 +51,7 @@ describe("ensureSchemaOn version fast path", () => {
   });
 
   it("still seeds the solo user on the fast path", async () => {
-    const raw = createClient({ url: ":memory:" });
+    const raw = await openTestDb("libsql");
     await ensureSchemaOn(raw);
     await raw.execute("DELETE FROM users");
     await ensureSchemaOn(raw);
@@ -57,7 +61,7 @@ describe("ensureSchemaOn version fast path", () => {
   });
 
   it("does NOT silently recreate a dropped object — that is what repair is for", async () => {
-    const raw = createClient({ url: ":memory:" });
+    const raw = await openTestDb("libsql");
     await ensureSchemaOn(raw);
     await raw.execute("DROP TABLE tools");
 
@@ -70,7 +74,7 @@ describe("ensureSchemaOn version fast path", () => {
   });
 
   it("honours PORTUNI_SCHEMA_REPAIR=1 as the env equivalent of repairSchemaOn", async () => {
-    const raw = createClient({ url: ":memory:" });
+    const raw = await openTestDb("libsql");
     await ensureSchemaOn(raw);
     await raw.execute("DROP TABLE tools");
     const prev = process.env.PORTUNI_SCHEMA_REPAIR;
@@ -86,7 +90,7 @@ describe("ensureSchemaOn version fast path", () => {
   });
 
   it("takes the full path when the migrations table is missing", async () => {
-    const raw = createClient({ url: ":memory:" });
+    const raw = await openTestDb("libsql");
     await ensureSchemaOn(raw);
     await raw.execute("DROP TABLE migrations");
     const c = counting(raw);
@@ -97,7 +101,7 @@ describe("ensureSchemaOn version fast path", () => {
   });
 
   it("replays once after the DDL set changes, then settles back", async () => {
-    const raw = createClient({ url: ":memory:" });
+    const raw = await openTestDb("libsql");
     await ensureSchemaOn(raw);
     // Standing in for an edit to DDL: the recorded fingerprint no longer
     // matches what this build carries.
@@ -117,7 +121,7 @@ describe("ensureSchemaOn version fast path", () => {
   });
 
   it("records exactly one DDL fingerprint row", async () => {
-    const raw = createClient({ url: ":memory:" });
+    const raw = await openTestDb("libsql");
     await ensureSchemaOn(raw);
     await ensureSchemaOn(raw);
     await repairSchemaOn(raw);

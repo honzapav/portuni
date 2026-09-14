@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createClient } from "@libsql/client";
+import { openTestDb } from "./helpers/db.js";
 import { ulid } from "ulid";
 import { ensureSchemaOn } from "../apps/server/infra/schema.js";
 import { setDbForTesting } from "../apps/server/infra/db.js";
@@ -38,7 +38,7 @@ before(async () => {
   workspace = await mkdtemp(join(tmpdir(), "portuni-rest-smoke-"));
   process.env.PORTUNI_WORKSPACE_ROOT = workspace;
   resetLocalDbForTests();
-  const db = createClient({ url: ":memory:" });
+  const db = await openTestDb();
   await ensureSchemaOn(db);
   setDbForTesting(db);
 

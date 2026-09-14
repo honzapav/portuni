@@ -82,6 +82,17 @@ simply report themselves unavailable. The result is the local-mirror experience
 — agents and editors work against plain folders — with zero shared secrets on
 the teammate's machine.
 
+### Tasks: the runner always runs on your device, the record lives wherever the graph does
+
+Starting a task on a node spawns a runner (Claude Code today) that reads
+and writes through your own machine, in both modes — that part never
+changes. What differs is only where the task's own record (its runs, its
+event log) is stored: in local mode it's your own database; in central
+mode it's the same central server your graph and files already go
+through, reached the same way (a per-teammate login, permissions
+enforced). Your device never needs its own database for this — starting,
+messaging, suspending and resuming a task work identically either way.
+
 ### One desktop, both modes
 
 `data_mode` is **per workspace**, not per machine. The desktop's multi-workspace

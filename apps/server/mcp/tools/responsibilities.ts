@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { getDb } from "../../infra/db.js";
 import {
   assignResponsibility,
@@ -18,7 +18,7 @@ import { guardNodeWrite } from "../write-gate.js";
 import type { SessionCtx } from "../server.js";
 
 async function guardNodeAccess(
-  db: Client,
+  db: DbClient,
   nodeId: string,
   identity: SessionCtx["identity"],
 ): Promise<{ allowed: true } | { allowed: false; error: string }> {
@@ -29,7 +29,7 @@ async function guardNodeAccess(
 }
 
 async function loadResponsibilityNodeId(
-  db: Client,
+  db: DbClient,
   responsibilityId: string,
 ): Promise<string | null> {
   const res = await db.execute({

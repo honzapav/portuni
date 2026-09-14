@@ -1,4 +1,4 @@
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { assertRemoteCapable } from "./types.js";
 import { upsertRemote, listRemotes, replaceRules, type RoutingRule } from "./routing.js";
 import { readDeviceTokens } from "./device-tokens.js";
@@ -12,7 +12,7 @@ export interface SetupRemoteArgs {
   service_account_json?: string;
 }
 
-export async function setupRemoteService(db: Client, a: SetupRemoteArgs): Promise<void> {
+export async function setupRemoteService(db: DbClient, a: SetupRemoteArgs): Promise<void> {
   // Fail before any side effect (e.g. the token-store write below) rather
   // than relying solely on upsertRemote's own guard further down.
   assertRemoteCapable();
@@ -48,7 +48,7 @@ export async function setupRemoteService(db: Client, a: SetupRemoteArgs): Promis
 }
 
 export async function setRoutingPolicyService(
-  db: Client,
+  db: DbClient,
   rules: RoutingRule[],
 ): Promise<void> {
   assertRemoteCapable();
@@ -61,7 +61,7 @@ export interface RemoteListing {
   authenticated: boolean;
 }
 
-export async function listRemotesService(db: Client): Promise<RemoteListing[]> {
+export async function listRemotesService(db: DbClient): Promise<RemoteListing[]> {
   const remotes = await listRemotes(db);
   const tokens = await readDeviceTokens(remotes.map((r) => r.name));
   return remotes.map((r) => ({

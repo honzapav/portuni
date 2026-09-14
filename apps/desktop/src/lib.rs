@@ -14,6 +14,7 @@ use std::sync::Mutex;
 mod auth;
 mod mcp_install;
 mod pty;
+mod sessions_ws;
 mod updater;
 mod workspace;
 
@@ -1305,6 +1306,36 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
                     || file_seg.ends_with("/rename")
                     || file_seg.ends_with("/move")
                 {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Sessions/tasks (runner batch, #323): bare POST /sessions starts a
+    // task on THIS device's own session runtime. Per-session action verbs
+    // that drive that same local run/device sidecar also stay local; the
+    // record half (bare /sessions/<id>, /state, /resume-info, /runs...,
+    // /sessions/record) stays central -- NOT matched here on purpose, same
+    // as /nodes/<id>/file-url above.
+    if p == "/sessions" {
+        return true;
+    }
+    if let Some(rest) = p.strip_prefix("/sessions/") {
+        if let Some(slash) = rest.find('/') {
+            let sub = &rest[slash + 1..];
+            if sub == "messages"
+                || sub == "interrupt"
+                || sub == "suspend"
+                || sub == "resume"
+                || sub == "close"
+                || sub == "events"
+                || sub == "signals"
+            {
+                return true;
+            }
+            if let Some(request_id) = sub.strip_prefix("questions/") {
+                if !request_id.is_empty() && !request_id.contains('/') {
                     return true;
                 }
             }
@@ -3336,6 +3367,7 @@ pub fn run() {
         .manage(PendingBackendErrors(Mutex::new(HashMap::new())))
         .manage(QuitQueue(Mutex::new(None)))
         .manage(pty::PtyState::default())
+        .manage(sessions_ws::SessionsWsState::default())
         .manage(updater::PendingUpdate::default())
         .register_uri_scheme_protocol("portuni-html", |ctx, request| {
             use tauri::http::Response;
@@ -3453,6 +3485,9 @@ pub fn run() {
             pty::pty_write,
             pty::pty_resize,
             pty::pty_kill,
+            sessions_ws::sessions_connect,
+            sessions_ws::sessions_disconnect,
+            sessions_ws::sessions_send,
             auth::auth_status,
             auth::google_login,
             auth::auth_refresh,
@@ -3552,6 +3587,11 @@ pub fn run() {
                         }
                     }
                     persist_open_windows(app);
+                    // A force-closed window never gets to call
+                    // sessions_disconnect itself -- close its live-channel
+                    // socket here so the background task doesn't outlive
+                    // the window (#341).
+                    sessions_ws::disconnect_for_ws(app, &ws_id);
                 }
                 // #229: this window's turn in a sequential quit (if one is
                 // running) is done -- close the next queued window, or
@@ -4278,6 +4318,45 @@ mod local_only_path_tests {
         // file-url stays central even though it shares the /file prefix.
         assert!(!is_local_only_path("/nodes/abc/file-url?file_id=xyz"));
         assert!(is_local_only_path("/nodes/abc/files/fileid?confirmed=true"));
+    }
+
+    // Sessions/tasks (runner batch, #323).
+    #[test]
+    fn bare_post_sessions_is_local_only() {
+        assert!(is_local_only_path("/sessions"));
+    }
+
+    #[test]
+    fn session_action_verbs_are_local_only() {
+        assert!(is_local_only_path("/sessions/abc123/messages"));
+        assert!(is_local_only_path("/sessions/abc123/interrupt"));
+        assert!(is_local_only_path("/sessions/abc123/suspend"));
+        assert!(is_local_only_path("/sessions/abc123/resume"));
+        assert!(is_local_only_path("/sessions/abc123/close"));
+        assert!(is_local_only_path("/sessions/abc123/events"));
+        assert!(is_local_only_path("/sessions/abc123/events?after=5"));
+        // The restart indicator (#342) reads the local SessionRuntime's own
+        // in-memory live-run state (liveRuns/runStartScopeSize) -- there is
+        // nothing for the central server to answer this from.
+        assert!(is_local_only_path("/sessions/abc123/signals"));
+    }
+
+    #[test]
+    fn session_question_answer_is_local_only() {
+        assert!(is_local_only_path("/sessions/abc123/questions/req-1"));
+    }
+
+    #[test]
+    fn session_record_half_stays_central() {
+        // Bare record fetch/patch, state, resume-info, record-create and
+        // run records are all central record-half routes, deliberately NOT
+        // matched here (see api/sessions.ts's header comment).
+        assert!(!is_local_only_path("/sessions/abc123"));
+        assert!(!is_local_only_path("/sessions/abc123/state"));
+        assert!(!is_local_only_path("/sessions/abc123/resume-info"));
+        assert!(!is_local_only_path("/sessions/abc123/runs"));
+        assert!(!is_local_only_path("/sessions/abc123/runs/run1"));
+        assert!(!is_local_only_path("/sessions/record"));
     }
 }
 

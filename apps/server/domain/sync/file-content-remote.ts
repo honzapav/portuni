@@ -22,7 +22,7 @@
 // Native formats (gdoc/gsheet/gslide) are not plain-text round-trippable:
 // PUT is rejected with NOT_EDITABLE and reads are short-circuited the same way.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../../infra/db.js";
 import { ulid } from "ulid";
 import { getAdapter } from "./adapter-cache.js";
 import { resolveRemote } from "./routing.js";
@@ -109,7 +109,7 @@ interface RemoteTarget {
 }
 
 async function resolveRemoteTarget(
-  db: Client,
+  db: DbClient,
   nodeId: string,
   relPath: string,
 ): Promise<RemoteTarget> {
@@ -138,7 +138,7 @@ async function resolveRemoteTarget(
 // Read works without a record (any remote object can be fetched), but the
 // record carries the native-format flag and is what a write refreshes.
 async function getFileRecord(
-  db: Client,
+  db: DbClient,
   nodeId: string,
   remotePath: string,
 ): Promise<{ id: string; isNative: boolean; currentRemoteHash: string | null } | null> {
@@ -172,7 +172,7 @@ async function getFileRecord(
 // discard it. No-op when there is no record to update, the hash is
 // unknown, or it already matches (avoids a write on every read).
 async function backfillRemoteHash(
-  db: Client,
+  db: DbClient,
   record: { id: string; currentRemoteHash: string | null } | null,
   observedHash: string | null,
 ): Promise<void> {
@@ -184,7 +184,7 @@ async function backfillRemoteHash(
 }
 
 export async function readFileContentRemote(
-  db: Client,
+  db: DbClient,
   a: { userId: string; nodeId: string; relPath: string },
 ): Promise<{
   content: string;
@@ -229,7 +229,7 @@ export async function readFileContentRemote(
 }
 
 export async function writeFileContentRemote(
-  db: Client,
+  db: DbClient,
   a: {
     userId: string;
     nodeId: string;
@@ -319,7 +319,7 @@ export async function writeFileContentRemote(
 // ---------------------------------------------------------------------------
 
 export async function readFileBytesRemote(
-  db: Client,
+  db: DbClient,
   a: { nodeId: string; relPath: string },
 ): Promise<{ bytes: Buffer; version: string; canonical_hash: string; filename: string; mime_type: string | null }> {
   const { remoteName, remotePath, filename } = await resolveRemoteTarget(db, a.nodeId, a.relPath);
@@ -384,7 +384,7 @@ export async function readFileBytesRemote(
 }
 
 export async function writeFileBytesRemote(
-  db: Client,
+  db: DbClient,
   a: {
     userId: string;
     nodeId: string;
@@ -503,7 +503,7 @@ function assertSafeFilename(fn: string): void {
 }
 
 async function auditFile(
-  db: Client,
+  db: DbClient,
   userId: string,
   action: string,
   fileId: string,
@@ -528,7 +528,7 @@ export interface CreateFileRemoteResult {
 }
 
 export async function createFileRemote(
-  db: Client,
+  db: DbClient,
   a: {
     userId: string;
     nodeId: string;
@@ -653,7 +653,7 @@ export interface RenameFileRemoteResult {
 }
 
 export async function renameFileRemote(
-  db: Client,
+  db: DbClient,
   a: { userId: string; nodeId?: string; fileId: string; newFilename: string },
 ): Promise<RenameFileRemoteResult> {
   const fn = a.newFilename;
@@ -772,7 +772,7 @@ export interface DeleteFileRemoteRepairNeeded {
 }
 
 export async function deleteFileRemote(
-  db: Client,
+  db: DbClient,
   a: { userId: string; nodeId?: string; fileId: string; mode?: "complete"; confirmed?: boolean },
 ): Promise<DeleteFileRemotePreview | DeleteFileRemoteSuccess | DeleteFileRemoteRepairNeeded> {
   const r = await db.execute({

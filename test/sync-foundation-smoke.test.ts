@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createClient, type Client } from "@libsql/client";
+// Pinned to libsql: this file builds its own SQLite DDL and/or drives the
+// libsql migration path (runMigrationNNN) directly -- neither has a
+// Postgres form (schema.pg.ts's baseline already carries the end state).
+import { openTestDb } from "./helpers/db.js";
+import type { DbClient as Client } from "../apps/server/infra/db.js";
 import { DDL_REMOTES_TABLE, DDL_REMOTE_ROUTING_TABLE, INDEX_REMOTE_ROUTING_PRIORITY } from "../apps/server/infra/schema.js";
 import { resolveRemote } from "../apps/server/domain/sync/routing.js";
 import { insertRemoteForTests, insertRuleForTests } from "./helpers/shared-db.js";
@@ -39,7 +43,7 @@ afterEach(async () => {
 });
 
 async function makeShared(): Promise<Client> {
-  const db = createClient({ url: ":memory:" });
+  const db = await openTestDb("libsql");
   await db.execute(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL)`);
   await db.execute(`CREATE TABLE nodes (
     id TEXT PRIMARY KEY, type TEXT NOT NULL, name TEXT NOT NULL,

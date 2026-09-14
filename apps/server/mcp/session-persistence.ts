@@ -17,13 +17,15 @@
 // that seeds a live decision (guardNodeRead consults the rehydrated
 // in-memory scope), so it is awaited by the caller instead.
 
-import type { Client } from "@libsql/client";
+import type { DbClient } from "../infra/db.js";
 import type { SessionScope, AddedVia } from "./scope.js";
 import {
   createSession,
+  getSession,
   getSessionScope,
   listConnectorCreatedWritableNodes,
   loadResumableSession,
+  setSessionCli,
   transitionSessionState,
   upsertSessionScopeRead,
   setSessionScopeWritable,
@@ -32,6 +34,7 @@ import {
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { filterVisibleNodeIds, type GroupIdentityView } from "../auth/node-access.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
+import type { SessionRow } from "../shared/types.js";
 
 function safe(promise: Promise<unknown>, what: string): void {
   promise.catch((err) => {
@@ -63,7 +66,7 @@ function classifyNode(scope: SessionScope, nodeId: string): { addedVia: AddedVia
 // current. Only this listener's own timing is deferred; SessionScope's
 // firing mechanism itself (used synchronously by the disk projector too) is
 // untouched.
-function syncRead(db: Client, sessionId: string, scope: SessionScope, nodeId: string): void {
+function syncRead(db: DbClient, sessionId: string, scope: SessionScope, nodeId: string): void {
   queueMicrotask(() => {
     const { addedVia, reason } = classifyNode(scope, nodeId);
     safe(upsertSessionScopeRead(db, sessionId, nodeId, addedVia, reason), `scope(${nodeId})`);
@@ -77,7 +80,7 @@ function syncRead(db: Client, sessionId: string, scope: SessionScope, nodeId: st
 // before the writable flip inside the SAME deferred, sequenced promise
 // makes this listener self-contained instead of depending on the separate
 // onAdd listener's unsequenced timing.
-function syncWritable(db: Client, sessionId: string, scope: SessionScope, nodeId: string): void {
+function syncWritable(db: DbClient, sessionId: string, scope: SessionScope, nodeId: string): void {
   queueMicrotask(() => {
     const { addedVia, reason } = classifyNode(scope, nodeId);
     safe(
@@ -105,7 +108,7 @@ function syncWritable(db: Client, sessionId: string, scope: SessionScope, nodeId
 // fresh session, since auto-seed races this call -- see
 // bindSessionPersistence's own doc).
 function wireOngoingSync(
-  db: Client,
+  db: DbClient,
   scope: SessionScope,
   sessionId: string,
   homeNodeId: string | null,
@@ -169,7 +172,7 @@ function wireOngoingSync(
 // rather than a custom header, since Codex and Vibe have no way to relay
 // one at all.
 export function bindSessionPersistence(
-  db: Client,
+  db: DbClient,
   scope: SessionScope,
   identity: Pick<RequestIdentity, "userId">,
   profileId: string | null = null,
@@ -224,7 +227,7 @@ export function bindSessionPersistence(
 // silently falling back to a fresh session, which would look like a
 // successful resume to the agent while actually starting from empty scope.
 export async function resumeSessionPersistence(
-  db: Client,
+  db: DbClient,
   scope: SessionScope,
   identity: Pick<RequestIdentity, "userId">,
   resumeSessionId: string,
@@ -266,6 +269,84 @@ export async function resumeSessionPersistence(
   return row.id;
 }
 
+// Rule 2 (runner-and-session-design spec, "The session exists before the
+// runner"): a fresh MCP connection whose X-Portuni-Spawn-Id names a session
+// row the runtime already created (domain/runner/session-runtime.ts's
+// startTask/resume, via RunStart.mcp.headers) binds to that row instead of
+// minting a new one -- the row is the task, the connection is just this
+// run's own agent talking back over MCP.
+//
+// Split from the refusal check the caller (transport.ts) makes first: by
+// the time this runs, the row is already known to be `running` and owned by
+// `identity`, so this only does the rehydration half -- same shape as
+// resumeSessionPersistence's accumulated-scope replay, minus the state
+// transition (the row is already running) and the homeNodeId parameter
+// (taken from the row itself, since a task's anchor node never changes).
+export async function bindExistingSessionPersistence(
+  db: DbClient,
+  scope: SessionScope,
+  identity: Pick<RequestIdentity, "userId">,
+  row: SessionRow,
+): Promise<void> {
+  scope.sessionId = row.id;
+  scope.homeNodeId = row.node_id;
+
+  const accumulated = await getSessionScope(db, row.id);
+  for (const scopeRow of accumulated) {
+    const hasLocalMirror = (await getMirrorPath(identity.userId, scopeRow.node_id)) !== null;
+    if (hasLocalMirror) scope.addSeed(scopeRow.node_id);
+    else scope.add(scopeRow.node_id);
+    if (scopeRow.writable) scope.addWritable(scopeRow.node_id);
+  }
+  if (accumulated.length > 0) {
+    scope.recordExpansion({
+      at: new Date().toISOString(),
+      node_ids: accumulated.map((r) => r.node_id),
+      reason: "session bound: rehydrated from persisted session_scope",
+      triggered_by: "init",
+    });
+  }
+
+  wireOngoingSync(db, scope, row.id, row.node_id);
+}
+
+// Companion to bindExistingSessionPersistence: called at the handshake's own
+// completion point (onsessioninitialized, same timing as bindSessionPersistence
+// for a fresh row -- see createMcpServer's `bindSession` doc) to fill in the
+// CLI name now that the connecting client's own clientInfo.name is known, and
+// bump last_active_at the same way a fresh connection's createSession would
+// have. Fire-and-forget like bindSessionPersistence: a DB hiccup here must
+// never break a live MCP tool call.
+export function bindExistingSessionHandshake(db: DbClient, sessionId: string, cli?: string | null): void {
+  safe(touchSession(db, sessionId), "touchSession");
+  if (cli) safe(setSessionCli(db, sessionId, cli), "setSessionCli");
+}
+
+export type SpawnSessionLookup =
+  | { kind: "not_found" }
+  | { kind: "refused" }
+  | { kind: "bindable"; row: SessionRow };
+
+// Pre-flight check the caller (transport.ts) makes BEFORE constructing the
+// scope/transport for a fresh connection carrying X-Portuni-Spawn-Id: a row
+// under that id that is not `running`, or not owned by this identity, must
+// refuse the whole connection (SESSION_BIND_REFUSED) rather than silently
+// falling back to creating a second, unrelated row under a different id --
+// that would look like an ordinary fresh session to the agent while orphaning
+// the task's own row. No row at all is the ordinary case for every
+// connection predating the runner batch (or any hand-opened CLI spawned
+// outside a task) -- todays's create-with-preassigned-id behaviour.
+export async function lookupSpawnSessionForBind(
+  db: DbClient,
+  identity: Pick<RequestIdentity, "userId">,
+  spawnSessionId: string,
+): Promise<SpawnSessionLookup> {
+  const row = await getSession(db, spawnSessionId);
+  if (!row) return { kind: "not_found" };
+  if (row.state !== "running" || row.user_id !== identity.userId) return { kind: "refused" };
+  return { kind: "bindable", row };
+}
+
 // Connector sessions (interactive_chat) have no anchor and no resume path,
 // yet a connector client reopens its MCP session all the time: the
 // transport's 30-minute idle GC, a server deploy, or simply the client
@@ -295,7 +376,7 @@ export async function resumeSessionPersistence(
 // refusing the connection -- reads on a connector session never depend on
 // it. Returns the rehydrated node ids for the caller's audit/log.
 export async function rehydrateConnectorWriteGrants(
-  db: Client,
+  db: DbClient,
   scope: SessionScope,
   identity: GroupIdentityView,
 ): Promise<string[]> {
