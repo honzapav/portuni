@@ -13,6 +13,7 @@ import { isProcessAlive } from "../apps/server/domain/runner/process-liveness.js
 import {
   categorizeTool,
   createClaudeAdapter,
+  resolveClaudeExecutable,
   toolTitle,
   waitForPidDeadOrTimeout,
   type CreateClaudeAdapterDeps,
@@ -72,10 +73,15 @@ function makeFakeQuery(script: readonly SDKMessage[], opts: { hold?: boolean } =
   };
 }
 
+const FAKE_CLAUDE = "/fake/bin/claude";
+const resolveFake = async () => FAKE_CLAUDE;
+
 function fakeExec(
   responses: Record<string, { err?: Error; stdout?: string }>,
+  seen: string[] = [],
 ): CreateClaudeAdapterDeps["exec"] {
-  return ((_cmd: string, args: readonly string[], _opts: unknown, cb: (err: Error | null, stdout: string) => void) => {
+  return ((cmd: string, args: readonly string[], _opts: unknown, cb: (err: Error | null, stdout: string) => void) => {
+    seen.push(cmd);
     const key = args.join(" ");
     const r = responses[key] ?? { err: new Error("unexpected args") };
     cb(r.err ?? null, r.stdout ?? "");
@@ -563,22 +569,69 @@ describe("Claude adapter: resume options", () => {
   });
 });
 
+describe("resolveClaudeExecutable", () => {
+  const only = (...ok: string[]) => async (path: string) => ok.includes(path);
+
+  it("prefers PATH order, then ~/.local/bin, ~/.claude/local, Homebrew and /usr/local", async () => {
+    const env = { PATH: "/usr/bin:/opt/x/bin", HOME: "/Users/u" };
+    assert.equal(await resolveClaudeExecutable(env, only("/opt/x/bin/claude", "/Users/u/.local/bin/claude")), "/opt/x/bin/claude");
+    assert.equal(await resolveClaudeExecutable(env, only("/Users/u/.local/bin/claude")), "/Users/u/.local/bin/claude");
+    assert.equal(await resolveClaudeExecutable(env, only("/Users/u/.claude/local/claude")), "/Users/u/.claude/local/claude");
+    assert.equal(await resolveClaudeExecutable(env, only("/opt/homebrew/bin/claude")), "/opt/homebrew/bin/claude");
+    assert.equal(await resolveClaudeExecutable(env, only("/usr/local/bin/claude")), "/usr/local/bin/claude");
+  });
+
+  it("finds the native installer's binary even with launchd's bare PATH", async () => {
+    const env = { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: "/Users/u" };
+    assert.equal(await resolveClaudeExecutable(env, only("/Users/u/.local/bin/claude")), "/Users/u/.local/bin/claude");
+  });
+
+  it("is null when nothing is executable", async () => {
+    assert.equal(await resolveClaudeExecutable({ PATH: "/usr/bin", HOME: "/Users/u" }, async () => false), null);
+  });
+});
+
+describe("Claude adapter: start() executable", () => {
+  it("hands the resolved binary to the SDK as pathToClaudeCodeExecutable", async () => {
+    const { query, options } = makeFakeQuery([]);
+    const adapter = createClaudeAdapter({ query, resolveExecutable: resolveFake });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    await handle.close();
+    assert.equal(options()?.pathToClaudeCodeExecutable, FAKE_CLAUDE);
+  });
+});
+
 describe("Claude adapter: detect()", () => {
-  it("reports installed + version + logged_in on success", async () => {
-    const exec = fakeExec({
-      "--version": { stdout: "1.2.3 (Claude Code)\n" },
-      "auth status": { stdout: "Logged in as a@b.com\n" },
-    });
-    const adapter = createClaudeAdapter({ exec });
+  it("reports installed + version + logged_in on success, probing the resolved binary by absolute path", async () => {
+    const seen: string[] = [];
+    const exec = fakeExec(
+      {
+        "--version": { stdout: "1.2.3 (Claude Code)\n" },
+        "auth status": { stdout: "Logged in as a@b.com\n" },
+      },
+      seen,
+    );
+    const adapter = createClaudeAdapter({ exec, resolveExecutable: resolveFake });
     const availability = await adapter.detect();
     assert.equal(availability.installed, true);
     assert.equal(availability.version, "1.2.3 (Claude Code)");
     assert.equal(availability.logged_in, true);
+    assert.deepEqual(seen, [FAKE_CLAUDE, FAKE_CLAUDE]);
+  });
+
+  it("reports not installed when no binary resolves, without running anything", async () => {
+    const seen: string[] = [];
+    const exec = fakeExec({ "--version": { stdout: "1.2.3\n" } }, seen);
+    const adapter = createClaudeAdapter({ exec, resolveExecutable: async () => null });
+    const availability = await adapter.detect();
+    assert.equal(availability.installed, false);
+    assert.equal(availability.logged_in, false);
+    assert.deepEqual(seen, []);
   });
 
   it("reports not installed when --version fails", async () => {
     const exec = fakeExec({ "--version": { err: new Error("ENOENT") } });
-    const adapter = createClaudeAdapter({ exec });
+    const adapter = createClaudeAdapter({ exec, resolveExecutable: resolveFake });
     const availability = await adapter.detect();
     assert.equal(availability.installed, false);
     assert.equal(availability.logged_in, false);
@@ -589,7 +642,7 @@ describe("Claude adapter: detect()", () => {
       "--version": { stdout: "1.2.3\n" },
       "auth status": { err: new Error("not logged in") },
     });
-    const adapter = createClaudeAdapter({ exec });
+    const adapter = createClaudeAdapter({ exec, resolveExecutable: resolveFake });
     const availability = await adapter.detect();
     assert.equal(availability.installed, true);
     assert.equal(availability.logged_in, false);
