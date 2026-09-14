@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.16.0](https://github.com/honzapav/portuni/compare/v0.15.0...v0.16.0) (2026-09-14)
+
+
+### Features
+
+* runner phase 1-3 (task infra, Postgres cutover, live-channel bridge) ([1a66cc6](https://github.com/honzapav/portuni/commit/1a66cc686cafde644b8245c699b21a6f2beb7403))
+
+
+### Bug Fixes
+
+* **mcp:** connector-created nodes stay writable across reconnects; status discovers remote files on unmirrored nodes ([#351](https://github.com/honzapav/portuni/issues/351)) ([babba8f](https://github.com/honzapav/portuni/commit/babba8f1ae6b0061557b56fe38cd2a1198840041))
+* **web:** open a node's source link once in the desktop app, not twice ([#350](https://github.com/honzapav/portuni/issues/350)) ([d3ab97d](https://github.com/honzapav/portuni/commit/d3ab97dcb7df46cb714e4d1a2f0a4025b661d884))
+* **web:** reload the desktop HTML preview when the file changes on disk ([#357](https://github.com/honzapav/portuni/issues/357)) ([2b01c7d](https://github.com/honzapav/portuni/commit/2b01c7da3533e24972598cb10098cac58912cd5f))
+
 ## [0.15.0](https://github.com/honzapav/portuni/compare/v0.14.0...v0.15.0) (2026-09-13)
 
 
