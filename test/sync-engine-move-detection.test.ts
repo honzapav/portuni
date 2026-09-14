@@ -66,9 +66,10 @@ function manualWatch(): { factory: WatchFactory; fire: (absPath: string) => void
   };
 }
 
-async function settle(): Promise<void> {
-  // debounceMs is 0; two macrotask hops let the queued reconciles finish.
-  await new Promise((r) => setTimeout(r, 150));
+async function settle(watcher: MirrorWatcher): Promise<void> {
+  // debounceMs is 0; wait for the queued reconciles to actually finish
+  // rather than a fixed sleep a loaded CI runner can outlast.
+  await watcher.idle();
 }
 
 async function startWatcher(db: Client, factory: WatchFactory): Promise<MirrorWatcher> {
@@ -109,7 +110,7 @@ describe("watcher-observed mv (inode pairing)", () => {
     await fsRename(oldAbs, newAbs);
     w.fire(oldAbs);
     w.fire(newAbs);
-    await settle();
+    await settle(watcher);
     watcher.stop();
 
     const rows = await fileRows(db, nodeId);
@@ -141,7 +142,7 @@ describe("watcher-observed mv (inode pairing)", () => {
     await fsRename(oldAbs, newAbs);
     w.fire(newAbs);
     w.fire(oldAbs);
-    await settle();
+    await settle(watcher);
     watcher.stop();
 
     const rows = await fileRows(db, nodeId);
@@ -164,7 +165,7 @@ describe("watcher-observed mv (inode pairing)", () => {
     const copyAbs = join(mirrorRoot, "wip", "kopie.md");
     await copyFile(oldAbs, copyAbs);
     w.fire(copyAbs);
-    await settle();
+    await settle(watcher);
     watcher.stop();
 
     const rows = await fileRows(db, nodeId);
@@ -187,7 +188,7 @@ describe("watcher-observed mv (inode pairing)", () => {
     await writeFile(newAbs, "prepsano po presunu");
     w.fire(oldAbs);
     w.fire(newAbs);
-    await settle();
+    await settle(watcher);
     watcher.stop();
 
     const rows = await fileRows(db, nodeId);
@@ -213,7 +214,7 @@ describe("watcher-observed mv (inode pairing)", () => {
     await fsRename(oldAbs, newAbs);
     w.fire(oldAbs);
     w.fire(newAbs);
-    await settle();
+    await settle(watcher);
     watcher.stop();
 
     // A never-pushed record carries no remote identity worth preserving, so
@@ -249,7 +250,7 @@ describe("watcher-observed mv (inode pairing)", () => {
     // the (unchanged) files inside it.
     w.fire(oldDir);
     w.fire(newDir);
-    await settle();
+    await settle(watcher);
     watcher.stop();
 
     const rows = await fileRows(db, nodeId);
@@ -285,7 +286,7 @@ describe("watcher-observed mv (inode pairing)", () => {
     await fsRename(oldAbs, newAbs);
     w.fire(newAbs);
     w.fire(oldAbs);
-    await settle();
+    await settle(watcher);
     watcher.stop();
 
     const rows = await fileRows(db, nodeId);
