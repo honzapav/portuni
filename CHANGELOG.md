@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.16.1](https://github.com/honzapav/portuni/compare/v0.16.0...v0.16.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **infra:** backup-turso builds its own raw libsql client instead of getDb() ([#363](https://github.com/honzapav/portuni/issues/363)) ([f827b79](https://github.com/honzapav/portuni/commit/f827b79f620eb91d888695300067046e0c05a11d))
+* **runner:** find claude from a GUI-launched app, and hand its path to the SDK ([#365](https://github.com/honzapav/portuni/issues/365)) ([61fe6d5](https://github.com/honzapav/portuni/commit/61fe6d5187f0a82af81df89db1154a496fa34bc2))
+
 ## [0.16.0](https://github.com/honzapav/portuni/compare/v0.15.0...v0.16.0) (2026-09-14)
 
 
