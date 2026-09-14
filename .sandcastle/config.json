@@ -3,7 +3,12 @@
   "image": "sandcastle:portuni",
   "keychain": {
     "claudeToken": "sandcastle.claude-code.oauth-token",
-    "githubToken": "sandcastle.portuni.github-pat"
+    "githubToken": "sandcastle.portuni.github-pat",
+    "claudeTokens": {
+      "osobni": "sandcastle.claude-code.oauth-token",
+      "tempo": "sandcastle.claude-code.oauth-token-tempo",
+      "jrd": "skill.sandcastle-jrd.claude-oauth-token"
+    }
   },
   "model": "claude-sonnet-5",
   "branchPrefix": "ralph/backlog",
