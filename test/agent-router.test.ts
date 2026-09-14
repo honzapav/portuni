@@ -1243,10 +1243,21 @@ describe("POST /nodes/:id/files (agent mode, #266)", () => {
     }
     assert.equal(fake.bytes.get(posix.join(NODE_ROOT, "wip/edited.md"))?.toString("utf8"), "v1");
 
-    const st = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
-    const s = (await st.json()) as { files: Array<{ local_path: string | null; sync_class: string }> };
-    const row = s.files.find((f) => f.local_path?.endsWith("/wip/edited.md"));
-    assert.ok(row, `record exists: ${JSON.stringify(s)}`);
+    // The upload landing is not the end of the push: the baseline
+    // (`last_synced_hash`) is written right after it, and until that write
+    // lands the row still classifies as "no baseline" (conflict). Wait for
+    // the baseline, then check the classification the edit must produce.
+    type StatusRow = { local_path: string | null; sync_class: string };
+    let row: StatusRow | undefined;
+    const stateDeadline = Date.now() + 2000;
+    do {
+      const st = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+      const s = (await st.json()) as { files: StatusRow[] };
+      row = s.files.find((f) => f.local_path?.endsWith("/wip/edited.md"));
+      if (row && row.sync_class !== "conflict") break;
+      await new Promise((res) => setTimeout(res, 20));
+    } while (Date.now() < stateDeadline);
+    assert.ok(row, "record exists");
     assert.equal(row.sync_class, "push", "the mid-push edit must not be masked as clean");
   });
 
