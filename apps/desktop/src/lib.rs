@@ -2680,6 +2680,16 @@ pub(crate) fn spawn_sidecar_ws(
         ("PORTUNI_LOG_REQUESTS".to_string(), "1".to_string()),
         ("HOME".to_string(), std::env::var("HOME").unwrap_or_default()),
         ("PATH".to_string(), pty::login_shell_path()),
+        // The Claude CLI's `auth status` resolves its Keychain credential
+        // under the USER account name; a GUI-launched app inherits USER and
+        // LOGNAME from launchd, so no login-shell probe is needed here
+        // (unlike PATH). Without these the sidecar's login detection, and
+        // any child `claude` process it spawns, both read as logged out.
+        ("USER".to_string(), std::env::var("USER").unwrap_or_default()),
+        (
+            "LOGNAME".to_string(),
+            std::env::var("LOGNAME").unwrap_or_default(),
+        ),
     ];
     // portuni-guard.sh is staged into sidecar-deps by build-sidecar.mjs. The
     // compiled sidecar cannot resolve it repo-relative, so hand it the staged

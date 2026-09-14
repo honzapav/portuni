@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import process from "node:process";
 import { isProcessAlive } from "../apps/server/domain/runner/process-liveness.js";
 import {
+  buildEnv,
   categorizeTool,
   createClaudeAdapter,
   resolveClaudeExecutable,
@@ -526,14 +527,20 @@ describe("Claude adapter: close() escalation (end stdin, SIGTERM, SIGKILL)", () 
 });
 
 describe("Claude adapter: env composition", () => {
-  it("HOME/PATH come from process.env; PORTUNI_* and an instance's own HOME are dropped", async () => {
+  it("HOME/PATH/USER/LOGNAME come from process.env; PORTUNI_* and an instance's own HOME/USER/LOGNAME are dropped", async () => {
     const { query, options } = makeFakeQuery([]);
     const adapter = createClaudeAdapter({ query });
     const handle = await adapter.start(
       makeRunStart({
         instance: {
           id: "inst-1",
-          env: { CLAUDE_CONFIG_DIR: "/home/x/.claude-work", PORTUNI_ROOT: "/should/drop", HOME: "/should/drop/too" },
+          env: {
+            CLAUDE_CONFIG_DIR: "/home/x/.claude-work",
+            PORTUNI_ROOT: "/should/drop",
+            HOME: "/should/drop/too",
+            USER: "should-drop",
+            LOGNAME: "should-drop",
+          },
         },
       }),
       () => undefined,
@@ -541,9 +548,57 @@ describe("Claude adapter: env composition", () => {
     const env = options()!.env!;
     assert.equal(env.PATH, process.env.PATH);
     assert.equal(env.HOME, process.env.HOME);
+    assert.equal(env.USER, process.env.USER);
+    assert.equal(env.LOGNAME, process.env.LOGNAME);
     assert.equal(env.CLAUDE_CONFIG_DIR, "/home/x/.claude-work");
     assert.equal("PORTUNI_ROOT" in env, false);
     await handle.close();
+  });
+});
+
+describe("Claude adapter: buildEnv", () => {
+  const saved = { USER: process.env.USER, LOGNAME: process.env.LOGNAME };
+  const restore = () => {
+    if (saved.USER === undefined) delete process.env.USER;
+    else process.env.USER = saved.USER;
+    if (saved.LOGNAME === undefined) delete process.env.LOGNAME;
+    else process.env.LOGNAME = saved.LOGNAME;
+  };
+
+  it("forwards USER/LOGNAME when set on process.env", () => {
+    process.env.USER = "honzapav";
+    process.env.LOGNAME = "honzapav";
+    try {
+      const env = buildEnv({});
+      assert.equal(env.USER, "honzapav");
+      assert.equal(env.LOGNAME, "honzapav");
+    } finally {
+      restore();
+    }
+  });
+
+  it("omits USER/LOGNAME when absent from process.env", () => {
+    delete process.env.USER;
+    delete process.env.LOGNAME;
+    try {
+      const env = buildEnv({});
+      assert.equal("USER" in env, false);
+      assert.equal("LOGNAME" in env, false);
+    } finally {
+      restore();
+    }
+  });
+
+  it("an instance's own USER/LOGNAME never override process.env's", () => {
+    process.env.USER = "honzapav";
+    process.env.LOGNAME = "honzapav";
+    try {
+      const env = buildEnv({ USER: "someone-else", LOGNAME: "someone-else" });
+      assert.equal(env.USER, "honzapav");
+      assert.equal(env.LOGNAME, "honzapav");
+    } finally {
+      restore();
+    }
   });
 });
 
