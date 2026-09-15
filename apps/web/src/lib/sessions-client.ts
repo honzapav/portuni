@@ -461,9 +461,9 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
           // and fails whichever test happened to create it. There is
           // nothing to report either way; the next reconnect resubscribes
           // from the same lastSeq.
-          send({ type: "subscribe", payload: { session_id: sessionId, after: lastSeq.get(sessionId) } }).catch(
-            () => {},
-          );
+          send({ type: "subscribe", payload: { session_id: sessionId, after: lastSeq.get(sessionId) } }).catch(() => {
+            // Deliberately empty: see above.
+          });
         }
       }
       wasOpen = true;
