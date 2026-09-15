@@ -83,7 +83,8 @@ export default function SessionChat({
   onOpenFile?: (relPath: string) => void;
 }) {
   const [events, setEvents] = useState<ChatEvent[]>([]);
-  const [deltaBuffers, setDeltaBuffers] = useState<DeltaBuffers>({});
+  const [textDeltaBuffers, setTextDeltaBuffers] = useState<DeltaBuffers>({});
+  const [reasoningDeltaBuffers, setReasoningDeltaBuffers] = useState<DeltaBuffers>({});
   const [liveRunId, setLiveRunId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -118,7 +119,8 @@ export default function SessionChat({
     setLoading(true);
     setError(null);
     setEvents([]);
-    setDeltaBuffers({});
+    setTextDeltaBuffers({});
+    setReasoningDeltaBuffers({});
     setLiveRunId(null);
     setLive({ state: session.state, waiting_since: session.waiting_since });
 
@@ -131,17 +133,27 @@ export default function SessionChat({
       if (event.kind === "run_started") {
         setLiveRunId(event.payload.run_id);
       } else if (event.kind === "run_ended") {
-        setDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
+        setTextDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
+        setReasoningDeltaBuffers((prev) => clearDeltaBuffer(prev, event.payload.run_id));
         setLiveRunId(null);
-      } else if (event.kind === "assistant_message" || event.kind === "reasoning") {
+      } else if (event.kind === "assistant_message") {
         setLiveRunId((current) => {
-          if (current) setDeltaBuffers((prev) => clearDeltaBuffer(prev, current));
+          if (current) setTextDeltaBuffers((prev) => clearDeltaBuffer(prev, current));
+          return current;
+        });
+      } else if (event.kind === "reasoning") {
+        setLiveRunId((current) => {
+          if (current) setReasoningDeltaBuffers((prev) => clearDeltaBuffer(prev, current));
           return current;
         });
       }
     });
     const offDelta = sessionsClient.onDelta(session.id, (delta) => {
-      setDeltaBuffers((prev) => appendDelta(prev, delta.run_id, delta.text));
+      if (delta.channel === "reasoning") {
+        setReasoningDeltaBuffers((prev) => appendDelta(prev, delta.run_id, delta.text));
+      } else {
+        setTextDeltaBuffers((prev) => appendDelta(prev, delta.run_id, delta.text));
+      }
     });
     const offState = sessionsClient.onSessionState((s) => {
       if (s.session_id !== session.id) return;
@@ -231,7 +243,8 @@ export default function SessionChat({
   const displayEvents = useMemo(() => collapseToolCalls(events), [events]);
   const openQuestion = latestQuestionEvent(events);
   const isWaiting = live.state === "running" && live.waiting_since !== null;
-  const streamingText = liveRunId ? deltaBuffers[liveRunId] : undefined;
+  const streamingText = liveRunId ? textDeltaBuffers[liveRunId] : undefined;
+  const streamingReasoning = liveRunId ? reasoningDeltaBuffers[liveRunId] : undefined;
   const chip = sessionStatusChip(live.state, live.waiting_since);
   const restartHint = signals ? formatRestartHint(signals) : null;
 
@@ -379,6 +392,12 @@ export default function SessionChat({
               {displayEvents.map((item) => (
                 <EventRow key={item.seq} item={item} onOpenFile={onOpenFile} />
               ))}
+              {streamingReasoning && (
+                <Reasoning isStreaming defaultOpen>
+                  <ReasoningTrigger getThinkingMessage={reasoningTriggerMessage} />
+                  <ReasoningContent>{streamingReasoning}</ReasoningContent>
+                </Reasoning>
+              )}
               {streamingText && (
                 <Message from="assistant">
                   <MessageContent>
@@ -445,6 +464,18 @@ function HeaderButton({
   );
 }
 
+// Czech trigger text for the Reasoning kit's default English wording:
+// "Přemýšlím…" while streaming, "Uvažoval N s" once the block is done.
+function reasoningTriggerMessage(isStreaming: boolean, duration?: number): React.ReactNode {
+  if (isStreaming || duration === 0) {
+    return <Shimmer duration={1}>Přemýšlím…</Shimmer>;
+  }
+  if (duration === undefined) {
+    return <p>Uvažoval několik sekund</p>;
+  }
+  return <p>Uvažoval {duration} s</p>;
+}
+
 function SystemMarker({ children }: { children: React.ReactNode }) {
   return <div className="text-center text-[11px] text-[var(--color-text-dim)]">{children}</div>;
 }
@@ -477,7 +508,7 @@ function EventRow({
     case "reasoning":
       return (
         <Reasoning isStreaming={false} defaultOpen={false}>
-          <ReasoningTrigger />
+          <ReasoningTrigger getThinkingMessage={reasoningTriggerMessage} />
           <ReasoningContent>{event.payload.summary}</ReasoningContent>
         </Reasoning>
       );

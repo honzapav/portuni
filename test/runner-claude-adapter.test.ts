@@ -310,6 +310,54 @@ describe("Claude adapter: message translation", () => {
     );
   });
 
+  it("stream_event thinking deltas become reasoning DeltaFrames, then exactly one reasoning event", async () => {
+    const script: SDKMessage[] = [
+      {
+        type: "stream_event",
+        event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Let me " } },
+        parent_tool_use_id: null,
+        uuid: "u1",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+      {
+        type: "stream_event",
+        event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "consider this." } },
+        parent_tool_use_id: null,
+        uuid: "u2",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "thinking", thinking: "Let me consider this.", signature: "sig1" },
+            { type: "text", text: "Here's my answer" },
+          ],
+        },
+        parent_tool_use_id: null,
+        uuid: "u3",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+    ];
+    const { query } = makeFakeQuery(script);
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    await handle.close();
+
+    const deltas = events.filter((e) => "type" in e && e.type === "delta") as DeltaFrame[];
+    assert.deepEqual(
+      deltas.map((d) => [d.channel, d.text]),
+      [
+        ["reasoning", "Let me "],
+        ["reasoning", "consider this."],
+      ],
+    );
+
+    const reasoningEvents = events.filter((e) => "kind" in e && e.kind === "reasoning");
+    assert.equal(reasoningEvents.length, 1, "the batched reasoning event must not be duplicated by the deltas");
+  });
+
   it("system/compact_boundary translates to a compaction event", async () => {
     const script: SDKMessage[] = [
       {

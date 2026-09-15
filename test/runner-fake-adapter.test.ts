@@ -27,7 +27,7 @@ function run(overrides: Partial<RunStart> = {}): RunStart {
 
 const userMsg: CanonicalEvent = { kind: "user_message", payload: { text: "hi", source: "chat" } };
 const assistantMsg: CanonicalEvent = { kind: "assistant_message", payload: { text: "hello" } };
-const delta: DeltaFrame = { type: "delta", run_id: "R1", text: "chunk" };
+const delta: DeltaFrame = { type: "delta", run_id: "R1", channel: "text", text: "chunk" };
 
 describe("FakeRunnerAdapter", () => {
   it("detect reports installed and logged in by default", async () => {

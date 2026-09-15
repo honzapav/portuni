@@ -123,13 +123,17 @@ there is no client-side prediction of who may do what.
 The event list renders the session's canonical log, delivered entirely
 over the live WebSocket below (a subscribe replays the persisted log,
 then streams what follows): user and assistant messages as chat bubbles,
-reasoning as a muted aside, `tool_call` collapsed from its `started` and
-`completed`/`failed` pair into one row showing the title (click it to
+reasoning as a collapsible aside, `tool_call` collapsed from its `started`
+and `completed`/`failed` pair into one row showing the title (click it to
 expand the input summary and output excerpt), `file_change` linking into
 the Files tab, and `compaction`, `handoff`, `state_changed` and
-`run_ended` as centered system markers. Assistant text streams in from
-`delta` frames before its `assistant_message` event lands, then the
-buffer clears. A question panel appears above the composer while
+`run_ended` as centered system markers. Both assistant text and reasoning
+stream in from `delta` frames — a `channel: "text"` delta builds up
+towards the next `assistant_message` event, a `channel: "reasoning"` one
+towards the next `reasoning` event — and each buffer clears once its own
+matching event lands; the reasoning aside stays open while its deltas are
+still arriving and collapses once the batched event replaces it. A
+question panel appears above the composer while
 `waiting_since` is set — option buttons for an approval, a text field for
 free-form input — and the composer itself disables while suspended,
 closed or archived, or when you are not the session's owner (messages
@@ -195,7 +199,9 @@ runtime call and access tier the REST route uses.
 
 Server → client: `event { session_id, event }` — a persisted canonical
 event, carrying the `seq` the store assigned it; `delta { session_id,
-run_id, text }` — streamed text, never persisted, never replayed; and
+run_id, channel, text }` — streamed text, never persisted, never replayed,
+`channel` one of `"text" | "reasoning"` saying which persisted event this
+delta is a live preview of; and
 `session_state { session_id, state, waiting_since, node_id }` — sent for
 every running or suspended session you can see the moment you connect
 (newest activity first, at most 500), and again on every `state_changed`,

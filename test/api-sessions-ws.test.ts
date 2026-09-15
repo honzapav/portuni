@@ -248,7 +248,7 @@ describe("GET /sessions/ws", () => {
   test("a delta never lands in listEvents (not persisted)", async () => {
     installAdapter([
       { wait: "message" },
-      { type: "delta", run_id: "r1", text: "chunk" },
+      { type: "delta", run_id: "r1", channel: "text", text: "chunk" },
       { kind: "assistant_message", payload: { text: "final" } },
     ]);
     const runtime = currentRuntime;
