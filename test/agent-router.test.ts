@@ -12,6 +12,7 @@ import { CentralHttpError } from "../apps/server/domain/sync/central/client.js";
 import type { NodeSyncInfo } from "../apps/server/domain/sync/sync-remote-api.js";
 import { registerMirror } from "../apps/server/domain/sync/mirror-registry.js";
 import { resetLocalDbForTests, getFileState } from "../apps/server/domain/sync/local-db.js";
+import { awaitAllPendingPushes } from "../apps/server/domain/sync/pending-pushes.js";
 import { SOLO_USER } from "../apps/server/infra/schema.js";
 import { resetGateCachesForTesting } from "../apps/server/http/middleware.js";
 
@@ -316,6 +317,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // Drain first: POST /nodes/:id/files answers before its own push lands,
+  // so a push started by this test is still running here -- and everything
+  // below (the workspace root env var, the temp directory itself) is what
+  // it needs to finish. Leaving it to run into the next test's teardown is
+  // what made the create tests flaky on a loaded runner.
+  await awaitAllPendingPushes();
   await handle.shutdown();
   resetGateCachesForTesting();
   resetLocalDbForTests();
@@ -1170,11 +1177,9 @@ describe("POST /nodes/:id/files (agent mode, #266)", () => {
 
     releasePush?.();
     // The background push is fire-and-forget from the handler's point of
-    // view; poll briefly for it to land.
-    for (let i = 0; i < 50; i += 1) {
-      if (fake.bytes.has(posix.join(NODE_ROOT, "wip/new.md"))) break;
-      await new Promise((res) => setTimeout(res, 10));
-    }
+    // view, but it is tracked per path, so it can be awaited outright
+    // rather than polled for against a deadline.
+    await awaitAllPendingPushes();
     assert.equal(
       fake.bytes.get(posix.join(NODE_ROOT, "wip/new.md"))?.toString("utf8"),
       "obsah",
@@ -1237,26 +1242,20 @@ describe("POST /nodes/:id/files (agent mode, #266)", () => {
     await writeFile(abs, "v2 -- edited while the background push was in flight");
     releasePush?.();
     fake.putDelay = null;
-    const deadline = Date.now() + 2000;
-    while (!fake.bytes.has(posix.join(NODE_ROOT, "wip/edited.md")) && Date.now() < deadline) {
-      await new Promise((res) => setTimeout(res, 20));
-    }
-    assert.equal(fake.bytes.get(posix.join(NODE_ROOT, "wip/edited.md"))?.toString("utf8"), "v1");
-
     // The upload landing is not the end of the push: the baseline
     // (`last_synced_hash`) is written right after it, and until that write
-    // lands the row still classifies as "no baseline" (conflict). Wait for
-    // the baseline, then check the classification the edit must produce.
+    // lands the row still classifies as "no baseline", i.e. conflict.
+    // Awaiting the tracked push covers both steps -- polling the upload
+    // and then the classification against a 2s deadline used to read
+    // "conflict" on a loaded CI runner, where the baseline write simply
+    // had not happened yet.
+    await awaitAllPendingPushes();
+    assert.equal(fake.bytes.get(posix.join(NODE_ROOT, "wip/edited.md"))?.toString("utf8"), "v1");
+
     type StatusRow = { local_path: string | null; sync_class: string };
-    let row: StatusRow | undefined;
-    const stateDeadline = Date.now() + 2000;
-    do {
-      const st = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
-      const s = (await st.json()) as { files: StatusRow[] };
-      row = s.files.find((f) => f.local_path?.endsWith("/wip/edited.md"));
-      if (row && row.sync_class !== "conflict") break;
-      await new Promise((res) => setTimeout(res, 20));
-    } while (Date.now() < stateDeadline);
+    const st = await fetch(`${base}/nodes/${NODE_ID}/sync-status`);
+    const status = (await st.json()) as { files: StatusRow[] };
+    const row = status.files.find((f) => f.local_path?.endsWith("/wip/edited.md"));
     assert.ok(row, "record exists");
     assert.equal(row.sync_class, "push", "the mid-push edit must not be masked as clean");
   });
@@ -1273,13 +1272,6 @@ describe("POST /nodes/:id/files (agent mode, #266)", () => {
     assert.equal(body.status, "output");
     assert.equal(body.relative_path, "outputs/q3/report.md");
     await readFile(join(mirrorRoot, "outputs", "q3", "report.md"), "utf8");
-    // Drain the background push before the test (and its afterEach, which
-    // tears down PORTUNI_WORKSPACE_ROOT) ends, so it doesn't run against a
-    // workspace root that's already been reset by the next test.
-    for (let i = 0; i < 50; i += 1) {
-      if (fake.bytes.has(posix.join(NODE_ROOT, "outputs/q3/report.md"))) break;
-      await new Promise((res) => setTimeout(res, 10));
-    }
   });
 
   it("409s when the file already exists in the mirror", async () => {

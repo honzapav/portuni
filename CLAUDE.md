@@ -1248,6 +1248,25 @@ symlink to this file.
   reaches the CLI's helpers too; a `canUseTool` question still open when
   the run ends is denied (and one raised after the end is denied outright)
   so the SDK's own awaiter settles; delta frames carry the real `run_id`.
+  **`translateStreamEvent` streams both channels, not just assistant text
+  (#379).** A `thinking_delta` content-block delta becomes a `DeltaFrame`
+  the same way a `text_delta` already did, tagged `channel: "reasoning"`
+  instead of `channel: "text"` (`DeltaFrame.channel`, `domain/runner/
+  types.ts`) -- before this, a turn that spent a long time on its first
+  thought showed an empty transcript for that whole time, since only
+  `translateAssistantMessage`'s own batched, end-of-block `reasoning` event
+  (#370/#377) reached the wire. The batched event is still the persisted
+  record; the deltas are only the live preview of the same thing, exactly
+  as `assistant_message` and its own text deltas already relate -- nothing
+  about the persisted-event side changed. `api/sessions-ws.ts`'s
+  `eventFrame` forwards `channel` unchanged into the wire `delta` frame's
+  payload; `SessionChat.tsx` keeps two separate `DeltaBuffers` (text,
+  reasoning), each cleared on its own matching persisted event
+  (`assistant_message` / `reasoning`) or on `run_ended`, and feeds the
+  reasoning one to `Reasoning` with `isStreaming` -- the kit's trigger
+  (Czech-wired here as "Přemýšlím…" / "Uvažoval N s",
+  `reasoningTriggerMessage`) opens while it streams and collapses once the
+  persisted event lands.
 - **A sidecar restart or crash leaves runner children alive and their runs
   open — `boot/run-sweep.ts` reaps both, run BEFORE
   `sweepStaleRunningSessionsOnBoot` (#325).** `session-runtime.ts` writes

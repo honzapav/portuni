@@ -199,7 +199,10 @@ describe("sessions-client: direct-WS transport", () => {
     await client.subscribe("S1");
     await waitUntil(() => server.subscribeCalls.length === 1);
     server.broadcast({ type: "event", payload: { session_id: "S1", event: { kind: "run_started", payload: {}, seq: 10 } } });
-    server.broadcast({ type: "delta", payload: { session_id: "S1", run_id: "R1", text: "streaming..." } });
+    server.broadcast({
+      type: "delta",
+      payload: { session_id: "S1", run_id: "R1", channel: "text", text: "streaming..." },
+    });
     await waitUntil(() => deltas.length === 1);
     assert.deepEqual(deltas, ["streaming..."]);
 

@@ -125,9 +125,13 @@ export type CanonicalEventKind = CanonicalEvent["kind"];
 
 // Streamed text, never persisted (rule 3: "Events are the record; deltas
 // are not"). Carried only on the live channel (the WebSocket issue).
+// `channel` says which persisted event this delta is a live preview of --
+// "text" builds up towards an assistant_message, "reasoning" towards a
+// reasoning event -- so a client can buffer and render the two separately.
 export interface DeltaFrame {
   type: "delta";
   run_id: string;
+  channel: "text" | "reasoning";
   text: string;
 }
 

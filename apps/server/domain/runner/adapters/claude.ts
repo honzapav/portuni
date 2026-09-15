@@ -30,7 +30,6 @@ import { isPortuniEnvKey } from "../../../shared/runner-env.js";
 import { decidePermission } from "../permissions.js";
 import { isProcessAlive } from "../process-liveness.js";
 import type {
-  DeltaFrame,
   EventSink,
   QuestionDecision,
   RunHandle,
@@ -433,9 +432,11 @@ function translateStreamEvent(
   const event = msg.event;
   if (event.type !== "content_block_delta") return;
   const delta = event.delta;
-  if (delta.type !== "text_delta" || typeof delta.text !== "string") return;
-  const frame: DeltaFrame = { type: "delta", run_id: runId, text: delta.text };
-  sink(frame);
+  if (delta.type === "text_delta" && typeof delta.text === "string") {
+    sink({ type: "delta", run_id: runId, channel: "text", text: delta.text });
+  } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
+    sink({ type: "delta", run_id: runId, channel: "reasoning", text: delta.thinking });
+  }
 }
 
 // Signals the child's whole process group (it is spawned detached, i.e. as

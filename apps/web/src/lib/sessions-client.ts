@@ -33,6 +33,7 @@ export interface CanonicalEventEnvelope {
 export interface SessionDeltaMessage {
   session_id: string;
   run_id: string;
+  channel: "text" | "reasoning";
   text: string;
 }
 

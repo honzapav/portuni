@@ -455,7 +455,7 @@ describe("session runtime: subscribers vs. store", () => {
     const { db, nodeId } = await sharedDb();
     const store = new DbSessionStore(db);
     const script: FakeScriptStep[] = [
-      { type: "delta", run_id: "will-be-overwritten", text: "chunk-1" },
+      { type: "delta", run_id: "will-be-overwritten", channel: "text", text: "chunk-1" },
       { kind: "assistant_message", payload: { text: "final" } },
     ];
     const adapter = new FakeRunnerAdapter({ script });

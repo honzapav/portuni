@@ -217,7 +217,10 @@ function isDeltaFrame(event: PublishedEvent): event is DeltaFrame {
 // never persists and never carries one.
 function eventFrame(sessionId: string, event: PublishedEvent): { type: string; payload: unknown } {
   if (isDeltaFrame(event)) {
-    return { type: "delta", payload: { session_id: sessionId, run_id: event.run_id, text: event.text } };
+    return {
+      type: "delta",
+      payload: { session_id: sessionId, run_id: event.run_id, channel: event.channel, text: event.text },
+    };
   }
   const { seq, kind, payload } = event;
   return { type: "event", payload: { session_id: sessionId, event: { kind, payload, seq } } };
