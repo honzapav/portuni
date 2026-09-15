@@ -3,8 +3,8 @@
 //
 // Streamdown's cjk/code/math/mermaid plugins are individually heavy (mermaid
 // especially -- a full diagram-rendering engine) and only a small fraction
-// of chat messages ever use them. Lazy-load them the way TerminalTabs.tsx
-// lazy-loads xterm, instead of bundling all four onto the startup path.
+// of chat messages ever use them. Lazy-load them the way WorkspaceView.tsx
+// lazy-loads SessionChat, instead of bundling all four onto the startup path.
 // Streamdown itself renders plain markdown fine with `plugins` undefined,
 // so the transcript is never blocked on this -- it just upgrades in place
 // (CJK line-breaking, syntax highlighting, math, diagrams) once the chunk

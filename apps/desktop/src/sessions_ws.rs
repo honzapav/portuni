@@ -9,9 +9,8 @@
 // Rust, emitting `session-connection { status }` so the UI can show it.
 //
 // Registry is keyed by workspace id (like `BackendPorts`/`AuthTokens` in
-// lib.rs), not by an opaque per-call id the way `pty.rs`'s `PtyState` is --
-// the spec is explicit about one connection per window, and every `ws:<id>`
-// window maps 1:1 to a workspace.
+// lib.rs), not by an opaque per-call id -- the spec is explicit about one
+// connection per window, and every `ws:<id>` window maps 1:1 to a workspace.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -130,8 +129,7 @@ pub(crate) fn sessions_disconnect(app: AppHandle, window: tauri::Window) -> Resu
 
 // Shared by the sessions_disconnect command and lib.rs's window Destroyed
 // handler -- a force-closed window must not leave an orphaned background
-// task holding a live socket open (pty.rs's own PTY sessions have the same
-// gap today; this is the one place in the codebase that closes it).
+// task holding a live socket open.
 pub(crate) fn disconnect_for_ws(app: &AppHandle, ws_id: &str) {
     if let Some(state) = app.try_state::<SessionsWsState>() {
         if let Ok(mut conns) = state.connections.lock() {
@@ -204,7 +202,7 @@ async fn run_connection_loop(
         headers.insert("Origin", HeaderValue::from_static("tauri://localhost"));
         // Same proof api_request attaches (#213): the upgrade originates in
         // this Tauri host, so the socket's mutating frames (message, answer,
-        // interrupt, suspend, close) are accepted; a spawned terminal that
+        // interrupt, suspend, close) are accepted; an external process that
         // opens the same socket with the bearer alone can only watch.
         if let Some(secret) = crate::webview_proxy_secret(&app, &ws_id) {
             match HeaderValue::from_str(&secret) {

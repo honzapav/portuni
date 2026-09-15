@@ -1049,7 +1049,7 @@ function applyInitialLayout(
 
 // Memoized: cytoscape re-init and layout math are by far the heaviest
 // render in the app, and App re-renders on every editor keystroke and
-// terminal activity tick. All props are stable identities (useCallback
+// session-state frame. All props are stable identities (useCallback
 // in App; Sets only change on toggle).
 export default memo(GraphView);
 

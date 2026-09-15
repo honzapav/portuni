@@ -217,8 +217,8 @@ export function useAppUpdate(): AppUpdate {
   }, []);
 
   // restart_app goes through the same sequential-close quit Cmd+Q uses
-  // (#229): every open window gets its own dirty-editor/unsynced-files/
-  // running-terminals guard chance before anything closes. A decline in
+  // (#229): every open window gets its own dirty-editor/unsynced-files
+  // guard chance before anything closes. A decline in
   // any of them aborts the whole restart -- the update stays installed and
   // this state remains "ready" for a later retry.
   const restart = useCallback(async () => {

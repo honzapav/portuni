@@ -39,7 +39,7 @@ export default function CentralLoginGate({ children }: { children: ReactNode }) 
         setStatus({ kind: "not-configured" });
       } else if (s.logged_in) {
         // First login on this install: show the one-time guidance that
-        // mirror folders appear only after a terminal is opened on a node.
+        // mirror folders appear only once a node's folder is created.
         if (localStorage.getItem(scopedKey("first-steps-pending")) === "1") {
           setStatus({ kind: "first-steps" });
         } else {
@@ -96,9 +96,9 @@ export default function CentralLoginGate({ children }: { children: ReactNode }) 
           </div>
           <div className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
             Pracovní složky na Macu vznikají po uzlech: otevři uzel v grafu a
-            klikni na <span className="font-medium text-[var(--color-text)]">Otevřít terminál v Portuni</span>.
-            Portuni založí lokální složku uzlu, spustí v ní agenta a stáhne
-            soubory. Bez tohoto kroku zůstává obsah jen na serveru.
+            klikni na <span className="font-medium text-[var(--color-text)]">Nový úkol</span>{" "}
+            nebo na ikonu složky v hlavičce uzlu. Portuni založí lokální složku
+            uzlu a stáhne soubory. Bez tohoto kroku zůstává obsah jen na serveru.
           </div>
           <button
             type="button"

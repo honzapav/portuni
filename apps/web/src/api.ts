@@ -157,10 +157,9 @@ export async function fetchNodeFileUrl(
 }
 
 // Node-detail *persistent* sessions list (#192, apps/server/domain/
-// sessions.ts) -- distinct from lib/sessions.ts's ephemeral TerminalSession
-// (a browser-local PTY tab). Named with the Persistent* prefix throughout
-// this block so a call site pulling in both never has to disambiguate by
-// import path alone. Archived sessions are hidden unless includeArchived --
+// sessions.ts). Named with the Persistent* prefix throughout this block
+// (historically to tell them apart from the browser-local terminal tabs,
+// which are gone). Archived sessions are hidden unless includeArchived --
 // "closed/archived (browse; archived behind a filter)".
 export function fetchNodePersistentSessions(
   id: string,
@@ -227,8 +226,7 @@ export function resumeSession(id: string, mode: "conversation" | "handoff"): Pro
   return jsonRequest<{ run: SessionRunRow }>("POST", `/sessions/${encodeURIComponent(id)}/resume`, { mode });
 }
 
-// POST /sessions -- starts a task (session + first run). Replaces
-// TerminalSplitButton's direct embedded-terminal spawn with a server-driven
+// POST /sessions -- starts a task (session + first run) as a server-driven
 // run (#342, NewTaskDialog).
 export function startSession(input: {
   node_id: string;
@@ -288,32 +286,6 @@ export function createNodeMirror(id: string): Promise<CreateMirrorResponse> {
   return jsonRequest<CreateMirrorResponse>(
     "POST",
     `/nodes/${encodeURIComponent(id)}/mirror`,
-  );
-}
-
-// Seatbelt disk-scope profile for spawning an agent terminal inside the
-// node's mirror: home mirror read+write, the rest of PORTUNI_ROOT denied
-// by the kernel. Depth-1 neighbours are readable via their real mirror;
-// nodes the session expands into mid-run are readable under
-// projection_root/<session-id>/<node-id>/ once the MCP session hardlinks
-// them there (domain/session-projection.ts). Fetched right before
-// pty_spawn; the terminal launch is fail-closed on errors so an agent
-// never starts without the boundary by accident.
-export type SandboxProfileResponse = {
-  profile: string;
-  portuni_root: string;
-  home_mirror: string;
-  projection_root: string | null;
-  // Session id the profile's projection grant is already narrowed to
-  // (#208 follow-up). Threaded through pty_spawn -> Claude's .mcp.json
-  // X-Portuni-Spawn-Id header so the MCP session reuses this exact id.
-  session_id: string | null;
-};
-
-export function fetchSandboxProfile(id: string): Promise<SandboxProfileResponse> {
-  return jsonRequest<SandboxProfileResponse>(
-    "GET",
-    `/nodes/${encodeURIComponent(id)}/sandbox-profile`,
   );
 }
 

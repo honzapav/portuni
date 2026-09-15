@@ -13,7 +13,6 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
-  ExternalLink,
   FileText,
   Folder,
   FolderOpen,
@@ -34,13 +33,11 @@ import type {
   UntrackedFile,
   WatcherErrorEntry,
 } from "../types";
-import { buildAgentCommand } from "../lib/prompt";
-import { agentDisplayName, loadCollapsedFolders, saveCollapsedFolders } from "../lib/settings";
-import { createNodeMirror, fetchNodeFileUrl } from "../api";
+import { loadCollapsedFolders, saveCollapsedFolders } from "../lib/settings";
+import { fetchNodeFileUrl } from "../api";
 import type { ResolveAction } from "../api";
 import { isTauri, openInFinder } from "../lib/backend-url";
 import { listWorkspaces } from "../lib/workspaces";
-import { listProfiles, type ProfileInfo } from "../lib/profiles";
 import { copyText } from "../lib/clipboard";
 import { summarizeSyncRun } from "../lib/sync-run-summary";
 import { syncBarState } from "../lib/sync-bar-state";
@@ -291,7 +288,7 @@ export function NewFileForm({
 // found -- a chevron with "Nový soubor" / "Nová prezentace". The second item
 // starts a Showtime deck in the node's wip/ (spec: 2026-09-13-showtime-new-
 // deck-design.md) and is disabled without a mirror, with the reason as its
-// title. Same shape as TerminalSplitButton; its error is the caller's to
+// title. Its error is the caller's to
 // show, inline under the toolbar (#267), never in a tab-level box.
 //
 // The installed probe always runs on mount, integration on or off: the
@@ -1307,280 +1304,31 @@ function syncCssVar(c: SyncClass): string {
   }
 }
 
-// Launch flow:
-//   1. POST /nodes/:id/mirror — idempotent; creates the working folder
-//      if missing and returns { local_path, ... } either way.
-//   2. Refresh the node's local_mirror in-memory from the response so
-//      buildAgentCommand prefixes `cd <path> && ...`.
-//   3a. On Tauri: invoke `launch_claude_for_node` to spawn Terminal.app.
-//       UNSUPPORTED_OS error → fall back to clipboard.
-//   3b. In browser: copy to clipboard.
-type LaunchState =
-  | { kind: "idle" }
-  | { kind: "pending" }
-  | { kind: "launched" }
-  | { kind: "copied" }
-  | { kind: "error"; message: string };
-
-// Split button, renamed from TerminalSplitButton (#342, runner batch phase
-// 3 -- docs/superpowers/specs/2026-09-12-runner-and-session-design.md "Web:
-// Práce, New task"):
-//   - Left (primary): "Nový úkol" opens NewTaskDialog (runner-managed
-//     session, POST /sessions), replacing the old primary "open an embedded
-//     terminal" action.
-//   - Right (chevron): dropdown with the two terminal-launch paths this
-//     button used to lead with -- "Otevřít terminál v Portuni" (embedded)
-//     and "Otevřít v externím terminálu". Kept reachable during this phase
-//     so the runner-driven chat and the terminal canvas can be compared on
-//     a real node; removal is phase 4.
-// Renders nothing for organization nodes (no working-folder concept there).
-//
-// selectedProfileId only reaches the embedded launch (onEmbeddedOpen) --
-// handleExternalLaunch's launch_claude_for_node command has no profile_id
-// parameter at all today, so picking a profile and then choosing "Otevřít v
-// externím terminálu" silently spawns without it (#207). Deliberately not
-// fixed here: profile threading is Claude-only for now (the same scope cut
-// as X-Portuni-Profile, write-scope.ts's buildClaudeMcpJson -- Codex/Vibe
-// have no equivalent per-spawn config-expansion mechanism), and the
-// external-launch path doesn't inject even the existing MCP-token/
-// PORTUNI_PROFILE_ID env pty_spawn does, so wiring just the profile through
-// would be an inconsistent half-fix. Extending profile support to Codex/
-// Vibe and to this external-launch path is future work.
+// "Nový úkol" (#342, runner batch; docs/superpowers/specs/2026-09-12-runner-
+// and-session-design.md "Web: New task"): opens NewTaskDialog, which starts
+// a runner-managed session (POST /sessions) and hands the fresh
+// {session, run} back through onSessionStarted. Renders nothing for
+// organization nodes (no working-folder concept there).
 export function NewTaskButton({
   node,
-  agentCommand,
-  terminalLaunch,
-  onEmbeddedOpen,
-  embeddedPending,
   onSessionStarted,
 }: {
   node: NodeDetail;
-  agentCommand: string;
-  terminalLaunch: string;
-  onEmbeddedOpen: (profileId?: string | null) => void | Promise<void>;
-  embeddedPending: boolean;
   onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow }) => void;
 }) {
-  const [dropdownOpen, setDropdownOpen] = useState(false);
   const [taskDialogOpen, setTaskDialogOpen] = useState(false);
-  const [externalState, setExternalState] = useState<LaunchState>({ kind: "idle" });
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  // CLI spawn profiles (phase 3, spawn UX): self-fetched, same convention as
-  // AccessSection/SessionsSection. Zero registered profiles keeps this
-  // whole block invisible; the picker itself only renders with >=2, per
-  // spec -- with exactly one, the org default (if set) still applies
-  // silently, there just isn't a UI to override it per spawn.
-  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
-  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
-  const orgId = node.edges.find(
-    (e) => e.relation === "belongs_to" && e.direction === "outgoing" && e.peer_type === "organization",
-  )?.peer_id;
-  useEffect(() => {
-    let cancelled = false;
-    const load = () => {
-      listProfiles()
-        .then((data) => {
-          if (cancelled) return;
-          setProfiles(data.profiles);
-          const def = orgId ? (data.default_by_org[orgId] ?? null) : null;
-          setSelectedProfileId(def && data.profiles.some((p) => p.id === def) ? def : null);
-        })
-        .catch(() => {
-          // No profiles registered (or outside Tauri) -- the picker stays hidden.
-        });
-    };
-    load();
-    window.addEventListener("portuni:profiles-changed", load);
-    return () => {
-      cancelled = true;
-      window.removeEventListener("portuni:profiles-changed", load);
-    };
-  }, [orgId]);
-
-  // Close dropdown when user clicks outside the split button.
-  useEffect(() => {
-    if (!dropdownOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setDropdownOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [dropdownOpen]);
-
-  // Close dropdown on Escape key.
-  useEffect(() => {
-    if (!dropdownOpen) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDropdownOpen(false);
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [dropdownOpen]);
-
-  const handleExternalLaunch = async () => {
-    setDropdownOpen(false);
-    setExternalState({ kind: "pending" });
-    try {
-      const { local_path } = await createNodeMirror(node.id);
-      const enriched: NodeDetail = {
-        ...node,
-        local_mirror: node.local_mirror ?? {
-          local_path,
-          registered_at: new Date().toISOString(),
-        },
-      };
-      const cmd = buildAgentCommand(enriched, agentCommand);
-
-      if (isTauri()) {
-        try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          await invoke("launch_claude_for_node", {
-            cwd: local_path,
-            command: cmd,
-            template: terminalLaunch,
-          });
-          setExternalState({ kind: "launched" });
-          setTimeout(() => setExternalState({ kind: "idle" }), 2000);
-          return;
-        } catch (err) {
-          const msg = String(err);
-          if (msg.includes("UNSUPPORTED_OS")) {
-            // Linux / Windows in Tauri build — fall through to clipboard.
-          } else {
-            setExternalState({ kind: "error", message: msg });
-            setTimeout(() => setExternalState({ kind: "idle" }), 3500);
-            return;
-          }
-        }
-      }
-
-      await copyText(cmd);
-      setExternalState({ kind: "copied" });
-      setTimeout(() => setExternalState({ kind: "idle" }), 1800);
-    } catch (err) {
-      setExternalState({ kind: "error", message: String(err) });
-      setTimeout(() => setExternalState({ kind: "idle" }), 3500);
-    }
-  };
-
-  const agentName = agentDisplayName(agentCommand);
-
-  const externalLabel = (() => {
-    switch (externalState.kind) {
-      case "pending":
-        return "Spouštím…";
-      case "launched":
-        return "Spuštěno v Terminal.app";
-      case "copied":
-        return "Zkopírováno — paste do svého terminálu";
-      case "error":
-        return externalState.message;
-      default:
-        return "Otevřít v externím terminálu";
-    }
-  })();
-
-  const externalIcon = (() => {
-    switch (externalState.kind) {
-      case "pending":
-        return <Loader2 size={12} className="animate-spin" />;
-      case "launched":
-        return <Check size={12} />;
-      case "copied":
-        return <Copy size={12} />;
-      default:
-        return <ExternalLink size={12} />;
-    }
-  })();
-
-  const primaryDisabled = embeddedPending || externalState.kind === "pending";
 
   return (
-    <div ref={containerRef} className="relative">
-      <div className="flex">
-        {/* Primary action: start a runner-managed task (#342) */}
-        <button
-          type="button"
-          onClick={() => setTaskDialogOpen(true)}
-          disabled={primaryDisabled}
-          title="Zadá agentovi úkol, který poběží v Práci jako chat."
-          className="flex flex-1 items-center justify-center gap-2 rounded-l-md border border-r-0 border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)] disabled:cursor-default disabled:opacity-60 disabled:hover:border-[var(--color-accent-dim)] disabled:hover:bg-[var(--color-accent-dim)]/15"
-        >
-          <Plus size={13} />
-          Nový úkol
-        </button>
-        {/* Chevron trigger for the embedded/external terminal dropdown */}
-        <button
-          type="button"
-          onClick={() => setDropdownOpen((v) => !v)}
-          disabled={primaryDisabled}
-          title="Další možnosti spuštění"
-          aria-label="Další možnosti spuštění"
-          className="flex items-center justify-center rounded-r-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-2.5 text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)] disabled:cursor-default disabled:opacity-60"
-        >
-          <ChevronDown size={13} />
-        </button>
-      </div>
-      {/* Dropdown: positioned above the button bar */}
-      {dropdownOpen && (
-        <div className="absolute bottom-full left-0 mb-1 min-w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
-          {profiles.length >= 2 && (
-            <div className="border-b border-[var(--color-border)] px-3 py-2">
-              <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
-                Profil pro spuštění
-              </div>
-              <select
-                value={selectedProfileId ?? ""}
-                onChange={(e) => setSelectedProfileId(e.target.value || null)}
-                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)]"
-              >
-                <option value="">(bez profilu)</option>
-                {profiles.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              setDropdownOpen(false);
-              void onEmbeddedOpen(selectedProfileId);
-            }}
-            disabled={embeddedPending}
-            title={`Otevře terminál v Práci a spustí v něm ${agentName}. Pracovní složka bude vytvořena, pokud ještě neexistuje.${
-              selectedProfileId
-                ? ` Profil: ${profiles.find((p) => p.id === selectedProfileId)?.label ?? selectedProfileId}.`
-                : ""
-            }`}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-[var(--color-text)] hover:bg-[var(--color-surface)] disabled:opacity-60"
-          >
-            <span className="text-[var(--color-text-dim)]">
-              {embeddedPending ? <Loader2 size={12} className="animate-spin" /> : <ChevronRight size={12} />}
-            </span>
-            <span className="truncate">{embeddedPending ? "Spouštím terminál…" : "Otevřít terminál v Portuni"}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleExternalLaunch()}
-            disabled={externalState.kind === "pending"}
-            title={
-              isTauri()
-                ? `Otevře Terminal.app v pracovní složce a spustí ${agentName}.`
-                : `Zkopíruje shell příkaz pro vstup do složky a spuštění ${agentName}.`
-            }
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-[var(--color-text)] hover:bg-[var(--color-surface)] disabled:opacity-60"
-          >
-            <span className="text-[var(--color-text-dim)]">{externalIcon}</span>
-            <span className="truncate">{externalLabel}</span>
-          </button>
-        </div>
-      )}
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setTaskDialogOpen(true)}
+        title="Zadá agentovi úkol, který poběží v Práci jako chat."
+        className="flex w-full items-center justify-center gap-2 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)]"
+      >
+        <Plus size={13} />
+        Nový úkol
+      </button>
       {taskDialogOpen && (
         <NewTaskDialog
           node={node}

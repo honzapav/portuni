@@ -90,7 +90,7 @@ pub(crate) async fn install_update(app: AppHandle) -> Result<(), String> {
 
 /// Restart onto the version installed by `install_update`, through the same
 /// sequential-close quit sequence Cmd+Q uses (#229) -- every window gets its
-/// own dirty-editor/unsynced-files/running-terminals guard chance before
+/// own dirty-editor/unsynced-files guard chance before
 /// anything closes, instead of an unconditional kill_all_sidecars + restart.
 /// `crate::advance_quit`'s Restart branch kills every sidecar (restart
 /// doesn't go through `RunEvent::Exit`, unlike the plain-quit path) and

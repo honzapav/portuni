@@ -1,9 +1,8 @@
 // Live chat view of a runner-batch session (#342, docs/superpowers/specs/
 // 2026-09-12-runner-and-session-design.md "Web: Práce, New task"; rebuilt
 // on AI Elements by #373, docs/superpowers/specs/2026-09-15-task-surface-
-// design.md "The chat is AI Elements"). Replaces the terminal canvas in
-// Práce's center pane when the selected node has an open (running/
-// suspended) persistent session. The whole log comes over the live
+// design.md "The chat is AI Elements"). Fills Práce's center pane when the
+// selected node has an open (running/suspended) persistent session. The whole log comes over the live
 // WebSocket (lib/sessions-client.ts): `subscribe(id, 0)` makes the server
 // replay the persisted events (it subscribes its own runtime listener
 // first and buffers, so nothing published during the replay is lost --
@@ -96,8 +95,8 @@ export default function SessionChat({
   // The composer's draft belongs to the session, not to this component --
   // see lib/session-drafts.ts. Seeded once per mount (the caller keys this
   // component on session.id, so a different session is a different instance)
-  // and written through on every keystroke, so it survives both switching
-  // sessions and the surface being unmounted when a terminal opens.
+  // and written through on every keystroke, so it survives switching
+  // sessions and the surface being unmounted.
   const [composerText, setComposerTextState] = useState(() => sessionDrafts.get(session.id));
   const setComposerText = (text: string) => {
     sessionDrafts.set(session.id, text);

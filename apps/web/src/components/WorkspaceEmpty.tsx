@@ -1,5 +1,5 @@
 // Shown when the workspace has nothing open. A search box over graph.nodes
-// (all types -- terminals are optional now) so the user can type and pick a
+// (all types) so the user can type and pick a
 // node to open. Mirrors the search UX from the sidebar so the muscle memory
 // transfers.
 import { useState } from "react";
@@ -45,8 +45,8 @@ export default function WorkspaceEmpty({ graph, onPick }: Props) {
         Otevři uzel v Práci
       </div>
       <p className="max-w-[420px] text-center text-[13px] text-[var(--color-text-dim)]">
-        Otevři libovolný uzel a pracuj na něm -- terminál je volitelný. Můžeš
-        mít otevřených víc uzlů a přeskakovat mezi nimi.
+        Otevři libovolný uzel a pracuj na něm. Můžeš mít otevřených víc uzlů
+        a přeskakovat mezi nimi.
       </p>
       <div className="relative w-full max-w-[480px]">
         <Search

@@ -1,191 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import {
-  createSession,
-  removeSession,
-  markActivity,
-  isSessionActive,
-  nodeIsActive,
-  countSessionsByNode,
-  isAgentCommand,
-  sessionIsAgentWorking,
-  nodeHasWorkingAgent,
-  renameSession,
-  sessionDisplayName,
-  deriveWorkspaceNodeRows,
-} from "../apps/web/src/lib/sessions.js";
-
-const baseNode = {
-  nodeId: "node_a",
-  nodeName: "Node A",
-  nodeType: "project" as const,
-  cwd: "/tmp/a",
-  command: "claude 'hello'",
-  sandboxProfile: "(version 1)\n(allow default)\n",
-};
-
-describe("sessions helpers", () => {
-  it("createSession assigns id, createdAt, lastOutputAt = createdAt", () => {
-    const now = 1_000_000;
-    const s = createSession(baseNode, now);
-    assert.equal(s.nodeId, "node_a");
-    assert.equal(s.createdAt, now);
-    assert.equal(s.lastOutputAt, now);
-    assert.match(s.id, /^term_node_a_/);
-  });
-
-  it("createSession carries the sandbox profile through to the session", () => {
-    const s = createSession(baseNode, 1);
-    assert.equal(s.sandboxProfile, "(version 1)\n(allow default)\n");
-  });
-
-  it("createSession defaults spawnRequestedAt to the creation time when not given", () => {
-    const s = createSession(baseNode, 1_000_000);
-    assert.equal(s.spawnRequestedAt, 1_000_000);
-  });
-
-  it("createSession keeps an explicit spawnRequestedAt from before mirror/profile setup", () => {
-    const s = createSession({ ...baseNode, spawnRequestedAt: 999_000 }, 1_000_000);
-    assert.equal(s.spawnRequestedAt, 999_000);
-    assert.equal(s.createdAt, 1_000_000);
-  });
-
-  it("removeSession returns a new array without the matching id", () => {
-    const a = createSession(baseNode, 1);
-    const b = createSession(baseNode, 2);
-    const out = removeSession([a, b], a.id);
-    assert.deepEqual(out.map((s) => s.id), [b.id]);
-  });
-
-  it("markActivity updates lastOutputAt only for the target session", () => {
-    const a = createSession(baseNode, 1);
-    const b = createSession(baseNode, 2);
-    const out = markActivity([a, b], a.id, 999);
-    assert.equal(out.find((s) => s.id === a.id)!.lastOutputAt, 999);
-    assert.equal(out.find((s) => s.id === b.id)!.lastOutputAt, 2);
-  });
-
-  it("markActivity returns the same array reference within the throttle window", () => {
-    const a = createSession(baseNode, 1000);
-    const sessions = [a];
-    // Within 250ms of the last recorded output the update is skipped --
-    // pty-data fires per byte chunk and each fresh array re-renders every
-    // consumer of the sessions state.
-    const throttled = markActivity(sessions, a.id, 1100);
-    assert.equal(throttled, sessions, "update within throttle window must be skipped");
-    const after = markActivity(sessions, a.id, 1300);
-    assert.notEqual(after, sessions);
-    assert.equal(after.find((s) => s.id === a.id)!.lastOutputAt, 1300);
-  });
-
-  it("isSessionActive uses 1500ms threshold by default", () => {
-    assert.equal(isSessionActive(2000, 1000), true); // 1000ms ago
-    assert.equal(isSessionActive(2600, 1000), false); // 1600ms ago
-    assert.equal(isSessionActive(2000, 1000, 500), false); // tighter threshold
-  });
-
-  it("nodeIsActive is true if any session for that node is active", () => {
-    const a = { ...createSession(baseNode, 1000), lastOutputAt: 1000 };
-    const b = { ...createSession({ ...baseNode, nodeId: "node_b" }, 100), lastOutputAt: 100 };
-    assert.equal(nodeIsActive([a, b], "node_a", 2000), true);
-    assert.equal(nodeIsActive([a, b], "node_b", 2000), false);
-  });
-
-  it("countSessionsByNode returns a map of nodeId -> count", () => {
-    const a = createSession(baseNode, 1);
-    const b = createSession(baseNode, 2);
-    const c = createSession({ ...baseNode, nodeId: "node_b" }, 3);
-    const counts = countSessionsByNode([a, b, c]);
-    assert.equal(counts.get("node_a"), 2);
-    assert.equal(counts.get("node_b"), 1);
-  });
-
-  it("isSessionActive returns true at the threshold boundary", () => {
-    // Default threshold is 1500ms; exactly 1500ms ago is still active.
-    assert.equal(isSessionActive(2500, 1000), true);
-  });
-
-  it("markActivity is a silent no-op for unknown session ids", () => {
-    // Race-condition contract: a pty-data event can arrive after the
-    // session was removed from state. markActivity must tolerate it
-    // without throwing or corrupting the array.
-    const a = createSession(baseNode, 1);
-    const out = markActivity([a], "term_does_not_exist", 999);
-    assert.equal(out.length, 1);
-    assert.equal(out[0].lastOutputAt, 1);
-  });
-
-  it("removeSession with unknown id returns the full array", () => {
-    const a = createSession(baseNode, 1);
-    const b = createSession(baseNode, 2);
-    const out = removeSession([a, b], "nope");
-    assert.equal(out.length, 2);
-  });
-
-  it("countSessionsByNode([]) returns an empty Map", () => {
-    const counts = countSessionsByNode([]);
-    assert.equal(counts.size, 0);
-  });
-});
-
-describe("agent activity gating", () => {
-  const agent = { ...baseNode, command: "claude 'hello'" };
-  const shell = { ...baseNode, command: "zsh -l" };
-
-  it("isAgentCommand matches agent CLIs, not bare shells", () => {
-    assert.equal(isAgentCommand("claude 'do x'"), true);
-    assert.equal(isAgentCommand("codex"), true);
-    assert.equal(isAgentCommand("vibe --trust 'y'"), true);
-    assert.equal(isAgentCommand("zsh -l"), false);
-    assert.equal(isAgentCommand("ls -la"), false);
-    assert.equal(isAgentCommand(""), false);
-  });
-
-  it("sessionIsAgentWorking requires both an agent command and recent output", () => {
-    const a = { ...createSession(agent, 1000), lastOutputAt: 1000 };
-    const s = { ...createSession(shell, 1000), lastOutputAt: 1000 };
-    assert.equal(sessionIsAgentWorking(a, 2000), true); // agent + fresh output
-    assert.equal(sessionIsAgentWorking(s, 2000), false); // busy shell must NOT light up
-    assert.equal(sessionIsAgentWorking(a, 5000), false); // agent, stale output
-  });
-
-  it("nodeHasWorkingAgent ignores busy shell sessions", () => {
-    const a = { ...createSession({ ...agent, nodeId: "n1" }, 1000), lastOutputAt: 1000 };
-    const s = { ...createSession({ ...shell, nodeId: "n2" }, 1000), lastOutputAt: 1000 };
-    assert.equal(nodeHasWorkingAgent([a, s], "n1", 2000), true);
-    assert.equal(nodeHasWorkingAgent([a, s], "n2", 2000), false);
-  });
-
-});
-
-describe("session tab labels", () => {
-  it("renameSession sets a trimmed label on the target session only", () => {
-    const a = createSession(baseNode, 1);
-    const b = createSession(baseNode, 2);
-    const out = renameSession([a, b], a.id, "  Build  ");
-    assert.equal(out.find((s) => s.id === a.id)!.label, "Build");
-    assert.equal(out.find((s) => s.id === b.id)!.label, undefined);
-  });
-
-  it("renameSession with an empty/whitespace label clears it", () => {
-    const a = { ...createSession(baseNode, 1), label: "Old" };
-    const out = renameSession([a], a.id, "   ");
-    assert.equal(out[0].label, undefined);
-  });
-
-  it("renameSession returns the same array reference when unchanged", () => {
-    const a = { ...createSession(baseNode, 1), label: "Same" };
-    const sessions = [a];
-    assert.equal(renameSession(sessions, a.id, "Same"), sessions);
-    assert.equal(renameSession(sessions, "nope", "x"), sessions);
-  });
-
-  it("sessionDisplayName falls back to #<n> (1-based) and prefers a label", () => {
-    assert.equal(sessionDisplayName({ label: undefined }, 0), "#1");
-    assert.equal(sessionDisplayName({ label: "  " }, 2), "#3");
-    assert.equal(sessionDisplayName({ label: "Deploy" }, 5), "Deploy");
-  });
-});
+import { deriveWorkspaceNodeRows } from "../apps/web/src/lib/sessions.js";
 
 describe("deriveWorkspaceNodeRows", () => {
   const resolve = (id: string) =>
@@ -197,38 +12,22 @@ describe("deriveWorkspaceNodeRows", () => {
       } as Record<string, { name: string; type: string }>
     )[id];
 
-  it("unions open nodes and session nodes, open-first, de-duplicated", () => {
-    const s = createSession(
-      { ...baseNode, nodeId: "n2", nodeName: "Two", nodeType: "area" },
-      1,
-    );
-    const rows = deriveWorkspaceNodeRows(["n1"], [s], resolve);
-    assert.deepEqual(rows.map((r) => r.id), ["n1", "n2"]);
-    assert.deepEqual(rows.map((r) => r.name), ["One", "Two"]);
+  it("resolves open nodes in order, including organizations", () => {
+    const rows = deriveWorkspaceNodeRows(["n2", "org", "n1"], resolve);
+    assert.deepEqual(rows, [
+      { id: "n2", name: "Two", type: "area" },
+      { id: "org", name: "Org", type: "organization" },
+      { id: "n1", name: "One", type: "project" },
+    ]);
   });
 
-  it("prefers session-provided name/type over the resolver", () => {
-    const s = createSession(
-      { ...baseNode, nodeId: "n1", nodeName: "Live", nodeType: "process" },
-      1,
-    );
-    const rows = deriveWorkspaceNodeRows(["n1"], [s], resolve);
-    assert.deepEqual(rows, [{ id: "n1", name: "Live", type: "process" }]);
+  it("drops ids that resolve to nothing", () => {
+    const rows = deriveWorkspaceNodeRows(["ghost", "n1"], resolve);
+    assert.deepEqual(rows, [{ id: "n1", name: "One", type: "project" }]);
   });
 
-  it("opens nodes with no session, including organizations, via the resolver", () => {
-    const rows = deriveWorkspaceNodeRows(["org"], [], resolve);
-    assert.deepEqual(rows, [{ id: "org", name: "Org", type: "organization" }]);
-  });
-
-  it("drops ids that resolve to nothing and have no session", () => {
-    const rows = deriveWorkspaceNodeRows(["ghost"], [], resolve);
-    assert.deepEqual(rows, []);
-  });
-
-  it("does not duplicate a node that is both open and has a session", () => {
-    const s = createSession({ ...baseNode, nodeId: "n1" }, 1);
-    const rows = deriveWorkspaceNodeRows(["n1"], [s], resolve);
+  it("de-duplicates a node listed twice", () => {
+    const rows = deriveWorkspaceNodeRows(["n1", "n1"], resolve);
     assert.equal(rows.length, 1);
   });
 });
