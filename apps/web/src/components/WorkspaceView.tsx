@@ -1,17 +1,23 @@
-// Workspace layout shell. What fills the center depends on the selected node:
+// Workspace layout shell (docs/superpowers/specs/2026-09-15-task-surface-
+// design.md, rule 4: "the node detail is the right aside whenever a thread
+// is open, and takes the centre only when the node has none"):
 //
-//   - selected node has an open session -> SessionChat takes the center
-//   - selected node, no session        -> the node's detail / editor
+//   - selected node has an open session -> SessionChat centre, node detail /
+//                                          editor in the right aside
+//   - selected node, no session        -> the node's detail / editor centre
 //   - nothing selected, something open -> "pick a node" hint
 //   - nothing open at all              -> the search picker (WorkspaceEmpty)
 //
 // The open-node list and its session sub-rows live in the global Sidebar
-// (workspace view); this component owns only the center layout.
+// (workspace view); this component owns the centre + aside layout and the
+// aside's collapse state.
 
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState } from "react";
+import { ChevronLeft } from "lucide-react";
 import type { GraphPayload, GraphNode, NodeDetail, SessionRunRow, SessionSummary } from "../types";
 import type { SessionsClient, SessionStateMessage } from "../lib/sessions-client";
 import type { FileEditor } from "../lib/use-file-editor";
+import { scopedKey } from "../lib/workspace-storage";
 import WorkspaceEmpty from "./WorkspaceEmpty";
 import DetailPane from "./DetailPane";
 import EditorPane, { type EditorMode } from "./EditorPane";
@@ -53,9 +59,10 @@ type Props = {
   onCloseEditor: () => void;
   onExpandEditor: () => void;
   // Runner batch (#342): the selected node's persistent session, when one
-  // is running/waiting/suspended -- SessionChat then takes over the center
-  // instead of DetailPane. Fetched by App.tsx alongside nodeDetail; null
-  // when the node has no live session or nothing is selected.
+  // is running/waiting/suspended -- SessionChat then takes the centre and
+  // the node detail moves to the aside. Fetched by App.tsx alongside
+  // nodeDetail; null when the node has no live session or nothing is
+  // selected.
   openSession: SessionSummary | null;
   sessionsClient: SessionsClient;
   onSessionUpdated: (session: SessionSummary) => void;
@@ -90,6 +97,16 @@ export default function WorkspaceView({
   onOpenChat,
   liveSessionStates,
 }: Props) {
+  const [detailVisible, setDetailVisible] = useState<boolean>(() => {
+    return localStorage.getItem(scopedKey("workspace.detailVisible")) !== "false";
+  });
+  const toggleDetail = () => {
+    setDetailVisible((v) => {
+      localStorage.setItem(scopedKey("workspace.detailVisible"), String(!v));
+      return !v;
+    });
+  };
+
   // The editor occupies the detail surface only when its open file belongs to
   // the currently-selected node AND we're not in fullscreen. When fullscreen,
   // App renders EditorFullscreen instead and the pane must not mount a second
@@ -107,7 +124,10 @@ export default function WorkspaceView({
   const hasOpenSession =
     openSession != null && (openSession.state === "running" || openSession.state === "suspended");
 
-  const surface =
+  // The node surface: EditorPane when a file is open for this node, else
+  // DetailPane. Centre-stage when the node has no thread, the right aside
+  // when it has one (`collapsible` adds the aside's collapse chevron).
+  const nodeSurface = (collapsible: boolean) =>
     showEditor && editorFile ? (
       <EditorPane
         editor={editor}
@@ -117,20 +137,6 @@ export default function WorkspaceView({
         onClose={onCloseEditor}
         onExpand={onExpandEditor}
       />
-    ) : hasOpenSession && openSession ? (
-      <Suspense fallback={null}>
-        <SessionChat
-          // Keyed on the session: without it React reuses one instance across
-          // every task that passes through this slot, so the composer draft
-          // (and everything else the component holds) bleeds from one task
-          // into the next.
-          key={openSession.id}
-          session={openSession}
-          onSessionUpdated={onSessionUpdated}
-          sessionsClient={sessionsClient}
-          onOpenFile={openSession.node_id ? (relPath) => onOpenFile(openSession.node_id!, relPath) : undefined}
-        />
-      </Suspense>
     ) : (
       <DetailPane
         node={nodeDetail}
@@ -145,19 +151,42 @@ export default function WorkspaceView({
         onMutate={onMutate}
         onOpenFile={onOpenFile}
         embedded
+        onCollapse={collapsible ? toggleDetail : undefined}
         onSessionStarted={onSessionStarted}
         onOpenChat={onOpenChat}
         liveSessionStates={liveSessionStates}
       />
     );
 
+  const chat =
+    hasOpenSession && openSession ? (
+      <Suspense fallback={null}>
+        <SessionChat
+          // Keyed on the session: without it React reuses one instance across
+          // every task that passes through this slot, so the composer draft
+          // (and everything else the component holds) bleeds from one task
+          // into the next.
+          key={openSession.id}
+          session={openSession}
+          onSessionUpdated={onSessionUpdated}
+          sessionsClient={sessionsClient}
+          onOpenFile={openSession.node_id ? (relPath) => onOpenFile(openSession.node_id!, relPath) : undefined}
+        />
+      </Suspense>
+    ) : null;
+
   return (
     <div className="flex h-full w-full overflow-hidden bg-[var(--color-bg)]">
       <main className="relative flex min-w-0 flex-1 flex-col">
-        {selectedNodeId && (
+        {/* A thread: the canvas has no chrome, the chat fills the centre. */}
+        {selectedNodeId && chat && <div className="absolute inset-0 flex flex-col">{chat}</div>}
+
+        {/* No thread: the node's detail / editor centre-stage, in a
+            readable column. */}
+        {selectedNodeId && !chat && (
           <div className="absolute inset-0 flex justify-center">
             <div className="flex h-full w-full max-w-[920px] flex-col border-x border-[var(--color-border)]">
-              {surface}
+              {nodeSurface(false)}
             </div>
           </div>
         )}
@@ -173,6 +202,26 @@ export default function WorkspaceView({
             </div>
           ))}
       </main>
+
+      {/* Right aside -- only when a thread occupies the centre. Without one
+          the node surface IS the centre, so there is no aside. */}
+      {selectedNodeId &&
+        chat &&
+        (detailVisible ? (
+          <aside className="flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)]">
+            {nodeSurface(true)}
+          </aside>
+        ) : (
+          <button
+            type="button"
+            onClick={toggleDetail}
+            title="Zobrazit detail uzlu"
+            aria-label="Zobrazit detail uzlu"
+            className="flex h-full w-6 shrink-0 items-center justify-center border-l border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+          >
+            <ChevronLeft size={14} />
+          </button>
+        ))}
     </div>
   );
 }

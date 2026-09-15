@@ -49,6 +49,8 @@ type Props = {
   workspaceSelectedNodeId: string | null;
   onWorkspaceSelectNode: (id: string) => void;
   onWorkspaceCloseNode: (nodeId: string) => void;
+  // "+" on a node row: start a new task on that node.
+  onWorkspaceNewTask: (nodeId: string) => void;
   // #343: each open node's own running/suspended persistent sessions, for
   // WorkspaceNodeList's sub-rows.
   workspaceOpenSessionsByNode: Record<string, SessionSummary[]>;
@@ -119,6 +121,7 @@ function Sidebar({
   workspaceSelectedNodeId,
   onWorkspaceSelectNode,
   onWorkspaceCloseNode,
+  onWorkspaceNewTask,
   onWorkspaceOpenNode,
   onWorkspaceCreateNode,
   workspaceOpenSessionsByNode,
@@ -209,6 +212,7 @@ function Sidebar({
               selectedNodeId={workspaceSelectedNodeId}
               onSelectNode={onWorkspaceSelectNode}
               onCloseNode={onWorkspaceCloseNode}
+              onNewTask={onWorkspaceNewTask}
               openSessionsByNode={workspaceOpenSessionsByNode}
               onOpenSessionChat={onWorkspaceOpenSessionChat}
             />

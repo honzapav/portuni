@@ -2,8 +2,8 @@
 // order (see deriveWorkspaceNodeRows); a node stays until it is explicitly
 // closed. Under each node, its running/suspended sessions (threads) are
 // sub-rows, so any live thread on any node is one click away without first
-// selecting its parent.
-import { X } from "lucide-react";
+// selecting its parent. The row's "+" starts a new task on that node.
+import { Plus, X } from "lucide-react";
 import type { WorkspaceNodeRow } from "../lib/sessions";
 import { sessionRowChip } from "../lib/session-views";
 import type { SessionSummary } from "../types";
@@ -13,6 +13,8 @@ type Props = {
   selectedNodeId: string | null;
   onSelectNode: (id: string) => void;
   onCloseNode: (id: string) => void;
+  // "+" on a node row: start a new task there (opens NewTaskDialog).
+  onNewTask: (id: string) => void;
   // #343: each open node's own running/suspended persistent (runner)
   // sessions, already live-overlaid by the caller (mergeLiveSessionStates).
   // Status comes from state/waiting_since (session_state frames).
@@ -30,6 +32,7 @@ export default function WorkspaceNodeList({
   selectedNodeId,
   onSelectNode,
   onCloseNode,
+  onNewTask,
   openSessionsByNode,
   onOpenSessionChat,
 }: Props) {
@@ -49,8 +52,8 @@ export default function WorkspaceNodeList({
         const selected = r.id === selectedNodeId;
         return (
           <li key={r.id}>
-            {/* Node row. Outer element selects the node; the × control is a
-                role=button span so we don't nest <button> (invalid). */}
+            {/* Node row. Outer element selects the node; the + / × controls
+                are role=button spans so we don't nest <button> (invalid). */}
             {/* biome-ignore lint/a11y/useSemanticElements: nested <button> is invalid HTML; role+tabIndex is the documented workaround */}
             <div
               role="button"
@@ -83,6 +86,31 @@ export default function WorkspaceNodeList({
                   title="Agent pracuje"
                   aria-label="running"
                 />
+              )}
+              {/* No working folder on an organization, so no task either --
+                  same rule as DetailPane's NewTaskButton. */}
+              {r.type !== "organization" && (
+                // biome-ignore lint/a11y/useSemanticElements: see note above
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onNewTask(r.id);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onNewTask(r.id);
+                    }
+                  }}
+                  title="Nový úkol pro tento uzel"
+                  aria-label="Nový úkol"
+                  className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--color-text-dim)] opacity-0 transition-opacity hover:bg-[var(--color-bg)] hover:text-[var(--color-text)] group-hover:opacity-100"
+                >
+                  <Plus size={11} />
+                </span>
               )}
               {/* biome-ignore lint/a11y/useSemanticElements: see note above */}
               <span
