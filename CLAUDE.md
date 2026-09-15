@@ -49,8 +49,21 @@ rebuilds → Keychain grants persist) and verifies the bundle:
 ```bash
 # local reinstall (signed, not notarized — Gatekeeper only checks
 # downloaded apps, so notarization is unnecessary for your own machine)
-APPLE_SIGNING_IDENTITY='Developer ID Application: JAN PÁV (98H25UC996)' \
+#
+# cargo comes from the brew rustup keg, which is NOT linked into
+# /opt/homebrew/bin: without this PATH the script dies on
+# `env: cargo: No such file or directory`, in an interactive shell as
+# well as a spawned one. Node is missing from a spawned shell too (nvm
+# loads from ~/.zshrc) — add ~/.nvm/versions/node/<version>/bin there.
+PATH="/opt/homebrew/opt/rustup/bin:$PATH" \
+  APPLE_SIGNING_IDENTITY='Developer ID Application: JAN PÁV (98H25UC996)' \
   scripts/build-signed.sh --no-notarize
+
+# Quit the app first, and REMOVE the old bundle before copying: `cp -R`
+# over a live bundle merges the two and breaks the code signature
+# ("a sealed resource is missing or invalid"), which costs the whole
+# Keychain trust the signed build exists to keep.
+rm -rf /Applications/Portuni.app
 cp -R apps/desktop/target/release/bundle/macos/Portuni.app /Applications/
 
 # distribution build (adds notarization + staples the DMG) — full run:
@@ -84,7 +97,7 @@ tmux loop for backend iteration.
 | MCP tools, scope, schema, REST | Backend tmux | `npm run build` + tmux restart |
 | React in `apps/web/` | Vite | save -> HMR |
 | `apps/server/desktop.ts`, Rust shell (`apps/desktop`) | Tauri dev | restart `cargo tauri dev` |
-| Ship new `.app` | Signed build | `scripts/build-signed.sh` + cp (never adhoc) |
+| Ship new `.app` | Signed build | `scripts/build-signed.sh` + `rm -rf` + cp (never adhoc) |
 
 ~95% of changes are the first row.
 
