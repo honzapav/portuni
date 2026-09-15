@@ -1908,6 +1908,61 @@ symlink to this file.
   `onWorkspaceOpenSessionChat`, new props alongside the existing PTY
   `workspaceSessions`) -> `WorkspaceNodeList.tsx`.
 
+- **`SessionChat.tsx` is built on AI Elements now, not hand-written bubbles
+  (#373, phase 1 of `docs/superpowers/specs/2026-09-15-task-surface-
+  design.md`).** `apps/web` gained shadcn/ui (`components.json`, style
+  `radix-nova`, `src/lib/utils.ts`'s `cn`) plus the primitives the chosen
+  components declare (`button`, `collapsible`, `command`, `dialog`,
+  `select`, `tooltip`, `badge`, `alert`, `scroll-area`, plus their own
+  registry dependencies -- `input`, `textarea`, `input-group`,
+  `button-group`, `separator`, `spinner`) and the AI Elements components
+  themselves under `src/components/ai-elements/` (`conversation`,
+  `message`, `reasoning`, `tool` + its `code-block` dependency,
+  `confirmation`, `prompt-input`, `shimmer`, `checkpoint`) -- pulled via
+  `npx ai-elements@latest add <name>`, each file keeping an Apache-2.0
+  header recording the upstream component + `ai-elements` version it came
+  from, so a later `add` reads as a diff. **Token bridge, not a restyle**:
+  shadcn's `--background`/`--foreground`/`--muted`/...  are defined in
+  `index.css` INSIDE the existing `:root, html[data-theme="dark"]` /
+  `html[data-theme="light"]` blocks, each one a `var(--color-*)` reference
+  -- Portuni's palette stays the only place a colour is defined; the
+  generated `@theme inline` block only remaps `--color-background` etc.
+  onto those, with the sidebar/chart tokens (unused by any component here)
+  dropped. `@custom-variant dark` targets `[data-theme="dark"]`, not a
+  `.dark` class (this app never adds one), so the copied components'
+  `dark:` variants actually apply. **No `ai` package dependency**: every
+  copied file that only imported it type-only (`UIMessage["role"]`,
+  `ToolUIPart["state"]`, `ChatStatus`, `FileUIPart`) had that import
+  replaced with a narrower local type matching this app's own
+  `CanonicalEvent` shapes (`MessageRole`, `Confirmation`'s own two-state
+  `requested | responded` in place of the SDK's seven-state tool-part
+  machine, `ToolHeader`/`ToolInput`/`ToolOutput` typed against
+  `ToolCallStatus` and plain strings since `ToolCallEvent.payload` is
+  already serialized server-side) -- `prompt-input.tsx` dropped file
+  attachments/screenshot capture/referenced sources/tabs entirely (unused,
+  `ai`-typed, and dead weight) down to the composer shell + `Select`
+  pieces a later model picker needs; `conversation.tsx` dropped
+  `ConversationDownload` (an unused download-as-markdown feature) for the
+  same reason. `collapseToolCalls` (`lib/session-chat.ts`) is unchanged and
+  still runs before rendering; the bubble/tool-row/markdown JSX it used to
+  feed is gone, replaced by `Message`/`Reasoning`/`Tool`/`Confirmation`.
+  **Streamdown's cjk/code/math/mermaid plugins are lazy-loaded**
+  (`lib/streamdown-plugins.ts`'s `useStreamdownPlugins`, a `Promise.all`
+  of four dynamic imports cached module-wide) instead of bundled
+  statically -- Streamdown renders plain markdown fine with `plugins`
+  undefined, so the transcript never blocks on the chunk arriving.
+  **`SessionChat` itself is lazy-loaded** the same way `TerminalTabs.tsx`
+  already lazy-loads `TerminalPane` (`WorkspaceView.tsx`'s
+  `lazy(() => import("./SessionChat"))` + `Suspense`) -- without this the
+  whole kit (radix-ui, shiki, motion, streamdown) would land in every
+  window's startup bundle instead of only downloading when a thread is
+  first opened; confirmed by comparing `npm --prefix apps/web run
+  build`'s main entry chunk before/after (unchanged in size -- the
+  lazy-loaded `SessionChat-*.js` chunk carries the new weight instead).
+  `react-markdown`/`remark-gfm` stay for `MarkdownPreview` (the file
+  preview), untouched by this issue. New pinned-exact deps: `streamdown`,
+  `@streamdown/{cjk,code,math,mermaid}`, `use-stick-to-bottom`, `nanoid`.
+
 ## Security rules (from the auth refactor post-mortem)
 
 1. **No secret in webview JS, ever.** If a JS module needs to know it, it

@@ -10,7 +10,7 @@
 // (workspace view); this component owns only the center + right-detail layout
 // and the detail-collapse state.
 
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { ChevronLeft } from "lucide-react";
 import type { GraphPayload, GraphNode, NodeDetail, SessionRunRow, SessionSummary } from "../types";
 import type { TerminalSession } from "../lib/sessions";
@@ -21,8 +21,14 @@ import { scopedKey } from "../lib/workspace-storage";
 import TerminalTabs from "./TerminalTabs";
 import WorkspaceEmpty from "./WorkspaceEmpty";
 import DetailPane from "./DetailPane";
-import SessionChat from "./SessionChat";
 import EditorPane, { type EditorMode } from "./EditorPane";
+
+// SessionChat pulls in the AI Elements/shadcn/Streamdown stack (radix-ui,
+// shiki, motion, streamdown...), dead weight until a thread is actually
+// open -- lazy-loaded the same way TerminalTabs.tsx lazy-loads xterm's
+// TerminalPane, so it lands in its own chunk instead of every window's
+// startup bundle.
+const SessionChat = lazy(() => import("./SessionChat"));
 
 type Props = {
   graph: GraphPayload | null;
@@ -159,17 +165,19 @@ export default function WorkspaceView({
         onExpand={onExpandEditor}
       />
     ) : hasOpenSession && openSession ? (
-      <SessionChat
-        // Keyed on the session: without it React reuses one instance across
-        // every task that passes through this slot, so the composer draft
-        // (and everything else the component holds) bleeds from one task
-        // into the next.
-        key={openSession.id}
-        session={openSession}
-        onSessionUpdated={onSessionUpdated}
-        sessionsClient={sessionsClient}
-        onOpenFile={openSession.node_id ? (relPath) => onOpenFile(openSession.node_id!, relPath) : undefined}
-      />
+      <Suspense fallback={null}>
+        <SessionChat
+          // Keyed on the session: without it React reuses one instance across
+          // every task that passes through this slot, so the composer draft
+          // (and everything else the component holds) bleeds from one task
+          // into the next.
+          key={openSession.id}
+          session={openSession}
+          onSessionUpdated={onSessionUpdated}
+          sessionsClient={sessionsClient}
+          onOpenFile={openSession.node_id ? (relPath) => onOpenFile(openSession.node_id!, relPath) : undefined}
+        />
+      </Suspense>
     ) : (
       <DetailPane
         node={nodeDetail}

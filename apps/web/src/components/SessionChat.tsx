@@ -1,15 +1,23 @@
 // Live chat view of a runner-batch session (#342, docs/superpowers/specs/
-// 2026-09-12-runner-and-session-design.md "Web: Práce, New task"). Replaces
-// the terminal canvas in Práce's center pane when the selected node has an
-// open (running/suspended) persistent session. The whole log comes over
-// the live WebSocket (lib/sessions-client.ts): `subscribe(id, 0)` makes the
-// server replay the persisted events (it subscribes its own runtime
-// listener first and buffers, so nothing published during the replay is
-// lost -- api/sessions-ws.ts's handleSubscribe) and then stream anything
-// after. Streamed assistant text arrives as `delta` frames (never
-// persisted, buffered here until the matching canonical event lands),
-// everything else as `event` frames already carrying a monotonic `seq`,
-// which is what de-duplicates a replay against a frame that raced it.
+// 2026-09-12-runner-and-session-design.md "Web: Práce, New task"; rebuilt
+// on AI Elements by #373, docs/superpowers/specs/2026-09-15-task-surface-
+// design.md "The chat is AI Elements"). Replaces the terminal canvas in
+// Práce's center pane when the selected node has an open (running/
+// suspended) persistent session. The whole log comes over the live
+// WebSocket (lib/sessions-client.ts): `subscribe(id, 0)` makes the server
+// replay the persisted events (it subscribes its own runtime listener
+// first and buffers, so nothing published during the replay is lost --
+// api/sessions-ws.ts's handleSubscribe) and then stream anything after.
+// Streamed assistant text arrives as `delta` frames (never persisted,
+// buffered here until the matching canonical event lands), everything
+// else as `event` frames already carrying a monotonic `seq`, which is what
+// de-duplicates a replay against a frame that raced it.
+//
+// This file is the CanonicalEvent -> component props adapter the spec
+// calls for: AI Elements supplies the transcript chrome (bubbles,
+// collapsible tool rows, streaming markdown, the "thinking" affordance,
+// stick-to-bottom scrolling); everything about sessions -- subscribe,
+// suspend/resume, handoffs, access control -- stays ours.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionState, SessionSummary } from "../types";
@@ -30,6 +38,35 @@ import {
   type CanonicalEvent,
   type DeltaBuffers,
 } from "../lib/session-chat";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Conversation,
+  ConversationContent,
+  ConversationEmptyState,
+  ConversationScrollButton,
+} from "@/components/ai-elements/conversation";
+import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
+import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
+import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "@/components/ai-elements/tool";
+import {
+  Confirmation,
+  ConfirmationAction,
+  ConfirmationActions,
+  ConfirmationRequest,
+  ConfirmationTitle,
+} from "@/components/ai-elements/confirmation";
+import { Checkpoint, CheckpointIcon } from "@/components/ai-elements/checkpoint";
+import { Shimmer } from "@/components/ai-elements/shimmer";
+import {
+  PromptInput,
+  PromptInputBody,
+  PromptInputFooter,
+  PromptInputSubmit,
+  PromptInputTextarea,
+  PromptInputTools,
+  type PromptInputMessage,
+} from "@/components/ai-elements/prompt-input";
 import { sessionDrafts } from "../lib/session-drafts";
 
 // Floor between two restart-indicator reads (see the signals effect).
@@ -72,8 +109,6 @@ export default function SessionChat({
   const [conversationResumable, setConversationResumable] = useState(false);
   const { meId, canManage } = useMe();
   const access = sessionRowAccess(session.user_id, meId, canManage);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const atBottomRef = useRef(true);
 
   // Backfill + subscribe. Re-runs whenever the selected session itself
   // changes (switching nodes in Práce mounts the same component fresh with
@@ -200,15 +235,6 @@ export default function SessionChat({
   const chip = sessionStatusChip(live.state, live.waiting_since);
   const restartHint = signals ? formatRestartHint(signals) : null;
 
-  const handleScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
-  };
-  useEffect(() => {
-    if (atBottomRef.current) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [displayEvents.length, streamingText]);
-
   const runAction = async (action: "interrupt" | "suspend" | "close") => {
     setActionPending(action);
     setError(null);
@@ -250,8 +276,8 @@ export default function SessionChat({
     }
   };
 
-  const handleSend = async () => {
-    const text = composerText.trim();
+  const handlePromptSubmit = async (message: PromptInputMessage) => {
+    const text = message.text.trim();
     if (!text) return;
     setSending(true);
     setError(null);
@@ -297,30 +323,30 @@ export default function SessionChat({
           </span>
           {live.state === "running" && access.canPauseOrClose && (
             <>
-              <ChatButton disabled={actionPending !== null} onClick={() => void runAction("interrupt")}>
+              <HeaderButton disabled={actionPending !== null} onClick={() => void runAction("interrupt")}>
                 {actionPending === "interrupt" ? "Přerušuji…" : "Přerušit"}
-              </ChatButton>
-              <ChatButton disabled={actionPending !== null} onClick={() => void runAction("suspend")}>
+              </HeaderButton>
+              <HeaderButton disabled={actionPending !== null} onClick={() => void runAction("suspend")}>
                 {actionPending === "suspend" ? "Pozastavuji…" : "Pozastavit"}
-              </ChatButton>
+              </HeaderButton>
             </>
           )}
           {live.state === "suspended" && access.canResume && (
             <>
               {conversationResumable && (
-                <ChatButton disabled={actionPending !== null} onClick={() => void handleResume("conversation")}>
+                <HeaderButton disabled={actionPending !== null} onClick={() => void handleResume("conversation")}>
                   {actionPending === "resume" ? "Nahazuji…" : "Pokračovat"}
-                </ChatButton>
+                </HeaderButton>
               )}
-              <ChatButton disabled={actionPending !== null} onClick={() => void handleResume("handoff")}>
+              <HeaderButton disabled={actionPending !== null} onClick={() => void handleResume("handoff")}>
                 {actionPending === "resume" ? "Nahazuji…" : "Předat a začít znovu"}
-              </ChatButton>
+              </HeaderButton>
             </>
           )}
           {(live.state === "running" || live.state === "suspended") && access.canPauseOrClose && (
-            <ChatButton disabled={actionPending !== null} onClick={() => void runAction("close")}>
+            <HeaderButton disabled={actionPending !== null} onClick={() => void runAction("close")}>
               {actionPending === "close" ? "Zavírám…" : "Uzavřít"}
-            </ChatButton>
+            </HeaderButton>
           )}
         </div>
       </div>
@@ -329,9 +355,9 @@ export default function SessionChat({
         <div className="flex items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-1 text-[11px] text-[var(--color-text-dim)]">
           <span>{restartHint}</span>
           {access.canResume && (
-            <ChatButton disabled={actionPending !== null} onClick={() => void handleRestartFromHandoff()}>
+            <HeaderButton disabled={actionPending !== null} onClick={() => void handleRestartFromHandoff()}>
               {actionPending === "restart" ? "Předávám…" : "Předat a začít znovu"}
-            </ChatButton>
+            </HeaderButton>
           )}
         </div>
       )}
@@ -342,69 +368,68 @@ export default function SessionChat({
         </div>
       )}
 
-      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 py-3">
-        {loading ? (
-          <div className="text-[13px] text-[var(--color-text-dim)]">Načítám konverzaci…</div>
-        ) : displayEvents.length === 0 ? (
-          <div className="text-[13px] text-[var(--color-text-dim)]">Zatím žádné zprávy.</div>
-        ) : (
-          <div className="space-y-2">
-            {displayEvents.map((item) => (
-              <EventRow key={item.seq} item={item} onOpenFile={onOpenFile} />
-            ))}
-            {streamingText && (
-              <ChatBubble align="left" muted>
-                {streamingText}
-              </ChatBubble>
-            )}
-          </div>
-        )}
-      </div>
+      <Conversation>
+        <ConversationContent>
+          {loading ? (
+            <Shimmer duration={1.5}>Načítám konverzaci…</Shimmer>
+          ) : displayEvents.length === 0 ? (
+            <ConversationEmptyState title="Zatím žádné zprávy" description="Napiš první zprávu níže." />
+          ) : (
+            <>
+              {displayEvents.map((item) => (
+                <EventRow key={item.seq} item={item} onOpenFile={onOpenFile} />
+              ))}
+              {streamingText && (
+                <Message from="assistant">
+                  <MessageContent>
+                    <MessageResponse isAnimating>{streamingText}</MessageResponse>
+                  </MessageContent>
+                </Message>
+              )}
+            </>
+          )}
+        </ConversationContent>
+        <ConversationScrollButton />
+      </Conversation>
 
       {openQuestion && isWaiting && access.canResume && (
-        <QuestionPanel question={openQuestion} onAnswer={(v) => void handleAnswer(v)} />
+        <QuestionConfirmation question={openQuestion} onAnswer={(v) => void handleAnswer(v)} />
       )}
 
       <div className="border-t border-[var(--color-border)] p-3">
-        <div className="flex gap-2">
-          <textarea
-            value={composerText}
-            onChange={(e) => setComposerText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void handleSend();
+        <PromptInput onSubmit={(message) => void handlePromptSubmit(message)}>
+          <PromptInputBody>
+            <PromptInputTextarea
+              value={composerText}
+              onChange={(e) => setComposerText(e.target.value)}
+              disabled={composerDisabled || sending}
+              placeholder={
+                !access.canResume
+                  ? "Zprávy může posílat jen vlastník relace."
+                  : isWaiting
+                    ? "Relace čeká na odpověď na otázku výše."
+                    : live.state === "suspended"
+                      ? "Relace je pozastavena — nejdřív ji nahoď."
+                      : live.state === "closed" || live.state === "archived"
+                        ? "Relace je uzavřená."
+                        : "Napiš zprávu…"
               }
-            }}
-            disabled={composerDisabled || sending}
-            placeholder={
-              !access.canResume
-                ? "Zprávy může posílat jen vlastník relace."
-                : isWaiting
-                  ? "Relace čeká na odpověď na otázku výše."
-                  : live.state === "suspended"
-                    ? "Relace je pozastavena — nejdřív ji nahoď."
-                    : live.state === "closed" || live.state === "archived"
-                      ? "Relace je uzavřená."
-                      : "Napiš zprávu…"
-            }
-            rows={2}
-            className="min-w-0 flex-1 resize-none rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-[13px] text-[var(--color-text)] disabled:opacity-50"
-          />
-          <button
-            onClick={() => void handleSend()}
-            disabled={composerDisabled || sending || !composerText.trim()}
-            className="shrink-0 self-end rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[13px] text-[var(--color-text)] hover:border-[var(--color-border-strong)] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {sending ? "Odesílám…" : "Odeslat"}
-          </button>
-        </div>
+            />
+          </PromptInputBody>
+          <PromptInputFooter>
+            <PromptInputTools />
+            <PromptInputSubmit
+              disabled={composerDisabled || sending || !composerText.trim()}
+              status={sending ? "submitted" : undefined}
+            />
+          </PromptInputFooter>
+        </PromptInput>
       </div>
     </div>
   );
 }
 
-function ChatButton({
+function HeaderButton({
   onClick,
   disabled,
   children,
@@ -414,46 +439,14 @@ function ChatButton({
   children: React.ReactNode;
 }) {
   return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[11.5px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
-    >
+    <Button variant="outline" size="sm" className="h-6 px-2 text-[11.5px]" onClick={onClick} disabled={disabled}>
       {children}
-    </button>
-  );
-}
-
-function ChatBubble({
-  align,
-  muted,
-  children,
-}: {
-  align: "left" | "right";
-  muted?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className={`flex ${align === "right" ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`max-w-[85%] whitespace-pre-wrap rounded-md px-3 py-1.5 text-[13px] ${
-          align === "right"
-            ? "bg-[var(--color-accent-dim)]/20 text-[var(--color-text)]"
-            : muted
-              ? "text-[var(--color-text-dim)]"
-              : "bg-[var(--color-surface)] text-[var(--color-text)]"
-        }`}
-      >
-        {children}
-      </div>
-    </div>
+    </Button>
   );
 }
 
 function SystemMarker({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="text-center text-[11px] text-[var(--color-text-dim)]">{children}</div>
-  );
+  return <div className="text-center text-[11px] text-[var(--color-text-dim)]">{children}</div>;
 }
 
 function EventRow({
@@ -466,17 +459,41 @@ function EventRow({
   const event: CanonicalEvent = item.event;
   switch (event.kind) {
     case "user_message":
-      return <ChatBubble align="right">{event.payload.text}</ChatBubble>;
+      return (
+        <Message from="user">
+          <MessageContent>
+            <MessageResponse>{event.payload.text}</MessageResponse>
+          </MessageContent>
+        </Message>
+      );
     case "assistant_message":
-      return <ChatBubble align="left">{event.payload.text}</ChatBubble>;
+      return (
+        <Message from="assistant">
+          <MessageContent>
+            <MessageResponse>{event.payload.text}</MessageResponse>
+          </MessageContent>
+        </Message>
+      );
     case "reasoning":
       return (
-        <ChatBubble align="left" muted>
-          {event.payload.summary}
-        </ChatBubble>
+        <Reasoning isStreaming={false} defaultOpen={false}>
+          <ReasoningTrigger />
+          <ReasoningContent>{event.payload.summary}</ReasoningContent>
+        </Reasoning>
       );
-    case "tool_call":
-      return <ToolCallRow payload={event.payload} />;
+    case "tool_call": {
+      const p = event.payload;
+      const failed = p.status === "failed";
+      return (
+        <Tool defaultOpen={false}>
+          <ToolHeader title={p.title || undefined} tool={p.tool} state={p.status} />
+          <ToolContent>
+            {p.input_summary && <ToolInput input={p.input_summary} />}
+            <ToolOutput output={failed ? null : p.output_excerpt} errorText={failed ? p.output_excerpt : null} />
+          </ToolContent>
+        </Tool>
+      );
+    }
     case "file_change":
       return (
         <SystemMarker>
@@ -493,7 +510,12 @@ function EventRow({
     case "question":
       return <SystemMarker>Otázka: {event.payload.title}</SystemMarker>;
     case "compaction":
-      return <SystemMarker>Komprese kontextu</SystemMarker>;
+      return (
+        <Checkpoint className="justify-center text-[11px]">
+          <CheckpointIcon className="size-3.5" />
+          Komprese kontextu
+        </Checkpoint>
+      );
     case "handoff":
       return <SystemMarker>Handoff uložen{event.payload.generated_by === "server" ? " (serverem)" : ""}</SystemMarker>;
     case "state_changed":
@@ -518,38 +540,13 @@ function EventRow({
   }
 }
 
-// Collapsed to its title (spec: "tool calls collapsed to `title` with
-// expand"); the input summary and output excerpt open on click.
-function ToolCallRow({ payload: p }: { payload: Extract<CanonicalEvent, { kind: "tool_call" }>["payload"] }) {
-  const [open, setOpen] = useState(false);
-  const statusLabel = p.status === "started" ? "běží" : p.status === "completed" ? "hotovo" : "selhalo";
-  const hasDetail = Boolean(p.input_summary || p.output_excerpt);
-  return (
-    <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[12.5px]">
-      <button
-        type="button"
-        onClick={() => hasDetail && setOpen((v) => !v)}
-        className={`flex w-full items-center gap-2 text-left ${hasDetail ? "cursor-pointer" : "cursor-default"}`}
-        aria-expanded={open}
-      >
-        {hasDetail && <span className="text-[var(--color-text-dim)]">{open ? "▾" : "▸"}</span>}
-        <span className="font-medium text-[var(--color-text)]">{p.title || p.tool}</span>
-        <span className="text-[var(--color-text-dim)]">({statusLabel})</span>
-      </button>
-      {open && p.input_summary && (
-        <div className="mt-1 whitespace-pre-wrap text-[11px] text-[var(--color-text-dim)]">{p.input_summary}</div>
-      )}
-      {open && p.output_excerpt && (
-        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap text-[11px] text-[var(--color-text-dim)]">
-          {p.output_excerpt}
-          {p.truncated ? "\n…" : ""}
-        </pre>
-      )}
-    </div>
-  );
-}
-
-function QuestionPanel({
+// The open-question interactive panel (spec: "the question panel becomes
+// Confirmation"). Only ever rendered for the current open question, while
+// the session is actually waiting on it -- a `question` event's own
+// history entry (EventRow above) stays a plain marker, since a persisted
+// event's `decision` never mutates in place (rule: "the canonical log is
+// append-only").
+function QuestionConfirmation({
   question,
   onAnswer,
 }: {
@@ -558,33 +555,39 @@ function QuestionPanel({
 }) {
   const [text, setText] = useState("");
   return (
-    <div className="border-t border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2.5">
-      <div className="text-[13px] font-medium text-[var(--color-text)]">{question.payload.title}</div>
-      {question.payload.detail && (
-        <div className="mt-0.5 whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]">{question.payload.detail}</div>
-      )}
-      {question.payload.type === "approval" ? (
-        <div className="mt-2 flex gap-2">
-          {(question.payload.options ?? ["Ano", "Ne"]).map((opt) => (
-            <ChatButton key={opt} onClick={() => onAnswer(opt)}>
-              {opt}
-            </ChatButton>
-          ))}
-        </div>
-      ) : (
-        <div className="mt-2 flex gap-2">
-          <input
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") onAnswer(text);
-            }}
-            className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[12.5px] text-[var(--color-text)]"
-            placeholder="Odpověď…"
-          />
-          <ChatButton onClick={() => onAnswer(text)}>Odeslat</ChatButton>
-        </div>
-      )}
+    <div className="border-t border-[var(--color-border)] px-4 py-2.5">
+      <Confirmation state="requested" className="border-none bg-[var(--color-surface)] p-0">
+        <ConfirmationTitle className="text-[13px] font-medium text-[var(--color-text)]">
+          {question.payload.title}
+        </ConfirmationTitle>
+        {question.payload.detail && (
+          <p className="whitespace-pre-wrap text-[12px] text-[var(--color-text-dim)]">{question.payload.detail}</p>
+        )}
+        <ConfirmationRequest>
+          {question.payload.type === "approval" ? (
+            <ConfirmationActions>
+              {(question.payload.options ?? ["Ano", "Ne"]).map((opt) => (
+                <ConfirmationAction key={opt} onClick={() => onAnswer(opt)}>
+                  {opt}
+                </ConfirmationAction>
+              ))}
+            </ConfirmationActions>
+          ) : (
+            <ConfirmationActions className="w-full">
+              <Input
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") onAnswer(text);
+                }}
+                placeholder="Odpověď…"
+                className="min-w-0 flex-1"
+              />
+              <ConfirmationAction onClick={() => onAnswer(text)}>Odeslat</ConfirmationAction>
+            </ConfirmationActions>
+          )}
+        </ConfirmationRequest>
+      </Confirmation>
     </div>
   );
 }
