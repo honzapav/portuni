@@ -178,6 +178,33 @@ describe("Claude adapter: message translation", () => {
     assert.equal(ended.payload.reason, "completed");
   });
 
+  it("translates a thinking block into one reasoning event, batched not per-delta", async () => {
+    const script: SDKMessage[] = [
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "thinking", thinking: "Let me consider the options.", signature: "sig1" },
+            { type: "text", text: "Here's my answer" },
+          ],
+        },
+        parent_tool_use_id: null,
+        uuid: "u1",
+        session_id: "s1",
+      } as unknown as SDKMessage,
+    ];
+    const { query } = makeFakeQuery(script);
+    const events: (CanonicalEvent | DeltaFrame)[] = [];
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), (e) => events.push(e));
+    await handle.close();
+
+    const kinds = events.map((e) => ("kind" in e ? e.kind : e.type));
+    assert.deepEqual(kinds, ["reasoning", "assistant_message", "run_ended"]);
+    const reasoning = events[0] as Extract<CanonicalEvent, { kind: "reasoning" }>;
+    assert.equal(reasoning.payload.summary, "Let me consider the options.");
+  });
+
   it("a failed tool_result translates to a failed tool_call and no file_change", async () => {
     const script: SDKMessage[] = [
       {

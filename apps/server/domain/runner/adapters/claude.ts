@@ -346,6 +346,8 @@ async function translateAssistantMessage(
   for (const block of blocks) {
     if (block.type === "text" && typeof block.text === "string") {
       sink({ kind: "assistant_message", payload: { text: block.text } });
+    } else if (block.type === "thinking" && typeof block.thinking === "string") {
+      sink({ kind: "reasoning", payload: { summary: block.thinking } });
     } else if (block.type === "tool_use") {
       const input = (block.input ?? {}) as Record<string, unknown>;
       const category = categorizeTool(block.name);
