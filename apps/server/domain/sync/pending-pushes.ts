@@ -25,3 +25,13 @@ export async function awaitPendingPush(localPath: string): Promise<void> {
   const p = pendingPushes.get(localPath);
   if (p) await p;
 }
+
+// Every push currently in flight, for a caller that has no single path to
+// wait on -- test teardown, which tears down the workspace root (and the
+// temp directory under it) the moment its test ends: a push still running
+// then fails on a root that no longer exists, and its baseline write never
+// lands. Tracked promises never reject (each dispatcher catches its own),
+// so this cannot throw.
+export async function awaitAllPendingPushes(): Promise<void> {
+  await Promise.all([...pendingPushes.values()]);
+}
