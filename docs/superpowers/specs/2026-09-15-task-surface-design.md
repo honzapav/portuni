@@ -247,7 +247,10 @@ must never share one map (the #343 hazard).
 **Starting a task.** Unchanged in placement: the button that opened a
 terminal (`NewTaskButton`, `DetailPane.files.tsx`) opens a thread, and
 opening it is the whole interaction — one click, the thread is there,
-the composer has focus. `NewTaskDialog` is removed.
+the composer has focus. `NewTaskDialog` is removed. The same button in
+the Graf tab's detail pane switches to Práce, opens the node and focuses
+the new thread — Graf has no canvas of its own, so a thread started
+there must land where it is visible.
 
 **Naming.** `name` comes from the first message: first line, trimmed,
 whitespace collapsed, cut at ~60 characters on a word boundary with an
