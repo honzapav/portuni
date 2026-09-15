@@ -119,9 +119,11 @@ preview), which is not chat and is not being touched.
    takes the centre only when the node has none.
 5. **A thread opens empty**: no modal, no required field, composer
    focused, transcript empty.
-6. **Closing a thread suspends its session.** A handoff is written and
-   the row goes to `suspended`, resumable with Nahodit. Ending a session
-   for good stays an explicit Uzavřít in the thread header.
+6. **A thread is open or closed, nothing in between.** Closing it is
+   Uzavřít — the one irreversible action and so the one that asks
+   first; the × on its row in the left column is that same action.
+   Whether the runner's process is currently alive is the server's
+   business, never a button.
 7. **A thread names itself from its first message**; only a manual
    rename ever replaces that name.
 8. **Model and reasoning effort are the thread's**, defaulted from the
@@ -148,6 +150,64 @@ cannot see.
   the same sweep that already resolves rows left `running` by a dead
   process. A draft has no runs, no events and no handoff, so deletion is
   a single `DELETE`, not an archive.
+
+## Thread lifecycle
+
+Every action here is deterministic: the server decides and acts, and
+none of it waits on the agent choosing to cooperate. Drawn in
+`docs/superpowers/mockups/2026-09-15-task-chat.html`.
+
+**Stop** is the composer's own submit button, flipped to a stop square
+by `Prompt Input`'s `status`, plus the Esc key. It cancels the current
+turn (`Query.interrupt()`) and nothing more: process, prompt queue and
+run stay alive, and the next message is an ordinary message.
+`adapters/claude.ts` stops ending the prompt queue inside `interrupt()`
+— that is what collapses it into "kill the run" today and leaves a
+session `running` with no live run for `sendMessage` to refuse. Ending
+the queue belongs to `close()` alone.
+
+**Idle.** The server ends a run with no activity for
+`PORTUNI_RUN_IDLE_MS` (default 30 min), writes the summary and moves
+the session to `suspended`, labelled **Nečinné**. No user action
+produces that state and none is offered for it.
+
+**The summary is the server's, written from `session_events`** — the
+last messages, the files changed, any open question, the write set —
+whenever a run ends other than by Uzavřít. Mechanical, instant, always
+available. `SUSPEND_INSTRUCTION`, the 30 s `pollUntilSuspended`, the
+`suspend_timeout` fallback, the `generated_by: agent | server` split
+and `POST /sessions/:id/suspend` all go. `portuni_session_suspend`
+stays for hand-opened CLIs, the only channel those have; a handoff a
+thread happens to have is appended to the summary, never waited for.
+
+**Resume is writing.** Sending into a thread whose run has ended starts
+a new one: `--resume` on the last run's `agent_session_id` while that is
+still valid, from the summary when it is not. The server picks — no
+mode picker, no Nahodit. `POST /sessions/:id/resume` becomes internal
+to `POST /sessions/:id/messages`.
+
+**The notice.** An open thread with no live run shows a bar above the
+composer: the process was ended, and the next message replays the whole
+conversation into the model. It informs, it does not block — the
+composer works with the bar still up. Dismissing hides that one bar;
+the next thread woken this way shows a new one.
+
+**Pokračovat v nové session** carries the work into a fresh context.
+`POST /sessions/:id/continue` closes this session and creates a new one
+on the same node seeded with its summary, and that new row becomes the
+active thread. **A new row is the point**: the context boundary is
+where the user later looks for "where did this go wrong", so it belongs
+in the list, not buried as another run under one thread. Offered beside
+the context ring at any time, emphasised once the ring passes 80 %.
+
+**Navázat** is the same endpoint on a closed thread, without the
+closing step. A closed thread shows its transcript, no composer, and
+this one button.
+
+**Uzavřít** writes the summary, then `closed`, after a confirmation.
+
+No storage change: `suspended` keeps its name in the database and is
+only ever reached by the server.
 
 ## Model and reasoning effort
 
@@ -207,6 +267,14 @@ starting a task. No throwaway process is started just to build a picker.
   starts the first run.
 - `DELETE /sessions/:id` removes a `draft` (and only a draft).
 - `GET /runners/:runner/models` → `{ models: RunnerModel[] }`.
+- `POST /sessions/:id/continue` → `{ session, run }`: closes this
+  session and starts a new one on the same node from its summary.
+  Serves both Pokračovat v nové session and Navázat.
+- `POST /sessions/:id/interrupt` keeps its route and cancels the
+  current turn only.
+- `POST /sessions/:id/suspend` and `POST /sessions/:id/resume` leave
+  the client surface entirely: idling is the server's, resuming is
+  `messages`.
 - `SessionSummary` carries `model` and `effort` so the header renders
   the current choice without a second fetch.
 - `RunStart` carries them resolved (thread → instance → unset), so the
@@ -226,9 +294,13 @@ collapsible as today; a node with no thread keeps today's centred
 detail. `detailSurface()` loses its `SessionChat` branch.
 
 **Inside the thread**: `Conversation` wrapping the mapped event list,
-`Prompt Input` as the composer, and a thin header of our own — name,
-status chip, and the actions the kit has no opinion about (Přerušit,
-Pozastavit, Uzavřít, Nahodit).
+`Prompt Input` as the composer — whose submit button is also the stop
+button, driven by `status` — and a thin header of our own: name, status
+chip, runner · instance, the kit's `Context` ring, and two actions,
+Pokračovat v nové session and Uzavřít. A question renders as
+`Confirmation` above the composer, never as a modal — Povolit, Odmítnout,
+and a Povolit vše v tomto vlákně that switches the session's policy to
+`auto`.
 
 **The adapter** (`lib/session-chat.ts`, which keeps its pure-helper
 role): `CanonicalEvent` → component props, one mapping per kind, plus
@@ -239,7 +311,7 @@ markdown rendering it fed do not.
 **Left column** (`WorkspaceNodeList.tsx`). Thread sub-rows replace
 terminal sub-rows one-for-one: status chip from `session_state`, the
 session name as the label, inline rename (`PATCH /sessions/:id`), and a
-close affordance that suspends. `App.tsx`'s single
+close affordance that is Uzavřít, confirmation included. `App.tsx`'s single
 `workspaceOpenSession` becomes the open-thread set per node plus an
 active-thread pointer; a persistent session id and a PTY terminal id
 must never share one map (the #343 hazard).
@@ -247,7 +319,10 @@ must never share one map (the #343 hazard).
 **Starting a task.** Unchanged in placement: the button that opened a
 terminal (`NewTaskButton`, `DetailPane.files.tsx`) opens a thread, and
 opening it is the whole interaction — one click, the thread is there,
-the composer has focus. `NewTaskDialog` is removed.
+the composer has focus. `NewTaskDialog` is removed. The same button in
+the Graf tab's detail pane switches to Práce, opens the node and focuses
+the new thread — Graf has no canvas of its own, so a thread started
+there must land where it is visible.
 
 **Naming.** `name` comes from the first message: first line, trimmed,
 whitespace collapsed, cut at ~60 characters on a word boundary with an
@@ -272,11 +347,16 @@ node detail.
 2. **Canvas and threads**: layout, thread sub-rows in the left column,
    per-node thread set, the `draft` state and its prune, first message
    starts the run, naming, `NewTaskDialog` removed.
-3. **Model and effort plumbing**: migration 036, `runners.json`
+3. **Lifecycle**: `interrupt()` back to cancelling a turn, the
+   server-written summary replacing the suspend handshake, the idle
+   sweep, resume-by-writing and its notice, `POST
+   /sessions/:id/continue`, Uzavřít's confirmation and Navázat.
+4. **Model and effort plumbing**: migration 036, `runners.json`
    defaults, the REST fields, `RunStart`, the adapter's `Options`,
    `RunHandle.setModel`.
-4. **Enumeration and the picker**: `RunnerAdapter.models()` with the
-   live-run cache, the REST route, `Model Selector` wired to it.
+5. **Enumeration and the picker**: `RunnerAdapter.models()` with the
+   live-run cache, the REST route, `Model Selector` wired to it, and
+   the window size the `Context` ring needs.
 
 ## Testing
 
@@ -291,6 +371,10 @@ node detail.
   `supportedModels`.
 - Storage: the `draft` transitions, the prune sweep, and that every list
   endpoint excludes drafts.
+- Lifecycle: that `interrupt()` leaves the run live and a message after
+  it is accepted; the summary builder against a fixture event list; the
+  idle sweep's cutoff; that `continue` closes one session and seeds the
+  next; that the summary exists after every non-Uzavřít run end.
 - Layout and pickers are macOS/visual verification, not the gate.
 
 ## Known gaps, accepted
@@ -299,6 +383,13 @@ node detail.
   control states that it applies from the next run.
 - The model list is empty until this process has run one task, and falls
   back to aliases plus free text.
+- The `Context` ring needs both halves: spent tokens (`session_runs
+  .usage`, already recorded) and the model's window size, which only
+  the model list carries. Until phase 5 lands there is no ring.
+- A server-written summary is a mechanical digest, not the agent's own
+  account of where it got to. That is the price of not waiting on the
+  agent, and it is the right trade: a summary that always exists beats
+  a better one that sometimes does not.
 - Copied source means upstream fixes arrive only when we re-run the CLI
   and read the diff. That is the shadcn bargain and it is the reason the
   components can be bent to our events at all.

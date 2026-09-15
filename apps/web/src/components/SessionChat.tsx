@@ -67,6 +67,7 @@ import {
   PromptInputTools,
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
+import { sessionDrafts } from "../lib/session-drafts";
 
 // Floor between two restart-indicator reads (see the signals effect).
 const SIGNALS_MIN_INTERVAL_MS = 10_000;
@@ -91,7 +92,16 @@ export default function SessionChat({
     waiting_since: session.waiting_since,
   });
   const [signals, setSignals] = useState<SessionSignals | null>(null);
-  const [composerText, setComposerText] = useState("");
+  // The composer's draft belongs to the session, not to this component --
+  // see lib/session-drafts.ts. Seeded once per mount (the caller keys this
+  // component on session.id, so a different session is a different instance)
+  // and written through on every keystroke, so it survives both switching
+  // sessions and the surface being unmounted when a terminal opens.
+  const [composerText, setComposerTextState] = useState(() => sessionDrafts.get(session.id));
+  const setComposerText = (text: string) => {
+    sessionDrafts.set(session.id, text);
+    setComposerTextState(text);
+  };
   const [sending, setSending] = useState(false);
   const [actionPending, setActionPending] = useState<"interrupt" | "suspend" | "close" | "resume" | "restart" | null>(null);
   // Whether the CLI conversation can still be picked up (GET

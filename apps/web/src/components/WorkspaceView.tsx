@@ -167,6 +167,11 @@ export default function WorkspaceView({
     ) : hasOpenSession && openSession ? (
       <Suspense fallback={null}>
         <SessionChat
+          // Keyed on the session: without it React reuses one instance across
+          // every task that passes through this slot, so the composer draft
+          // (and everything else the component holds) bleeds from one task
+          // into the next.
+          key={openSession.id}
           session={openSession}
           onSessionUpdated={onSessionUpdated}
           sessionsClient={sessionsClient}

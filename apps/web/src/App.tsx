@@ -1344,6 +1344,13 @@ export default function App() {
             onOpenFile={openFileInEditor}
             terminalSessions={sessions}
             onOpenChat={openSessionChat}
+            onSessionStarted={({ session }) => {
+              // Graf has no chat surface of its own, so a task started here
+              // lands in Práce: the node opens and the fresh session is the
+              // thread it shows. Without this the run is live with nowhere
+              // in the UI showing it.
+              if (session.node_id) openSessionChat(session.node_id, session.id);
+            }}
             liveSessionStates={sessionStates}
           />
         ))}

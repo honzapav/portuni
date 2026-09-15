@@ -1810,11 +1810,13 @@ symlink to this file.
   the old button during this phase so both can be compared on a real
   node"; removal is phase 4). `onSessionStarted` threads from there up
   through `DetailPane`'s two-layer prop passthrough (`DetailPane` ->
-  `DetailPaneBody`) as an optional callback — present when `DetailPane` is
-  rendered inside `WorkspaceView` (which needs to know), absent for the
-  graph view's own `DetailPane` (which has no chat surface to hand the new
-  session to; starting a task there still works, its session just is not
-  visible until the node is later selected in Práce).
+  `DetailPaneBody`) as an optional callback — inside `WorkspaceView` it
+  sets the shown thread; **the graph view's own `DetailPane` passes one
+  too, routing through `openSessionChat`** (switch to Práce, open the
+  node, focus that session). It has no chat surface of its own, and
+  leaving the callback off — the original #342 cut — meant a task started
+  from Graf ran with nothing in the UI showing it until the user happened
+  to open the same node in Práce.
   **`WorkspaceView`'s detail surface gained a third branch, alongside
   DetailPane/EditorPane**: `SessionChat` renders whenever the selected
   node's `openSession` is `running` or `suspended` (closed/archived fall
