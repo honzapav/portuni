@@ -8,6 +8,7 @@ import EditorFullscreen from "./components/EditorFullscreen";
 import EditorPane from "./components/EditorPane";
 import StatusFooter from "./components/StatusFooter";
 import CreateNodeModal from "./components/CreateNodeModal";
+import NewTaskDialog from "./components/NewTaskDialog";
 import { fetchGraph, fetchNode, fetchMe, fetchNodePersistentSessions } from "./api";
 import type { SessionSummary } from "./types";
 import { createSessionsClient, type SessionStateMessage } from "./lib/sessions-client";
@@ -778,6 +779,21 @@ export default function App() {
     return () => clearInterval(id);
   }, [view, selectedWorkspaceNodeId, selectedId, refetchWorkspaceDetail]);
 
+  // "+" on a Práce node row: start a task there. NewTaskDialog needs the
+  // node's detail (name, organization edge for the instance default), so
+  // fetch it first; the node is opened/selected at the same time so the
+  // fresh thread lands where it is visible.
+  const [newTaskNode, setNewTaskNode] = useState<NodeDetail | null>(null);
+  const workspaceNewTask = useCallback(
+    (nodeId: string) => {
+      openNode(nodeId);
+      void fetchNode(nodeId)
+        .then((detail) => setNewTaskNode(detail))
+        .catch(() => setNewTaskNode(null));
+    },
+    [openNode],
+  );
+
   const workspaceCreateNode = useCallback(() => {
     createFromWorkspaceRef.current = true;
     openCreateModal();
@@ -828,6 +844,7 @@ export default function App() {
           workspaceSelectedNodeId={selectedWorkspaceNodeId}
           onWorkspaceSelectNode={workspaceSelectNode}
           onWorkspaceCloseNode={closeNode}
+          onWorkspaceNewTask={workspaceNewTask}
           workspaceOpenSessionsByNode={liveOpenSessionsByNode}
           onWorkspaceOpenSessionChat={openSessionChat}
           onWorkspaceOpenNode={openNode}
@@ -1005,6 +1022,17 @@ export default function App() {
               createFromWorkspaceRef.current = false;
               openNode(node.id);
             }
+          }}
+        />
+      )}
+      {newTaskNode && (
+        <NewTaskDialog
+          node={newTaskNode}
+          onClose={() => setNewTaskNode(null)}
+          onStarted={({ session }) => {
+            setNewTaskNode(null);
+            setWorkspaceOpenSession(session);
+            if (session.node_id) openSessionChat(session.node_id, session.id);
           }}
         />
       )}

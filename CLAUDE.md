@@ -1790,11 +1790,19 @@ symlink to this file.
   leaving the callback off — the original #342 cut — meant a task started
   from Graf ran with nothing in the UI showing it until the user happened
   to open the same node in Práce.
-  **`WorkspaceView`'s centre surface has three branches, EditorPane /
-  SessionChat / DetailPane**: `SessionChat` renders whenever the selected
-  node's `openSession` is `running` or `suspended` (closed/archived fall
-  through to the plain node detail — those are history, not something to
-  keep steering). `App.tsx` owns the state this depends on:
+  **`WorkspaceView`'s layout follows the task-surface spec's rule 4
+  (`docs/superpowers/specs/2026-09-15-task-surface-design.md`)**:
+  `SessionChat` takes the centre whenever the selected node's
+  `openSession` is `running` or `suspended` (closed/archived fall through
+  to the plain node detail — those are history, not something to keep
+  steering) and the node surface (`DetailPane`, or `EditorPane` when a
+  file is open for that node) moves to a collapsible right aside
+  (`workspace.detailVisible`, workspace-scoped localStorage); a node with
+  no thread keeps the node surface centre-stage and has no aside. The
+  Práce sidebar's `+` on a node row (`WorkspaceNodeList`'s `onNewTask` →
+  `App.tsx`'s `workspaceNewTask`) opens the same `NewTaskDialog` as the
+  detail pane's action bar, after fetching the node's detail, and focuses
+  the fresh thread through `openSessionChat`. `App.tsx` owns the state this depends on:
   ONE `SessionsClient` for the app's lifetime (`useState(() =>
   createSessionsClient())`, since the client opens its transport
   immediately — creating it lazily on first render, never per-render, is
