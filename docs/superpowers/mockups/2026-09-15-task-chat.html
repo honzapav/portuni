@@ -1,0 +1,612 @@
+<!doctype html>
+<html lang="cs" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Portuni — chat úkolu (AI Elements)</title>
+<style>
+:root, html[data-theme="dark"] {
+  --color-bg: #0a0b0d;
+  --color-surface: #141518;
+  --color-surface-2: #1c1d21;
+  --color-border: #27282c;
+  --color-border-strong: #35363b;
+  --color-text: #f1f2f5;
+  --color-text-muted: #c2c6cf;
+  --color-text-dim: #9298a2;
+  --color-accent: #76d9ff;
+  --color-accent-soft: rgba(118, 217, 255, 0.14);
+  --color-accent-dim: #3d8fb3;
+  --color-node-project: #a78bfa;
+  --color-node-process: #fbbf24;
+  --color-status-active: #34d399;
+  --color-status-completed: #60a5fa;
+  --color-status-archived: #6b6f77;
+  --color-warn: #fbbf24;
+  --color-danger: #fca5a5;
+  --color-danger-strong: #f87171;
+  --color-danger-bg: rgba(127, 29, 29, 0.18);
+  --color-danger-border: rgba(185, 28, 28, 0.4);
+}
+html[data-theme="light"] {
+  --color-bg: #f8fafc;
+  --color-surface: #ffffff;
+  --color-surface-2: #f1f5f9;
+  --color-border: #e2e8f0;
+  --color-border-strong: #cbd5e1;
+  --color-text: #0f172a;
+  --color-text-muted: #334155;
+  --color-text-dim: #64748b;
+  --color-accent: #0284c7;
+  --color-accent-soft: rgba(2, 132, 199, 0.12);
+  --color-accent-dim: #7dd3fc;
+  --color-node-project: #7c3aed;
+  --color-node-process: #d97706;
+  --color-status-active: #059669;
+  --color-status-completed: #2563eb;
+  --color-status-archived: #94a3b8;
+  --color-warn: #b45309;
+  --color-danger: #b91c1c;
+  --color-danger-strong: #991b1b;
+  --color-danger-bg: #fef2f2;
+  --color-danger-border: #fecaca;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+.mono { font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace; }
+
+.page { max-width: 1480px; margin: 0 auto; padding: 28px 24px 80px; }
+.topbar { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 4px; }
+h1 { font-size: 19px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.sub { color: var(--color-text-dim); font-size: 12.5px; margin: 6px 0 26px; max-width: 78ch; line-height: 1.55; }
+.themetoggle {
+  border: 1px solid var(--color-border); background: var(--color-surface);
+  color: var(--color-text-muted); border-radius: 7px; padding: 5px 10px;
+  font: inherit; font-size: 11.5px; cursor: pointer;
+}
+.themetoggle:hover { border-color: var(--color-border-strong); color: var(--color-text); }
+
+h2 {
+  font-size: 12px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--color-text-dim); margin: 40px 0 4px;
+}
+.note { color: var(--color-text-dim); font-size: 12.5px; margin: 0 0 14px; line-height: 1.55; max-width: 84ch; }
+.note b { color: var(--color-text-muted); font-weight: 500; }
+
+.frame { border: 1px solid var(--color-border); border-radius: 10px; overflow: hidden; background: var(--color-bg); }
+
+/* ---------- full layout ---------- */
+.app { display: flex; height: 560px; }
+.sidebar { width: 300px; flex: none; border-right: 1px solid var(--color-border); background: var(--color-surface); display: flex; flex-direction: column; }
+.side-h { padding: 10px 12px; border-bottom: 1px solid var(--color-border); display: flex; align-items: center; justify-content: space-between; }
+.side-title { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-text-dim); }
+.noderow { display: flex; align-items: center; gap: 8px; padding: 7px 12px; }
+.noderow.sel { background: var(--color-surface-2); }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.nodename { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.threads { list-style: none; margin: 0; padding: 0 0 6px; }
+.thread {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 12px 5px 30px; color: var(--color-text-muted); font-size: 12.5px;
+  border-left: 2px solid transparent;
+}
+.thread .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.thread.active { background: var(--color-accent-soft); border-left-color: var(--color-accent); color: var(--color-text); }
+.thread .x { color: var(--color-text-dim); opacity: 0.6; flex: none; }
+.newthread { margin: 2px 12px 8px 30px; font-size: 12px; color: var(--color-accent); cursor: pointer; }
+
+.center { flex: 1; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--color-border); }
+.aside { width: 440px; flex: none; background: var(--color-bg); display: flex; flex-direction: column; }
+.aside-h { padding: 10px 14px; border-bottom: 1px solid var(--color-border); display: flex; align-items: center; gap: 8px; }
+.tabs { display: flex; gap: 14px; padding: 0 14px; border-bottom: 1px solid var(--color-border); }
+.tab { padding: 8px 0; font-size: 12.5px; color: var(--color-text-dim); border-bottom: 2px solid transparent; }
+.tab.on { color: var(--color-text); border-bottom-color: var(--color-accent); }
+.aside-body { padding: 14px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+.field-l { font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--color-text-dim); margin-bottom: 4px; }
+.field-v { font-size: 12.5px; color: var(--color-text-muted); line-height: 1.5; }
+.chiprow { display: flex; flex-wrap: wrap; gap: 6px; }
+.minichip { border: 1px solid var(--color-border); border-radius: 999px; padding: 2px 8px; font-size: 11px; color: var(--color-text-muted); }
+
+/* ---------- chat ---------- */
+.chat { display: flex; flex-direction: column; min-height: 0; flex: 1; background: var(--color-bg); }
+.chat-h { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-bottom: 1px solid var(--color-border); }
+.chat-name { font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--color-text-dim); flex: none; }
+.spacer { flex: 1; }
+.meta { font-size: 11.5px; color: var(--color-text-dim); flex: none; }
+.btn {
+  border: 1px solid var(--color-border); background: var(--color-surface);
+  color: var(--color-text-muted); border-radius: 7px; padding: 4px 9px;
+  font-size: 11.5px; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px;
+}
+.btn:hover { border-color: var(--color-border-strong); color: var(--color-text); }
+.btn.warn { border-color: var(--color-warn); color: var(--color-warn); }
+.btn.danger { border-color: var(--color-danger-border); color: var(--color-danger); background: var(--color-danger-bg); }
+.btn.primary { background: var(--color-accent); border-color: var(--color-accent); color: #04222e; font-weight: 500; }
+
+/* context ring */
+.ring { position: relative; width: 26px; height: 26px; flex: none; }
+.ring svg { transform: rotate(-90deg); display: block; }
+.ring .track { stroke: var(--color-border-strong); }
+.ring .bar { stroke: var(--color-accent); stroke-linecap: round; }
+.ring.warn .bar { stroke: var(--color-warn); }
+.ring-n { position: absolute; inset: 0; display: grid; place-items: center; font-size: 8.5px; color: var(--color-text-dim); }
+
+.conv { flex: 1; overflow: hidden; padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+.msg-user { align-self: flex-end; max-width: 78%; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 12px; padding: 8px 12px; font-size: 13px; line-height: 1.55; }
+.msg-ai { max-width: 94%; font-size: 13px; line-height: 1.62; color: var(--color-text); }
+.msg-ai p { margin: 0 0 9px; }
+.msg-ai h3 { font-size: 13px; font-weight: 600; margin: 0 0 6px; }
+.msg-ai ul { margin: 0 0 9px; padding-left: 18px; }
+.msg-ai li { margin: 0 0 3px; }
+.msg-ai code { font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 11.5px; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 4px; padding: 0 4px; }
+.codeblock { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; padding: 9px 11px; font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 11.5px; line-height: 1.6; color: var(--color-text-muted); overflow: hidden; }
+.codeblock .k { color: var(--color-node-project); }
+.codeblock .s { color: var(--color-status-active); }
+
+/* reasoning / tool — collapsible rows */
+.disc { border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-surface); overflow: hidden; }
+.disc-h { display: flex; align-items: center; gap: 8px; padding: 7px 10px; font-size: 12px; color: var(--color-text-muted); }
+.disc-h .grow { flex: 1; }
+.badge { font-size: 10.5px; border-radius: 999px; padding: 1px 7px; border: 1px solid var(--color-border); color: var(--color-text-dim); }
+.badge.ok { color: var(--color-status-active); border-color: color-mix(in srgb, var(--color-status-active) 40%, transparent); }
+.badge.run { color: var(--color-accent); border-color: var(--color-accent-dim); }
+.disc-b { padding: 0 10px 9px 32px; font-size: 12px; color: var(--color-text-dim); line-height: 1.6; }
+
+.reasoning { color: var(--color-text-dim); font-size: 12.5px; }
+.reasoning .rh { display: flex; align-items: center; gap: 7px; }
+.reasoning .rb { margin: 6px 0 0 21px; padding-left: 11px; border-left: 1px solid var(--color-border); line-height: 1.6; }
+
+/* confirmation */
+.confirm { border: 1px solid var(--color-accent-dim); background: var(--color-accent-soft); border-radius: 10px; padding: 11px 12px; }
+.confirm .q { font-size: 12.5px; margin-bottom: 9px; line-height: 1.5; }
+.confirm .row { display: flex; gap: 7px; }
+
+/* notice */
+.notice { display: flex; align-items: flex-start; gap: 9px; border: 1px solid var(--color-border); background: var(--color-surface); border-radius: 9px; padding: 9px 11px; font-size: 12px; color: var(--color-text-muted); line-height: 1.55; margin: 0 18px 10px; }
+.notice .x { color: var(--color-text-dim); flex: none; cursor: pointer; }
+
+/* prompt input */
+.composer { margin: 0 18px 16px; border: 1px solid var(--color-border-strong); border-radius: 13px; background: var(--color-surface); }
+.composer.focus { border-color: var(--color-accent-dim); }
+.composer .ta { padding: 11px 13px 4px; font-size: 13px; color: var(--color-text); min-height: 42px; line-height: 1.55; }
+.composer .ta.ph { color: var(--color-text-dim); }
+.composer .bar { display: flex; align-items: center; gap: 7px; padding: 7px 9px 8px 11px; }
+.sel { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--color-border); border-radius: 999px; padding: 3px 9px; font-size: 11.5px; color: var(--color-text-muted); }
+.sel:hover { border-color: var(--color-border-strong); }
+.send { width: 29px; height: 29px; border-radius: 50%; display: grid; place-items: center; background: var(--color-accent); color: #04222e; flex: none; }
+.send.stop { background: var(--color-text); color: var(--color-bg); }
+.send.off { background: var(--color-surface-2); color: var(--color-text-dim); border: 1px solid var(--color-border); }
+
+.shimmer {
+  display: inline-block; font-size: 12.5px;
+  background: linear-gradient(90deg, var(--color-text-dim) 0%, var(--color-text) 45%, var(--color-text-dim) 90%);
+  background-size: 260% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: sh 2.1s linear infinite;
+}
+@keyframes sh { from { background-position: 160% 0; } to { background-position: -60% 0; } }
+
+.pulse { animation: pl 1.6s ease-in-out infinite; }
+@keyframes pl { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* closed state */
+.closed-bar { margin: 0 18px 16px; border: 1px dashed var(--color-border-strong); border-radius: 12px; padding: 13px; display: flex; align-items: center; gap: 12px; }
+.closed-bar .t { flex: 1; font-size: 12.5px; color: var(--color-text-dim); line-height: 1.5; }
+
+/* modal */
+.modal-wrap { position: relative; }
+.scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.55); display: grid; place-items: center; }
+.modal { width: 380px; background: var(--color-surface); border: 1px solid var(--color-border-strong); border-radius: 12px; padding: 16px; }
+.modal h4 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+.modal p { margin: 0 0 14px; font-size: 12.5px; color: var(--color-text-dim); line-height: 1.55; }
+.modal .row { display: flex; justify-content: flex-end; gap: 8px; }
+
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 1100px) { .grid2 { grid-template-columns: 1fr; } }
+.cap { font-size: 11.5px; color: var(--color-text-dim); margin: 8px 2px 0; line-height: 1.5; }
+.cap b { color: var(--color-text-muted); font-weight: 500; }
+.chat-box { height: 470px; }
+.chat-box .conv { overflow: hidden; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<div class="topbar">
+  <h1>Chat úkolu — po přechodu na AI Elements</h1>
+  <button class="themetoggle" onclick="document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'">světlý / tmavý</button>
+</div>
+<p class="sub">
+  Komponenty z AI Elements (Conversation, Message, Response/Streamdown, Reasoning, Tool, Confirmation, Context, Prompt Input),
+  obarvené tokeny Portuni. Sada akcí: stop ikona v composeru (Esc), <b>Pokračovat v nové session</b>, <b>Uzavřít</b>.
+  Pozastavit, Nahodit ani Přerušit jako textová tlačítka nejsou.
+</p>
+
+<h2>1 — Rozložení</h2>
+<p class="note">
+  Vlákna jsou pod uzlem v levém sloupci, uprostřed je aktivní vlákno bez chrome, vpravo detail uzlu.
+  Uzel má vláken kolik chce a jsou vidět všechna najednou.
+</p>
+<div class="frame">
+  <div class="app">
+
+    <!-- left -->
+    <div class="sidebar">
+      <div class="side-h"><span class="side-title">Práce</span><span style="color:var(--color-text-dim)">+</span></div>
+
+      <div class="noderow sel">
+        <span class="dot" style="background:var(--color-node-project)"></span>
+        <span class="nodename">Majstrštych</span>
+      </div>
+      <ul class="threads">
+        <li class="thread active">
+          <span class="dot pulse" style="background:var(--color-status-active)"></span>
+          <span class="label">Rozpad ceníku na varianty</span>
+          <span class="x">×</span>
+        </li>
+        <li class="thread">
+          <span class="dot" style="background:var(--color-accent)"></span>
+          <span class="label">Čeká na mě: smazat wip/starý</span>
+          <span class="x">×</span>
+        </li>
+        <li class="thread">
+          <span class="dot" style="background:var(--color-status-archived)"></span>
+          <span class="label">Kontrola odkazů v README</span>
+          <span class="x">×</span>
+        </li>
+        <li class="newthread">+ nové vlákno</li>
+      </ul>
+
+      <div class="noderow">
+        <span class="dot" style="background:var(--color-node-process)"></span>
+        <span class="nodename">Onboarding klienta</span>
+      </div>
+      <ul class="threads">
+        <li class="thread">
+          <span class="dot" style="background:var(--color-status-active)"></span>
+          <span class="label">Šablona uvítacího mailu</span>
+          <span class="x">×</span>
+        </li>
+        <li class="newthread">+ nové vlákno</li>
+      </ul>
+    </div>
+
+    <!-- centre: chat -->
+    <div class="center">
+      <div class="chat">
+        <div class="chat-h">
+          <span class="dot pulse" style="background:var(--color-status-active)"></span>
+          <span class="chat-name">Rozpad ceníku na varianty</span>
+          <span class="chip">Běží</span>
+          <span class="spacer"></span>
+          <span class="meta">claude · osobní</span>
+          <span class="ring">
+            <svg width="26" height="26" viewBox="0 0 26 26">
+              <circle class="track" cx="13" cy="13" r="10" fill="none" stroke-width="2.5"></circle>
+              <circle class="bar" cx="13" cy="13" r="10" fill="none" stroke-width="2.5" stroke-dasharray="62.8" stroke-dashoffset="41"></circle>
+            </svg>
+            <span class="ring-n">34</span>
+          </span>
+          <button class="btn">Pokračovat v nové session</button>
+          <button class="btn">Uzavřít</button>
+        </div>
+
+        <div class="conv">
+          <div class="msg-user">Projdi ceník a rozpad ho na varianty podle velikosti týmu.</div>
+
+          <div class="reasoning">
+            <div class="rh">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+              Uvažoval 4 s
+            </div>
+            <div class="rb">Ceník je v <span class="mono">resources/cenik.md</span>, varianty se dnes liší jen počtem míst. Nejdřív se podívám, jestli existuje historická verze.</div>
+          </div>
+
+          <div class="disc">
+            <div class="disc-h">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a4 4 0 0 1-5 5L4 17v3h3l5.7-5.7a4 4 0 0 1 5-5z"/></svg>
+              <span class="mono">Read</span>
+              <span class="grow" style="color:var(--color-text-dim)">resources/cenik.md</span>
+              <span class="badge ok">hotovo</span>
+            </div>
+          </div>
+
+          <div class="msg-ai">
+            <p>Ceník má dnes tři řádky bez vazby na velikost týmu. Navrhuju rozpad:</p>
+            <ul>
+              <li><b>Do 5 lidí</b> — základ, bez custom integrací</li>
+              <li><b>6–20</b> — plus onboarding a dva workshopy</li>
+              <li><b>20+</b> — individuálně, vazba na <code>procesy/zavedeni</code></li>
+            </ul>
+          </div>
+
+          <div class="disc">
+            <div class="disc-h">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a4 4 0 0 1-5 5L4 17v3h3l5.7-5.7a4 4 0 0 1 5-5z"/></svg>
+              <span class="mono">Edit</span>
+              <span class="grow" style="color:var(--color-text-dim)">wip/cenik-varianty.md</span>
+              <span class="badge run">běží 3 s</span>
+            </div>
+          </div>
+
+          <div><span class="shimmer">Zapisuje varianty…</span></div>
+        </div>
+
+        <div class="composer">
+          <div class="ta ph">Napiš zprávu…</div>
+          <div class="bar">
+            <span class="sel">Sonnet 5
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg>
+            </span>
+            <span class="sel">effort: medium
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg>
+            </span>
+            <span class="spacer"></span>
+            <span class="send stop" title="Zastavit (Esc)">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- right: node -->
+    <div class="aside">
+      <div class="aside-h">
+        <span class="dot" style="background:var(--color-node-project)"></span>
+        <span style="font-weight:500">Majstrštych</span>
+        <span class="spacer"></span>
+        <span style="color:var(--color-text-dim)">›</span>
+      </div>
+      <div class="tabs">
+        <span class="tab on">Přehled</span>
+        <span class="tab">Soubory</span>
+        <span class="tab">Události</span>
+        <span class="tab">Relace</span>
+      </div>
+      <div class="aside-body">
+        <div>
+          <div class="field-l">Účel</div>
+          <div class="field-v">Rekonstrukce bytových jader na klíč, od zaměření po předání.</div>
+        </div>
+        <div>
+          <div class="field-l">Odpovědnosti</div>
+          <div class="chiprow">
+            <span class="minichip">Rozpočet — Honza</span>
+            <span class="minichip">Realizace — Petra</span>
+          </div>
+        </div>
+        <div>
+          <div class="field-l">Soubory</div>
+          <div class="field-v mono" style="font-size:11.5px; line-height:1.85">
+            resources/cenik.md<br />
+            wip/cenik-varianty.md<br />
+            outputs/nabidka-2026.pdf
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+<p class="cap"><b>Co je vidět:</b> chat nepřebíjí uzel — detail zůstává vpravo po celou dobu práce. Stop ikona sedí v composeru, ne mezi akcemi vlákna.</p>
+
+<h2>2 — Stavy vlákna</h2>
+<div class="grid2">
+
+  <!-- waiting -->
+  <div>
+    <div class="frame chat-box">
+      <div class="chat">
+        <div class="chat-h">
+          <span class="dot" style="background:var(--color-accent)"></span>
+          <span class="chat-name">Smazat wip/starý</span>
+          <span class="chip">Čeká na mě</span>
+          <span class="spacer"></span>
+          <span class="ring">
+            <svg width="26" height="26" viewBox="0 0 26 26">
+              <circle class="track" cx="13" cy="13" r="10" fill="none" stroke-width="2.5"></circle>
+              <circle class="bar" cx="13" cy="13" r="10" fill="none" stroke-width="2.5" stroke-dasharray="62.8" stroke-dashoffset="50"></circle>
+            </svg>
+            <span class="ring-n">20</span>
+          </span>
+          <button class="btn">Pokračovat v nové session</button>
+          <button class="btn">Uzavřít</button>
+        </div>
+        <div class="conv">
+          <div class="msg-user">Ukliď wip, ať tam nejsou staré verze.</div>
+          <div class="msg-ai"><p>Našel jsem čtyři soubory starší než rok. Tři jsou koncepty nabídek, jeden je poslední podepsaná verze smlouvy.</p></div>
+          <div class="confirm">
+            <div class="q">Smazat <span class="mono">wip/smlouva-2024-final.md</span>? Soubor je v zápisovém rozsahu, ale vypadá jako podepsaná verze.</div>
+            <div class="row">
+              <button class="btn primary">Povolit</button>
+              <button class="btn">Odmítnout</button>
+              <button class="btn">Povolit vše v tomto vlákně</button>
+            </div>
+          </div>
+        </div>
+        <div class="composer">
+          <div class="ta ph">Odpověz na otázku výše, nebo napiš zprávu…</div>
+          <div class="bar">
+            <span class="sel">Sonnet 5 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg></span>
+            <span class="spacer"></span>
+            <span class="send stop"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="cap"><b>Čeká na mě.</b> Otázka je komponenta Confirmation nad composerem, ne modal. Psát můžeš i tak.</p>
+  </div>
+
+  <!-- idle notice -->
+  <div>
+    <div class="frame chat-box">
+      <div class="chat">
+        <div class="chat-h">
+          <span class="dot" style="background:var(--color-status-archived)"></span>
+          <span class="chat-name">Kontrola odkazů v README</span>
+          <span class="chip">Nečinné</span>
+          <span class="spacer"></span>
+          <span class="ring">
+            <svg width="26" height="26" viewBox="0 0 26 26">
+              <circle class="track" cx="13" cy="13" r="10" fill="none" stroke-width="2.5"></circle>
+              <circle class="bar" cx="13" cy="13" r="10" fill="none" stroke-width="2.5" stroke-dasharray="62.8" stroke-dashoffset="34"></circle>
+            </svg>
+            <span class="ring-n">46</span>
+          </span>
+          <button class="btn">Pokračovat v nové session</button>
+          <button class="btn">Uzavřít</button>
+        </div>
+        <div class="conv">
+          <div class="msg-user">Zkontroluj odkazy v README a oprav ty mrtvé.</div>
+          <div class="msg-ai"><p>Prošel jsem 31 odkazů, čtyři vracejí 404. Tři jsou přesuny v rámci dokumentace, jeden vede na zrušenou doménu.</p></div>
+          <div class="disc">
+            <div class="disc-h">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/></svg>
+              <span style="color:var(--color-text-dim)">Shrnutí uloženo</span>
+              <span class="grow"></span>
+              <span class="badge">před 2 h</span>
+            </div>
+          </div>
+        </div>
+        <div class="notice">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:none;margin-top:1px;color:var(--color-text-dim)"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+          <span style="flex:1">Proces byl po dvou hodinách nečinnosti ukončen. Další zpráva konverzaci nastartuje znovu — celý dosavadní kontext půjde do modelu ještě jednou.</span>
+          <span class="x">×</span>
+        </div>
+        <div class="composer focus">
+          <div class="ta">Ten poslední odkaz nahraď archivní verzí.</div>
+          <div class="bar">
+            <span class="sel">Sonnet 5 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg></span>
+            <span class="spacer"></span>
+            <span class="send"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="cap"><b>Po nečinnosti.</b> Oznámení, ne potvrzení — křížek ho zavře, odeslání jede dál. Objeví se znovu, až proces zase usne.</p>
+  </div>
+
+  <!-- context full -->
+  <div>
+    <div class="frame chat-box">
+      <div class="chat">
+        <div class="chat-h">
+          <span class="dot pulse" style="background:var(--color-status-active)"></span>
+          <span class="chat-name">Rozpad ceníku na varianty</span>
+          <span class="chip">Běží</span>
+          <span class="spacer"></span>
+          <span class="ring warn">
+            <svg width="26" height="26" viewBox="0 0 26 26">
+              <circle class="track" cx="13" cy="13" r="10" fill="none" stroke-width="2.5"></circle>
+              <circle class="bar" cx="13" cy="13" r="10" fill="none" stroke-width="2.5" stroke-dasharray="62.8" stroke-dashoffset="9"></circle>
+            </svg>
+            <span class="ring-n" style="color:var(--color-warn)">86</span>
+          </span>
+          <button class="btn warn">Pokračovat v nové session</button>
+          <button class="btn">Uzavřít</button>
+        </div>
+        <div class="conv">
+          <div class="msg-ai"><p>Varianty jsou zapsané. Zbývá projít vazbu na <code>procesy/zavedeni</code> a doplnit ceny workshopů.</p></div>
+          <div class="disc">
+            <div class="disc-h">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M3 12h18"/></svg>
+              <span style="color:var(--color-text-dim)">Kontext 86 % — 172k / 200k tokenů</span>
+              <span class="grow"></span>
+            </div>
+            <div class="disc-b" style="padding-left:32px">
+              Nové vlákno dostane shrnutí téhle session a začne s prázdným kontextem.
+              Tohle vlákno zůstane v seznamu k přečtení.
+            </div>
+          </div>
+        </div>
+        <div class="composer">
+          <div class="ta ph">Napiš zprávu…</div>
+          <div class="bar">
+            <span class="sel">Sonnet 5 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg></span>
+            <span class="spacer"></span>
+            <span class="send stop"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="cap"><b>Kontext se plní.</b> Prstýnek zežloutne a akce se zvýrazní. Klik založí <b>nový řádek</b> ve vláknech, ne další běh pod tímhle.</p>
+  </div>
+
+  <!-- close confirm -->
+  <div>
+    <div class="frame chat-box modal-wrap">
+      <div class="chat">
+        <div class="chat-h">
+          <span class="dot" style="background:var(--color-status-archived)"></span>
+          <span class="chat-name">Kontrola odkazů v README</span>
+          <span class="chip">Nečinné</span>
+          <span class="spacer"></span>
+          <button class="btn">Pokračovat v nové session</button>
+          <button class="btn">Uzavřít</button>
+        </div>
+        <div class="conv">
+          <div class="msg-ai"><p>Tři odkazy opraveny, poslední nahrazen archivní verzí.</p></div>
+        </div>
+        <div class="composer">
+          <div class="ta ph">Napiš zprávu…</div>
+          <div class="bar"><span class="spacer"></span><span class="send off"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span></div>
+        </div>
+      </div>
+      <div class="scrim">
+        <div class="modal">
+          <h4>Uzavřít vlákno?</h4>
+          <p>Vlákno se zavře natrvalo a už ho nepůjde nahodit. Transcript zůstane k přečtení a uloží se shrnutí, ze kterého můžeš kdykoli navázat novým vláknem.</p>
+          <div class="row">
+            <button class="btn">Zrušit</button>
+            <button class="btn danger">Uzavřít</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="cap"><b>Uzavření.</b> Jediná nevratná akce, tedy jediná s potvrzením.</p>
+  </div>
+
+</div>
+
+<h2>3 — Uzavřené vlákno</h2>
+<p class="note">Composer je pryč, zůstane transcript a jedna nabídka. „Navázat" založí nové vlákno na stejném uzlu, nasazené ze shrnutí.</p>
+<div class="frame" style="max-width:760px">
+  <div class="chat" style="height:300px">
+    <div class="chat-h">
+      <span class="dot" style="background:var(--color-status-completed)"></span>
+      <span class="chat-name">Kontrola odkazů v README</span>
+      <span class="chip">Uzavřeno</span>
+      <span class="spacer"></span>
+      <span class="meta">claude · osobní · 14. 9.</span>
+    </div>
+    <div class="conv">
+      <div class="msg-user">Zkontroluj odkazy v README a oprav ty mrtvé.</div>
+      <div class="msg-ai"><p>Tři odkazy opraveny, poslední nahrazen archivní verzí. Zbývá rozhodnout, co s odkazem na zrušenou doménu v sekci Partneři.</p></div>
+    </div>
+    <div class="closed-bar">
+      <span class="t">Shrnutí uloženo. Nové vlákno z něj začne s prázdným kontextem a odkazem na rozdělanou věc.</span>
+      <button class="btn primary">Navázat novým vláknem</button>
+    </div>
+  </div>
+</div>
+
+<h2>4 — Co se změnilo proti dnešku</h2>
+<p class="note">
+  <b>Pryč:</b> Přerušit, Pozastavit, Nahodit: pokračovat, Nahodit: předat a začít znovu, modal „Nový úkol“, ruční volba režimu obnovení.<br />
+  <b>Nově:</b> stop ikona v composeru s Esc, prstýnek zaplnění kontextu, oznámení po nečinnosti, potvrzení u Uzavřít, Navázat u uzavřeného vlákna, výběr modelu a effortu v composeru.<br />
+  <b>Beze změny:</b> vlákna v levém sloupci, detail uzlu vpravo, jméno vlákna z první zprávy.
+</p>
+
+</div>
+</body>
+</html>
