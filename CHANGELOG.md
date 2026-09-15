@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.17.0](https://github.com/honzapav/portuni/compare/v0.16.1...v0.17.0) (2026-09-15)
+
+
+### Features
+
+* **runner,web:** stream thinking, not just the finished reasoning block ([#382](https://github.com/honzapav/portuni/issues/382)) ([56a4966](https://github.com/honzapav/portuni/commit/56a4966d2dbdf404570626e1dc86d82e1d034072))
+* **web:** emit reasoning events; rebuild task chat on AI Elements ([#377](https://github.com/honzapav/portuni/issues/377)) ([d3b39c1](https://github.com/honzapav/portuni/commit/d3b39c1b4391cb6ef4e528e9890591f797a459ba))
+
+
+### Bug Fixes
+
+* **desktop,runner:** pass USER to the sidecar and the Claude child ([#367](https://github.com/honzapav/portuni/issues/367)) ([b728db5](https://github.com/honzapav/portuni/commit/b728db59835e9d8b5b9b805deb4abb587cb5005a))
+* **web:** a task started in Graf opens its thread in Práce ([fc98754](https://github.com/honzapav/portuni/commit/fc98754c4db7abfb63b653ec1de1505f3c92e2fb))
+* **web:** a task's composer draft stays with that task ([24051eb](https://github.com/honzapav/portuni/commit/24051eb635ab8b144977b1b09ff85da7416843a5))
+* **web:** comment the deliberately empty catch so lint:strict passes ([15f69b3](https://github.com/honzapav/portuni/commit/15f69b3e4e4ea7e52afb276534df2f03712a9dad))
+* **web:** the live channel's resubscribe no longer rejects into nowhere ([#381](https://github.com/honzapav/portuni/issues/381)) ([426662a](https://github.com/honzapav/portuni/commit/426662ab312431a77c3fc43c04c5a008d5cfe21b))
+
 ## [0.16.1](https://github.com/honzapav/portuni/compare/v0.16.0...v0.16.1) (2026-09-14)
 
 
