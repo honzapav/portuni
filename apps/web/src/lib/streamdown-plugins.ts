@@ -1,3 +1,6 @@
+// The code highlighter is ours (lib/streamdown-code.ts, #380): @streamdown/code
+// reaches every grammar shiki ships and would bundle all 716 of them.
+//
 // Streamdown's cjk/code/math/mermaid plugins are individually heavy (mermaid
 // especially -- a full diagram-rendering engine) and only a small fraction
 // of chat messages ever use them. Lazy-load them the way TerminalTabs.tsx
@@ -18,12 +21,12 @@ export function loadStreamdownPlugins(): Promise<StreamdownPlugins> {
   if (!cached) {
     cached = Promise.all([
       import("@streamdown/cjk"),
-      import("@streamdown/code"),
+      import("./streamdown-code"),
       import("@streamdown/math"),
       import("@streamdown/mermaid"),
     ]).then(([cjkMod, codeMod, mathMod, mermaidMod]) => ({
       cjk: cjkMod.cjk,
-      code: codeMod.code,
+      code: codeMod.code as StreamdownPlugins["code"],
       math: mathMod.math,
       mermaid: mermaidMod.mermaid,
     }));

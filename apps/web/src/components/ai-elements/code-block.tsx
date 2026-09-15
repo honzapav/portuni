@@ -45,7 +45,9 @@ import type {
   HighlighterGeneric,
   ThemedToken,
 } from "shiki";
-import { createHighlighter } from "shiki";
+// Curated languages only -- shiki's own `createHighlighter` makes every
+// grammar it ships reachable (#380). See lib/streamdown-code.ts.
+import { createHighlighter } from "@/lib/streamdown-code";
 
 // Shiki uses bitflags for font styles: 1=italic, 2=bold, 4=underline
 // oxlint-disable-next-line eslint(no-bitwise)
