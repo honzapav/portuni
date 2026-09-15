@@ -454,7 +454,16 @@ export function createSessionsClient(options: CreateSessionsClientOptions = {}):
       // (sessions-ws.ts) fills exactly that gap.
       if (wasOpen) {
         for (const sessionId of subscribedSessions) {
-          void send({ type: "subscribe", payload: { session_id: sessionId, after: lastSeq.get(sessionId) } });
+          // Nobody awaits a resubscribe, so its rejection has to be
+          // swallowed here: a drop (or a disconnect()) before the reply
+          // arrives rejects every outstanding request, and an unhandled
+          // one of those crashes the webview's own error reporting --
+          // and fails whichever test happened to create it. There is
+          // nothing to report either way; the next reconnect resubscribes
+          // from the same lastSeq.
+          send({ type: "subscribe", payload: { session_id: sessionId, after: lastSeq.get(sessionId) } }).catch(
+            () => {},
+          );
         }
       }
       wasOpen = true;
