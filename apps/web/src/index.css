@@ -1,17 +1,8 @@
 @import "tailwindcss";
-/* JetBrains Mono webfont — bundled so the embedded xterm.js terminal
- * gets a guaranteed-loaded monospace with broad unicode coverage. Without
- * a webfont, listing JetBrains Mono first in any font-stack would race
- * against xterm's glyph atlas build (font wasn't installed → atlas built
- * with proportional fallback → text rendered with wrong metrics). 400
- * (regular) is enough for terminal text; 700 covers bold ANSI styling. */
-@import "@fontsource/jetbrains-mono/400.css";
-@import "@fontsource/jetbrains-mono/700.css";
-/* Inter, same treatment. It used to come from fonts.googleapis.com via a
+/* Inter is bundled: it used to come from fonts.googleapis.com via a
  * render-blocking <link> in index.html — a cross-origin request on the
  * startup path of a local-first desktop app, which on a cold launch with no
- * network blocks first paint until it fails. The same <link> also fetched
- * JetBrains Mono a second time, on top of the bundled copy above. */
+ * network blocks first paint until it fails. */
 @import "@fontsource/inter/400.css";
 @import "@fontsource/inter/500.css";
 @import "@fontsource/inter/600.css";
@@ -26,7 +17,7 @@
 
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 /* ----- Dark theme (default) ----- */

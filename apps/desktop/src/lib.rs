@@ -13,8 +13,8 @@ use std::sync::Mutex;
 
 mod auth;
 mod mcp_install;
-mod pty;
 mod sessions_ws;
+mod shell_path;
 mod updater;
 mod workspace;
 
@@ -213,8 +213,8 @@ fn schedule_exit_fallback(app: &AppHandle, label: String) {
     });
 }
 
-// The webview's answer to a close guard (dirty editor, unsynced files, or
-// the running-terminals confirm) when the user declined. Cancels the
+// The webview's answer to a close guard (dirty editor, unsynced files)
+// when the user declined. Cancels the
 // pending fallback timer, and aborts any quit sequence in progress --
 // windows already closed stay closed, but no further one is asked and the
 // app does not exit. Harmless to call outside any quit (a plain
@@ -233,17 +233,17 @@ struct SidecarState(Mutex<HashMap<String, CommandChild>>);
 // Per-workspace bound backend port. Value 0 is the central sentinel — the
 // sync agent for that workspace is deferred (not logged in / no server_url).
 struct BackendPorts(Mutex<HashMap<String, u16>>);
-// Per-workspace MCP bearer token, cached so api_request / pty_spawn read it
-// without touching Keychain each time. regenerate_mcp_token rotates the
+// Per-workspace MCP bearer token, cached so api_request reads it without
+// touching Keychain each time. regenerate_mcp_token rotates the
 // active workspace's entry in place without restarting the Tauri host.
 struct AuthTokens(Mutex<HashMap<String, String>>);
 // Per-workspace, per-launch secret proving a request came through THIS
-// Tauri host's api_request proxy rather than a spawned agent terminal
-// holding the same bearer token (#213). Generated fresh at every
-// spawn_sidecar_ws, handed to the sidecar only via its child-process env
-// (PORTUNI_WEBVIEW_PROXY_SECRET) and attached as X-Portuni-Webview-Proxy on
-// every locally-proxied api_request call. Never persisted, never exported
-// into pty_spawn's shell env -- see api_request and spawn_sidecar_ws.
+// Tauri host's api_request proxy rather than from an external process (an
+// MCP client or shell) holding the same bearer token (#213). Generated fresh
+// at every spawn_sidecar_ws, handed to the sidecar only via its child-process
+// env (PORTUNI_WEBVIEW_PROXY_SECRET) and attached as X-Portuni-Webview-Proxy
+// on every locally-proxied api_request call. Never persisted, never handed to
+// any other process -- see api_request and spawn_sidecar_ws.
 struct WebviewProxySecrets(Mutex<HashMap<String, String>>);
 // Serializes every config.json read-modify-write (#224). Every mutating
 // command does load -> modify -> workspace::save through one fixed
@@ -355,24 +355,6 @@ pub(crate) fn ws_of(window: &tauri::Window) -> Result<String, String> {
         .app_data_dir()
         .map_err(|e| e.to_string())?;
     ws_of_from_dir(window.label(), &data_dir)
-}
-
-// The label half of ws_of, without the config.json read.
-//
-// Ownership checks on an already-live PTY (pty_write/resize/kill) compare
-// this window's workspace id against the one captured on PtySession at spawn
-// time — and that one came from a full, validated ws_of. Re-validating the
-// label against config.json on every keystroke bought nothing for that
-// comparison and cost a synchronous file read plus a full parse and validate
-// of the config per input event (measured: 24.9 us per call). Labels are set
-// by this process alone; an unparseable one still yields None, which
-// session_owned_by denies by default.
-pub(crate) fn ws_label_id(window: &tauri::Window) -> Option<String> {
-    window
-        .label()
-        .strip_prefix("ws:")
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
 }
 
 fn ws_of_from_dir(label: &str, data_dir: &Path) -> Result<String, String> {
@@ -826,7 +808,8 @@ fn get_mcp_token(window: tauri::Window) -> Result<String, String> {
 // Rotates the MCP auth token: writes a fresh value to Keychain and into
 // the active workspace's entry in the AuthTokens map. Per-mirror .mcp.json and .codex/config.toml
 // reference the token via the PORTUNI_MCP_TOKEN env var, so they survive
-// rotation (already-running terminals keep the old value until respawned).
+// rotation (a shell that already exported the old value keeps it until it
+// re-exports).
 // Only ~/.claude.json embeds the literal token and goes stale until the
 // user re-runs "Install Claude (global)".
 #[tauri::command]
@@ -1193,8 +1176,6 @@ fn open_external(url: String) -> Result<(), String> {
 ///
 /// Rules derived from src/api/router.ts:
 ///   /scope                      — write-scope gate (local filesystem check)
-///   /sandbox-profile            — global sandbox profile (local cwd lookup)
-///   /nodes/:id/sandbox-profile  — per-node sandbox profile
 ///   /nodes/:id/mirror           — create mirror (local filesystem operation)
 ///   /nodes/:id/sync-status      — sync status (local sync DB)
 ///   /nodes/:id/sync             — sync run (local sync engine)
@@ -1264,7 +1245,6 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
     // device's sidecar -- the central server's own registry would describe
     // the central host, not the machine the task actually runs on.
     if p == "/scope"
-        || p == "/sandbox-profile"
         || p == "/sync/pending"
         || p == "/sync/health"
         || p == "/sync/jobs"
@@ -1277,7 +1257,7 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
 
     // Node sub-paths that are local-only.
     // Matches: /nodes/<id>/mirror, /nodes/<id>/sync-status, /nodes/<id>/sync,
-    //          /nodes/<id>/sandbox-profile, /nodes/<id>/file (content),
+    //          /nodes/<id>/file (content),
     //          /nodes/<id>/files (create, #266), /nodes/<id>/files/<fileId>
     //          (delete, #254 -- exactly one segment after "files/"),
     //          /nodes/<id>/files/<fileId>/resolve (#264),
@@ -1295,7 +1275,6 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
                 || sub == "sync-status"
                 || sub == "files"
                 || sub == "sync"
-                || sub == "sandbox-profile"
                 || sub == "file"
             {
                 return true;
@@ -1608,78 +1587,6 @@ async fn setup_central(app: AppHandle, server_url: String) -> Result<(), String>
     Ok(())
 }
 
-// Spawn an external Terminal.app window in the given working directory
-// and run the given shell command. macOS-only; on other platforms returns
-// a "UNSUPPORTED_OS" error so the webview can fall back to clipboard
-// copy. The webview is responsible for building the full shell command
-// (via app/src/lib/prompt.ts:buildAgentCommand) which already starts
-// with `cd <cwd> && ...` — we still validate `cwd` here so a malformed
-// path surfaces as a clear error before AppleScript sees it.
-#[cfg(target_os = "macos")]
-#[tauri::command]
-async fn launch_claude_for_node(
-    cwd: String,
-    command: String,
-    template: String,
-) -> Result<(), String> {
-    if cwd.trim().is_empty() {
-        return Err("cwd is required".to_string());
-    }
-    if !std::path::Path::new(&cwd).is_dir() {
-        return Err(format!("cwd does not exist: {cwd}"));
-    }
-    if command.trim().is_empty() {
-        return Err("command is required".to_string());
-    }
-    if template.trim().is_empty() {
-        return Err("template is required".to_string());
-    }
-    // The terminal-launch template (Settings -> Terminal) runs as `sh -c`.
-    // The default uses Terminal.app via osascript and carries the cold-start
-    // two-window fix; users can pick iTerm2 / Ghostty / Warp / cmux or write
-    // their own. We expose three env vars: PORTUNI_COMMAND (the full
-    // `cd <path> && <agent> ...` from buildAgentCommand), PORTUNI_CWD, and
-    // PORTUNI_COMMAND_AS (AppleScript-escaped: \ -> \\, " -> \" so it drops
-    // straight into a `do script "..."` double-quoted string).
-    let command_as = command.replace('\\', "\\\\").replace('"', "\\\"");
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&template)
-        .env("PORTUNI_CWD", &cwd)
-        .env("PORTUNI_COMMAND", &command)
-        .env("PORTUNI_COMMAND_AS", &command_as)
-        .output()
-        .map_err(|e| format!("template run failed: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut detail = String::new();
-        if !stderr.trim().is_empty() {
-            detail.push_str(" stderr=");
-            detail.push_str(stderr.trim());
-        }
-        if !stdout.trim().is_empty() {
-            detail.push_str(" stdout=");
-            detail.push_str(stdout.trim());
-        }
-        let msg = format!("template exited with {}{}", output.status, detail);
-        // Mirror to the file logger — the UI toast truncates long messages.
-        error!("launch_claude_for_node: {msg}");
-        return Err(msg);
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-#[tauri::command]
-async fn launch_claude_for_node(
-    _cwd: String,
-    _command: String,
-    _template: String,
-) -> Result<(), String> {
-    Err("UNSUPPORTED_OS".to_string())
-}
-
 // Open a path in Finder. If reveal=true, uses `open -R` to select/reveal
 // the file; if false, uses `open` to open the folder itself. macOS-only;
 // on other platforms returns UNSUPPORTED_OS so callers can fall through.
@@ -1841,8 +1748,8 @@ struct HandoffMinted {
 }
 
 /// Mint a one-time handoff code on a workspace's sidecar (POST /auth/handoff,
-/// authenticated with the terminal token this host already holds for
-/// pty_spawn -- never through the webview). Answers the sidecar's base URL,
+/// authenticated with the sidecar bearer this host already holds in
+/// AuthTokens -- never through the webview). Answers the sidecar's base URL,
 /// which the link carries so Showtime knows where to exchange the code, and
 /// what was minted.
 async fn mint_showtime_handoff(
@@ -2185,8 +2092,8 @@ async fn restart_sidecar(window: tauri::Window, id: Option<String>) -> Result<()
 // Snapshot the local sidecar's port + bearer token for `ws_id`, then drop
 // the guards before the caller awaits anything — holding a std::sync::Mutex
 // across .await deadlocks the executor on contention. Shared by callers that
-// need to reach this workspace's local backend (e.g. api_request's webview
-// proxy, pty.rs's terminal-exit report).
+// need to reach this workspace's local backend (api_request's webview
+// proxy, mint_showtime_handoff, sessions_ws's live channel).
 //
 // Port 0 is the central-mode sentinel: the sync agent for this workspace
 // isn't running (not logged in yet, or no server_url). Callers that need to
@@ -2216,10 +2123,10 @@ pub(crate) fn sidecar_port_and_token(app: &AppHandle, ws_id: &str) -> Result<(u1
 }
 
 // The per-workspace, per-launch secret proving a request came through this
-// trusted Tauri host process rather than a spawned agent terminal (#213).
-// Shared by api_request's webview proxy and pty.rs's terminal-exit report
-// (#219) -- both originate in Rust code here, not webview JS or a shell's
-// env, so both are entitled to prove it the same way.
+// trusted Tauri host process rather than from an external process holding
+// the same bearer token (#213). Shared by api_request's webview proxy and
+// sessions_ws's WebSocket upgrade -- both originate in Rust code here, not
+// webview JS, so both are entitled to prove it the same way.
 pub(crate) fn webview_proxy_secret(app: &AppHandle, ws_id: &str) -> Option<String> {
     app.state::<WebviewProxySecrets>()
         .0
@@ -2253,7 +2160,7 @@ async fn api_request(
     let (ws_id, cfg) = ws_and_config(&app, &window)?;
     let is_central = workspace::is_central(&cfg);
 
-    // In central mode, LOCAL_ONLY paths (mirror/sync/scope/sandbox) are
+    // In central mode, LOCAL_ONLY paths (mirror/sync/scope) are
     // served by the LOCAL sync agent — fall through to the local proxy
     // below. Everything else goes to the central server.
     if is_central && !is_local_only_path(&path) {
@@ -2349,8 +2256,8 @@ async fn api_request(
         // Backend's PORTUNI_ALLOWED_ORIGINS includes tauri://localhost
         // so the existing origin allowlist accepts proxied requests.
         .header("Origin", "tauri://localhost");
-    // Proves this request came through the Tauri host, not a spawned
-    // agent terminal holding the same bearer token (#213) — the server's
+    // Proves this request came through the Tauri host, not an external
+    // process holding the same bearer token (#213) — the server's
     // env-mode write gate treats this header as proof of the desktop UI's
     // blanket write exemption. Only set when the sidecar for this
     // workspace is known to have one (always true once spawn_sidecar_ws
@@ -2573,7 +2480,7 @@ pub(crate) fn spawn_sidecar_ws(
             .map(|s| s.trim().trim_end_matches('/').to_string());
         let device_token = server_url
             .as_ref()
-            .and_then(|u| crate::pty::ensure_device_token(app, ws_id, u).ok());
+            .and_then(|u| crate::auth::ensure_device_token(app, ws_id, u).ok());
         match (server_url, device_token) {
             (Some(url), Some(token)) => {
                 info!("workspace {ws_id}: starting sync agent against {url}");
@@ -2624,7 +2531,7 @@ pub(crate) fn spawn_sidecar_ws(
     );
 
     // Per-workspace persisted MCP token, cached in the AuthTokens map so
-    // api_request / pty_spawn read it without touching Keychain each time.
+    // api_request reads it without touching Keychain each time.
     let auth_token = ensure_mcp_token_ws(ws_id).unwrap_or_else(|e| {
         warn!("Keychain unavailable for {ws_id} MCP token, using per-launch random: {e}");
         random_token()
@@ -2636,8 +2543,8 @@ pub(crate) fn spawn_sidecar_ws(
         .insert(ws_id.to_string(), auth_token.clone());
 
     // Per-launch webview-proxy secret (#213): proves an env-mode REST write
-    // came through this Tauri host's api_request proxy, not a spawned agent
-    // terminal holding the same bearer token. Regenerated on every spawn,
+    // came through this Tauri host's api_request proxy, not an external
+    // process holding the same bearer token. Regenerated on every spawn,
     // kept only in memory and in the sidecar's own child-process env below.
     let webview_proxy_secret = random_token();
     app.state::<WebviewProxySecrets>()
@@ -2679,7 +2586,7 @@ pub(crate) fn spawn_sidecar_ws(
         ("PORTUNI_ALLOWED_ORIGINS".to_string(), allowed_origins),
         ("PORTUNI_LOG_REQUESTS".to_string(), "1".to_string()),
         ("HOME".to_string(), std::env::var("HOME").unwrap_or_default()),
-        ("PATH".to_string(), pty::login_shell_path()),
+        ("PATH".to_string(), shell_path::login_shell_path()),
         // The Claude CLI's `auth status` resolves its Keychain credential
         // under the USER account name; a GUI-launched app inherits USER and
         // LOGNAME from launchd, so no login-shell probe is needed here
@@ -3122,214 +3029,6 @@ fn delete_workspace(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
-// --- CLI profiles registry (phase 3, spawn UX) -----------------------------
-//
-// Non-secret, so it lives in config.json like the workspace registry rather
-// than Keychain. Zero registered profiles keeps the whole feature invisible
-// on the web side; these commands are only ever called from the Settings
-// "Profily" section and the per-spawn picker.
-//
-// #207: env VALUES never leave this process. list_profiles returns only key
-// NAMES -- a value round-tripped through list_profiles would violate "no
-// secret in webview JS, ever" the moment a value actually is one, even
-// though this registry is meant for non-secret config. create_profile/
-// update_profile additionally reject secret-shaped keys outright (see
-// workspace::is_secret_shaped_env_key) so a user pasting e.g.
-// ANTHROPIC_API_KEY=... gets pointed at the Keychain instead of persisting
-// it to plaintext config.json. Because values are never read back, editing
-// an existing profile is a partial-update: update_profile treats an empty
-// submitted value for a key that already exists as "leave unchanged"
-// (apps/web/src/components/ProfilesSection.tsx pre-fills existing keys with
-// an empty value for exactly this reason) -- only a non-empty value
-// actually overwrites the stored one.
-
-fn reject_secret_shaped_keys(env: &std::collections::BTreeMap<String, String>) -> Result<(), String> {
-    for key in env.keys() {
-        if workspace::is_secret_shaped_env_key(key) {
-            return Err(format!(
-                "'{key}' looks like a secret (matches *_TOKEN/*_KEY/*_SECRET/*PASSWORD*) -- store secrets in the OS keychain, not the profiles registry"
-            ));
-        }
-    }
-    Ok(())
-}
-
-#[derive(Serialize)]
-struct ProfileInfo {
-    id: String,
-    label: String,
-    env_keys: Vec<String>,
-    command: Option<String>,
-}
-
-#[derive(Serialize)]
-struct ProfilesData {
-    profiles: Vec<ProfileInfo>,
-    default_by_org: std::collections::BTreeMap<String, String>,
-}
-
-#[tauri::command]
-fn list_profiles(app: AppHandle) -> Result<ProfilesData, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => {
-            return Ok(ProfilesData {
-                profiles: vec![],
-                default_by_org: std::collections::BTreeMap::new(),
-            })
-        }
-    };
-    Ok(ProfilesData {
-        profiles: file
-            .profiles
-            .into_iter()
-            .map(|(id, cfg)| ProfileInfo {
-                id,
-                label: cfg.label,
-                env_keys: cfg.env.into_keys().collect(),
-                command: cfg.command,
-            })
-            .collect(),
-        default_by_org: file.default_profile_by_org,
-    })
-}
-
-#[derive(Deserialize)]
-struct CreateProfileArgs {
-    id: String,
-    label: String,
-    env: std::collections::BTreeMap<String, String>,
-    command: Option<String>,
-}
-
-#[tauri::command]
-fn create_profile(app: AppHandle, args: CreateProfileArgs) -> Result<(), String> {
-    if !workspace::is_valid_profile_id(&args.id) {
-        return Err("invalid profile id (use lowercase letters, digits, dashes)".to_string());
-    }
-    if args.label.trim().is_empty() {
-        return Err("profile label is required".to_string());
-    }
-    reject_secret_shaped_keys(&args.env)?;
-    with_config_mut(&app, |file| {
-        if file.profiles.contains_key(&args.id) {
-            return Err(format!("profile '{}' already exists", args.id));
-        }
-        file.profiles.insert(
-            args.id.clone(),
-            workspace::ProfileConfig {
-                label: args.label.clone(),
-                env: args.env.clone(),
-                command: args.command.clone().filter(|s| !s.trim().is_empty()),
-            },
-        );
-        Ok(())
-    })
-}
-
-#[derive(Deserialize)]
-struct UpdateProfileArgs {
-    id: String,
-    label: String,
-    env: std::collections::BTreeMap<String, String>,
-    command: Option<String>,
-}
-
-/// Merge a profile update's submitted env into its stored one: an empty
-/// submitted value for a key that already exists means "leave unchanged"
-/// (the webview never received the old value to resubmit it verbatim, see
-/// ProfilesSection.tsx's envKeysToText) -- only a non-empty value, or a
-/// genuinely new key, is actually stored as given. A key omitted from
-/// `submitted` entirely is dropped (the user deleted that line).
-fn merge_profile_env_update(
-    stored: &std::collections::BTreeMap<String, String>,
-    submitted: std::collections::BTreeMap<String, String>,
-) -> std::collections::BTreeMap<String, String> {
-    submitted
-        .into_iter()
-        .map(|(k, v)| {
-            if v.is_empty() {
-                if let Some(existing) = stored.get(&k) {
-                    return (k, existing.clone());
-                }
-            }
-            (k, v)
-        })
-        .collect()
-}
-
-#[tauri::command]
-fn update_profile(app: AppHandle, args: UpdateProfileArgs) -> Result<(), String> {
-    if args.label.trim().is_empty() {
-        return Err("profile label is required".to_string());
-    }
-    reject_secret_shaped_keys(&args.env)?;
-    with_config_mut(&app, |file| {
-        let cfg = file
-            .profiles
-            .get_mut(&args.id)
-            .ok_or_else(|| format!("unknown profile '{}'", args.id))?;
-        cfg.label = args.label.clone();
-        cfg.env = merge_profile_env_update(&cfg.env, args.env.clone());
-        cfg.command = args.command.clone().filter(|s| !s.trim().is_empty());
-        Ok(())
-    })
-}
-
-// Narrow, purpose-built exception to "list_profiles never returns env
-// values" (#207): DetailPane.sessions.tsx's resume-info check needs the
-// resumed session's CLAUDE_CONFIG_DIR value to ask the sidecar about
-// conversation-resumability at the right transcript location (#204).
-// CLAUDE_CONFIG_DIR is a plain directory path, never secret-shaped
-// (create_profile/update_profile reject secret-shaped keys outright), and
-// this command exposes exactly that one well-known key -- not the general
-// env map -- so it cannot become a path for a future secret-shaped key to
-// leak into the webview the way returning the whole map would.
-#[tauri::command]
-fn profile_config_dir(app: AppHandle, id: String) -> Result<Option<String>, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let file = match workspace::load(&data_dir)? {
-        workspace::LoadedConfig::V2(f) => f,
-        _ => return Ok(None),
-    };
-    Ok(file.profiles.get(&id).and_then(|cfg| cfg.env.get("CLAUDE_CONFIG_DIR").cloned()))
-}
-
-#[tauri::command]
-fn delete_profile(app: AppHandle, id: String) -> Result<(), String> {
-    with_config_mut(&app, |file| {
-        if !file.profiles.contains_key(&id) {
-            return Err(format!("unknown profile '{id}'"));
-        }
-        file.profiles.remove(&id);
-        file.default_profile_by_org.retain(|_, p| p != &id);
-        Ok(())
-    })
-}
-
-#[tauri::command]
-fn set_default_profile_for_org(
-    app: AppHandle,
-    org_id: String,
-    profile_id: Option<String>,
-) -> Result<(), String> {
-    with_config_mut(&app, |file| {
-        match &profile_id {
-            Some(pid) => {
-                if !file.profiles.contains_key(pid) {
-                    return Err(format!("unknown profile '{pid}'"));
-                }
-                file.default_profile_by_org.insert(org_id.clone(), pid.clone());
-            }
-            None => {
-                file.default_profile_by_org.remove(&org_id);
-            }
-        }
-        Ok(())
-    })
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // State maps start empty and are filled per workspace by .setup()'s
@@ -3376,7 +3075,6 @@ pub fn run() {
         .manage(FocusHistory(Mutex::new(Vec::new())))
         .manage(PendingBackendErrors(Mutex::new(HashMap::new())))
         .manage(QuitQueue(Mutex::new(None)))
-        .manage(pty::PtyState::default())
         .manage(sessions_ws::SessionsWsState::default())
         .manage(updater::PendingUpdate::default())
         .register_uri_scheme_protocol("portuni-html", |ctx, request| {
@@ -3483,7 +3181,6 @@ pub fn run() {
             install_claude_global,
             install_codex_global,
             install_vibe_global,
-            launch_claude_for_node,
             open_in_finder,
             open_path_external,
             open_in_showtime,
@@ -3491,10 +3188,6 @@ pub fn run() {
             showtime_installed,
             clipboard_file_path,
             copy_text,
-            pty::pty_spawn,
-            pty::pty_write,
-            pty::pty_resize,
-            pty::pty_kill,
             sessions_ws::sessions_connect,
             sessions_ws::sessions_disconnect,
             sessions_ws::sessions_send,
@@ -3509,12 +3202,6 @@ pub fn run() {
             set_workspace_enabled,
             delete_workspace,
             open_workspace_window,
-            list_profiles,
-            create_profile,
-            update_profile,
-            delete_profile,
-            set_default_profile_for_org,
-            profile_config_dir,
             updater::check_update,
             updater::install_update,
             updater::restart_app,
@@ -3576,8 +3263,8 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             // Only Destroyed, not CloseRequested: the webview registers an
-            // onCloseRequested listener (dirty-editor/unsynced-files/
-            // running-terminals guard), so a close request may be
+            // onCloseRequested listener (dirty-editor/unsynced-files
+            // guard), so a close request may be
             // cancelled in JS. Sidecars are no longer killed here (#229) --
             // a sidecar is bound to `enabled`, not to a window (external
             // MCP clients address it on its fixed port regardless of any
@@ -3795,8 +3482,6 @@ mod multi_window_phase2_tests {
                 .iter()
                 .map(|(id, enabled)| (id.to_string(), ws(*enabled)))
                 .collect(),
-            profiles: BTreeMap::new(),
-            default_profile_by_org: BTreeMap::new(),
             open_windows: open_windows.iter().map(|s| s.to_string()).collect(),
         }
     }
@@ -4170,16 +3855,6 @@ mod local_only_path_tests {
     }
 
     #[test]
-    fn sandbox_profile_top_level_is_local_only() {
-        assert!(is_local_only_path("/sandbox-profile"));
-    }
-
-    #[test]
-    fn node_sandbox_profile_is_local_only() {
-        assert!(is_local_only_path("/nodes/abc123/sandbox-profile"));
-    }
-
-    #[test]
     fn node_file_content_is_local_only() {
         // File CONTENT (GET/PUT /nodes/:id/file) routes to the local sync
         // agent so unsynced device-mirror files open in the editor; the agent
@@ -4435,79 +4110,6 @@ mod expand_tilde_tests {
         let local_path =
             Path::new("/Users/honzapav/Workspaces/portuni-tempo/nodes/abc/wip/page.html");
         assert!(super::path_within_root(&root, local_path));
-    }
-}
-
-#[cfg(test)]
-mod reject_secret_shaped_keys_tests {
-    use super::reject_secret_shaped_keys;
-    use std::collections::BTreeMap;
-
-    #[test]
-    fn rejects_a_secret_shaped_key_among_ordinary_ones() {
-        let mut env = BTreeMap::new();
-        env.insert("CLAUDE_CONFIG_DIR".to_string(), "/Users/x/.claude-work".to_string());
-        env.insert("ANTHROPIC_API_KEY".to_string(), "sk-...".to_string());
-        let err = reject_secret_shaped_keys(&env).unwrap_err();
-        assert!(err.contains("ANTHROPIC_API_KEY"));
-        assert!(err.to_lowercase().contains("keychain"));
-    }
-
-    #[test]
-    fn accepts_ordinary_keys() {
-        let mut env = BTreeMap::new();
-        env.insert("CLAUDE_CONFIG_DIR".to_string(), "/Users/x/.claude-work".to_string());
-        env.insert("EDITOR".to_string(), "vim".to_string());
-        assert!(reject_secret_shaped_keys(&env).is_ok());
-    }
-
-    #[test]
-    fn accepts_an_empty_map() {
-        assert!(reject_secret_shaped_keys(&BTreeMap::new()).is_ok());
-    }
-}
-
-#[cfg(test)]
-mod merge_profile_env_update_tests {
-    use super::merge_profile_env_update;
-    use std::collections::BTreeMap;
-
-    fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
-    }
-
-    #[test]
-    fn empty_value_for_an_existing_key_keeps_the_stored_value() {
-        let stored = map(&[("CLAUDE_CONFIG_DIR", "/Users/x/.claude-work")]);
-        let submitted = map(&[("CLAUDE_CONFIG_DIR", "")]);
-        assert_eq!(
-            merge_profile_env_update(&stored, submitted),
-            map(&[("CLAUDE_CONFIG_DIR", "/Users/x/.claude-work")])
-        );
-    }
-
-    #[test]
-    fn non_empty_value_overwrites_the_stored_value() {
-        let stored = map(&[("CLAUDE_CONFIG_DIR", "/Users/x/.claude-work")]);
-        let submitted = map(&[("CLAUDE_CONFIG_DIR", "/Users/x/.claude-other")]);
-        assert_eq!(
-            merge_profile_env_update(&stored, submitted),
-            map(&[("CLAUDE_CONFIG_DIR", "/Users/x/.claude-other")])
-        );
-    }
-
-    #[test]
-    fn empty_value_for_a_brand_new_key_is_stored_as_empty() {
-        let stored = BTreeMap::new();
-        let submitted = map(&[("NEW_KEY", "")]);
-        assert_eq!(merge_profile_env_update(&stored, submitted), map(&[("NEW_KEY", "")]));
-    }
-
-    #[test]
-    fn a_key_omitted_from_the_submission_is_dropped() {
-        let stored = map(&[("A", "1"), ("B", "2")]);
-        let submitted = map(&[("A", "1")]);
-        assert_eq!(merge_profile_env_update(&stored, submitted), map(&[("A", "1")]));
     }
 }
 

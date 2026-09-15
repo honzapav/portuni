@@ -1,60 +1,41 @@
 // Workspace layout shell. What fills the center depends on the selected node:
 //
-//   - selected node HAS terminals  -> terminal canvas center, detail aside (right)
-//   - selected node has NO terminal -> the node's detail / editor takes center
-//     stage (Option A: a node's "home" is its detail; a terminal is optional)
+//   - selected node has an open session -> SessionChat takes the center
+//   - selected node, no session        -> the node's detail / editor
 //   - nothing selected, something open -> "pick a node" hint
-//   - nothing open at all            -> the search picker (WorkspaceEmpty)
+//   - nothing open at all              -> the search picker (WorkspaceEmpty)
 //
-// The open-node list and its terminal tabs live in the global Sidebar
-// (workspace view); this component owns only the center + right-detail layout
-// and the detail-collapse state.
+// The open-node list and its session sub-rows live in the global Sidebar
+// (workspace view); this component owns only the center layout.
 
-import { lazy, Suspense, useState } from "react";
-import { ChevronLeft } from "lucide-react";
+import { lazy, Suspense } from "react";
 import type { GraphPayload, GraphNode, NodeDetail, SessionRunRow, SessionSummary } from "../types";
-import type { TerminalSession } from "../lib/sessions";
 import type { SessionsClient, SessionStateMessage } from "../lib/sessions-client";
-import type { Theme } from "../lib/theme";
 import type { FileEditor } from "../lib/use-file-editor";
-import { scopedKey } from "../lib/workspace-storage";
-import TerminalTabs from "./TerminalTabs";
 import WorkspaceEmpty from "./WorkspaceEmpty";
 import DetailPane from "./DetailPane";
 import EditorPane, { type EditorMode } from "./EditorPane";
 
 // SessionChat pulls in the AI Elements/shadcn/Streamdown stack (radix-ui,
 // shiki, motion, streamdown...), dead weight until a thread is actually
-// open -- lazy-loaded the same way TerminalTabs.tsx lazy-loads xterm's
-// TerminalPane, so it lands in its own chunk instead of every window's
-// startup bundle.
+// open -- lazy-loaded so it lands in its own chunk instead of every
+// window's startup bundle.
 const SessionChat = lazy(() => import("./SessionChat"));
 
 type Props = {
   graph: GraphPayload | null;
-  sessions: TerminalSession[];
-  // Theme drives xterm colors inside TerminalPane; the rest of the
-  // workspace uses CSS variables, but xterm holds a snapshot of those
-  // colors that has to be re-applied imperatively when the user
-  // toggles dark/light at runtime.
-  theme: Theme;
   selectedNodeId: string | null;
   onSelectNode: (id: string | null) => void;
-  activeSessionIdByNode: Record<string, string>;
-  onCloseSession: (sessionId: string) => void;
-  // Open a node (no terminal) from the empty-state picker.
+  // Open a node from the empty-state picker.
   onOpenNodeFromPicker: (node: GraphNode) => void;
   // How many nodes are open, so the empty-state picker only shows when the
-  // workspace is truly empty (a node can be open without any session).
+  // workspace is truly empty.
   openNodeCount: number;
   // Detail data for the selected node. Fetched in App.tsx whenever
   // selectedNodeId changes.
   nodeDetail: NodeDetail | null;
   nodeDetailLoading: boolean;
   nodeDetailError: string | null;
-  agentCommand: string;
-  terminalLaunch: string;
-  onOpenTerminal: (nodeId: string, profileId?: string | null) => void | Promise<void>;
   // Refetch graph + this view's node detail after an edit. DetailPane's
   // edit / lifecycle / sync flows all funnel through this.
   onMutate: () => Promise<void>;
@@ -72,10 +53,9 @@ type Props = {
   onCloseEditor: () => void;
   onExpandEditor: () => void;
   // Runner batch (#342): the selected node's persistent session, when one
-  // is running/waiting/suspended -- SessionChat then takes over the detail
-  // surface (centre when no terminal is open, aside otherwise) instead of
-  // DetailPane. Fetched by App.tsx alongside nodeDetail; null when the
-  // node has no live session or nothing is selected.
+  // is running/waiting/suspended -- SessionChat then takes over the center
+  // instead of DetailPane. Fetched by App.tsx alongside nodeDetail; null
+  // when the node has no live session or nothing is selected.
   openSession: SessionSummary | null;
   sessionsClient: SessionsClient;
   onSessionUpdated: (session: SessionSummary) => void;
@@ -86,21 +66,14 @@ type Props = {
 };
 
 export default function WorkspaceView({
-  sessions,
   selectedNodeId,
   onSelectNode,
-  theme,
   graph,
-  activeSessionIdByNode,
-  onCloseSession,
   onOpenNodeFromPicker,
   openNodeCount,
   nodeDetail,
   nodeDetailLoading,
   nodeDetailError,
-  agentCommand,
-  terminalLaunch,
-  onOpenTerminal,
   onMutate,
   editorFile,
   editor,
@@ -117,21 +90,6 @@ export default function WorkspaceView({
   onOpenChat,
   liveSessionStates,
 }: Props) {
-  const [detailVisible, setDetailVisible] = useState<boolean>(() => {
-    return localStorage.getItem(scopedKey("workspace.detailVisible")) !== "false";
-  });
-  const toggleDetail = () => {
-    setDetailVisible((v) => {
-      localStorage.setItem(scopedKey("workspace.detailVisible"), String(!v));
-      return !v;
-    });
-  };
-
-  // Does the selected node actually have a terminal? That decides whether the
-  // center is the terminal canvas (detail to the side) or the detail itself.
-  const selectedHasSessions =
-    selectedNodeId != null && sessions.some((s) => s.nodeId === selectedNodeId);
-
   // The editor occupies the detail surface only when its open file belongs to
   // the currently-selected node AND we're not in fullscreen. When fullscreen,
   // App renders EditorFullscreen instead and the pane must not mount a second
@@ -145,16 +103,11 @@ export default function WorkspaceView({
   // A running/waiting session renders as chat; a suspended one still does
   // (the composer just disables, with a Nahodit affordance) -- closed and
   // archived fall through to the plain node detail, since those are
-  // history, not something to keep steering. Matches #342's "when the
-  // selected node has an open session (running/waiting/suspended)".
+  // history, not something to keep steering.
   const hasOpenSession =
     openSession != null && (openSession.state === "running" || openSession.state === "suspended");
 
-  // The detail surface (DetailPane, SessionChat, or EditorPane when a file
-  // is open), rendered either center-stage (no terminal) or in the right
-  // aside (with a terminal). `collapsible` adds the collapse chevron used
-  // only in the aside.
-  const detailSurface = (collapsible: boolean) =>
+  const surface =
     showEditor && editorFile ? (
       <EditorPane
         editor={editor}
@@ -186,17 +139,12 @@ export default function WorkspaceView({
         error={nodeDetailError}
         onSelect={(id) => onSelectNode(id)}
         canGoBack={false}
-        terminalLaunch={terminalLaunch}
         onBack={() => {
           // No-op: workspace doesn't keep a back-stack like graph does.
         }}
         onMutate={onMutate}
-        agentCommand={agentCommand}
-        onOpenTerminal={onOpenTerminal}
         onOpenFile={onOpenFile}
         embedded
-        onCollapse={collapsible ? toggleDetail : undefined}
-        terminalSessions={sessions}
         onSessionStarted={onSessionStarted}
         onOpenChat={onOpenChat}
         liveSessionStates={liveSessionStates}
@@ -206,33 +154,10 @@ export default function WorkspaceView({
   return (
     <div className="flex h-full w-full overflow-hidden bg-[var(--color-bg)]">
       <main className="relative flex min-w-0 flex-1 flex-col">
-        {/*
-          Terminal canvas. Mounted whenever ANY session exists so every
-          xterm's scrollback survives switching to a terminal-less node
-          (see the comment atop TerminalTabs.tsx); only VISIBLE when the
-          selected node actually has sessions.
-        */}
-        {sessions.length > 0 && (
-          <div
-            className={selectedHasSessions ? "absolute inset-0" : "hidden"}
-            aria-hidden={!selectedHasSessions}
-          >
-            <TerminalTabs
-              sessions={sessions}
-              selectedNodeId={selectedNodeId}
-              activeSessionIdByNode={activeSessionIdByNode}
-              onCloseSession={onCloseSession}
-              theme={theme}
-            />
-          </div>
-        )}
-
-        {/* Option A: a selected node with no terminal shows its detail /
-            files (or the editor) center-stage, in a readable column. */}
-        {!selectedHasSessions && selectedNodeId && (
+        {selectedNodeId && (
           <div className="absolute inset-0 flex justify-center">
             <div className="flex h-full w-full max-w-[920px] flex-col border-x border-[var(--color-border)]">
-              {detailSurface(false)}
+              {surface}
             </div>
           </div>
         )}
@@ -248,24 +173,6 @@ export default function WorkspaceView({
             </div>
           ))}
       </main>
-
-      {/* Right detail aside -- only when a terminal occupies the center. For a
-          terminal-less node the detail IS the center, so there's no aside. */}
-      {selectedHasSessions &&
-        (detailVisible ? (
-          <aside className="flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)]">
-            {detailSurface(true)}
-          </aside>
-        ) : (
-          <button
-            onClick={toggleDetail}
-            title="Zobrazit detail"
-            aria-label="Zobrazit detail"
-            className="flex h-full w-6 shrink-0 items-center justify-center border-l border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-          >
-            <ChevronLeft size={14} />
-          </button>
-        ))}
     </div>
   );
 }

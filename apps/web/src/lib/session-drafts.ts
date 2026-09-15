@@ -4,10 +4,8 @@
 // is mounted at a position in the tree that survives a change of session:
 // WorkspaceView renders one detail surface and swaps which session feeds it,
 // so React reused the same instance and the draft followed the user from one
-// task to the next (and got overwritten by the next one). The same placement
-// also moves between the centre column and the right aside the moment a
-// terminal opens on the node, which unmounts the surface and threw the draft
-// away outright.
+// task to the next (and got overwritten by the next one), and any remount of
+// the surface threw the draft away outright.
 //
 // A draft belongs to the session, not to whichever component happens to be
 // showing it, so it lives here: keyed by session id, for as long as the

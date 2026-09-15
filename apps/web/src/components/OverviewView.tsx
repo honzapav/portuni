@@ -8,7 +8,7 @@
 // SyncOverview's pattern.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Clock, RefreshCw, Sparkles, Terminal } from "lucide-react";
+import { AlertTriangle, Clock, MessagesSquare, RefreshCw, Sparkles } from "lucide-react";
 import type {
   AccessRequest,
   OverviewAttentionNode,
@@ -200,7 +200,7 @@ function SessionsCard({
   // the caller's own sessions -- the team-wide list is the hosts spec's job.
   const sessions = sortInboxSessions(running, suspended, meId);
   return (
-    <Card title="Relace" icon={<Terminal size={14} />}>
+    <Card title="Relace" icon={<MessagesSquare size={14} />}>
       {sessions.length === 0 ? (
         <Empty>Žádné běžící ani pozastavené relace.</Empty>
       ) : (

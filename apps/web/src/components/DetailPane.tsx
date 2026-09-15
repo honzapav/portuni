@@ -57,7 +57,6 @@ import type { SessionStateMessage } from "../lib/sessions-client";
 import { groupEventsByDate } from "../lib/events";
 import { isTauri, openInFinder } from "../lib/backend-url";
 import { externalLinkProps } from "../lib/external-link";
-import type { TerminalSession } from "../lib/sessions";
 import type { Actor } from "../api";
 import {
   updateNode,
@@ -150,9 +149,6 @@ type Props = {
   canGoBack: boolean;
   onBack: () => void;
   onMutate: () => Promise<void>;
-  agentCommand: string;
-  terminalLaunch: string;
-  onOpenTerminal: (nodeId: string, profileId?: string | null) => void | Promise<void>;
   // True when this pane is rendered inside another column (e.g. the
   // workspace's right-side detail). Drops the slide-in animation, the
   // 40vw / min-w-440 sizing, and the left border so the parent's layout
@@ -165,11 +161,6 @@ type Props = {
   // Open a file (mirror-relative path) in the editor. Provided by the
   // workspace; absent in contexts without an editor surface.
   onOpenFile?: (nodeId: string, relPath: string) => void;
-  // This window's own live terminal tabs (#232) -- lets the Sessions tab
-  // show "Pozastavit" on a running row correlated to a live agent
-  // terminal, same mechanism as the window close dialog's Pozastavit
-  // (#231). Absent in contexts with no terminal concept (none today).
-  terminalSessions?: TerminalSession[];
   // NewTaskButton's "Nový úkol" success (#342) -- provided by the
   // workspace, which owns the open-session state SessionChat renders from.
   // Absent in contexts with no chat surface (none today).
@@ -185,7 +176,7 @@ type Props = {
 };
 
 // Memoized: 3.5k lines of pane re-rendered wholesale on every App render
-// (editor keystrokes, terminal activity) even when its props are unchanged.
+// (editor keystrokes, session state) even when its props are unchanged.
 export default memo(DetailPane);
 
 function DetailPane({
@@ -197,13 +188,9 @@ function DetailPane({
   canGoBack,
   onBack,
   onMutate,
-  agentCommand,
-  terminalLaunch,
-  onOpenTerminal,
   embedded,
   onCollapse,
   onOpenFile,
-  terminalSessions,
   onSessionStarted,
   onOpenChat,
   liveSessionStates,
@@ -259,13 +246,9 @@ function DetailPane({
       canGoBack={canGoBack}
       onBack={onBack}
       onMutate={onMutate}
-      agentCommand={agentCommand}
-      terminalLaunch={terminalLaunch}
-      onOpenTerminal={onOpenTerminal}
       embedded={embedded}
       onCollapse={onCollapse}
       onOpenFile={onOpenFile}
-      terminalSessions={terminalSessions}
       onSessionStarted={onSessionStarted}
       onOpenChat={onOpenChat}
       liveSessionStates={liveSessionStates}
@@ -282,13 +265,9 @@ function DetailPaneBody({
   canGoBack,
   onBack,
   onMutate,
-  agentCommand,
-  terminalLaunch,
-  onOpenTerminal,
   embedded,
   onCollapse,
   onOpenFile,
-  terminalSessions,
   onSessionStarted,
   onOpenChat,
   liveSessionStates,
@@ -301,13 +280,9 @@ function DetailPaneBody({
   canGoBack: boolean;
   onBack: () => void;
   onMutate: () => Promise<void>;
-  agentCommand: string;
-  terminalLaunch: string;
-  onOpenTerminal: (nodeId: string, profileId?: string | null) => void | Promise<void>;
   embedded?: boolean;
   onCollapse?: () => void;
   onOpenFile?: (nodeId: string, relPath: string) => void;
-  terminalSessions?: TerminalSession[];
   onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow }) => void;
   onOpenChat?: (nodeId: string, sessionId: string) => void;
   // Live session_state map for the Relace tab (see SessionsSection).
@@ -368,10 +343,6 @@ function DetailPaneBody({
   // „Nová prezentace" failed: shown under the toolbar, where NewFileForm's
   // own error would be (#267). Cleared by the next attempt or a new file.
   const [presentationError, setPresentationError] = useState<string | null>(null);
-  // Opening a terminal does two sequential round-trips (fetch node +
-  // create mirror) before the view switches, so guard the button with a
-  // visible pending state -- otherwise the click looks like a no-op.
-  const [launchingTerminal, setLaunchingTerminal] = useState(false);
   // Header/Files-tab "create the local mirror" action -- shared pending +
   // error state so both entry points (header button, and the Files tab
   // banner from the follow-up issue) render the same feedback.
@@ -407,16 +378,6 @@ function DetailPaneBody({
       setMirrorError(null);
     }
   }, [node.id, node.name]);
-
-  const openEmbeddedTerminal = async (profileId?: string | null) => {
-    if (launchingTerminal) return;
-    setLaunchingTerminal(true);
-    try {
-      await onOpenTerminal(node.id, profileId);
-    } finally {
-      setLaunchingTerminal(false);
-    }
-  };
 
   // Trigger node-wide sync. Pushes push_candidates, pulls pull_candidates,
   // surfaces conflicts/errors. Refreshes the per-file status map after.
@@ -459,7 +420,7 @@ function DetailPaneBody({
     }
   };
 
-  // Create the local mirror for this node without launching a terminal.
+  // Create the local mirror for this node.
   // Shared by the header button (this issue) and the Files tab banner
   // (follow-up issue): both just call this and read creatingMirror/
   // mirrorError back. Mirrors handleRunSync's refresh so the Files tab
@@ -577,8 +538,8 @@ function DetailPaneBody({
   };
 
   const handleArchive = async () => {
-    // window.confirm() is a no-op in the Tauri webview on macOS — same
-    // bug as TerminalTabs (commit d229d84). The button lives in the
+    // window.confirm() is a no-op in the Tauri webview on macOS (commit
+    // d229d84). The button lives in the
     // "Nebezpečná oblast" section in edit mode, so a click is already a
     // deliberate gesture, and archive is reversible from the DB.
     setBusy(true);
@@ -1221,9 +1182,7 @@ function DetailPaneBody({
         {tab === "sessions" && (
           <SessionsSection
             nodeId={node.id}
-            onOpenTerminal={openEmbeddedTerminal}
             onOpenFile={onOpenFile}
-            terminalSessions={terminalSessions}
             onOpenChat={onOpenChat ? (sessionId) => onOpenChat(node.id, sessionId) : undefined}
             liveStates={liveSessionStates}
             canManage={canManage}
@@ -1266,14 +1225,7 @@ function DetailPaneBody({
         ) : (
           <div className="flex flex-col gap-2">
             {node.type !== "organization" ? (
-              <NewTaskButton
-                node={node}
-                agentCommand={agentCommand}
-                terminalLaunch={terminalLaunch}
-                onEmbeddedOpen={openEmbeddedTerminal}
-                embeddedPending={launchingTerminal}
-                onSessionStarted={onSessionStarted}
-              />
+              <NewTaskButton node={node} onSessionStarted={onSessionStarted} />
             ) : null}
           </div>
         )}
@@ -3666,8 +3618,8 @@ function FolderLink({ nodeId }: { nodeId: string }) {
   );
 }
 
-// Header action that creates the local mirror for this node without
-// launching a terminal. Fills the same horizontal slot as PathCopy so the
+// Header action that creates the local mirror for this node. Fills the
+// same horizontal slot as PathCopy so the
 // layout doesn't shift the moment the mirror is created.
 function CreateMirrorButton({
   pending,

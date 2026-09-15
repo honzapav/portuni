@@ -490,14 +490,8 @@ symlink to this file.
   now takes an explicit `ws_id` instead of resolving it itself). The
   `portuni-html` URI scheme handler resolves the same way
   from `ctx.webview_label()` via `ws_of_from_dir` (no `tauri::Window` object
-  available there, just the label). `pty_spawn` captures the spawning
-  window's workspace onto `PtySession.ws_id` (already true since #219, now
-  window- rather than active-workspace-sourced); `pty_write`/`pty_resize`/
-  `pty_kill` refuse a session whose `ws_id` doesn't match the caller's own
-  window (`session_owned_by`, deny-by-default when either side is
-  unresolved) — `PtyState` is process-wide, so without this one workspace's
-  window could reach into another's PTY. App-global commands (workspace
-  list/CRUD, updater, profiles, clipboard, `open_external`, exit,
+  available there, just the label). App-global commands (workspace
+  list/CRUD, updater, clipboard, `open_external`, exit,
   `workspace_migration_status`, `get_turso_status`, `save_config`/
   `setup_central`/`migrate_to_workspaces` themselves — all legitimately
   called from a `bootstrap` window where `ws_of` would error) keep
@@ -596,9 +590,8 @@ symlink to this file.
   `window.close()` — the same `tauri://close-requested` event a window's
   own native close button already raises, which the webview's
   `onCloseRequested` listener (`App.tsx`) already guards (dirty editor →
-  unsynced files → **running terminals**, new: a plain "Zavřít okno? Běží N
-  terminálů, budou ukončeny." confirm — the session-aware
-  Ukončit/Pozastavit/Zrušit dialog is phase 3). There is no more separate
+  unsynced files; runs belong to the sidecar and survive a window close, so
+  there is no third guard). There is no more separate
   `app-exit-requested` broadcast + `confirmExit()`/`approve_exit` dance —
   `approve_exit` and `EXIT_APPROVED` are gone entirely. `quit_advance`
   (pure: `Option<QuitState> -> QuitAdvance`) decides what happens next —
@@ -651,57 +644,26 @@ symlink to this file.
   workspace at all yet. No capability entry needed — the plugin registers
   no invokable commands, only a Rust-side lifecycle hook.
 
-- **"Pozastavit" (suspend a running agent terminal) is one shared
-  mechanism, used from two places: the window-close dialog (#231) and the
-  node-detail Sessions tab (#232).** `SessionSummary` (REST, `GET
-  /nodes/:id/sessions`) gained `terminal_id: string | null` (`toSummary`,
-  `apps/server/api/sessions.ts`) so either caller can correlate its own
-  local terminal ids (`lib/sessions.ts`'s `TerminalSession.id` — always
-  Claude-only, since Codex/Vibe's config format has no header for it) to
-  their persistent session rows without a bespoke lookup.
-  `apps/web/src/lib/session-suspend.ts` holds the whole mechanism, not just
-  decision logic: `correlateSessions`/`suspendableTerminalIds` (pure —
-  agent command **and** a correlated `running` session; the session row's
-  `cli` column is always `NULL` and can't be used for this),
-  `allSuspended`/`suspendPollTimedOut` (pure, the 30s poll's stop
-  conditions), and the async orchestration both callers actually invoke:
-  `fetchCorrelatedSessions` (one `GET /nodes/:id/sessions` per distinct
-  node among the given terminals) and `suspendTerminalsAndPoll` (`pty_write`s
-  a plain-English instruction, `SUSPEND_INSTRUCTION`, into each terminal
-  asking the agent to call `portuni_session_suspend` on its own initiative
-  — there is no other protocol for this, the agent decides — then polls
-  every 2s, re-fetching fresh correlated state each tick, until none is
-  `running` or 30s pass; returns whether it timed out and leaves "what
-  happens to the terminal" to the caller). **The close dialog** (`App.tsx`,
-  replacing #229's plain confirm): `onCloseRequested` fetches correlated
-  sessions before showing it. **Ukončit**: `killTerminalsAndCloseWindow` —
-  `pty_kill` every terminal (this is also what #229's plain-confirm path
-  was missing: destroying the window alone never killed its PTYs, since
-  `PtyState` is process-wide and a window closing doesn't touch it — the
-  child only dies when the whole app exits and every fd, PTY masters
-  included, finally closes), then destroys the window. **Pozastavit**
-  (`handleSuspendAndClose`, shown only when `suspendableIds` is non-empty):
-  calls `suspendTerminalsAndPoll`, then **always** `killTerminalsAndCloseWindow`s
-  every terminal in the dialog regardless of outcome; a timeout flips the
-  dialog to say so first. **Zrušit**: `declineExit()`, same as the other
-  two guards. **The Sessions tab** (`DetailPane.sessions.tsx`'s
-  `SessionRow`, #232): `DetailPane` gained a `terminalSessions` prop
-  (threaded from `App.tsx`/`WorkspaceView.tsx`'s own `sessions` state, the
-  window's live terminal tabs — previously `DetailPane` had no terminal
-  concept at all) so a `running` row can show "Pozastavit" when its
-  `terminal_id` is in the node-scoped `suspendableTerminalIds` set. Its own
-  click handler calls `suspendTerminalsAndPoll` for that one terminal, then
-  `pty_kill`s it regardless of outcome (a suspend attempt that's over, one
-  way or another, shouldn't leave a stale terminal behind — "Otevřít
-  terminál" spawns a fresh one on demand) and reloads the list so the row
-  picks up the real state.
+- **The embedded terminal is gone (#345, runner batch phase 4).** There is
+  no PTY, no xterm, no Seatbelt profile fetched by the desktop, no spawn
+  profiles registry and no terminal branch in the window close guard —
+  `apps/desktop/src/pty.rs`, `TerminalPane.tsx`/`TerminalTabs.tsx`,
+  `lib/session-suspend.ts`, `lib/prompt.ts`, `lib/profiles.ts` and the
+  `AGENT_PRESETS`/`TERMINAL_PRESETS` settings were deleted. An agent runs
+  only as a task (`POST /sessions`, `SessionChat`), per
+  `docs/superpowers/specs/2026-09-12-runner-and-session-design.md`; the
+  server-side leftovers of the terminal model (`X-Portuni-Terminal`,
+  `POST /terminals/:id/exit`, `sandbox-profile.ts`, the hardlink
+  projection) are #346's removal and still exist until then, with nothing
+  on the desktop calling them. What survived from `pty.rs`:
+  `auth::ensure_device_token` (the central-mode sync agent's device token,
+  label "Sync agent") and `shell_path::login_shell_path` (the sidecar
+  needs a login shell's PATH to find `claude`).
 
-- **Backend/PTY events are per-window, not broadcast (#227).**
+- **Backend events are per-window, not broadcast (#227).**
   `backend-ready`, `backend-error` (`spawn_sidecar_ws`'s reader loop and
-  its deferred-central branch), `pty-data` and `pty-exit` all moved from
-  `app.emit` to `app.emit_to("ws:<id>", …)` (`emit_to(&label, …)` for the
-  PTY pair, keyed off `PtySession.ws_id`/`ws_of` at spawn time, same as
-  #223's write-side isolation). This removed the `is_active_ws` gating
+  its deferred-central branch) moved from `app.emit` to
+  `app.emit_to("ws:<id>", …)`. This removed the `is_active_ws` gating
   entirely (and the function itself, now `#[allow(dead_code)]` — kept only
   for #230's single-instance fallback) — a per-window target already
   guarantees only that workspace's own window ever receives the event, so
@@ -746,8 +708,8 @@ symlink to this file.
   core (`migrateUnscopedStorage`, operating on a `StorageLike` interface)
   is unit-tested in `test/workspace-storage.test.ts`, server-side via
   `tsx`, same pattern as `test/sessions-helpers.test.ts` importing from
-  `apps/web/src/lib/*.js`. `theme`, `agentCommand`, `terminalLaunch` stay
-  global/unscoped by design (user preferences, not workspace state) —
+  `apps/web/src/lib/*.js`. `theme` stays global/unscoped by design (a user
+  preference, not workspace state) —
   `App.tsx` now also subscribes to the native `storage` event (fires in
   every OTHER window when one writes, since they share an origin) so a
   change in one window's Settings applies live in every other one instead
@@ -778,8 +740,11 @@ symlink to this file.
   `docs/superpowers/specs/2026-08-31-scope-sessions-redesign-design.md` and
   the scope-enforcement docs page.
 - **Disk read scope = the session scope, on REAL paths for the seed set, a
-  hardlink projection for everything else.** The MCP `SessionScope` is the
-  single source of truth. The Seatbelt profile grants rw on the home mirror
+  hardlink projection for everything else.** (Server-side model from the
+  terminal era; the desktop no longer fetches a sandbox profile or spawns
+  under Seatbelt since #345, and #346 removes this whole layer. Kept here
+  verbatim until then.) The MCP `SessionScope` is the single source of
+  truth. The Seatbelt profile grants rw on the home mirror
   and **read-only on the REAL mirrors of the depth-1 neighbour set** (the
   stable spawn scope), computed at spawn — locally from the graph, in central
   mode from `CentralClient.nodeNeighbours` (`sandbox-profile.ts`
@@ -927,11 +892,10 @@ symlink to this file.
   bytes once (`CentralClient.getFileRaw` over REST in agent mode, since that
   front door has no graph db) and writes a real copy into the same directory.
 
-- **No automatic first prompt on spawn.** A terminal opened from a node
-  detail (`buildAgentCommand`, `apps/web/src/lib/prompt.ts`) starts empty
-  and ready — the app never sends an orientation message. What that prompt
-  used to fetch (node context, responsibilities, recent events, a handoff
-  pointer for a suspended session) is written into `PORTUNI_SCOPE.md`
+- **No automatic orientation message.** A hand-opened CLI in a mirror
+  starts with nothing sent by Portuni; what an orientation prompt used to
+  fetch (node context, responsibilities, recent events, a handoff pointer
+  for a suspended session) is written into `PORTUNI_SCOPE.md`
   instead (`domain/write-scope.ts` `buildOrientationHint`,
   `domain/scope-materialize.ts` `orientationForNode`) — appended there only,
   never into `.cursor/rules` or the `CLAUDE.md`/`AGENTS.md` marker blocks,
@@ -941,13 +905,9 @@ symlink to this file.
   central, which has the real graph db) backs
   `materializeAllRegisteredMirrors`'s `orientationFor` resolver in
   `desktop.ts`'s agent-mode boot, in place of the local `orientationForNode`
-  (a direct db read agent mode can't make). Agent-command presets carry no
-  `{prompt}` placeholder anymore (`apps/web/src/lib/settings.ts`);
-  `TerminalPane.tsx` times spawn phases (provisioning -> `pty_spawn` -> CLI
-  boot to first byte) and prints/logs a one-line breakdown on first output.
+  (a direct db read agent mode can't make).
 - **Provider instances (Settings → Runnery) are a sidecar `runners.json`
-  registry; the desktop's old `config.json` profiles registry is dormant
-  until phase 4 removes it.** `domain/runner/instances.ts` owns
+  registry.** `domain/runner/instances.ts` owns
   `<dataDir>/runners.json` (create/update/delete/`setOrgDefault`), served
   over `api/runners.ts` (`GET /runners`, `/runners/instances` CRUD, `PUT
   …/org-default`, `DELETE /runners/org-defaults/:orgId`); the web side is
@@ -957,34 +917,22 @@ symlink to this file.
   (`agent-router.ts`, mutations behind `guardAgentRestWrite`), never to
   central. Env values never reach a client (`env_keys` only; an empty
   submitted value for a known key means "leave unchanged"), secret-shaped
-  keys (`shared/runner-env.ts`'s `isSecretShapedEnvKey`, the same rule as
-  `workspace::is_secret_shaped_env_key`) and `PORTUNI_*` keys are refused
-  with `INSTANCE_ENV_KEY_REFUSED`, and a leading `~` expands to `$HOME`
-  only when `getInstanceEnv` reads the value for a run. The Rust profile
-  commands, `lib/profiles.ts` and `pty_spawn`'s `PORTUNI_PROFILE_ID`/
-  `X-Portuni-Profile` threading (now landing in the session row's
-  `instance_id` column, renamed from `profile_id` by migration 034) still
-  exist for the embedded terminal and are removed with it (#345).
-- **A durable session row learns its PTY died via a server call, not a
-  local signal.** `pty_spawn` exports `PORTUNI_TERMINAL_ID=<terminal id>`
-  (the frontend's `term_<node>_<ts>_<rand>`, i.e. `args.session_id` — no
-  separate id is minted); a Claude Code connection threads it through
-  `X-Portuni-Terminal` (Claude-only env-expansion, same channel as
-  `X-Portuni-Profile`/`X-Portuni-Spawn-Id`) into the session row's
-  `terminal_id` column. On PTY exit — `pty_kill`, the user typing `exit`,
-  or a crash — the reader thread's EOF/error path in `apps/desktop/src/
-  pty.rs` (`report_terminal_exit`) POSTs to the *owning workspace's*
-  sidecar (`ws_id` captured on `PtySession` at spawn time, not re-resolved
-  at exit) at `POST /terminals/:terminal_id/exit`, which moves every
-  `running` session sharing that `terminal_id` to `closed` (#218/#219).
-  Best-effort: failure just leaves the row until the MCP transport's idle
-  GC backstop (`transport.ts`'s `onclose`) closes it, the same backstop
-  that covers Codex/Vibe (no header support) and crashes that never reach
-  the reader thread's exit path. Like `api_request`'s webview proxy, this
-  call carries `X-Portuni-Webview-Proxy` (`lib.rs`'s `webview_proxy_secret`)
-  when the hardened posture (#213) is active for that workspace — it
-  originates from the same trusted Tauri host process, not a spawned
-  terminal.
+  keys (`shared/runner-env.ts`'s `isSecretShapedEnvKey`) and `PORTUNI_*`
+  keys are refused with `INSTANCE_ENV_KEY_REFUSED`, and a leading `~`
+  expands to `$HOME` only when `getInstanceEnv` reads the value for a run.
+  The session row's `instance_id` column (renamed from `profile_id` by
+  migration 034) is where a run's instance lands; the desktop's old
+  `config.json` profiles registry and the `X-Portuni-Profile` header
+  threading are gone (#345) — an old config.json that still carries a
+  `profiles` key loads fine, the key is ignored and dropped on save.
+- **`sessions.terminal_id` and `POST /terminals/:terminal_id/exit` are
+  dead on the desktop side.** They carried the embedded terminal's exit
+  signal (a Claude Code connection threaded `PORTUNI_TERMINAL_ID` through
+  `X-Portuni-Terminal`; the PTY reader thread POSTed the exit). Nothing
+  sets the header or calls the route since #345; the column, the route and
+  `closeSessionsByTerminalId` stay until #346 removes them server-side. A
+  hand-opened CLI's row is still resolved by the MCP transport's idle GC
+  (`transport.ts`'s `onclose`), which suspends it (#329).
 - **A `sessions` row exists once a task is started OR a handshake completes
   (runner batch, Rule 2 "The session exists before the runner").** A task
   started through `POST /sessions` (`domain/runner/session-runtime.ts`'s
@@ -1755,14 +1703,12 @@ symlink to this file.
   backoff is 1s→30s, doubling (`next_backoff_ms`, a pure function unit
   tested in isolation — `sessions_ws::backoff_tests`); the connection
   registry (`SessionsWsState`, keyed by workspace id like
-  `BackendPorts`/`AuthTokens`, not by an opaque session id the way PTY's
-  own registry is) carries a `generation` counter bumped on every connect/
+  `BackendPorts`/`AuthTokens`) carries a `generation` counter bumped on every connect/
   disconnect so a background task from a superseded connect (e.g. sleeping
   out a backoff when a fresh `sessions_connect` or a `sessions_disconnect`
   arrives) recognizes it no longer owns the entry and exits instead of
-  resurrecting a connection nothing wants. **Unlike PTY sessions (which
-  are NOT torn down on window close today — a known gap), this one is**:
-  `disconnect_for_ws` is called both from `sessions_disconnect` and from
+  resurrecting a connection nothing wants. **It is torn down on window
+  close**: `disconnect_for_ws` is called both from `sessions_disconnect` and from
   `on_window_event`'s `Destroyed` arm, since a force-closed window never
   gets to call the command itself. `tokio-tungstenite`/`tokio`/
   `futures-util` are new direct dependencies (default features only, no
@@ -1771,7 +1717,7 @@ symlink to this file.
   own async runtime. No change needed to `capabilities/default.json`:
   custom app commands need no per-command capability entry in this
   codebase (confirmed against the existing, equally un-listed
-  `api_request`/`pty_spawn`), only the `windows: ["bootstrap", "ws:*"]`
+  `api_request`), only the `windows: ["bootstrap", "ws:*"]`
   scope already covers every command.
   **`apps/web/src/lib/sessions-client.ts`** is the typed client the two
   transports share one interface for: Tauri mode invokes those three
@@ -1802,8 +1748,8 @@ symlink to this file.
   behavior across a forced connection drop, and that a `delta` frame never
   moves the tracked seq.
 - **SessionChat + "Nový úkol" (#342, runner batch phase 3, second issue)
-  replace the embedded terminal as Práce's primary path, not yet its only
-  one.** `apps/web/src/lib/session-chat.ts` mirrors
+  are Práce's way of running an agent (the embedded terminal they first
+  ran beside is gone since #345).** `apps/web/src/lib/session-chat.ts` mirrors
   `domain/runner/types.ts`'s `CanonicalEvent` union by hand (that module is
   server-only, deliberately not shared — same boundary `shared/api-types.ts`
   exists to keep) and holds every pure helper `test/session-chat-helpers.test.ts`
@@ -1832,15 +1778,10 @@ symlink to this file.
   — the same `instances.find(i => i.org_defaults.includes(orgId))` lookup
   `RunnersSection.tsx` already used) that calls `POST /sessions` and hands
   the fresh `{session, run}` back to its caller.
-  **`TerminalSplitButton` (`DetailPane.files.tsx`) is renamed
-  `NewTaskButton` and its primary/dropdown roles swap**: the primary
-  action is now "Nový úkol" (opens `NewTaskDialog`); the two terminal
-  launch paths that used to be the primary action and the dropdown's only
-  item ("Otevřít terminál v Portuni", "Otevřít v externím terminálu") both
-  move into the dropdown, unchanged otherwise — kept reachable
-  deliberately (per the issue: "the terminal canvas stays reachable behind
-  the old button during this phase so both can be compared on a real
-  node"; removal is phase 4). `onSessionStarted` threads from there up
+  **`NewTaskButton` (`DetailPane.files.tsx`, the former
+  `TerminalSplitButton`) is a single "Nový úkol" button** opening
+  `NewTaskDialog`; the terminal-launch dropdown it carried during phase 3
+  went with the terminal (#345). `onSessionStarted` threads from there up
   through `DetailPane`'s two-layer prop passthrough (`DetailPane` ->
   `DetailPaneBody`) as an optional callback — inside `WorkspaceView` it
   sets the shown thread; **the graph view's own `DetailPane` passes one
@@ -1849,15 +1790,11 @@ symlink to this file.
   leaving the callback off — the original #342 cut — meant a task started
   from Graf ran with nothing in the UI showing it until the user happened
   to open the same node in Práce.
-  **`WorkspaceView`'s detail surface gained a third branch, alongside
-  DetailPane/EditorPane**: `SessionChat` renders whenever the selected
+  **`WorkspaceView`'s centre surface has three branches, EditorPane /
+  SessionChat / DetailPane**: `SessionChat` renders whenever the selected
   node's `openSession` is `running` or `suspended` (closed/archived fall
   through to the plain node detail — those are history, not something to
-  keep steering), in EITHER the centre slot (no terminal open for that
-  node) or the aside slot (a terminal IS open) — the existing
-  `detailSurface(collapsible)` function already unified those two
-  placements for DetailPane/EditorPane, so this is one more branch there,
-  not new outer-layout code. `App.tsx` owns the state this depends on:
+  keep steering). `App.tsx` owns the state this depends on:
   ONE `SessionsClient` for the app's lifetime (`useState(() =>
   createSessionsClient())`, since the client opens its transport
   immediately — creating it lazily on first render, never per-render, is
@@ -1892,9 +1829,8 @@ symlink to this file.
   `filterSessions`); the restriction is this helper's job, client-side,
   matching the issue's "(the caller's own)" -- the team-wide view is later,
   host-aware work, not this issue. `countRunningSessions` sums a
-  `session_state` map's `running` entries for `StatusFooter`'s count,
-  replacing the old PTY-tab count (`sessions.length`) -- a session can be
-  `running` with no terminal tab open for it in this window at all.
+  `session_state` map's `running` entries for `StatusFooter`'s count -- a
+  session can be `running` without being open anywhere in this window.
   **`fetchMe()` widened to return `id`** (the server's `handleMe` already
   sent it; only the client's return type was narrower) -- `sessionRowAccess`
   needs the caller's own id, which `canManage` alone never carried.
@@ -1920,16 +1856,11 @@ symlink to this file.
   **`onOpenChat` threads from `App.tsx`'s new `openSessionChat(nodeId)`**
   through both `DetailPane` instances (graph view directly, Workspace view
   via `WorkspaceView.tsx`) and into `SessionsSection`. It replaces the
-  OverviewView-only `overviewOpenSession`, which used to also call
-  `workspaceSelectSession(nodeId, sessionId)` -- writing a PERSISTENT
-  session id into `activeSessionIdByNode` (the PTY terminal-tab selection
-  map) was always a latent mismatch: on a node that also has a real
-  terminal tab open, it would silently steal that tab's "active" pointer.
-  `openSessionChat` just opens/selects the node; #342's own
+  OverviewView-only `overviewOpenSession`. `openSessionChat` just
+  opens/selects the node; #342's own
   `workspaceOpenSession` fetch-on-select effect finds the session with no
   id needed. **`WorkspaceNodeList.tsx`** renders persistent-session
-  sub-rows as a second `<ul>` alongside the existing PTY terminal sub-rows
-  (unchanged), fed by `App.tsx`'s `liveOpenSessionsByNode` -- one
+  sub-rows under each node, fed by `App.tsx`'s `liveOpenSessionsByNode` -- one
   `fetchNodePersistentSessions(id, false)` per entry in `openNodeIds`,
   refetched whenever that set changes, live-overlaid via
   `mergeLiveSessionStates` against the SAME app-wide `sessionStates` map
@@ -1937,8 +1868,7 @@ symlink to this file.
   `Set`-backed so multiple listeners coexist -- SessionChat keeps its own
   separate subscription for its own event log, untouched). Threading is
   `App.tsx` -> `Sidebar.tsx` (`workspaceOpenSessionsByNode`/
-  `onWorkspaceOpenSessionChat`, new props alongside the existing PTY
-  `workspaceSessions`) -> `WorkspaceNodeList.tsx`.
+  `onWorkspaceOpenSessionChat`) -> `WorkspaceNodeList.tsx`.
 
 - **`SessionChat.tsx` is built on AI Elements now, not hand-written bubbles
   (#373, phase 1 of `docs/superpowers/specs/2026-09-15-task-surface-
@@ -1983,8 +1913,7 @@ symlink to this file.
   of four dynamic imports cached module-wide) instead of bundled
   statically -- Streamdown renders plain markdown fine with `plugins`
   undefined, so the transcript never blocks on the chunk arriving.
-  **`SessionChat` itself is lazy-loaded** the same way `TerminalTabs.tsx`
-  already lazy-loads `TerminalPane` (`WorkspaceView.tsx`'s
+  **`SessionChat` itself is lazy-loaded** (`WorkspaceView.tsx`'s
   `lazy(() => import("./SessionChat"))` + `Suspense`) -- without this the
   whole kit (radix-ui, shiki, motion, streamdown) would land in every
   window's startup bundle instead of only downloading when a thread is

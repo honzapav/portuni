@@ -34,6 +34,67 @@ use tauri::{AppHandle, Manager};
 
 const KEYCHAIN_GOOGLE_REFRESH: &str = "google_refresh_token";
 pub const KEYCHAIN_SESSION_JWT: &str = "portuni_session_jwt";
+// Long-lived device token the central-mode sync-agent sidecar authenticates
+// with (PORTUNI_CENTRAL_TOKEN in spawn_sidecar_ws). Separate from the
+// per-workspace MCP token (AuthTokens map / Keychain) the local sidecar's own
+// gate uses, so the two never interfere. auth_logout deletes it alongside the
+// session JWT.
+pub(crate) const KEYCHAIN_DEVICE_TOKEN_ACCOUNT: &str = "portuni_device_token";
+
+/// Return the device token for this workspace's central-mode sync agent.
+/// Tries Keychain first; if absent, mints one via POST /device-tokens on the
+/// central server (using the current session JWT) and stores it. Errors if
+/// not logged in. `ws_id` and `server_url` come from the caller's own
+/// workspace-config lookup -- this function itself does no config resolution.
+///
+/// Blocking: calls block_on internally because its caller,
+/// `spawn_sidecar_ws` (lib.rs), is a sync function. It must therefore run
+/// off the async runtime's worker threads (`.setup()`, a sync Tauri command,
+/// or `spawn_blocking` -- see google_login).
+pub(crate) fn ensure_device_token(
+    _app: &AppHandle,
+    ws_id: &str,
+    server_url: &str,
+) -> Result<String, String> {
+    // Return cached token if already in Keychain.
+    if let Some(t) = crate::keychain_get_ws(KEYCHAIN_DEVICE_TOKEN_ACCOUNT, ws_id) {
+        return Ok(t);
+    }
+
+    // Need to mint. Require a session JWT.
+    let jwt = crate::keychain_get_ws(KEYCHAIN_SESSION_JWT, ws_id)
+        .ok_or_else(|| "not logged in: no session JWT in Keychain".to_string())?;
+
+    let server_url = server_url.trim().trim_end_matches('/').to_string();
+    let ws_for_store = ws_id.to_string();
+    // Mint via POST /device-tokens {"label": "Sync agent"}. block_on is safe
+    // here because spawn_sidecar_ws runs on a plain thread (setup, a sync
+    // command, or spawn_blocking), never inside an async context.
+    let token = tauri::async_runtime::block_on(async move {
+        let body = serde_json::json!({ "label": "Sync agent" });
+        let resp = do_central_request_raw(&server_url, "POST", "/device-tokens", Some(&body), &jwt)
+            .await?;
+        if resp.status != 201 {
+            return Err(format!(
+                "POST /device-tokens returned {}: {}",
+                resp.status, resp.body
+            ));
+        }
+        // Response: {"id": "...", "token": "plaintext-value"}
+        let parsed: serde_json::Value = serde_json::from_str(&resp.body)
+            .map_err(|e| format!("device-tokens response parse failed: {e}"))?;
+        parsed["token"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| "device-tokens response missing 'token' field".to_string())
+    })?;
+
+    // Persist to Keychain so subsequent sidecar spawns reuse it.
+    crate::keychain_set_ws(KEYCHAIN_DEVICE_TOKEN_ACCOUNT, &ws_for_store, &token)?;
+    info!("auth: device token minted and stored for workspace {ws_for_store}");
+
+    Ok(token)
+}
 
 pub fn keychain_get_ws(base: &str, ws_id: &str) -> Option<String> {
     crate::keychain_get_ws(base, ws_id)
@@ -529,7 +590,7 @@ pub fn auth_logout(window: tauri::Window) -> Result<(), String> {
     let ws_id = crate::ws_of(&window)?;
     keychain_delete_ws(KEYCHAIN_GOOGLE_REFRESH, &ws_id);
     keychain_delete_ws(KEYCHAIN_SESSION_JWT, &ws_id);
-    keychain_delete_ws(crate::pty::KEYCHAIN_DEVICE_TOKEN_ACCOUNT, &ws_id);
+    keychain_delete_ws(KEYCHAIN_DEVICE_TOKEN_ACCOUNT, &ws_id);
     info!("auth_logout: Keychain entries removed for workspace {ws_id}");
     Ok(())
 }
@@ -581,9 +642,9 @@ pub async fn central_request(
     Ok(resp)
 }
 
-/// Public alias so lib.rs and pty.rs can call the central request helper
-/// directly (e.g. for api_request routing and device-token minting) without
-/// going through the full central_request Tauri command.
+/// Public alias so lib.rs (api_request routing) and ensure_device_token above
+/// can call the central request helper directly without going through the
+/// full central_request Tauri command.
 pub async fn do_central_request_raw(
     server_url: &str,
     method: &str,

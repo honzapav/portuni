@@ -1,11 +1,11 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Search, Sun, Moon, X, Settings, Waypoints, Terminal, LayoutDashboard } from "lucide-react";
+import { Plus, Search, Sun, Moon, X, Settings, Waypoints, MessagesSquare, LayoutDashboard } from "lucide-react";
 import type { GraphPayload, GraphNode, SessionSummary } from "../types";
 import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
 import type { Theme } from "../lib/theme";
 import { foldForSearch } from "../lib/normalize";
-import type { TerminalSession, WorkspaceNodeRow } from "../lib/sessions";
+import type { WorkspaceNodeRow } from "../lib/sessions";
 import { isTauri } from "../lib/backend-url";
 import { listWorkspaces, openWorkspaceWindow, type WorkspaceInfo } from "../lib/workspaces";
 import WorkspaceNodeList from "./WorkspaceNodeList";
@@ -42,27 +42,18 @@ type Props = {
   canCreateNode: boolean;
   workspaceBadge?: number;
   // Workspace state -- the left column of the workspace view (the list of
-  // open nodes + their terminal tabs) lives here so the layout collapses to
-  // "left column / terminal / right detail" without a separate aside in
-  // WorkspaceView. `workspaceRows` is the open set (open nodes ∪ nodes with
-  // sessions); `workspaceSessions` carries the per-node terminals.
+  // open nodes + their live sessions) lives here so the layout collapses to
+  // "left column / canvas / right detail" without a separate aside in
+  // WorkspaceView. `workspaceRows` is the open-node set.
   workspaceRows: WorkspaceNodeRow[];
-  workspaceSessions: TerminalSession[];
   workspaceSelectedNodeId: string | null;
-  workspaceActiveSessionIdByNode: Record<string, string>;
   onWorkspaceSelectNode: (id: string) => void;
-  onWorkspaceSelectSession: (nodeId: string, sessionId: string) => void;
-  onWorkspaceCloseSession: (sessionId: string) => void;
   onWorkspaceCloseNode: (nodeId: string) => void;
-  onWorkspaceNewSession: (nodeId: string) => void;
-  onWorkspaceRenameSession: (sessionId: string, label: string) => void;
   // #343: each open node's own running/suspended persistent sessions, for
-  // WorkspaceNodeList's sub-rows -- distinct from workspaceSessions (PTY
-  // terminal tabs) above.
+  // WorkspaceNodeList's sub-rows.
   workspaceOpenSessionsByNode: Record<string, SessionSummary[]>;
   onWorkspaceOpenSessionChat: (nodeId: string, sessionId: string) => void;
-  // Open an EXISTING node in the workspace (no terminal required -- the
-  // primary workspace action). Driven by the inline search-first picker at
+  // Open an EXISTING node in the workspace (the primary workspace action). Driven by the inline search-first picker at
   // the top of the workspace column: type a node name, click it, it opens.
   onWorkspaceOpenNode: (nodeId: string) => void;
   // Create a brand-new node and open it in the workspace. The graph view has
@@ -84,9 +75,8 @@ function nodeTypeVar(type: string): string {
 }
 
 // Global shortcuts (Cmd+K, Cmd+T) must not steal focus while the user is
-// typing -- in a DetailPane textarea, the CodeMirror editor (contenteditable)
-// or the embedded terminal (xterm's hidden textarea). Cmd+T in a shell is a
-// common readline binding, so the terminal case is not theoretical.
+// typing -- in a DetailPane textarea, the chat composer or the CodeMirror
+// editor (contenteditable).
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;
@@ -99,7 +89,7 @@ function nodeTypeGlow(type: string, alpha: number = 0.4): string {
 }
 
 // Memoized: the sidebar renders org/type/status filter lists plus the
-// workspace node list; App re-renders frequently (sessions state, editor)
+// workspace node list; App re-renders frequently (session state, editor)
 // while these props rarely change. All handlers are useCallback-stable.
 export default memo(Sidebar);
 
@@ -126,15 +116,9 @@ function Sidebar({
   canCreateNode,
   workspaceBadge,
   workspaceRows,
-  workspaceSessions,
   workspaceSelectedNodeId,
-  workspaceActiveSessionIdByNode,
   onWorkspaceSelectNode,
-  onWorkspaceSelectSession,
-  onWorkspaceCloseSession,
   onWorkspaceCloseNode,
-  onWorkspaceNewSession,
-  onWorkspaceRenameSession,
   onWorkspaceOpenNode,
   onWorkspaceCreateNode,
   workspaceOpenSessionsByNode,
@@ -189,7 +173,7 @@ function Sidebar({
           />
           <ViewToggleButton
             label="Práce"
-            icon={<Terminal size={12} />}
+            icon={<MessagesSquare size={12} />}
             active={view === "workspace"}
             onClick={() => onViewChange("workspace")}
             badge={workspaceBadge}
@@ -222,15 +206,9 @@ function Sidebar({
           <div className="flex-1 overflow-x-hidden overflow-y-auto scroll-thin">
             <WorkspaceNodeList
               rows={workspaceRows}
-              sessions={workspaceSessions}
               selectedNodeId={workspaceSelectedNodeId}
-              activeSessionIdByNode={workspaceActiveSessionIdByNode}
               onSelectNode={onWorkspaceSelectNode}
-              onSelectSession={onWorkspaceSelectSession}
-              onCloseSession={onWorkspaceCloseSession}
               onCloseNode={onWorkspaceCloseNode}
-              onNewSession={onWorkspaceNewSession}
-              onRenameSession={onWorkspaceRenameSession}
               openSessionsByNode={workspaceOpenSessionsByNode}
               onOpenSessionChat={onWorkspaceOpenSessionChat}
             />
@@ -361,7 +339,7 @@ function WorkspaceSwitcher() {
 }
 
 // Search-first workspace actions. The primary action is opening an EXISTING
-// node in the workspace (no terminal required): type a name, the list filters
+// node in the workspace: type a name, the list filters
 // inline, click (or Enter) opens the node. ⌘T focuses the field from anywhere
 // in the workspace. Creating a brand-new node is the secondary, quiet
 // "Nebo vytvoř nový uzel…" link below.
@@ -401,8 +379,7 @@ function WorkspaceActions({
   }, [isMac]);
 
   const q = foldForSearch(query.trim());
-  // Any node type can be opened in the workspace now, organizations included
-  // (they never had a terminal but can still be opened to view/edit).
+  // Any node type can be opened in the workspace, organizations included.
   const matches = q
     ? graph.nodes
         .filter(

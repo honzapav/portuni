@@ -5,7 +5,7 @@
 // two windows must not share which nodes are open, which folders are
 // collapsed in a file tree, whether the detail pane is visible, or the
 // central-mode first-login guidance flag. Keys become "portuni:<ws_id>:
-// <key>"; global user preferences (theme, agentCommand, terminalLaunch)
+// <key>"; global user preferences (theme)
 // are untouched by this file and stay unscoped.
 
 import { isTauri } from "./backend-url";

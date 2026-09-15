@@ -91,7 +91,7 @@ export function sortInboxSessions(
 }
 
 // SessionsSection's `sessions?.length` count of running rows, live
-// (StatusFooter's replacement for the PTY tab count) -- counts distinct
+// (StatusFooter's running count) -- counts distinct
 // session ids currently reporting `running` via session_state, regardless
 // of whether this device has ever fetched their full SessionSummary.
 export function countRunningSessions(liveStates: Readonly<Record<string, SessionStateMessage>>): number {

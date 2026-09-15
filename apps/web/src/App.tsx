@@ -8,14 +8,7 @@ import EditorFullscreen from "./components/EditorFullscreen";
 import EditorPane from "./components/EditorPane";
 import StatusFooter from "./components/StatusFooter";
 import CreateNodeModal from "./components/CreateNodeModal";
-import {
-  fetchGraph,
-  fetchNode,
-  createNodeMirror,
-  fetchSandboxProfile,
-  fetchMe,
-  fetchNodePersistentSessions,
-} from "./api";
+import { fetchGraph, fetchNode, fetchMe, fetchNodePersistentSessions } from "./api";
 import type { SessionSummary } from "./types";
 import { createSessionsClient, type SessionStateMessage } from "./lib/sessions-client";
 import {
@@ -26,20 +19,7 @@ import {
 } from "./lib/session-views";
 import { CREATE_NODE_SCOPE, isGlobalScope, scopeAtLeast } from "./lib/scopes";
 import { useFileEditor } from "./lib/use-file-editor";
-import { buildAgentCommand } from "./lib/prompt";
-import {
-  suspendableTerminalIds,
-  fetchCorrelatedSessions,
-  suspendTerminalsAndPoll,
-} from "./lib/session-suspend";
-import {
-  type TerminalSession,
-  createSession,
-  removeSession,
-  markActivity,
-  renameSession,
-  deriveWorkspaceNodeRows,
-} from "./lib/sessions";
+import { deriveWorkspaceNodeRows } from "./lib/sessions";
 import { isTauri } from "./lib/backend-url";
 import { useAppUpdate } from "./lib/updater";
 import { useSyncPending } from "./lib/use-sync-pending";
@@ -53,14 +33,7 @@ const GraphView = lazy(() => import("./components/GraphView"));
 import type { GraphPayload, NodeDetail } from "./types";
 import type { Theme } from "./lib/theme";
 import { loadTheme, saveTheme, THEME_STORAGE_KEY } from "./lib/theme";
-import {
-  loadAgentCommand,
-  loadTerminalLaunch,
-  saveTerminalLaunch,
-  loadOpenNodes,
-  saveOpenNodes,
-  TERMINAL_LAUNCH_KEY,
-} from "./lib/settings";
+import { loadOpenNodes, saveOpenNodes } from "./lib/settings";
 import { isShowtimePath } from "./lib/showtime";
 
 // Files that have a useful rendered preview (MarkdownPreview). These open in
@@ -75,8 +48,7 @@ export function isHtmlPath(relPath: string): boolean {
 }
 
 // Cancels a pending window close (#229): tells the Rust host this window's
-// close-guard chain (dirty editor / unsynced files / running terminals)
-// said no. Cancels the 5s fallback timer Rust armed alongside window.close()
+// close-guard chain (dirty editor / unsynced files) said no. Cancels the 5s fallback timer Rust armed alongside window.close()
 // (without this, cancelling force-closed anyway once the timer fired,
 // #221) and, if this close was part of a Cmd+Q/restart sequential quit,
 // aborts the whole sequence -- no further window is asked and the app does
@@ -98,70 +70,21 @@ async function destroyCurrentWindow(): Promise<void> {
   await getCurrentWindow().destroy().catch(() => undefined);
 }
 
-// pty_kill every given terminal (best-effort, #231's "Ukončit" -- and the
-// terminal step of "Pozastavit", whether the poll actually succeeded or
-// timed out), then proceed with the window close. Without the kill step, a
-// destroyed window's own PTYs kept running invisibly in the background
-// until the whole app quit (the master fd -- and so the child's controlling
-// terminal -- only closes then); pty_kill's explicit removal SIGHUPs them
-// immediately.
-async function killTerminalsAndCloseWindow(
-  terminals: readonly Pick<TerminalSession, "id">[],
-): Promise<void> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    for (const t of terminals) {
-      await invoke("pty_kill", { args: { session_id: t.id } }).catch(() => undefined);
-    }
-  }
-  await destroyCurrentWindow();
-}
-
 export default function App() {
   const [graph, setGraph] = useState<GraphPayload | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
-  // Failures from opening a node terminal/session. Kept separate from
-  // graphError: that one renders as a full-screen "graph failed to load"
-  // overlay, which is the wrong message and blocks the whole view.
-  const [sessionError, setSessionError] = useState<string | null>(null);
-  const sessionErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showSessionError = useCallback((msg: string) => {
-    setSessionError(msg);
-    if (sessionErrorTimer.current) clearTimeout(sessionErrorTimer.current);
-    sessionErrorTimer.current = setTimeout(() => setSessionError(null), 8000);
-  }, []);
-
   const [theme, setTheme] = useState<Theme>(() => loadTheme());
-  // No setter: Nastavení > Runnery (#344) replaced the "Příkaz agenta"
-  // panel that used to let the user edit this, since it has no meaning
-  // without an embedded terminal. The stored value/localStorage key stay
-  // untouched (still read for spawning below) until phase 4 removes the
-  // terminal entirely.
-  const [agentCommand] = useState<string>(() => loadAgentCommand());
 
-  const [terminalLaunch, setTerminalLaunchRaw] = useState<string>(() =>
-    loadTerminalLaunch(),
-  );
-
-  const setTerminalLaunch = useCallback((value: string) => {
-    setTerminalLaunchRaw(value);
-    saveTerminalLaunch(value);
-  }, []);
-
-  // theme/agentCommand/terminalLaunch are global preferences (#228, unlike
-  // the workspace-scoped keys elsewhere), so a change made in one window
-  // must apply live in every other one too -- all windows share the same
-  // localStorage origin, but each only ever reads its own copy into React
-  // state once, at mount. The native `storage` event fires in every OTHER
-  // window when one of them writes, so re-reading here on that event is
-  // what keeps them in sync without a reload.
+  // theme is a global preference (#228, unlike the workspace-scoped keys
+  // elsewhere), so a change made in one window must apply live in every
+  // other one too -- all windows share the same localStorage origin, but
+  // each only ever reads its own copy into React state once, at mount. The
+  // native `storage` event fires in every OTHER window when one of them
+  // writes, so re-reading here on that event is what keeps them in sync
+  // without a reload.
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
-      if (e.key === THEME_STORAGE_KEY) {
-        setTheme(loadTheme());
-      } else if (e.key === TERMINAL_LAUNCH_KEY) {
-        setTerminalLaunchRaw(loadTerminalLaunch());
-      }
+      if (e.key === THEME_STORAGE_KEY) setTheme(loadTheme());
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -409,34 +332,18 @@ export default function App() {
     setTheme((t) => (t === "dark" ? "light" : "dark"));
   }, []);
 
-  // --- Session state ---
-  const [sessions, setSessions] = useState<TerminalSession[]>([]);
+  // --- Workspace state ---
   const [selectedWorkspaceNodeId, setSelectedWorkspaceNodeId] = useState<string | null>(null);
-  const [activeSessionIdByNode, setActiveSessionIdByNode] = useState<Record<string, string>>({});
-  // The set of nodes open in the workspace, decoupled from sessions: a node
-  // can be open (and switched to) without ever launching a terminal, and it
-  // stays open after its last terminal closes. Persisted across restarts and
-  // pruned against the graph once it loads (the terminals themselves are
-  // never restored -- a PTY does not survive a restart).
+  // The set of nodes open in the workspace. Persisted across restarts and
+  // pruned against the graph once it loads.
   const [openNodeIds, setOpenNodeIds] = useState<string[]>(() => loadOpenNodes());
   useEffect(() => {
     saveOpenNodes(openNodeIds);
   }, [openNodeIds]);
 
-  // Selecting a session jumps straight to it: focus its node AND make it the
-  // node's active session. That is what lets every tab in the left column be
-  // one click away, without selecting the parent node first.
-  const workspaceSelectSession = useCallback(
-    (nodeId: string, sessionId: string) => {
-      setSelectedWorkspaceNodeId(nodeId);
-      setActiveSessionIdByNode((p) => ({ ...p, [nodeId]: sessionId }));
-    },
-    [],
-  );
-
-  // Open a node in the workspace WITHOUT launching a terminal -- the core of
-  // "open more nodes and switch between them". Idempotent; focuses the node
-  // and flips to the workspace view.
+  // Open a node in the workspace -- the core of "open more nodes and switch
+  // between them". Idempotent; focuses the node and flips to the workspace
+  // view.
   const openNode = useCallback((nodeId: string) => {
     setOpenNodeIds((prev) => (prev.includes(nodeId) ? prev : [...prev, nodeId]));
     setSelectedWorkspaceNodeId(nodeId);
@@ -459,7 +366,7 @@ export default function App() {
 
   // Přehled tab (#196) navigation: a node reference switches to Graf and
   // opens its detail pane; a session reference opens the node in Práce and
-  // focuses that session, mirroring workspaceSelectSession above.
+  // focuses that session (openSessionChat below).
   const overviewSelectNode = useCallback(
     (id: string) => {
       setSelectedId(id);
@@ -474,9 +381,7 @@ export default function App() {
   // clicked row is the selector -- #342's workspaceOpenSession effect
   // prefers this id when it is among the node's live sessions and only
   // falls back to the newest live one otherwise (first open, or the
-  // requested session has since closed). Unlike a PTY terminal tab, a
-  // persistent session has no tab of its own in activeSessionIdByNode
-  // (that map is PTY-only), hence a separate per-node map.
+  // requested session has since closed).
   const [requestedChatSessionByNode, setRequestedChatSessionByNode] = useState<Record<string, string>>({});
   const openSessionChat = useCallback(
     (nodeId: string, sessionId?: string) => {
@@ -486,16 +391,15 @@ export default function App() {
     [openNode],
   );
 
-  // The workspace's left-column rows: open nodes ∪ nodes-with-sessions,
-  // de-duplicated and ordered open-first. Name/type resolved from the graph
-  // for nodes without a live session.
+  // The workspace's left-column rows: the open nodes, in open order, with
+  // name/type resolved from the graph.
   const workspaceRows = useMemo(
     () =>
-      deriveWorkspaceNodeRows(openNodeIds, sessions, (id) => {
+      deriveWorkspaceNodeRows(openNodeIds, (id) => {
         const n = graph?.nodes.find((g) => g.id === id);
         return n ? { name: n.name, type: n.type } : undefined;
       }),
-    [openNodeIds, sessions, graph],
+    [openNodeIds, graph],
   );
 
   // Prune persisted open ids and the workspace selection against the graph
@@ -510,10 +414,9 @@ export default function App() {
     });
     setSelectedWorkspaceNodeId((prev) => (prev && !exists.has(prev) ? null : prev));
   }, [graph]);
-  const openingSessionNodeIdsRef = useRef<Set<string>>(new Set());
   // Set when the create-node modal is opened from the workspace view, so that
-  // on success we also open a terminal session for the freshly created node
-  // (one-click "Nový uzel + terminál"). Reset on close or after handling.
+  // on success the freshly created node opens in the workspace. Reset on
+  // close or after handling.
   const createFromWorkspaceRef = useRef(false);
 
   // Detail for the workspace's selected node. Kept separate from
@@ -709,19 +612,6 @@ export default function App() {
     syncPendingRef.current = syncPending.total;
   }, [syncPending.total]);
   const [syncQuitGuard, setSyncQuitGuard] = useState<{ count: number } | null>(null);
-  const sessionsRef = useRef(sessions);
-  useEffect(() => {
-    sessionsRef.current = sessions;
-  }, [sessions]);
-  // Third onCloseRequested guard (#229/#231), after dirty editor and
-  // unsynced files: this window's running terminals. "confirm" offers
-  // Ukončit / Pozastavit (only when at least one terminal is suspendable,
-  // #231) / Zrušit; "suspending" is the Pozastavit poll in progress.
-  const [terminalsCloseGuard, setTerminalsCloseGuard] = useState<
-    | null
-    | { kind: "confirm"; terminals: TerminalSession[]; suspendableIds: string[] }
-    | { kind: "suspending"; terminals: TerminalSession[]; suspendableIds: string[]; timedOut: boolean }
-  >(null);
 
   const appUpdate = useAppUpdate();
 
@@ -797,8 +687,9 @@ export default function App() {
   // restart, and a plain click on this window's own close button all reach
   // it the same way, since Rust closes windows via window.close(), which
   // raises this same event, rather than a separate app-exit-requested
-  // broadcast + confirm dance. Order: dirty editor -> unsynced files ->
-  // running terminals.
+  // broadcast + confirm dance. Order: dirty editor -> unsynced files. Runs
+  // belong to the sidecar and survive a window close, so there is no third
+  // guard for them.
   useEffect(() => {
     const beforeUnload = (e: BeforeUnloadEvent) => {
       if (editorDirtyRef.current) e.preventDefault();
@@ -816,16 +707,6 @@ export default function App() {
             } else if (syncPendingRef.current > 0) {
               event.preventDefault();
               setSyncQuitGuard({ count: syncPendingRef.current });
-            } else if (sessionsRef.current.length > 0) {
-              event.preventDefault();
-              const terminals = sessionsRef.current;
-              void fetchCorrelatedSessions(terminals).then((correlated) => {
-                setTerminalsCloseGuard({
-                  kind: "confirm",
-                  terminals,
-                  suspendableIds: suspendableTerminalIds(terminals, correlated),
-                });
-              });
             }
           });
         } catch {
@@ -842,29 +723,6 @@ export default function App() {
       }
     };
   }, []);
-
-  // "Pozastavit" (#231): write the suspend instruction into every
-  // suspendable terminal, then poll their correlated sessions (re-fetched
-  // fresh each tick, since a session's own state can change from the
-  // agent's own action) until none is "running" or 30s pass. Either way,
-  // every terminal in the dialog -- suspendable or not -- gets killed and
-  // the window closes; a timeout just means the dialog says so first
-  // (briefly, before the same close happens) rather than pretending
-  // everything suspended cleanly.
-  const handleSuspendAndClose = useCallback(
-    async (terminals: TerminalSession[], suspendableIds: string[]) => {
-      setTerminalsCloseGuard({ kind: "suspending", terminals, suspendableIds, timedOut: false });
-      const { timedOut } = await suspendTerminalsAndPoll(suspendableIds, terminals);
-      if (timedOut) {
-        setTerminalsCloseGuard({ kind: "suspending", terminals, suspendableIds, timedOut: true });
-        // Give the user a moment to actually read "časový limit vypršel"
-        // before the window disappears out from under the dialog.
-        await new Promise((r) => setTimeout(r, 1500));
-      }
-      await killTerminalsAndCloseWindow(terminals);
-    },
-    [],
-  );
 
   // Refetch on focus AND tab-visible. Covers BOTH the graph selection and
   // the workspace selection so files registered elsewhere (MCP / another
@@ -920,214 +778,17 @@ export default function App() {
     return () => clearInterval(id);
   }, [view, selectedWorkspaceNodeId, selectedId, refetchWorkspaceDetail]);
 
-  // The 1s activity-dot clock lives in WorkspaceNodeList (useNowTick) --
-  // ticking here re-rendered the whole tree every second forever.
-
-  // Listen for pty-data and pty-exit events at App level so lastOutputAt
-  // updates for every session regardless of which pane is visible.
-  useEffect(() => {
-    let unlistenData: (() => void) | null = null;
-    let unlistenExit: (() => void) | null = null;
-    let cancelled = false;
-    (async () => {
-      if (typeof window === "undefined") return;
-      // Browser-mode (vite dev outside Tauri) has no pty events. Skip.
-      try {
-        const { listen } = await import("@tauri-apps/api/event");
-        type PtyData = { session_id: string };
-        type PtyExit = { session_id: string; code: number | null };
-        unlistenData = await listen<PtyData>("pty-data", (e) => {
-          if (cancelled) return;
-          const id = e.payload.session_id;
-          setSessions((prev) => markActivity(prev, id));
-        });
-        unlistenExit = await listen<PtyExit>("pty-exit", (e) => {
-          if (cancelled) return;
-          const id = e.payload.session_id;
-          setSessions((prev) => removeSession(prev, id));
-          setActiveSessionIdByNode((prev) => {
-            const next: Record<string, string> = {};
-            for (const [nid, sid] of Object.entries(prev)) {
-              if (sid !== id) next[nid] = sid;
-            }
-            return next;
-          });
-          // The node stays open after its last terminal closes (it lives in
-          // openNodeIds now, not only in sessions), so selectedWorkspaceNodeId
-          // remains valid -- the workspace just shows the node's detail
-          // center-stage instead of a terminal. Nothing to clear here.
-        });
-      } catch {
-        // Not running in Tauri -- fine.
-      }
-    })();
-    return () => {
-      cancelled = true;
-      try { unlistenData?.(); } catch { /* unlisten can throw if Tauri is gone */ }
-      try { unlistenExit?.(); } catch { /* same */ }
-    };
-  }, []);
-
-  const openSession = useCallback(
-    (input: {
-      node: NodeDetail;
-      cwd: string;
-      command: string;
-      sandboxProfile: string | null;
-      spawnRequestedAt?: number;
-      profileId?: string | null;
-      spawnSessionId?: string | null;
-    }) => {
-      const session = createSession({
-        nodeId: input.node.id,
-        nodeName: input.node.name,
-        nodeType: input.node.type,
-        cwd: input.cwd,
-        command: input.command,
-        sandboxProfile: input.sandboxProfile,
-        spawnRequestedAt: input.spawnRequestedAt,
-        profileId: input.profileId,
-        spawnSessionId: input.spawnSessionId,
-      });
-      setSessions((prev) => [...prev, session]);
-      // Opening a terminal also opens the node (terminals imply an open node).
-      setOpenNodeIds((prev) =>
-        prev.includes(input.node.id) ? prev : [...prev, input.node.id],
-      );
-      setSelectedWorkspaceNodeId(input.node.id);
-      setActiveSessionIdByNode((prev) => ({ ...prev, [input.node.id]: session.id }));
-      setView("workspace");
-    },
-    [],
-  );
-
-  const openSessionForNodeId = useCallback(
-    async (nodeId: string, profileId?: string | null) => {
-      // Terminals work in central (agent) mode too: createNodeMirror,
-      // fetchSandboxProfile and pty_spawn all have central-mode paths (the
-      // sidecar serves the mirror + sandbox profile locally, and the terminal
-      // connects to the local MCP front door which proxies to central).
-      if (openingSessionNodeIdsRef.current.has(nodeId)) return;
-      openingSessionNodeIdsRef.current.add(nodeId);
-      // Spawn-phase instrumentation start (spec: "Spawn UX" -- instrument
-      // spawn phases spawn request -> sidecar calls -> CLI boot -> first
-      // token). TerminalPane measures the rest and prints the breakdown.
-      const spawnRequestedAt = Date.now();
-      try {
-        let detail: NodeDetail | null = null;
-        try {
-          detail = await fetchNode(nodeId);
-        } catch (err) {
-          showSessionError(`Nelze načíst uzel: ${String(err)}`);
-          return;
-        }
-        if (!detail) return;
-        let cwd: string;
-        try {
-          const mirror = await createNodeMirror(nodeId);
-          cwd = mirror.local_path;
-        } catch (err) {
-          showSessionError(`Nelze otevřít terminál: ${String(err)}`);
-          return;
-        }
-        // Fail-closed: without the disk-scope profile the terminal does
-        // not open at all. Running an agent without the kernel boundary
-        // must be a deliberate act, never a silent fallback.
-        let sandboxProfile: string;
-        let spawnSessionId: string | null;
-        try {
-          const profileResponse = await fetchSandboxProfile(nodeId);
-          sandboxProfile = profileResponse.profile;
-          spawnSessionId = profileResponse.session_id;
-        } catch (err) {
-          showSessionError(`Nelze načíst sandbox profil uzlu: ${String(err)}`);
-          return;
-        }
-        const enriched: NodeDetail = {
-          ...detail,
-          local_mirror: detail.local_mirror ?? {
-            local_path: cwd,
-            registered_at: new Date().toISOString(),
-          },
-        };
-        const command = buildAgentCommand(enriched, agentCommand);
-        openSession({
-          node: enriched,
-          cwd,
-          command,
-          sandboxProfile,
-          spawnRequestedAt,
-          profileId,
-          spawnSessionId,
-        });
-      } finally {
-        openingSessionNodeIdsRef.current.delete(nodeId);
-      }
-    },
-    [agentCommand, openSession, showSessionError],
-  );
-
-  const workspaceNewSession = useCallback(
-    (nodeId: string) => {
-      void openSessionForNodeId(nodeId);
-    },
-    [openSessionForNodeId],
-  );
   const workspaceCreateNode = useCallback(() => {
     createFromWorkspaceRef.current = true;
     openCreateModal();
   }, [openCreateModal]);
 
-  const closeSession = useCallback((sessionId: string) => {
-    setSessions((prev) => removeSession(prev, sessionId));
-    setActiveSessionIdByNode((prev) => {
-      const next = { ...prev };
-      for (const [nid, sid] of Object.entries(next)) {
-        if (sid === sessionId) delete next[nid];
-      }
-      return next;
-    });
-    // Best-effort: tell the backend the PTY is gone. Errors swallowed --
-    // the pty-exit reader thread will clean up its own map entry once
-    // the child SIGHUPs. (closeNode kills a node's sessions the same way.)
-    void (async () => {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("pty_kill", { args: { session_id: sessionId } });
-      } catch { /* errors swallowed -- pty-exit thread self-cleans */ }
-    })();
-  }, []);
-
-  // Close a node: drop it from the open set and tear down every terminal it
-  // owns (PTYs included). Moves the workspace selection to a neighbouring
-  // open node, or clears it when nothing is left.
+  // Close a node: drop it from the open set. Its sessions keep running on
+  // the sidecar. Moves the workspace selection to a neighbouring open node,
+  // or clears it when nothing is left.
   const closeNode = useCallback(
     (nodeId: string) => {
       setOpenNodeIds((prev) => prev.filter((id) => id !== nodeId));
-      setSessions((prev) => {
-        const doomed = prev.filter((s) => s.nodeId === nodeId);
-        if (doomed.length > 0) {
-          void (async () => {
-            try {
-              const { invoke } = await import("@tauri-apps/api/core");
-              for (const s of doomed) {
-                await invoke("pty_kill", { args: { session_id: s.id } }).catch(
-                  () => undefined,
-                );
-              }
-            } catch {
-              /* not running in Tauri */
-            }
-          })();
-        }
-        return prev.filter((s) => s.nodeId !== nodeId);
-      });
-      setActiveSessionIdByNode((prev) => {
-        if (!(nodeId in prev)) return prev;
-        const next = { ...prev };
-        delete next[nodeId];
-        return next;
-      });
       setSelectedWorkspaceNodeId((prev) => {
         if (prev !== nodeId) return prev;
         const remaining = workspaceRows.filter((r) => r.id !== nodeId);
@@ -1136,10 +797,6 @@ export default function App() {
     },
     [workspaceRows],
   );
-
-  const renameSessionTab = useCallback((sessionId: string, label: string) => {
-    setSessions((prev) => renameSession(prev, sessionId, label));
-  }, []);
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden">
@@ -1168,15 +825,9 @@ export default function App() {
           canCreateNode={canCreateNode}
           workspaceBadge={workspaceRows.length}
           workspaceRows={workspaceRows}
-          workspaceSessions={sessions}
           workspaceSelectedNodeId={selectedWorkspaceNodeId}
-          workspaceActiveSessionIdByNode={activeSessionIdByNode}
           onWorkspaceSelectNode={workspaceSelectNode}
-          onWorkspaceSelectSession={workspaceSelectSession}
-          onWorkspaceCloseSession={closeSession}
           onWorkspaceCloseNode={closeNode}
-          onWorkspaceNewSession={workspaceNewSession}
-          onWorkspaceRenameSession={renameSessionTab}
           workspaceOpenSessionsByNode={liveOpenSessionsByNode}
           onWorkspaceOpenSessionChat={openSessionChat}
           onWorkspaceOpenNode={openNode}
@@ -1185,19 +836,6 @@ export default function App() {
       )}
 
       <main className="relative min-w-0 flex-1 bg-[var(--color-bg)]">
-        {sessionError && (
-          <div className="absolute left-1/2 top-4 z-50 flex max-w-[80%] -translate-x-1/2 items-start gap-3 rounded-md border border-red-900 bg-red-950/80 px-4 py-3 text-[13px] text-red-200 shadow-lg">
-            <span className="min-w-0 break-words">{sessionError}</span>
-            <button
-              type="button"
-              onClick={() => setSessionError(null)}
-              className="shrink-0 text-red-300 hover:text-red-100"
-              title="Zavřít"
-            >
-              ×
-            </button>
-          </div>
-        )}
         {graphError && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="rounded-md border border-red-900 bg-red-950/30 px-6 py-4 text-[13.5px] text-red-300">
@@ -1248,40 +886,19 @@ export default function App() {
             />
           </Suspense>
         )}
-        {/*
-          WorkspaceView stays mounted whenever there are live sessions, so
-          switching to Graf/Nastavení and back doesn't unmount TerminalPane
-          and accidentally re-spawn the PTY (pty_spawn replaces by id, which
-          would SIGHUP the running shell — breaks the "sessions přežijí
-          přepnutí pohledu" contract from the sidebar hint). When no sessions
-          exist, we only mount on demand so the picker's autoFocus doesn't
-          steal focus from the graph view.
-        */}
-        {(view === "workspace" || sessions.length > 0) && (
-          <div
-            className={
-              view === "workspace"
-                ? "absolute inset-0"
-                : "pointer-events-none absolute inset-0 hidden"
-            }
-            aria-hidden={view !== "workspace"}
-          >
+        {/* Mounted on demand so the picker's autoFocus doesn't steal focus
+            from the graph view. */}
+        {view === "workspace" && (
+          <div className="absolute inset-0">
             <WorkspaceView
               graph={graph}
-              sessions={sessions}
-              theme={theme}
               selectedNodeId={selectedWorkspaceNodeId}
               onSelectNode={workspaceSelectNode}
-              activeSessionIdByNode={activeSessionIdByNode}
-              onCloseSession={closeSession}
               onOpenNodeFromPicker={(node) => openNode(node.id)}
               openNodeCount={workspaceRows.length}
               nodeDetail={workspaceNodeDetail}
               nodeDetailLoading={workspaceDetailLoading}
               nodeDetailError={workspaceDetailError}
-              agentCommand={agentCommand}
-              terminalLaunch={terminalLaunch}
-              onOpenTerminal={openSessionForNodeId}
               onMutate={async () => {
                 await Promise.all([refetchAll(), refetchWorkspaceDetail()]);
               }}
@@ -1303,11 +920,7 @@ export default function App() {
           </div>
         )}
         {view === "settings" && (
-          <SettingsPage
-            terminalLaunch={terminalLaunch}
-            onTerminalLaunchChange={setTerminalLaunch}
-            appUpdate={appUpdate}
-          />
+          <SettingsPage appUpdate={appUpdate} />
         )}
       </main>
 
@@ -1338,11 +951,7 @@ export default function App() {
             canGoBack={historyRef.current.length > 0}
             onBack={goBack}
             onMutate={refetchAll}
-            agentCommand={agentCommand}
-            terminalLaunch={terminalLaunch}
-            onOpenTerminal={openSessionForNodeId}
             onOpenFile={openFileInEditor}
-            terminalSessions={sessions}
             onOpenChat={openSessionChat}
             onSessionStarted={({ session }) => {
               // Graf has no chat surface of its own, so a task started here
@@ -1391,8 +1000,7 @@ export default function App() {
             setSelectedId(node.id);
             refetchAll().catch((err) => setGraphError(String(err)));
             // Opened from the workspace "vytvoř nový uzel" action: open the
-            // freshly created node in the workspace (no forced terminal --
-            // terminals are optional now, and this works for orgs too).
+            // freshly created node in the workspace (works for orgs too).
             if (createFromWorkspaceRef.current) {
               createFromWorkspaceRef.current = false;
               openNode(node.id);
@@ -1511,79 +1119,6 @@ export default function App() {
                 Zavřít bez synchronizace
               </button>
             </div>
-          </div>
-        </div>
-      )}
-      {terminalsCloseGuard && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
-          <div className="w-[440px] rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-5 shadow-xl">
-            {terminalsCloseGuard.kind === "confirm" ? (
-              <>
-                <div className="mb-2 text-[14.5px] font-semibold text-[var(--color-text)]">
-                  Zavřít okno?
-                </div>
-                <p className="mb-4 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
-                  Běží {terminalsCloseGuard.terminals.length}{" "}
-                  {terminalsCloseGuard.terminals.length === 1
-                    ? "terminál"
-                    : terminalsCloseGuard.terminals.length < 5
-                      ? "terminály"
-                      : "terminálů"}
-                  .{" "}
-                  {terminalsCloseGuard.suspendableIds.length > 0
-                    ? "Agenty lze před zavřením pozastavit, nebo terminály rovnou ukončit."
-                    : "Budou ukončeny."}
-                </p>
-                <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTerminalsCloseGuard(null);
-                      void declineExit();
-                    }}
-                    className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
-                  >
-                    Zrušit
-                  </button>
-                  {terminalsCloseGuard.suspendableIds.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void handleSuspendAndClose(
-                          terminalsCloseGuard.terminals,
-                          terminalsCloseGuard.suspendableIds,
-                        )
-                      }
-                      className="rounded-md border border-[var(--color-accent-dim)] px-3 py-1.5 text-[12.5px] text-[var(--color-accent)] hover:bg-[var(--color-surface)]"
-                    >
-                      Pozastavit
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const terminals = terminalsCloseGuard.terminals;
-                      setTerminalsCloseGuard(null);
-                      await killTerminalsAndCloseWindow(terminals);
-                    }}
-                    className="rounded-md border border-[var(--color-danger-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-danger)] hover:bg-[var(--color-surface)]"
-                  >
-                    Ukončit
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="mb-2 text-[14.5px] font-semibold text-[var(--color-text)]">
-                  {terminalsCloseGuard.timedOut ? "Časový limit vypršel" : "Pozastavuji…"}
-                </div>
-                <p className="mb-4 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
-                  {terminalsCloseGuard.timedOut
-                    ? "Relace se nestihly pozastavit včas, terminály se zavřou."
-                    : `Čekám, až ${terminalsCloseGuard.suspendableIds.length === 1 ? "agent uloží" : "agenti uloží"} rozdělanou práci…`}
-                </p>
-              </>
-            )}
           </div>
         </div>
       )}

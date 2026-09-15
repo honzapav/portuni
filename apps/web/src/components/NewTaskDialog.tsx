@@ -64,8 +64,8 @@ export default function NewTaskDialog({ node, onClose, onStarted }: Props) {
   }, []);
 
   // Instances for the selected runner. Preselects the organization's
-  // default instance (org_defaults), same lookup TerminalSplitButton's
-  // profile-picker and RunnersSection's own org-default row already use.
+  // default instance (org_defaults), same lookup RunnersSection's own
+  // org-default row already uses.
   const instancesForRunner = useMemo(
     () => instances.filter((i) => i.runner === runnerId),
     [instances, runnerId],
