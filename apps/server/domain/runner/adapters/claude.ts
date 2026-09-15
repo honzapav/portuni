@@ -209,17 +209,20 @@ async function canExecute(path: string): Promise<boolean> {
 
 // --- env composition ---------------------------------------------------
 // The SDK replaces the subprocess environment entirely (no merge with
-// process.env), so PATH and HOME are passed explicitly -- HOME is never
-// overridden by an instance's own env, since the CLI login lives in the
-// Keychain under it; CLAUDE_CONFIG_DIR (an instance's own env key) is what
-// actually selects a different account.
+// process.env), so PATH, HOME, USER and LOGNAME are passed explicitly --
+// none of the four are overridden by an instance's own env, since the CLI
+// login lives in the Keychain under USER (HOME locates the Keychain search
+// path, USER is the account key); CLAUDE_CONFIG_DIR (an instance's own env
+// key) is what actually selects a different account.
 
-function buildEnv(instanceEnv: Readonly<Record<string, string>>): Record<string, string> {
+export function buildEnv(instanceEnv: Readonly<Record<string, string>>): Record<string, string> {
   const env: Record<string, string> = {};
   if (process.env.PATH) env.PATH = process.env.PATH;
   if (process.env.HOME) env.HOME = process.env.HOME;
+  if (process.env.USER) env.USER = process.env.USER;
+  if (process.env.LOGNAME) env.LOGNAME = process.env.LOGNAME;
   for (const [key, value] of Object.entries(instanceEnv)) {
-    if (isPortuniEnvKey(key) || key === "HOME") continue;
+    if (isPortuniEnvKey(key) || key === "HOME" || key === "USER" || key === "LOGNAME") continue;
     env[key] = value;
   }
   return env;
