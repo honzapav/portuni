@@ -18,6 +18,9 @@ class FakeSessionsServer {
   readonly wss: WebSocketServer;
   private readonly sockets = new Set<WsSocket>();
   readonly subscribeCalls: SubscribeCall[] = [];
+  // When set, requests are recorded but never answered -- the way a server
+  // that dies mid-request behaves. Lets a test strand a request on purpose.
+  silent = false;
 
   constructor() {
     this.wss = new WebSocketServer({ port: 0 });
@@ -29,7 +32,7 @@ class FakeSessionsServer {
         if (frame.type === "subscribe") {
           this.subscribeCalls.push(frame.payload as SubscribeCall);
         }
-        if (frame.id) {
+        if (frame.id && !this.silent) {
           socket.send(JSON.stringify({ id: frame.id, type: "reply", payload: { ok: true } }));
         }
       });
@@ -148,6 +151,41 @@ describe("sessions-client: direct-WS transport", () => {
     assert.deepEqual(server.subscribeCalls[1], { session_id: "S1", after: 5 });
 
     client.disconnect();
+  });
+
+  // The reconnect's own resubscribe is fire-and-forget: no caller awaits it,
+  // so if the connection goes away again before its reply lands, rejecting it
+  // produces an unhandled rejection -- which in the webview reaches the
+  // window's error reporting, and in the suite fails whichever test happened
+  // to be running when it fired (#381).
+  it("a resubscribe stranded by a second disconnect does not reject into nowhere", async () => {
+    const server = await fakeServer();
+    const transport = testTransport(server);
+    const client = createSessionsClient({ transport });
+    clients.push(client);
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await client.subscribe("S1");
+      await waitUntil(() => server.subscribeCalls.length === 1);
+
+      // The reconnect's resubscribe is recorded but never answered, so it is
+      // still outstanding when the client disconnects underneath it.
+      server.silent = true;
+      server.dropAllConnections();
+      await waitUntil(() => server.subscribeCalls.length === 2, 5000);
+
+      client.disconnect();
+      // Two macrotask turns: the rejection has to be delivered and then
+      // reported as unhandled, both of which happen after the current one.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      assert.deepEqual(unhandled, []);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 
   it("delta frames never touch the tracked seq, so a resubscribe after a drop still uses the last real event's seq", async () => {
