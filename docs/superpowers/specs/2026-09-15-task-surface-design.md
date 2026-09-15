@@ -6,190 +6,224 @@ everything about where a task lives and how one is started. The rest of
 that spec — model, runtime, events, live channel, API, adapters — stands
 unchanged.
 
-What that spec said, and what phase 3 (#342) implemented faithfully: "the
-centre is `SessionChat` when the selected node has an open session, else
-the node detail". Four consequences, all observed on 0.16.1:
+"The runner" below is always the `claude` binary the Agent SDK spawns as
+a subprocess (`domain/runner/adapters/claude.ts`), authenticated by its
+own login, never an API key.
+
+What the runner spec said, and what phase 3 (#342) implemented
+faithfully: "the centre is `SessionChat` when the selected node has an
+open session, else the node detail". Four consequences, all observed on
+0.16.1:
 
 - Opening a task hides the node. `WorkspaceView.tsx`'s `detailSurface()`
   swaps `SessionChat` in for `DetailPane` in the same slot, and with no
   terminal open that slot IS the centre, so no right aside exists at all.
 - A node can hold exactly one task. `App.tsx`'s `workspaceOpenSession` is
   a single `SessionSummary | null` (the first running/suspended row);
-  terminals have had tabs since day one.
+  terminals have been a list per node from the start.
 - Starting a task is a modal that demands the brief up front, before
   there is anything to react to.
 - There is no model choice anywhere: `RunStart` has no field for it,
-  `POST /sessions` does not accept one, and the Claude adapter builds its
-  SDK `Options` without `model`, so every task runs on the CLI default.
+  `POST /sessions` does not accept one, and the adapter builds its SDK
+  `Options` without `model`, so every task runs on the runner's default.
 
 ## Scope
 
-In: the Práce canvas layout, task threads as tabs, starting a task,
-thread naming, model and run parameters end to end (web → REST →
-`RunStart` → adapter).
+In: the Práce canvas, threads as open sessions in the left column,
+starting a task, thread naming, model and reasoning effort end to end
+(web → REST → `RunStart` → adapter).
 
 Out: the chat's own event rendering (markdown #369, activity visibility
-#370), the terminal's removal (runner spec, phase 4), remote hosts.
+#370), remote hosts.
+
+## The terminal comes out first
+
+Every "how do a terminal tab and a thread behave the same" question
+exists only because both are on screen at once. That was phase 3's
+deliberate choice (compare them on a real node), and it has served its
+purpose. **Run the runner spec's phase 4 — the terminal's removal — before
+the work below**, so this spec has exactly one kind of canvas to
+describe and no dual-behaviour compromises get built into the layout.
+Everything here is written as if the terminal is already gone; where it
+still matters during the transition it says so.
 
 ## Rules
 
-1. **A thread is a canvas tab, peer to a terminal tab.** The canvas is
-   the centre; the node detail is the right aside and stays visible
-   whenever any canvas tab is open. The node detail takes the centre only
-   when the node has no tab at all.
-2. **A node holds as many threads as the user opens**, concurrently, the
-   way it holds terminals.
-3. **A thread opens empty.** No modal, no required field. The tab exists,
-   the composer is focused, the transcript is empty.
-4. **The first message starts the run.** Until then the thread is
-   client-side only: no `sessions` row, no runner process. This keeps the
-   runner spec's Rule 2 ("the session exists before the runner") — `POST
-   /sessions` still creates the row and then starts the run, it is just
-   called on send instead of from a dialog.
-5. **A thread names itself from its first message**, not from the date.
-6. **Model and parameters are the thread's**, defaulted from the runner
-   instance, changeable while the thread is open.
+1. **The canvas has no chrome.** The middle column is the active thread,
+   nothing else. This is not new: the per-node strip was deliberately
+   moved out of the middle column into the left one (see the comment
+   atop `TerminalTabs.tsx`), and that decision stands.
+2. **Open threads live in the left column**, as sub-rows under their
+   node in `WorkspaceNodeList`, exactly where a node's terminals are
+   today: every node's threads visible at once, one click to any of
+   them, inline rename, a status chip per row.
+3. **A node holds as many threads as the user opens**, concurrently.
+4. **The node detail is the right aside** whenever a thread is open, and
+   takes the centre only when the node has none.
+5. **A thread opens empty**: no modal, no required field, composer
+   focused, transcript empty.
+6. **Closing a thread suspends its session.** A handoff is written and
+   the row goes to `suspended`, resumable with Nahodit. Ending a session
+   for good stays an explicit Uzavřít in the thread header.
+7. **A thread names itself from its first message**; only a manual
+   rename ever replaces that name.
+8. **Model and reasoning effort are the thread's**, defaulted from the
+   runner instance.
 
-## Model, effort and the rest of the parameters
+## The session row exists from the moment the thread opens
 
-Only what `@anthropic-ai/claude-agent-sdk` actually exposes (verified
-against the pinned 0.3.270 `sdk.d.ts`), no invented knobs — there is no
-temperature here:
+A thread is a session from the first click, not from the first message:
+one surface, one row, no client-only state that other windows and Relace
+cannot see.
 
-| Field | SDK `Options` | Notes |
+- `sessions.state` gains **`draft`** (schema check in both dialects, the
+  `SessionState` union, `ALLOWED_TRANSITIONS`: `draft → running`, and
+  `draft` is terminal only by deletion). A draft has a name
+  („Nový úkol"), a node, an owner, and nothing else.
+- The first message transitions it to `running` and starts the run.
+  `POST /sessions` keeps creating the row for a task started any other
+  way; a draft is promoted by `POST /sessions/:id/messages` instead.
+- **Every list filters drafts out**: `GET /overview`, the WS snapshot,
+  Relace, the sidebar's session sub-rows in other windows. A draft is
+  visible only as the open thread it is.
+- **Prune.** A draft is deleted when its thread is closed still empty,
+  and `boot/session-sweep.ts` deletes any draft older than 24 hours —
+  the same sweep that already resolves rows left `running` by a dead
+  process. A draft has no runs, no events and no handoff, so deletion is
+  a single `DELETE`, not an archive.
+
+## Model and reasoning effort
+
+Only what `@anthropic-ai/claude-agent-sdk` exposes (verified against the
+pinned 0.3.270 `sdk.d.ts`); there is no temperature here.
+
+| Choice | SDK | When it can change |
 |---|---|---|
-| `model` | `model` | Alias (`opus`, `sonnet`, `haiku`) or full id; unset = CLI default |
-| `fallback_model` | `fallbackModel` | Used when the primary is overloaded |
-| `effort` | `effort` | `low \| medium \| high \| xhigh \| max`, only on models whose `ModelInfo.supportsEffort` is true |
-| `max_turns` | `maxTurns` | Guard rail for an unattended thread |
+| Model | `Options.model` at start, `Query.setModel(model?)` after | **Any time**, mid-run, without restarting anything |
+| Reasoning effort | `Options.effort` (`low \| medium \| high \| xhigh \| max`) | **At the start of a run only** — the SDK has no `setEffort` |
 
-`thinking` / `maxThinkingTokens` stay out: adaptive thinking is the
-default on the models this ships against, and a token budget is not a
-choice a user of this app can make well.
+So the thread header offers both before the first message; afterwards the
+model picker keeps working live (`setModel` on the live `Query`, through a
+new `RunHandle.setModel`), while a changed effort applies from the next
+run — the picker says so rather than pretending otherwise. Effort is
+offered only on models whose `ModelInfo.supportsEffort` is true.
+
+`fallbackModel`, `maxTurns`, `thinking`/`maxThinkingTokens` stay out of
+the UI entirely: none is a choice this app's user can make well, and
+each has a working default.
+
+**Where a value comes from**, first match wins: the thread's own setting
+(`sessions.model` / `sessions.effort`), then the runner instance's
+defaults (`runners.json`, next to the `env` and org defaults it already
+carries), then the runner's own default.
 
 **Enumerating models.** `Query.supportedModels()` returns `ModelInfo[]`
 (canonical id, display name, description, `supportsEffort`,
-`effortLevels`). It lives on a live query, so the adapter interface gains
-`models(): Promise<RunnerModel[]>`, implemented for Claude by starting a
-throwaway query, reading the list and closing it; served as `GET
-/runners/:runner/models` and cached for the process lifetime with an
-explicit refresh. When enumeration fails the picker degrades to a free
-text field — the SDK accepts a bare alias, so a failed list must never
-block starting a task.
-
-**Where a value comes from**, first match wins:
-
-1. The thread's own setting (`sessions.model` / `sessions.effort` / …).
-2. The runner instance's defaults (`runners.json`, next to `env` and the
-   org defaults it already carries).
-3. Unset — the CLI's own default.
-
-Changing a thread's model applies to its next run; a run in flight keeps
-the one it started with.
+`effortLevels`) and lives on a live query — which a running thread
+already has. The adapter caches the list from the first live run of the
+process (`RunnerAdapter.models()` reads that cache) and serves it at
+`GET /runners/:runner/models`. Before any run has ever happened the list
+is the documented aliases (`opus`, `sonnet`, `haiku`) plus a free text
+field; a bare alias is accepted by the SDK, so an empty cache must never
+block starting a task. No throwaway process is started just to build a
+picker.
 
 ## Storage
 
-- Migration **036**: `sessions` gains `model TEXT`, `fallback_model
-  TEXT`, `effort TEXT`, `max_turns INTEGER`, all nullable. Both dialects
-  (`schema.pg.ts` baseline + the libsql migration), per B2/B3.
-- `runners.json` instances gain an optional `defaults` object with the
-  same four keys. `instances.ts` validates it; an unknown key is
-  refused the way an unknown env key already is.
+- Migration **036**: `sessions` gains `model TEXT` and `effort TEXT`
+  (both nullable) and `draft` joins the `state` check constraint. Both
+  dialects — the libsql migration and `schema.pg.ts`'s baseline — per
+  B2/B3.
+- `runners.json` instances gain an optional `defaults: { model?,
+  effort? }`, validated by `instances.ts`; an unknown key is refused the
+  way an unknown env key already is.
 
 ## API
 
-- `POST /sessions` accepts `model`, `fallback_model`, `effort`,
-  `max_turns`, all optional; persisted on the row.
-- `PATCH /sessions/:id` accepts the same four (the thread's picker),
-  alongside the rename it already serves. Its double shape stays: a bare
-  `{name}` keeps returning `SessionSummary`, anything else returns the
-  raw row.
+- `POST /sessions` accepts `model` and `effort`, both optional.
+- `PATCH /sessions/:id` accepts the same two, alongside the rename it
+  already serves; setting `model` on a session with a live run calls
+  through to `RunHandle.setModel` instead of only writing the column.
+  Its double shape stays: a bare `{name}` keeps returning
+  `SessionSummary`, anything else returns the raw row.
+- `POST /sessions/:id/messages` promotes a `draft` to `running` and
+  starts the first run.
+- `DELETE /sessions/:id` removes a `draft` (and only a draft).
 - `GET /runners/:runner/models` → `{ models: RunnerModel[] }`.
-- `SessionSummary` carries the four so the chat header can render the
-  current choice without a second fetch.
+- `SessionSummary` carries `model` and `effort` so the header renders
+  the current choice without a second fetch.
 - `RunStart` carries them resolved (thread → instance → unset), so the
   adapter never reads config itself.
 
-Every one of these is device-local in central mode already; the routing
-in `is_local_only_path` is unchanged except for the new `/runners/*`
-sub-path, which is in the local set already.
+Routing in `is_local_only_path` is unchanged: `/sessions/:id/messages`
+and `/runners/*` are already in the device-local set.
 
 ## Web
 
-**Layout** (`WorkspaceView.tsx`). The centre is the canvas: the tab strip
-plus the active tab's body, a terminal or a thread. The right aside is
-`DetailPane`/`EditorPane` whenever the canvas has at least one tab,
-collapsible as today. A node with no tab keeps today's centred detail.
-`detailSurface()` loses its `SessionChat` branch; `SessionChat` becomes a
-canvas body next to `TerminalPane`.
+**Layout** (`WorkspaceView.tsx`). The middle column is the active
+thread's `SessionChat`, mounted for every open thread and toggled with
+`display:none` the way terminal panes already are, so a thread's
+transcript and scroll position survive switching nodes. The right aside
+is `DetailPane`/`EditorPane` whenever the node has an open thread,
+collapsible as today; a node with no thread keeps today's centred
+detail. `detailSurface()` loses its `SessionChat` branch.
 
-**Tabs.** One strip for both kinds, each tab carrying its kind's icon,
-its name and a close affordance; `TerminalTabs` generalizes rather than
-gaining a sibling. A thread's tab label is its session name, live from
-`session_state`. Closing a thread tab closes the view, never the session
-— a running task keeps running, and it is reopened from Relace or the
-sidebar. This is the opposite of a terminal tab, whose close kills the
-PTY, so the close affordance must say which it is (thread: „Zavřít
-záložku", terminal: unchanged).
+**Left column** (`WorkspaceNodeList.tsx`). Thread sub-rows replace
+terminal sub-rows one-for-one: status chip from `session_state`, the
+session name as the label, inline rename (`PATCH /sessions/:id`), and a
+close affordance that suspends. `App.tsx`'s single
+`workspaceOpenSession` becomes the open-thread set per node plus an
+active-thread pointer; a persistent session id and a PTY terminal id
+must never share one map (the #343 hazard).
 
-**State** (`App.tsx`). `workspaceOpenSession` (single) is replaced by the
-open-thread set per node plus an active-tab pointer, mirroring
-`activeSessionIdByNode`. A persistent session id and a PTY terminal id
-must not share one map — the #343 note about `workspaceSelectSession`
-stealing a terminal's active pointer is exactly this hazard.
+**Starting a task.** Unchanged in placement: the button that opened a
+terminal (`NewTaskButton`, `DetailPane.files.tsx`) opens a thread, and
+opening it is the whole interaction — one click, the thread is there,
+the composer has focus. `NewTaskDialog` is removed. Runner, instance,
+model and effort are pickers in the thread header with resolved defaults
+preselected.
 
-**Starting a task.** „Nový úkol" opens an empty thread tab and focuses
-the composer. `NewTaskDialog` is removed. The runner/instance/model
-controls move into the thread header, where they are pickers with
-resolved defaults preselected, editable before the first message and
-after it. Sending the first message calls `POST /sessions` with the
-brief and the current picker state, then subscribes the way the chat
-already does.
+**Naming.** `name` comes from the first message: first line, trimmed,
+whitespace collapsed, cut at ~60 characters on a word boundary with an
+ellipsis. `computeDefaultSessionName`'s `node · date time` stays for what
+has no first message of its own (a hand-opened CLI session,
+`interactive_chat`). The handoff-title enrichment at suspend
+(`sessions.ts`) no longer applies to a thread named this way — the first
+message is the user's own words and outranks the agent's summary; only a
+manual rename replaces it.
 
-**Naming.** The row's `name` comes from the first message: its first
-line, trimmed, collapsed whitespace, cut at ~60 characters on a word
-boundary, with an ellipsis when cut. `computeDefaultSessionName`'s `node
-· date time` stays for what has no first message of its own — a
-hand-opened CLI, an `interactive_chat`. `name_is_custom` semantics are
-unchanged, so the handoff-title enrichment at suspend still refines an
-auto-name later, and a manual rename still wins over both.
-
-**Relace / sidebar / Přehled.** „Otevřít chat" opens the thread as a tab
-and focuses it, or focuses the tab if it is already open; it never
-replaces the node detail.
+**Relace / Přehled.** „Otevřít chat" opens the thread in the left column
+and focuses it, or focuses it if already open; it never replaces the
+node detail.
 
 ## Phases
 
-Four issues, in order; 1 is the only one the others depend on.
-
-1. **Canvas and tabs**: layout, the shared tab strip, per-node thread
-   set, empty thread, first message starts the run, `NewTaskDialog`
-   removed. Naming rides along (it is the same call site).
-2. **Model plumbing**: migration 036, `runners.json` defaults, the REST
-   fields, `RunStart`, the Claude adapter's `Options`. No UI beyond
-   passing what it is given.
-3. **Model enumeration**: the adapter's `models()`, the REST route, the
-   cache and its fallback.
-4. **Pickers** in the thread header, wired to 2 and 3.
+1. **Canvas and threads**: layout, thread sub-rows in the left column,
+   per-node thread set, the `draft` state and its prune, first message
+   starts the run, naming, `NewTaskDialog` removed.
+2. **Model and effort plumbing**: migration 036, `runners.json`
+   defaults, the REST fields, `RunStart`, the adapter's `Options`,
+   `RunHandle.setModel`.
+3. **Enumeration and pickers**: `RunnerAdapter.models()` with the
+   live-run cache, the REST route, the header pickers.
 
 ## Testing
 
-- Pure helpers (tab-set reducers, the name-from-first-message function,
-  the model resolution chain) unit-tested through the server's
-  `node:test` runner, as `lib/session-chat.ts`'s helpers already are.
-- Adapter: `Options.model`/`effort`/`maxTurns` set from `RunStart`
-  against the injected fake `query`; `models()` against a fake
-  `supportedModels`.
-- REST: the four fields round-trip through `POST`/`PATCH /sessions`.
+- Pure helpers (thread-set reducers, name-from-first-message, the
+  value-resolution chain) unit-tested through the server's `node:test`
+  runner, as `lib/session-chat.ts`'s helpers already are.
+- Adapter: `Options.model`/`effort` set from `RunStart`, `setModel`
+  reaching the live query, `models()` against a fake `supportedModels` —
+  all against the injected fake `query`.
+- Storage: the `draft` transitions, the prune sweep, and that every list
+  endpoint excludes drafts.
 - Layout and pickers are macOS/visual verification, not the gate.
 
 ## Known gaps, accepted
 
-- Enumeration costs one throwaway CLI start per refresh. The initialize
-  response already carries `models`, so a later change can populate the
-  cache from a real run's own handshake instead.
-- `effort` is offered only for models that declare `supportsEffort`; a
-  model that silently downgrades it is the CLI's business, not ours.
-- The terminal stays until the runner spec's phase 4. Until then both
-  kinds of tab live in one strip, which is the point — they are
-  comparable on the same node.
+- Effort cannot change mid-run; the SDK has no setter for it. The picker
+  states that it applies from the next run.
+- The model list is empty until this process has run one task, and falls
+  back to aliases plus free text. Populating it from a run's own
+  initialize response would close that, and is not worth a phase of its
+  own.
