@@ -228,14 +228,17 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname === "/sessions/record" && m === "POST") return "write";
   if (/^\/sessions\/[^/]+$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+$/.test(pathname) && m === "PATCH") return "write";
+  // Removes a draft only (#374) -- sessionAccess's "message" tier further
+  // scopes this to the draft's own owner inside the handler.
+  if (/^\/sessions\/[^/]+$/.test(pathname) && m === "DELETE") return "write";
   if (/^\/sessions\/[^/]+\/state$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/resume-info$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+\/signals$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+\/messages$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/questions\/[^/]+$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/interrupt$/.test(pathname) && m === "POST") return "write";
-  if (/^\/sessions\/[^/]+\/suspend$/.test(pathname) && m === "POST") return "write";
-  if (/^\/sessions\/[^/]+\/resume$/.test(pathname) && m === "POST") return "write";
+  // #378: closes this session and starts a new one on the same node.
+  if (/^\/sessions\/[^/]+\/continue$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/close$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/events$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+\/events$/.test(pathname) && m === "POST") return "write";
@@ -250,6 +253,9 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
 
   // --- Runners (adapter registry, provider instances; #319) ---
   if (pathname === "/runners" && m === "GET") return "read";
+  // #376: the model picker's list -- MUST be checked before the (unrelated)
+  // /runners/instances rules below since both start with /runners/.
+  if (/^\/runners\/[^/]+\/models$/.test(pathname) && m === "GET") return "read";
   if (pathname === "/runners/instances" && m === "GET") return "read";
   if (pathname === "/runners/instances" && m === "POST") return "write";
   if (/^\/runners\/instances\/[^/]+\/org-default$/.test(pathname) && m === "PUT") return "write";

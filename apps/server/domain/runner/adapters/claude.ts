@@ -36,8 +36,22 @@ import type {
   RunStart,
   RunnerAdapter,
   RunnerAvailability,
+  RunnerModel,
   ToolCallCategory,
 } from "../types.js";
+
+// #376: before this process has ever run a live query, there is nothing to
+// ask supportedModels() -- and starting a throwaway process just to build a
+// picker is explicitly ruled out. These are the documented aliases the SDK
+// accepts as a bare `model` string; "sonnet" first since it's the sensible
+// everyday default. Effort support is left false/[] here (deliberately
+// conservative -- the real per-model answer only exists once
+// supportedModels() has actually answered).
+const CLAUDE_ALIAS_MODELS: readonly RunnerModel[] = [
+  { id: "sonnet", displayName: "Sonnet", description: "Vyvážený model pro každodenní práci.", supportsEffort: false, effortLevels: [] },
+  { id: "opus", displayName: "Opus", description: "Nejschopnější model, pomalejší a dražší.", supportsEffort: false, effortLevels: [] },
+  { id: "haiku", displayName: "Haiku", description: "Nejrychlejší a nejlevnější model.", supportsEffort: false, effortLevels: [] },
+];
 
 const DETECT_TIMEOUT_MS = 5_000;
 const DEFAULT_CLOSE_POLL_INTERVAL_MS = 500;
@@ -303,7 +317,6 @@ interface RunTranslationState {
   latestUsage: unknown;
   pendingToolCalls: Map<string, PendingToolCall>;
   pendingPermissions: Map<string, PendingPermission>;
-  interrupting: boolean;
   ended: boolean;
   endedResolve: () => void;
   endedPromise: Promise<void>;
@@ -320,7 +333,6 @@ function createState(): RunTranslationState {
     latestUsage: null,
     pendingToolCalls: new Map(),
     pendingPermissions: new Map(),
-    interrupting: false,
     ended: false,
     endedResolve,
     endedPromise,
@@ -469,6 +481,14 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
   const closeTimeoutMs = deps.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
   const closeGraceMs = deps.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
   const closeTermMs = deps.closeTermMs ?? DEFAULT_CLOSE_TERM_MS;
+  // #376: filled from the first live run's own Query.supportedModels() --
+  // null until then (and re-attempted on the next run if that call itself
+  // failed), never re-fetched once it holds a real list.
+  let modelsCache: RunnerModel[] | null = null;
+
+  async function models(): Promise<RunnerModel[]> {
+    return modelsCache ?? [...CLAUDE_ALIAS_MODELS];
+  }
 
   async function runExec(executable: string, args: string[]): Promise<{ ok: boolean; stdout: string }> {
     return new Promise((resolve) => {
@@ -580,6 +600,8 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       env: buildEnv(run.instance.env),
       hooks: { PreCompact: [{ hooks: [preCompactHook] }] },
       spawnClaudeCodeProcess,
+      ...(run.model !== null ? { model: run.model } : {}),
+      ...(run.effort !== null ? { effort: run.effort } : {}),
       ...(run.resume
         ? {
             resume: run.resume.agentSessionId,
@@ -589,6 +611,28 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     };
 
     const q: Query = query({ prompt: promptQueue, options });
+
+    // #376: fire-and-forget -- never blocks this run on the picker's own
+    // data. A failure here just leaves modelsCache null, so models() keeps
+    // serving the alias fallback and the next run's start() tries again.
+    // Deferred into the promise chain itself (Promise.resolve().then(...))
+    // rather than calling q.supportedModels() directly, so a query mock
+    // that doesn't implement it (an older SDK, or a test double) rejects
+    // instead of throwing synchronously past the .catch below.
+    if (modelsCache === null) {
+      void Promise.resolve()
+        .then(() => q.supportedModels())
+        .then((list) => {
+          modelsCache = list.map((m) => ({
+            id: m.value,
+            displayName: m.displayName,
+            description: m.description,
+            supportsEffort: m.supportsEffort ?? false,
+            effortLevels: m.supportedEffortLevels ?? [],
+          }));
+        })
+        .catch(() => undefined);
+    }
 
     async function translateMessage(msg: SDKMessage): Promise<void> {
       if (msg.type === "system" && msg.subtype === "init") {
@@ -621,13 +665,14 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         for await (const msg of q) {
           await translateMessage(msg);
         }
+        // #378: the loop only ends naturally once the prompt queue itself
+        // ends (close()'s own job) -- interrupt() no longer touches the
+        // queue, so this is always a graceful close. session-runtime.ts's
+        // own withSuspendReason is what rewrites this to "suspended" when
+        // the close wasn't an explicit Uzavřít/continue.
         sink({
           kind: "run_ended",
-          payload: {
-            run_id: run.runId,
-            reason: state.interrupting ? "interrupted" : "completed",
-            usage: state.latestUsage,
-          },
+          payload: { run_id: run.runId, reason: "completed", usage: state.latestUsage },
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -686,23 +731,16 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
           pending.resolve({ behavior: "allow", updatedInput: { ...pending.input, answer: decision.value } });
         }
       },
+      // #378 ("Stop, not Přerušit"): cancels the CURRENT TURN only
+      // (Query.interrupt()) -- the process, the prompt queue and the run
+      // all stay alive, so the very next send() is an ordinary message.
+      // Ending the queue (and therefore the run) belongs to close() alone.
       async interrupt(): Promise<void> {
         if (state.ended) return;
-        state.interrupting = true;
         try {
           await q.interrupt();
         } catch {
           // Best-effort -- the process may already be gone.
-        }
-        promptQueue.end();
-        const abort = new AbortController();
-        try {
-          await Promise.race([
-            state.endedPromise,
-            waitForPidDeadOrTimeout(state.capturedPid, closePollIntervalMs, closeTimeoutMs, abort.signal),
-          ]);
-        } finally {
-          abort.abort();
         }
       },
       // Spec, "Process lifecycle": end stdin (the prompt stream), 2 s,
@@ -726,6 +764,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         signalProcessGroup(state.capturedPid, "SIGKILL");
         await endedWithin(closeTimeoutMs);
       },
+      async setModel(model: string | null): Promise<void> {
+        if (state.ended) return;
+        await q.setModel(model ?? undefined);
+      },
       agentSessionId(): string | null {
         return state.agentSessionId;
       },
@@ -736,5 +778,5 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
     return handle;
   }
 
-  return { id: "claude", detect, start };
+  return { id: "claude", detect, start, models };
 }

@@ -2,7 +2,16 @@
 // registered in production -- the registry issue decides where this is
 // wired up, and it is test-only there too.
 
-import type { CanonicalEvent, DeltaFrame, EventSink, RunHandle, RunStart, RunnerAdapter, RunnerAvailability } from "../types.js";
+import type {
+  CanonicalEvent,
+  DeltaFrame,
+  EventSink,
+  RunHandle,
+  RunStart,
+  RunnerAdapter,
+  RunnerAvailability,
+  RunnerModel,
+} from "../types.js";
 
 // A step is either a canonical event/delta to emit, or a pause: the script
 // blocks until the returned RunHandle's send()/answer() is called (whichever
@@ -13,6 +22,9 @@ export interface FakeRunnerAdapterOptions {
   script: readonly FakeScriptStep[];
   agentSessionId?: string | null;
   availability?: Partial<RunnerAvailability>;
+  // #376: models() just returns this fixed list -- the fake has no live
+  // query to fill a cache from, and no test needs it to.
+  models?: readonly RunnerModel[];
 }
 
 function isWaitStep(step: FakeScriptStep): step is { wait: "message" | "answer" } {
@@ -24,10 +36,23 @@ export class FakeRunnerAdapter implements RunnerAdapter {
   private readonly script: readonly FakeScriptStep[];
   private readonly agentSessionIdValue: string | null;
   private readonly availability: RunnerAvailability;
+  private readonly modelsList: readonly RunnerModel[];
+  // Test-only visibility for RunHandle.setModel (#375) -- the last model
+  // any live run's handle was asked to switch to, or null if never called.
+  private lastSetModel: string | null = null;
+
+  getLastSetModel(): string | null {
+    return this.lastSetModel;
+  }
+
+  async models(): Promise<RunnerModel[]> {
+    return [...this.modelsList];
+  }
 
   constructor(opts: FakeRunnerAdapterOptions) {
     this.script = opts.script;
     this.agentSessionIdValue = opts.agentSessionId ?? null;
+    this.modelsList = opts.models ?? [];
     this.availability = {
       installed: true,
       version: "fake-1.0.0",
@@ -101,15 +126,20 @@ export class FakeRunnerAdapter implements RunnerAdapter {
       async answer(): Promise<void> {
         resolveWait("answer");
       },
+      // #378: mirrors the real Claude adapter -- interrupt() only cancels
+      // whatever turn is in flight, it never ends the run. The script (if
+      // paused at a wait step) stays paused; ending the run is close()'s
+      // job alone.
       async interrupt(): Promise<void> {
-        if (ended) return;
-        stopAndResume();
-        emitEnded("interrupted");
+        // no-op
       },
       async close(): Promise<void> {
         if (ended) return;
         stopAndResume();
         emitEnded("completed");
+      },
+      setModel: async (model: string | null): Promise<void> => {
+        this.lastSetModel = model;
       },
       agentSessionId(): string | null {
         return agentSessionIdValue;

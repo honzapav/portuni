@@ -111,8 +111,10 @@ import {
   handleAnswerSessionQuestion,
   handleAppendSessionEvents,
   handleCloseSession,
+  handleContinueSession,
   handleCreateSessionRecord,
   handleCreateSessionRun,
+  handleDeleteSession,
   handleGetSession,
   handleGetSessionResumeInfo,
   handleGetSessionSignals,
@@ -122,11 +124,9 @@ import {
   handleListSessionRuns,
   handlePatchSession,
   handlePatchSessionRun,
-  handleResumeSession,
   handleSendSessionMessage,
   handleStartSession,
   handleListSessions,
-  handleSuspendSession,
   handleTerminalExit,
   handleTransitionSessionState,
 } from "./sessions.js";
@@ -134,6 +134,7 @@ import {
   handleCreateRunnerInstance,
   handleDeleteRunnerInstance,
   handleListRunnerInstances,
+  handleListRunnerModels,
   handleListRunners,
   handleSetRunnerInstanceOrgDefault,
   handleUpdateRunnerInstance,
@@ -813,14 +814,10 @@ async function routeSessions(
     await handleInterruptSession(req, res, identity, decodeURIComponent(interruptMatch[1]));
     return true;
   }
-  const suspendMatch = pathname.match(/^\/sessions\/([^/]+)\/suspend$/);
-  if (suspendMatch && method === "POST") {
-    await handleSuspendSession(req, res, identity, decodeURIComponent(suspendMatch[1]));
-    return true;
-  }
-  const resumeMatch = pathname.match(/^\/sessions\/([^/]+)\/resume$/);
-  if (resumeMatch && method === "POST") {
-    await handleResumeSession(req, res, identity, decodeURIComponent(resumeMatch[1]));
+  // #378: "Pokračovat v nové session" / "Navázat".
+  const continueMatch = pathname.match(/^\/sessions\/([^/]+)\/continue$/);
+  if (continueMatch && method === "POST") {
+    await handleContinueSession(req, res, identity, decodeURIComponent(continueMatch[1]));
     return true;
   }
   const closeMatch = pathname.match(/^\/sessions\/([^/]+)\/close$/);
@@ -864,6 +861,12 @@ async function routeSessions(
     await handlePatchSession(req, res, identity, decodeURIComponent(sessionMatch[1]));
     return true;
   }
+  // #374: removes a draft (and only a draft) -- a real thread is closed via
+  // POST /sessions/:id/close, never deleted.
+  if (sessionMatch && method === "DELETE") {
+    await handleDeleteSession(req, res, identity, decodeURIComponent(sessionMatch[1]));
+    return true;
+  }
   return false;
 }
 
@@ -881,6 +884,16 @@ async function routeRunners(
   const { pathname } = url;
   if (pathname === "/runners" && method === "GET") {
     await handleListRunners(req, res);
+    return true;
+  }
+  // #376: /runners/:runner/models MUST match before the bare
+  // /runners/instances handlers below, same precedence reason as
+  // /runners/instances/:id/org-default -- "instances" or "org-defaults" as
+  // a literal runner id never collides here since the second path segment
+  // has to be exactly "models".
+  const modelsMatch = pathname.match(/^\/runners\/([^/]+)\/models$/);
+  if (modelsMatch && method === "GET") {
+    await handleListRunnerModels(req, res, decodeURIComponent(modelsMatch[1]));
     return true;
   }
   if (pathname === "/runners/instances" && method === "GET") {

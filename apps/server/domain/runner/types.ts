@@ -87,9 +87,12 @@ export interface CompactionEvent {
   payload: { trigger: "auto" | "manual" };
 }
 
+// #378: always server-written now (session-runtime.ts's own suspend
+// handshake -- the only thing that ever produced an "agent"-generated one
+// here -- is gone), so the payload no longer distinguishes generated_by.
 export interface HandoffEvent {
   kind: "handoff";
-  payload: { path: string | null; hash: string | null; generated_by: "agent" | "server" };
+  payload: { path: string | null; hash: string | null };
 }
 
 export interface StateChangedEvent {
@@ -147,11 +150,29 @@ export interface DeltaFrame {
 // ExitPlanMode) is unaffected by the policy.
 export type PermissionPolicy = "default" | "auto";
 
+// Reasoning effort (#375, phase 4 of docs/superpowers/specs/2026-09-15-
+// task-surface-design.md): mirrors @anthropic-ai/claude-agent-sdk's own
+// EffortLevel exactly, duplicated here (not imported) so this adapter-
+// agnostic types file has no dependency on a specific runner's SDK package
+// -- the Claude adapter is the only one that currently reads it.
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
 export interface RunnerAvailability {
   installed: boolean;
   version: string | null;
   logged_in: boolean;
   instances_supported: boolean;
+}
+
+// #376: one entry in a runner's model picker (GET /runners/:runner/models).
+// `id` is what a caller sends back as `model` on POST/PATCH /sessions.
+export interface RunnerModel {
+  id: string;
+  displayName: string;
+  description: string;
+  supportsEffort: boolean;
+  effortLevels: readonly EffortLevel[];
 }
 
 export interface RunStart {
@@ -176,6 +197,11 @@ export interface RunStart {
   // adapter (#324) needed them.
   portuniRoot: string;
   mirrors: readonly string[];
+  // #375: resolved once by session-runtime.ts (the thread's own value, else
+  // the runner instance's defaults, else unset) -- the adapter never reads
+  // config itself. null means "the runner's own default", not "off".
+  model: string | null;
+  effort: EffortLevel | null;
 }
 
 export interface RunHandle {
@@ -185,6 +211,11 @@ export interface RunHandle {
   interrupt(): Promise<void>;
   // Graceful end of the run's process.
   close(): Promise<void>;
+  // #375: changes the model on the LIVE query, no restart -- the one
+  // setting the SDK allows to change mid-run. null resets to the runner's
+  // own default. Reasoning effort has no equivalent live setter (SDK
+  // limitation); it only ever applies from the next run.
+  setModel(model: string | null): Promise<void>;
   agentSessionId(): string | null;
   // The runner's own child process id, or null when the adapter has none
   // (the fake adapter, or a real one that hasn't captured it yet) -- the
@@ -201,4 +232,9 @@ export interface RunnerAdapter {
   id: string;
   detect(): Promise<RunnerAvailability>;
   start(run: RunStart, sink: EventSink): Promise<RunHandle>;
+  // #376: the picker's list. Never starts a process just to build it --
+  // an adapter that hasn't run anything yet in this process returns a
+  // documented fallback (aliases plus free text) rather than throwing or
+  // blocking.
+  models(): Promise<RunnerModel[]>;
 }

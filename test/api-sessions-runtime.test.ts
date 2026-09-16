@@ -107,11 +107,9 @@ function installRuntime(script: readonly FakeScriptStep[]) {
     store: new DbSessionStore(dbFixture.db),
     registry: { getAdapter: (id) => (id === adapter.id ? adapter : null) },
     provision: stubProvision(),
-    suspendPollIntervalMs: 10,
-    suspendTimeoutMs: 100,
   });
   setSessionRuntimeForTesting(runtime);
-  return runtime;
+  return { runtime, adapter };
 }
 
 let dbFixture: SharedDb;
@@ -162,7 +160,9 @@ describe("task REST endpoints under /sessions", () => {
     const eventsBody = JSON.parse(eventsRes.body) as { events: SessionEventRow[]; next_after: number | null };
     assert.deepEqual(
       eventsBody.events.map((e) => e.kind),
-      ["run_started", "user_message", "run_ended"],
+      // #378: nobody closed this run explicitly, so it falls through to the
+      // auto-summary/suspend path and gets its handoff event too.
+      ["run_started", "user_message", "run_ended", "handoff"],
     );
     assert.deepEqual(eventsBody.events[1].payload, { text: "Fix the bug", source: "chat" });
     assert.equal(eventsBody.next_after, null);
@@ -189,6 +189,160 @@ describe("task REST endpoints under /sessions", () => {
     });
     assert.equal(res.statusCode, 400);
     assert.equal(JSON.parse(res.body).code, "UNKNOWN_INSTANCE");
+  });
+
+  // #375: model/effort round-trip through POST and PATCH.
+  test("POST /sessions persists model/effort; SessionSummary carries them", async () => {
+    installRuntime([]);
+    const res = await call(makeIdentity("U1"), "POST", "/sessions", {
+      node_id: dbFixture.nodeId,
+      brief: "x",
+      runner: "fake",
+      model: "claude-opus-4-8",
+      effort: "high",
+    });
+    assert.equal(res.statusCode, 201);
+    const body = JSON.parse(res.body) as { session: SessionSummary };
+    assert.equal(body.session.model, "claude-opus-4-8");
+    assert.equal(body.session.effort, "high");
+  });
+
+  test("PATCH /sessions/:id sets model on a session with a live run, reaching the adapter's live query", async () => {
+    const { adapter } = installRuntime([{ wait: "message" }]);
+    const startRes = await call(makeIdentity("U1"), "POST", "/sessions", {
+      node_id: dbFixture.nodeId,
+      brief: "x",
+      runner: "fake",
+    });
+    const { session } = JSON.parse(startRes.body) as { session: SessionSummary };
+    assert.equal(adapter.getLastSetModel(), null);
+
+    const patchRes = await call(makeIdentity("U1"), "PATCH", `/sessions/${session.id}`, {
+      model: "claude-sonnet-5",
+    });
+    assert.equal(patchRes.statusCode, 200);
+    assert.equal(adapter.getLastSetModel(), "claude-sonnet-5", "the live run's Query must have been told");
+
+    const getRes = await call(makeIdentity("U1"), "GET", `/sessions/${session.id}`);
+    assert.equal((JSON.parse(getRes.body) as { model: string | null }).model, "claude-sonnet-5");
+  });
+
+  test("PATCH /sessions/:id sets effort without touching the live run (no live setter for it)", async () => {
+    const { adapter } = installRuntime([{ wait: "message" }]);
+    const startRes = await call(makeIdentity("U1"), "POST", "/sessions", {
+      node_id: dbFixture.nodeId,
+      brief: "x",
+      runner: "fake",
+    });
+    const { session } = JSON.parse(startRes.body) as { session: SessionSummary };
+
+    const patchRes = await call(makeIdentity("U1"), "PATCH", `/sessions/${session.id}`, { effort: "xhigh" });
+    assert.equal(patchRes.statusCode, 200);
+    assert.equal(adapter.getLastSetModel(), null, "effort has no live setter, unlike model");
+
+    const getRes = await call(makeIdentity("U1"), "GET", `/sessions/${session.id}`);
+    assert.equal((JSON.parse(getRes.body) as { effort: string | null }).effort, "xhigh");
+  });
+
+  // #374: a thread opens empty -- POST /sessions with no brief creates a
+  // draft (no run, no runner chosen yet) instead of starting a task.
+  test("POST /sessions without a brief creates a draft, no run started", async () => {
+    installRuntime([]);
+    const res = await call(makeIdentity("U1"), "POST", "/sessions", { node_id: dbFixture.nodeId });
+    assert.equal(res.statusCode, 201);
+    const body = JSON.parse(res.body) as { session: SessionSummary; run: SessionRunRow | null };
+    assert.equal(body.session.state, "draft");
+    assert.equal(body.session.name, "Nový úkol");
+    assert.equal(body.session.brief, null);
+    assert.equal(body.session.runner, null);
+    assert.equal(body.run, null);
+
+    // A draft never shows up in the node's own sessions list -- "visible
+    // only as the open thread it is" (spec, "The session row exists from
+    // the moment the thread opens").
+    const listRes = await call(makeIdentity("U1"), "GET", `/nodes/${dbFixture.nodeId}/sessions`);
+    const listBody = JSON.parse(listRes.body) as { sessions: SessionSummary[] };
+    assert.ok(!listBody.sessions.some((s) => s.id === body.session.id));
+  });
+
+  test("POST /sessions/:id/messages promotes a draft: resolves the runner, names the thread, starts the run", async () => {
+    // A trailing wait keeps the run live -- an empty script would auto-
+    // complete right away and (#378) fall into the auto-summary/suspend
+    // path, which is not what this test is about.
+    installRuntime([{ wait: "message" }]);
+    const draftRes = await call(makeIdentity("U1"), "POST", "/sessions", { node_id: dbFixture.nodeId });
+    const { session: draft } = JSON.parse(draftRes.body) as { session: SessionSummary };
+
+    const msgRes = await call(makeIdentity("U1"), "POST", `/sessions/${draft.id}/messages`, {
+      text: "Fix the login bug please, it throws on empty passwords",
+    });
+    assert.equal(msgRes.statusCode, 202);
+
+    // GET /sessions/:id returns the raw SessionRow (see handleGetSession's
+    // own comment), not the curated SessionSummary -- name_is_custom is
+    // still the 0/1 integer column here.
+    const getRes = await call(makeIdentity("U1"), "GET", `/sessions/${draft.id}`);
+    const updated = JSON.parse(getRes.body) as { state: string; runner: string; brief: string; name: string; name_is_custom: number };
+    assert.equal(updated.state, "running");
+    assert.equal(updated.runner, "fake");
+    assert.equal(updated.brief, "Fix the login bug please, it throws on empty passwords");
+    assert.equal(updated.name, "Fix the login bug please, it throws on empty passwords");
+    assert.equal(updated.name_is_custom, 1);
+
+    const eventsRes = await call(makeIdentity("U1"), "GET", `/sessions/${draft.id}/events`);
+    const eventsBody = JSON.parse(eventsRes.body) as { events: SessionEventRow[] };
+    assert.deepEqual(
+      eventsBody.events.map((e) => e.kind),
+      ["state_changed", "run_started", "user_message"],
+    );
+    assert.deepEqual(eventsBody.events[0].payload, { from: "draft", to: "running", waiting: false });
+    assert.deepEqual(eventsBody.events[2].payload, {
+      text: "Fix the login bug please, it throws on empty passwords",
+      source: "chat",
+    });
+  });
+
+  test("POST /sessions/:id/messages 400s promoting a draft when no runner is installed/logged in", async () => {
+    clearRegistryForTests(); // no adapter registered at all
+    const runtime = createSessionRuntime({
+      store: new DbSessionStore(dbFixture.db),
+      registry: { getAdapter: () => null },
+      provision: stubProvision(),
+    });
+    setSessionRuntimeForTesting(runtime);
+
+    const draftRes = await call(makeIdentity("U1"), "POST", "/sessions", { node_id: dbFixture.nodeId });
+    const { session: draft } = JSON.parse(draftRes.body) as { session: SessionSummary };
+
+    const res = await call(makeIdentity("U1"), "POST", `/sessions/${draft.id}/messages`, { text: "hello" });
+    assert.equal(res.statusCode, 400);
+    assert.equal(JSON.parse(res.body).code, "NO_RUNNER_AVAILABLE");
+  });
+
+  test("DELETE /sessions/:id removes a draft", async () => {
+    installRuntime([]);
+    const draftRes = await call(makeIdentity("U1"), "POST", "/sessions", { node_id: dbFixture.nodeId });
+    const { session: draft } = JSON.parse(draftRes.body) as { session: SessionSummary };
+
+    const res = await call(makeIdentity("U1"), "DELETE", `/sessions/${draft.id}`);
+    assert.equal(res.statusCode, 200);
+
+    const getRes = await call(makeIdentity("U1"), "GET", `/sessions/${draft.id}`);
+    assert.equal(getRes.statusCode, 404);
+  });
+
+  test("DELETE /sessions/:id refuses a non-draft session", async () => {
+    installRuntime([]);
+    const res0 = await call(makeIdentity("U1"), "POST", "/sessions", {
+      node_id: dbFixture.nodeId,
+      brief: "x",
+      runner: "fake",
+    });
+    const { session } = JSON.parse(res0.body) as { session: SessionSummary };
+
+    const res = await call(makeIdentity("U1"), "DELETE", `/sessions/${session.id}`);
+    assert.equal(res.statusCode, 409);
+    assert.equal(JSON.parse(res.body).code, "NOT_A_DRAFT");
   });
 
   test("a scripted question sets waiting_since; POST .../questions/:request_id clears it and records the decision", async () => {
@@ -238,7 +392,7 @@ describe("task REST endpoints under /sessions", () => {
     assert.equal((answered.payload as { decision: { value: boolean } | null }).decision?.value, true);
   });
 
-  test("interrupt, suspend, resume {mode: handoff} and close move the session through its states", async () => {
+  test("interrupt leaves the run live, continue moves to a new session, and close ends it (#378)", async () => {
     installRuntime([{ wait: "message" }]);
     const start = await call(makeIdentity("U1"), "POST", "/sessions", {
       node_id: dbFixture.nodeId,
@@ -247,25 +401,32 @@ describe("task REST endpoints under /sessions", () => {
     });
     const { session: started } = JSON.parse(start.body) as { session: SessionSummary };
 
+    // interrupt() only cancels the current turn -- the run and the session
+    // both stay live, so a message right after is accepted as ordinary.
     const interruptRes = await call(makeIdentity("U1"), "POST", `/sessions/${started.id}/interrupt`);
     assert.equal(interruptRes.statusCode, 200);
+    const afterInterrupt = (JSON.parse(interruptRes.body) as { session: SessionSummary }).session;
+    assert.equal(afterInterrupt.state, "running");
 
-    // Suspend on a session with no live run still runs the full poll (short,
-    // via the test-only override) and falls back to a server-generated
-    // handoff since nothing calls portuni_session_suspend in this test.
-    const suspendRes = await call(makeIdentity("U1"), "POST", `/sessions/${started.id}/suspend`);
-    assert.equal(suspendRes.statusCode, 200);
-    const suspended = (JSON.parse(suspendRes.body) as { session: SessionSummary }).session;
-    assert.equal(suspended.state, "suspended");
-
-    const resumeRes = await call(makeIdentity("U1"), "POST", `/sessions/${started.id}/resume`, {
-      mode: "handoff",
+    const msgRes = await call(makeIdentity("U1"), "POST", `/sessions/${started.id}/messages`, {
+      text: "still here?",
     });
-    assert.equal(resumeRes.statusCode, 200);
-    const resumed = (JSON.parse(resumeRes.body) as { session: SessionSummary; run: SessionRunRow }).session;
-    assert.equal(resumed.state, "running");
+    assert.equal(msgRes.statusCode, 202);
 
-    const closeRes = await call(makeIdentity("U1"), "POST", `/sessions/${started.id}/close`);
+    // "Pokračovat v nové session": closes the old session (no summary
+    // written on it -- continueSession's own close is not the auto-summary
+    // path) and starts a fresh, running one on the same node, carrying the
+    // old session's history as orientation.
+    const continueRes = await call(makeIdentity("U1"), "POST", `/sessions/${started.id}/continue`);
+    assert.equal(continueRes.statusCode, 200);
+    const { session: continued } = JSON.parse(continueRes.body) as { session: SessionSummary; run: SessionRunRow };
+    assert.notEqual(continued.id, started.id);
+    assert.equal(continued.state, "running");
+
+    const oldRes = await call(makeIdentity("U1"), "GET", `/sessions/${started.id}`);
+    assert.equal((JSON.parse(oldRes.body) as { state: string }).state, "closed");
+
+    const closeRes = await call(makeIdentity("U1"), "POST", `/sessions/${continued.id}/close`);
     assert.equal(closeRes.statusCode, 200);
     const closed = (JSON.parse(closeRes.body) as { session: SessionSummary }).session;
     assert.equal(closed.state, "closed");

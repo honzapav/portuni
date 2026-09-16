@@ -8,9 +8,16 @@ import EditorFullscreen from "./components/EditorFullscreen";
 import EditorPane from "./components/EditorPane";
 import StatusFooter from "./components/StatusFooter";
 import CreateNodeModal from "./components/CreateNodeModal";
-import NewTaskDialog from "./components/NewTaskDialog";
-import { fetchGraph, fetchNode, fetchMe, fetchNodePersistentSessions } from "./api";
-import type { SessionSummary } from "./types";
+import {
+  fetchGraph,
+  fetchNode,
+  fetchMe,
+  fetchNodePersistentSessions,
+  startDraftThread,
+  deletePersistentSession,
+  renamePersistentSession,
+} from "./api";
+import type { SessionSummary, SessionRunRow } from "./types";
 import { createSessionsClient, type SessionStateMessage } from "./lib/sessions-client";
 import {
   applySessionStateFrame,
@@ -505,10 +512,31 @@ export default function App() {
   const runningSessionCount = useMemo(() => countRunningSessions(sessionStates), [sessionStates]);
 
 
+  // Draft threads (#374): a draft is visible only as the open thread it
+  // is -- every list the server serves (GET /nodes/:id/sessions included)
+  // excludes it, so the window that created one tracks it here, keyed by
+  // session id, until it is promoted (its first message starts the run) or
+  // closed. Once a session_state frame arrives for it, the server-fetched
+  // lists below already have it (running, or whatever it became), so it's
+  // dropped from here -- there is never a reason to still be tracking it
+  // as a draft afterward.
+  const [localDrafts, setLocalDrafts] = useState<Record<string, SessionSummary>>({});
+  useEffect(() => {
+    return sessionsClient.onSessionState((s) => {
+      setLocalDrafts((prev) => {
+        if (!(s.session_id in prev)) return prev;
+        const next = { ...prev };
+        delete next[s.session_id];
+        return next;
+      });
+    });
+  }, [sessionsClient]);
+
   // The selected node's own persistent session, when it has one that's
-  // running/waiting/suspended -- drives whether WorkspaceView's detail
-  // surface shows SessionChat instead of DetailPane. Refetched whenever the
-  // workspace selection changes, same pattern as workspaceNodeDetail above.
+  // running/waiting/suspended/draft -- drives whether WorkspaceView's
+  // detail surface shows SessionChat instead of DetailPane. Refetched
+  // whenever the workspace selection changes, same pattern as
+  // workspaceNodeDetail above.
   const [workspaceOpenSession, setWorkspaceOpenSession] = useState<SessionSummary | null>(null);
   const requestedChatSessionId = selectedWorkspaceNodeId
     ? (requestedChatSessionByNode[selectedWorkspaceNodeId] ?? null)
@@ -531,18 +559,19 @@ export default function App() {
       return;
     }
     let cancelled = false;
+    const localForNode = Object.values(localDrafts).filter((d) => d.node_id === selectedWorkspaceNodeId);
     fetchNodePersistentSessions(selectedWorkspaceNodeId, false)
       .then((res) => {
         if (cancelled) return;
-        setWorkspaceOpenSession(pickOpenChatSession(res.sessions, requestedChatSessionId));
+        setWorkspaceOpenSession(pickOpenChatSession([...res.sessions, ...localForNode], requestedChatSessionId));
       })
       .catch(() => {
-        if (!cancelled) setWorkspaceOpenSession(null);
+        if (!cancelled) setWorkspaceOpenSession(pickOpenChatSession(localForNode, requestedChatSessionId));
       });
     return () => {
       cancelled = true;
     };
-  }, [selectedWorkspaceNodeId, requestedChatSessionId, selectedNodeLiveStamp]);
+  }, [selectedWorkspaceNodeId, requestedChatSessionId, selectedNodeLiveStamp, localDrafts]);
 
 
   // #343's Práce sidebar: every OPEN node's own running/suspended
@@ -571,12 +600,26 @@ export default function App() {
       cancelled = true;
     };
   }, [openNodeIds]);
+  // Local drafts merged in per node (#374) -- the server-fetched list above
+  // never contains one.
+  const openSessionsByNodeWithDrafts = useMemo(() => {
+    if (Object.keys(localDrafts).length === 0) return openSessionsByNode;
+    const merged: Record<string, SessionSummary[]> = { ...openSessionsByNode };
+    for (const draft of Object.values(localDrafts)) {
+      if (!draft.node_id) continue;
+      merged[draft.node_id] = [...(merged[draft.node_id] ?? []), draft];
+    }
+    return merged;
+  }, [openSessionsByNode, localDrafts]);
   const liveOpenSessionsByNode = useMemo(
     () =>
       Object.fromEntries(
-        Object.entries(openSessionsByNode).map(([id, list]) => [id, mergeLiveSessionStates(list, sessionStates)]),
+        Object.entries(openSessionsByNodeWithDrafts).map(([id, list]) => [
+          id,
+          mergeLiveSessionStates(list, sessionStates),
+        ]),
       ),
-    [openSessionsByNode, sessionStates],
+    [openSessionsByNodeWithDrafts, sessionStates],
   );
 
   // --- Source editor state ---
@@ -788,25 +831,91 @@ export default function App() {
     return () => clearInterval(id);
   }, [view, selectedWorkspaceNodeId, selectedId, refetchWorkspaceDetail]);
 
-  // "+" on a Práce node row: start a task there. NewTaskDialog needs the
-  // node's detail (name, organization edge for the instance default), so
-  // fetch it first; the node is opened/selected at the same time so the
-  // fresh thread lands where it is visible.
-  const [newTaskNode, setNewTaskNode] = useState<NodeDetail | null>(null);
+  // "+" on a Práce node row: open a fresh, empty thread there (#374, "one
+  // click, thread is there, composer has focus") -- no dialog, nothing to
+  // pick first. The node opens/selects at the same time so the thread
+  // lands where it's visible, and openSessionChat focuses the new draft
+  // specifically (there may be other open threads on the same node).
   const workspaceNewTask = useCallback(
     (nodeId: string) => {
       openNode(nodeId);
-      void fetchNode(nodeId)
-        .then((detail) => setNewTaskNode(detail))
-        .catch(() => setNewTaskNode(null));
+      void startDraftThread(nodeId)
+        .then((session) => {
+          setLocalDrafts((prev) => ({ ...prev, [session.id]: session }));
+          openSessionChat(nodeId, session.id);
+        })
+        .catch(() => undefined);
     },
-    [openNode],
+    [openNode, openSessionChat],
+  );
+
+  // Shared by every onSessionStarted call site (Práce's own NewTaskButton,
+  // Graf's, the workspace sidebar's "+"): shows the fresh thread and, when
+  // it's a draft (run: null), tracks it locally so it survives the next
+  // sidebar refetch too (#374).
+  const registerSessionStarted = useCallback(
+    (result: { session: SessionSummary; run: SessionRunRow | null }) => {
+      setWorkspaceOpenSession(result.session);
+      if (result.session.state === "draft") {
+        setLocalDrafts((prev) => ({ ...prev, [result.session.id]: result.session }));
+      }
+    },
+    [],
   );
 
   const workspaceCreateNode = useCallback(() => {
     createFromWorkspaceRef.current = true;
     openCreateModal();
   }, [openCreateModal]);
+
+  // Inline rename on a thread's own sub-row (#374). A local draft is
+  // renamed only in place (there is no server row to rename yet -- naming
+  // a draft is moot anyway, since its first message renames it for real);
+  // otherwise PATCH /sessions/:id.
+  const workspaceRenameTask = useCallback((session: SessionSummary, name: string) => {
+    if (session.state === "draft") {
+      setLocalDrafts((prev) =>
+        prev[session.id] ? { ...prev, [session.id]: { ...prev[session.id], name, name_is_custom: true } } : prev,
+      );
+      return;
+    }
+    void renamePersistentSession(session.id, name)
+      .then((updated) => {
+        const nodeId = session.node_id;
+        if (nodeId) {
+          setOpenSessionsByNode((prev) => {
+            const list = prev[nodeId];
+            if (!list?.some((s) => s.id === updated.id)) return prev;
+            return { ...prev, [nodeId]: list.map((s) => (s.id === updated.id ? updated : s)) };
+          });
+        }
+        setWorkspaceOpenSession((prev) => (prev?.id === updated.id ? updated : prev));
+      })
+      .catch(() => undefined);
+  }, []);
+
+  // The × on a thread's own sub-row (#374): a draft with no first message
+  // yet is deleted outright; anything else is Uzavřít, which asks first --
+  // via closeTaskConfirm below, a real dialog (window.confirm is a no-op
+  // in the Tauri webview, same reasoning as editorGuard).
+  const [closeTaskConfirm, setCloseTaskConfirm] = useState<SessionSummary | null>(null);
+  const workspaceCloseTask = useCallback((session: SessionSummary) => {
+    const forgetLocally = () => {
+      setLocalDrafts((prev) => {
+        if (!(session.id in prev)) return prev;
+        const next = { ...prev };
+        delete next[session.id];
+        return next;
+      });
+      setWorkspaceOpenSession((prev) => (prev?.id === session.id ? null : prev));
+    };
+    if (session.state === "draft") {
+      forgetLocally();
+      void deletePersistentSession(session.id).catch(() => undefined);
+      return;
+    }
+    setCloseTaskConfirm(session);
+  }, []);
 
   // Close a node: drop it from the open set. Its sessions keep running on
   // the sidecar. Moves the workspace selection to a neighbouring open node,
@@ -856,6 +965,8 @@ export default function App() {
           onWorkspaceNewTask={workspaceNewTask}
           workspaceOpenSessionsByNode={liveOpenSessionsByNode}
           onWorkspaceOpenSessionChat={openSessionChat}
+          onWorkspaceRenameTask={workspaceRenameTask}
+          onWorkspaceCloseTask={workspaceCloseTask}
           onWorkspaceOpenNode={openNode}
           onWorkspaceCreateNode={workspaceCreateNode}
         />
@@ -940,7 +1051,7 @@ export default function App() {
               sessionsClient={sessionsClient}
               liveSessionStates={sessionStates}
               onSessionUpdated={setWorkspaceOpenSession}
-              onSessionStarted={(result) => setWorkspaceOpenSession(result.session)}
+              onSessionStarted={registerSessionStarted}
               onOpenChat={openSessionChat}
             />
           </div>
@@ -979,12 +1090,13 @@ export default function App() {
             onMutate={refetchAll}
             onOpenFile={openFileInEditor}
             onOpenChat={openSessionChat}
-            onSessionStarted={({ session }) => {
+            onSessionStarted={(result) => {
               // Graf has no chat surface of its own, so a task started here
               // lands in Práce: the node opens and the fresh session is the
               // thread it shows. Without this the run is live with nowhere
               // in the UI showing it.
-              if (session.node_id) openSessionChat(session.node_id, session.id);
+              registerSessionStarted(result);
+              if (result.session.node_id) openSessionChat(result.session.node_id, result.session.id);
             }}
             liveSessionStates={sessionStates}
           />
@@ -1031,17 +1143,6 @@ export default function App() {
               createFromWorkspaceRef.current = false;
               openNode(node.id);
             }
-          }}
-        />
-      )}
-      {newTaskNode && (
-        <NewTaskDialog
-          node={newTaskNode}
-          onClose={() => setNewTaskNode(null)}
-          onStarted={({ session }) => {
-            setNewTaskNode(null);
-            setWorkspaceOpenSession(session);
-            if (session.node_id) openSessionChat(session.node_id, session.id);
           }}
         />
       )}
@@ -1092,6 +1193,34 @@ export default function App() {
               </Button>
               <Button disabled={fileEditor.saving} onClick={() => void resolveEditorGuard("save")}>
                 {fileEditor.saving ? "Ukládám…" : "Uložit"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+      {closeTaskConfirm && (
+        <Dialog open onOpenChange={(open) => !open && setCloseTaskConfirm(null)}>
+          <DialogContent showCloseButton={false} className="sm:max-w-[420px]">
+            <DialogHeader>
+              <DialogTitle>Uzavřít vlákno?</DialogTitle>
+              <DialogDescription>
+                Vlákno „{closeTaskConfirm.name}“ se uzavře. Server napřed uloží shrnutí konverzace; najdeš ho pak
+                mezi Hotové.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setCloseTaskConfirm(null)}>
+                Zpět
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  const session = closeTaskConfirm;
+                  setCloseTaskConfirm(null);
+                  void sessionsClient.close(session.id).catch(() => undefined);
+                }}
+              >
+                Uzavřít
               </Button>
             </DialogFooter>
           </DialogContent>

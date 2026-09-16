@@ -67,7 +67,7 @@ type Props = {
   openSession: SessionSummary | null;
   sessionsClient: SessionsClient;
   onSessionUpdated: (session: SessionSummary) => void;
-  onSessionStarted: (result: { session: SessionSummary; run: SessionRunRow }) => void;
+  onSessionStarted: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
   // Relace tab's "Otevřít chat" (#343), threaded through to DetailPane.
   onOpenChat: (nodeId: string, sessionId: string) => void;
   liveSessionStates: Readonly<Record<string, SessionStateMessage>>;
@@ -119,11 +119,13 @@ export default function WorkspaceView({
     editorFile.nodeId === selectedNodeId;
 
   // A running/waiting session renders as chat; a suspended one still does
-  // (the composer just disables, with a Nahodit affordance) -- closed and
-  // archived fall through to the plain node detail, since those are
-  // history, not something to keep steering.
+  // (the composer just disables, with a Nahodit affordance); a draft does
+  // too -- a thread opens empty (#374, rule 5), composer focused, nothing
+  // to show yet. closed and archived fall through to the plain node
+  // detail, since those are history, not something to keep steering.
   const hasOpenSession =
-    openSession != null && (openSession.state === "running" || openSession.state === "suspended");
+    openSession != null &&
+    (openSession.state === "running" || openSession.state === "suspended" || openSession.state === "draft");
 
   // The node surface: EditorPane when a file is open for this node, else
   // DetailPane. Centre-stage when the node has no thread, the right aside

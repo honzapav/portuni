@@ -125,13 +125,26 @@ export function extractHandoffTitle(content: string): string | null {
 // suspend() (session-runtime.ts, #320) calls this too, with reason
 // suspend_timeout, when the agent never wrote its own handoff in time.
 
-// suspend_timeout: the runner runtime's own suspend() (session-runtime.ts,
-// #320) asked the agent to write a handoff and it never did within the
-// poll window -- the same server-written fallback, one more reason.
 // host_lost: the boot orphaned-run sweep (domain/runner/run-sweep.ts, #325)
 // found a run whose child process this device can no longer be tracking
 // after a sidecar restart/crash.
-export type ServerHandoffReason = "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | "suspend_timeout" | "host_lost";
+// run_ended (#378): a runner-driven thread's run ended for any reason other
+// than an explicit Uzavřít/continue (session-runtime.ts's own
+// handleAdapterEvent) -- the generic case; "idle" is the more specific one
+// below, still reported separately so the Relace row can say "nečinnost"
+// rather than the generic wording. suspend_timeout is retired along with
+// the agent-cooperative suspend handshake it belonged to (#378) -- no
+// runtime code produces it anymore, but the value stays in this union so an
+// old row's already-written reason marker still parses.
+export type ServerHandoffReason =
+  | "disconnect"
+  | "idle"
+  | "terminal_exit"
+  | "boot_sweep"
+  | "suspend_timeout"
+  | "host_lost"
+  | "run_ended"
+  | "continue";
 
 const SERVER_HANDOFF_REASONS: readonly ServerHandoffReason[] = [
   "disconnect",
@@ -140,6 +153,8 @@ const SERVER_HANDOFF_REASONS: readonly ServerHandoffReason[] = [
   "boot_sweep",
   "suspend_timeout",
   "host_lost",
+  "run_ended",
+  "continue",
 ];
 
 // A leading HTML-comment marker rather than a new column for `generated_by`/
@@ -160,17 +175,77 @@ export function parseServerHandoffReason(content: string | null): ServerHandoffR
     : null;
 }
 
+// #378 ("the deterministic thread lifecycle"): the minimal shape a summary
+// needs from a canonical event -- deliberately NOT domain/runner/types.ts's
+// own CanonicalEvent union, so this file (and its pure builder below) has no
+// dependency on the runner layer; a plain { kind, payload } pair is exactly
+// what a session_events row already carries once its payload is parsed.
+export interface SummaryEvent {
+  kind: string;
+  payload: unknown;
+}
+
+const MAX_SUMMARY_MESSAGES = 6;
+const MAX_MESSAGE_PREVIEW_LENGTH = 200;
+
+function isTextPayload(payload: unknown): payload is { text: string } {
+  return typeof payload === "object" && payload !== null && typeof (payload as { text?: unknown }).text === "string";
+}
+
+function isFileChangePayload(payload: unknown): payload is { path: string; op: string } {
+  const p = payload as { path?: unknown; op?: unknown };
+  return typeof p?.path === "string" && typeof p?.op === "string";
+}
+
+function isQuestionPayload(payload: unknown): payload is { request_id: string; title: string; decision: unknown } {
+  const p = payload as { request_id?: unknown; title?: unknown };
+  return typeof p?.request_id === "string" && typeof p?.title === "string";
+}
+
 // Exported for domain/runner/suspend-fallback-central.ts (#323): the
 // agent-mode counterpart of suspendSessionServerSide below reuses this same
-// content format so a handoff written by either mode looks identical.
-export function buildServerHandoffContent(input: {
+// content format so a summary written by either mode looks identical.
+//
+// #378: "the summary replaces the suspend handshake" -- mechanical, built
+// entirely from session_events and session_scope, no agent cooperation
+// needed: the last few messages, any files changed, any question left open
+// (the LATEST payload per request_id wins, since an answered question
+// re-appends with `decision` filled in -- "open" means that latest payload
+// still has none), and the write/read set. Renamed from
+// buildServerHandoffContent (the write/read-set-only shape #329 introduced)
+// -- this is what it always meant to grow into once nothing had to wait on
+// the agent for the rest of it.
+export function buildRunSummaryContent(input: {
   nodeName: string | null;
   sessionName: string;
   reason: ServerHandoffReason;
+  events: readonly SummaryEvent[];
   writeSet: readonly string[];
   readSet: readonly string[];
   lastActiveAt: string;
 }): string {
+  const messages = input.events
+    .filter((e) => (e.kind === "user_message" || e.kind === "assistant_message") && isTextPayload(e.payload))
+    .slice(-MAX_SUMMARY_MESSAGES)
+    .map((e) => {
+      const text = (e.payload as { text: string }).text;
+      const firstLine = text.split("\n")[0].slice(0, MAX_MESSAGE_PREVIEW_LENGTH);
+      return `- **${e.kind === "user_message" ? "Uživatel" : "Agent"}:** ${firstLine}`;
+    });
+
+  const filesChanged = new Map<string, string>();
+  for (const e of input.events) {
+    if (e.kind === "file_change" && isFileChangePayload(e.payload)) filesChanged.set(e.payload.path, e.payload.op);
+  }
+
+  const questionsByRequestId = new Map<string, { title: string; decision: unknown }>();
+  for (const e of input.events) {
+    if (e.kind === "question" && isQuestionPayload(e.payload)) {
+      questionsByRequestId.set(e.payload.request_id, { title: e.payload.title, decision: e.payload.decision });
+    }
+  }
+  const openQuestion = [...questionsByRequestId.values()].find((q) => q.decision == null);
+
   return [
     serverHandoffMarker(input.reason),
     `# ${input.sessionName}`,
@@ -178,13 +253,22 @@ export function buildServerHandoffContent(input: {
     `Uzel: ${input.nodeName ?? "(bez uzlu)"}`,
     `Poslední aktivita: ${input.lastActiveAt}`,
     "",
+    "## Poslední zprávy",
+    messages.length > 0 ? messages.join("\n") : "(žádné)",
+    "",
+    "## Změněné soubory",
+    filesChanged.size > 0 ? [...filesChanged.entries()].map(([path, op]) => `- ${path} (${op})`).join("\n") : "(žádné)",
+    "",
+    "## Otevřená otázka",
+    openQuestion ? openQuestion.title : "(žádná)",
+    "",
     "## Zápisový rozsah",
     input.writeSet.length > 0 ? input.writeSet.map((id) => `- ${id}`).join("\n") : "(žádný)",
     "",
     "## Čtecí rozsah",
     input.readSet.length > 0 ? input.readSet.map((id) => `- ${id}`).join("\n") : "(žádný)",
     "",
-    "Konverzace nebyla uložena; pokračuj z tohoto handoffu.",
+    "Konverzace nebyla uložena; pokračuj z tohoto shrnutí.",
   ].join("\n");
 }
 
@@ -193,7 +277,19 @@ async function nodeNameForHandoff(db: DbClient, nodeId: string): Promise<string 
   return res.rows.length > 0 ? String(res.rows[0].name) : null;
 }
 
-// Suspends a 'running' session with a handoff the SERVER writes, not the
+// The summary builder's own input shape, straight off session_events --
+// domain/runner/store.ts's DbSessionStore.listEvents does the identical
+// query; this file stays independent of the runner layer (see SummaryEvent
+// above), so it reads the table directly instead of importing that module.
+async function listSummaryEvents(db: DbClient, sessionId: string): Promise<SummaryEvent[]> {
+  const res = await db.execute({
+    sql: "SELECT kind, payload FROM session_events WHERE session_id = ? ORDER BY seq ASC",
+    args: [sessionId],
+  });
+  return res.rows.map((r) => ({ kind: String(r.kind), payload: JSON.parse(String(r.payload)) as unknown }));
+}
+
+// Suspends a 'running' session with a summary the SERVER writes, not the
 // agent -- a real file in the mirror when one exists on this device (same
 // path writeHandoffAndSuspend uses), or handoff_inline when it doesn't
 // (central mode, or simply no mirror registered here). A no-op (returns
@@ -209,10 +305,12 @@ export async function suspendSessionServerSide(
 
   const nodeName = session.node_id ? await nodeNameForHandoff(db, session.node_id) : null;
   const scope = await getSessionScope(db, sessionId);
-  const content = buildServerHandoffContent({
+  const events = await listSummaryEvents(db, sessionId);
+  const content = buildRunSummaryContent({
     nodeName,
     sessionName: session.name,
     reason,
+    events,
     writeSet: scope.filter((s) => s.writable === 1).map((s) => s.node_id),
     readSet: scope.map((s) => s.node_id),
     lastActiveAt: session.last_active_at,

@@ -35,6 +35,8 @@ function makeRunStart(overrides: Partial<RunStart> = {}): RunStart {
     policy: "default",
     portuniRoot: "/tmp",
     mirrors: ["/tmp"],
+    model: null,
+    effort: null,
     ...overrides,
   };
 }
@@ -46,9 +48,13 @@ function makeRunStart(overrides: Partial<RunStart> = {}): RunStart {
 // `hold: true` keeps the iterator open after the script (the run stays
 // live, as it is while a real turn is in flight) until `release()` is
 // called -- canUseTool only means something on a live run.
-function makeFakeQuery(script: readonly SDKMessage[], opts: { hold?: boolean } = {}) {
+function makeFakeQuery(
+  script: readonly SDKMessage[],
+  opts: { hold?: boolean; supportedModels?: () => ReturnType<Query["supportedModels"]> } = {},
+) {
   let capturedOptions: Options | undefined;
   const interruptCalls: number[] = [];
+  const setModelCalls: (string | undefined)[] = [];
   let release: () => void = () => undefined;
   const held = new Promise<void>((resolve) => {
     release = resolve;
@@ -64,14 +70,30 @@ function makeFakeQuery(script: readonly SDKMessage[], opts: { hold?: boolean } =
       interruptCalls.push(1);
       return undefined;
     };
+    (iterator as unknown as { setModel: (model?: string) => Promise<undefined> }).setModel = async (
+      model?: string,
+    ) => {
+      setModelCalls.push(model);
+      return undefined;
+    };
+    (iterator as unknown as { supportedModels: Query["supportedModels"] }).supportedModels =
+      opts.supportedModels ?? (async () => []);
     return iterator;
   }) as CreateClaudeAdapterDeps["query"];
   return {
     query: fakeQuery,
     options: () => capturedOptions,
     interruptCalls,
+    setModelCalls,
     release: () => release(),
   };
+}
+
+// Flushes the microtask queue so a fire-and-forget `.then()` (models()'s
+// own cache-fill after start()) has had a chance to run before a test
+// asserts on it.
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 const FAKE_CLAUDE = "/fake/bin/claude";
@@ -696,6 +718,139 @@ describe("Claude adapter: resume options", () => {
     const handle = await adapter.start(makeRunStart(), () => undefined);
     assert.equal(options()!.resume, undefined);
     await handle.close();
+  });
+});
+
+// #375: model and reasoning effort, resolved once by session-runtime.ts
+// onto RunStart -- the adapter only ever reads run.model/run.effort, never
+// config of its own.
+describe("Claude adapter: model and effort", () => {
+  it("sets Options.model/effort from RunStart when given", async () => {
+    const { query, options } = makeFakeQuery([]);
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart({ model: "claude-opus-4-8", effort: "high" }), () => undefined);
+    assert.equal(options()!.model, "claude-opus-4-8");
+    assert.equal(options()!.effort, "high");
+    await handle.close();
+  });
+
+  it("omits Options.model/effort entirely when RunStart carries neither (the runner's own default)", async () => {
+    const { query, options } = makeFakeQuery([]);
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart({ model: null, effort: null }), () => undefined);
+    assert.equal(options()!.model, undefined);
+    assert.equal(options()!.effort, undefined);
+    await handle.close();
+  });
+
+  it("setModel reaches the live query, resetting to the runner default on null", async () => {
+    const { query, setModelCalls } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+
+    await handle.setModel("claude-sonnet-5");
+    await handle.setModel(null);
+
+    assert.deepEqual(setModelCalls, ["claude-sonnet-5", undefined]);
+    await handle.close();
+  });
+
+  it("setModel is a no-op once the run has ended", async () => {
+    const { query, setModelCalls } = makeFakeQuery([]);
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    await handle.close();
+
+    await handle.setModel("claude-sonnet-5");
+    assert.deepEqual(setModelCalls, []);
+  });
+});
+
+// #376: the model picker's list. No throwaway process is ever started for
+// this -- the cache is only ever filled as a side effect of a real run.
+describe("Claude adapter: models()", () => {
+  it("before any run, returns the documented aliases -- never throws, never blocks", async () => {
+    const adapter = createClaudeAdapter({ query: makeFakeQuery([]).query });
+    const models = await adapter.models();
+    assert.deepEqual(
+      models.map((m) => m.id),
+      ["sonnet", "opus", "haiku"],
+    );
+    assert.ok(models.every((m) => m.displayName.length > 0 && m.description.length > 0));
+  });
+
+  it("fills its cache from the first live run's own supportedModels(), and serves it after", async () => {
+    const sdkModels = [
+      {
+        value: "claude-opus-4-8",
+        displayName: "Claude Opus 4.8",
+        description: "Most capable model",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] as const,
+      },
+      {
+        value: "claude-haiku-4-5",
+        displayName: "Claude Haiku 4.5",
+        description: "Fastest model",
+        supportsEffort: false,
+      },
+    ];
+    const { query } = makeFakeQuery([], { supportedModels: async () => sdkModels });
+    const adapter = createClaudeAdapter({ query });
+
+    // Before the first run, still the alias fallback.
+    assert.deepEqual(
+      (await adapter.models()).map((m) => m.id),
+      ["sonnet", "opus", "haiku"],
+    );
+
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    await handle.close();
+    await flushMicrotasks();
+
+    const models = await adapter.models();
+    assert.deepEqual(models, [
+      { id: "claude-opus-4-8", displayName: "Claude Opus 4.8", description: "Most capable model", supportsEffort: true, effortLevels: ["low", "medium", "high", "xhigh", "max"] },
+      { id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5", description: "Fastest model", supportsEffort: false, effortLevels: [] },
+    ]);
+  });
+
+  it("never calls supportedModels() again once the cache is filled", async () => {
+    let calls = 0;
+    const { query } = makeFakeQuery([], {
+      supportedModels: async () => {
+        calls += 1;
+        return [{ value: "claude-opus-4-8", displayName: "Opus", description: "d", supportsEffort: false }];
+      },
+    });
+    const adapter = createClaudeAdapter({ query });
+
+    const handle1 = await adapter.start(makeRunStart(), () => undefined);
+    await handle1.close();
+    await flushMicrotasks();
+    const handle2 = await adapter.start(makeRunStart(), () => undefined);
+    await handle2.close();
+    await flushMicrotasks();
+
+    assert.equal(calls, 1, "supportedModels() must only ever be asked once it has already succeeded");
+  });
+
+  it("a failed supportedModels() leaves the cache empty -- still the alias fallback, no throw", async () => {
+    const { query } = makeFakeQuery([], {
+      supportedModels: async () => {
+        throw new Error("boom");
+      },
+    });
+    const adapter = createClaudeAdapter({ query });
+
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    await handle.close();
+    await flushMicrotasks();
+
+    assert.deepEqual(
+      (await adapter.models()).map((m) => m.id),
+      ["sonnet", "opus", "haiku"],
+    );
   });
 });
 

@@ -81,9 +81,10 @@ export interface CompactionEvent {
   kind: "compaction";
   payload: { trigger: "auto" | "manual" };
 }
+// #378: always server-written now -- no more generated_by to distinguish.
 export interface HandoffEvent {
   kind: "handoff";
-  payload: { path: string | null; hash: string | null; generated_by: "agent" | "server" };
+  payload: { path: string | null; hash: string | null };
 }
 export interface StateChangedEvent {
   kind: "state_changed";
@@ -221,4 +222,25 @@ export function formatRestartHint(signals: SessionSignals): string | null {
   const ageText = minutes < 1 ? "méně než minutu" : `${minutes} min`;
   const growth = signals.expansionsSinceRunStart > 0 ? ` (+${signals.expansionsSinceRunStart} od startu běhu)` : "";
   return `Běží ${ageText} · zápis ${signals.writeSetSize} · čtení ${signals.readSetSize}${growth}`;
+}
+
+// --- Naming (#374) -----------------------------------------------------------
+
+const THREAD_NAME_MAX_LENGTH = 60;
+
+// A thread names itself from its first message: first line, trimmed,
+// whitespace collapsed, cut at ~60 characters on a word boundary with an
+// ellipsis. The server (domain/sessions.ts's threadNameFromFirstMessage)
+// is what actually writes the name when a draft is promoted -- this copy
+// exists for the composer's own optimistic display and is exercised by the
+// same test suite, duplicated rather than imported across the server/web
+// boundary like this file's CanonicalEvent mirror.
+export function threadNameFromFirstMessage(text: string): string {
+  const firstLine = text.split("\n")[0] ?? "";
+  const collapsed = firstLine.trim().replace(/\s+/g, " ");
+  if (collapsed.length <= THREAD_NAME_MAX_LENGTH) return collapsed;
+  const truncated = collapsed.slice(0, THREAD_NAME_MAX_LENGTH);
+  const lastSpace = truncated.lastIndexOf(" ");
+  const cut = lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated;
+  return `${cut}…`;
 }

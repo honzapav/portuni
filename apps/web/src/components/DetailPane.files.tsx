@@ -41,7 +41,7 @@ import { listWorkspaces } from "../lib/workspaces";
 import { copyText } from "../lib/clipboard";
 import { summarizeSyncRun } from "../lib/sync-run-summary";
 import { syncBarState } from "../lib/sync-bar-state";
-import NewTaskDialog from "./NewTaskDialog";
+import { startDraftThread } from "../api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
@@ -1265,40 +1265,41 @@ function syncCssVar(c: SyncClass): string {
   }
 }
 
-// "Nový úkol" (#342, runner batch; docs/superpowers/specs/2026-09-12-runner-
-// and-session-design.md "Web: New task"): opens NewTaskDialog, which starts
-// a runner-managed session (POST /sessions) and hands the fresh
-// {session, run} back through onSessionStarted. Renders nothing for
-// organization nodes (no working-folder concept there).
+// "Nový úkol" (#374, "Starting a task"): one click, no modal -- opens an
+// empty thread (POST /sessions with no brief, a draft) and hands it back
+// through onSessionStarted with run: null. The composer's first message is
+// what picks a runner/instance and starts the run (server-side,
+// session-runtime.ts's promoteDraftAndStart); there is nothing left to ask
+// up front. Renders nothing for organization nodes (no working-folder
+// concept there).
 export function NewTaskButton({
   node,
   onSessionStarted,
 }: {
   node: NodeDetail;
-  onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow }) => void;
+  onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
 }) {
-  const [taskDialogOpen, setTaskDialogOpen] = useState(false);
+  const [starting, setStarting] = useState(false);
+
+  const handleClick = async () => {
+    setStarting(true);
+    try {
+      const session = await startDraftThread(node.id);
+      onSessionStarted?.({ session, run: null });
+    } finally {
+      setStarting(false);
+    }
+  };
 
   return (
-    <div className="relative">
-      <Button
-        onClick={() => setTaskDialogOpen(true)}
-        title="Zadá agentovi úkol, který poběží v Práci jako chat."
-        className="w-full"
-      >
-        <Plus />
-        Nový úkol
-      </Button>
-      {taskDialogOpen && (
-        <NewTaskDialog
-          node={node}
-          onClose={() => setTaskDialogOpen(false)}
-          onStarted={(result) => {
-            setTaskDialogOpen(false);
-            onSessionStarted?.(result);
-          }}
-        />
-      )}
-    </div>
+    <Button
+      onClick={() => void handleClick()}
+      disabled={starting}
+      title="Otevře prázdné vlákno, kam agentovi zadáš úkol."
+      className="w-full"
+    >
+      <Plus />
+      Nový úkol
+    </Button>
   );
 }

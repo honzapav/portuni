@@ -159,7 +159,7 @@ async function sweepOne(db: DbClient, entry: PidFileEntry, deps: Required<RunSwe
   const session = await suspendSessionServerSide(db, run.session_id, "host_lost");
   if (session) {
     await store.appendEvents(run.session_id, run.id, [
-      { kind: "handoff", payload: { path: session.handoff_path, hash: session.handoff_hash, generated_by: "server" } },
+      { kind: "handoff", payload: { path: session.handoff_path, hash: session.handoff_hash } },
     ]);
   }
 

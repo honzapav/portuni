@@ -22,13 +22,17 @@ import {
 } from "./domain/sync/central/engine-central.js";
 import { createMirrorWatcher, type MirrorWatcher } from "./domain/sync/mirror-watcher.js";
 import { listUserMirrors } from "./domain/sync/mirror-registry.js";
-import { createAgentSessionRuntime } from "./boot/session-runtime.js";
+import { createAgentSessionRuntime, getSessionRuntime } from "./boot/session-runtime.js";
 import { createAgentSessionsWsDeps, createSessionsWsServer } from "./api/sessions-ws.js";
 import { createAgentRouter } from "./api/agent-router.js";
 import { createAgentMcpTransport } from "./mcp/agent-transport.js";
 import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
 import { sweepOrphanedRunsOnBoot } from "./boot/run-sweep.js";
-import { sweepStaleRunningSessionsOnBoot } from "./boot/session-sweep.js";
+import {
+  startIdleRunSweep,
+  sweepStaleDraftSessionsOnBoot,
+  sweepStaleRunningSessionsOnBoot,
+} from "./boot/session-sweep.js";
 import { warnIfLocalWorkspaceHasStaleRemotesOnBoot } from "./boot/local-mode-remote-warning.js";
 import { registerRunnerAdapters } from "./boot/register-runner-adapters.js";
 import {
@@ -190,6 +194,11 @@ async function agentMain(client: CentralClient): Promise<void> {
   });
   await bindAndAnnounce(handle);
   console.error("[boot] central-mode sync agent (no local graph db)");
+  // #378: this sidecar is what actually drives the run in agent mode too
+  // ("one implementation" -- session-runtime.ts never changes between
+  // modes), so the idle sweep runs against THIS process's own runtime
+  // instance, not the local singleton (which agent mode never touches).
+  startIdleRunSweep(sessionRuntime);
 
   // Watcher with the central reconcile; the boot backfill is done below (the
   // built-in backfill needs the local graph db the agent doesn't have), and
@@ -352,7 +361,9 @@ async function main(): Promise<void> {
   // sweep's own query for stale 'running' rows sees an already-correct
   // picture instead of racing it.
   void sweepOrphanedRunsOnBoot().then(() => sweepStaleRunningSessionsOnBoot());
+  void sweepStaleDraftSessionsOnBoot();
   void warnIfLocalWorkspaceHasStaleRemotesOnBoot();
+  startIdleRunSweep(getSessionRuntime());
 
   // Refresh every registered mirror's harness configs so any .mcp.json
   // pointing at an older random port / rotated token picks up the

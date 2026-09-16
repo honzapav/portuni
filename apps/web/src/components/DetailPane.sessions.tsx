@@ -8,13 +8,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, Pencil, X } from "lucide-react";
-import type { SessionSummary } from "../types";
+import type { SessionResumeInfo, SessionSummary } from "../types";
 import {
+  continueSession,
   fetchNodePersistentSessions,
   fetchPersistentSessionResumeInfo,
   fetchUsers,
   renamePersistentSession,
-  resumeSession,
   transitionPersistentSessionState,
 } from "../api";
 import { mergeLiveSessionStates, sessionRowAccess, sessionRowChip, type SessionRowAccess } from "../lib/session-views";
@@ -23,6 +23,14 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 // #329: labels for a session the server suspended (dropped connection,
 // idle GC, terminal exit, boot sweep) rather than the agent's own
@@ -142,6 +150,10 @@ export function SessionsSection({
     setSessions((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
   };
 
+  // Uzavřít is the one irreversible action here (#378) -- confirmed via
+  // closeConfirm below rather than window.confirm, which is a no-op in the
+  // Tauri webview (see App.tsx's editorGuard for the same reasoning).
+  const [closeConfirm, setCloseConfirm] = useState<SessionSummary | null>(null);
   const handleClose = async (id: string) => {
     try {
       const updated = await transitionPersistentSessionState(id, "closed");
@@ -151,9 +163,13 @@ export function SessionsSection({
     }
   };
 
-  const handleResume = async (id: string, mode: "conversation" | "handoff") => {
+  // "Navázat" (#378): the same POST /sessions/:id/continue as "Pokračovat v
+  // nové session" in the chat header, minus a prior close -- this session
+  // is already closed. Jumps straight to the new thread.
+  const handleContinue = async (id: string) => {
     try {
-      await resumeSession(id, mode);
+      const { session } = await continueSession(id);
+      onOpenChat?.(session.id);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -198,9 +214,9 @@ export function SessionsSection({
               access={sessionRowAccess(s.user_id, meId, canManage)}
               ownerName={s.user_id !== meId ? (userNames[s.user_id] ?? null) : null}
               onRenamed={updateOne}
-              onClose={() => void handleClose(s.id)}
+              onClose={() => setCloseConfirm(s)}
               onOpenChat={onOpenChat}
-              onResume={(mode) => void handleResume(s.id, mode)}
+              onContinue={() => void handleContinue(s.id)}
               onOpenHandoff={
                 onOpenFile && s.handoff_path
                   ? () => onOpenFile(nodeId, s.handoff_path!)
@@ -209,6 +225,34 @@ export function SessionsSection({
             />
           ))}
         </div>
+      )}
+
+      {closeConfirm && (
+        <Dialog open onOpenChange={(open) => !open && setCloseConfirm(null)}>
+          <DialogContent showCloseButton={false} className="sm:max-w-[420px]">
+            <DialogHeader>
+              <DialogTitle>Uzavřít relaci?</DialogTitle>
+              <DialogDescription>
+                Relace „{closeConfirm.name}“ se uzavře. Server napřed uloží shrnutí konverzace.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setCloseConfirm(null)}>
+                Zpět
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  const id = closeConfirm.id;
+                  setCloseConfirm(null);
+                  void handleClose(id);
+                }}
+              >
+                Uzavřít
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );
@@ -221,7 +265,7 @@ function SessionRow({
   onRenamed,
   onClose,
   onOpenChat,
-  onResume,
+  onContinue,
   onOpenHandoff,
 }: {
   session: SessionSummary;
@@ -232,19 +276,14 @@ function SessionRow({
   onRenamed: (updated: SessionSummary) => void;
   onClose: () => void;
   onOpenChat?: (sessionId: string) => void;
-  onResume: (mode: "conversation" | "handoff") => void;
+  // "Navázat" (#378): POST /sessions/:id/continue on a closed session.
+  onContinue: () => void;
   onOpenHandoff?: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.name);
   const [saving, setSaving] = useState(false);
-  const [resumeInfo, setResumeInfo] = useState<{
-    conversation_resumable: boolean;
-    handoff_changed: boolean;
-    handoff_checkable: boolean;
-    generated_by: "server" | null;
-    reason: "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | "suspend_timeout" | "host_lost" | null;
-  } | null>(null);
+  const [resumeInfo, setResumeInfo] = useState<SessionResumeInfo | null>(null);
 
   // Resumability is only meaningful (and only worth the round trip) for a
   // suspended session -- fetched lazily per row rather than batched with
@@ -362,10 +401,12 @@ function SessionRow({
           Zápis: {session.write_count}
         </span>
         {session.state === "suspended" && resumeInfo && (
+          // #378: resuming is no longer a picked action -- the next message
+          // just does one or the other. This is purely informational now.
           <span>
             {resumeInfo.conversation_resumable
-              ? "lze pokračovat v konverzaci"
-              : "spustí se z handoffu"}
+              ? "další zpráva naváže na konverzaci"
+              : "další zpráva ji spustí ze shrnutí"}
             {resumeInfo.handoff_changed ? " (handoff upraven od pozastavení)" : ""}
             {!resumeInfo.handoff_checkable ? " (nelze ověřit handoff na tomto zařízení)" : ""}
             {resumeInfo.generated_by === "server" ? ` (pozastaveno serverem${SERVER_SUSPEND_REASON_LABEL[resumeInfo.reason ?? ""] ? `, ${SERVER_SUSPEND_REASON_LABEL[resumeInfo.reason ?? ""]}` : ""})` : ""}
@@ -378,13 +419,8 @@ function SessionRow({
           <RowButton onClick={() => onOpenChat(session.id)}>Otevřít chat</RowButton>
         )}
         {onOpenHandoff && <RowButton onClick={onOpenHandoff}>Zobrazit handoff</RowButton>}
-        {session.state === "suspended" && access.canResume && resumeInfo && (
-          <>
-            {resumeInfo.conversation_resumable && (
-              <RowButton onClick={() => onResume("conversation")}>Nahodit: pokračovat</RowButton>
-            )}
-            <RowButton onClick={() => onResume("handoff")}>Nahodit: předat a začít znovu</RowButton>
-          </>
+        {session.state === "closed" && access.canResume && (
+          <RowButton onClick={onContinue}>Navázat</RowButton>
         )}
         {(session.state === "running" || session.state === "suspended") && access.canPauseOrClose && (
           <RowButton onClick={onClose}>Uzavřít</RowButton>

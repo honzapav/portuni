@@ -335,6 +335,9 @@ describe("agent-router: sessions/tasks", () => {
         [1, "run_started"],
         [2, "user_message"],
         [3, "run_ended"],
+        // #378: nobody closed this run explicitly, so it falls through to
+        // the auto-summary/suspend path and gets its handoff event too.
+        [4, "handoff"],
       ],
     );
   });
@@ -358,7 +361,7 @@ describe("agent-router: sessions/tasks", () => {
     assert.equal(res.status, 404);
   });
 
-  it("suspend and resume patch the session state on central", async () => {
+  it("continue closes the old session and starts a new, running one on central (#378)", async () => {
     stubScript([{ wait: "message" }]);
     const start = await fetch(`${base}/sessions`, {
       method: "POST",
@@ -367,18 +370,14 @@ describe("agent-router: sessions/tasks", () => {
     });
     const { session } = (await start.json()) as { session: SessionRow };
 
-    const suspendRes = await fetch(`${base}/sessions/${session.id}/suspend`, { method: "POST" });
-    assert.equal(suspendRes.status, 200);
-    assert.equal(fake.sessions.get(session.id)?.state, "suspended");
+    const continueRes = await fetch(`${base}/sessions/${session.id}/continue`, { method: "POST" });
+    assert.equal(continueRes.status, 200);
+    const { session: continued } = (await continueRes.json()) as { session: SessionRow };
+    assert.notEqual(continued.id, session.id);
 
-    const resumeRes = await fetch(`${base}/sessions/${session.id}/resume`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ mode: "handoff" }),
-    });
-    assert.equal(resumeRes.status, 200);
-    assert.equal(fake.sessions.get(session.id)?.state, "running");
-    assert.equal(fake.runs.size, 2, "resume must create a second run record on central");
+    assert.equal(fake.sessions.get(session.id)?.state, "closed");
+    assert.equal(fake.sessions.get(continued.id)?.state, "running");
+    assert.equal(fake.runs.size, 2, "continue must create a second run record on central");
   });
 
   it("GET /sessions/:id/events replays exactly what central holds", async () => {
@@ -394,7 +393,9 @@ describe("agent-router: sessions/tasks", () => {
     const body = (await res.json()) as { events: Array<{ kind: string }> };
     assert.deepEqual(
       body.events.map((e) => e.kind),
-      ["run_started", "user_message", "run_ended"],
+      // #378: nobody closed this run explicitly, so it falls through to the
+      // auto-summary/suspend path and gets its handoff event too.
+      ["run_started", "user_message", "run_ended", "handoff"],
     );
   });
 

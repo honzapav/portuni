@@ -21,7 +21,7 @@
 // request proved it came from the desktop webview / dev proxy under the
 // hardened posture (PORTUNI_WEBVIEW_PROXY_SECRET, #213) -- a spawned
 // terminal holding the same loopback bearer can open the socket and
-// watch, but its message/answer/interrupt/suspend/close frames are
+// watch, but its message/answer/interrupt/close/continue frames are
 // refused, exactly as its REST calls are.
 //
 // Everything that touches storage goes through `SessionsWsDeps`: local mode
@@ -43,6 +43,7 @@ import { scopeAtLeast } from "../auth/roles.js";
 import type { SessionRuntime } from "../domain/runner/session-runtime.js";
 import type { CentralClient } from "../domain/sync/central/client.js";
 import { logAudit } from "../infra/audit.js";
+import { toSummary } from "./sessions.js";
 import type { RequestIdentity } from "../auth/request-identity.js";
 import type { DeltaFrame, QuestionDecision } from "../domain/runner/types.js";
 import type { PublishedEvent } from "../domain/runner/session-runtime.js";
@@ -84,12 +85,14 @@ const ClientFrameSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     id: z.string().optional(),
-    type: z.literal("suspend"),
+    type: z.literal("close"),
     payload: z.object({ session_id: z.string() }),
   }),
+  // #378: "Pokračovat v nové session" / "Navázat" -- closes this session
+  // and starts a new one on the same node, seeded with its summary.
   z.object({
     id: z.string().optional(),
-    type: z.literal("close"),
+    type: z.literal("continue"),
     payload: z.object({ session_id: z.string() }),
   }),
 ]);
@@ -396,12 +399,13 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     sendReply(conn.ws, frame.id, { ok: true });
   }
 
-  // interrupt / suspend / close: the "stop" tier, shared shape (REST's
-  // api/sessions.ts has the same three handlers over HTTP; this is the
-  // socket's version of the same runtime calls, gated the same way).
+  // interrupt / close: the "stop" tier, shared shape (REST's api/sessions.ts
+  // has the same two handlers over HTTP; this is the socket's version of
+  // the same runtime calls, gated the same way). interrupt (#378) only ever
+  // cancels the current turn now -- the run stays live either way.
   async function handleStop(
     conn: Connection,
-    frame: Extract<ClientFrame, { type: "interrupt" | "suspend" | "close" }>,
+    frame: Extract<ClientFrame, { type: "interrupt" | "close" }>,
   ): Promise<void> {
     const sessionId = frame.payload.session_id;
     if (!refuseUnlessMutationAllowed(conn, frame)) return;
@@ -417,13 +421,33 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
     }
     const runtime = deps.runtime();
     if (frame.type === "interrupt") await runtime.interrupt(sessionId);
-    else if (frame.type === "suspend") await runtime.suspend(sessionId);
     else await runtime.closeSession(sessionId);
     await deps.audit(conn.identity, `session_${frame.type}`, sessionId, {});
     if (existing.user_id !== conn.identity.userId) {
       await runtime.recordStoppedBy(sessionId, conn.identity.userId);
     }
     sendReply(conn.ws, frame.id, { ok: true });
+  }
+
+  // #378: owner-only, same tier the old resume frame used -- unlike
+  // interrupt/close, the reply carries the new session so the client can
+  // switch the active thread to it without a second round trip.
+  async function handleContinue(conn: Connection, frame: Extract<ClientFrame, { type: "continue" }>): Promise<void> {
+    const sessionId = frame.payload.session_id;
+    if (!refuseUnlessMutationAllowed(conn, frame)) return;
+    try {
+      await deps.access(conn.identity, sessionId, "resume");
+    } catch (err) {
+      if (err instanceof SessionAccessError) {
+        sendErrorReply(conn.ws, frame.id, err.code, err.message);
+        return;
+      }
+      throw err;
+    }
+    const runtime = deps.runtime();
+    const { session, run } = await runtime.continueSession(sessionId);
+    await deps.audit(conn.identity, "session_continue", sessionId, { new_session_id: session.id });
+    sendReply(conn.ws, frame.id, { session: await toSummary(session), run });
   }
 
   async function dispatch(conn: Connection, raw: string): Promise<void> {
@@ -451,9 +475,11 @@ export function createSessionsWsServer(deps: SessionsWsDeps = createLocalSession
           await handleAnswer(conn, frame);
           break;
         case "interrupt":
-        case "suspend":
         case "close":
           await handleStop(conn, frame);
+          break;
+        case "continue":
+          await handleContinue(conn, frame);
           break;
       }
     } catch (err) {

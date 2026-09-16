@@ -16,8 +16,14 @@ export type SessionRowChip = { label: string; color: string; pulsing: boolean };
 export type SessionChipVariant = "row" | "header";
 
 const STATE_LABEL: Record<SessionChipVariant, Record<SessionState, string>> = {
-  row: { running: "Běží", suspended: "Pozastaveno", closed: "Hotovo", archived: "Archiv" },
-  header: { running: "Běží", suspended: "Pozastaveno", closed: "Uzavřeno", archived: "Archivováno" },
+  row: { running: "Běží", suspended: "Pozastaveno", closed: "Hotovo", archived: "Archiv", draft: "Nový úkol" },
+  header: {
+    running: "Běží",
+    suspended: "Pozastaveno",
+    closed: "Uzavřeno",
+    archived: "Archivováno",
+    draft: "Nový úkol",
+  },
 };
 
 const ROW_STATE_COLOR: Record<SessionState, string> = {
@@ -25,6 +31,7 @@ const ROW_STATE_COLOR: Record<SessionState, string> = {
   suspended: "var(--color-node-process)",
   closed: "var(--color-text-dim)",
   archived: "var(--color-text-dim)",
+  draft: "var(--color-text-dim)",
 };
 
 // "Čeká na mě" (waiting_since set) overrides the plain "Běží" -- a running
@@ -120,12 +127,16 @@ export function applySessionStateFrame(
 }
 
 // The persistent session Práce shows for a node: the requested one when
-// it is still live, else the newest live one, else nothing.
+// it is still live, else the newest live one, else nothing. "draft" counts
+// as live too (#374: "a thread opens empty") -- a draft is never in the
+// server-fetched list on its own (every list excludes it), so it only ever
+// surfaces here when the caller merges in the one it just created locally
+// and asks for it by id.
 export function pickOpenChatSession<T extends { id: string; state: SessionState }>(
   sessions: readonly T[],
   requestedId: string | null,
 ): T | null {
-  const live = sessions.filter((s) => s.state === "running" || s.state === "suspended");
+  const live = sessions.filter((s) => s.state === "running" || s.state === "suspended" || s.state === "draft");
   if (requestedId) {
     const requested = live.find((s) => s.id === requestedId);
     if (requested) return requested;

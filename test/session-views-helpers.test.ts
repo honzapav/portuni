@@ -177,12 +177,20 @@ describe("applySessionStateFrame", () => {
 });
 
 describe("pickOpenChatSession", () => {
-  const s = (id: string, state: "running" | "suspended" | "closed") => ({ id, state });
+  const s = (id: string, state: "running" | "suspended" | "closed" | "draft") => ({ id, state });
   it("prefers the requested session while it is live, else the newest live one, else nothing", () => {
     const list = [s("new", "running"), s("old", "suspended"), s("gone", "closed")];
     assert.equal(pickOpenChatSession(list, "old")?.id, "old");
     assert.equal(pickOpenChatSession(list, "gone")?.id, "new");
     assert.equal(pickOpenChatSession(list, null)?.id, "new");
     assert.equal(pickOpenChatSession([s("gone", "closed")], "gone"), null);
+  });
+
+  // #374: a draft (a thread opened but not yet promoted) counts as live
+  // too -- it only ever reaches this helper merged in by the caller and
+  // asked for by id, since the server never lists one on its own.
+  it("finds a requested draft", () => {
+    const list = [s("d1", "draft")];
+    assert.equal(pickOpenChatSession(list, "d1")?.id, "d1");
   });
 });

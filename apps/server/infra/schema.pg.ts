@@ -1,5 +1,5 @@
 // Postgres baseline DDL (batch B, docs/superpowers/plans/2026-09-12-infra-batch.md,
-// B2). Mirrors the libsql schema as it exists after migration 035
+// B2). Mirrors the libsql schema as it exists after migration 036
 // (schema-migrations.ts's highest id at the time of writing) -- i.e. every
 // table/column/index a FRESH libsql install ends up with once
 // ensureSchemaOn's DDL replay + full migration pass both finish, not a
@@ -186,12 +186,14 @@ export const PG_BASELINE_DDL: string[] = [
     runner TEXT,
     host_id TEXT,
     waiting_since TEXT,
-    state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived')),
+    state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived','draft')),
     handoff_path TEXT,
     handoff_hash TEXT,
     handoff_inline TEXT,
     name TEXT NOT NULL DEFAULT '',
     name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
+    model TEXT,
+    effort TEXT CHECK(effort IS NULL OR effort IN ('low','medium','high','xhigh','max')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_active_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     closed_at TIMESTAMPTZ

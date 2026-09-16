@@ -2,14 +2,16 @@
 // round trip, validation, and partial-update semantics for runners.json.
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import {
+  InstanceDefaultsKeyRefusedError,
   InstanceEnvKeyRefusedError,
   createInstance,
   deleteInstance,
+  getInstanceDefaults,
   getInstanceEnv,
   listInstances,
   setOrgDefault,
@@ -171,5 +173,68 @@ describe("runner instances registry", () => {
     } finally {
       await rm(freshDir, { recursive: true, force: true });
     }
+  });
+});
+
+// #375: an instance's own model/reasoning-effort defaults.
+describe("runner instances registry: model/effort defaults", () => {
+  let dataDir: string;
+
+  before(async () => {
+    dataDir = await mkdtemp(join(tmpdir(), "portuni-runner-instances-defaults-"));
+  });
+
+  after(async () => {
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it("round trips defaults through create -> list -> getInstanceDefaults", async () => {
+    const created = await createInstance(
+      { name: "Team", runner: "claude", defaults: { model: "claude-opus-4-8", effort: "high" } },
+      dataDir,
+    );
+    assert.deepEqual(created.defaults, { model: "claude-opus-4-8", effort: "high" });
+
+    const list = await listInstances(dataDir);
+    assert.deepEqual(list.find((i) => i.id === created.id)?.defaults, { model: "claude-opus-4-8", effort: "high" });
+
+    assert.deepEqual(await getInstanceDefaults(created.id, dataDir), { model: "claude-opus-4-8", effort: "high" });
+  });
+
+  it("defaults to {} when not given, and for an instance created before #375", async () => {
+    const created = await createInstance({ name: "No defaults", runner: "claude" }, dataDir);
+    assert.deepEqual(created.defaults, {});
+
+    // Simulate a pre-#375 runners.json row with no `defaults` key at all.
+    const path = join(dataDir, "runners.json");
+    const raw = JSON.parse(await readFile(path, "utf8"));
+    delete raw.instances.find((i: { id: string }) => i.id === created.id)!.defaults;
+    await writeFile(path, JSON.stringify(raw));
+
+    const list = await listInstances(dataDir);
+    assert.deepEqual(list.find((i) => i.id === created.id)?.defaults, {});
+  });
+
+  it("rejects an unknown key inside defaults", async () => {
+    await assert.rejects(
+      () => createInstance({ name: "Bad", runner: "claude", defaults: { nonsense: "x" } as never }, dataDir),
+      InstanceDefaultsKeyRefusedError,
+    );
+  });
+
+  it("rejects an invalid effort level", async () => {
+    await assert.rejects(
+      () => createInstance({ name: "Bad effort", runner: "claude", defaults: { effort: "extreme" as never } }, dataDir),
+      InstanceDefaultsKeyRefusedError,
+    );
+  });
+
+  it("updateInstance replaces defaults wholesale", async () => {
+    const created = await createInstance(
+      { name: "Replace me", runner: "claude", defaults: { model: "claude-opus-4-8" } },
+      dataDir,
+    );
+    const updated = await updateInstance(created.id, { defaults: { effort: "max" } }, dataDir);
+    assert.deepEqual(updated.defaults, { effort: "max" });
   });
 });

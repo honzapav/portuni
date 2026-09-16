@@ -181,8 +181,6 @@ describe("GET /sessions/ws", () => {
       store: new DbSessionStore(db),
       registry: { getAdapter },
       provision: stubProvision(),
-      suspendPollIntervalMs: 10,
-      suspendTimeoutMs: 100,
     });
     setSessionRuntimeForTesting(currentRuntime);
   });
@@ -398,7 +396,7 @@ describe("GET /sessions/ws", () => {
     const sub = await collector.waitFor((f) => f.id === "sub");
     assert.equal(sub.type, "reply");
 
-    for (const type of ["message", "interrupt", "suspend", "close"] as const) {
+    for (const type of ["message", "interrupt", "continue", "close"] as const) {
       const payload = type === "message" ? { session_id: session.id, text: "hi" } : { session_id: session.id };
       ws.send(JSON.stringify({ id: type, type, payload }));
       const reply = await collector.waitFor((f) => f.id === type);
