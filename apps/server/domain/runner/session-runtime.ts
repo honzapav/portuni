@@ -133,6 +133,13 @@ export interface StartTaskInput {
   effort?: string | null;
 }
 
+export interface CreateDraftInput {
+  userId: string;
+  nodeId: string;
+  model?: string | null;
+  effort?: string | null;
+}
+
 export interface SessionSignals {
   // Age of the live run, or null when the session has none.
   runAgeMs: number | null;
@@ -147,6 +154,12 @@ type QuestionPayload = Extract<CanonicalEvent, { kind: "question" }>["payload"];
 
 export interface SessionRuntime {
   startTask(input: StartTaskInput): Promise<{ session: SessionRow; run: SessionRunRow }>;
+  // #374's draft thread: the row exists from the moment the thread opens,
+  // with no brief, runner or run -- sendMessage is what promotes it. Here
+  // rather than only in api/sessions.ts because agent mode has no local
+  // graph db to write the row to; the store it is bound to decides where
+  // the row lands (rule 1, "one implementation").
+  createDraft(input: CreateDraftInput): Promise<SessionRow>;
   // Plain read-through to the store -- agent-router.ts's REST handlers have
   // no local db of their own to re-fetch a session row from after a
   // mutation the way api/sessions.ts's handlers do, so they go through this
@@ -479,6 +492,15 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // sees the fully persisted result, not a still-in-flight background
     // write.
     await drain(session.id);
+  }
+
+  async function createDraft(input: CreateDraftInput): Promise<SessionRow> {
+    return store.createDraft({
+      node_id: input.nodeId,
+      user_id: input.userId,
+      model: input.model ?? null,
+      effort: input.effort ?? null,
+    });
   }
 
   async function startTask(input: StartTaskInput): Promise<{ session: SessionRow; run: SessionRunRow }> {
@@ -874,6 +896,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
 
   return {
     startTask,
+    createDraft,
     getSession: (sessionId: string) => store.getSession(sessionId),
     sendMessage,
     answer,

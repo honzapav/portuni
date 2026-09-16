@@ -13,6 +13,7 @@
 import type { CentralClient } from "../sync/central/client.js";
 import type { SessionRow } from "../../shared/types.js";
 import type {
+  CreateDraftSessionInput,
   CreateRunInput,
   CreateRunnerSessionInput,
   ListEventsOptions,
@@ -51,6 +52,10 @@ export class CentralSessionStore implements SessionStore {
 
   async createSession(input: CreateRunnerSessionInput): Promise<SessionRow> {
     return this.client.createSessionRecord(input);
+  }
+
+  async createDraft(input: CreateDraftSessionInput): Promise<SessionRow> {
+    return this.client.createDraftSessionRecord(input);
   }
 
   async getSession(id: string): Promise<SessionRow | null> {

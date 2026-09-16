@@ -15,6 +15,7 @@ import {
   threadNameFromFirstMessage as serverThreadName,
 } from "../apps/server/domain/sessions.js";
 import { threadNameFromFirstMessage as webThreadName } from "../apps/web/src/lib/session-chat.js";
+import { DbSessionStore } from "../apps/server/domain/runner/store.js";
 import { makeSharedDb } from "./helpers/shared-db.js";
 
 describe("createDraftSession", () => {
@@ -26,6 +27,25 @@ describe("createDraftSession", () => {
     assert.equal(draft.brief, null);
     assert.equal(draft.runner, null);
     assert.equal(draft.instance_id, null);
+  });
+});
+
+// The session runtime never writes SQL itself (rule 1): a draft reaches
+// the db through the store it is bound to, which is what lets agent mode
+// create one on central instead.
+describe("DbSessionStore.createDraft", () => {
+  it("creates the same draft row createDraftSession does, carrying model/effort", async () => {
+    const { db, nodeId } = await makeSharedDb();
+    const draft = await new DbSessionStore(db).createDraft({
+      node_id: nodeId,
+      user_id: "U1",
+      model: "sonnet",
+      effort: "medium",
+    });
+    assert.equal(draft.state, "draft");
+    assert.equal(draft.runner, null);
+    assert.equal(draft.model, "sonnet");
+    assert.equal(draft.effort, "medium");
   });
 });
 
