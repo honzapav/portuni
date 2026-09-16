@@ -70,6 +70,9 @@ type Props = {
   // WorkspaceNodeList's sub-rows.
   workspaceOpenSessionsByNode: Record<string, SessionSummary[]>;
   onWorkspaceOpenSessionChat: (nodeId: string, sessionId: string) => void;
+  // Inline rename / close on a thread's own sub-row (#374).
+  onWorkspaceRenameTask: (session: SessionSummary, name: string) => void;
+  onWorkspaceCloseTask: (session: SessionSummary) => void;
   // Open an EXISTING node in the workspace (the primary workspace action). Driven by the inline search-first picker at
   // the top of the workspace column: type a node name, click it, it opens.
   onWorkspaceOpenNode: (nodeId: string) => void;
@@ -140,6 +143,8 @@ function Sidebar({
   onWorkspaceCreateNode,
   workspaceOpenSessionsByNode,
   onWorkspaceOpenSessionChat,
+  onWorkspaceRenameTask,
+  onWorkspaceCloseTask,
 }: Props) {
   const isMac =
     typeof navigator !== "undefined" &&
@@ -288,6 +293,8 @@ function Sidebar({
               onNewTask={onWorkspaceNewTask}
               openSessionsByNode={workspaceOpenSessionsByNode}
               onOpenSessionChat={onWorkspaceOpenSessionChat}
+              onRenameTask={onWorkspaceRenameTask}
+              onCloseTask={onWorkspaceCloseTask}
             />
           </div>
         </div>

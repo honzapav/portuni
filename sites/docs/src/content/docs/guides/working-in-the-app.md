@@ -54,8 +54,8 @@ When a node is selected, the detail pane on the right shows the same payload `po
 ```
 
 - **Sidebar header** (every tab) — the workspace switcher under the brand, the Přehled / Graf / Práce toggle, "Hledat uzel…" (also `⌘K` / `Ctrl+K`) opening a command palette that filters nodes by name, description and type, and "Nový uzel". The block is identical on every tab; in Graf a pick selects the node in the graph, in Práce it opens the node.
-- **Node list** (left, "Otevřené") — two arrangements, switched by the Uzly | Stav toggle (remembered per workspace). **Uzly**: every open node in the order you opened them, with a node-type dot and at most one activity dot (waiting on an answer, running, or suspended, from live `session_state` frames); its running/suspended task sessions sit as sub-rows flush under the node name, the state in the tooltip — click one to jump straight to the chat. Hovering a node shows `+` (a new task on that node, the same "Nový úkol" dialog as the detail pane's action bar) and `×` (close the node — its sessions keep running on the sidecar). **Stav**: tasks only, grouped Vyžadují pozornost / Pracují / Pozastavené / Hotové, each with its node's name underneath.
-- **Centre** — [the task chat](#task-chat-práce) when the selected node has a running/suspended session; otherwise the same `DetailPane` the graph view uses, in "embedded" mode.
+- **Node list** (left, "Otevřené") — two arrangements, switched by the Uzly | Stav toggle (remembered per workspace). **Uzly**: every open node in the order you opened them, with a node-type dot and at most one activity dot (waiting on an answer, running, or suspended, from live `session_state` frames); its task sessions (including an empty, just-opened draft) sit as sub-rows flush under the node name, the state in the tooltip — click one to jump straight to the chat, double-click to rename inline, and the `×` revealed on hover closes it (a draft is deleted outright; anything else asks first). Hovering a node itself shows `+` (opens a new, empty thread on that node — the same one-click action as the detail pane's "Nový úkol") and `×` (close the node — its sessions keep running on the sidecar). **Stav**: tasks only, grouped Vyžadují pozornost / Pracují / Pozastavené / Nové / Hotové, each with its node's name underneath.
+- **Centre** — [the task chat](#task-chat-práce) when the selected node has an open (running/suspended/draft) session; otherwise the same `DetailPane` the graph view uses, in "embedded" mode.
 - **Node detail** (right) — shown only while a chat occupies the centre, so the node stays visible next to its thread. The chevron at the top collapses it; the state persists in `localStorage` under `portuni:workspace.detailVisible`. A file opened from the Files tab replaces the detail with the editor in the same column.
 
 Tasks run in the sidecar, not in this window: closing the window or the app never stops a run.
@@ -79,15 +79,23 @@ Every mutating action calls back through `onMutate` which refetches the graph an
 
 ### Task chat (Práce)
 
-"Nový úkol" on a node's detail pane opens `NewTaskDialog`: a brief
-textarea, a runner picker (`GET /runners`, only entries with
-`installed && logged_in` are selectable), and an instance picker shown
-once a runner has two or more registered instances (Settings → Runnery),
-preselecting the calling node's organization default when one is set.
-Submitting calls `POST /sessions` (`{ node_id, brief, runner,
-instance_id?, policy? }`), which creates the session and starts its first
-run, then switches Práce's centre column to `SessionChat` for that
-session.
+"Nový úkol" on a node's detail pane (or the "+" on its sub-row in the
+left column) opens a thread immediately — one click, no dialog: `POST
+/sessions` with just `{ node_id }` creates a `draft` session (a name,
+a node, an owner, nothing else yet) and Práce's centre column switches to
+`SessionChat` for it right away, composer focused. There is no runner or
+instance to pick up front. The first message you send
+(`POST /sessions/:id/messages`) is what promotes the draft to `running`
+and starts its first run: the server picks the first installed &&
+logged-in runner (`GET /runners`) and, when the node's organization has a
+default instance registered for it (Settings → Runnery), that instance —
+the same rule a manual picker used to apply, just resolved server-side
+instead of asked up front. The thread's name comes from that same first
+message (first line, trimmed, cut at ~60 characters), not from the node
+and date the way an ownerless chat session still defaults to. A draft
+closed before a first message is sent is deleted outright, and one left
+open longer than 24 hours is pruned by the same server sweep that resolves
+a `running` row orphaned by a crashed process.
 
 `SessionChat`'s header shows the session name, a status chip derived from
 `state` and `waiting_since` ("Běží", "Čeká na mě" when a question is
@@ -216,7 +224,7 @@ one-time admin task; see [Setting Up Remotes](/guides/setting-up-remotes/).
 
 1. Open `Portuni.app`. Workspace view.
 2. Pick the node you're working on from the left list (or jump from the graph view).
-3. "Nový úkol": write the brief, pick the runner, start. The chat opens in the centre column.
+3. "Nový úkol": opens an empty thread right away. Write the first message; it picks a runner for you and starts the run.
 4. Work. The agent uses Portuni MCP tools (`get_node`, `get_context`, `log`, `store`, etc.) via the embedded sidecar — same surface external clients see.
 5. When done, `portuni_status` (or rely on the agent to call it) before ending the session so disk / DB / remote stay consistent — this rule is enforced by the server-level instructions.
 

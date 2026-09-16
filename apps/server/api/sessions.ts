@@ -56,6 +56,8 @@ import { nodeVisibleTo } from "../auth/node-access.js";
 import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../auth/session-access.js";
 import {
   closeSessionsByTerminalId,
+  createDraftSession,
+  deleteDraftSession,
   getSession,
   getSessionWriteCount,
   listSessions,
@@ -66,6 +68,7 @@ import { getResumeInfo } from "../domain/session-handoff.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { logAudit } from "../infra/audit.js";
 import { getSessionRuntime } from "../boot/session-runtime.js";
+import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
 import { DbSessionStore } from "../domain/runner/store.js";
@@ -174,6 +177,12 @@ export async function handleListNodeSessions(
     if (!includeArchived) {
       rows = rows.filter((r) => r.state !== "archived");
     }
+    // A draft (#374) is visible only as the open thread it is -- the window
+    // that created it already has the row from its own POST /sessions
+    // response and tracks it client-side; every list, this one included,
+    // excludes it so it never leaks into another window's sidebar or a
+    // reload of this same one.
+    rows = rows.filter((r) => r.state !== "draft");
     const sessions = await Promise.all(rows.map(toSummary));
     respondJson(res, 200, { sessions });
   } catch (err) {
@@ -249,6 +258,13 @@ const PatchSessionBody = z
     waiting_since: z.string().nullable().optional(),
     handoff_path: z.string().nullable().optional(),
     handoff_hash: z.string().nullable().optional(),
+    // Set together with state: "running" when a draft is promoted by its
+    // first message (#374's CentralSessionStore.patchSession, in agent
+    // mode, forwards these here).
+    brief: z.string().optional(),
+    runner: z.string().optional(),
+    instance_id: z.string().nullable().optional(),
+    name_is_custom: z.boolean().optional(),
   })
   .refine((b) => Object.keys(b).length > 0, "at least one field is required");
 
@@ -281,6 +297,10 @@ export async function handlePatchSession(
       waiting_since: body.waiting_since,
       handoff_path: body.handoff_path,
       handoff_hash: body.handoff_hash,
+      brief: body.brief,
+      runner: body.runner,
+      instance_id: body.instance_id,
+      name_is_custom: body.name_is_custom,
     });
     respondJson(res, 200, updated);
   } catch (err) {
@@ -394,10 +414,14 @@ export async function handleGetSessionSignals(
 // --- Tasks (runner batch): starting a session's task and driving its run --
 
 // Shared with api/agent-router.ts's POST /sessions: one schema, both routers.
+// brief/runner optional (#374): a thread opens empty (spec rule 5, "no
+// modal, no required field") -- omitting brief creates a draft instead of
+// starting a task; runner is validated as required only in that case
+// (a plain zod .optional() cannot express "required together").
 export const StartSessionBody = z.object({
   node_id: z.string().min(1),
-  brief: z.string().trim().min(1),
-  runner: z.string().min(1),
+  brief: z.string().trim().min(1).optional(),
+  runner: z.string().min(1).optional(),
   instance_id: z.string().min(1).nullable().optional(),
   policy: z.enum(["default", "auto"]).optional(),
 });
@@ -415,6 +439,23 @@ export async function handleStartSession(
     const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [body.node_id] });
     if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, body.node_id))) {
       respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+
+    if (body.brief === undefined) {
+      // No brief yet: a draft, not a task -- the first message
+      // (POST /sessions/:id/messages) promotes it and resolves runner/
+      // instance itself (session-runtime.ts's promoteDraftAndStart).
+      const session = await createDraftSession(db, identity.userId, body.node_id);
+      await logAudit(identity.userId, "session_start", "session", session.id, {
+        node_id: body.node_id,
+        draft: true,
+      });
+      respondJson(res, 201, { session: await toSummary(session), run: null });
+      return;
+    }
+    if (!body.runner) {
+      respondJson(res, 400, { error: "runner is required when brief is given", code: "RUNNER_REQUIRED" });
       return;
     }
     if (!getAdapter(body.runner)) {
@@ -449,6 +490,27 @@ export async function handleStartSession(
   }
 }
 
+export async function handleDeleteSession(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
+    if (!existing) return;
+    if (existing.state !== "draft") {
+      respondJson(res, 409, { error: "only a draft session can be deleted", code: "NOT_A_DRAFT" });
+      return;
+    }
+    await deleteDraftSession(db, identity.userId, sessionId);
+    respondJson(res, 200, { deleted: true });
+  } catch (err) {
+    respondError(res, `${req.method} /sessions/${sessionId}`, err);
+  }
+}
+
 const MessageBody = z.object({
   text: z.string().trim().min(1),
 });
@@ -469,6 +531,10 @@ export async function handleSendSessionMessage(
     try {
       await getSessionRuntime().sendMessage(sessionId, body.text);
     } catch (err) {
+      if (err instanceof NoRunnerAvailableError) {
+        respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
+        return;
+      }
       if (err instanceof Error && err.message.includes("has no live run")) {
         respondJson(res, 409, { error: err.message, code: "NO_LIVE_RUN" });
         return;

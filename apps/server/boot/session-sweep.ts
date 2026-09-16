@@ -6,7 +6,7 @@
 // mode or data mode, since the table always exists (schema migration 027).
 
 import { getDb } from "../infra/db.js";
-import { closeStaleRunningSessionsOnBoot } from "../domain/sessions.js";
+import { closeStaleRunningSessionsOnBoot, pruneStaleDraftSessions } from "../domain/sessions.js";
 
 export async function sweepStaleRunningSessionsOnBoot(): Promise<void> {
   try {
@@ -16,5 +16,19 @@ export async function sweepStaleRunningSessionsOnBoot(): Promise<void> {
     }
   } catch (e) {
     console.error("[boot] session sweep failed:", e);
+  }
+}
+
+// #374: a draft opened and then abandoned (never sent a first message, its
+// tab/window closed without an explicit Uzavřít) has no other cleanup
+// path -- 24h matches the spec's own "Storage: Prune" cutoff.
+export async function sweepStaleDraftSessionsOnBoot(): Promise<void> {
+  try {
+    const pruned = await pruneStaleDraftSessions(getDb());
+    if (pruned > 0) {
+      console.log(`[boot] session sweep pruned ${pruned} stale draft session(s)`);
+    }
+  } catch (e) {
+    console.error("[boot] draft session sweep failed:", e);
   }
 }

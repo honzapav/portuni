@@ -114,6 +114,16 @@ export interface PatchSessionInput {
   name?: string;
   handoff_path?: string | null;
   handoff_hash?: string | null;
+  // Set together with state: "running" when promoting a draft (#374) --
+  // the draft had none of these chosen up front.
+  brief?: string;
+  runner?: string;
+  instance_id?: string | null;
+  // Set together with name when the promotion derives it from the first
+  // message (#374, "Naming") -- protects it the same way a manual rename
+  // does, so a later handoff-title enrichment at suspend never overwrites
+  // the user's own words.
+  name_is_custom?: boolean;
 }
 
 export interface CreateRunInput {
@@ -193,6 +203,22 @@ export class DbSessionStore implements SessionStore {
     if (patch.handoff_hash !== undefined) {
       sets.push("handoff_hash = ?");
       args.push(patch.handoff_hash);
+    }
+    if (patch.brief !== undefined) {
+      sets.push("brief = ?");
+      args.push(patch.brief);
+    }
+    if (patch.runner !== undefined) {
+      sets.push("runner = ?");
+      args.push(patch.runner);
+    }
+    if (patch.instance_id !== undefined) {
+      sets.push("instance_id = ?");
+      args.push(patch.instance_id);
+    }
+    if (patch.name_is_custom !== undefined) {
+      sets.push("name_is_custom = ?");
+      args.push(patch.name_is_custom ? 1 : 0);
     }
     if (sets.length > 0) {
       args.push(id);

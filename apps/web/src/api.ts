@@ -227,15 +227,29 @@ export function resumeSession(id: string, mode: "conversation" | "handoff"): Pro
 }
 
 // POST /sessions -- starts a task (session + first run) as a server-driven
-// run (#342, NewTaskDialog).
+// run. `brief` omitted creates a draft instead (#374, "a thread opens
+// empty"): no run, `run` comes back null; the first message
+// (sessionsClient.message) is what promotes it and starts the run.
 export function startSession(input: {
   node_id: string;
-  brief: string;
-  runner: string;
+  brief?: string;
+  runner?: string;
   instance_id?: string | null;
   policy?: "default" | "auto";
-}): Promise<{ session: SessionSummary; run: SessionRunRow }> {
-  return jsonRequest<{ session: SessionSummary; run: SessionRunRow }>("POST", "/sessions", input);
+}): Promise<{ session: SessionSummary; run: SessionRunRow | null }> {
+  return jsonRequest<{ session: SessionSummary; run: SessionRunRow | null }>("POST", "/sessions", input);
+}
+
+// Opens a new, empty thread on a node -- one click, no modal (#374). The
+// composer's first message resolves the runner/instance and names it.
+export function startDraftThread(nodeId: string): Promise<SessionSummary> {
+  return startSession({ node_id: nodeId }).then((r) => r.session);
+}
+
+// DELETE /sessions/:id -- removes a draft (and only a draft, #374); a real
+// thread is closed via sessionsClient.close, never deleted.
+export function deletePersistentSession(id: string): Promise<void> {
+  return jsonRequest<{ deleted: boolean }>("DELETE", `/sessions/${encodeURIComponent(id)}`).then(() => undefined);
 }
 
 // GET /overview -- Přehled tab (#196). One aggregate, permission-filtered

@@ -113,6 +113,7 @@ import {
   handleCloseSession,
   handleCreateSessionRecord,
   handleCreateSessionRun,
+  handleDeleteSession,
   handleGetSession,
   handleGetSessionResumeInfo,
   handleGetSessionSignals,
@@ -862,6 +863,12 @@ async function routeSessions(
   }
   if (sessionMatch && method === "PATCH") {
     await handlePatchSession(req, res, identity, decodeURIComponent(sessionMatch[1]));
+    return true;
+  }
+  // #374: removes a draft (and only a draft) -- a real thread is closed via
+  // POST /sessions/:id/close, never deleted.
+  if (sessionMatch && method === "DELETE") {
+    await handleDeleteSession(req, res, identity, decodeURIComponent(sessionMatch[1]));
     return true;
   }
   return false;

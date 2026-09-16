@@ -187,7 +187,7 @@ type Props = {
   // NewTaskButton's "Nový úkol" success (#342) -- provided by the
   // workspace, which owns the open-session state SessionChat renders from.
   // Absent in contexts with no chat surface (none today).
-  onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow }) => void;
+  onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
   // Relace tab's "Otevřít chat" (#343) -- jumps to Práce with this node
   // selected; #342's own workspaceOpenSession fetch then picks up the
   // session automatically, so this needs no session id. Provided by App
@@ -306,7 +306,7 @@ function DetailPaneBody({
   embedded?: boolean;
   onCollapse?: () => void;
   onOpenFile?: (nodeId: string, relPath: string) => void;
-  onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow }) => void;
+  onSessionStarted?: (result: { session: SessionSummary; run: SessionRunRow | null }) => void;
   onOpenChat?: (nodeId: string, sessionId: string) => void;
   // Live session_state map for the Relace tab (see SessionsSection).
   liveSessionStates?: Readonly<Record<string, SessionStateMessage>>;

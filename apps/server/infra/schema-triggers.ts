@@ -171,7 +171,7 @@ export const DDL_SESSIONS = `CREATE TABLE IF NOT EXISTS sessions (
     runner TEXT,
     host_id TEXT,
     waiting_since TEXT,
-    state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived')),
+    state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived','draft')),
     handoff_path TEXT,
     handoff_hash TEXT,
     -- Server-generated handoff text (#329) for a session with no local

@@ -1932,6 +1932,79 @@ symlink to this file.
   preview), untouched by this issue. New pinned-exact deps: `streamdown`,
   `@streamdown/{cjk,code,math,mermaid}`, `use-stick-to-bottom`, `nanoid`.
 
+- **A thread is a session row from the moment it opens (#374, phase 2 of
+  `docs/superpowers/specs/2026-09-15-task-surface-design.md`, umbrella
+  #387).** `sessions.state` gained **`draft`** (migration 036: SQLite is a
+  full table rebuild, same shape as migration 030's, since SQLite cannot
+  `ALTER` a CHECK constraint; `PG_BASELINE_DDL` in `schema.pg.ts` carries it
+  directly rather than a `pg-002` migration, since the Postgres cutover
+  (#335) has not run yet -- a later issue extending this same migration 036
+  (e.g. #375's model/effort columns) must check #335's state again before
+  picking which of those two applies). `domain/sessions.ts`'s
+  `ALLOWED_TRANSITIONS` gained `draft: ["running"]` -- a draft's only other
+  exit is deletion (`deleteDraftSession`), never a state transition.
+  **"Nový úkol" (`DetailPane.files.tsx`'s `NewTaskButton`, and the "+" on a
+  node's own row in `WorkspaceNodeList`) opens a thread with one click, no
+  dialog**: `POST /sessions` with no `brief` creates a draft (name „Nový
+  úkol", no runner, no run) instead of starting a task -- `NewTaskDialog.tsx`
+  is gone. **The first message is what promotes it**:
+  `session-runtime.ts`'s `sendMessage` falls through to
+  `promoteDraftAndStart` when the session has no live run and is a draft
+  (any other no-live-run session still refuses, unchanged -- #378 is what
+  teaches that case to resume-by-writing instead). Promotion resolves a
+  runner/instance itself, the exact rule `NewTaskDialog` used to apply
+  client-side before it was removed: the first `detectAll()`-reported
+  runner with `installed && logged_in`, and the calling node's
+  organization's default instance for it (`resolveTaskDefaults`,
+  `NoRunnerAvailableError` -> REST `400 NO_RUNNER_AVAILABLE` when nothing is
+  usable) -- there is no picker before the first message (spec rule 5: "no
+  modal, no required field"). The org lookup degrades to "no organization"
+  in agent mode (no local graph db there, same try/catch-degrade pattern
+  `readSessionScopeSize` already uses) rather than failing the promotion;
+  **draft creation itself is not yet wired up for central/agent mode**
+  (`agent-router.ts`'s `POST /sessions` answers `501 DRAFT_NOT_SUPPORTED`
+  for a briefless body) -- the central record half's draft would need its
+  own `CentralClient` method and REST shape, left as a follow-up. **Naming**:
+  `domain/sessions.ts`'s `threadNameFromFirstMessage` (mirrored, not
+  imported, as `apps/web/src/lib/session-chat.ts`'s own copy of the same
+  function -- the server/web boundary this codebase already keeps
+  elsewhere) derives the name from the first message's first line, and the
+  promotion sets `name_is_custom = 1` alongside it (a new
+  `PatchSessionInput.name_is_custom` field on `SessionStore.patchSession`)
+  so the handoff-title enrichment at suspend never overwrites it --
+  `computeDefaultSessionName`'s `node · date time` form stays for whatever
+  still has no first message (`interactive_chat`). A `state_changed
+  {from: "draft", to: "running"}` event is appended as part of the
+  promotion purely so the live channel's `session_state` broadcast fires
+  (`api/sessions-ws.ts` only reacts to `state_changed`/`question`/
+  `run_ended`) -- without it, a window that isn't the one driving the
+  promotion would never learn the draft became a real thread. **Every list
+  excludes a draft** (`GET /nodes/:id/sessions` now filters it out
+  explicitly, same as `GET /overview` and the WS snapshot already did by
+  construction, being scoped to `running`/`suspended`): a draft is visible
+  only as the open thread it is, in the window that created it, which
+  tracks its own locally-created drafts client-side (`App.tsx`'s
+  `localDrafts`, merged into `openSessionsByNode` and into
+  `pickOpenChatSession`'s candidate list -- widened to also accept `draft`)
+  precisely because the server will never hand it back on a refetch.
+  **Prune**: `boot/session-sweep.ts`'s new `sweepStaleDraftSessionsOnBoot`
+  (wired at the same two call sites as the existing stale-`running` sweep)
+  deletes any draft older than 24h; a thread's own `×` deletes an empty
+  draft immediately instead of going through Uzavřít. **Thread sub-rows
+  gained inline rename (double-click) and a hover-revealed `×`**
+  (`WorkspaceNodeList.tsx`'s `TaskRow`) -- a draft's `×` deletes outright,
+  anything else is a `window.confirm` stand-in for Uzavřít (`#378` replaces
+  it with a real confirmation carrying the session's summary; today's
+  `sessionsClient.close` is unchanged). `WorkspaceView.tsx`'s
+  `hasOpenSession` and `TaskGroupKey`/`taskGroupOf` (a new `"draft"` group,
+  labelled "Nové") both learned the new state; **mounting every open
+  thread simultaneously with `display:none`, instead of remounting
+  `SessionChat` per selection (`key={openSession.id}`), was not done in
+  this issue** -- switching threads still re-subscribes and replays,
+  correct but without the scroll-position continuity the full spec text
+  describes; a real gap, left for a follow-up since the layout itself is
+  macOS/visual verification, not gated.
+
 ## Security rules (from the auth refactor post-mortem)
 
 1. **No secret in webview JS, ever.** If a JS module needs to know it, it

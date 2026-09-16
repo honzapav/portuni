@@ -490,6 +490,18 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
       const body = await parseJsonBody(req, res, StartSessionBody);
       if (!body) return true;
       if (!guardAgentRestWrite(req, res, identity, body.node_id)) return true;
+      // #374's draft-thread creation (POST /sessions with no brief) is not
+      // wired up for central/agent mode yet -- the record half's draft
+      // would need its own CentralClient method and REST shape, out of
+      // scope here. A clear 501 instead of a crash on the now-optional
+      // brief/runner fields; see the #374 PR/issue comment.
+      if (body.brief === undefined || !body.runner) {
+        respondJson(res, 501, {
+          error: "starting an empty thread is not supported in this data mode yet",
+          code: "DRAFT_NOT_SUPPORTED",
+        });
+        return true;
+      }
       if (!getAdapter(body.runner)) {
         respondJson(res, 400, { error: `unknown runner '${body.runner}'`, code: "UNKNOWN_RUNNER" });
         return true;

@@ -137,7 +137,7 @@ export type DataSourceRow = z.infer<typeof DataSourceRow>;
 export const ToolRow = DataSourceRow; // same columns, aliased for intent
 export type ToolRow = z.infer<typeof ToolRow>;
 
-export const SESSION_STATES = ["running", "suspended", "closed", "archived"] as const;
+export const SESSION_STATES = ["running", "suspended", "closed", "archived", "draft"] as const;
 export type SessionState = (typeof SESSION_STATES)[number];
 
 export const SessionRow = z.object({

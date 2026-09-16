@@ -432,7 +432,11 @@ export type AccessRequest = {
 // GET /nodes/:id/sessions -- node-detail sessions list (#192, "Naming &
 // UI"). One row per persistent session (apps/server/domain/sessions.ts),
 // enriched with what the row needs to render without a second round trip.
-export type SessionState = "running" | "suspended" | "closed" | "archived";
+// "draft" (#374): a thread from the moment it opens, before it has a brief
+// or a run -- created empty and never listed outside the open-thread view
+// itself (GET /overview, the WS snapshot and GET /nodes/:id/sessions all
+// exclude it). The first message promotes it to "running".
+export type SessionState = "running" | "suspended" | "closed" | "archived" | "draft";
 
 export type SessionSummary = {
   id: string;

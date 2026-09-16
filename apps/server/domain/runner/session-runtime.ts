@@ -13,11 +13,12 @@
 // persisted and published in emission order, never interleaved.
 
 import { getDb } from "../../infra/db.js";
-import { getSessionScope } from "../sessions.js";
+import { getSessionScope, threadNameFromFirstMessage } from "../sessions.js";
 import { suspendSessionServerSide, type ServerHandoffReason } from "../session-handoff.js";
 import type { SessionRow } from "../../shared/types.js";
 import type { ListEventsOptions, SessionEventRow, SessionRunRow, SessionStore } from "./store.js";
-import { getInstanceEnv } from "./instances.js";
+import { detectAll } from "./registry.js";
+import { getInstanceEnv, listInstances } from "./instances.js";
 import { resolveRunnerDataDir } from "./data-dir.js";
 import { removePidFile, writePidFile } from "./pid-file.js";
 import type { ProvisionRunInput, ProvisionRunResult, ProvisionRunResumeInfo } from "./provision.js";
@@ -44,6 +45,45 @@ const DEFAULT_SUSPEND_POLL_INTERVAL_MS = 1_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// A draft's first message (#374) has no runner/instance chosen up front --
+// the spec's "a thread opens empty: no modal, no required field" rules out
+// a picker before then, so sendMessage resolves both itself, the same rule
+// NewTaskDialog used to apply client-side before it was removed: the first
+// installed-and-logged-in runner, and the node's organization's default
+// instance for it, if one is set.
+export class NoRunnerAvailableError extends Error {}
+
+// session_scope's own graceful-degrade comment above explains why this is
+// wrapped in try/catch the same way: edges/nodes are graph-db tables that
+// simply do not exist in agent mode (no local graph db there), so this
+// resolves to "no organization" rather than failing the whole promotion.
+async function resolveNodeOrgId(nodeId: string): Promise<string | null> {
+  try {
+    const db = getDb();
+    const res = await db.execute({
+      sql: `SELECT e.target_id FROM edges e JOIN nodes n ON n.id = e.target_id
+            WHERE e.source_id = ? AND e.relation = 'belongs_to' AND n.type = 'organization' LIMIT 1`,
+      args: [nodeId],
+    });
+    return res.rows.length > 0 ? String(res.rows[0].target_id) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveTaskDefaults(nodeId: string): Promise<{ runner: string; instanceId: string | null }> {
+  const detections = await detectAll();
+  const usable = detections.find((d) => d.availability.installed && d.availability.logged_in);
+  if (!usable) {
+    throw new NoRunnerAvailableError("no runner is installed and logged in on this device");
+  }
+  const orgId = await resolveNodeOrgId(nodeId);
+  const instances = await listInstances();
+  const forRunner = instances.filter((i) => i.runner === usable.id);
+  const orgDefault = orgId ? forRunner.find((i) => i.org_defaults.includes(orgId)) : undefined;
+  return { runner: usable.id, instanceId: orgDefault?.id ?? null };
 }
 
 export interface RunnerRegistryLookup {
@@ -401,11 +441,66 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
   // so whatever the runner emits in reaction to it can never land before it.
   async function sendMessage(sessionId: string, text: string): Promise<void> {
     const live = liveRuns.get(sessionId);
-    if (!live) throw new Error(`sendMessage: session ${sessionId} has no live run`);
-    await enqueue(sessionId, () =>
-      appendAndPublish(sessionId, live.runId, [{ kind: "user_message", payload: { text, source: "chat" } }]),
-    );
-    await live.handle.send(text);
+    if (live) {
+      await enqueue(sessionId, () =>
+        appendAndPublish(sessionId, live.runId, [{ kind: "user_message", payload: { text, source: "chat" } }]),
+      );
+      await live.handle.send(text);
+      return;
+    }
+    await promoteDraftAndStart(sessionId, text);
+  }
+
+  // A thread is a session row from the moment it opens (#374, "the session
+  // row exists from the moment the thread opens"): the first message is
+  // what promotes a draft to running and starts its first run, resolving
+  // runner/instance the same way startTask's caller used to before it was
+  // chosen up front in a now-removed dialog. Any other session with no live
+  // run (a thread whose run has already ended) is out of this issue's scope
+  // -- #378 teaches that case to resume-by-writing; today it still refuses.
+  async function promoteDraftAndStart(sessionId: string, text: string): Promise<void> {
+    const session = await store.getSession(sessionId);
+    if (!session) throw new Error(`sendMessage: session ${sessionId} not found`);
+    if (session.state !== "draft") throw new Error(`sendMessage: session ${sessionId} has no live run`);
+    if (!session.node_id) throw new Error(`sendMessage: draft session ${sessionId} has no anchor node`);
+
+    const { runner, instanceId } = await resolveTaskDefaults(session.node_id);
+    const updated = await store.patchSession(sessionId, {
+      state: "running",
+      brief: text,
+      runner,
+      instance_id: instanceId,
+      // Naming (#374): the thread names itself from its first message,
+      // protected the same way a manual rename is so a later handoff-title
+      // enrichment at suspend never overwrites it.
+      name: threadNameFromFirstMessage(text),
+      name_is_custom: true,
+    });
+
+    // Published so the live channel's session_state broadcast fires
+    // (api/sessions-ws.ts only reacts to state_changed/question/run_ended) --
+    // without it, a window that isn't this one showing the draft's thread
+    // (the sidebar sub-row, Relace, Přehled) would never learn it was
+    // promoted until its next unrelated refetch.
+    await appendAndPublish(sessionId, null, [
+      { kind: "state_changed", payload: { from: "draft", to: "running", waiting: false } },
+    ]);
+
+    const provisioned = await provision({
+      userId: updated.user_id,
+      nodeId: session.node_id,
+      sessionId,
+      resume: null,
+    });
+    const run = await store.createRun({ session_id: sessionId, runner, instance_id: instanceId, host_id: null });
+    const instanceEnv = instanceId ? ((await getInstanceEnv(instanceId)) ?? {}) : {};
+
+    await startRun(updated, run, provisioned, instanceEnv, {
+      brief: text,
+      runStartResume: null,
+      resumeMode: null,
+      policy: "default",
+    });
   }
 
   // Same ordering rule: the answered question (and the waiting: false

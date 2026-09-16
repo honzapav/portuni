@@ -228,6 +228,9 @@ export function minScopeForRoute(method: string, pathname: string): GlobalScope 
   if (pathname === "/sessions/record" && m === "POST") return "write";
   if (/^\/sessions\/[^/]+$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+$/.test(pathname) && m === "PATCH") return "write";
+  // Removes a draft only (#374) -- sessionAccess's "message" tier further
+  // scopes this to the draft's own owner inside the handler.
+  if (/^\/sessions\/[^/]+$/.test(pathname) && m === "DELETE") return "write";
   if (/^\/sessions\/[^/]+\/state$/.test(pathname) && m === "POST") return "write";
   if (/^\/sessions\/[^/]+\/resume-info$/.test(pathname) && m === "GET") return "read";
   if (/^\/sessions\/[^/]+\/signals$/.test(pathname) && m === "GET") return "read";

@@ -28,7 +28,7 @@ import { createAgentRouter } from "./api/agent-router.js";
 import { createAgentMcpTransport } from "./mcp/agent-transport.js";
 import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
 import { sweepOrphanedRunsOnBoot } from "./boot/run-sweep.js";
-import { sweepStaleRunningSessionsOnBoot } from "./boot/session-sweep.js";
+import { sweepStaleDraftSessionsOnBoot, sweepStaleRunningSessionsOnBoot } from "./boot/session-sweep.js";
 import { warnIfLocalWorkspaceHasStaleRemotesOnBoot } from "./boot/local-mode-remote-warning.js";
 import { registerRunnerAdapters } from "./boot/register-runner-adapters.js";
 import {
@@ -352,6 +352,7 @@ async function main(): Promise<void> {
   // sweep's own query for stale 'running' rows sees an already-correct
   // picture instead of racing it.
   void sweepOrphanedRunsOnBoot().then(() => sweepStaleRunningSessionsOnBoot());
+  void sweepStaleDraftSessionsOnBoot();
   void warnIfLocalWorkspaceHasStaleRemotesOnBoot();
 
   // Refresh every registered mirror's harness configs so any .mcp.json
