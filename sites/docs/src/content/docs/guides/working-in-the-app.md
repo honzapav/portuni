@@ -43,18 +43,19 @@ When a node is selected, the detail pane on the right shows the same payload `po
 ## Workspace view
 
 ```
-┌──────────────┬──────────────────────────────────────────┐
-│ Node list    │  Node detail                             │
-│ (300 px)     │  — or the task chat when the node has a  │
-│              │    running / suspended session           │
-│ Sessions     │                                          │
-│ under each   │                                          │
-│ node         │                                          │
-└──────────────┴──────────────────────────────────────────┘
+┌──────────────┬──────────────────────────────┬──────────────┐
+│ Node list    │  Task chat                   │ Node detail  │
+│ (300 px)     │  (the node's open session)   │ (collapsible)│
+│              │                              │              │
+│ Sessions     │  — or, with no session, the  │              │
+│ under each   │    node detail centre-stage  │              │
+│ node, [+]    │    and no right column       │              │
+└──────────────┴──────────────────────────────┴──────────────┘
 ```
 
-- **Node list** (left) — every open node, in the order you opened them. A node with a running/suspended task session shows it as a sub-row with its own status dot (Běží / Čeká na mě / Pozastaveno, from live `session_state` frames) — click it to jump straight to the chat. `×` closes the node; its sessions keep running on the sidecar.
-- **Centre** — the same `DetailPane` the graph view uses, in "embedded" mode, or [the task chat](#task-chat-práce) when the selected node has a running/suspended session.
+- **Node list** (left) — every open node, in the order you opened them. A node with a running/suspended task session shows it as a sub-row with its own status dot (Běží / Čeká na mě / Pozastaveno, from live `session_state` frames) — click it to jump straight to the chat. `+` on a row starts a new task on that node (the same "Nový úkol" dialog as the detail pane's action bar); `×` closes the node — its sessions keep running on the sidecar.
+- **Centre** — [the task chat](#task-chat-práce) when the selected node has a running/suspended session; otherwise the same `DetailPane` the graph view uses, in "embedded" mode.
+- **Node detail** (right) — shown only while a chat occupies the centre, so the node stays visible next to its thread. The chevron at the top collapses it; the state persists in `localStorage` under `portuni:workspace.detailVisible`. A file opened from the Files tab replaces the detail with the editor in the same column.
 
 Tasks run in the sidecar, not in this window: closing the window or the app never stops a run.
 
