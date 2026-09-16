@@ -2462,6 +2462,21 @@ pub(crate) fn spawn_sidecar_ws(
     let ws_data_dir = workspace::workspace_data_dir(&app_data, ws_id);
     std::fs::create_dir_all(&ws_data_dir).ok();
     let data_dir_str = ws_data_dir.to_string_lossy().to_string();
+
+    // Bun unpacks the NAPI addons compiled into the sidecar (opendal's is
+    // 67 MB) to a content-hash-named file in TMPDIR and dlopens it from
+    // there -- and the unpack is not atomic. Every enabled workspace starts
+    // its own sidecar at once, so with a shared TMPDIR two processes race
+    // for the same file and whichever one reads the half-written copy dies
+    // at boot with opendal's `Cannot find native binding` (v0.17.0). Give
+    // each workspace its own scratch dir so there is only ever one writer.
+    // Kept across launches on purpose: the unpack costs ~0.9 s cold and
+    // ~0.04 s warm, and wiping it would pay that on every start.
+    let sidecar_tmp = ws_data_dir.join("tmp");
+    if let Err(e) = std::fs::create_dir_all(&sidecar_tmp) {
+        warn!("could not create sidecar tmp dir {:?}: {e}", sidecar_tmp);
+    }
+    let sidecar_tmp_str = sidecar_tmp.to_string_lossy().to_string();
     let is_central = workspace::is_central(&cfg);
 
     // In central data_mode the webview talks to the remote server for the
@@ -2587,6 +2602,10 @@ pub(crate) fn spawn_sidecar_ws(
         ("PORTUNI_LOG_REQUESTS".to_string(), "1".to_string()),
         ("HOME".to_string(), std::env::var("HOME").unwrap_or_default()),
         ("PATH".to_string(), shell_path::login_shell_path()),
+        // Per-workspace scratch dir (see sidecar_tmp above). env_clear()
+        // drops the inherited TMPDIR, and Bun then falls back to the shared
+        // per-user one -- which is exactly the collision this avoids.
+        ("TMPDIR".to_string(), sidecar_tmp_str),
         // The Claude CLI's `auth status` resolves its Keychain credential
         // under the USER account name; a GUI-launched app inherits USER and
         // LOGNAME from launchd, so no login-shell probe is needed here
