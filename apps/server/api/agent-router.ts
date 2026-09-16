@@ -60,6 +60,7 @@ import {
   handleCreateRunnerInstance,
   handleDeleteRunnerInstance,
   handleListRunnerInstances,
+  handleListRunnerModels,
   handleListRunners,
   handleSetRunnerInstanceOrgDefault,
   handleUpdateRunnerInstance,
@@ -448,6 +449,14 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
     // proxy posture like every other REST write on the sync agent.
     if (pathname === "/runners" && method === "GET") {
       await handleListRunners(req, res);
+      return true;
+    }
+    // #376: the model picker's list -- MUST match before the bare
+    // /runners/instances handlers below, same precedence as local mode's
+    // own router.ts.
+    const runnerModelsMatch = pathname.match(/^\/runners\/([^/]+)\/models$/);
+    if (runnerModelsMatch && method === "GET") {
+      await handleListRunnerModels(req, res, decodeURIComponent(runnerModelsMatch[1]));
       return true;
     }
     if (pathname === "/runners/instances" && method === "GET") {

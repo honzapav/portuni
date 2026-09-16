@@ -64,4 +64,12 @@ Clears the given organization's default instance (no instance is the default for
 2. The runner instance's own `defaults`, when the thread has one.
 3. Unset — the runner's own default (for Claude Code, whatever the `claude` binary defaults to).
 
-Setting `model` on a thread with a live run also switches that run's live process immediately, no restart — the Claude adapter forwards it to the SDK's `Query.setModel`. Reasoning effort has no equivalent: the SDK only accepts it when a run starts, so a change there applies from the *next* run, never the current one. There is no model/effort picker in the app yet; until one lands, both are only ever set through this REST surface (or an instance's `defaults`).
+Setting `model` on a thread with a live run also switches that run's live process immediately, no restart — the Claude adapter forwards it to the SDK's `Query.setModel`. Reasoning effort has no equivalent: the SDK only accepts it when a run starts, so a change there applies from the *next* run, never the current one. The task chat's composer has a picker for both (see below); either can also be set directly through this REST surface or an instance's `defaults`.
+
+### GET /runners/:runner/models
+
+Returns `{ models: RunnerModel[] }`, each `{ id, displayName, description, supportsEffort, effortLevels }` — `id` is what a caller sends back as `model`. Requires `read` scope; 404 `UNKNOWN_RUNNER` for an unregistered runner id.
+
+The Claude adapter never starts a process just to answer this: before this server process has run any task under this runner, it returns the three documented aliases (`sonnet`, `opus`, `haiku` — the SDK accepts any of these as a bare `model` string) with `supportsEffort: false`, since the real per-model answer isn't known yet. The first live run fills a process-wide cache from the SDK's own `Query.supportedModels()`, and every call after — for any session, on this device — serves that cached list instead. A model not in the list can still be sent as free text; the picker in the app doesn't restrict to it.
+
+The task chat's composer (Práce) shows this list in a model selector, preselecting the thread's own `session.model` (blank means "use the resolved default" above). A reasoning-effort selector appears next to it only when the currently-selected model's `supportsEffort` is true, offering that model's own `effortLevels`; it's labelled as applying from the next run, matching the REST behavior above.

@@ -135,6 +135,7 @@ import {
   handleCreateRunnerInstance,
   handleDeleteRunnerInstance,
   handleListRunnerInstances,
+  handleListRunnerModels,
   handleListRunners,
   handleSetRunnerInstanceOrgDefault,
   handleUpdateRunnerInstance,
@@ -888,6 +889,16 @@ async function routeRunners(
   const { pathname } = url;
   if (pathname === "/runners" && method === "GET") {
     await handleListRunners(req, res);
+    return true;
+  }
+  // #376: /runners/:runner/models MUST match before the bare
+  // /runners/instances handlers below, same precedence reason as
+  // /runners/instances/:id/org-default -- "instances" or "org-defaults" as
+  // a literal runner id never collides here since the second path segment
+  // has to be exactly "models".
+  const modelsMatch = pathname.match(/^\/runners\/([^/]+)\/models$/);
+  if (modelsMatch && method === "GET") {
+    await handleListRunnerModels(req, res, decodeURIComponent(modelsMatch[1]));
     return true;
   }
   if (pathname === "/runners/instances" && method === "GET") {

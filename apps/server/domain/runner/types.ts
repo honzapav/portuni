@@ -162,6 +162,16 @@ export interface RunnerAvailability {
   instances_supported: boolean;
 }
 
+// #376: one entry in a runner's model picker (GET /runners/:runner/models).
+// `id` is what a caller sends back as `model` on POST/PATCH /sessions.
+export interface RunnerModel {
+  id: string;
+  displayName: string;
+  description: string;
+  supportsEffort: boolean;
+  effortLevels: readonly EffortLevel[];
+}
+
 export interface RunStart {
   sessionId: string;
   runId: string;
@@ -219,4 +229,9 @@ export interface RunnerAdapter {
   id: string;
   detect(): Promise<RunnerAvailability>;
   start(run: RunStart, sink: EventSink): Promise<RunHandle>;
+  // #376: the picker's list. Never starts a process just to build it --
+  // an adapter that hasn't run anything yet in this process returns a
+  // documented fallback (aliases plus free text) rather than throwing or
+  // blocking.
+  models(): Promise<RunnerModel[]>;
 }

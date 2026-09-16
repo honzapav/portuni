@@ -715,6 +715,17 @@ export type RunnerInfo = {
   };
 };
 
+// GET /runners/:runner/models -- the model picker's list (#376). Mirrors
+// domain/runner/types.ts's own RunnerModel, same "shared has no domain
+// imports" precedent as RunEndReason above.
+export type RunnerModel = {
+  id: string;
+  displayName: string;
+  description: string;
+  supportsEffort: boolean;
+  effortLevels: readonly string[];
+};
+
 // GET/POST/PATCH /runners/instances -- provider instances (today's desktop
 // CLI spawn profiles, moved server-side). env values never appear here --
 // env_keys only; the values live in runners.json and are read server-side

@@ -127,10 +127,13 @@ closed or archived, or when you are not the session's owner (messages
 and answers are owner-only; anyone who can see the node can read along).
 The header names the runner, instance and host, plus the thread's own
 model/reasoning-effort override when it has one (see
-[Runners: model and reasoning effort](/reference/runners/#model-and-reasoning-effort)
-— there is no picker yet, only the REST surface and an instance's own
-`defaults`), and while a run is live it shows the restart indicator (run
-age, write/read-set size, scope expansions since the run started) with a
+[Runners: model and reasoning effort](/reference/runners/#model-and-reasoning-effort)).
+The composer has a model selector (`GET /runners/:runner/models` —
+documented aliases until this device has run a task, the real list after)
+and, only when the chosen model supports it, a reasoning-effort selector
+labelled as applying from the next run, not the current one. While a run
+is live the header also shows the restart indicator (run age, write/read-set
+size, scope expansions since the run started) with a
 **Předat a začít znovu** action:
 suspend, then start a fresh run from the handoff. A suspended session
 offers **Pokračovat** when the CLI conversation can still be picked up

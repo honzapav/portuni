@@ -2,6 +2,7 @@
 // docs/superpowers/specs/2026-09-12-runner-and-session-design.md):
 //
 //   GET    /runners                          read   -> detected adapters + availability
+//   GET    /runners/:runner/models            read   -> the picker's list (#376)
 //   GET    /runners/instances                read   -> provider instances (no env values)
 //   POST   /runners/instances                write  -> create an instance
 //   PATCH  /runners/instances/:id            write  -> update (partial; empty env value = unchanged)
@@ -18,7 +19,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { parseJsonBody, respondError, respondJson } from "../http/middleware.js";
-import { detectAll } from "../domain/runner/registry.js";
+import { detectAll, getAdapter } from "../domain/runner/registry.js";
 import { EFFORT_LEVELS } from "../domain/runner/types.js";
 import {
   InstanceDefaultsKeyRefusedError,
@@ -45,6 +46,28 @@ export async function handleListRunners(req: IncomingMessage, res: ServerRespons
     respondJson(res, 200, { runners });
   } catch (err) {
     respondError(res, `${req.method} /runners`, err);
+  }
+}
+
+// #376: the model picker's list -- device-local like every other /runners*
+// route (lib.rs's is_local_only_path already matches on the /runners/
+// prefix). 404 for an unregistered runner id, same tier as the instance
+// routes below (no ownership model, read scope).
+export async function handleListRunnerModels(
+  req: IncomingMessage,
+  res: ServerResponse,
+  runnerId: string,
+): Promise<void> {
+  try {
+    const adapter = getAdapter(runnerId);
+    if (!adapter) {
+      respondJson(res, 404, { error: `unknown runner '${runnerId}'`, code: "UNKNOWN_RUNNER" });
+      return;
+    }
+    const models = await adapter.models();
+    respondJson(res, 200, { models });
+  } catch (err) {
+    respondError(res, `${req.method} /runners/${runnerId}/models`, err);
   }
 }
 

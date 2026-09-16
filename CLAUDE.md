@@ -2055,9 +2055,47 @@ symlink to this file.
   that mode, same class as #374's own agent-mode draft-creation cut.
   `SessionSummary` carries both fields (`SessionChat.tsx`'s header renders
   them next to runner/instance/host) so the current choice needs no second
-  fetch. No model/effort picker exists yet (phase 5, #376) -- until then
-  both are set only through `POST`/`PATCH /sessions/:id` or an instance's
-  `defaults`.
+  fetch.
+
+- **The model picker and its list (#376, phase 5, the last of the
+  task-surface spec).** `RunnerAdapter` gained `models(): Promise<RunnerModel[]>`
+  (`domain/runner/types.ts`'s new `RunnerModel`: `id`, `displayName`,
+  `description`, `supportsEffort`, `effortLevels`) -- `GET
+  /runners/:runner/models` (device-local, already covered by
+  `is_local_only_path`'s `/runners/` prefix match in both `lib.rs` and
+  `agent-router.ts`) just calls it. **No throwaway process is ever started
+  to answer this.** The Claude adapter's `models()` serves a process-wide
+  `modelsCache` (module-closure state in `createClaudeAdapter`, not
+  per-run) that starts `null` and is filled as a side effect of the FIRST
+  live run's own `Query.supportedModels()` -- deferred into the promise
+  chain itself (`Promise.resolve().then(() => q.supportedModels())`, not
+  called directly) so a `query` mock or SDK version missing the method
+  rejects into the existing `.catch` instead of throwing synchronously past
+  it. Before that first run (or if it ever fails -- `modelsCache` only ever
+  moves `null` -> populated, never back, and a failure leaves it `null` so
+  the NEXT run retries), `models()` answers a fixed fallback,
+  `CLAUDE_ALIAS_MODELS`: the three documented aliases (`sonnet` first as
+  the sensible default, then `opus`, `haiku`) the SDK accepts as a bare
+  `model` string, each with `supportsEffort: false` -- deliberately
+  conservative, since the real per-model answer only exists once
+  `supportedModels()` has actually answered. **The picker lives in
+  `SessionChat.tsx`'s composer** (`PromptInputTools`, using the
+  `PromptInputSelect*` pieces #373 already left there for this): a model
+  `Select` (`GET /runners/:runner/models` for `session.runner ?? "claude"`
+  -- a draft has no runner chosen yet, and "claude" is the only adapter
+  this codebase registers, so that's what a runner-less thread's picker
+  queries) and, only when the currently-selected model's `supportsEffort`
+  is true, a reasoning-effort `Select` offering that model's own
+  `effortLevels`, titled as applying from the next run (no live setter,
+  same as the REST behavior). Both gated on `access.canResume` (owner-only,
+  matching who may already message/resume the thread) and both just call
+  the existing `PATCH /sessions/:id` (`api.ts`'s new
+  `patchSessionModelEffort`) -- changing the model also reaches a live
+  run immediately via #375's `RunHandle.setModel` plumbing, already wired,
+  nothing new needed here. `FakeRunnerAdapter` gained a trivial
+  `models()` (returns whatever fixed list its `FakeRunnerAdapterOptions.models`
+  constructor option was given, `[]` by default) purely so it satisfies the
+  now-larger `RunnerAdapter` interface -- no test exercises it beyond that.
 
 ## Security rules (from the auth refactor post-mortem)
 

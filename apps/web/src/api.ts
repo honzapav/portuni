@@ -183,6 +183,18 @@ export function transitionPersistentSessionState(
   return jsonRequest<SessionSummary>("POST", `/sessions/${encodeURIComponent(id)}/state`, { state });
 }
 
+// #375/#376: sets the thread's own model/effort override. Not a plain
+// rename, so the server's raw-row PATCH branch answers (see
+// handlePatchSession's own comment) -- only the two fields this needs are
+// typed here. A model change also reaches a live run's Query immediately;
+// effort only ever applies from the next run.
+export function patchSessionModelEffort(
+  id: string,
+  patch: { model?: string | null; effort?: string | null },
+): Promise<{ model: string | null; effort: string | null }> {
+  return jsonRequest("PATCH", `/sessions/${encodeURIComponent(id)}`, patch);
+}
+
 // configDir: the resumed session's profile CLAUDE_CONFIG_DIR, when the
 // caller can resolve one from the desktop profiles registry (#204) --
 // lets the server check conversation-resumability at the right transcript

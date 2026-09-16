@@ -61,12 +61,19 @@ import {
   PromptInput,
   PromptInputBody,
   PromptInputFooter,
+  PromptInputSelect,
+  PromptInputSelectContent,
+  PromptInputSelectItem,
+  PromptInputSelectTrigger,
+  PromptInputSelectValue,
   PromptInputSubmit,
   PromptInputTextarea,
   PromptInputTools,
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
 import { sessionDrafts } from "../lib/session-drafts";
+import { patchSessionModelEffort } from "../api";
+import { fetchRunnerModels, type RunnerModel } from "../lib/runners";
 
 // Floor between two restart-indicator reads (see the signals effect).
 const SIGNALS_MIN_INTERVAL_MS = 10_000;
@@ -109,6 +116,38 @@ export default function SessionChat({
   const [conversationResumable, setConversationResumable] = useState(false);
   const { meId, canManage } = useMe();
   const access = sessionRowAccess(session.user_id, meId, canManage);
+
+  // #376: the model picker's list. A draft has no runner chosen yet
+  // (resolved only at promotion, from the first message) -- "claude" is
+  // the only runner this codebase registers today, so that's what a
+  // runner-less thread's picker queries; a real multi-runner picker would
+  // need its own runner choice first, which doesn't exist yet either.
+  const [models, setModels] = useState<RunnerModel[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetchRunnerModels(session.runner ?? "claude")
+      .then((list) => {
+        if (!cancelled) setModels(list);
+      })
+      .catch(() => {
+        if (!cancelled) setModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session.runner]);
+  const selectedModel = models.find((m) => m.id === session.model) ?? null;
+
+  const handleModelChange = (value: string) => {
+    const model = value === "" ? null : value;
+    onSessionUpdated({ ...session, model });
+    void patchSessionModelEffort(session.id, { model }).catch(() => undefined);
+  };
+  const handleEffortChange = (value: string) => {
+    const effort = value === "" ? null : value;
+    onSessionUpdated({ ...session, effort });
+    void patchSessionModelEffort(session.id, { effort }).catch(() => undefined);
+  };
 
   // Backfill + subscribe. Re-runs whenever the selected session itself
   // changes (switching nodes in Práce mounts the same component fresh with
@@ -442,7 +481,41 @@ export default function SessionChat({
             />
           </PromptInputBody>
           <PromptInputFooter>
-            <PromptInputTools />
+            <PromptInputTools>
+              {access.canResume && (
+                <>
+                  <PromptInputSelect value={session.model ?? ""} onValueChange={handleModelChange}>
+                    <PromptInputSelectTrigger className="w-auto min-w-0" title="Model">
+                      <PromptInputSelectValue placeholder="Model (výchozí)" />
+                    </PromptInputSelectTrigger>
+                    <PromptInputSelectContent>
+                      {models.map((m) => (
+                        <PromptInputSelectItem key={m.id} value={m.id} title={m.description}>
+                          {m.displayName}
+                        </PromptInputSelectItem>
+                      ))}
+                    </PromptInputSelectContent>
+                  </PromptInputSelect>
+                  {selectedModel?.supportsEffort && (
+                    <PromptInputSelect value={session.effort ?? ""} onValueChange={handleEffortChange}>
+                      <PromptInputSelectTrigger
+                        className="w-auto min-w-0"
+                        title="Úsilí uvažování — projeví se od příštího běhu"
+                      >
+                        <PromptInputSelectValue placeholder="Úsilí (výchozí)" />
+                      </PromptInputSelectTrigger>
+                      <PromptInputSelectContent>
+                        {selectedModel.effortLevels.map((e) => (
+                          <PromptInputSelectItem key={e} value={e}>
+                            {e}
+                          </PromptInputSelectItem>
+                        ))}
+                      </PromptInputSelectContent>
+                    </PromptInputSelect>
+                  )}
+                </>
+              )}
+            </PromptInputTools>
             <PromptInputSubmit
               disabled={composerDisabled || sending || !composerText.trim()}
               status={sending ? "submitted" : undefined}
