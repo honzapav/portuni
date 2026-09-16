@@ -111,7 +111,7 @@ function installRuntime(script: readonly FakeScriptStep[]) {
     suspendTimeoutMs: 100,
   });
   setSessionRuntimeForTesting(runtime);
-  return runtime;
+  return { runtime, adapter };
 }
 
 let dbFixture: SharedDb;
@@ -189,6 +189,59 @@ describe("task REST endpoints under /sessions", () => {
     });
     assert.equal(res.statusCode, 400);
     assert.equal(JSON.parse(res.body).code, "UNKNOWN_INSTANCE");
+  });
+
+  // #375: model/effort round-trip through POST and PATCH.
+  test("POST /sessions persists model/effort; SessionSummary carries them", async () => {
+    installRuntime([]);
+    const res = await call(makeIdentity("U1"), "POST", "/sessions", {
+      node_id: dbFixture.nodeId,
+      brief: "x",
+      runner: "fake",
+      model: "claude-opus-4-8",
+      effort: "high",
+    });
+    assert.equal(res.statusCode, 201);
+    const body = JSON.parse(res.body) as { session: SessionSummary };
+    assert.equal(body.session.model, "claude-opus-4-8");
+    assert.equal(body.session.effort, "high");
+  });
+
+  test("PATCH /sessions/:id sets model on a session with a live run, reaching the adapter's live query", async () => {
+    const { adapter } = installRuntime([{ wait: "message" }]);
+    const startRes = await call(makeIdentity("U1"), "POST", "/sessions", {
+      node_id: dbFixture.nodeId,
+      brief: "x",
+      runner: "fake",
+    });
+    const { session } = JSON.parse(startRes.body) as { session: SessionSummary };
+    assert.equal(adapter.getLastSetModel(), null);
+
+    const patchRes = await call(makeIdentity("U1"), "PATCH", `/sessions/${session.id}`, {
+      model: "claude-sonnet-5",
+    });
+    assert.equal(patchRes.statusCode, 200);
+    assert.equal(adapter.getLastSetModel(), "claude-sonnet-5", "the live run's Query must have been told");
+
+    const getRes = await call(makeIdentity("U1"), "GET", `/sessions/${session.id}`);
+    assert.equal((JSON.parse(getRes.body) as { model: string | null }).model, "claude-sonnet-5");
+  });
+
+  test("PATCH /sessions/:id sets effort without touching the live run (no live setter for it)", async () => {
+    const { adapter } = installRuntime([{ wait: "message" }]);
+    const startRes = await call(makeIdentity("U1"), "POST", "/sessions", {
+      node_id: dbFixture.nodeId,
+      brief: "x",
+      runner: "fake",
+    });
+    const { session } = JSON.parse(startRes.body) as { session: SessionSummary };
+
+    const patchRes = await call(makeIdentity("U1"), "PATCH", `/sessions/${session.id}`, { effort: "xhigh" });
+    assert.equal(patchRes.statusCode, 200);
+    assert.equal(adapter.getLastSetModel(), null, "effort has no live setter, unlike model");
+
+    const getRes = await call(makeIdentity("U1"), "GET", `/sessions/${session.id}`);
+    assert.equal((JSON.parse(getRes.body) as { effort: string | null }).effort, "xhigh");
   });
 
   // #374: a thread opens empty -- POST /sessions with no brief creates a

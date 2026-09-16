@@ -518,6 +518,8 @@ export function createAgentRouter(client: CentralClient, opts?: AgentRouterOpts)
           runner: body.runner,
           instanceId: body.instance_id ?? null,
           policy: body.policy,
+          model: body.model,
+          effort: body.effort,
         });
         // Same reason as the local route: startTask's own return value is
         // the session row as of creation, before the run had a chance to

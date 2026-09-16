@@ -29,6 +29,11 @@ const CreateSessionInput = z.object({
   brief: z.string().nullable().optional().describe("The task as given (runner batch): the first user message on a fresh run."),
   runner: z.string().nullable().optional().describe("Runner adapter id (e.g. 'claude') this session's task runs under."),
   host_id: z.string().nullable().optional().describe("The device/workspace running this session's task."),
+  // #375: the thread's own model/effort override. Resolution (session ->
+  // instance defaults -> unset) happens once at run start, in
+  // session-runtime.ts -- never here.
+  model: z.string().nullable().optional().describe("The thread's own model override, or null to use the instance/runner default."),
+  effort: z.string().nullable().optional().describe("The thread's own reasoning-effort override, or null to use the instance/runner default."),
 });
 type CreateSessionInput = z.infer<typeof CreateSessionInput>;
 
@@ -114,8 +119,8 @@ export async function createSession(
   const name = computeDefaultSessionName(nodeName, now);
 
   await db.execute({
-    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, brief, runner, host_id, state, name, created_at, last_active_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
+    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, brief, runner, host_id, model, effort, state, name, created_at, last_active_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
     args: [
       id,
       parsed.node_id,
@@ -128,6 +133,8 @@ export async function createSession(
       parsed.brief ?? null,
       parsed.runner ?? null,
       parsed.host_id ?? null,
+      parsed.model ?? null,
+      parsed.effort ?? null,
       name,
       now,
       now,
@@ -148,13 +155,18 @@ export async function createSession(
 // row exists from the moment the thread opens"): no brief, no runner, no
 // run -- just a name, a node, an owner. The first message (session-
 // runtime.ts's sendMessage) promotes it to 'running' and starts the run.
-export async function createDraftSession(db: DbClient, userId: string, nodeId: string): Promise<SessionRow> {
+export async function createDraftSession(
+  db: DbClient,
+  userId: string,
+  nodeId: string,
+  overrides: { model?: string | null; effort?: string | null } = {},
+): Promise<SessionRow> {
   const id = ulid();
   const now = new Date().toISOString();
   await db.execute({
-    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, state, name, created_at, last_active_at)
-          VALUES (?, ?, ?, 'interactive_task', 'draft', ?, ?, ?)`,
-    args: [id, nodeId, userId, "Nový úkol", now, now],
+    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, state, name, model, effort, created_at, last_active_at)
+          VALUES (?, ?, ?, 'interactive_task', 'draft', ?, ?, ?, ?, ?)`,
+    args: [id, nodeId, userId, "Nový úkol", overrides.model ?? null, overrides.effort ?? null, now, now],
   });
 
   await writeAudit(db, userId, "session_create", "session", id, { node_id: nodeId, draft: true });

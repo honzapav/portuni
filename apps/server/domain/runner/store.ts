@@ -106,6 +106,10 @@ export interface CreateRunnerSessionInput {
   runner: string;
   instance_id: string | null;
   host_id: string | null;
+  // #375: the thread's own model/effort override, or null/omitted to use
+  // the instance/runner default.
+  model?: string | null;
+  effort?: string | null;
 }
 
 export interface PatchSessionInput {
@@ -124,6 +128,11 @@ export interface PatchSessionInput {
   // does, so a later handoff-title enrichment at suspend never overwrites
   // the user's own words.
   name_is_custom?: boolean;
+  // #375: PATCH /sessions/:id sets these; the REST handler ALSO forwards
+  // a model change through SessionRuntime.setModel to a live run's Query
+  // (this column write alone would never reach an already-running process).
+  model?: string | null;
+  effort?: string | null;
 }
 
 export interface CreateRunInput {
@@ -172,6 +181,8 @@ export class DbSessionStore implements SessionStore {
       runner: input.runner,
       instance_id: input.instance_id,
       host_id: input.host_id,
+      model: input.model ?? null,
+      effort: input.effort ?? null,
     });
   }
 
@@ -219,6 +230,14 @@ export class DbSessionStore implements SessionStore {
     if (patch.name_is_custom !== undefined) {
       sets.push("name_is_custom = ?");
       args.push(patch.name_is_custom ? 1 : 0);
+    }
+    if (patch.model !== undefined) {
+      sets.push("model = ?");
+      args.push(patch.model);
+    }
+    if (patch.effort !== undefined) {
+      sets.push("effort = ?");
+      args.push(patch.effort);
     }
     if (sets.length > 0) {
       args.push(id);

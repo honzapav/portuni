@@ -580,6 +580,8 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
       env: buildEnv(run.instance.env),
       hooks: { PreCompact: [{ hooks: [preCompactHook] }] },
       spawnClaudeCodeProcess,
+      ...(run.model !== null ? { model: run.model } : {}),
+      ...(run.effort !== null ? { effort: run.effort } : {}),
       ...(run.resume
         ? {
             resume: run.resume.agentSessionId,
@@ -725,6 +727,10 @@ export function createClaudeAdapter(deps: CreateClaudeAdapterDeps = {}): RunnerA
         if (await endedWithin(closeTermMs)) return;
         signalProcessGroup(state.capturedPid, "SIGKILL");
         await endedWithin(closeTimeoutMs);
+      },
+      async setModel(model: string | null): Promise<void> {
+        if (state.ended) return;
+        await q.setModel(model ?? undefined);
       },
       agentSessionId(): string | null {
         return state.agentSessionId;

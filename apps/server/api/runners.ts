@@ -19,7 +19,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { parseJsonBody, respondError, respondJson } from "../http/middleware.js";
 import { detectAll } from "../domain/runner/registry.js";
+import { EFFORT_LEVELS } from "../domain/runner/types.js";
 import {
+  InstanceDefaultsKeyRefusedError,
   InstanceEnvKeyRefusedError,
   createInstance,
   deleteInstance,
@@ -30,7 +32,7 @@ import {
 import type { RunnerInfo, RunnerInstanceSummary } from "../shared/api-types.js";
 
 function respondInstanceError(res: ServerResponse, ctx: string, err: unknown): void {
-  if (err instanceof InstanceEnvKeyRefusedError) {
+  if (err instanceof InstanceEnvKeyRefusedError || err instanceof InstanceDefaultsKeyRefusedError) {
     respondJson(res, 400, { error: err.message, code: err.code });
     return;
   }
@@ -56,18 +58,28 @@ export async function handleListRunnerInstances(req: IncomingMessage, res: Serve
 }
 
 const EnvMap = z.record(z.string(), z.string());
+const InstanceDefaults = z.object({
+  model: z.string().optional(),
+  effort: z.enum(EFFORT_LEVELS).optional(),
+});
 
 const CreateInstanceBody = z.object({
   name: z.string().trim().min(1).max(200),
   runner: z.string().trim().min(1),
   env: EnvMap.optional(),
+  defaults: InstanceDefaults.optional(),
 });
 
 export async function handleCreateRunnerInstance(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     const body = await parseJsonBody(req, res, CreateInstanceBody);
     if (!body) return;
-    const created = await createInstance({ name: body.name, runner: body.runner, env: body.env });
+    const created = await createInstance({
+      name: body.name,
+      runner: body.runner,
+      env: body.env,
+      defaults: body.defaults,
+    });
     respondJson(res, 201, created);
   } catch (err) {
     respondInstanceError(res, `${req.method} /runners/instances`, err);
@@ -83,6 +95,7 @@ const UpdateInstanceBody = z.object({
   name: z.string().trim().min(1).max(200).optional(),
   runner: z.string().trim().min(1).optional(),
   env: EnvMap.optional(),
+  defaults: InstanceDefaults.optional(),
 });
 
 export async function handleUpdateRunnerInstance(

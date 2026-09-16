@@ -192,6 +192,8 @@ export const PG_BASELINE_DDL: string[] = [
     handoff_inline TEXT,
     name TEXT NOT NULL DEFAULT '',
     name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
+    model TEXT,
+    effort TEXT CHECK(effort IS NULL OR effort IN ('low','medium','high','xhigh','max')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_active_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     closed_at TIMESTAMPTZ

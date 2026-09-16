@@ -24,6 +24,13 @@ export class FakeRunnerAdapter implements RunnerAdapter {
   private readonly script: readonly FakeScriptStep[];
   private readonly agentSessionIdValue: string | null;
   private readonly availability: RunnerAvailability;
+  // Test-only visibility for RunHandle.setModel (#375) -- the last model
+  // any live run's handle was asked to switch to, or null if never called.
+  private lastSetModel: string | null = null;
+
+  getLastSetModel(): string | null {
+    return this.lastSetModel;
+  }
 
   constructor(opts: FakeRunnerAdapterOptions) {
     this.script = opts.script;
@@ -110,6 +117,9 @@ export class FakeRunnerAdapter implements RunnerAdapter {
         if (ended) return;
         stopAndResume();
         emitEnded("completed");
+      },
+      setModel: async (model: string | null): Promise<void> => {
+        this.lastSetModel = model;
       },
       agentSessionId(): string | null {
         return agentSessionIdValue;

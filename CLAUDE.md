@@ -2005,6 +2005,60 @@ symlink to this file.
   describes; a real gap, left for a follow-up since the layout itself is
   macOS/visual verification, not gated.
 
+- **Model and reasoning effort are per-thread now (#375, phase 4 of the same
+  task-surface spec).** `sessions` gained `model TEXT` and `effort TEXT`
+  (nullable, `effort` CHECKed against the SDK's own five-value enum) --
+  added to the SAME migration 036 #374 introduced (both issues landed in
+  this batch, per the tracking rule), extended in **both dialects and both
+  places that rebuild the `sessions` table**: `PG_BASELINE_DDL` (still no
+  Postgres cutover, #335) and, less obviously, migration **030**'s own
+  rebuild -- that one predates 034/035/036 but is written to "always carry
+  the CURRENT full shape forward" (its own header comment), so a database
+  that has already been through 036 but still needs 030's fix must not have
+  its rebuild reject re-inserting a `draft` row or silently drop
+  model/effort; the same conditional-carry-forward pattern already used for
+  `terminal_id`/`handoff_inline` there now covers `model`/`effort` too, and
+  the `state` CHECK there gained `'draft'` for the identical reason (a
+  literal CHECK cannot be added "conditionally" the way a column can, so
+  it's simply always the current full set). `domain/runner/instances.ts`'s
+  `StoredInstance`/`PublicInstance` gained `defaults: { model?, effort? }`
+  (an unknown key or invalid `effort` value throws
+  `InstanceDefaultsKeyRefusedError`, mirroring `InstanceEnvKeyRefusedError`'s
+  own shape); `updateInstance` replaces `defaults` wholesale, unlike `env`'s
+  per-key merge. **Resolution is first-match-wins, resolved once**:
+  `session-runtime.ts`'s pure `resolveModelAndEffort(session, instanceDefaults)`
+  -- the thread's own `sessions.model`/`.effort`, else the instance's
+  `defaults`, else `null` (meaning "the runner's own default", not "off") --
+  called inside `startRun` (every call site: `startTask`,
+  `promoteDraftAndStart`, `resume`) and threaded onto the new
+  `RunStart.model`/`.effort` fields, so **the adapter never reads config
+  itself**. `domain/runner/types.ts`'s `EffortLevel`/`EFFORT_LEVELS` mirror
+  the SDK's own enum, duplicated rather than imported (same reasoning as
+  this file's other adapter-agnostic-types-file mirrors) since only the
+  Claude adapter currently reads it. The Claude adapter
+  (`adapters/claude.ts`) sets `Options.model`/`Options.effort` from
+  `RunStart` (omitted entirely, not passed as `undefined`, when null -- the
+  SDK's own "no override" shape) and implements the new
+  `RunHandle.setModel(model)` as `q.setModel(model ?? undefined)`, a no-op
+  once the run has ended. **`PATCH /sessions/:id` forwards a `model` change
+  to a LIVE run's Query** via a new `SessionRuntime.setModel(sessionId,
+  model)` (looks up `liveRuns`, no-ops if the session has none -- the
+  ordinary `DbSessionStore.patchSession` call right after is what persists
+  the column either way, for the next run or because there is no live one)
+  -- `effort` has no equivalent live setter (SDK limitation) and only ever
+  applies from the next run, so there is no `setEffort` anywhere. This only
+  ever reaches a live run on the device actually driving it: local mode
+  works end to end, but agent/central mode's `PATCH /sessions/:id` is
+  routed straight to central (`is_local_only_path` never matches the bare
+  `/sessions/:id`, unlike `/sessions/:id/interrupt` etc.), and central's own
+  `SessionRuntime` never runs a task itself -- a known, unaddressed gap for
+  that mode, same class as #374's own agent-mode draft-creation cut.
+  `SessionSummary` carries both fields (`SessionChat.tsx`'s header renders
+  them next to runner/instance/host) so the current choice needs no second
+  fetch. No model/effort picker exists yet (phase 5, #376) -- until then
+  both are set only through `POST`/`PATCH /sessions/:id` or an instance's
+  `defaults`.
+
 ## Security rules (from the auth refactor post-mortem)
 
 1. **No secret in webview JS, ever.** If a JS module needs to know it, it

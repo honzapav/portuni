@@ -125,9 +125,13 @@ question panel appears above the composer while
 free-form input — and the composer itself disables while suspended,
 closed or archived, or when you are not the session's owner (messages
 and answers are owner-only; anyone who can see the node can read along).
-The header names the runner, instance and host, and while a run is live
-it shows the restart indicator (run age, write/read-set size, scope
-expansions since the run started) with a **Předat a začít znovu** action:
+The header names the runner, instance and host, plus the thread's own
+model/reasoning-effort override when it has one (see
+[Runners: model and reasoning effort](/reference/runners/#model-and-reasoning-effort)
+— there is no picker yet, only the REST surface and an instance's own
+`defaults`), and while a run is live it shows the restart indicator (run
+age, write/read-set size, scope expansions since the run started) with a
+**Předat a začít znovu** action:
 suspend, then start a fresh run from the handoff. A suspended session
 offers **Pokračovat** when the CLI conversation can still be picked up
 and **Předat a začít znovu** always.

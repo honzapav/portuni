@@ -147,6 +147,14 @@ export interface DeltaFrame {
 // ExitPlanMode) is unaffected by the policy.
 export type PermissionPolicy = "default" | "auto";
 
+// Reasoning effort (#375, phase 4 of docs/superpowers/specs/2026-09-15-
+// task-surface-design.md): mirrors @anthropic-ai/claude-agent-sdk's own
+// EffortLevel exactly, duplicated here (not imported) so this adapter-
+// agnostic types file has no dependency on a specific runner's SDK package
+// -- the Claude adapter is the only one that currently reads it.
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
 export interface RunnerAvailability {
   installed: boolean;
   version: string | null;
@@ -176,6 +184,11 @@ export interface RunStart {
   // adapter (#324) needed them.
   portuniRoot: string;
   mirrors: readonly string[];
+  // #375: resolved once by session-runtime.ts (the thread's own value, else
+  // the runner instance's defaults, else unset) -- the adapter never reads
+  // config itself. null means "the runner's own default", not "off".
+  model: string | null;
+  effort: EffortLevel | null;
 }
 
 export interface RunHandle {
@@ -185,6 +198,11 @@ export interface RunHandle {
   interrupt(): Promise<void>;
   // Graceful end of the run's process.
   close(): Promise<void>;
+  // #375: changes the model on the LIVE query, no restart -- the one
+  // setting the SDK allows to change mid-run. null resets to the runner's
+  // own default. Reasoning effort has no equivalent live setter (SDK
+  // limitation); it only ever applies from the next run.
+  setModel(model: string | null): Promise<void>;
   agentSessionId(): string | null;
   // The runner's own child process id, or null when the adapter has none
   // (the fake adapter, or a real one that hasn't captured it yet) -- the

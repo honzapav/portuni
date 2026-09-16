@@ -18,13 +18,14 @@ import { suspendSessionServerSide, type ServerHandoffReason } from "../session-h
 import type { SessionRow } from "../../shared/types.js";
 import type { ListEventsOptions, SessionEventRow, SessionRunRow, SessionStore } from "./store.js";
 import { detectAll } from "./registry.js";
-import { getInstanceEnv, listInstances } from "./instances.js";
+import { getInstanceDefaults, getInstanceEnv, listInstances, type InstanceDefaults } from "./instances.js";
 import { resolveRunnerDataDir } from "./data-dir.js";
 import { removePidFile, writePidFile } from "./pid-file.js";
 import type { ProvisionRunInput, ProvisionRunResult, ProvisionRunResumeInfo } from "./provision.js";
 import type {
   CanonicalEvent,
   DeltaFrame,
+  EffortLevel,
   PermissionPolicy,
   QuestionDecision,
   RunHandle,
@@ -71,6 +72,20 @@ async function resolveNodeOrgId(nodeId: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+// #375: first match wins -- the thread's own value, then the runner
+// instance's defaults, then unset (the runner's own default). Pure, so
+// it's directly testable independent of the store/instances file I/O
+// startRun (its only caller) otherwise needs.
+export function resolveModelAndEffort(
+  session: { model: string | null; effort: string | null },
+  instanceDefaults: InstanceDefaults | null,
+): { model: string | null; effort: EffortLevel | null } {
+  return {
+    model: session.model ?? instanceDefaults?.model ?? null,
+    effort: (session.effort as EffortLevel | null) ?? instanceDefaults?.effort ?? null,
+  };
 }
 
 async function resolveTaskDefaults(nodeId: string): Promise<{ runner: string; instanceId: string | null }> {
@@ -121,6 +136,11 @@ export interface StartTaskInput {
   runner: string;
   instanceId?: string | null;
   policy?: PermissionPolicy;
+  // #375: the thread's own model/effort override, resolved against the
+  // instance's defaults in startRun -- unset here means "no override",
+  // not "no model at all".
+  model?: string | null;
+  effort?: string | null;
 }
 
 export interface SessionSignals {
@@ -146,6 +166,10 @@ export interface SessionRuntime {
   sendMessage(sessionId: string, text: string): Promise<void>;
   answer(sessionId: string, requestId: string, decision: QuestionDecision): Promise<void>;
   interrupt(sessionId: string): Promise<void>;
+  // #375: forwards a model change to a live run's Query (no restart) --
+  // a no-op when the session has no live run, since the REST handler's own
+  // plain column write already persists the choice for the NEXT run.
+  setModel(sessionId: string, model: string | null): Promise<void>;
   suspend(sessionId: string): Promise<SessionRow>;
   resume(sessionId: string, mode: "conversation" | "handoff"): Promise<SessionRunRow>;
   closeSession(sessionId: string): Promise<SessionRow>;
@@ -350,6 +374,10 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     // there rather than failing the whole run start.
     runStartScopeSize.set(run.id, await readSessionScopeSize(session.id));
 
+    // #375: resolved once here, so the adapter never reads config itself.
+    const instanceDefaults = run.instance_id ? await getInstanceDefaults(run.instance_id) : null;
+    const { model, effort } = resolveModelAndEffort(session, instanceDefaults);
+
     await appendAndPublish(session.id, run.id, [
       {
         kind: "run_started",
@@ -379,6 +407,8 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       policy: opts.policy,
       portuniRoot: provisioned.portuniRoot,
       mirrors: provisioned.mirrors,
+      model,
+      effort,
     };
 
     const handle = await adapter.start(runStart, makeSink(session.id, run.id));
@@ -408,6 +438,8 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
       runner: input.runner,
       instance_id: instanceId,
       host_id: null,
+      model: input.model ?? null,
+      effort: input.effort ?? null,
     });
 
     const provisioned = await provision({
@@ -524,6 +556,17 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     if (!live) return;
     await live.handle.interrupt();
     await drain(sessionId);
+  }
+
+  // #375: the one setting the SDK allows to change mid-run, no restart --
+  // reasoning effort has no equivalent and only ever applies from the next
+  // run, so there is no setEffort here. The column write (source of truth
+  // for the next run, and for a session with no live run right now) is the
+  // REST handler's own job via the ordinary patchSession call.
+  async function setModel(sessionId: string, model: string | null): Promise<void> {
+    const live = liveRuns.get(sessionId);
+    if (!live) return;
+    await live.handle.setModel(model);
   }
 
   async function closeSession(sessionId: string): Promise<SessionRow> {
@@ -697,6 +740,7 @@ export function createSessionRuntime(deps: CreateSessionRuntimeDeps): SessionRun
     sendMessage,
     answer,
     interrupt,
+    setModel,
     suspend,
     resume,
     pendingQuestion,

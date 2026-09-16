@@ -332,6 +332,10 @@ export default function SessionChat({
             {session.runner ?? "runner neznámý"}
             {session.instance_id ? ` · ${session.instance_id}` : ""}
             {session.host_id ? ` · ${session.host_id}` : ""}
+            {/* #375: the thread's own model/effort override, when set --
+                there is no picker yet (phase 5), just the current choice. */}
+            {session.model ? ` · ${session.model}` : ""}
+            {session.effort ? ` · ${session.effort}` : ""}
           </span>
           {live.state === "running" && access.canPauseOrClose && (
             <>

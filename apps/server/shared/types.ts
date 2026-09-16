@@ -159,6 +159,11 @@ export const SessionRow = z.object({
   handoff_inline: z.union([z.string(), z.null()]),
   name: z.string(),
   name_is_custom: z.number(),
+  // #375: the thread's own model/reasoning-effort override, resolved
+  // (session -> instance defaults -> unset) once at run start onto
+  // RunStart -- null means "no override here", not "off".
+  model: z.union([z.string(), z.null()]),
+  effort: z.union([z.string(), z.null()]),
   created_at: z.string(),
   last_active_at: z.string(),
   closed_at: z.union([z.string(), z.null()]),

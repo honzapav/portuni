@@ -474,6 +474,12 @@ export type SessionSummary = {
   name_is_custom: boolean;
   handoff_path: string | null;
   write_count: number;
+  // #375: the thread's own model/reasoning-effort choice, so the header
+  // renders it without a second fetch. null means unset (falls back to
+  // the runner instance's defaults, then the runner's own default) --
+  // never a resolved/effective value.
+  model: string | null;
+  effort: string | null;
   created_at: string;
   last_active_at: string;
   closed_at: string | null;
@@ -719,4 +725,7 @@ export type RunnerInstanceSummary = {
   runner: string;
   env_keys: string[];
   org_defaults: string[];
+  // #375: this instance's own model/effort defaults -- a thread that
+  // doesn't override them itself falls back to these.
+  defaults: { model?: string; effort?: string };
 };

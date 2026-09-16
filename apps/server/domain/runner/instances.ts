@@ -17,6 +17,15 @@ import { join } from "node:path";
 import { ulid } from "ulid";
 import { isPortuniEnvKey, isSecretShapedEnvKey } from "../../shared/runner-env.js";
 import { resolveRunnerDataDir } from "./data-dir.js";
+import { EFFORT_LEVELS, type EffortLevel } from "./types.js";
+
+// #375: an instance's own default model/reasoning-effort, applied to a
+// thread that doesn't override them itself (session -> instance defaults
+// -> unset, resolved once in session-runtime.ts's startRun).
+export interface InstanceDefaults {
+  model?: string;
+  effort?: EffortLevel;
+}
 
 export interface StoredInstance {
   id: string;
@@ -27,6 +36,7 @@ export interface StoredInstance {
   // exclusive across instances -- setOrgDefault removes an org from every
   // other instance's list before adding it here.
   org_defaults: string[];
+  defaults: InstanceDefaults;
 }
 
 interface InstancesFile {
@@ -39,18 +49,21 @@ export interface PublicInstance {
   runner: string;
   env_keys: string[];
   org_defaults: string[];
+  defaults: InstanceDefaults;
 }
 
 export interface CreateInstanceInput {
   name: string;
   runner: string;
   env?: Record<string, string>;
+  defaults?: InstanceDefaults;
 }
 
 export interface UpdateInstanceInput {
   name?: string;
   runner?: string;
   env?: Record<string, string>;
+  defaults?: InstanceDefaults;
 }
 
 // Key rules live in shared/runner-env.ts (the web form echoes them).
@@ -62,6 +75,27 @@ export class InstanceEnvKeyRefusedError extends Error {
   ) {
     super(`Klíč prostředí '${key}' byl odmítnut: ${reason}`);
     this.name = "InstanceEnvKeyRefusedError";
+  }
+}
+
+// #375: an unknown key inside `defaults` is refused the same way an
+// unknown/secret-shaped env key is -- silently dropping it would leave the
+// caller believing a setting was saved that never was.
+const DEFAULTS_KEYS = new Set(["model", "effort"]);
+export class InstanceDefaultsKeyRefusedError extends Error {
+  readonly code = "INSTANCE_DEFAULTS_KEY_REFUSED" as const;
+  constructor(readonly key: string) {
+    super(`Neznámý klíč '${key}' v defaults instance -- povolené jsou pouze 'model' a 'effort'`);
+    this.name = "InstanceDefaultsKeyRefusedError";
+  }
+}
+
+function assertValidDefaults(defaults: InstanceDefaults): void {
+  for (const key of Object.keys(defaults)) {
+    if (!DEFAULTS_KEYS.has(key)) throw new InstanceDefaultsKeyRefusedError(key);
+  }
+  if (defaults.effort !== undefined && !EFFORT_LEVELS.includes(defaults.effort)) {
+    throw new InstanceDefaultsKeyRefusedError("effort");
   }
 }
 
@@ -100,7 +134,9 @@ async function loadInstancesFile(dataDir: string | undefined): Promise<Instances
   }
   if (raw.trim() === "") return { instances: [] };
   const parsed = JSON.parse(raw) as Partial<InstancesFile>;
-  return { instances: parsed.instances ?? [] };
+  // An instance persisted before #375 has no `defaults` key at all.
+  const instances = (parsed.instances ?? []).map((i) => ({ ...i, defaults: i.defaults ?? {} }));
+  return { instances };
 }
 
 // Atomic write: temp file in the same directory, then rename over -- same
@@ -115,12 +151,30 @@ async function saveInstancesFile(file: InstancesFile, dataDir: string | undefine
 }
 
 function toPublicInstance(row: StoredInstance): PublicInstance {
-  return { id: row.id, name: row.name, runner: row.runner, env_keys: Object.keys(row.env), org_defaults: row.org_defaults };
+  return {
+    id: row.id,
+    name: row.name,
+    runner: row.runner,
+    env_keys: Object.keys(row.env),
+    org_defaults: row.org_defaults,
+    defaults: row.defaults,
+  };
 }
 
 export async function listInstances(dataDir?: string): Promise<PublicInstance[]> {
   const file = await loadInstancesFile(dataDir);
   return file.instances.map(toPublicInstance);
+}
+
+// #375: an instance's own model/effort defaults -- the middle link in
+// session-runtime.ts's resolution chain (session's own value -> this ->
+// unset). Server-side only like getInstanceEnv, though there is nothing
+// secret here; it simply has no REST consumer of its own (listInstances
+// already returns it as part of the public shape).
+export async function getInstanceDefaults(id: string, dataDir?: string): Promise<InstanceDefaults | null> {
+  const file = await loadInstancesFile(dataDir);
+  const row = file.instances.find((i) => i.id === id);
+  return row ? row.defaults : null;
 }
 
 // Server-side only: never exposed over REST. The adapter's env composition
@@ -143,10 +197,12 @@ export async function createInstance(input: CreateInstanceInput, dataDir?: strin
   if (runner === "") throw new Error("createInstance: runner is required");
   const env = input.env ?? {};
   assertValidEnvKeys(env);
+  const defaults = input.defaults ?? {};
+  assertValidDefaults(defaults);
 
   const file = await loadInstancesFile(dataDir);
   const id = ulid();
-  const row: StoredInstance = { id, name, runner, env, org_defaults: [] };
+  const row: StoredInstance = { id, name, runner, env, org_defaults: [], defaults };
   file.instances.push(row);
   await saveInstancesFile(file, dataDir);
   return toPublicInstance(row);
@@ -186,6 +242,10 @@ export async function updateInstance(
   if (input.env !== undefined) {
     assertValidEnvKeys(input.env);
     row.env = mergeEnvUpdate(row.env, input.env);
+  }
+  if (input.defaults !== undefined) {
+    assertValidDefaults(input.defaults);
+    row.defaults = input.defaults;
   }
 
   await saveInstancesFile(file, dataDir);

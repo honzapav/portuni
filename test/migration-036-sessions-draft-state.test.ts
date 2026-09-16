@@ -1,6 +1,8 @@
-// Validates migration 036 (#374: sessions.state CHECK gains 'draft').
-// SQLite cannot ALTER a CHECK constraint, so this is a table rebuild --
-// same methodology as test/migration-030-sessions-node-set-null.test.ts.
+// Validates migration 036 (#374: sessions.state CHECK gains 'draft'; #375
+// added sessions.model/effort to this same migration, landing in the same
+// batch). SQLite cannot ALTER a CHECK constraint, so this is a table
+// rebuild -- same methodology as
+// test/migration-030-sessions-node-set-null.test.ts.
 import { describe, it, test } from "node:test";
 import assert from "node:assert/strict";
 import { ulid } from "ulid";
@@ -19,6 +21,16 @@ describe("migration 036 sessions.state gains 'draft'", () => {
       args: [],
     });
     assert.match(String(r.rows[0]?.sql ?? ""), /'draft'/);
+  });
+
+  it("fresh install already has model/effort columns (#375)", async () => {
+    const db = createClient({ url: ":memory:" });
+    const { ensureSchemaOn } = await import("../apps/server/infra/schema.js");
+    await ensureSchemaOn(db);
+    const info = await db.execute("PRAGMA table_info(sessions)");
+    const cols = new Set(info.rows.map((r) => r.name as string));
+    assert.ok(cols.has("model"));
+    assert.ok(cols.has("effort"));
   });
 
   it("is idempotent across re-runs", async () => {
@@ -84,6 +96,20 @@ test("migration 036 preserves existing rows and allows a draft afterward", async
   });
   const draft = await getSession(db, draftId);
   assert.equal(draft?.state, "draft");
+
+  // #375: model/effort exist and default to NULL for a row preserved
+  // across the rebuild (the legacy source table had neither column).
+  assert.equal(preserved?.model, null);
+  assert.equal(preserved?.effort, null);
+
+  await db.execute({ sql: "UPDATE sessions SET model = ?, effort = ? WHERE id = ?", args: ["claude-opus-4-8", "high", draftId] });
+  const withDefaults = await getSession(db, draftId);
+  assert.equal(withDefaults?.model, "claude-opus-4-8");
+  assert.equal(withDefaults?.effort, "high");
+
+  await assert.rejects(() =>
+    db.execute({ sql: "UPDATE sessions SET effort = 'bogus' WHERE id = ?", args: [draftId] }),
+  );
 });
 
 // Structural guard, same reasoning as migration 030's own: the rebuild must
@@ -113,6 +139,8 @@ describe("migration 036 is a single-connection rebuild", () => {
       "DROP TABLE sessions",
       "ALTER TABLE sessions_new RENAME TO sessions",
       "'draft'",
+      "model TEXT",
+      "effort TEXT",
     ]) {
       assert.ok(script.includes(required), `${required} must be inside the script`);
     }

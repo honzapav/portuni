@@ -1485,9 +1485,8 @@ const MIGRATIONS: Migration[] = [
   // state"): a thread is a session row from the moment it opens, before it
   // has a brief or a run -- 'draft' joins the state CHECK. SQLite cannot
   // ALTER a CHECK constraint, so this is a table rebuild (same shape as
-  // migration 030's). If #375 (model/effort columns) lands in the same
-  // batch as this one, it extends this same migration rather than adding a
-  // 037 -- see CLAUDE.md's "Migration 036 and Postgres" note.
+  // migration 030's). #375 (model/effort columns) landed in the same batch,
+  // so it extends this same migration rather than adding a 037.
   {
     id: "036_sessions_draft_state",
     isApplied: async (db) => {
@@ -1556,21 +1555,26 @@ export async function runMigration028(db: DbClient): Promise<void> {
 // as migrations 007/008's actors rebuild (foreign_keys off, new table,
 // copy, drop, rename, recreate indexes). No triggers reference `sessions`.
 //
-// The new table's shape always includes every column the CURRENT DDL_SESSIONS
-// has (terminal_id from migration 032, #218; instance_id/brief/runner/
-// host_id/waiting_since from migration 034, the runner batch) -- a fresh
-// install that already has them must not lose them when this rebuild runs
-// (test/migration-030-sessions-node-set-null.test.ts's upgrade-path
-// simulation exercises exactly this: DDL creates them, then only 030's
-// marker is cleared). The source SELECT list, however, only names a later
-// column when the table being rebuilt actually has it -- a genuine
-// sequential upgrade of a pre-032/pre-034 DB runs 030 (this function)
-// before those columns exist at all, so unconditionally selecting them
-// would fail with "no such column". Omitting one from the INSERT target
-// list leaves it NULL, which the later migration's own ADD COLUMN would
-// have produced anyway; profile_id/instance_id is a rename rather than an
-// addition, so the source list picks whichever name is actually present
-// instead of omitting it.
+// The new table's shape always includes every column (and CHECK value) the
+// CURRENT DDL_SESSIONS has (terminal_id from migration 032, #218;
+// instance_id/brief/runner/host_id/waiting_since from migration 034, the
+// runner batch; 'draft' and model/effort from migration 036, #374/#375) --
+// a fresh install that already has them must not lose them when this
+// rebuild runs (test/migration-030-sessions-node-set-null.test.ts's
+// upgrade-path simulation exercises exactly this: DDL creates them, then
+// only 030's marker is cleared). The source SELECT list, however, only
+// names a later column when the table being rebuilt actually has it -- a
+// genuine sequential upgrade of a pre-032/pre-034/pre-036 DB runs 030 (this
+// function) before those columns exist at all, so unconditionally
+// selecting them would fail with "no such column". Omitting one from the
+// INSERT target list leaves it NULL, which the later migration's own ADD
+// COLUMN would have produced anyway; profile_id/instance_id is a rename
+// rather than an addition, so the source list picks whichever name is
+// actually present instead of omitting it. The CHECK values ('draft', the
+// effort enum) cannot be added "conditionally" the way a column can -- they
+// are simply always the current full set, which is safe: a database that
+// hasn't reached 036 yet has no row using them, and one that has must not
+// have this rebuild reject re-inserting a row already in that state.
 export async function runMigration030(db: DbClient): Promise<void> {
   // Resolve the branch BEFORE the script: the rebuild itself has to be a
   // single executeMultiple (below), so the shape check cannot sit between
@@ -1583,6 +1587,13 @@ export async function runMigration030(db: DbClient): Promise<void> {
   const runnerCols = ["brief", "runner", "host_id", "waiting_since"].filter((c) => cols.has(c));
   const runnerColList = runnerCols.length > 0 ? ", " + runnerCols.join(", ") : "";
   const handoffInlineCol = cols.has("handoff_inline") ? ", handoff_inline" : "";
+  // #375: same "always the current full shape" rule as terminal_id/
+  // handoff_inline above -- a database that has already been through 036
+  // (state allows 'draft', model/effort exist) but still needs 030's own
+  // fix must not have this rebuild drop them, or lose a 'draft' row
+  // outright (the CHECK below would reject re-inserting it).
+  const modelEffortCols = ["model", "effort"].filter((c) => cols.has(c));
+  const modelEffortColList = modelEffortCols.length > 0 ? ", " + modelEffortCols.join(", ") : "";
   // The whole rebuild runs as ONE script over ONE connection via
   // executeMultiple. Per-statement db.execute() calls are unsafe for this on
   // Turso/libsql over HTTP: each statement may hit a different connection,
@@ -1611,22 +1622,24 @@ export async function runMigration030(db: DbClient): Promise<void> {
       runner TEXT,
       host_id TEXT,
       waiting_since TEXT,
-      state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived')),
+      state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived','draft')),
       handoff_path TEXT,
       handoff_hash TEXT,
       handoff_inline TEXT,
       name TEXT NOT NULL DEFAULT '',
       name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
+      model TEXT,
+      effort TEXT CHECK(effort IS NULL OR effort IN ('low','medium','high','xhigh','max')),
       created_at DATETIME NOT NULL DEFAULT (datetime('now')),
       last_active_at DATETIME NOT NULL DEFAULT (datetime('now')),
       closed_at DATETIME
     );
     INSERT INTO sessions_new (
       id, node_id, user_id, session_type, cli, instance_id, agent_session_id, state,
-      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}${runnerColList}${handoffInlineCol}
+      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}${runnerColList}${handoffInlineCol}${modelEffortColList}
     ) SELECT
       id, node_id, user_id, session_type, cli, ${profileSourceCol}, agent_session_id, state,
-      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}${runnerColList}${handoffInlineCol}
+      handoff_path, handoff_hash, name, name_is_custom, created_at, last_active_at, closed_at${terminalIdCol}${runnerColList}${handoffInlineCol}${modelEffortColList}
     FROM sessions;
     DROP TABLE sessions;
     ALTER TABLE sessions_new RENAME TO sessions;
@@ -1638,11 +1651,16 @@ export async function runMigration030(db: DbClient): Promise<void> {
   `);
 }
 
-// Table rebuild: sessions.state CHECK gains 'draft' (#374). By the time this
-// runs (after 032/034/035 in sequence) an upgrading database's sessions
-// table already carries every column the current DDL_SESSIONS has, so
-// unlike migration 030's rebuild there is no need to branch on which
-// columns exist -- the source SELECT list is unconditional.
+// Table rebuild: sessions.state CHECK gains 'draft' (#374), and sessions
+// gains model/effort (#375, added to this same migration rather than a
+// 037 since both issues land in the same batch -- see CLAUDE.md's #374
+// entry). By the time this runs (after 032/034/035 in sequence) an
+// upgrading database's sessions table already carries every OTHER column
+// the current DDL_SESSIONS has, so unlike migration 030's rebuild there is
+// no need to branch on those -- but model/effort are new columns THIS
+// migration introduces, so (like migration 028's name/name_is_custom) the
+// source SELECT list omits them; the destination simply defaults them to
+// NULL, same as a later ADD COLUMN would.
 export async function runMigration036(db: DbClient): Promise<void> {
   await db.executeMultiple(`
     PRAGMA foreign_keys = OFF;
@@ -1669,6 +1687,8 @@ export async function runMigration036(db: DbClient): Promise<void> {
       handoff_inline TEXT,
       name TEXT NOT NULL DEFAULT '',
       name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
+      model TEXT,
+      effort TEXT CHECK(effort IS NULL OR effort IN ('low','medium','high','xhigh','max')),
       created_at DATETIME NOT NULL DEFAULT (datetime('now')),
       last_active_at DATETIME NOT NULL DEFAULT (datetime('now')),
       closed_at DATETIME

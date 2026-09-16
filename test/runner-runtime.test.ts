@@ -4,11 +4,15 @@
 // setup (via test/helpers/shared-db.ts's makeSharedDb).
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { setDbForTesting } from "../apps/server/infra/db.js";
 import { DbSessionStore } from "../apps/server/domain/runner/store.js";
-import { createSessionRuntime } from "../apps/server/domain/runner/session-runtime.js";
+import { createSessionRuntime, resolveModelAndEffort } from "../apps/server/domain/runner/session-runtime.js";
 import { FakeRunnerAdapter, type FakeScriptStep } from "../apps/server/domain/runner/adapters/fake.js";
-import type { RunnerAdapter } from "../apps/server/domain/runner/types.js";
+import { createInstance } from "../apps/server/domain/runner/instances.js";
+import type { RunnerAdapter, RunHandle, RunStart } from "../apps/server/domain/runner/types.js";
 import type { ProvisionRunResult } from "../apps/server/domain/runner/provision.js";
 import { suspendSession } from "../apps/server/domain/sessions.js";
 import { makeSharedDb, type SharedDb } from "./helpers/shared-db.js";
@@ -509,5 +513,142 @@ describe("session runtime: sessionSignals", () => {
     const { session } = await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
     const signals = await runtime.sessionSignals(session.id);
     assert.equal(signals.runAgeMs, null);
+  });
+});
+
+describe("resolveModelAndEffort", () => {
+  it("prefers the session's own value over the instance's defaults", () => {
+    const r = resolveModelAndEffort(
+      { model: "claude-opus-4-8", effort: "high" },
+      { model: "claude-sonnet-5", effort: "low" },
+    );
+    assert.deepEqual(r, { model: "claude-opus-4-8", effort: "high" });
+  });
+
+  it("falls back to the instance's defaults when the session has none", () => {
+    const r = resolveModelAndEffort({ model: null, effort: null }, { model: "claude-sonnet-5", effort: "low" });
+    assert.deepEqual(r, { model: "claude-sonnet-5", effort: "low" });
+  });
+
+  it("is null/null when neither the session nor the instance has anything", () => {
+    assert.deepEqual(resolveModelAndEffort({ model: null, effort: null }, null), { model: null, effort: null });
+    assert.deepEqual(resolveModelAndEffort({ model: null, effort: null }, {}), { model: null, effort: null });
+  });
+
+  it("resolves each field independently", () => {
+    const r = resolveModelAndEffort({ model: "claude-opus-4-8", effort: null }, { model: "claude-sonnet-5", effort: "xhigh" });
+    assert.deepEqual(r, { model: "claude-opus-4-8", effort: "xhigh" });
+  });
+});
+
+// #375: end-to-end through startTask -- a bespoke adapter (not
+// FakeRunnerAdapter, which never exposes the RunStart it received)
+// captures what session-runtime.ts actually resolved onto RunStart.
+function capturingAdapter() {
+  let captured: RunStart | undefined;
+  const handle: RunHandle = {
+    async send() {
+      /* unused by these tests */
+    },
+    async answer() {
+      /* unused by these tests */
+    },
+    async interrupt() {
+      /* unused by these tests */
+    },
+    async close() {
+      /* unused by these tests */
+    },
+    async setModel() {
+      /* unused by these tests */
+    },
+    agentSessionId: () => null,
+    pid: () => null,
+  };
+  const adapter: RunnerAdapter = {
+    id: "fake",
+    async detect() {
+      return { installed: true, version: null, logged_in: true, instances_supported: false };
+    },
+    async start(run, sink) {
+      captured = run;
+      sink({ kind: "run_ended", payload: { run_id: run.runId, reason: "completed", usage: null } });
+      return handle;
+    },
+  };
+  return { adapter, getRunStart: () => captured };
+}
+
+describe("session runtime: model/effort resolution end-to-end (startTask)", () => {
+  let dataDir: string;
+  const originalDataDir = process.env.PORTUNI_DATA_DIR;
+
+  afterEach(async () => {
+    if (originalDataDir === undefined) delete process.env.PORTUNI_DATA_DIR;
+    else process.env.PORTUNI_DATA_DIR = originalDataDir;
+    if (dataDir) await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it("resolves the instance's defaults onto RunStart when the task carries none of its own", async () => {
+    dataDir = await mkdtemp(join(tmpdir(), "portuni-model-effort-"));
+    process.env.PORTUNI_DATA_DIR = dataDir;
+    const instance = await createInstance({
+      name: "Team account",
+      runner: "fake",
+      defaults: { model: "claude-sonnet-5", effort: "low" },
+    });
+
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const { adapter, getRunStart } = capturingAdapter();
+    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+
+    await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake", instanceId: instance.id });
+
+    assert.equal(getRunStart()?.model, "claude-sonnet-5");
+    assert.equal(getRunStart()?.effort, "low");
+  });
+
+  it("the task's own model/effort wins over the instance's defaults", async () => {
+    dataDir = await mkdtemp(join(tmpdir(), "portuni-model-effort-"));
+    process.env.PORTUNI_DATA_DIR = dataDir;
+    const instance = await createInstance({
+      name: "Team account",
+      runner: "fake",
+      defaults: { model: "claude-sonnet-5", effort: "low" },
+    });
+
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const { adapter, getRunStart } = capturingAdapter();
+    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+
+    await runtime.startTask({
+      userId: "U1",
+      nodeId,
+      brief: "x",
+      runner: "fake",
+      instanceId: instance.id,
+      model: "claude-opus-4-8",
+      effort: "max",
+    });
+
+    assert.equal(getRunStart()?.model, "claude-opus-4-8");
+    assert.equal(getRunStart()?.effort, "max");
+  });
+
+  it("is null/null with no instance and no task-level override", async () => {
+    dataDir = await mkdtemp(join(tmpdir(), "portuni-model-effort-"));
+    process.env.PORTUNI_DATA_DIR = dataDir;
+
+    const { db, nodeId } = await sharedDb();
+    const store = new DbSessionStore(db);
+    const { adapter, getRunStart } = capturingAdapter();
+    const runtime = createSessionRuntime({ store, registry: registryOf(adapter), provision: stubProvision() });
+
+    await runtime.startTask({ userId: "U1", nodeId, brief: "x", runner: "fake" });
+
+    assert.equal(getRunStart()?.model, null);
+    assert.equal(getRunStart()?.effort, null);
   });
 });

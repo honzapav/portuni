@@ -35,6 +35,8 @@ function makeRunStart(overrides: Partial<RunStart> = {}): RunStart {
     policy: "default",
     portuniRoot: "/tmp",
     mirrors: ["/tmp"],
+    model: null,
+    effort: null,
     ...overrides,
   };
 }
@@ -49,6 +51,7 @@ function makeRunStart(overrides: Partial<RunStart> = {}): RunStart {
 function makeFakeQuery(script: readonly SDKMessage[], opts: { hold?: boolean } = {}) {
   let capturedOptions: Options | undefined;
   const interruptCalls: number[] = [];
+  const setModelCalls: (string | undefined)[] = [];
   let release: () => void = () => undefined;
   const held = new Promise<void>((resolve) => {
     release = resolve;
@@ -64,12 +67,19 @@ function makeFakeQuery(script: readonly SDKMessage[], opts: { hold?: boolean } =
       interruptCalls.push(1);
       return undefined;
     };
+    (iterator as unknown as { setModel: (model?: string) => Promise<undefined> }).setModel = async (
+      model?: string,
+    ) => {
+      setModelCalls.push(model);
+      return undefined;
+    };
     return iterator;
   }) as CreateClaudeAdapterDeps["query"];
   return {
     query: fakeQuery,
     options: () => capturedOptions,
     interruptCalls,
+    setModelCalls,
     release: () => release(),
   };
 }
@@ -696,6 +706,51 @@ describe("Claude adapter: resume options", () => {
     const handle = await adapter.start(makeRunStart(), () => undefined);
     assert.equal(options()!.resume, undefined);
     await handle.close();
+  });
+});
+
+// #375: model and reasoning effort, resolved once by session-runtime.ts
+// onto RunStart -- the adapter only ever reads run.model/run.effort, never
+// config of its own.
+describe("Claude adapter: model and effort", () => {
+  it("sets Options.model/effort from RunStart when given", async () => {
+    const { query, options } = makeFakeQuery([]);
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart({ model: "claude-opus-4-8", effort: "high" }), () => undefined);
+    assert.equal(options()!.model, "claude-opus-4-8");
+    assert.equal(options()!.effort, "high");
+    await handle.close();
+  });
+
+  it("omits Options.model/effort entirely when RunStart carries neither (the runner's own default)", async () => {
+    const { query, options } = makeFakeQuery([]);
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart({ model: null, effort: null }), () => undefined);
+    assert.equal(options()!.model, undefined);
+    assert.equal(options()!.effort, undefined);
+    await handle.close();
+  });
+
+  it("setModel reaches the live query, resetting to the runner default on null", async () => {
+    const { query, setModelCalls } = makeFakeQuery([], { hold: true });
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+
+    await handle.setModel("claude-sonnet-5");
+    await handle.setModel(null);
+
+    assert.deepEqual(setModelCalls, ["claude-sonnet-5", undefined]);
+    await handle.close();
+  });
+
+  it("setModel is a no-op once the run has ended", async () => {
+    const { query, setModelCalls } = makeFakeQuery([]);
+    const adapter = createClaudeAdapter({ query });
+    const handle = await adapter.start(makeRunStart(), () => undefined);
+    await handle.close();
+
+    await handle.setModel("claude-sonnet-5");
+    assert.deepEqual(setModelCalls, []);
   });
 });
 

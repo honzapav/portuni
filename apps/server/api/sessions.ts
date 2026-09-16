@@ -72,7 +72,7 @@ import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
 import { DbSessionStore } from "../domain/runner/store.js";
-import type { CanonicalEvent, QuestionDecision } from "../domain/runner/types.js";
+import { EFFORT_LEVELS, type CanonicalEvent, type QuestionDecision } from "../domain/runner/types.js";
 import { SESSION_STATES, type SessionRow, type SessionState } from "../shared/types.js";
 import type { SessionResumeInfo, SessionRunRow, SessionSummary } from "../shared/api-types.js";
 
@@ -94,6 +94,8 @@ async function toSummary(row: SessionRow): Promise<SessionSummary> {
     name_is_custom: row.name_is_custom === 1,
     handoff_path: row.handoff_path,
     write_count: await getSessionWriteCount(getDb(), row.id),
+    model: row.model,
+    effort: row.effort,
     created_at: row.created_at,
     last_active_at: row.last_active_at,
     closed_at: row.closed_at,
@@ -265,6 +267,9 @@ const PatchSessionBody = z
     runner: z.string().optional(),
     instance_id: z.string().nullable().optional(),
     name_is_custom: z.boolean().optional(),
+    // #375: the thread's own model/effort override.
+    model: z.string().nullable().optional(),
+    effort: z.enum(EFFORT_LEVELS).nullable().optional(),
   })
   .refine((b) => Object.keys(b).length > 0, "at least one field is required");
 
@@ -288,6 +293,14 @@ export async function handlePatchSession(
       respondJson(res, 200, await toSummary(updated));
       return;
     }
+    // #375: a model change reaches a LIVE run's Query directly (no
+    // restart) -- the column write below is what the NEXT run reads, and
+    // is the only effect for a session with no live run right now. This is
+    // local-process state (session-runtime.ts's in-memory liveRuns), so it
+    // only ever does something on the device actually driving the run.
+    if (body.model !== undefined) {
+      await getSessionRuntime().setModel(sessionId, body.model);
+    }
     // Central record half (#323): raw SessionRow, same reasoning as
     // handleGetSession above -- the caller is CentralSessionStore, which
     // needs every column back, not the curated summary.
@@ -301,6 +314,8 @@ export async function handlePatchSession(
       runner: body.runner,
       instance_id: body.instance_id,
       name_is_custom: body.name_is_custom,
+      model: body.model,
+      effort: body.effort,
     });
     respondJson(res, 200, updated);
   } catch (err) {
@@ -424,6 +439,9 @@ export const StartSessionBody = z.object({
   runner: z.string().min(1).optional(),
   instance_id: z.string().min(1).nullable().optional(),
   policy: z.enum(["default", "auto"]).optional(),
+  // #375: the thread's own model/effort override.
+  model: z.string().nullable().optional(),
+  effort: z.enum(EFFORT_LEVELS).nullable().optional(),
 });
 
 export async function handleStartSession(
@@ -446,7 +464,10 @@ export async function handleStartSession(
       // No brief yet: a draft, not a task -- the first message
       // (POST /sessions/:id/messages) promotes it and resolves runner/
       // instance itself (session-runtime.ts's promoteDraftAndStart).
-      const session = await createDraftSession(db, identity.userId, body.node_id);
+      const session = await createDraftSession(db, identity.userId, body.node_id, {
+        model: body.model,
+        effort: body.effort,
+      });
       await logAudit(identity.userId, "session_start", "session", session.id, {
         node_id: body.node_id,
         draft: true,
@@ -474,6 +495,8 @@ export async function handleStartSession(
       runner: body.runner,
       instanceId: body.instance_id ?? null,
       policy: body.policy,
+      model: body.model,
+      effort: body.effort,
     });
     await logAudit(identity.userId, "session_start", "session", session.id, {
       node_id: body.node_id,

@@ -227,6 +227,34 @@ describe("Postgres baseline (PGlite): sessions.terminal_id index and files uniqu
     );
   });
 
+  // #375: sessions.model/effort, nullable, effort checked against the SDK's
+  // own enum.
+  it("has nullable sessions.model/effort accepting a valid effort level", async () => {
+    const db = await freshPgDb();
+    const u = await seedUser(db);
+    const project = await seedNode(db, "project", u);
+    const sessionId = ulid();
+    await db.execute({
+      sql: "INSERT INTO sessions (id, node_id, user_id, session_type, name, model, effort) VALUES (?, ?, ?, 'interactive_task', 'x', ?, ?)",
+      args: [sessionId, project, u, "claude-opus-4-8", "high"],
+    });
+    const res = await db.execute({ sql: "SELECT model, effort FROM sessions WHERE id = ?", args: [sessionId] });
+    assert.equal(res.rows[0]?.model, "claude-opus-4-8");
+    assert.equal(res.rows[0]?.effort, "high");
+  });
+
+  it("rejects an invalid sessions.effort value", async () => {
+    const db = await freshPgDb();
+    const u = await seedUser(db);
+    const project = await seedNode(db, "project", u);
+    await assert.rejects(
+      db.execute({
+        sql: "INSERT INTO sessions (id, node_id, user_id, session_type, name, effort) VALUES (?, ?, ?, 'interactive_task', 'x', 'extreme')",
+        args: [ulid(), project, u],
+      }),
+    );
+  });
+
   it("rejects a second file at the same (node_id, remote_path)", async () => {
     const db = await freshPgDb();
     const u = await seedUser(db);
