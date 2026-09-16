@@ -5,7 +5,15 @@
 #   - "Developer ID Application" certificate in the login Keychain
 #     (Xcode -> Settings -> Accounts -> Manage Certificates).
 #   - Env vars (values live in Bitwarden, item "Portuni Apple signing"):
-#       APPLE_SIGNING_IDENTITY  "Developer ID Application: <name> (<team id>)"
+#       APPLE_SIGNING_IDENTITY  the certificate's SHA-1, from
+#                               `security find-identity -v -p codesigning`.
+#                               `codesign` also accepts the identity's name
+#                               ("Developer ID Application: <name> (<team
+#                               id>)"), but it decodes that argument in the
+#                               process locale, so a name carrying a
+#                               diacritic fails with "no identity found"
+#                               mid-build. The hash is ASCII and names the
+#                               same certificate.
 #     and for notarization additionally:
 #       APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
 #

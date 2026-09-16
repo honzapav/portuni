@@ -69,6 +69,9 @@ Bitwarden item **"Portuni Apple signing"** and in GitHub repo secrets.
 4. Add the six GitHub repo secrets listed in the header of
    `.github/workflows/release.yml` (`gh secret set NAME`).
 5. Verify locally before cutting a tag: export `APPLE_SIGNING_IDENTITY`
+   (the certificate's SHA-1 from `security find-identity -v -p codesigning`
+   — the identity's name fails with "no identity found" when it carries a
+   diacritic, since `codesign` decodes that argument in the process locale)
    (+ `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID`) and run
    `scripts/build-signed.sh`. First run `--no-notarize` to shake out
    entitlement problems cheaply, then the full run, then launch the
