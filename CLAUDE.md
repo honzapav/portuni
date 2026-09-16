@@ -55,8 +55,14 @@ rebuilds → Keychain grants persist) and verifies the bundle:
 # `env: cargo: No such file or directory`, in an interactive shell as
 # well as a spawned one. Node is missing from a spawned shell too (nvm
 # loads from ~/.zshrc) — add ~/.nvm/versions/node/<version>/bin there.
+# Address the identity by its SHA-1, never by its name: the name carries a
+# diacritic, `codesign` decodes the argument in the process locale, and the
+# build dies mid-run with `JAN P√ÅV …: no identity found` — after the
+# sidecar is already compiled. `security find-identity -v -p codesigning`
+# prints the hash; it is the same Developer ID either way, so the signing
+# identity (and every Keychain grant hanging off it) stays stable.
 PATH="/opt/homebrew/opt/rustup/bin:$PATH" \
-  APPLE_SIGNING_IDENTITY='Developer ID Application: JAN PÁV (98H25UC996)' \
+  APPLE_SIGNING_IDENTITY=85E1645A46A7F888A8CB7D3025B48FAD6DF8757F \
   scripts/build-signed.sh --no-notarize
 
 # Quit the app first, and REMOVE the old bundle before copying: `cp -R`
