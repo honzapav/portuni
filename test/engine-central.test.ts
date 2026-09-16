@@ -45,6 +45,13 @@ class FakeCentral implements CentralClient {
   // When set, putFileRaw awaits this before reading/writing bytes -- lets a
   // test simulate an edit landing while an upload is in flight.
   putDelay: Promise<void> | null = null;
+  // Resolves the moment putFileRaw is entered, i.e. once the pushing side
+  // has already read the file and handed its bytes over. A test that needs
+  // to act exactly then awaits this instead of guessing with a timer.
+  private announcePutEntered: (() => void) | undefined;
+  putEntered: Promise<void> = new Promise<void>((r) => {
+    this.announcePutEntered = r;
+  });
   // Delete tombstones the server would derive from audit_log (GH #79).
   deleted: Array<{ file_id: string; remote_path: string }> = [];
   nextId = 1;
@@ -145,6 +152,7 @@ class FakeCentral implements CentralClient {
       force?: boolean;
     },
   ) {
+    this.announcePutEntered?.();
     if (this.putDelay) await this.putDelay;
     const remotePath = posix.join(NODE_ROOT, relPath);
     const cur = this.bytes.get(remotePath);
@@ -413,8 +421,8 @@ describe("statusScanCentral", () => {
       release = r;
     });
     const runPromise = syncRunCentral(c, { userId: "U1", nodeId: NODE_ID });
-    // Let the push read "v1" and call putFileRaw, which is now blocked.
-    await new Promise((res) => setTimeout(res, 20));
+    // The push has read "v1" and is now blocked inside putFileRaw.
+    await c.putEntered;
     await writeFile(abs, "v2 -- edited while the sync run's push was in flight");
     release?.();
     c.putDelay = null;
