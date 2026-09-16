@@ -8,6 +8,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Copy, RefreshCw, Trash2 } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { copyText } from "../lib/clipboard";
 import {
   isTauri,
@@ -161,19 +165,10 @@ export default function AccountSection() {
             <ErrorBox message={error} onDismiss={() => setError(null)} />
           )}
           <div>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void handleLogin()}
-              className="flex items-center gap-2 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-4 py-2 text-[13.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {busy ? (
-                <RefreshCw size={14} className="animate-spin" />
-              ) : (
-                <GoogleIcon />
-              )}
+            <Button type="button" disabled={busy} onClick={() => void handleLogin()}>
+              {busy ? <RefreshCw className="animate-spin" /> : <GoogleIcon />}
               {busy ? "Přihlašuji…" : "Přihlásit přes Google"}
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -250,26 +245,28 @@ function UserCard({
         {user.groups && user.groups.length > 0 && (
           <div className="mt-1 flex flex-wrap gap-1">
             {user.groups.map((g) => (
-              <span
+              <Badge
                 key={g}
-                className="rounded-sm border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--color-text-dim)]"
+                variant="outline"
+                className="bg-[var(--color-bg)] font-mono text-[var(--color-text-dim)]"
               >
                 {g}
-              </span>
+              </Badge>
             ))}
           </div>
         )}
       </div>
 
       {/* Logout */}
-      <button
+      <Button
         type="button"
+        variant="outline"
         disabled={busy}
         onClick={onLogout}
-        className="shrink-0 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
+        className="shrink-0"
       >
         {busy ? "…" : "Odhlásit"}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -366,8 +363,10 @@ function ConnectedAppsTable() {
                     {g.last_used_at ? fmtDate(g.last_used_at) : "—"}
                   </td>
                   <td className="py-2">
-                    <button
+                    <Button
                       type="button"
+                      variant="destructive"
+                      size="sm"
                       disabled={revoking.has(g.id)}
                       onClick={() => {
                         if (
@@ -381,11 +380,10 @@ function ConnectedAppsTable() {
                         }
                       }}
                       title="Odpojit aplikaci"
-                      className="flex items-center gap-1 rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-dim)] transition-colors hover:border-red-900/50 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      <Trash2 size={11} />
+                      <Trash2 />
                       {revoking.has(g.id) ? "…" : "Odpojit"}
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -488,20 +486,21 @@ function DeviceTokensTable() {
           Device tokeny
         </div>
         {newToken === null && (
-          <button
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
             onClick={() => setNewToken({ kind: "input", label: "", busy: false })}
-            className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1 text-[12.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
           >
             Nový token
-          </button>
+          </Button>
         )}
       </div>
 
       {/* New token input form */}
       {newToken?.kind === "input" && (
         <div className="mb-4 flex items-center gap-2 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-3 py-2.5">
-          <input
+          <Input
             autoFocus
             type="text"
             value={newToken.label}
@@ -514,24 +513,26 @@ function DeviceTokensTable() {
             }}
             placeholder="Název tokenu (např. dev-laptop)"
             disabled={newToken.busy}
-            className="flex-1 bg-transparent text-[13px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] disabled:opacity-50"
+            className="flex-1"
           />
-          <button
+          <Button
             type="button"
+            size="sm"
             disabled={newToken.busy || !newToken.label.trim()}
             onClick={() => void handleCreateToken()}
-            className="rounded-md border border-[var(--color-accent-dim)] px-3 py-1 text-[12.5px] text-[var(--color-accent)] transition-colors hover:border-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {newToken.busy ? "Vytvářím…" : "Vytvořit"}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="ghost"
+            size="sm"
             disabled={newToken.busy}
             onClick={() => setNewToken(null)}
-            className="rounded-md px-2 py-1 text-[12.5px] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+            className="text-muted-foreground"
           >
             Zrušit
-          </button>
+          </Button>
         </div>
       )}
 
@@ -548,22 +549,25 @@ function DeviceTokensTable() {
             <code className="flex-1 truncate rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 font-mono text-[12px] text-[var(--color-text)]">
               {newToken.token.token}
             </code>
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
               onClick={() => void copyToken(newToken.token.token)}
-              className="flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[12px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
             >
-              <Copy size={11} />
+              <Copy />
               {copied ? "Zkopírováno" : "Zkopírovat"}
-            </button>
+            </Button>
           </div>
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="sm"
             onClick={() => setNewToken(null)}
-            className="mt-2 text-[12px] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+            className="mt-2 text-muted-foreground"
           >
             Zavřít
-          </button>
+          </Button>
         </div>
       )}
 
@@ -629,8 +633,10 @@ function DeviceTokensTable() {
                     </td>
                     <td className="py-2">
                       {!revoked && (
-                        <button
+                        <Button
                           type="button"
+                          variant="destructive"
+                          size="sm"
                           disabled={revoking.has(t.id)}
                           onClick={() => {
                             if (
@@ -644,11 +650,10 @@ function DeviceTokensTable() {
                             }
                           }}
                           title="Revokovat token"
-                          className="flex items-center gap-1 rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-dim)] transition-colors hover:border-red-900/50 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          <Trash2 size={11} />
+                          <Trash2 />
                           {revoking.has(t.id) ? "…" : "Revokovat"}
-                        </button>
+                        </Button>
                       )}
                     </td>
                   </tr>
@@ -686,16 +691,20 @@ function ErrorBox({
   dismissLabel?: string;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3 rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
-      <span className="min-w-0 break-words">{message}</span>
-      <button
-        type="button"
-        onClick={onDismiss}
-        className="shrink-0 text-red-400 hover:text-red-200"
-      >
-        {dismissLabel}
-      </button>
-    </div>
+    <Alert variant="destructive">
+      <AlertDescription className="flex items-start justify-between gap-3">
+        <span className="min-w-0 break-words">{message}</span>
+        <Button
+          type="button"
+          variant="link"
+          size="sm"
+          onClick={onDismiss}
+          className="shrink-0 text-destructive"
+        >
+          {dismissLabel}
+        </Button>
+      </AlertDescription>
+    </Alert>
   );
 }
 

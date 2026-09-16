@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 const MONTHS_CS = [
   "leden", "únor", "březen", "duben", "květen", "červen",
@@ -44,23 +46,6 @@ export function DatePicker({
   const selected = parseIso(value);
   const [viewYear, setViewYear] = useState(selected.getFullYear());
   const [viewMonth, setViewMonth] = useState(selected.getMonth());
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
 
   useEffect(() => {
     if (!open) {
@@ -92,75 +77,73 @@ export function DatePicker({
   };
 
   return (
-    <div ref={wrapRef} className={`relative ${className ?? ""}`}>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[12.5px] text-[var(--color-text)] hover:border-[var(--color-border-strong)]"
-      >
-        {formatCzech(value)}
-      </button>
-      {open && (
-        <div className="absolute top-full left-0 z-30 mt-1 w-[230px] rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-2 shadow-lg">
-          <div className="mb-1.5 flex items-center justify-between">
-            <button
-              type="button"
-              onClick={() => stepMonth(-1)}
-              className="rounded p-1 text-[var(--color-text-dim)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
-              aria-label="Předchozí měsíc"
-            >
-              <ChevronLeft size={12} />
-            </button>
-            <div className="font-mono text-[12px] uppercase tracking-wider text-[var(--color-text-muted)]">
-              {MONTHS_CS[viewMonth]} {viewYear}
-            </div>
-            <button
-              type="button"
-              onClick={() => stepMonth(1)}
-              className="rounded p-1 text-[var(--color-text-dim)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
-              aria-label="Další měsíc"
-            >
-              <ChevronRight size={12} />
-            </button>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" className={`font-mono ${className ?? ""}`}>
+          {formatCzech(value)}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[230px] gap-0 p-2">
+        <div className="mb-1.5 flex items-center justify-between">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => stepMonth(-1)}
+            className="text-muted-foreground"
+            aria-label="Předchozí měsíc"
+          >
+            <ChevronLeft />
+          </Button>
+          <div className="font-mono text-[12px] uppercase tracking-wider text-[var(--color-text-muted)]">
+            {MONTHS_CS[viewMonth]} {viewYear}
           </div>
-          <div className="grid grid-cols-7 gap-0.5">
-            {WEEKDAYS_CS.map((w) => (
-              <div
-                key={w}
-                className="py-0.5 text-center font-mono text-[10.5px] uppercase tracking-wider text-[var(--color-text-dim)]"
-              >
-                {w}
-              </div>
-            ))}
-            {cells.map(({ date, inMonth }) => {
-              const iso = formatIso(date);
-              const isSelected = isoEq(date, selected);
-              const isToday = isoEq(date, today);
-              const base = "h-6 rounded text-[12px] font-mono transition-colors";
-              const tone = isSelected
-                ? "bg-[var(--color-accent-dim)] text-[var(--color-bg)]"
-                : isToday
-                  ? "border border-[var(--color-accent-dim)] text-[var(--color-accent)]"
-                  : inMonth
-                    ? "text-[var(--color-text)] hover:bg-[var(--color-surface-2)]"
-                    : "text-[var(--color-text-dim)] hover:bg-[var(--color-surface-2)]";
-              return (
-                <button
-                  type="button"
-                  key={iso}
-                  onClick={() => {
-                    onChange(iso);
-                    setOpen(false);
-                  }}
-                  className={`${base} ${tone}`}
-                >
-                  {date.getDate()}
-                </button>
-              );
-            })}
-          </div>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => stepMonth(1)}
+            className="text-muted-foreground"
+            aria-label="Další měsíc"
+          >
+            <ChevronRight />
+          </Button>
         </div>
-      )}
-    </div>
+        <div className="grid grid-cols-7 gap-0.5">
+          {WEEKDAYS_CS.map((w) => (
+            <div
+              key={w}
+              className="py-0.5 text-center font-mono text-[10.5px] uppercase tracking-wider text-[var(--color-text-dim)]"
+            >
+              {w}
+            </div>
+          ))}
+          {cells.map(({ date, inMonth }) => {
+            const iso = formatIso(date);
+            const isSelected = isoEq(date, selected);
+            const isToday = isoEq(date, today);
+            const tone = isSelected
+              ? "bg-[var(--color-accent-dim)] text-[var(--color-bg)] hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-bg)]"
+              : isToday
+                ? "border-[var(--color-accent-dim)] text-[var(--color-accent)]"
+                : inMonth
+                  ? "text-[var(--color-text)]"
+                  : "text-muted-foreground";
+            return (
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                key={iso}
+                onClick={() => {
+                  onChange(iso);
+                  setOpen(false);
+                }}
+                className={`w-full font-mono ${tone}`}
+              >
+                {date.getDate()}
+              </Button>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }

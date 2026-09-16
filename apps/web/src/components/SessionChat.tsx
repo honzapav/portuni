@@ -318,7 +318,7 @@ export default function SessionChat({
 
   return (
     <div className="flex h-full min-w-0 flex-col">
-      <div className="flex items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-2.5">
+      <div className="flex min-h-[42px] items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-1.5">
         <div className="flex min-w-0 items-center gap-2">
           <span
             className={`inline-flex h-2 w-2 shrink-0 rounded-full ${chip.pulsing ? "animate-pulse" : ""}`}
@@ -327,7 +327,7 @@ export default function SessionChat({
           <span className="truncate text-[13.5px] font-medium text-[var(--color-text)]">{session.name}</span>
           <span className="shrink-0 text-[12px] text-[var(--color-text-dim)]">{chip.label}</span>
         </div>
-        <div className="flex shrink-0 items-center gap-2 text-[11.5px] text-[var(--color-text-dim)]">
+        <div className="flex shrink-0 items-center gap-1.5 text-[12px] text-[var(--color-text-dim)]">
           <span>
             {session.runner ?? "runner neznámý"}
             {session.instance_id ? ` · ${session.instance_id}` : ""}
@@ -381,7 +381,7 @@ export default function SessionChat({
       )}
 
       <Conversation>
-        <ConversationContent>
+        <ConversationContent className="gap-5">
           {loading ? (
             <Shimmer duration={1.5}>Načítám konverzaci…</Shimmer>
           ) : displayEvents.length === 0 ? (
@@ -415,7 +415,10 @@ export default function SessionChat({
       )}
 
       <div className="border-t border-[var(--color-border)] p-3">
-        <PromptInput onSubmit={(message) => void handlePromptSubmit(message)}>
+        <PromptInput
+          onSubmit={(message) => void handlePromptSubmit(message)}
+          className="[&_[data-slot=input-group]]:border-[var(--color-border-strong)] [&_[data-slot=input-group]]:bg-[var(--color-surface)] dark:[&_[data-slot=input-group]]:bg-[var(--color-surface)]"
+        >
           <PromptInputBody>
             <PromptInputTextarea
               value={composerText}
@@ -457,7 +460,7 @@ function HeaderButton({
   children: React.ReactNode;
 }) {
   return (
-    <Button variant="outline" size="sm" className="h-6 px-2 text-[11.5px]" onClick={onClick} disabled={disabled}>
+    <Button variant="outline" size="sm" onClick={onClick} disabled={disabled}>
       {children}
     </Button>
   );
@@ -491,7 +494,7 @@ function EventRow({
     case "user_message":
       return (
         <Message from="user">
-          <MessageContent>
+          <MessageContent className="group-[.is-user]:border group-[.is-user]:border-[var(--color-border)] group-[.is-user]:bg-[var(--color-accent-soft)]">
             <MessageResponse>{event.payload.text}</MessageResponse>
           </MessageContent>
         </Message>
@@ -515,8 +518,8 @@ function EventRow({
       const p = event.payload;
       const failed = p.status === "failed";
       return (
-        <Tool defaultOpen={false}>
-          <ToolHeader title={p.title || undefined} tool={p.tool} state={p.status} />
+        <Tool defaultOpen={false} className="mb-0 bg-[var(--color-surface)]">
+          <ToolHeader title={p.title || undefined} tool={p.tool} state={p.status} className="p-2.5" />
           <ToolContent>
             {p.input_summary && <ToolInput input={p.input_summary} />}
             <ToolOutput output={failed ? null : p.output_excerpt} errorText={failed ? p.output_excerpt : null} />
@@ -528,9 +531,9 @@ function EventRow({
       return (
         <SystemMarker>
           {onOpenFile ? (
-            <button className="underline hover:text-[var(--color-text)]" onClick={() => onOpenFile(event.payload.path)}>
+            <Button variant="link" size="xs" className="h-auto p-0 text-[11px] text-inherit" onClick={() => onOpenFile(event.payload.path)}>
               {event.payload.path}
-            </button>
+            </Button>
           ) : (
             event.payload.path
           )}{" "}

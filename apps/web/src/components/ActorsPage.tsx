@@ -1,5 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Plus, Pencil, Trash2, X, Users, Search } from "lucide-react";
+import { Plus, Pencil, Trash2, Users, Search } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import {
   fetchActors,
   fetchUsers,
@@ -14,6 +35,10 @@ type Props = Record<string, never>;
 
 type TypeFilter = "all" | "person" | "automation";
 type PlaceholderFilter = "all" | "real" | "placeholder";
+
+// Radix Select refuses an empty-string item value, so "no linked user"
+// travels as this sentinel and is mapped back to "" at the call site.
+const NO_USER = "__none__";
 
 export default function ActorsPage(_props: Props) {
   const [actors, setActors] = useState<Actor[] | null>(null);
@@ -100,13 +125,10 @@ export default function ActorsPage(_props: Props) {
           <h1 className="flex-1 text-[22px] font-semibold leading-tight tracking-tight text-[var(--color-text)]">
             Aktéři
           </h1>
-          <button
-            onClick={openCreate}
-            className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-3 py-1.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-text)]"
-          >
-            <Plus size={13} />
+          <Button onClick={openCreate}>
+            <Plus />
             Přidat aktéra
-          </button>
+          </Button>
         </div>
 
         {/* Filters */}
@@ -116,11 +138,12 @@ export default function ActorsPage(_props: Props) {
               size={13}
               className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-dim)]"
             />
-            <input
+            <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Hledat aktéry..."
-              className="w-[240px] rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] py-1.5 pl-8 pr-3 text-[13.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] focus:outline-none"
+              aria-label="Hledat aktéry"
+              className="w-[240px] pl-8"
             />
           </div>
 
@@ -153,16 +176,9 @@ export default function ActorsPage(_props: Props) {
       {/* Body */}
       <div className="scroll-thin flex-1 overflow-y-auto">
         {error && (
-          <div
-            className="mx-6 mt-4 rounded-md border px-3 py-2 text-[11.5px]"
-            style={{
-              color: "var(--color-danger)",
-              borderColor: "var(--color-danger-border)",
-              background: "var(--color-danger-bg)",
-            }}
-          >
-            {error}
-          </div>
+          <Alert variant="destructive" className="mx-6 mt-4 w-auto">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
         )}
 
         {loading && !actors && (
@@ -197,12 +213,14 @@ export default function ActorsPage(_props: Props) {
                   className="group border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-surface)]"
                 >
                   <Td>
-                    <button
+                    <Button
+                      variant="link"
+                      size="sm"
                       onClick={() => openEdit(a)}
-                      className="text-left font-medium text-[var(--color-text)] hover:text-[var(--color-accent)]"
+                      className="-ml-2.5 text-left font-medium text-[var(--color-text)] hover:text-[var(--color-accent)]"
                     >
                       {a.name}
-                    </button>
+                    </Button>
                   </Td>
                   <Td>
                     <TypeBadge type={a.type} />
@@ -223,14 +241,14 @@ export default function ActorsPage(_props: Props) {
                         title="Upravit"
                         onClick={() => openEdit(a)}
                       >
-                        <Pencil size={12} />
+                        <Pencil />
                       </IconButton>
                       <IconButton
                         title="Smazat"
                         onClick={() => handleDelete(a)}
                         danger
                       >
-                        <Trash2 size={12} />
+                        <Trash2 />
                       </IconButton>
                     </div>
                   </Td>
@@ -267,17 +285,18 @@ function FilterSelect({
   options: Array<{ value: string; label: string }>;
 }) {
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[13.5px] text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none"
-    >
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
-      ))}
-    </select>
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {options.map((o) => (
+          <SelectItem key={o.value} value={o.value}>
+            {o.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -314,12 +333,13 @@ function TypeBadge({ type }: { type: "person" | "automation" }) {
   const color =
     type === "person" ? "var(--color-accent)" : "var(--color-node-process)";
   return (
-    <span
-      className="inline-flex items-center gap-1.5 rounded-sm px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-widest"
+    <Badge
+      variant="outline"
+      className="gap-1.5 font-mono uppercase tracking-widest"
       style={{
         color,
         background: `color-mix(in srgb, ${color} 12%, transparent)`,
-        border: `1px solid color-mix(in srgb, ${color} 25%, transparent)`,
+        borderColor: `color-mix(in srgb, ${color} 25%, transparent)`,
       }}
     >
       <span
@@ -327,7 +347,7 @@ function TypeBadge({ type }: { type: "person" | "automation" }) {
         style={{ background: color }}
       />
       {label}
-    </span>
+    </Badge>
   );
 }
 
@@ -373,17 +393,15 @@ function IconButton({
   danger?: boolean;
 }) {
   return (
-    <button
+    <Button
+      variant={danger ? "destructive" : "ghost"}
+      size="icon-xs"
       onClick={onClick}
       title={title}
-      className={`inline-flex h-6 w-6 items-center justify-center rounded-sm border border-[var(--color-border)] bg-[var(--color-surface)] transition-colors ${
-        danger
-          ? "text-[var(--color-text-muted)] hover:border-[var(--color-danger-border)] hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)]"
-          : "text-[var(--color-text-muted)] hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
-      }`}
+      className={danger ? undefined : "text-muted-foreground"}
     >
       {children}
-    </button>
+    </Button>
   );
 }
 
@@ -488,31 +506,18 @@ function ActorModal({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
       }}
     >
-      <div
-        className="max-h-[90vh] w-full max-w-[520px] overflow-y-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] shadow-2xl"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-5 py-4">
-          <h2 className="flex-1 text-[14px] font-semibold tracking-tight text-[var(--color-text)]">
-            {isEdit ? "Upravit aktéra" : "Nový aktér"}
-          </h2>
-          <button
-            onClick={onClose}
-            className="flex h-7 w-7 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
-            title="Zavřít"
-          >
-            <X size={13} />
-          </button>
-        </div>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[520px]">
+        <DialogHeader>
+          <DialogTitle>{isEdit ? "Upravit aktéra" : "Nový aktér"}</DialogTitle>
+        </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="px-5 py-4">
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div className="space-y-4">
             <Field label="Typ" required>
               <div className="flex gap-2">
@@ -534,12 +539,12 @@ function ActorModal({
               )}
             </Field>
 
-            <Field label="Jméno" required>
-              <input
+            <Field label="Jméno" required htmlFor="actor-name">
+              <Input
+                id="actor-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 autoFocus
-                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] focus:outline-none"
                 placeholder={
                   type === "person" ? "Jan Novák" : "Denní report z CRM"
                 }
@@ -547,22 +552,24 @@ function ActorModal({
             </Field>
 
             <Field label="Placeholder">
-              <label
-                className={`inline-flex items-center gap-2 text-[13.5px] ${
-                  type === "automation"
-                    ? "cursor-not-allowed opacity-50"
-                    : "cursor-pointer"
-                } text-[var(--color-text-muted)]`}
-              >
-                <input
-                  type="checkbox"
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="actor-placeholder"
                   checked={isPlaceholder}
-                  onChange={(e) => setIsPlaceholder(e.target.checked)}
+                  onCheckedChange={(checked) => setIsPlaceholder(checked === true)}
                   disabled={type === "automation"}
-                  className="h-3.5 w-3.5 accent-[var(--color-accent)]"
                 />
-                Zástupná osoba (bude nahrazena reálnou)
-              </label>
+                <Label
+                  htmlFor="actor-placeholder"
+                  className={`font-normal text-[13.5px] text-[var(--color-text-muted)] ${
+                    type === "automation"
+                      ? "cursor-not-allowed opacity-50"
+                      : "cursor-pointer"
+                  }`}
+                >
+                  Zástupná osoba (bude nahrazena reálnou)
+                </Label>
+              </div>
               {type === "automation" && (
                 <FieldHint>Automatizace nemůže být placeholder.</FieldHint>
               )}
@@ -570,22 +577,26 @@ function ActorModal({
 
             {type === "person" && !isPlaceholder && (
               <Field label="Uživatelský účet">
-                <select
-                  value={userId}
-                  onChange={(e) => setUserId(e.target.value)}
+                <Select
+                  value={userId || NO_USER}
+                  onValueChange={(v) => setUserId(v === NO_USER ? "" : v)}
                   disabled={users === null && !usersError}
-                  className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none disabled:opacity-60"
                 >
-                  <option value="">— Nepropojeno —</option>
-                  {users?.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.name} ({u.email})
-                    </option>
-                  ))}
-                  {userId && !users?.some((u) => u.id === userId) && (
-                    <option value={userId}>{userId} (neznámý)</option>
-                  )}
-                </select>
+                  <SelectTrigger className="w-full" aria-label="Uživatelský účet">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_USER}>— Nepropojeno —</SelectItem>
+                    {users?.map((u) => (
+                      <SelectItem key={u.id} value={u.id}>
+                        {u.name} ({u.email})
+                      </SelectItem>
+                    ))}
+                    {userId && !users?.some((u) => u.id === userId) && (
+                      <SelectItem value={userId}>{userId} (neznámý)</SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
                 {usersError ? (
                   <FieldHint>Nepodařilo se načíst uživatele: {usersError}</FieldHint>
                 ) : users === null ? (
@@ -596,68 +607,58 @@ function ActorModal({
               </Field>
             )}
 
-            <Field label="Poznámky">
-              <textarea
+            <Field label="Poznámky" htmlFor="actor-notes">
+              <Textarea
+                id="actor-notes"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
                 rows={2}
-                className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] focus:outline-none"
+                className="resize-y leading-relaxed"
                 placeholder="Interní poznámky..."
               />
             </Field>
           </div>
 
           {formError && (
-            <div
-              className="mt-4 rounded-md border px-3 py-2 text-[11.5px]"
-              style={{
-                color: "var(--color-danger)",
-                borderColor: "var(--color-danger-border)",
-                background: "var(--color-danger-bg)",
-              }}
-            >
-              {formError}
-            </div>
+            <Alert variant="destructive">
+              <AlertDescription>{formError}</AlertDescription>
+            </Alert>
           )}
 
-          <div className="mt-5 flex items-center justify-end gap-2 border-t border-[var(--color-border)] pt-4">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={saving}
-              className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[13.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
-            >
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
               Zrušit
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-3 py-1.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-text)] disabled:opacity-50"
-            >
+            </Button>
+            <Button type="submit" disabled={saving}>
               {saving ? "Ukládám..." : isEdit ? "Uložit změny" : "Vytvořit"}
-            </button>
-          </div>
+            </Button>
+          </DialogFooter>
         </form>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 function Field({
   label,
   required,
+  htmlFor,
   children,
 }: {
   label: string;
   required?: boolean;
+  htmlFor?: string;
   children: React.ReactNode;
 }) {
   return (
     <div>
-      <label className="mb-1 block text-[13.5px] font-semibold uppercase tracking-widest text-[var(--color-text-dim)]">
+      <Label
+        htmlFor={htmlFor}
+        className="mb-1 gap-0 text-[13.5px] font-semibold uppercase tracking-widest text-[var(--color-text-dim)]"
+      >
         {label}
         {required && <span className="ml-1 text-[var(--color-danger)]">*</span>}
-      </label>
+      </Label>
       {children}
     </div>
   );
@@ -683,17 +684,15 @@ function TypeRadio({
   disabled?: boolean;
 }) {
   return (
-    <button
+    <Button
       type="button"
+      variant="outline"
+      aria-pressed={checked}
       onClick={onChange}
       disabled={disabled}
-      className={`flex-1 rounded-md border px-3 py-1.5 text-[13.5px] transition-colors ${
-        checked
-          ? "border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
-          : "border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
-      } ${disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
+      className="flex-1 aria-pressed:bg-muted aria-pressed:text-foreground dark:aria-pressed:bg-muted"
     >
       {label}
-    </button>
+    </Button>
   );
 }

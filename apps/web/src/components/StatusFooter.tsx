@@ -6,6 +6,7 @@
 import { useMcpStatus } from "../lib/use-mcp-status";
 import { pluralFiles } from "../lib/plural-files";
 import type { AppUpdate } from "../lib/updater";
+import { Button } from "@/components/ui/button";
 
 type Props = {
   onOpenSettings: () => void;
@@ -18,6 +19,10 @@ type Props = {
   onOpenSyncOverview: () => void;
   appUpdate: AppUpdate;
 };
+
+// Every footer indicator is a clickable pill: a small ghost Button keeping
+// the footer's own dim/hover colours.
+const PILL = "h-5 gap-1.5 rounded-full px-2 font-normal text-[12px] text-[var(--color-text-dim)] hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]";
 
 export default function StatusFooter({
   onOpenSettings,
@@ -53,59 +58,55 @@ export default function StatusFooter({
 
   return (
     <footer className="flex h-7 shrink-0 items-center border-t border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-[12px] text-[var(--color-text-dim)]">
-      <button
-        type="button"
-        title={title}
-        onClick={onOpenSettings}
-        className="flex items-center gap-2 rounded px-2 py-0.5 transition-colors hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
-      >
-        <span
-          aria-hidden="true"
-          className={`inline-block h-2 w-2 rounded-full ${dotColor}`}
-        />
+      <Button variant="ghost" size="xs" className={PILL} title={title} onClick={onOpenSettings}>
+        <span aria-hidden="true" className={`inline-block h-2 w-2 rounded-full ${dotColor}`} />
         <span className="font-mono">{label}</span>
-      </button>
+      </Button>
       {sessionCount > 0 && (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="xs"
+          className={`ml-3 ${PILL}`}
           title={`Aktivní sessions: ${sessionCount}`}
           onClick={onOpenWorkspace}
-          className="ml-3 flex items-center gap-2 rounded px-2 py-0.5 transition-colors hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
         >
           <span aria-hidden="true" className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
           <span className="font-mono">{sessionCount} sess</span>
-        </button>
+        </Button>
       )}
       {pendingCount > 0 && (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="xs"
+          className={`ml-3 ${PILL}`}
           title={`Nesynchronizováno: ${pendingCount} ${pluralFiles(pendingCount)}`}
           onClick={onOpenSyncOverview}
-          className="ml-3 flex items-center gap-2 rounded px-2 py-0.5 transition-colors hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
         >
           <span aria-hidden="true" className="inline-block h-2 w-2 rounded-full bg-amber-500" />
           <span className="font-mono">↑ {pendingCount} nesynced</span>
-        </button>
+        </Button>
       )}
       {updateState.kind === "available" && (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="xs"
+          className={`ml-auto ${PILL}`}
           title="Nová verze Portuni – klikni pro aktualizaci"
           onClick={onOpenSettings}
-          className="ml-auto flex items-center gap-2 rounded px-2 py-0.5 transition-colors hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
         >
           <span className="font-mono">↑ {updateState.info.version}</span>
-        </button>
+        </Button>
       )}
       {updateState.kind === "ready" && (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="xs"
+          className={`ml-auto ${PILL}`}
           title="Restartovat pro dokončení aktualizace"
           onClick={() => void appUpdate.restart()}
-          className="ml-auto flex items-center gap-2 rounded px-2 py-0.5 transition-colors hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
         >
           <span className="font-mono">Restartovat</span>
-        </button>
+        </Button>
       )}
     </footer>
   );

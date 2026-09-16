@@ -3,11 +3,32 @@
 // POST /sessions and hand the fresh session back to the caller (which opens
 // it in Práce's SessionChat). Same modal shape as CreateNodeModal.tsx.
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import type { NodeDetail, SessionSummary, SessionRunRow } from "../types";
 import { startSession } from "../api";
 import { listRunners, listRunnerInstances, type RunnerInfo, type RunnerInstanceSummary } from "../lib/runners";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+
+// Radix Select refuses an empty-string item value, so "(výchozí)" -- no
+// instance picked, `instanceId === ""` -- travels as this sentinel.
+const NO_INSTANCE = "__none__";
 
 type Props = {
   node: NodeDetail;
@@ -24,23 +45,10 @@ export default function NewTaskDialog({ node, onClose, onStarted }: Props) {
   const [instanceId, setInstanceId] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const briefRef = useRef<HTMLTextAreaElement>(null);
 
   const orgId = node.edges.find(
     (e) => e.relation === "belongs_to" && e.direction === "outgoing" && e.peer_type === "organization",
   )?.peer_id;
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
-
-  useEffect(() => {
-    briefRef.current?.focus();
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -100,39 +108,27 @@ export default function NewTaskDialog({ node, onClose, onStarted }: Props) {
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
       }}
     >
-      <div
-        className="max-h-[90vh] w-full max-w-[520px] overflow-y-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] shadow-2xl"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-5 py-4">
-          <h2 className="flex-1 text-[14px] font-semibold tracking-tight text-[var(--color-text)]">
-            Nový úkol — {node.name}
-          </h2>
-          <button
-            onClick={onClose}
-            className="flex h-7 w-7 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
-            title="Zavřít"
-          >
-            <X size={13} />
-          </button>
-        </div>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[520px]">
+        <DialogHeader>
+          <DialogTitle>Nový úkol — {node.name}</DialogTitle>
+        </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="px-5 py-4">
+        <form onSubmit={handleSubmit}>
           <div className="space-y-4">
             <Field label="Zadání" required>
-              <textarea
-                ref={briefRef}
+              <Textarea
+                autoFocus
                 value={brief}
                 onChange={(e) => setBrief(e.target.value)}
                 rows={4}
                 placeholder="Co má agent udělat?"
-                className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] focus:outline-none"
+                className="resize-y leading-relaxed"
               />
             </Field>
 
@@ -144,25 +140,23 @@ export default function NewTaskDialog({ node, onClose, onStarted }: Props) {
                   Žádný runner není zaregistrovaný.
                 </div>
               ) : (
-                <select
-                  value={runnerId}
-                  onChange={(e) => setRunnerId(e.target.value)}
-                  className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none"
-                >
-                  <option value="" disabled>
-                    (vyber runner)
-                  </option>
-                  {runners.map((r) => (
-                    <option key={r.id} value={r.id} disabled={!(r.availability.installed && r.availability.logged_in)}>
-                      {r.id}
-                      {!r.availability.installed
-                        ? " — nenainstalováno"
-                        : !r.availability.logged_in
-                          ? " — nepřihlášeno"
-                          : ""}
-                    </option>
-                  ))}
-                </select>
+                <Select value={runnerId} onValueChange={setRunnerId}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="(vyber runner)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {runners.map((r) => (
+                      <SelectItem key={r.id} value={r.id} disabled={!(r.availability.installed && r.availability.logged_in)}>
+                        {r.id}
+                        {!r.availability.installed
+                          ? " — nenainstalováno"
+                          : !r.availability.logged_in
+                            ? " — nepřihlášeno"
+                            : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               )}
               {selectedRunner && !runnerUsable && (
                 <FieldHint>
@@ -175,55 +169,51 @@ export default function NewTaskDialog({ node, onClose, onStarted }: Props) {
 
             {instancesForRunner.length >= 2 && (
               <Field label="Instance">
-                <select
-                  value={instanceId}
-                  onChange={(e) => setInstanceId(e.target.value)}
-                  className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none"
+                <Select
+                  value={instanceId || NO_INSTANCE}
+                  onValueChange={(v) => setInstanceId(v === NO_INSTANCE ? "" : v)}
                 >
-                  <option value="">(výchozí)</option>
-                  {instancesForRunner.map((i) => (
-                    <option key={i.id} value={i.id}>
-                      {i.name}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_INSTANCE}>(výchozí)</SelectItem>
+                    {instancesForRunner.map((i) => (
+                      <SelectItem key={i.id} value={i.id}>
+                        {i.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </Field>
             )}
           </div>
 
           {error && (
-            <div
-              className="mt-4 rounded-md border px-3 py-2 text-[11.5px]"
-              style={{
-                color: "var(--color-danger)",
-                borderColor: "var(--color-danger-border)",
-                background: "var(--color-danger-bg)",
-              }}
+            <Alert
+              variant="destructive"
+              className="mt-4 border-[var(--color-danger-border)] bg-[var(--color-danger-bg)]"
             >
-              {error}
-            </div>
+              <AlertDescription className="break-words">{error}</AlertDescription>
+            </Alert>
           )}
 
-          <div className="mt-5 flex items-center justify-end gap-2 border-t border-[var(--color-border)] pt-4">
-            <button
+          <DialogFooter className="mt-5">
+            <Button
               type="button"
+              variant="outline"
               onClick={onClose}
               disabled={submitting}
-              className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[13.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
             >
               Zrušit
-            </button>
-            <button
-              type="submit"
-              disabled={!canSubmit}
-              className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-3 py-1.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-text)] disabled:opacity-50"
-            >
+            </Button>
+            <Button type="submit" disabled={!canSubmit}>
               {submitting ? "Spouštím…" : "Spustit"}
-            </button>
-          </div>
+            </Button>
+          </DialogFooter>
         </form>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -237,13 +227,13 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <label className="block">
+    <Label className="block font-normal leading-normal">
       <div className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-[var(--color-text-dim)]">
         {label}
         {required && <span className="ml-1 text-[var(--color-accent)]">*</span>}
       </div>
       {children}
-    </label>
+    </Label>
   );
 }
 

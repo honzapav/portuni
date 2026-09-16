@@ -1,10 +1,14 @@
 // Distraction-free, full-window editor overlay (Option A). Slim top bar.
 // Rendered via a portal to document.body so the `fixed inset-0` overlay can
 // never be clipped or contained by an ancestor's overflow/transform.
+// The header mirrors EditorPane's: same right-hand cluster in the same
+// slots, ⤡ where the pane has ⤢, and × appended after it — the only thing
+// that leaves is "zpět" (collapsing returns to the pane, which has it).
 import { createPortal } from "react-dom";
-import { Minimize2, Save, X } from "lucide-react";
+import { Minimize2, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import type { FileEditor } from "../lib/use-file-editor";
-import { EditorBody, isPreviewOnly, type EditorMode } from "./EditorPane";
+import { EditorBody, EditorFileName, EditorHeaderActions, type EditorMode } from "./EditorPane";
 
 export default function EditorFullscreen({
   editor,
@@ -26,39 +30,18 @@ export default function EditorFullscreen({
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex flex-col bg-[var(--color-bg)]">
-      <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-4 py-2">
-        <button
-          onClick={onCollapse}
-          title="Zmenšit do panelu"
-          className="flex h-7 w-7 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
-        >
-          <Minimize2 size={14} />
-        </button>
-        <span className="truncate text-[13.5px] text-[var(--color-text)]">
-          {filename}
-          {ed.dirty && <span className="ml-1 text-[var(--color-node-process)]">●</span>}
-        </span>
-        <span className="ml-auto flex items-center gap-1">
-          {!isPreviewOnly(relPath) && (
-            <button
-              onClick={() => ed.save()}
-              disabled={ed.saving || !ed.dirty}
-              title="Uložit (Cmd/Ctrl+S)"
-              className="flex items-center gap-1 rounded border border-[var(--color-border)] px-2.5 py-1 text-[12.5px] text-[var(--color-text)] hover:border-[var(--color-border-strong)] disabled:opacity-50"
-            >
-              <Save size={13} /> {ed.saving ? "Ukládám…" : "Uložit"}
-            </button>
-          )}
-          <button
-            onClick={onClose}
-            title="Zavřít editor"
-            className="flex h-7 w-7 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
-          >
-            <X size={15} />
-          </button>
-        </span>
+      <div className="flex min-h-[42px] items-center gap-1.5 border-b border-[var(--color-border)] px-2.5 py-1.5">
+        <EditorFileName filename={filename} dirty={ed.dirty} />
+        <EditorHeaderActions ed={ed} relPath={relPath} mode={mode} onModeChange={onModeChange}>
+          <Button variant="ghost" size="icon-sm" onClick={onCollapse} title="Zmenšit do panelu" className="text-muted-foreground">
+            <Minimize2 />
+          </Button>
+          <Button variant="ghost" size="icon-sm" onClick={onClose} title="Zavřít editor" className="text-muted-foreground">
+            <X />
+          </Button>
+        </EditorHeaderActions>
       </div>
-      <EditorBody ed={ed} relPath={relPath} mode={mode} onModeChange={onModeChange} capWidth />
+      <EditorBody ed={ed} relPath={relPath} mode={mode} capWidth />
     </div>,
     document.body,
   );

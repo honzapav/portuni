@@ -5,6 +5,7 @@
 // their own.
 
 import { Download, ExternalLink, RotateCw } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import type { AppUpdate } from "../lib/updater";
 import { isTauri, openExternal } from "../lib/backend-url";
 
@@ -87,50 +88,38 @@ export default function UpdateSection({ appUpdate }: Props) {
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={checkNow}
-          disabled={busy}
-          className="flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-60"
-        >
-          <RotateCw size={13} />
+        <Button type="button" variant="outline" onClick={checkNow} disabled={busy}>
+          <RotateCw />
           Zkontrolovat nyní
-        </button>
+        </Button>
 
         {(state.kind === "available" || (state.kind === "error" && updateInfo)) && (
-          <button
-            type="button"
-            onClick={install}
-            className="flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] px-3 py-1.5 text-[13px] text-[var(--color-accent)] transition-colors hover:border-[var(--color-accent)]"
-          >
-            <Download size={13} />
+          <Button type="button" onClick={install}>
+            <Download />
             Stáhnout a nainstalovat
-          </button>
+          </Button>
         )}
 
         {state.kind === "ready" && (
-          <button
-            type="button"
-            onClick={() => void restart()}
-            className="flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] px-3 py-1.5 text-[13px] text-[var(--color-accent)] transition-colors hover:border-[var(--color-accent)]"
-          >
+          <Button type="button" onClick={() => void restart()}>
             Restartovat
-          </button>
+          </Button>
         )}
 
         {releaseVersion && (
-          <button
+          <Button
             type="button"
+            variant="ghost"
             onClick={() =>
               void openExternal(
                 `https://github.com/honzapav/portuni/releases/tag/v${releaseVersion}`,
               )
             }
-            className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)]"
+            className="text-muted-foreground"
           >
             Co je nového
-            <ExternalLink size={12} />
-          </button>
+            <ExternalLink />
+          </Button>
         )}
       </div>
     </section>

@@ -23,6 +23,9 @@ import type {
 import { HEALTH_COLORS, LIFECYCLE_COLORS } from "../types";
 import { fetchOverview } from "../api";
 import { useMe } from "../lib/use-me";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import type { SessionStateMessage } from "../lib/sessions-client";
 import { fmtDateTime } from "./DetailPane.sessions";
 import { mergeLiveSessionStates, sessionRowChip, sortInboxSessions } from "../lib/session-views";
@@ -90,21 +93,16 @@ export default function OverviewView({ onSelectNode, onOpenSession, liveStates }
       <div className="mx-auto max-w-5xl px-6 py-6">
         <div className="mb-4 flex items-center justify-between">
           <h1 className="text-[18px] font-semibold text-[var(--color-text)]">Přehled</h1>
-          <button
-            type="button"
-            onClick={() => void load()}
-            disabled={loading}
-            className="flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1 text-[12px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
-          >
-            <RefreshCw size={12} className={loading ? "animate-spin" : undefined} />
+          <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading} className="text-muted-foreground">
+            <RefreshCw className={loading ? "animate-spin" : undefined} />
             Obnovit
-          </button>
+          </Button>
         </div>
 
         {error && (
-          <div className="mb-4 rounded-md border border-[var(--color-danger)]/30 bg-[var(--color-danger)]/10 px-3 py-2 text-[13px]" style={{ color: "var(--color-danger)" }}>
-            {error}
-          </div>
+          <Alert variant="destructive" className="mb-4">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
         )}
 
         {data && (
@@ -274,7 +272,7 @@ function AttentionCard({
               <Row key={n.id} onClick={() => onSelectNode(n.id)}>
                 <div className="flex items-center gap-1.5">
                   <span className="truncate text-[var(--color-text)]">{n.name}</span>
-                  <span className={`lifecycle-badge lifecycle-${color}`}>{state}</span>
+                  <Badge className={`lifecycle-badge lifecycle-${color}`}>{state}</Badge>
                 </div>
                 <div className="text-[11px] text-[var(--color-text-dim)]">{TYPE_LABELS[n.type] ?? n.type}</div>
               </Row>

@@ -11,6 +11,12 @@
 // workspace's health is visible at all.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   createWorkspace,
   deleteWorkspace,
@@ -175,16 +181,20 @@ export default function WorkspacesSection() {
         </p>
 
         {rowError && (
-          <div className="mb-4 flex items-start justify-between gap-3 rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
-            <span className="min-w-0 break-words">{rowError}</span>
-            <button
-              type="button"
-              onClick={() => setRowError(null)}
-              className="shrink-0 text-red-400 hover:text-red-200"
-            >
-              Zavřít
-            </button>
-          </div>
+          <Alert variant="destructive" className="mb-4">
+            <AlertDescription className="flex items-start justify-between gap-3">
+              <span className="min-w-0 break-words">{rowError}</span>
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                onClick={() => setRowError(null)}
+                className="shrink-0 text-destructive"
+              >
+                Zavřít
+              </Button>
+            </AlertDescription>
+          </Alert>
         )}
 
         {state.kind === "loading" && (
@@ -194,16 +204,20 @@ export default function WorkspacesSection() {
         )}
 
         {state.kind === "error" && (
-          <div className="flex items-start justify-between gap-3 rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
-            <span className="min-w-0 break-words">{state.reason}</span>
-            <button
-              type="button"
-              onClick={() => void load()}
-              className="shrink-0 text-red-400 hover:text-red-200"
-            >
-              Zkusit znovu
-            </button>
-          </div>
+          <Alert variant="destructive">
+            <AlertDescription className="flex items-start justify-between gap-3">
+              <span className="min-w-0 break-words">{state.reason}</span>
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                onClick={() => void load()}
+                className="shrink-0 text-destructive"
+              >
+                Zkusit znovu
+              </Button>
+            </AlertDescription>
+          </Alert>
         )}
 
         {state.kind === "ok" && state.workspaces.length === 0 && (
@@ -240,14 +254,20 @@ export default function WorkspacesSection() {
                             {w.label}
                           </span>
                           {w.active && (
-                            <span className="rounded-sm border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-1.5 py-0.5 font-mono text-[10.5px] uppercase tracking-wide text-[var(--color-accent)]">
+                            <Badge
+                              variant="outline"
+                              className="border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] font-mono uppercase tracking-wide text-[var(--color-accent)]"
+                            >
                               aktivní
-                            </span>
+                            </Badge>
                           )}
                           {w.window_open && (
-                            <span className="rounded-sm border border-[var(--color-border)] px-1.5 py-0.5 font-mono text-[10.5px] uppercase tracking-wide text-[var(--color-text-dim)]">
+                            <Badge
+                              variant="outline"
+                              className="font-mono uppercase tracking-wide text-[var(--color-text-dim)]"
+                            >
                               okno otevřené
-                            </span>
+                            </Badge>
                           )}
                         </div>
                       </td>
@@ -275,60 +295,66 @@ export default function WorkspacesSection() {
                       </td>
                       <td className="py-2">
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <button
+                          <Button
                             type="button"
+                            variant="outline"
+                            size="sm"
                             disabled={busy || !w.enabled}
                             onClick={() => void handleOpen(w.id)}
-                            className="rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             {w.window_open ? "Přepnout na okno" : "Otevřít"}
-                          </button>
+                          </Button>
                           {canRestart && (
-                            <button
+                            <Button
                               type="button"
+                              variant="outline"
+                              size="sm"
                               disabled={busy}
                               onClick={() => void handleRestart(w.id)}
-                              className="rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               Restartovat
-                            </button>
+                            </Button>
                           )}
-                          <button
+                          <Button
                             type="button"
+                            variant={w.enabled ? "destructive" : "outline"}
+                            size="sm"
                             disabled={busy}
                             onClick={() => void handleToggleEnabled(w.id, !w.enabled)}
-                            className="rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             {w.enabled ? "Vypnout" : "Zapnout"}
-                          </button>
+                          </Button>
                           {confirmDeleteId === w.id ? (
-                            <button
+                            <Button
                               type="button"
+                              variant="destructive"
+                              size="sm"
                               disabled={busy}
                               onClick={() => void handleDelete(w)}
-                              className="rounded border border-red-900/50 bg-red-950/20 px-2 py-1 text-[11.5px] font-medium text-red-300 transition-colors hover:border-red-800 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               Opravdu smazat
-                            </button>
+                            </Button>
                           ) : (
-                            <button
+                            <Button
                               type="button"
+                              variant="destructive"
+                              size="sm"
                               disabled={busy}
                               onClick={() => setConfirmDeleteId(w.id)}
-                              className="rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-dim)] transition-colors hover:border-red-900/50 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               Smazat
-                            </button>
+                            </Button>
                           )}
                           {confirmDeleteId === w.id && (
-                            <button
+                            <Button
                               type="button"
+                              variant="ghost"
+                              size="sm"
                               disabled={busy}
                               onClick={() => setConfirmDeleteId(null)}
-                              className="rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               Zrušit
-                            </button>
+                            </Button>
                           )}
                         </div>
                         {confirmDeleteId === w.id && (
@@ -352,6 +378,9 @@ export default function WorkspacesSection() {
 }
 
 // --- Create workspace form ---------------------------------------------------
+
+const FIELD_LABEL =
+  "mb-1 text-[12.5px] uppercase tracking-wider text-[var(--color-text-dim)]";
 
 function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
   const [name, setName] = useState("");
@@ -428,16 +457,16 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
 
       <div className="flex flex-col gap-3">
         <div>
-          <label className="mb-1 block text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+          <Label htmlFor="ws-create-name" className={FIELD_LABEL}>
             Jméno
-          </label>
-          <input
+          </Label>
+          <Input
+            id="ws-create-name"
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
             disabled={busy}
             placeholder="Např. Osobní"
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-[13.5px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] disabled:opacity-50"
           />
           <div className="mt-1 text-[11.5px] text-[var(--color-text-dim)]">
             ID: <span className="font-mono">{id || "(neplatné)"}</span> –
@@ -446,46 +475,39 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
         </div>
 
         <div>
-          <label className="mb-1 block text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
-            Režim
-          </label>
-          <div className="flex gap-4">
-            <label className="flex items-center gap-1.5 text-[13px] text-[var(--color-text-muted)]">
-              <input
-                type="radio"
-                name="workspace-mode"
-                checked={mode === "local"}
-                onChange={() => setMode("local")}
-                disabled={busy}
-              />
+          <Label className={FIELD_LABEL}>Režim</Label>
+          <RadioGroup
+            value={mode}
+            onValueChange={(v) => setMode(v as typeof mode)}
+            disabled={busy}
+            className="flex gap-4"
+            aria-label="Režim workspace"
+          >
+            <Label className="gap-1.5 font-normal text-[13px] text-[var(--color-text-muted)]">
+              <RadioGroupItem value="local" />
               Lokální (Turso)
-            </label>
-            <label className="flex items-center gap-1.5 text-[13px] text-[var(--color-text-muted)]">
-              <input
-                type="radio"
-                name="workspace-mode"
-                checked={mode === "central"}
-                onChange={() => setMode("central")}
-                disabled={busy}
-              />
+            </Label>
+            <Label className="gap-1.5 font-normal text-[13px] text-[var(--color-text-muted)]">
+              <RadioGroupItem value="central" />
               Centrální server
-            </label>
-          </div>
+            </Label>
+          </RadioGroup>
         </div>
 
         {mode === "local" && (
           <div>
-            <label className="mb-1 block text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+            <Label htmlFor="ws-create-turso-url" className={FIELD_LABEL}>
               Turso URL (volitelné)
-            </label>
-            <input
+            </Label>
+            <Input
+              id="ws-create-turso-url"
               type="text"
               value={tursoUrl}
               onChange={(e) => setTursoUrl(e.target.value)}
               disabled={busy}
               placeholder="libsql://your-db.turso.io"
               spellCheck={false}
-              className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[12.5px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] disabled:opacity-50"
+              className="font-mono"
             />
             <div className="mt-1 text-[11.5px] text-[var(--color-text-dim)]">
               Necháš-li prázdné, workspace startuje s lokální SQLite – token
@@ -497,53 +519,57 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
         {mode === "central" && (
           <div className="flex flex-col gap-3">
             <div>
-              <label className="mb-1 block text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+              <Label htmlFor="ws-create-server-url" className={FIELD_LABEL}>
                 Server URL
-              </label>
-              <input
+              </Label>
+              <Input
+                id="ws-create-server-url"
                 type="text"
                 value={serverUrl}
                 onChange={(e) => setServerUrl(e.target.value)}
                 disabled={busy}
                 placeholder="https://portuni.example.com"
                 spellCheck={false}
-                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[12.5px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] disabled:opacity-50"
+                className="font-mono"
               />
             </div>
             <div>
-              <label className="mb-1 block text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+              <Label htmlFor="ws-create-google-client-id" className={FIELD_LABEL}>
                 Google Client ID
-              </label>
-              <input
+              </Label>
+              <Input
+                id="ws-create-google-client-id"
                 type="text"
                 value={googleClientId}
                 onChange={(e) => setGoogleClientId(e.target.value)}
                 disabled={busy}
                 spellCheck={false}
-                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)] disabled:opacity-50"
+                className="font-mono"
               />
             </div>
             <div>
-              <label className="mb-1 block text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+              <Label htmlFor="ws-create-google-client-secret" className={FIELD_LABEL}>
                 Google Client Secret
-              </label>
-              <input
+              </Label>
+              <Input
+                id="ws-create-google-client-secret"
                 type="password"
                 value={googleClientSecret}
                 onChange={(e) => setGoogleClientSecret(e.target.value)}
                 disabled={busy}
                 spellCheck={false}
-                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)] disabled:opacity-50"
+                className="font-mono"
               />
             </div>
           </div>
         )}
 
         <div>
-          <label className="mb-1 block text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+          <Label htmlFor="ws-create-root" className={FIELD_LABEL}>
             Workspace root
-          </label>
-          <input
+          </Label>
+          <Input
+            id="ws-create-root"
             type="text"
             value={effectiveWorkspaceRoot}
             onChange={(e) => {
@@ -552,32 +578,29 @@ function CreateWorkspaceForm({ onCreated }: { onCreated: () => void }) {
             }}
             disabled={busy}
             spellCheck={false}
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)] disabled:opacity-50"
+            className="font-mono"
           />
         </div>
 
         {error && (
-          <div className="rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
-            {error}
-          </div>
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
         )}
 
         {createdHint && (
-          <div className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-3 py-2 text-[12.5px] text-[var(--color-accent)]">
-            Workspace vytvořen. Turso token vlož po přepnutí do workspace v
-            Settings.
-          </div>
+          <Alert className="border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]">
+            <AlertDescription className="text-[var(--color-accent)]">
+              Workspace vytvořen. Turso token vlož po přepnutí do workspace v
+              Settings.
+            </AlertDescription>
+          </Alert>
         )}
 
         <div>
-          <button
-            type="button"
-            disabled={busy || !id}
-            onClick={() => void handleCreate()}
-            className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-4 py-2 text-[13.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] disabled:cursor-not-allowed disabled:opacity-50"
-          >
+          <Button type="button" disabled={busy || !id} onClick={() => void handleCreate()}>
             {busy ? "Vytvářím…" : "Vytvořit workspace"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

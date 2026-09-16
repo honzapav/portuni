@@ -26,6 +26,15 @@ import { useAppUpdate } from "./lib/updater";
 import { useSyncPending } from "./lib/use-sync-pending";
 import { pluralFiles } from "./lib/plural-files";
 import SyncOverview from "./components/SyncOverview";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 // Lazy chunks: cytoscape (the GraphView dep) is the main reason the app
 // bundle blew past 500 kB. Splitting GraphView and ActorsPage cuts the
@@ -1049,46 +1058,44 @@ export default function App() {
         />
       )}
       {editorGuard && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
-          <div className="w-[420px] rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-5 shadow-xl">
-            <div className="mb-2 text-[14.5px] font-semibold text-[var(--color-text)]">
-              Neuložené změny
-            </div>
-            <p className="mb-4 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
-              {editorGuard.kind === "quit"
-                ? "Soubor v editoru má neuložené změny. Chceš je před zavřením aplikace uložit?"
-                : "Soubor v editoru má neuložené změny. Chceš je uložit?"}
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (open) return;
+            const wasQuit = editorGuard?.kind === "quit";
+            setEditorGuard(null);
+            if (wasQuit) void declineExit();
+          }}
+        >
+          <DialogContent showCloseButton={false} className="sm:max-w-[420px]">
+            <DialogHeader>
+              <DialogTitle>Neuložené změny</DialogTitle>
+              <DialogDescription>
+                {editorGuard.kind === "quit"
+                  ? "Soubor v editoru má neuložené změny. Chceš je před zavřením aplikace uložit?"
+                  : "Soubor v editoru má neuložené změny. Chceš je uložit?"}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                variant="outline"
                 onClick={() => {
                   const wasQuit = editorGuard?.kind === "quit";
                   setEditorGuard(null);
                   if (wasQuit) void declineExit();
                 }}
-                className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
               >
                 Zpět do editoru
-              </button>
-              <button
-                type="button"
-                onClick={() => void resolveEditorGuard("discard")}
-                className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-danger)] hover:border-[var(--color-danger)]"
-              >
+              </Button>
+              <Button variant="destructive" onClick={() => void resolveEditorGuard("discard")}>
                 Zahodit změny
-              </button>
-              <button
-                type="button"
-                disabled={fileEditor.saving}
-                onClick={() => void resolveEditorGuard("save")}
-                className="rounded-md border border-[var(--color-accent-dim)] px-3 py-1.5 text-[12.5px] text-[var(--color-accent)] hover:border-[var(--color-accent)] disabled:opacity-60"
-              >
+              </Button>
+              <Button disabled={fileEditor.saving} onClick={() => void resolveEditorGuard("save")}>
                 {fileEditor.saving ? "Ukládám…" : "Uložit"}
-              </button>
-            </div>
-          </div>
-        </div>
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
       {syncOverviewOpen && (
         <SyncOverview
@@ -1106,49 +1113,52 @@ export default function App() {
         />
       )}
       {syncQuitGuard && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
-          <div className="w-[440px] rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-5 shadow-xl">
-            <div className="mb-2 text-[14.5px] font-semibold text-[var(--color-text)]">
-              Nesynchronizovaná práce
-            </div>
-            <p className="mb-4 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
-              Máš {syncQuitGuard.count} {pluralFiles(syncQuitGuard.count)}, které nejsou na remote (nesynchronizováno). Pokud aplikaci zavřeš, zůstanou jen lokálně.
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (open) return;
+            setSyncQuitGuard(null);
+            void declineExit();
+          }}
+        >
+          <DialogContent showCloseButton={false} className="sm:max-w-[440px]">
+            <DialogHeader>
+              <DialogTitle>Nesynchronizovaná práce</DialogTitle>
+              <DialogDescription>
+                Máš {syncQuitGuard.count} {pluralFiles(syncQuitGuard.count)}, které nejsou na remote (nesynchronizováno). Pokud aplikaci zavřeš, zůstanou jen lokálně.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                variant="outline"
                 onClick={() => {
                   setSyncQuitGuard(null);
                   void declineExit();
                 }}
-                className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
               >
                 Zrušit
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
                 onClick={() => {
                   setSyncQuitGuard(null);
                   setSyncOverviewOpen(true);
                   void declineExit();
                 }}
-                className="rounded-md border border-[var(--color-accent-dim)] px-3 py-1.5 text-[12.5px] text-[var(--color-accent)] hover:bg-[var(--color-surface)]"
               >
                 Zobrazit a synchronizovat
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="destructive"
                 onClick={async () => {
                   setSyncQuitGuard(null);
                   await destroyCurrentWindow();
                 }}
-                className="rounded-md border border-[var(--color-danger-border)] px-3 py-1.5 text-[12.5px] text-[var(--color-danger)] hover:bg-[var(--color-surface)]"
               >
                 Zavřít bez synchronizace
-              </button>
-            </div>
-          </div>
-        </div>
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );

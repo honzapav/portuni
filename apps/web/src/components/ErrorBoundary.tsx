@@ -8,6 +8,7 @@
 
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { reportError } from "../lib/error-overlay";
+import { Button } from "@/components/ui/button";
 
 type Props = { children: ReactNode };
 type State = { error: Error | null; componentStack: string | null };
@@ -45,21 +46,14 @@ export default class ErrorBoundary extends Component<Props, State> {
             Portuni narazil na chybu při vykreslení. Zkopíruj text níže a
             přepni se zpět na fungujícího agenta.
           </div>
-          <button
-            type="button"
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => this.setState({ error: null, componentStack: null })}
-            style={{
-              marginBottom: 16,
-              padding: "4px 12px",
-              border: "1px solid #555",
-              borderRadius: 4,
-              background: "transparent",
-              color: "#ddd",
-              cursor: "pointer",
-            }}
+            className="mb-4 border-[#555] bg-transparent text-[#ddd] hover:bg-[#333] hover:text-white"
           >
             Zkusit znovu vykreslit
-          </button>
+          </Button>
           <div>
             {this.state.error.name}: {this.state.error.message}
             {"\n"}

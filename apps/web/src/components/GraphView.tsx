@@ -8,7 +8,8 @@ import {
   useState,
 } from "react";
 import cytoscape from "cytoscape";
-import { LayoutGrid, Shuffle } from "lucide-react";
+import { LayoutGrid, Plus, Shuffle } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import type {
   Core,
   EdgeCollection,
@@ -2288,24 +2289,26 @@ function GraphView({
         })}
       </svg>
       <div className="absolute bottom-4 right-4 z-30 flex gap-2">
-        <button
-          type="button"
+        <Button
+          variant="outline"
+          size="icon-lg"
           onClick={handleRetileNodes}
           title="Uspořádat uzly uvnitř organizací (organizace zůstanou na místě)"
           aria-label="Uspořádat uzly"
-          className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+          className="bg-[var(--color-surface)] text-muted-foreground shadow-sm"
         >
-          <LayoutGrid size={16} />
-        </button>
-        <button
-          type="button"
+          <LayoutGrid />
+        </Button>
+        <Button
+          variant="outline"
+          size="icon-lg"
           onClick={handleFullRelayout}
           title="Kompletně přegenerovat layout včetně rozmístění organizací"
           aria-label="Přegenerovat layout"
-          className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+          className="bg-[var(--color-surface)] text-muted-foreground shadow-sm"
         >
-          <Shuffle size={16} />
-        </button>
+          <Shuffle />
+        </Button>
       </div>
       {graph.nodes.length === 0 && (
         <EmptyStateCta
@@ -2338,15 +2341,15 @@ function EmptyStateCta({
           Portuni mapuje, na čem pracuješ — týmy, projekty, procesy. Začni
           tím, že přidáš svou organizaci.
         </p>
-        <button
-          type="button"
+        <Button
           onClick={onCreateOrganization}
           disabled={!canCreateNode}
           title={canCreateNode ? undefined : "Vytváření uzlů vyžaduje vyšší roli"}
-          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-4 py-2.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-[var(--color-accent-soft)] disabled:hover:text-[var(--color-accent)]"
+          className="w-full"
         >
-          + Vytvořit organizaci
-        </button>
+          <Plus />
+          Vytvořit organizaci
+        </Button>
       </div>
     </div>
   );

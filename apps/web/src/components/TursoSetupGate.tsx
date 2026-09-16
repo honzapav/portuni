@@ -18,6 +18,9 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { isTauri } from "../lib/backend-url";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 
 type TursoStatus = {
   config_exists: boolean;
@@ -158,22 +161,22 @@ export default function TursoSetupGate({ children }: Props) {
                 – přihlásíš se pak svým Google účtem.
               </div>
               <div className="mt-3 flex flex-col gap-2">
-                <input
+                <Input
                   type="text"
                   value={urlInput}
                   onChange={(e) => setUrlInput(e.target.value)}
                   placeholder="api.tvoje-firma.com"
                   spellCheck={false}
                   autoFocus
-                  className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[12px] text-[var(--color-text)] outline-none focus:border-[var(--color-text-dim)]"
+                  className="font-mono"
                 />
-                <button
+                <Button
                   disabled={saving}
                   onClick={() => void handleJoinTeam()}
-                  className="self-end rounded bg-[var(--color-text)] px-4 py-1.5 text-[13px] font-medium text-[var(--color-bg)] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="self-end"
                 >
                   {saving ? "Připojuji…" : "Připojit"}
-                </button>
+                </Button>
               </div>
             </div>
 
@@ -185,13 +188,13 @@ export default function TursoSetupGate({ children }: Props) {
                 Jen na tomto Macu, žádný účet. Vhodné pro vyzkoušení.
               </div>
               <div className="mt-3 flex justify-end">
-                <button
+                <Button
+                  variant="outline"
                   disabled={saving}
                   onClick={() => void handleStartLocal()}
-                  className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-1.5 text-[13px] font-medium text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Pokračovat lokálně
-                </button>
+                </Button>
               </div>
             </div>
 
@@ -222,27 +225,26 @@ export default function TursoSetupGate({ children }: Props) {
               {tursoUrl}
             </div>
           )}
-          <textarea
+          <Textarea
             value={token}
             onChange={(e) => setToken(e.target.value)}
             placeholder="eyJhbGciOiJFZERTQSIs..."
             spellCheck={false}
             autoFocus
             rows={4}
-            className="w-full resize-y rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[12px] text-[var(--color-text)] outline-none focus:border-[var(--color-text-dim)]"
+            className="resize-y font-mono"
           />
           {error && (
             <div className="text-[12px] text-red-500">{error}</div>
           )}
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-[var(--color-border)] px-5 py-3">
-          <button
+          <Button
             disabled={saving || token.trim().length === 0}
             onClick={() => void handleSaveToken()}
-            className="rounded bg-[var(--color-text)] px-4 py-1.5 text-[13px] font-medium text-[var(--color-bg)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {saving ? "Ukládám…" : "Uložit a restartovat"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

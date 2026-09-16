@@ -14,6 +14,8 @@
 
 import { useEffect, useState } from "react";
 import { Copy, Eye, EyeOff, RefreshCw } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { apiFetch, isTauri } from "../lib/backend-url";
 import { useDataMode } from "../lib/central";
 import { listWorkspaces } from "../lib/workspaces";
@@ -219,9 +221,11 @@ export default function McpServerSection() {
       )}
 
       {status.kind === "error" && (
-        <div className="rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[13px] text-red-300">
-          MCP server není dostupný: <span className="font-mono">{status.reason}</span>
-        </div>
+        <Alert variant="destructive">
+          <AlertDescription>
+            MCP server není dostupný: <span className="font-mono">{status.reason}</span>
+          </AlertDescription>
+        </Alert>
       )}
 
       {status.kind === "ok" && (
@@ -236,7 +240,7 @@ export default function McpServerSection() {
                 title="Kopírovat URL"
                 onClick={() => void copy(status.info.url, "URL")}
               >
-                <Copy size={12} />
+                <Copy />
               </IconButton>
             </div>
 
@@ -255,10 +259,10 @@ export default function McpServerSection() {
                     title={tokenVisible ? "Skrýt token" : "Zobrazit token"}
                     onClick={() => void toggleTokenVisible()}
                   >
-                    {tokenVisible ? <EyeOff size={12} /> : <Eye size={12} />}
+                    {tokenVisible ? <EyeOff /> : <Eye />}
                   </IconButton>
                   <IconButton title="Kopírovat token" onClick={() => void copyToken()}>
-                    <Copy size={12} />
+                    <Copy />
                   </IconButton>
                 </>
               )}
@@ -294,7 +298,7 @@ export default function McpServerSection() {
                 onClick={() => void regenerate()}
                 variant="ghost"
               >
-                <RefreshCw size={11} className="mr-1.5" />
+                <RefreshCw />
                 Vygenerovat nový token
               </ActionButton>
             )}
@@ -330,16 +334,13 @@ export default function McpServerSection() {
       )}
 
       {message && (
-        <div
+        <Alert
           role="status"
-          className={`mt-4 rounded-md border px-3 py-2 text-[12.5px] ${
-            message.kind === "ok"
-              ? "border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text-muted)]"
-              : "border-red-900/50 bg-red-950/20 text-red-300"
-          }`}
+          variant={message.kind === "ok" ? "default" : "destructive"}
+          className="mt-4"
         >
-          {message.text}
-        </div>
+          <AlertDescription>{message.text}</AlertDescription>
+        </Alert>
       )}
     </section>
   );
@@ -399,15 +400,17 @@ function EnvTokenInstallHint({
             if (exportLine) onCopy(exportLine, "Export");
           }}
         >
-          <Copy size={12} />
+          <Copy />
         </IconButton>
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="sm"
           onClick={onDismiss}
-          className="rounded px-2 py-1 text-[12px] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+          className="text-muted-foreground"
         >
           Skrýt
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -423,14 +426,16 @@ function IconButton({
   children: React.ReactNode;
 }) {
   return (
-    <button
+    <Button
       type="button"
+      variant="outline"
+      size="icon-sm"
       title={title}
       onClick={onClick}
-      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+      className="shrink-0"
     >
       {children}
-    </button>
+    </Button>
   );
 }
 
@@ -447,20 +452,15 @@ function ActionButton({
   children: React.ReactNode;
   variant?: "ghost";
 }) {
-  const base =
-    "flex items-center rounded-md border px-3 py-1.5 text-[13px] transition-colors disabled:cursor-not-allowed disabled:opacity-50";
-  const styles =
-    variant === "ghost"
-      ? "border-[var(--color-border)] bg-transparent text-[var(--color-text-muted)] hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
-      : "border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] hover:border-[var(--color-border-strong)]";
   return (
-    <button
+    <Button
       type="button"
+      variant={variant === "ghost" ? "ghost" : "outline"}
       disabled={disabled}
       onClick={onClick}
-      className={`${base} ${styles}`}
+      className={variant === "ghost" ? "text-muted-foreground" : undefined}
     >
       {busy ? "…" : children}
-    </button>
+    </Button>
   );
 }

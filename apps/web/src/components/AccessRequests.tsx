@@ -19,6 +19,8 @@ import {
   AccessAlreadyVisibleError,
   AccessRequestPendingError,
 } from "../api";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 // --- Non-member side -------------------------------------------------------
 
@@ -81,7 +83,7 @@ export function RequestAccessControl({ nodeId }: { nodeId: string }) {
         className="flex shrink-0 items-center gap-1"
         onClick={(e) => e.stopPropagation()}
       >
-        <input
+        <Input
           ref={inputRef}
           value={message}
           onChange={(e) => setMessage(e.target.value)}
@@ -92,26 +94,28 @@ export function RequestAccessControl({ nodeId }: { nodeId: string }) {
           disabled={busy}
           placeholder="Zpráva (volitelné)"
           maxLength={1000}
-          className="w-[160px] rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[12px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] disabled:opacity-50"
+          className="w-[160px]"
         />
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="icon-xs"
           onClick={() => void send()}
           disabled={busy}
           title="Odeslat žádost"
-          className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-accent)] hover:bg-[var(--color-accent-dim)]/15 disabled:pointer-events-none disabled:opacity-40"
+          className="text-[var(--color-accent)]"
         >
-          <Check size={12} />
-        </button>
-        <button
-          type="button"
+          <Check />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-xs"
           onClick={() => setState({ kind: "idle" })}
           disabled={busy}
           title="Zrušit"
-          className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-bg)] hover:text-[var(--color-text)] disabled:pointer-events-none"
+          className="text-muted-foreground"
         >
-          <X size={12} />
-        </button>
+          <X />
+        </Button>
         {state.kind === "error" && (
           <span className="text-[11px]" style={{ color: "var(--color-danger)" }}>
             {state.reason}
@@ -121,17 +125,18 @@ export function RequestAccessControl({ nodeId }: { nodeId: string }) {
     );
   }
   return (
-    <button
-      type="button"
+    <Button
+      variant="outline"
+      size="sm"
       onClick={(e) => {
         e.stopPropagation();
         setState({ kind: "form" });
       }}
-      className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-0.5 text-[12px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+      className="shrink-0 text-muted-foreground"
     >
-      <KeyRound size={10} />
+      <KeyRound />
       Požádat o přístup
-    </button>
+    </Button>
   );
 }
 
@@ -214,22 +219,18 @@ export function AccessRequestList({
               )}
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => void resolve(r, "approve")}
-                disabled={busy}
-                className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-2.5 py-1 text-[12.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] disabled:opacity-50"
-              >
+              <Button size="sm" onClick={() => void resolve(r, "approve")} disabled={busy}>
                 {busy ? "…" : "Schválit"}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => void resolve(r, "deny")}
                 disabled={busy}
-                className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1 text-[12.5px] text-[var(--color-text-muted)] transition-colors hover:border-[color:var(--color-danger-border)] hover:text-[var(--color-danger)] disabled:opacity-50"
+                className="text-muted-foreground hover:text-[var(--color-danger)]"
               >
                 Zamítnout
-              </button>
+              </Button>
             </div>
           </div>
         );
@@ -295,13 +296,14 @@ export default function SettingsAccessRequestsPanel({
       {state.kind === "error" && (
         <div className="flex items-start justify-between gap-3 rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
           <span className="min-w-0 break-words">{state.reason}</span>
-          <button
-            type="button"
+          <Button
+            variant="link"
+            size="sm"
             onClick={() => void load()}
             className="shrink-0 text-red-400 hover:text-red-200"
           >
             Zkusit znovu
-          </button>
+          </Button>
         </div>
       )}
 

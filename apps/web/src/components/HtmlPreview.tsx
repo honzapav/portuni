@@ -17,6 +17,7 @@ import { isTauri, openPathExternal } from "../lib/backend-url";
 import { protocolUrl } from "../lib/html-preview-url";
 import { copyText } from "../lib/clipboard";
 import { openInShowtime, showtimeInstalled } from "../lib/showtime";
+import { Button } from "@/components/ui/button";
 
 export type HtmlPreviewKind = "html" | "showtime";
 
@@ -100,21 +101,13 @@ export default function HtmlPreview({
               {openError}
             </span>
           )}
-          <button
-            onClick={copyPath}
-            title="Kopírovat cestu k souboru"
-            className="rounded px-2 py-0.5 text-[11.5px] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-          >
+          <Button variant="ghost" size="xs" onClick={copyPath} title="Kopírovat cestu k souboru" className="text-muted-foreground">
             {copied ? "Zkopírováno" : "Kopírovat cestu"}
-          </button>
+          </Button>
           {openButton && (
-            <button
-              onClick={() => void openExternal()}
-              title={openButton.title}
-              className="rounded px-2 py-0.5 text-[11.5px] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-            >
+            <Button variant="ghost" size="xs" onClick={() => void openExternal()} title={openButton.title} className="text-muted-foreground">
               {openButton.label}
-            </button>
+            </Button>
           )}
         </div>
       )}
