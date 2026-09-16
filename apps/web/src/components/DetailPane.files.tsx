@@ -42,6 +42,16 @@ import { copyText } from "../lib/clipboard";
 import { summarizeSyncRun } from "../lib/sync-run-summary";
 import { syncBarState } from "../lib/sync-bar-state";
 import NewTaskDialog from "./NewTaskDialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { ButtonGroup } from "@/components/ui/button-group";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 
 // ---------------------------------------------------------------------------
 // File tree (Files tab)
@@ -247,7 +257,7 @@ export function NewFileForm({
   return (
     <div className="mb-3">
       <div className="flex items-center gap-2">
-        <input
+        <Input
           autoFocus
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -256,24 +266,20 @@ export function NewFileForm({
             if (e.key === "Escape") onCancel();
           }}
           placeholder="Název nového souboru (např. poznamky.md)"
-          className="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-border-strong)]"
+          className="min-w-0 flex-1"
         />
-        <button
-          type="button"
+        <Button
+          size="sm"
           disabled={!name.trim() || busy}
           onClick={() => void submit()}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-accent)] hover:border-[var(--color-accent)] disabled:opacity-50"
+          className="shrink-0"
         >
-          {busy && <Loader2 size={12} className="animate-spin" />}
+          {busy && <Loader2 className="animate-spin" />}
           {busy ? "Vytvářím…" : "Vytvořit"}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="shrink-0 rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-dim)] hover:border-[var(--color-border-strong)]"
-        >
+        </Button>
+        <Button variant="outline" size="sm" onClick={onCancel} className="shrink-0">
           Zrušit
-        </button>
+        </Button>
       </div>
       {error && (
         <div className="mt-1 text-[11px]" style={{ color: "var(--color-danger)" }}>
@@ -312,9 +318,7 @@ export function NewFileSplitButton({
   onNewPresentation: () => Promise<void>;
 }) {
   const [installed, setInstalled] = useState(false);
-  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -326,41 +330,22 @@ export function NewFileSplitButton({
     };
   }, []);
 
-  useEffect(() => {
-    if (!open) return;
-    const onMouse = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onMouse);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onMouse);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
   const menu = newFileMenu({
     showtimeEnabled: loadShowtimeEnabled(),
     showtimeInstalled: installed,
     hasMirror,
   });
 
-  const primary =
-    "shrink-0 border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text)] hover:border-[var(--color-border-strong)]";
-
   if (menu.kind === "plain") {
     return (
-      <button type="button" onClick={onNewFile} className={`ml-2 rounded-md ${primary}`}>
-        + Nový soubor
-      </button>
+      <Button variant="outline" size="sm" onClick={onNewFile} className="ml-2 shrink-0">
+        <Plus />
+        Nový soubor
+      </Button>
     );
   }
 
   const startPresentation = async () => {
-    setOpen(false);
     setBusy(true);
     try {
       await onNewPresentation();
@@ -370,55 +355,43 @@ export function NewFileSplitButton({
   };
 
   return (
-    <div ref={containerRef} className="relative ml-2 shrink-0">
-      <div className="flex">
-        <button
-          type="button"
-          onClick={onNewFile}
-          disabled={busy}
-          className={`rounded-l-md border-r-0 ${primary} disabled:opacity-60`}
-        >
-          + Nový soubor
-        </button>
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          disabled={busy}
-          title="Další možnosti"
-          aria-label="Další možnosti"
-          className={`rounded-r-md px-2 ${primary} disabled:opacity-60`}
-        >
-          {busy ? <Loader2 size={12} className="animate-spin" /> : <ChevronDown size={12} />}
-        </button>
-      </div>
-      {open && (
-        <div className="absolute right-0 top-full z-10 mt-1 min-w-[180px] rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(false);
-              onOpenNewFile();
-            }}
-            className="flex w-full items-center px-3 py-2 text-left text-[13px] text-[var(--color-text)] hover:bg-[var(--color-surface)]"
+    <ButtonGroup className="ml-2 shrink-0">
+      <Button variant="outline" size="sm" onClick={onNewFile} disabled={busy}>
+        <Plus />
+        Nový soubor
+      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="outline"
+            size="icon-sm"
+            disabled={busy}
+            title="Další možnosti"
+            aria-label="Další možnosti"
           >
-            Nový soubor
-          </button>
-          <button
-            type="button"
-            onClick={() => void startPresentation()}
+            {busy ? <Loader2 className="animate-spin" /> : <ChevronDown />}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-auto min-w-[180px]">
+          <DropdownMenuItem onSelect={onOpenNewFile}>Nový soubor</DropdownMenuItem>
+          {/* data-disabled:pointer-events-auto keeps the reason readable as a
+              tooltip on the disabled item; Radix's own disabled guard still
+              blocks selection and hover highlight. */}
+          <DropdownMenuItem
+            onSelect={() => void startPresentation()}
             disabled={!menu.presentation.enabled}
             title={
               menu.presentation.enabled
                 ? "Založí novou prezentaci v Showtime ve složce wip/ tohoto uzlu"
                 : menu.presentation.reason
             }
-            className="flex w-full items-center px-3 py-2 text-left text-[13px] text-[var(--color-text)] hover:bg-[var(--color-surface)] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent"
+            className="data-disabled:pointer-events-auto"
           >
             Nová prezentace
-          </button>
-        </div>
-      )}
-    </div>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </ButtonGroup>
   );
 }
 
@@ -558,35 +531,37 @@ function FileTreeNode({
   const childCount = node.children ? node.children.size : 0;
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => onToggle(node.path)}
-        className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left hover:bg-[var(--color-surface)]"
-        style={{ paddingLeft: indent + 4 }}
-      >
-        {isCollapsed ? (
-          <ChevronRight size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-        ) : (
-          <ChevronDown size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-        )}
-        <Folder size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-        <span className="truncate font-mono text-[12.5px] uppercase tracking-wider text-[var(--color-text-muted)]">
-          {node.name}
-        </span>
-        <span className="text-[11px] text-[var(--color-text-dim)]">
-          {childCount}
-        </span>
-        {dot && (
-          <span
-            title={dot.title}
-            className="ml-auto h-1.5 w-1.5 rounded-full"
-            style={{
-              background: dot.color,
-              boxShadow: `0 0 6px color-mix(in srgb, ${dot.color} 70%, transparent)`,
-            }}
-          />
-        )}
-      </button>
+      <div style={{ paddingLeft: indent }}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onToggle(node.path)}
+          className="w-full justify-start gap-1.5 font-normal"
+        >
+          {isCollapsed ? (
+            <ChevronRight className="shrink-0 text-[var(--color-text-dim)]" />
+          ) : (
+            <ChevronDown className="shrink-0 text-[var(--color-text-dim)]" />
+          )}
+          <Folder className="shrink-0 text-[var(--color-text-dim)]" />
+          <span className="min-w-0 truncate font-mono uppercase tracking-wider text-[var(--color-text-muted)]">
+            {node.name}
+          </span>
+          <span className="text-[11px] text-[var(--color-text-dim)]">
+            {childCount}
+          </span>
+          {dot && (
+            <span
+              title={dot.title}
+              className="ml-auto h-1.5 w-1.5 rounded-full"
+              style={{
+                background: dot.color,
+                boxShadow: `0 0 6px color-mix(in srgb, ${dot.color} 70%, transparent)`,
+              }}
+            />
+          )}
+        </Button>
+      </div>
       {!isCollapsed && node.children && (
         <div>
           {sortChildren(node, false).map((c) => (
@@ -619,8 +594,9 @@ function FileTreeNode({
 function CopyPathButton({ value, title }: { value: string; title: string }) {
   const [copied, setCopied] = useState(false);
   return (
-    <button
-      type="button"
+    <Button
+      variant="ghost"
+      size="icon-xs"
       title={title}
       onClick={async (e) => {
         e.stopPropagation();
@@ -632,10 +608,10 @@ function CopyPathButton({ value, title }: { value: string; title: string }) {
           /* clipboard write rejected; skip copied state */
         }
       }}
-      className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+      className="text-muted-foreground"
     >
-      {copied ? <Check size={11} /> : <Copy size={11} />}
-    </button>
+      {copied ? <Check /> : <Copy />}
+    </Button>
   );
 }
 
@@ -644,8 +620,9 @@ function CopyPathButton({ value, title }: { value: string; title: string }) {
 function CopyDriveLinkButton({ nodeId, fileId }: { nodeId: string; fileId: string }) {
   const [state, setState] = useState<"idle" | "copied" | "none">("idle");
   return (
-    <button
-      type="button"
+    <Button
+      variant="ghost"
+      size="icon-xs"
       title={state === "none" ? "Soubor zatím není na Disku" : "Kopírovat odkaz na Disk"}
       onClick={async (e) => {
         e.stopPropagation();
@@ -662,17 +639,12 @@ function CopyDriveLinkButton({ nodeId, fileId }: { nodeId: string; fileId: strin
         }
         setTimeout(() => setState("idle"), 1500);
       }}
-      className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+      className="text-muted-foreground"
     >
-      {state === "copied" ? <Check size={11} /> : <Link2 size={11} />}
-    </button>
+      {state === "copied" ? <Check /> : <Link2 />}
+    </Button>
   );
 }
-
-// Shared class for the row's plain (non-destructive) text actions --
-// Přejmenovat's class, reused for the resolve buttons below.
-const ACTION_BTN =
-  "text-[11px] text-[var(--color-text-dim)] hover:text-[var(--color-text)] disabled:opacity-50";
 
 // While a row action runs, the row's sync badge is replaced by this one:
 // the action's own verb plus a spinner. Without it the row went silently
@@ -692,8 +664,9 @@ const ROW_BUSY_LABEL: Record<RowBusy, string> = {
 
 function RowBusyBadge({ action }: { action: RowBusy }) {
   return (
-    <span
-      className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[8.5px] uppercase tracking-wider"
+    <Badge
+      variant="outline"
+      className="shrink-0 font-mono text-[8.5px] uppercase tracking-wider"
       style={{
         color: "var(--color-accent)",
         background: "color-mix(in srgb, var(--color-accent) 12%, transparent)",
@@ -701,9 +674,9 @@ function RowBusyBadge({ action }: { action: RowBusy }) {
           "1px solid color-mix(in srgb, var(--color-accent) 25%, transparent)",
       }}
     >
-      <Loader2 size={9} className="animate-spin" />
+      <Loader2 className="animate-spin" />
       {ROW_BUSY_LABEL[action]}
-    </span>
+    </Badge>
   );
 }
 
@@ -820,7 +793,7 @@ function FileRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           {renaming ? (
-            <input
+            <Input
               autoFocus
               value={draft}
               disabled={busy}
@@ -833,11 +806,12 @@ function FileRow({
                 }
               }}
               onBlur={() => void submitRename()}
-              className="min-w-0 flex-1 rounded border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-1.5 py-0.5 text-[13.5px] text-[var(--color-text)] outline-none"
+              className="min-w-0 flex-1"
             />
           ) : (
-            <button
-              type="button"
+            <Button
+              variant="link"
+              size="sm"
               disabled={!editable}
               onClick={() => editable && onOpenFile(f.relative_path)}
               title={
@@ -847,14 +821,11 @@ function FileRow({
                     ? "Otevřít v editoru"
                     : "Tento soubor nelze editovat"
               }
-              className={
-                "truncate text-left text-[13.5px] text-[var(--color-text)] " +
-                (editable ? "hover:underline" : "cursor-default opacity-70")
-              }
+              className="min-w-0 justify-start font-normal text-[var(--color-text)]"
               style={busy ? { opacity: 0.5 } : undefined}
             >
-              {f.filename}
-            </button>
+              <span className="truncate">{f.filename}</span>
+            </Button>
           )}
           {f.local_path && (
             <span className="opacity-0 group-hover:opacity-100">
@@ -863,17 +834,18 @@ function FileRow({
           )}
           {f.local_path && isTauri() && (
             <span className="opacity-0 group-hover:opacity-100">
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="icon-xs"
                 title="Otevřít na disku"
                 onClick={(e) => {
                   e.stopPropagation();
                   void openInFinder(f.local_path!, true).catch(() => undefined);
                 }}
-                className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+                className="text-muted-foreground"
               >
-                <FolderOpen size={11} />
-              </button>
+                <FolderOpen />
+              </Button>
             </span>
           )}
           {f.fileId && (
@@ -887,9 +859,10 @@ function FileRow({
             sync && <SyncStatusBadge sync={sync} />
           )}
           {!f.fileId && (
-            <span
+            <Badge
+              variant="outline"
               title="Soubor je na disku, ale ještě není zaregistrovaný. Zaregistruje se při synchronizaci."
-              className="rounded px-1.5 py-0.5 font-mono text-[8.5px] uppercase tracking-wider"
+              className="font-mono text-[8.5px] uppercase tracking-wider"
               style={{
                 color: "var(--color-status-archived)",
                 background:
@@ -899,7 +872,7 @@ function FileRow({
               }}
             >
               neregistrováno
-            </span>
+            </Badge>
           )}
           {f.fileId && !renaming && !readOnly && (
             <span
@@ -908,20 +881,22 @@ function FileRow({
                 (confirmingDelete || busy ? "flex" : "hidden group-hover:flex")
               }
             >
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="xs"
                 disabled={busy}
                 onClick={() => {
                   setDraft(f.filename);
                   setRenaming(true);
                 }}
                 title="Přejmenovat"
-                className={ACTION_BTN}
+                className="text-muted-foreground"
               >
                 Přejmenovat
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="destructive"
+                size="xs"
                 disabled={busy}
                 onClick={handleDeleteClick}
                 title={
@@ -929,47 +904,45 @@ function FileRow({
                     ? "Smaže soubor i z remote úložiště"
                     : "Smazat"
                 }
-                className={
-                  "text-[11px] disabled:opacity-50 " +
-                  (confirmingDelete
-                    ? "font-medium text-[var(--color-danger)]"
-                    : "text-[var(--color-text-dim)] hover:text-[var(--color-danger)]")
-                }
+                className={confirmingDelete ? "font-medium" : undefined}
               >
                 {confirmingDelete ? "Opravdu smazat?" : "Smazat"}
-              </button>
+              </Button>
               {sync?.sync_class === "conflict" && (
                 <>
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
+                    size="xs"
                     onClick={() => act("keep_local")}
                     disabled={busy}
                     title="Nahrát lokální verzi na remote"
-                    className={ACTION_BTN}
+                    className="text-muted-foreground"
                   >
                     Ponechat lokální
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="xs"
                     onClick={() => act("take_remote")}
                     disabled={busy}
                     title="Přepsat lokální kopii verzí z remote"
-                    className={ACTION_BTN}
+                    className="text-muted-foreground"
                   >
                     Vzít z remote
-                  </button>
+                  </Button>
                 </>
               )}
               {isCentralMode && sync?.sync_class === "deleted_local" && (
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="xs"
                   onClick={() => act("restore")}
                   disabled={busy}
                   title="Stáhnout znovu z remote"
-                  className={ACTION_BTN}
+                  className="text-muted-foreground"
                 >
                   Obnovit
-                </button>
+                </Button>
               )}
             </span>
           )}
@@ -1136,20 +1109,14 @@ export function SyncBar({
   return (
     <div className="mb-3">
       <div className="flex items-center gap-2">
-        <button
-          onClick={onRun}
-          disabled={running}
-          className="inline-flex items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[12.5px] text-[var(--color-text)] transition-colors hover:border-[var(--color-border-strong)] disabled:cursor-default disabled:opacity-60"
-        >
-          <RefreshCw
-            size={12}
-            className={running ? "animate-spin" : undefined}
-          />
+        <Button variant="outline" size="sm" onClick={onRun} disabled={running}>
+          <RefreshCw className={running ? "animate-spin" : undefined} />
           {label}
-        </button>
+        </Button>
         {conflicts > 0 && (
-          <span
-            className="rounded px-1.5 py-0.5 font-mono text-[8.5px] uppercase tracking-wider"
+          <Badge
+            variant="outline"
+            className="font-mono text-[8.5px] uppercase tracking-wider"
             style={{
               color: "var(--color-danger)",
               background:
@@ -1160,11 +1127,12 @@ export function SyncBar({
             title="Konflikt: vyber verzi u souboru (Ponechat lokální / Vzít z remote)."
           >
             {conflicts} konflikt{conflicts === 1 ? "" : "y"}
-          </span>
+          </Badge>
         )}
         {deletedLocal > 0 && (
-          <span
-            className="rounded px-1.5 py-0.5 font-mono text-[8.5px] uppercase tracking-wider"
+          <Badge
+            variant="outline"
+            className="font-mono text-[8.5px] uppercase tracking-wider"
             style={{
               color: "var(--color-status-archived)",
               background:
@@ -1175,7 +1143,7 @@ export function SyncBar({
             title="Smazáno lokálně: Obnovit stáhne kopii znovu, Smazat odstraní soubor všude."
           >
             {deletedLocal} smazáno lokálně
-          </span>
+          </Badge>
         )}
         {showOutcome && outcome && (
           <span
@@ -1189,15 +1157,16 @@ export function SyncBar({
                 what a user who just resolved the rows by hand is not about
                 to do. */}
             {outcome.hasError && (
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="icon-xs"
                 onClick={() => setShowOutcome(false)}
                 title="Skrýt"
                 aria-label="Skrýt výsledek synchronizace"
                 className="shrink-0 opacity-60 hover:opacity-100"
               >
-                <X size={11} />
-              </button>
+                <X />
+              </Button>
             )}
           </span>
         )}
@@ -1226,19 +1195,10 @@ export function NoMirrorBanner({
         Tento uzel nemá na tomto počítači pracovní složku – soubory jsou
         zatím jen na vzdáleném úložišti.
       </div>
-      <button
-        type="button"
-        onClick={onCreate}
-        disabled={pending}
-        className="inline-flex items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[12.5px] text-[var(--color-text)] transition-colors hover:border-[var(--color-border-strong)] disabled:cursor-default disabled:opacity-60"
-      >
-        {pending ? (
-          <Loader2 size={12} className="animate-spin" />
-        ) : (
-          <Folder size={12} />
-        )}
+      <Button variant="outline" size="sm" onClick={onCreate} disabled={pending}>
+        {pending ? <Loader2 className="animate-spin" /> : <Folder />}
         {pending ? "Vytvářím…" : "Vytvořit pracovní složku"}
-      </button>
+      </Button>
       {error && (
         <div className="mt-1.5" style={{ color: "var(--color-danger)" }}>
           Chyba: {error}
@@ -1261,9 +1221,10 @@ function SyncStatusBadge({ sync }: { sync: SyncStatusFile }) {
     .filter(Boolean)
     .join("\n");
   return (
-    <span
+    <Badge
+      variant="outline"
       title={tip}
-      className="rounded px-1.5 py-0.5 font-mono text-[8.5px] uppercase tracking-wider"
+      className="font-mono text-[8.5px] uppercase tracking-wider"
       style={{
         color: cssVar,
         background: `color-mix(in srgb, ${cssVar} 12%, transparent)`,
@@ -1271,7 +1232,7 @@ function SyncStatusBadge({ sync }: { sync: SyncStatusFile }) {
       }}
     >
       {SYNC_LABEL[sync.sync_class]}
-    </span>
+    </Badge>
   );
 }
 
@@ -1320,15 +1281,14 @@ export function NewTaskButton({
 
   return (
     <div className="relative">
-      <button
-        type="button"
+      <Button
         onClick={() => setTaskDialogOpen(true)}
         title="Zadá agentovi úkol, který poběží v Práci jako chat."
-        className="flex w-full items-center justify-center gap-2 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-all hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)]"
+        className="w-full"
       >
-        <Plus size={13} />
+        <Plus />
         Nový úkol
-      </button>
+      </Button>
       {taskDialogOpen && (
         <NewTaskDialog
           node={node}

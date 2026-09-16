@@ -14,6 +14,7 @@
 
 import { lazy, Suspense, useState } from "react";
 import { ChevronLeft } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import type { GraphPayload, GraphNode, NodeDetail, SessionRunRow, SessionSummary } from "../types";
 import type { SessionsClient, SessionStateMessage } from "../lib/sessions-client";
 import type { FileEditor } from "../lib/use-file-editor";
@@ -212,15 +213,15 @@ export default function WorkspaceView({
             {nodeSurface(true)}
           </aside>
         ) : (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             onClick={toggleDetail}
             title="Zobrazit detail uzlu"
             aria-label="Zobrazit detail uzlu"
-            className="flex h-full w-6 shrink-0 items-center justify-center border-l border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+            className="h-full w-6 shrink-0 rounded-none border-l border-[var(--color-border)] bg-[var(--color-surface)] px-0 text-muted-foreground hover:bg-[var(--color-surface-2)]"
           >
-            <ChevronLeft size={14} />
-          </button>
+            <ChevronLeft />
+          </Button>
         ))}
     </div>
   );

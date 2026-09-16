@@ -6,11 +6,29 @@
 // non-organization types an organization picker is shown — the form
 // won't submit without one because the server rejects it.
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { useMemo, useState } from "react";
 import type { GraphNode } from "../types";
 import { createNode } from "../api";
 import type { NodeDetail } from "../types";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 
 const NODE_TYPES = [
   "organization",
@@ -68,21 +86,6 @@ export default function CreateNodeModal({
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const nameRef = useRef<HTMLInputElement>(null);
-
-  // Esc closes the modal — matches the rest of the app's modals.
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
-
-  // Auto-focus the name field on open.
-  useEffect(() => {
-    nameRef.current?.focus();
-  }, []);
 
   const trimmed = name.trim();
   const needsOrg = type !== "organization";
@@ -109,44 +112,36 @@ export default function CreateNodeModal({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
       }}
     >
-      <div
-        className="max-h-[90vh] w-full max-w-[480px] overflow-y-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] shadow-2xl"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-5 py-4">
-          <h2 className="flex-1 text-[14px] font-semibold tracking-tight text-[var(--color-text)]">
-            Nový uzel
-          </h2>
-          <button
-            onClick={onClose}
-            className="flex h-7 w-7 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
-            title="Zavřít"
-          >
-            <X size={13} />
-          </button>
-        </div>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[480px]">
+        <DialogHeader>
+          <DialogTitle>Nový uzel</DialogTitle>
+        </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="px-5 py-4">
+        <form onSubmit={handleSubmit}>
           <div className="space-y-4">
             <Field label="Typ" required>
-              <select
+              <Select
                 value={type}
-                onChange={(e) => setType(e.target.value as NodeType)}
+                onValueChange={(v) => setType(v as NodeType)}
                 disabled={Boolean(forceType)}
-                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none disabled:opacity-60"
               >
-                {NODE_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {TYPE_LABELS[t]}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {NODE_TYPES.map((t) => (
+                    <SelectItem key={t} value={t}>
+                      {TYPE_LABELS[t]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               {forceType === "organization" && (
                 <FieldHint>
                   Začínáte vytvořením první organizace — typ je předvyplněn.
@@ -161,30 +156,31 @@ export default function CreateNodeModal({
                     Nejdřív vytvořte organizaci a vraťte se sem.
                   </div>
                 ) : (
-                  <select
-                    value={orgId}
-                    onChange={(e) => setOrgId(e.target.value)}
-                    className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none"
-                  >
-                    {orgs.map((o) => (
-                      <option key={o.id} value={o.id}>
-                        {o.name}
-                      </option>
-                    ))}
-                  </select>
+                  <Select value={orgId} onValueChange={setOrgId}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {orgs.map((o) => (
+                        <SelectItem key={o.id} value={o.id}>
+                          {o.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 )}
               </Field>
             )}
 
             <Field label="Název" required>
-              <input
-                ref={nameRef}
+              {/* Auto-focus the name field on open. */}
+              <Input
+                autoFocus
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder={
                   type === "organization" ? "Acme s.r.o." : "Onboarding klientů"
                 }
-                className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] focus:outline-none"
               />
               {trimmed.length > 0 && trimmed.length < 2 && (
                 <FieldHint>Název musí mít alespoň 2 znaky.</FieldHint>
@@ -192,49 +188,41 @@ export default function CreateNodeModal({
             </Field>
 
             <Field label="Popis">
-              <textarea
+              <Textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 rows={3}
                 placeholder="Krátký popis (volitelné)"
-                className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] focus:outline-none"
+                className="resize-y leading-relaxed"
               />
             </Field>
           </div>
 
           {error && (
-            <div
-              className="mt-4 rounded-md border px-3 py-2 text-[11.5px]"
-              style={{
-                color: "var(--color-danger)",
-                borderColor: "var(--color-danger-border)",
-                background: "var(--color-danger-bg)",
-              }}
+            <Alert
+              variant="destructive"
+              className="mt-4 border-[var(--color-danger-border)] bg-[var(--color-danger-bg)]"
             >
-              {error}
-            </div>
+              <AlertDescription className="break-words">{error}</AlertDescription>
+            </Alert>
           )}
 
-          <div className="mt-5 flex items-center justify-end gap-2 border-t border-[var(--color-border)] pt-4">
-            <button
+          <DialogFooter className="mt-5">
+            <Button
               type="button"
+              variant="outline"
               onClick={onClose}
               disabled={submitting}
-              className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[13.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
             >
               Zrušit
-            </button>
-            <button
-              type="submit"
-              disabled={!canSubmit}
-              className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-3 py-1.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-text)] disabled:opacity-50"
-            >
+            </Button>
+            <Button type="submit" disabled={!canSubmit}>
               {submitting ? "Vytvářím…" : "Vytvořit"}
-            </button>
-          </div>
+            </Button>
+          </DialogFooter>
         </form>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -248,13 +236,13 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <label className="block">
+    <Label className="block font-normal leading-normal">
       <div className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-[var(--color-text-dim)]">
         {label}
         {required && <span className="ml-1 text-[var(--color-accent)]">*</span>}
       </div>
       {children}
-    </label>
+    </Label>
   );
 }
 

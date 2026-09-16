@@ -11,6 +11,8 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { isTauri } from "../lib/backend-url";
 import { slugify } from "../lib/workspaces";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 type GateStatus = "checking" | "needed" | "ready";
 
@@ -78,14 +80,13 @@ export default function WorkspaceMigrationGate({
             Portuni nově podporuje více workspaces. Stávající data se přesunou
             pod zvolené jméno — jméno je pak neměnné.
           </div>
-          <input
+          <Input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
             disabled={busy}
             autoFocus
             spellCheck={false}
-            className="w-full rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[13px] text-[var(--color-text)] outline-none focus:border-[var(--color-text-dim)] disabled:opacity-50"
           />
           {id !== name && (
             <div className="text-[12px] text-[var(--color-text-dim)]">
@@ -95,14 +96,9 @@ export default function WorkspaceMigrationGate({
           {error && <div className="text-[12px] text-red-500">{error}</div>}
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-[var(--color-border)] px-5 py-3">
-          <button
-            type="button"
-            disabled={busy || !id}
-            onClick={() => void migrate()}
-            className="rounded bg-[var(--color-text)] px-4 py-1.5 text-[13px] font-medium text-[var(--color-bg)] disabled:cursor-not-allowed disabled:opacity-50"
-          >
+          <Button type="button" disabled={busy || !id} onClick={() => void migrate()}>
             {busy ? "Migruji…" : "Pokračovat"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

@@ -29,7 +29,30 @@ import {
   Building2,
   Info,
   ExternalLink,
+  Link2,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import { GoogleDriveIcon } from "./icons/GoogleDriveIcon";
 import type {
   NodeDetail,
   DetailEdge,
@@ -775,93 +798,111 @@ function DetailPaneBody({
               onError={setErrorMsg}
             />
           )}
-          <StatusDot status={node.status} />
         </div>
         {editing ? (
-          <input
+          <Input
             value={draftName}
             onChange={(e) => setDraftName(e.target.value)}
             autoFocus
-            className="mb-1 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[22px] font-semibold leading-tight tracking-tight text-[var(--color-text)] focus:border-[var(--color-accent-dim)]"
+            className="mb-1 h-auto px-2 py-1.5 text-[22px] font-semibold leading-tight tracking-tight md:text-[22px]"
           />
         ) : (
           <h1 className="mb-1 text-[22px] font-semibold leading-tight tracking-tight text-[var(--color-text)]">
             {node.name}
           </h1>
         )}
-        <div className="flex items-center gap-3 min-w-0">
+        {/* Identity row, left-packed: ID · local path · folder · remote
+            (copy link, open). Order and content per the 2026-09-15 header
+            redesign -- the path is truncated from the LEFT so the leaf
+            folder is always readable; the full path is in the tooltip. */}
+        <div className="flex min-w-0 items-center gap-1.5">
           <IdCopy id={node.id} />
-          <MetaInfo meta={node.meta} />
-          <FolderLink nodeId={node.id} />
           {node.type !== "organization" && (
             <>
               <span className="text-[var(--color-border-strong)]">·</span>
               {node.local_mirror ? (
                 <>
                   <PathCopy path={node.local_mirror.local_path} />
-                  {isTauri() && (
-                    <button
-                      type="button"
-                      title="Otevřít složku"
-                      onClick={() => void openInFinder(node.local_mirror!.local_path, false).catch(() => undefined)}
-                      className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-                    >
-                      <FolderOpen size={13} />
-                    </button>
-                  )}
+                  <span className="ml-0.5 inline-flex items-center gap-0.5">
+                    {isTauri() && (
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        title="Otevřít složku ve Finderu"
+                        aria-label="Otevřít složku ve Finderu"
+                        className="text-muted-foreground"
+                        onClick={() => void openInFinder(node.local_mirror!.local_path, false).catch(() => undefined)}
+                      >
+                        <FolderOpen />
+                      </Button>
+                    )}
+                    <RemoteFolderActions nodeId={node.id} />
+                  </span>
                 </>
               ) : (
-                <CreateMirrorButton
-                  pending={creatingMirror}
-                  error={mirrorError}
-                  onCreate={() => void createMirrorAndRefresh()}
-                />
+                <>
+                  <CreateMirrorButton
+                    pending={creatingMirror}
+                    error={mirrorError}
+                    onCreate={() => void createMirrorAndRefresh()}
+                  />
+                  <span className="ml-0.5 inline-flex items-center gap-0.5">
+                    <RemoteFolderActions nodeId={node.id} />
+                  </span>
+                </>
               )}
             </>
+          )}
+          {node.type === "organization" && (
+            <span className="ml-0.5 inline-flex items-center gap-0.5">
+              <RemoteFolderActions nodeId={node.id} />
+            </span>
           )}
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4">
-        <TabButton
-          active={tab === "overview"}
-          onClick={() => setTab("overview")}
-          label="Přehled"
-        />
-        <TabButton
-          active={tab === "events"}
-          onClick={() => setTab("events")}
-          label="Události"
-          count={node.events.length}
-        />
-        <TabButton
-          active={tab === "files"}
-          onClick={() => setTab("files")}
-          label="Soubory"
-          count={node.files.length}
-          dotColor={syncDot?.color}
-          dotTitle={syncDot?.title}
-        />
-        <TabButton
-          active={tab === "connections"}
-          onClick={() => setTab("connections")}
-          label="Propojení"
-          count={node.edges.length}
-        />
-        {node.type !== "organization" && (
-          <TabButton
-            active={tab === "sessions"}
-            onClick={() => setTab("sessions")}
-            label="Relace"
-          />
-        )}
-        <TabButton
-          active={tab === "sharing"}
-          onClick={() => setTab("sharing")}
-          label="Sdílení"
-        />
-      </div>
+      <Tabs
+        value={tab}
+        onValueChange={(v) => setTab(v as DetailTab)}
+        className="border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4"
+      >
+        <TabsList variant="line" className="gap-0 p-0 group-data-horizontal/tabs:h-auto">
+          <TabsTrigger value="overview" className={TAB_TRIGGER_CLASS}>
+            Přehled
+          </TabsTrigger>
+          <TabsTrigger value="events" className={TAB_TRIGGER_CLASS}>
+            Události
+            <TabCount count={node.events.length} active={tab === "events"} />
+          </TabsTrigger>
+          <TabsTrigger value="files" className={TAB_TRIGGER_CLASS}>
+            Soubory
+            <TabCount count={node.files.length} active={tab === "files"} />
+            {syncDot && (
+              <span
+                title={syncDot.title}
+                className="h-1.5 w-1.5 rounded-full"
+                style={{
+                  background: syncDot.color,
+                  boxShadow: `0 0 6px color-mix(in srgb, ${syncDot.color} 70%, transparent)`,
+                }}
+              />
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="connections" className={TAB_TRIGGER_CLASS}>
+            Propojení
+            <TabCount count={node.edges.length} active={tab === "connections"} />
+          </TabsTrigger>
+          {node.type !== "organization" && (
+            <TabsTrigger value="sessions" className={TAB_TRIGGER_CLASS}>
+              Relace
+            </TabsTrigger>
+          )}
+          <TabsTrigger value="sharing" className={TAB_TRIGGER_CLASS}>
+            Sdílení
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
 
       {errorMsg && (
         <div
@@ -995,35 +1036,18 @@ function DetailPaneBody({
 
         {editing && (
           <Section title="Nebezpečná oblast">
-            <button
-              onClick={handleArchive}
-              disabled={busy}
-              className="flex items-center gap-2 rounded-md border px-3 py-2 text-[11.5px] font-medium transition-colors disabled:opacity-50"
-              style={{
-                color: "var(--color-danger)",
-                borderColor: "var(--color-danger-border)",
-                background: "var(--color-danger-bg)",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background =
-                  "var(--color-danger-bg-hover)";
-                e.currentTarget.style.borderColor =
-                  "var(--color-danger-border-hover)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "var(--color-danger-bg)";
-                e.currentTarget.style.borderColor = "var(--color-danger-border)";
-              }}
-            >
-              <Archive size={12} />
+            <Button variant="destructive" size="sm" onClick={handleArchive} disabled={busy}>
+              <Archive />
               Archivovat tento uzel
-            </button>
+            </Button>
             <p className="mt-2 text-[10px] text-[var(--color-text-dim)]">
               Uzel bude skryt z grafu, ale jeho vazby a události zůstanou
               v databázi pro audit.
             </p>
           </Section>
         )}
+
+        <MetaSection meta={node.meta} />
           </>
         )}
 
@@ -1206,21 +1230,17 @@ function DetailPaneBody({
       <div className="border-t border-[var(--color-border)] bg-[var(--color-bg)] px-6 py-4">
         {editing ? (
           <div className="flex gap-2">
-            <button
+            <Button
               onClick={saveEdit}
               disabled={saving || !draftName.trim()}
-              className="flex flex-1 items-center justify-center gap-2 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-4 py-2.5 text-[13.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 hover:border-[var(--color-accent)] disabled:opacity-50"
+              className="flex-1"
             >
-              <Save size={13} />
+              <Save />
               {saving ? "Ukládám..." : "Uložit změny"}
-            </button>
-            <button
-              onClick={cancelEdit}
-              disabled={saving}
-              className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2.5 text-[13.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
-            >
+            </Button>
+            <Button variant="outline" onClick={cancelEdit} disabled={saving}>
               Zrušit
-            </button>
+            </Button>
           </div>
         ) : (
           <div className="flex flex-col gap-2">
@@ -1266,42 +1286,42 @@ function PaneShell({
           : "animate-slide-in flex h-full w-[40vw] min-w-[440px] shrink-0 flex-col border-l border-[var(--color-border)] bg-[var(--color-bg)]"
       }
     >
-      <div className="flex items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2">
+      <div className="flex min-h-[42px] items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5">
         {embedded ? (
           onCollapse ? (
-            <button
+            <Button
+              variant="ghost"
+              size="icon-sm"
               onClick={onCollapse}
               title="Skrýt detail"
               aria-label="Skrýt detail"
-              className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
+              className="text-muted-foreground"
             >
-              <ChevronRight size={14} />
-            </button>
+              <ChevronRight />
+            </Button>
           ) : (
             // Embedded but no collapse handler -- keep the layout
             // balanced so Upravit stays right-aligned.
             <span />
           )
         ) : (
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             disabled={!canGoBack}
             onClick={onBack}
-            className="flex items-center gap-1.5 rounded px-2 py-1 text-[14px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)] disabled:opacity-30 disabled:hover:text-[var(--color-text-dim)]"
+            className="text-muted-foreground"
           >
-            <ArrowLeft size={12} />
+            <ArrowLeft />
             Zpět
-          </button>
+          </Button>
         )}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
           {onEdit && !editing && (
-            <button
-              onClick={onEdit}
-              title="Upravit uzel"
-              className="flex h-6 items-center gap-1.5 rounded px-2 text-[14px] text-[var(--color-text-dim)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
-            >
-              <Pencil size={12} />
+            <Button variant="ghost" size="sm" onClick={onEdit} title="Upravit uzel">
+              <Pencil />
               Upravit
-            </button>
+            </Button>
           )}
           {/*
             X close deselects the node (onSelect(null)). In standalone
@@ -1312,12 +1332,9 @@ function PaneShell({
             clicked (left column would lose selection).
           */}
           {!embedded && (
-            <button
-              onClick={onClose}
-              className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
-            >
-              <X size={13} />
-            </button>
+            <Button variant="ghost" size="icon-sm" onClick={onClose} title="Zavřít detail" aria-label="Zavřít detail" className="text-muted-foreground">
+              <X />
+            </Button>
           )}
         </div>
       </div>
@@ -1382,40 +1399,44 @@ function ConnectionLink({
         <span className="flex-1 truncate text-[13.5px] text-[var(--color-text)]">
           {edge.peer_name}
         </span>
-        <select
-          value={draftRelation}
-          onChange={(e) => setDraftRelation(e.target.value)}
-          disabled={disabled}
-          className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[13px] text-[var(--color-text)]"
-        >
-          {RELATION_TYPES.map((r) => (
-            <option key={r} value={r}>
-              {r}
-            </option>
-          ))}
-        </select>
-        <button
+        <Select value={draftRelation} onValueChange={setDraftRelation} disabled={disabled}>
+          <SelectTrigger size="sm" className="font-mono">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {RELATION_TYPES.map((r) => (
+              <SelectItem key={r} value={r} className="font-mono">
+                {r}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          variant="ghost"
+          size="icon-xs"
           onClick={async () => {
             await onChangeRelation(draftRelation);
             setEditing(false);
           }}
           disabled={disabled || draftRelation === edge.relation}
           title="Uložit relaci"
-          className="ml-0.5 flex h-6 w-6 items-center justify-center rounded text-[var(--color-accent)] hover:bg-[var(--color-accent-dim)]/15 disabled:pointer-events-none disabled:opacity-40"
+          className="ml-0.5 text-[var(--color-accent)]"
         >
-          <Check size={12} />
-        </button>
-        <button
+          <Check />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-xs"
           onClick={() => {
             setDraftRelation(edge.relation);
             setEditing(false);
           }}
           disabled={disabled}
           title="Zrušit"
-          className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
+          className="text-muted-foreground"
         >
-          <X size={12} />
-        </button>
+          <X />
+        </Button>
       </div>
     );
   }
@@ -1439,9 +1460,11 @@ function ConnectionLink({
           {edge.peer_id && <RequestAccessControl nodeId={edge.peer_id} />}
         </>
       ) : (
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => onSelect(edge.peer_id)}
-          className="flex flex-1 items-center gap-2 text-left"
+          className="min-w-0 flex-1 justify-start gap-2 px-1 text-left font-normal hover:bg-transparent"
         >
           <span
             className="h-2 w-2 shrink-0 rounded-full"
@@ -1456,14 +1479,13 @@ function ConnectionLink({
           <span className="font-mono text-[14px] text-[var(--color-text-dim)]">
             {edge.peer_type}
           </span>
-          <ArrowRight
-            size={11}
-            className="text-[var(--color-text-dim)] opacity-0 transition-opacity group-hover:opacity-100"
-          />
-        </button>
+          <ArrowRight className="text-[var(--color-text-dim)] opacity-0 transition-opacity group-hover:opacity-100" />
+        </Button>
       )}
       {editable && (
-        <button
+        <Button
+          variant="ghost"
+          size="icon-xs"
           onClick={(e) => {
             e.stopPropagation();
             setDraftRelation(edge.relation);
@@ -1471,31 +1493,25 @@ function ConnectionLink({
           }}
           disabled={disabled}
           title="Změnit typ vazby"
-          className="ml-0.5 flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] opacity-0 transition-all hover:bg-[var(--color-surface)] hover:text-[var(--color-text)] group-hover:opacity-100 disabled:pointer-events-none"
+          className="ml-0.5 text-muted-foreground opacity-0 transition-all group-hover:opacity-100"
         >
-          <Pencil size={11} />
-        </button>
+          <Pencil />
+        </Button>
       )}
       {!edge.peer_restricted && (
-        <button
+        <Button
+          variant="destructive"
+          size="icon-xs"
           onClick={(e) => {
             e.stopPropagation();
             onRemove();
           }}
           disabled={disabled}
           title="Odebrat vazbu"
-          className="ml-0.5 flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] opacity-0 transition-all group-hover:opacity-100 disabled:pointer-events-none"
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = "var(--color-danger-bg)";
-            e.currentTarget.style.color = "var(--color-danger)";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = "";
-            e.currentTarget.style.color = "";
-          }}
+          className="ml-0.5 opacity-0 transition-all group-hover:opacity-100"
         >
-          <Trash2 size={11} />
-        </button>
+          <Trash2 />
+        </Button>
       )}
     </div>
   );
@@ -1526,13 +1542,10 @@ function AddEdgeForm({
 
   if (!open) {
     return (
-      <button
-        onClick={() => setOpen(true)}
-        className="mt-3 flex items-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[14px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
-      >
-        <Plus size={12} />
+      <Button variant="outline" size="sm" onClick={() => setOpen(true)} className="mt-3">
+        <Plus />
         Přidat propojení
-      </button>
+      </Button>
     );
   }
 
@@ -1561,12 +1574,14 @@ function AddEdgeForm({
         <div className="font-mono text-[14px] uppercase tracking-widest text-[var(--color-text-dim)]">
           Nové propojení
         </div>
-        <button
+        <Button
+          variant="ghost"
+          size="icon-xs"
           onClick={() => setOpen(false)}
-          className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+          className="text-muted-foreground"
         >
-          <X size={12} />
-        </button>
+          <X />
+        </Button>
       </div>
       <div className="space-y-2">
         <NodePicker
@@ -1575,37 +1590,36 @@ function AddEdgeForm({
           onChange={setTargetId}
         />
         <div className="flex items-center gap-2">
-          <select
-            value={relation}
-            onChange={(e) => setRelation(e.target.value)}
-            className="flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 font-mono text-[14px] text-[var(--color-text)]"
-          >
-            {RELATION_TYPES.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
-          <button
+          <Select value={relation} onValueChange={setRelation}>
+            <SelectTrigger size="sm" className="flex-1 font-mono">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {RELATION_TYPES.map((r) => (
+                <SelectItem key={r} value={r} className="font-mono">
+                  {r}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
             type="button"
+            variant="outline"
+            size="icon-sm"
             onClick={() =>
               setDirection((d) => (d === "outgoing" ? "incoming" : "outgoing"))
             }
             title="Otočit směr"
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+            className="shrink-0 text-muted-foreground"
           >
             {direction === "outgoing" ? "→" : "←"}
-          </button>
+          </Button>
         </div>
       </div>
       <div className="mt-2 flex justify-end">
-        <button
-          onClick={submit}
-          disabled={!targetId || submitting || disabled}
-          className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[14px] text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
-        >
+        <Button size="sm" onClick={submit} disabled={!targetId || submitting || disabled}>
           {submitting ? "Přidávám..." : "Přidat propojení"}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -1626,7 +1640,6 @@ function NodePicker({
 }) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
-  const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const selected = nodes.find((n) => n.id === value);
@@ -1639,21 +1652,12 @@ function NodePicker({
       )
     : nodes;
 
-  // Close on outside click.
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
-        setOpen(false);
-        setFilter("");
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
+  // Outside click and Escape close via the Popover itself; the filter is
+  // reset on every close.
+  const handleOpenChange = (next: boolean) => {
+    setOpen(next);
+    if (!next) setFilter("");
+  };
 
   // Auto-focus input when dropdown opens.
   useEffect(() => {
@@ -1674,80 +1678,108 @@ function NodePicker({
   };
 
   return (
-    <div ref={containerRef} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-left text-[11.5px]"
-      >
-        {selected ? (
-          <>
-            <span
-              className="h-2 w-2 shrink-0 rounded-full"
-              style={{
-                background: nodeTypeVar(selected.type),
-                boxShadow: `0 0 6px ${nodeTypeGlow(selected.type, 0.35)}`,
-              }}
-            />
-            <span className="flex-1 truncate text-[var(--color-text)]">
-              {selected.name}
-            </span>
-            <span className="shrink-0 text-[10px] text-[var(--color-text-dim)]">
-              {selected.type}
-            </span>
-          </>
-        ) : (
-          <span className="text-[var(--color-text-dim)]">Vyberte uzel...</span>
-        )}
-      </button>
+    <Popover open={open} onOpenChange={handleOpenChange}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="w-full justify-start gap-2 text-left font-normal"
+        >
+          {selected ? (
+            <>
+              <span
+                className="h-2 w-2 shrink-0 rounded-full"
+                style={{
+                  background: nodeTypeVar(selected.type),
+                  boxShadow: `0 0 6px ${nodeTypeGlow(selected.type, 0.35)}`,
+                }}
+              />
+              <span className="flex-1 truncate text-[var(--color-text)]">
+                {selected.name}
+              </span>
+              <span className="shrink-0 text-[10px] text-[var(--color-text-dim)]">
+                {selected.type}
+              </span>
+            </>
+          ) : (
+            <span className="text-muted-foreground">Vyberte uzel...</span>
+          )}
+        </Button>
+      </PopoverTrigger>
 
-      {open && (
-        <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] shadow-lg">
-          <div className="border-b border-[var(--color-border)] px-2.5 py-1.5">
-            <input
-              ref={inputRef}
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Hledat..."
-              className="w-full bg-transparent text-[11.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] outline-none"
-            />
-          </div>
-          <div className="scroll-thin max-h-[240px] overflow-y-auto py-1">
-            {filtered.length === 0 ? (
-              <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
-                Žádné výsledky
-              </div>
-            ) : (
-              filtered.map((n) => (
-                <button
-                  key={n.id}
-                  type="button"
-                  onClick={() => pick(n.id)}
-                  className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
-                    n.id === value ? "bg-[var(--color-surface-2)]" : ""
-                  }`}
-                >
-                  <span
-                    className="h-2 w-2 shrink-0 rounded-full"
-                    style={{
-                      background: nodeTypeVar(n.type),
-                      boxShadow: `0 0 6px ${nodeTypeGlow(n.type, 0.35)}`,
-                    }}
-                  />
-                  <span className="flex-1 truncate text-[var(--color-text)]">
-                    {n.name}
-                  </span>
-                  <span className="shrink-0 text-[10px] text-[var(--color-text-dim)]">
-                    {n.type}
-                  </span>
-                </button>
-              ))
-            )}
-          </div>
+      <PopoverContent
+        align="start"
+        className="w-(--radix-popover-trigger-width) gap-0 overflow-hidden p-0"
+      >
+        <div className="border-b border-[var(--color-border)] px-2.5 py-1.5">
+          <Input
+            ref={inputRef}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Hledat..."
+            className="h-7 border-none bg-transparent px-0 focus-visible:ring-0 dark:bg-transparent"
+          />
         </div>
-      )}
-    </div>
+        <div className="scroll-thin max-h-[240px] overflow-y-auto py-1">
+          {filtered.length === 0 ? (
+            <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
+              Žádné výsledky
+            </div>
+          ) : (
+            filtered.map((n) => (
+              <Button
+                key={n.id}
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => pick(n.id)}
+                className={`w-full justify-start gap-2 rounded-none text-left font-normal hover:bg-[var(--color-surface)] ${
+                  n.id === value ? "bg-[var(--color-surface-2)]" : ""
+                }`}
+              >
+                <span
+                  className="h-2 w-2 shrink-0 rounded-full"
+                  style={{
+                    background: nodeTypeVar(n.type),
+                    boxShadow: `0 0 6px ${nodeTypeGlow(n.type, 0.35)}`,
+                  }}
+                />
+                <span className="flex-1 truncate text-[var(--color-text)]">
+                  {n.name}
+                </span>
+                <span className="shrink-0 text-[10px] text-[var(--color-text-dim)]">
+                  {n.type}
+                </span>
+              </Button>
+            ))
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// Tab strip styling on top of shadcn Tabs (variant="line"): dim label,
+// full text colour when active, accent underline instead of the kit's
+// foreground one.
+const TAB_TRIGGER_CLASS =
+  "h-auto flex-none gap-1.5 rounded-none px-3 py-2.5 text-[13px] text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] data-active:text-[var(--color-text)] data-active:after:bg-[var(--color-accent)]";
+
+function TabCount({ count, active }: { count: number; active: boolean }) {
+  if (count <= 0) return null;
+  return (
+    <Badge
+      variant="secondary"
+      className={`h-4 min-w-4 rounded-full px-1.5 font-mono text-[10px] ${
+        active
+          ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+          : "bg-[var(--color-surface-2)] text-[var(--color-text-dim)]"
+      }`}
+    >
+      {count}
+    </Badge>
   );
 }
 
@@ -1768,30 +1800,13 @@ function LifecycleDropdown({
   onMutate: () => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
 
   const states =
     (LIFECYCLE_STATES_BY_TYPE as Record<string, readonly string[]>)[nodeType] ??
     [];
 
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
   const pick = async (next: string | null) => {
-    setOpen(false);
     if (next === value) return;
     setSaving(true);
     onError(null);
@@ -1810,46 +1825,37 @@ function LifecycleDropdown({
     : "lifecycle-badge lifecycle-gray";
 
   return (
-    <div ref={containerRef} className="relative inline-flex">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        disabled={saving}
-        title="Změnit stav životního cyklu"
-        className={`${badgeClass} cursor-pointer transition-opacity hover:opacity-80 disabled:opacity-50`}
-      >
-        {value ?? "nevyplněno"}
-      </button>
-      {open && (
-        <div className="absolute left-0 top-full z-50 mt-1 min-w-[160px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
-          <button
-            type="button"
-            onClick={() => pick(null)}
-            className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
-              value === null ? "bg-[var(--color-surface-2)]" : ""
-            }`}
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild disabled={saving}>
+        <Button
+          variant="ghost"
+          size="xs"
+          title="Změnit stav životního cyklu"
+          className={`${badgeClass} h-auto rounded-full hover:opacity-80`}
+        >
+          {value ?? "nevyplněno"}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-[160px]">
+        <DropdownMenuItem
+          onSelect={() => void pick(null)}
+          className={value === null ? "bg-[var(--color-surface-2)]" : ""}
+        >
+          <span className="text-muted-foreground">— nevyplněno —</span>
+        </DropdownMenuItem>
+        {states.map((s) => (
+          <DropdownMenuItem
+            key={s}
+            onSelect={() => void pick(s)}
+            className={value === s ? "bg-[var(--color-surface-2)]" : ""}
           >
-            <span className="text-[var(--color-text-dim)]">— nevyplněno —</span>
-          </button>
-          {states.map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => pick(s)}
-              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
-                value === s ? "bg-[var(--color-surface-2)]" : ""
-              }`}
-            >
-              <span
-                className={`lifecycle-badge lifecycle-${LIFECYCLE_COLORS[s] ?? "gray"}`}
-              >
-                {s}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+            <Badge className={`lifecycle-badge lifecycle-${LIFECYCLE_COLORS[s] ?? "gray"}`}>
+              {s}
+            </Badge>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -1867,26 +1873,9 @@ function HealthDropdown({
   onMutate: () => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
 
   const pick = async (next: string) => {
-    setOpen(false);
     if (next === value) return;
     setSaving(true);
     onError(null);
@@ -1901,35 +1890,31 @@ function HealthDropdown({
   };
 
   return (
-    <div ref={containerRef} className="relative inline-flex">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        disabled={saving}
-        title="Změnit zdraví projektu"
-        className={`lifecycle-badge lifecycle-${HEALTH_COLORS[value] ?? "gray"} cursor-pointer transition-opacity hover:opacity-80 disabled:opacity-50`}
-      >
-        {value}
-      </button>
-      {open && (
-        <div className="absolute left-0 top-full z-50 mt-1 min-w-[160px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
-          {HEALTH_STATES.map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => pick(s)}
-              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
-                value === s ? "bg-[var(--color-surface-2)]" : ""
-              }`}
-            >
-              <span className={`lifecycle-badge lifecycle-${HEALTH_COLORS[s] ?? "gray"}`}>
-                {s}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild disabled={saving}>
+        <Button
+          variant="ghost"
+          size="xs"
+          title="Změnit zdraví projektu"
+          className={`lifecycle-badge lifecycle-${HEALTH_COLORS[value] ?? "gray"} h-auto rounded-full hover:opacity-80`}
+        >
+          {value}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-[160px]">
+        {HEALTH_STATES.map((s) => (
+          <DropdownMenuItem
+            key={s}
+            onSelect={() => void pick(s)}
+            className={value === s ? "bg-[var(--color-surface-2)]" : ""}
+          >
+            <Badge className={`lifecycle-badge lifecycle-${HEALTH_COLORS[s] ?? "gray"}`}>
+              {s}
+            </Badge>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -1994,43 +1979,37 @@ function EditableDescription({
             </p>
           )}
         </div>
-        <button
+        <Button
+          variant="ghost"
+          size="icon-xs"
           onClick={() => setEditing(true)}
           title="Upravit popis"
-          className="flex h-6 items-center gap-1 rounded px-1.5 text-[13.5px] text-[var(--color-text-dim)] opacity-0 transition-all hover:text-[var(--color-text)] group-hover:opacity-100"
+          className="text-muted-foreground opacity-0 transition-all group-hover:opacity-100"
         >
-          <Pencil size={11} />
-        </button>
+          <Pencil />
+        </Button>
       </div>
     );
   }
 
   return (
     <div className="space-y-2">
-      <textarea
+      <Textarea
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         rows={5}
         autoFocus
         placeholder="Popište, co tento uzel reprezentuje..."
-        className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[14px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+        className="field-sizing-fixed resize-y leading-relaxed"
       />
       <div className="flex gap-2">
-        <button
-          onClick={save}
-          disabled={saving}
-          className="flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[14px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
-        >
-          <Save size={11} />
+        <Button size="sm" onClick={save} disabled={saving}>
+          <Save />
           {saving ? "Ukládám..." : "Uložit"}
-        </button>
-        <button
-          onClick={cancel}
-          disabled={saving}
-          className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[14px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
-        >
+        </Button>
+        <Button variant="outline" size="sm" onClick={cancel} disabled={saving}>
           Zrušit
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -2092,43 +2071,37 @@ function EditableGoal({
             </p>
           )}
         </div>
-        <button
+        <Button
+          variant="ghost"
+          size="icon-xs"
           onClick={() => setEditing(true)}
           title="Upravit účel"
-          className="flex h-6 items-center gap-1 rounded px-1.5 text-[13.5px] text-[var(--color-text-dim)] opacity-0 transition-all hover:text-[var(--color-text)] group-hover:opacity-100"
+          className="text-muted-foreground opacity-0 transition-all group-hover:opacity-100"
         >
-          <Pencil size={11} />
-        </button>
+          <Pencil />
+        </Button>
       </div>
     );
   }
 
   return (
     <div className="space-y-2">
-      <textarea
+      <Textarea
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         rows={4}
         autoFocus
         placeholder="Proč tento uzel existuje, čeho má dosáhnout..."
-        className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[14px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+        className="field-sizing-fixed resize-y leading-relaxed"
       />
       <div className="flex gap-2">
-        <button
-          onClick={save}
-          disabled={saving}
-          className="flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[14px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
-        >
-          <Save size={11} />
+        <Button size="sm" onClick={save} disabled={saving}>
+          <Save />
           {saving ? "Ukládám..." : "Uložit"}
-        </button>
-        <button
-          onClick={cancel}
-          disabled={saving}
-          className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[14px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
-        >
+        </Button>
+        <Button variant="outline" size="sm" onClick={cancel} disabled={saving}>
           Zrušit
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -2151,23 +2124,7 @@ function OrganizationPicker({
   onMutate: () => Promise<void>;
   onError: (msg: string | null) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
 
   const currentOrgEdge = node.edges.find(
     (e) =>
@@ -2180,7 +2137,6 @@ function OrganizationPicker({
     .sort((a, b) => a.name.localeCompare(b.name, "cs"));
 
   const pick = async (orgId: string) => {
-    setOpen(false);
     if (orgId === currentOrgEdge?.peer_id) return;
     setSaving(true);
     onError(null);
@@ -2195,53 +2151,52 @@ function OrganizationPicker({
   };
 
   return (
-    <div ref={containerRef} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        disabled={saving || orgs.length === 0}
-        className="flex w-full items-center gap-2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-left text-[11.5px] transition-colors hover:border-[var(--color-border-strong)] disabled:opacity-50"
-      >
-        {currentOrgEdge ? (
-          <span className="flex flex-1 items-center gap-1.5 truncate text-[var(--color-text)]">
-            <Building2 size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-            <span className="truncate">{currentOrgEdge.peer_name}</span>
-          </span>
-        ) : (
-          <span className="flex-1 text-[var(--color-text-dim)]">
-            — Bez organizace —
-          </span>
-        )}
-        <Pencil size={11} className="shrink-0 text-[var(--color-text-dim)]" />
-      </button>
-      {open && (
-        <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-72 overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
-          {orgs.length === 0 ? (
-            <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
-              Žádné organizace nejsou k dispozici.
-            </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild disabled={saving || orgs.length === 0}>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="w-full justify-start gap-2 text-left font-normal"
+        >
+          {currentOrgEdge ? (
+            <span className="flex flex-1 items-center gap-1.5 truncate text-[var(--color-text)]">
+              <Building2 className="shrink-0 text-muted-foreground" />
+              <span className="truncate">{currentOrgEdge.peer_name}</span>
+            </span>
           ) : (
-            orgs.map((o) => (
-              <button
-                key={o.id}
-                type="button"
-                onClick={() => pick(o.id)}
-                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] ${
-                  currentOrgEdge?.peer_id === o.id
-                    ? "bg-[var(--color-surface-2)]"
-                    : ""
-                }`}
-              >
-                <span className="flex flex-1 items-center gap-1.5 truncate text-[var(--color-text)]">
-                  <Building2 size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-                  <span className="truncate">{o.name}</span>
-                </span>
-              </button>
-            ))
+            <span className="flex-1 text-muted-foreground">
+              — Bez organizace —
+            </span>
           )}
-        </div>
-      )}
-    </div>
+          <Pencil className="shrink-0 text-muted-foreground" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="max-h-72">
+        {orgs.length === 0 ? (
+          <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
+            Žádné organizace nejsou k dispozici.
+          </div>
+        ) : (
+          orgs.map((o) => (
+            <DropdownMenuItem
+              key={o.id}
+              onSelect={() => void pick(o.id)}
+              className={
+                currentOrgEdge?.peer_id === o.id
+                  ? "bg-[var(--color-surface-2)]"
+                  : ""
+              }
+            >
+              <span className="flex flex-1 items-center gap-1.5 truncate text-[var(--color-text)]">
+                <Building2 className="shrink-0 text-muted-foreground" />
+                <span className="truncate">{o.name}</span>
+              </span>
+            </DropdownMenuItem>
+          ))
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -2273,23 +2228,8 @@ function OwnerPicker({
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
-  const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
 
   // Auto-focus the search input as soon as the popover renders.
   useEffect(() => {
@@ -2392,93 +2332,81 @@ function OwnerPicker({
   };
 
   return (
-    <div ref={containerRef} className="relative">
-      <button
-        type="button"
-        onClick={openPicker}
-        disabled={saving}
-        className="flex w-full items-center gap-2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-left text-[11.5px] transition-colors hover:border-[var(--color-border-strong)] disabled:opacity-50"
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        if (next) void openPicker();
+        else setOpen(false);
+      }}
+    >
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={saving}
+          className="w-full justify-start gap-2 text-left font-normal"
+        >
+          {node.owner ? (
+            <span className="flex flex-1 items-center gap-1.5 truncate text-[var(--color-text)]">
+              <User className="shrink-0 text-muted-foreground" />
+              <span className="truncate">{node.owner.name}</span>
+            </span>
+          ) : (
+            <span className="flex-1 text-muted-foreground">
+              — Žádný —
+            </span>
+          )}
+          <Pencil className="shrink-0 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-(--radix-popover-trigger-width) gap-0 overflow-hidden p-0"
       >
-        {node.owner ? (
-          <span className="flex flex-1 items-center gap-1.5 truncate text-[var(--color-text)]">
-            <User size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-            <span className="truncate">{node.owner.name}</span>
-          </span>
-        ) : (
-          <span className="flex-1 text-[var(--color-text-dim)]">
-            — Žádný —
-          </span>
-        )}
-        <Pencil size={11} className="shrink-0 text-[var(--color-text-dim)]" />
-      </button>
-      {open && (
-        <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] shadow-lg">
-          <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-2.5 py-1.5">
-            <Search
-              size={12}
-              className="shrink-0 text-[var(--color-text-dim)]"
-            />
-            <input
-              ref={inputRef}
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={onKeyDown}
-              placeholder="Hledat aktéra..."
-              className="flex-1 bg-transparent text-[11.5px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)]"
-            />
-          </div>
-          <div ref={listRef} className="max-h-64 overflow-y-auto py-1">
-            {loading ? (
-              <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
-                Načítám aktéry...
-              </div>
-            ) : fetchError ? (
-              <div
-                className="px-3 py-2 text-[14px]"
-                style={{ color: "var(--color-danger)" }}
-              >
-                {fetchError}
-              </div>
-            ) : (
-              <>
-                {rows.map((row, idx) => {
-                  const isHighlight = idx === highlight;
-                  if (row.kind === "unset") {
-                    const isCurrent = !node.owner;
-                    return (
-                      <button
-                        key="__unset__"
-                        type="button"
-                        data-row-index={idx}
-                        onMouseEnter={() => setHighlight(idx)}
-                        onClick={() => pick(null)}
-                        className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors ${
-                          isHighlight ? "bg-[var(--color-surface)]" : ""
-                        } ${
-                          isCurrent && !isHighlight
-                            ? "bg-[var(--color-surface-2)]"
-                            : ""
-                        }`}
-                      >
-                        <span className="text-[var(--color-text-dim)]">
-                          — Žádný —
-                        </span>
-                      </button>
-                    );
-                  }
-                  const a = row.actor;
-                  const isPlaceholder =
-                    a.is_placeholder === 1 || a.user_id === null;
-                  const isCurrent = node.owner?.id === a.id;
+        <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-2.5 py-1.5">
+          <Search
+            size={12}
+            className="shrink-0 text-[var(--color-text-dim)]"
+          />
+          <Input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Hledat aktéra..."
+            className="h-7 flex-1 border-none bg-transparent px-0 focus-visible:ring-0 dark:bg-transparent"
+          />
+        </div>
+        <div ref={listRef} className="max-h-64 overflow-y-auto py-1">
+          {loading ? (
+            <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
+              Načítám aktéry...
+            </div>
+          ) : fetchError ? (
+            <div
+              className="px-3 py-2 text-[14px]"
+              style={{ color: "var(--color-danger)" }}
+            >
+              {fetchError}
+            </div>
+          ) : (
+            <>
+              {rows.map((row, idx) => {
+                const isHighlight = idx === highlight;
+                if (row.kind === "unset") {
+                  const isCurrent = !node.owner;
                   return (
-                    <button
-                      key={a.id}
+                    <Button
+                      key="__unset__"
                       type="button"
+                      variant="ghost"
+                      size="sm"
                       data-row-index={idx}
                       onMouseEnter={() => setHighlight(idx)}
-                      onClick={() => pick(a.id)}
-                      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors ${
+                      onClick={() => pick(null)}
+                      className={`w-full justify-start gap-2 rounded-none text-left font-normal hover:bg-[var(--color-surface)] ${
                         isHighlight ? "bg-[var(--color-surface)]" : ""
                       } ${
                         isCurrent && !isHighlight
@@ -2486,44 +2414,67 @@ function OwnerPicker({
                           : ""
                       }`}
                     >
-                      <span className="flex flex-1 items-center gap-1.5 truncate text-[var(--color-text)]">
-                        <User
-                          size={12}
-                          className="shrink-0 text-[var(--color-text-dim)]"
-                        />
-                        <span
-                          className={`truncate ${
-                            a.type === "person" && isPlaceholder
-                              ? "italic text-[var(--color-text-dim)]"
-                              : ""
-                          }`}
-                        >
-                          {a.name}
-                        </span>
-                        <ActorBadge
-                          type={a.type}
-                          placeholder={isPlaceholder}
-                        />
+                      <span className="text-muted-foreground">
+                        — Žádný —
                       </span>
-                    </button>
+                    </Button>
                   );
-                })}
-                {actors && filtered.length === 0 && query.trim() !== "" && (
-                  <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
-                    Nic neodpovídá „{query}".
-                  </div>
-                )}
-                {actors && actors.length === 0 && (
-                  <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
-                    Žádní aktéři nejsou k dispozici.
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+                }
+                const a = row.actor;
+                const isPlaceholder =
+                  a.is_placeholder === 1 || a.user_id === null;
+                const isCurrent = node.owner?.id === a.id;
+                return (
+                  <Button
+                    key={a.id}
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    data-row-index={idx}
+                    onMouseEnter={() => setHighlight(idx)}
+                    onClick={() => pick(a.id)}
+                    className={`w-full justify-start gap-2 rounded-none text-left font-normal hover:bg-[var(--color-surface)] ${
+                      isHighlight ? "bg-[var(--color-surface)]" : ""
+                    } ${
+                      isCurrent && !isHighlight
+                        ? "bg-[var(--color-surface-2)]"
+                        : ""
+                    }`}
+                  >
+                    <span className="flex flex-1 items-center gap-1.5 truncate text-[var(--color-text)]">
+                      <User className="shrink-0 text-muted-foreground" />
+                      <span
+                        className={`truncate ${
+                          a.type === "person" && isPlaceholder
+                            ? "italic text-[var(--color-text-dim)]"
+                            : ""
+                        }`}
+                      >
+                        {a.name}
+                      </span>
+                      <ActorBadge
+                        type={a.type}
+                        placeholder={isPlaceholder}
+                      />
+                    </span>
+                  </Button>
+                );
+              })}
+              {actors && filtered.length === 0 && query.trim() !== "" && (
+                <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
+                  Nic neodpovídá „{query}".
+                </div>
+              )}
+              {actors && actors.length === 0 && (
+                <div className="px-3 py-2 text-[14px] text-[var(--color-text-dim)]">
+                  Žádní aktéři nejsou k dispozici.
+                </div>
+              )}
+            </>
+          )}
         </div>
-      )}
-    </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -2634,13 +2585,10 @@ function ResponsibilitiesEditor({
           onError={onError}
         />
       ) : (
-        <button
-          onClick={() => setAdding(true)}
-          className="mt-3 flex items-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[14px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
-        >
-          <Plus size={12} />
+        <Button variant="outline" size="sm" onClick={() => setAdding(true)} className="mt-3">
+          <Plus />
           Přidat úlohu
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -2750,36 +2698,28 @@ function ResponsibilityItem({
     return (
       <li>
         <div className="space-y-2">
-          <input
+          <Input
             value={draftTitle}
             onChange={(e) => setDraftTitle(e.target.value)}
             autoFocus
             placeholder="Název úlohy"
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[14px] font-semibold text-[var(--color-text)] focus:border-[var(--color-accent-dim)]"
+            className="font-semibold"
           />
-          <textarea
+          <Textarea
             value={draftDescription}
             onChange={(e) => setDraftDescription(e.target.value)}
             rows={3}
             placeholder="Popis (volitelné)"
-            className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[13.5px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+            className="field-sizing-fixed resize-y leading-relaxed"
           />
           <div className="flex gap-2">
-            <button
-              onClick={save}
-              disabled={saving || !draftTitle.trim()}
-              className="flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[14px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
-            >
-              <Save size={11} />
+            <Button size="sm" onClick={save} disabled={saving || !draftTitle.trim()}>
+              <Save />
               {saving ? "Ukládám..." : "Uložit"}
-            </button>
-            <button
-              onClick={cancel}
-              disabled={saving}
-              className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[14px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
-            >
+            </Button>
+            <Button variant="outline" size="sm" onClick={cancel} disabled={saving}>
               Zrušit
-            </button>
+            </Button>
           </div>
         </div>
       </li>
@@ -2799,21 +2739,26 @@ function ResponsibilityItem({
               <span className="assignee-empty">— Nikdo zatím</span>
             )}
             {responsibility.assignees.map((a) => (
-              <span
+              <Badge
                 key={a.id}
-                className={`assignee assignee-${a.type} inline-flex items-center gap-1`}
+                variant="secondary"
+                className={`assignee assignee-${a.type} gap-1`}
               >
                 <span className="truncate">{a.name}</span>
                 <ActorBadge type={a.type} />
-                <button
+                {/* size-4: the pill is 20px tall, so even icon-xs (24px)
+                    would stretch it -- the one hand-set button size here. */}
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
                   onClick={() => unassign(a.id)}
                   disabled={busy}
                   title="Odebrat"
-                  className="ml-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full text-[var(--color-text-dim)] hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)] disabled:opacity-50"
+                  className="ml-0.5 size-4 rounded-full text-muted-foreground hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)]"
                 >
-                  <X size={9} />
-                </button>
-              </span>
+                  <X />
+                </Button>
+              </Badge>
             ))}
             {pickerOpen ? (
               <AssigneePicker
@@ -2823,59 +2768,59 @@ function ResponsibilityItem({
                 disabled={busy}
               />
             ) : (
-              <button
+              <Button
+                variant="outline"
+                size="xs"
                 onClick={() => setPickerOpen(true)}
                 disabled={busy}
-                className="assignee inline-flex items-center gap-1 border-dashed text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)] disabled:opacity-50"
-                style={{ borderStyle: "dashed" }}
+                className="rounded-full text-muted-foreground hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
               >
-                <Plus size={10} />
+                <Plus />
                 přiřadit
-              </button>
+              </Button>
             )}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-          <button
+          <Button
+            variant="ghost"
+            size="icon-xs"
             onClick={onMoveUp}
             disabled={busy || !canMoveUp}
             title="Posunout nahoru"
-            className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)] disabled:opacity-30 disabled:hover:bg-transparent"
+            className="text-muted-foreground"
           >
-            <ChevronUp size={12} />
-          </button>
-          <button
+            <ChevronUp />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
             onClick={onMoveDown}
             disabled={busy || !canMoveDown}
             title="Posunout dolů"
-            className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)] disabled:opacity-30 disabled:hover:bg-transparent"
+            className="text-muted-foreground"
           >
-            <ChevronDown size={12} />
-          </button>
-          <button
+            <ChevronDown />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
             onClick={() => setEditing(true)}
             disabled={busy}
             title="Upravit úlohu"
-            className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)] disabled:opacity-50"
+            className="text-muted-foreground"
           >
-            <Pencil size={11} />
-          </button>
-          <button
+            <Pencil />
+          </Button>
+          <Button
+            variant="destructive"
+            size="icon-xs"
             onClick={remove}
             disabled={busy}
             title="Smazat úlohu"
-            className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] disabled:opacity-50"
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "var(--color-danger-bg)";
-              e.currentTarget.style.color = "var(--color-danger)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "";
-              e.currentTarget.style.color = "";
-            }}
           >
-            <Trash2 size={11} />
-          </button>
+            <Trash2 />
+          </Button>
         </div>
       </div>
     </li>
@@ -2955,27 +2900,23 @@ function AddResponsibilityForm({
         <div className="font-mono text-[14px] uppercase tracking-widest text-[var(--color-text-dim)]">
           Nová úloha
         </div>
-        <button
-          onClick={onCancel}
-          className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-        >
-          <X size={12} />
-        </button>
+        <Button variant="ghost" size="icon-xs" onClick={onCancel} className="text-muted-foreground">
+          <X />
+        </Button>
       </div>
       <div className="space-y-2">
-        <input
+        <Input
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           autoFocus
           placeholder="Název úlohy"
-          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[13.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
         />
-        <textarea
+        <Textarea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           rows={3}
           placeholder="Popis (volitelné)"
-          className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[13.5px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+          className="field-sizing-fixed resize-y leading-relaxed"
         />
         <div>
           <div className="mb-1 font-mono text-[14px] uppercase tracking-widest text-[var(--color-text-dim)]">
@@ -3002,16 +2943,11 @@ function AddResponsibilityForm({
                 const isPlaceholder = a.is_placeholder === 1;
                 const checked = selected.includes(a.id);
                 return (
-                  <label
+                  <Label
                     key={a.id}
-                    className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[11.5px] hover:bg-[var(--color-surface)]"
+                    className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[11.5px] font-normal hover:bg-[var(--color-surface)]"
                   >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggle(a.id)}
-                      className="h-3 w-3 shrink-0"
-                    />
+                    <Checkbox checked={checked} onCheckedChange={() => toggle(a.id)} />
                     <span
                       className={`flex-1 truncate ${
                         isPlaceholder
@@ -3023,7 +2959,7 @@ function AddResponsibilityForm({
                       {isPlaceholder ? " (placeholder)" : ""}
                     </span>
                     <ActorBadge type={a.type} placeholder={isPlaceholder} />
-                  </label>
+                  </Label>
                 );
               })}
             </div>
@@ -3031,20 +2967,12 @@ function AddResponsibilityForm({
         </div>
       </div>
       <div className="mt-2 flex justify-end gap-2">
-        <button
-          onClick={onCancel}
-          disabled={saving}
-          className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5 text-[14px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
-        >
+        <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
           Zrušit
-        </button>
-        <button
-          onClick={submit}
-          disabled={!title.trim() || saving}
-          className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[14px] text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
-        >
+        </Button>
+        <Button size="sm" onClick={submit} disabled={!title.trim() || saving}>
           {saving ? "Vytvářím..." : "Vytvořit"}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -3147,13 +3075,10 @@ function EntityAttributeSection<TItem extends EntityAttributeItem>({
             onError={onError}
           />
         ) : (
-          <button
-            onClick={() => setAdding(true)}
-            className="mt-3 flex items-center gap-1.5 rounded-md border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[14px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
-          >
-            <Plus size={12} />
+          <Button variant="outline" size="sm" onClick={() => setAdding(true)} className="mt-3">
+            <Plus />
             Přidat {title}
-          </button>
+          </Button>
         ))}
     </div>
   );
@@ -3231,42 +3156,28 @@ function EntityAttributeItem<TItem extends EntityAttributeItem>({
   if (editing) {
     return (
       <li className="space-y-1.5 py-2">
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          autoFocus
-          placeholder="Název"
-          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[13.5px] text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none"
-        />
-        <input
+        <Input value={name} onChange={(e) => setName(e.target.value)} autoFocus placeholder="Název" />
+        <Input
           value={link}
           onChange={(e) => setLink(e.target.value)}
           placeholder="Odkaz (volitelné)"
-          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 font-mono text-[12px] text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none"
+          className="font-mono text-[12px]"
         />
-        <textarea
+        <Textarea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           rows={2}
           placeholder="Popis (volitelné)"
-          className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-[13.5px] leading-relaxed text-[var(--color-text)] focus:border-[var(--color-accent-dim)] focus:outline-none"
+          className="resize-y"
         />
         <div className="flex gap-2">
-          <button
-            onClick={save}
-            disabled={saving || !name.trim()}
-            className="flex items-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1 text-[13px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
-          >
-            <Save size={11} />
+          <Button size="sm" onClick={save} disabled={saving || !name.trim()}>
+            <Save />
             {saving ? "Ukládám..." : "Uložit"}
-          </button>
-          <button
-            onClick={cancel}
-            disabled={saving}
-            className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
-          >
+          </Button>
+          <Button variant="outline" size="sm" onClick={cancel} disabled={saving}>
             Zrušit
-          </button>
+          </Button>
         </div>
       </li>
     );
@@ -3292,22 +3203,26 @@ function EntityAttributeItem<TItem extends EntityAttributeItem>({
       </div>
       {canEdit && (
         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-          <button
+          <Button
+            variant="ghost"
+            size="icon-xs"
             onClick={() => setEditing(true)}
             disabled={busy}
             aria-label={`Upravit ${title}`}
-            className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)] disabled:opacity-30"
+            className="text-muted-foreground"
           >
-            <Pencil size={11} />
-          </button>
-          <button
+            <Pencil />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
             onClick={onRemove}
             disabled={busy}
             aria-label={`Smazat ${title}`}
-            className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)] disabled:opacity-30"
+            className="text-muted-foreground hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)]"
           >
-            <X size={11} />
-          </button>
+            <X />
+          </Button>
         </div>
       )}
     </li>
@@ -3368,51 +3283,33 @@ function AddEntityAttributeForm<TItem extends EntityAttributeItem>({
         <div className="font-mono text-[14px] uppercase tracking-widest text-[var(--color-text-dim)]">
           Nový {title}
         </div>
-        <button
-          onClick={onCancel}
-          className="text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-        >
-          <X size={12} />
-        </button>
+        <Button variant="ghost" size="icon-xs" onClick={onCancel} aria-label="Zavřít" className="text-muted-foreground">
+          <X />
+        </Button>
       </div>
       <div className="space-y-2">
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          autoFocus
-          placeholder="Název"
-          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[13.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
-        />
-        <textarea
+        <Input value={name} onChange={(e) => setName(e.target.value)} autoFocus placeholder="Název" />
+        <Textarea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           rows={2}
           placeholder="Popis (volitelné)"
-          className="w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[13.5px] leading-relaxed text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
+          className="resize-y"
         />
-        <input
+        <Input
           value={externalLink}
           onChange={(e) => setExternalLink(e.target.value)}
           type="url"
           placeholder="Odkaz (volitelné, např. https://…)"
-          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-[13.5px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)]"
         />
       </div>
       <div className="mt-2 flex justify-end gap-2">
-        <button
-          onClick={onCancel}
-          disabled={saving}
-          className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5 text-[14px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
-        >
+        <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
           Zrušit
-        </button>
-        <button
-          onClick={submit}
-          disabled={!name.trim() || saving}
-          className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/15 px-3 py-1.5 text-[14px] text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/25 disabled:opacity-50"
-        >
+        </Button>
+        <Button size="sm" onClick={submit} disabled={!name.trim() || saving}>
           {saving ? "Vytvářím..." : "Vytvořit"}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -3498,12 +3395,13 @@ function AssigneePicker({
             {candidates.map((a) => {
               const isPlaceholder = a.is_placeholder === 1;
               return (
-                <button
+                <Button
                   key={a.id}
-                  type="button"
+                  variant="ghost"
+                  size="sm"
                   disabled={disabled}
                   onClick={() => onPick(a.id)}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] transition-colors hover:bg-[var(--color-surface)] disabled:opacity-50"
+                  className="w-full justify-start gap-2 rounded-none px-3 font-normal text-[11.5px]"
                 >
                   <span
                     className={`flex-1 truncate ${
@@ -3516,7 +3414,7 @@ function AssigneePicker({
                     {isPlaceholder ? " (placeholder)" : ""}
                   </span>
                   <ActorBadge type={a.type} placeholder={isPlaceholder} />
-                </button>
+                </Button>
               );
             })}
           </div>
@@ -3539,21 +3437,20 @@ function IdCopy({ id }: { id: string }) {
     }
   };
   return (
-    <button
+    <Button
+      variant="ghost"
+      size="xs"
       onClick={handle}
       title="Kliknutím zkopírujete ID"
-      className="group inline-flex items-center gap-1.5 rounded font-mono text-[10px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text-muted)]"
+      className="group h-auto shrink-0 gap-1.5 px-1 py-0.5 font-mono text-[11.5px] font-normal text-[var(--color-text-muted)] hover:bg-transparent hover:text-[var(--color-text)]"
     >
       <span>{id}</span>
       {copied ? (
-        <Check size={10} className="text-[var(--color-accent)]" />
+        <Check className="text-[var(--color-accent)]" />
       ) : (
-        <Copy
-          size={10}
-          className="opacity-0 transition-opacity group-hover:opacity-100"
-        />
+        <Copy className="opacity-0 transition-opacity group-hover:opacity-100" />
       )}
-    </button>
+    </Button>
   );
 }
 
@@ -3561,40 +3458,41 @@ function IdCopy({ id }: { id: string }) {
 // Debug-only: meta is dev/import bookkeeping (e.g. source: "evoluce",
 // evoluce_entity_id, ...), not user-facing labels. Hidden entirely when
 // meta is empty/null so it adds no visual noise to nodes without meta.
-function MetaInfo({ meta }: { meta: unknown }) {
+function MetaSection({ meta }: { meta: unknown }) {
   const [open, setOpen] = useState(false);
   if (!meta || typeof meta !== "object" || Object.keys(meta as object).length === 0) {
     return null;
   }
   return (
-    <div className="relative">
-      <button
-        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
-        title="Meta (debug)"
-        className="inline-flex items-center justify-center rounded text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text-muted)]"
+    <div className="px-6 py-3">
+      <Button
+        variant="ghost"
+        size="xs"
+        onClick={() => setOpen((v) => !v)}
+        className="h-auto gap-1.5 px-1 py-0.5 font-mono text-[11px] font-normal uppercase tracking-[0.18em] text-[var(--color-text-dim)] hover:bg-transparent hover:text-[var(--color-text)]"
       >
-        <Info size={11} />
-      </button>
+        <Info />
+        Meta
+        {open ? <ChevronUp /> : <ChevronDown />}
+      </Button>
       {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 top-full z-50 mt-1 max-h-80 min-w-[280px] max-w-md overflow-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-2 shadow-lg">
-            <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-[var(--color-text-muted)]">
-              {JSON.stringify(meta, null, 2)}
-            </pre>
-          </div>
-        </>
+        <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-2 font-mono text-[11px] leading-relaxed text-[var(--color-text-muted)]">
+          {JSON.stringify(meta, null, 2)}
+        </pre>
       )}
     </div>
   );
 }
 
-// Folder-link icon: fetches the routed remote's web URL for the node folder
-// and shows a click-to-open external-link icon when one is available. The
-// fetch is best-effort: hidden silently when there is no routed remote, the
-// backend has no web URL (s3, sftp), or the folder isn't synced yet.
-function FolderLink({ nodeId }: { nodeId: string }) {
+// Remote-folder actions in the identity row: copy the folder's web URL, then
+// open it. Both fetch the routed remote's web URL for the node folder and
+// render nothing when there is none (no routed remote, a backend without a
+// web URL such as s3/sftp, or a folder not synced yet) -- best-effort, same
+// as the old FolderLink icon this replaces. A Google Drive URL gets the
+// Drive mark; anything else a generic link icon labelled by remote name.
+function RemoteFolderActions({ nodeId }: { nodeId: string }) {
   const [info, setInfo] = useState<{ url: string; remote_name?: string } | null>(null);
+  const [copied, setCopied] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setInfo(null);
@@ -3607,15 +3505,52 @@ function FolderLink({ nodeId }: { nodeId: string }) {
     return () => { cancelled = true; };
   }, [nodeId]);
   if (!info) return null;
+  const isDrive = /(^|\.)drive\.google\.com$/.test(safeHost(info.url));
+  const label = isDrive ? "Google Drive" : (info.remote_name ?? "remote");
+  const copy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await copyText(info.url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      /* clipboard write rejected; skip copied state */
+    }
+  };
   return (
-    <a
-      {...externalLinkProps(info.url, { onClick: (e) => e.stopPropagation() })}
-      title={`Otevřít na ${info.remote_name ?? "remote"}`}
-      className="inline-flex items-center justify-center rounded text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text-muted)]"
-    >
-      <ExternalLink size={11} />
-    </a>
+    <>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        onClick={copy}
+        title={`Kopírovat odkaz na ${label}`}
+        aria-label={`Kopírovat odkaz na ${label}`}
+        className="text-muted-foreground"
+      >
+        {copied ? <Check className="text-[var(--color-accent)]" /> : isDrive ? <GoogleDriveIcon size={13} /> : <Link2 />}
+      </Button>
+      <Button
+        asChild
+        variant="ghost"
+        size="icon-xs"
+        title={`Otevřít na ${label}`}
+        aria-label={`Otevřít na ${label}`}
+        className="text-muted-foreground"
+      >
+        <a {...externalLinkProps(info.url, { onClick: (e) => e.stopPropagation() })}>
+          <ExternalLink />
+        </a>
+      </Button>
+    </>
   );
+}
+
+function safeHost(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
 }
 
 // Header action that creates the local mirror for this node. Fills the
@@ -3631,18 +3566,19 @@ function CreateMirrorButton({
   onCreate: () => void;
 }) {
   return (
-    <span className="flex min-w-0 flex-1 items-center gap-1.5 font-mono text-[10px] text-[var(--color-text-dim)]">
-      <button
-        type="button"
+    <span className="flex min-w-0 flex-1 items-center gap-1.5 font-mono text-[11.5px] text-[var(--color-text-dim)]">
+      <Button
+        variant="ghost"
+        size="xs"
         onClick={onCreate}
         disabled={pending}
-        className="flex min-w-0 items-center gap-1.5 truncate transition-colors hover:text-[var(--color-text-muted)] disabled:cursor-default disabled:opacity-60"
+        className="h-auto min-w-0 gap-1.5 px-1 py-0.5 font-mono text-[11.5px] font-normal text-[var(--color-text-muted)] hover:bg-transparent hover:text-[var(--color-text)]"
       >
-        <Folder size={10} className="shrink-0" />
+        <Folder />
         <span className="truncate">
           {pending ? "Vytvářím…" : "Vytvořit pracovní složku"}
         </span>
-      </button>
+      </Button>
       {error && (
         <span
           className="truncate"
@@ -3671,97 +3607,29 @@ function PathCopy({ path }: { path: string }) {
     }
   };
   return (
-    <button
+    <Button
+      variant="ghost"
+      size="xs"
       onClick={handle}
-      title="Kliknutím zkopírujete cestu"
-      className="group flex min-w-0 flex-1 items-center gap-1.5 rounded font-mono text-[10px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text-muted)]"
+      title={`${path}\nKliknutím zkopírujete cestu`}
+      className="group h-auto min-w-0 gap-1.5 px-1 py-0.5 font-mono text-[11.5px] font-normal text-[var(--color-text-muted)] hover:bg-transparent hover:text-[var(--color-text)]"
     >
-      <Folder size={10} className="shrink-0" />
-      <span className="truncate">{path}</span>
+      <Folder />
+      {/* dir="rtl" on the truncating span puts the ellipsis on the LEFT;
+          <bdi> isolates the path so its own characters still read
+          left-to-right. The leaf folder stays visible however long the
+          prefix is. */}
+      <span dir="rtl" className="min-w-0 truncate text-left">
+        <bdi>{path}</bdi>
+      </span>
       {copied ? (
-        <Check size={10} className="shrink-0 text-[var(--color-accent)]" />
+        <Check className="shrink-0 text-[var(--color-accent)]" />
       ) : (
-        <Copy
-          size={10}
-          className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-        />
+        <Copy className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />
       )}
-    </button>
+    </Button>
   );
 }
 
-// Tab button for the detail pane. Underline indicator + optional count badge.
-function TabButton({
-  active,
-  onClick,
-  label,
-  count,
-  dotColor,
-  dotTitle,
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-  count?: number;
-  dotColor?: string;
-  dotTitle?: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`relative flex items-center gap-1.5 px-3 py-2.5 text-[13px] font-medium transition-colors ${
-        active
-          ? "text-[var(--color-text)]"
-          : "text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)]"
-      }`}
-    >
-      {label}
-      {count !== undefined && count > 0 && (
-        <span
-          className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] ${
-            active
-              ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
-              : "bg-[var(--color-surface)] text-[var(--color-text-dim)]"
-          }`}
-        >
-          {count}
-        </span>
-      )}
-      {dotColor && (
-        <span
-          title={dotTitle}
-          className="h-1.5 w-1.5 rounded-full"
-          style={{
-            background: dotColor,
-            boxShadow: `0 0 6px color-mix(in srgb, ${dotColor} 70%, transparent)`,
-          }}
-        />
-      )}
-      {active && (
-        <span
-          className="absolute inset-x-0 bottom-0 h-[2px]"
-          style={{ background: "var(--color-accent)" }}
-        />
-      )}
-    </button>
-  );
-}
 
-function StatusDot({ status }: { status: string }) {
-  const cssVar =
-    status === "active"
-      ? "var(--color-status-active)"
-      : status === "completed"
-      ? "var(--color-status-completed)"
-      : "var(--color-status-archived)";
-  return (
-    <span className="ml-auto flex items-center gap-1.5">
-      <span
-        className="h-1.5 w-1.5 rounded-full"
-        style={{ background: cssVar }}
-      />
-      <span className="text-[10px] text-[var(--color-text-dim)]">{status}</span>
-    </span>
-  );
-}
 

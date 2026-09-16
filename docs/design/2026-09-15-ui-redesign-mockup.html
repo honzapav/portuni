@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="cs" data-theme="light" data-tokens="new">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Portuni – mockup hlavičky nodu a editoru (v2)</title>
+<style>
+  /* ===== Tokeny 1:1 z apps/web/src/index.css ===== */
+  html[data-theme="dark"] {
+    --color-bg: #0a0b0d; --color-surface: #141518; --color-surface-2: #1c1d21;
+    --color-border: #27282c; --color-border-strong: #35363b;
+    --color-text: #f1f2f5; --color-text-muted: #c2c6cf; --color-text-dim: #9298a2;
+    --color-accent: #76d9ff; --color-accent-soft: rgba(118,217,255,.14);
+    --color-node-project: #a78bfa; --color-node-process: #fbbf24; --color-status-active: #34d399;
+  }
+  html[data-theme="light"] {
+    --color-bg: #f8fafc; --color-surface: #ffffff; --color-surface-2: #f1f5f9;
+    --color-border: #e2e8f0; --color-border-strong: #cbd5e1;
+    --color-text: #0f172a; --color-text-muted: #334155; --color-text-dim: #64748b;
+    --color-accent: #0284c7; --color-accent-soft: rgba(2,132,199,.12);
+    --color-node-project: #7c3aed; --color-node-process: #d97706; --color-status-active: #059669;
+  }
+  /* ===== Návrh: zesílená paleta (bod 1) – mění se jen hodnoty, bridge zůstává ===== */
+  html[data-theme="dark"][data-tokens="new"] {
+    --color-surface: #16171b; --color-surface-2: #26282e;
+    --color-border: #3a3c43; --color-border-strong: #545761;
+    --color-text-muted: #d0d4dc; --color-text-dim: #a6acb8;
+  }
+  html[data-theme="light"][data-tokens="new"] {
+    --color-surface-2: #e2e8f0;
+    --color-border: #cbd5e1; --color-border-strong: #94a3b8;
+    --color-text-muted: #334155; --color-text-dim: #475569;
+  }
+  /* shadcn bridge, stejné jako v index.css */
+  :root {
+    --background: var(--color-bg); --foreground: var(--color-text);
+    --primary: var(--color-accent); --primary-foreground: var(--color-bg);
+    --secondary: var(--color-surface-2); --secondary-foreground: var(--color-text);
+    --muted: var(--color-surface-2); --muted-foreground: var(--color-text-dim);
+    --accent: var(--color-accent-soft); --accent-foreground: var(--color-text);
+    --border: var(--color-border); --input: var(--color-border); --ring: var(--color-accent);
+    --radius: 0.625rem; --radius-md: calc(var(--radius) * .8); --radius-lg: var(--radius);
+    --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: var(--font-sans); font-size: 14px; color: var(--foreground); background: var(--background); padding: 24px 32px 80px; }
+  h2 { font-size: 15px; margin: 40px 0 12px; }
+  h2 small { font-weight: 400; color: var(--muted-foreground); margin-left: 8px; }
+  p.note { color: var(--color-text-muted); max-width: 760px; line-height: 1.5; margin: 6px 0 14px; }
+  code { font-family: var(--font-mono); font-size: 12px; }
+  .toolbar { position: sticky; top: 0; z-index: 10; display: flex; gap: 8px; align-items: center; padding: 10px 0 12px; background: var(--background); border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+  .frame { border: 1px solid var(--border); border-radius: 10px; background: var(--background); overflow: hidden; max-width: 900px; }
+  .frame + .frame { margin-top: 14px; }
+  .label { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted-foreground); padding: 6px 12px; background: var(--muted); border-bottom: 1px solid var(--border); }
+  .label.ok { color: var(--primary); }
+  .callout { font-size: 12.5px; color: var(--color-text-muted); padding: 10px 12px; border-top: 1px dashed var(--border); line-height: 1.5; }
+  .callout b { color: var(--foreground); }
+  .body { height: 70px; background: repeating-linear-gradient(0deg, transparent 0 14px, var(--muted) 14px 15px); opacity: .7; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 12px; }
+  .row .cap { width: 100%; font-size: 11px; color: var(--muted-foreground); }
+
+  /* ===== shadcn Button (radix-nova) – přepis tříd z components/ui/button.tsx ===== */
+  .sb { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 4px; height: 28px; padding: 0 10px;
+        border-radius: min(var(--radius-md), 12px); border: 1px solid transparent; background-clip: padding-box;
+        font: inherit; font-size: .8rem; font-weight: 500; white-space: nowrap; color: var(--foreground); cursor: pointer; transition: all .12s; user-select: none; }
+  .sb svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  .sb.icon { width: 28px; padding: 0; }
+  .sb.md { height: 32px; padding: 0 10px; border-radius: var(--radius-lg); font-size: 14px; gap: 6px; } .sb.md svg { width: 16px; height: 16px; } .sb.md.icon { width: 32px; }
+  .sb:disabled { opacity: .5; pointer-events: none; }
+  .sb.default { background: var(--primary); color: var(--primary-foreground); } .sb.default:hover { opacity: .8; }
+  .sb.outline { border-color: var(--border); background: var(--background); } .sb.outline:hover { background: var(--muted); }
+  html[data-theme="dark"] .sb.outline { border-color: var(--input); background: color-mix(in srgb, var(--input) 30%, transparent); }
+  html[data-theme="dark"] .sb.outline:hover { background: color-mix(in srgb, var(--input) 50%, transparent); }
+  .sb.secondary { background: var(--secondary); color: var(--secondary-foreground); }
+  .sb.ghost { color: var(--foreground); } .sb.ghost:hover { background: var(--muted); }
+  .sb.ghost.dim { color: var(--muted-foreground); } .sb.ghost.dim:hover { color: var(--foreground); }
+  .sb[aria-pressed="true"] { background: var(--muted); color: var(--foreground); }
+  /* ButtonGroup – components/ui/button-group.tsx */
+  .bg { display: inline-flex; align-items: stretch; width: fit-content; }
+  .bg > .sb:not(:first-child) { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: 0; }
+  .bg > .sb:not(:last-child) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .bg > .sb { border-radius: var(--radius-lg); }
+  .bg > .sb:not(:first-child) { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+  .bg > .sb:not(:last-child) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+
+  /* ===== lišty ===== */
+  .bar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); min-height: 42px; }
+  .bar .grow { flex: 1; min-width: 0; }
+  .bar .right { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  .fname { font-size: 13.5px; color: var(--foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dirty { color: var(--color-node-process); margin-left: 4px; }
+
+  /* ===== hlavička nodu ===== */
+  .nh { padding: 20px 24px; border-bottom: 1px solid var(--border); }
+  .nh .type { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-node-project); box-shadow: 0 0 10px rgba(167,139,250,.8); }
+  .typ { font-family: var(--font-mono); font-size: 14px; text-transform: uppercase; letter-spacing: .14em; color: var(--color-node-project); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; font-family: var(--font-mono); letter-spacing: .02em; background: rgba(31,169,115,.2); color: #1fa973; }
+  .nh h1 { margin: 0 0 8px; font-size: 22px; font-weight: 600; letter-spacing: -.01em; line-height: 1.2; }
+  .idrow { display: flex; align-items: center; gap: 6px; min-width: 0; font-family: var(--font-mono); font-size: 11.5px; color: var(--color-text-muted); }
+  .idrow .mono { display: inline-flex; align-items: center; gap: 6px; min-width: 0; cursor: pointer; border-radius: 4px; }
+  .idrow .mono:hover { color: var(--foreground); }
+  .idrow .path { min-width: 0; max-width: 420px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .idrow .path > span { overflow: hidden; text-overflow: ellipsis; }
+  .idrow .sep { color: var(--color-border-strong); }
+  .idrow svg { width: 13px; height: 13px; flex: none; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .idrow .copy { opacity: 0; } .idrow .mono:hover .copy { opacity: 1; }
+  .idrow .group { display: inline-flex; align-items: center; gap: 2px; margin-left: 2px; }
+  .idrow .sb.icon { width: 26px; height: 26px; }
+
+  /* ===== levý sloupec ===== */
+  .cols { display: grid; grid-template-columns: 300px 300px 300px; gap: 24px; align-items: start; }
+  .side { width: 300px; border: 1px solid var(--border); border-radius: 10px; background: var(--background); overflow: hidden; }
+  .side .hd { display: flex; align-items: center; gap: 12px; padding: 16px 16px; border-bottom: 1px solid var(--border); }
+  .logo { width: 32px; height: 32px; border-radius: 8px; background: var(--accent); display: flex; align-items: center; justify-content: center; color: var(--primary); }
+  .logo svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; }
+  .brand { flex: 1; min-width: 0; } .brand b { display: block; font-size: 15px; font-weight: 600; letter-spacing: -.01em; } .brand span { display: block; font-size: 12px; color: var(--muted-foreground); }
+  .side .pad { padding: 16px 16px 0; }
+  .side .pad + .pad { padding-top: 10px; }
+  .side .bg.full { width: 100%; display: flex; } .side .bg.full .sb { flex: 1; }
+  .cnt { display: inline-flex; min-width: 16px; height: 16px; align-items: center; justify-content: center; border-radius: 999px; padding: 0 4px; font-size: 10px; font-weight: 600; background: var(--accent); color: var(--primary); margin-left: 2px; }
+  .sb.trigger { width: 100%; justify-content: flex-start; color: var(--muted-foreground); font-weight: 400; height: 32px; }
+  .sb.trigger kbd { margin-left: auto; font-family: var(--font-mono); font-size: 10px; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--muted-foreground); background: var(--muted); }
+  .sec { display: flex; align-items: center; gap: 6px; padding: 24px 18px 6px; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted-foreground); }
+  .tree { list-style: none; margin: 0; padding: 4px 10px 16px; display: flex; flex-direction: column; gap: 3px; }
+  .nrow { position: relative; display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border-radius: 6px; font-size: 13px; color: var(--foreground); cursor: pointer; }
+  .nrow:hover { background: var(--muted); }
+  .nrow.sel { background: var(--muted); font-weight: 500; }
+  .nrow.sel::before { content: ""; position: absolute; left: -10px; top: 6px; bottom: 6px; width: 2px; border-radius: 2px; background: var(--primary); }
+  .nrow .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .sdot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .pulse { animation: pulse 1.4s ease-in-out infinite; } @keyframes pulse { 50% { opacity: .35; } }
+  .acts { display: none; gap: 2px; } .nrow:hover .acts, .srow:hover .acts { display: inline-flex; }
+  .acts .sb { width: 22px; height: 22px; padding: 0; color: var(--muted-foreground); } .acts .sb svg { width: 12px; height: 12px; }
+  .sub { list-style: none; margin: 0 0 4px; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+  .srow { display: flex; align-items: center; gap: 10px; height: 28px; padding: 0 10px 0 28px; border-radius: 6px; font-size: 12.5px; color: var(--color-text-muted); cursor: pointer; }
+  .srow:hover { background: var(--muted); color: var(--foreground); }
+  .srow.vis { background: var(--muted); color: var(--foreground); font-weight: 500; }
+  .srow svg.ic { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; color: var(--muted-foreground); }
+  .srow .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .srow .st { font-size: 11px; font-weight: 500; flex: none; }
+  .st.run { color: var(--color-status-active); } .st.wait { color: var(--color-node-process); } .st.idle { color: var(--muted-foreground); }
+  /* stávající */
+  .old .hd { padding: 20px; } .old .hd .logo { width: 36px; height: 36px; background: var(--color-accent-soft); }
+  .old .hd b { font-size: 18px; }
+  .old .oi { width: 28px; height: 28px; border: 1px solid var(--border); background: var(--color-surface); border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; color: var(--color-text-muted); } .old .oi svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 2; }
+  .old .vt { display: flex; border: 1px solid var(--border); background: var(--color-surface); border-radius: 6px; padding: 2px; margin: 16px 16px 0; }
+  .old .vt span { flex: 1; text-align: center; font-size: 13px; padding: 6px; color: var(--color-text-dim); border-radius: 4px; } .old .vt span.on { background: var(--background); color: var(--foreground); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .old .search { margin: 16px 16px 0; border: 1px solid var(--color-accent-dim, #7dd3fc); background: var(--color-accent-soft); border-radius: 8px; padding: 10px 12px 10px 32px; font-size: 13px; color: var(--color-text-dim); position: relative; }
+  .old .search kbd { position: absolute; right: 10px; top: 9px; font-family: var(--font-mono); font-size: 10px; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; background: var(--background); }
+  .old .newn { margin: 8px 16px 0; font-size: 12.5px; color: var(--color-text-dim); padding: 6px; }
+  .old .nrow { height: 28px; font-size: 13px; color: var(--color-text-muted); } .old .nrow.sel { background: var(--color-surface); color: var(--foreground); font-weight: 400; } .old .nrow.sel::before { display: none; }
+  .old .tdot, .old .sdot { width: 6px; height: 6px; }
+  .old .srow { height: 24px; font-size: 12px; color: var(--color-text-dim); } .old .srow.vis { background: var(--color-surface); color: var(--primary); }
+  .old .sub { margin-left: 12px; padding-left: 4px; border-left: 1px solid var(--border); } .old .srow { padding-left: 8px; }
+  .brand .ws { display: inline-flex; align-items: center; gap: 4px; margin-top: 1px; padding: 1px 6px 1px 0; border-radius: 4px; font-size: 12px; color: var(--muted-foreground); cursor: pointer; }
+  .brand .ws:hover { color: var(--foreground); background: var(--muted); padding-left: 6px; margin-left: -6px; }
+  .brand .ws svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 2; }
+  .menu { position: absolute; left: 60px; top: 52px; z-index: 5; min-width: 220px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--color-surface); box-shadow: 0 8px 24px rgba(0,0,0,.12); font-size: 13px; }
+  .menu .it { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; border-radius: 5px; color: var(--foreground); }
+  .menu .it:hover { background: var(--muted); } .menu .it.cur { font-weight: 500; } .menu .it.dis { color: var(--muted-foreground); }
+  .menu .it .k { margin-left: auto; font-size: 11px; color: var(--muted-foreground); }
+  .menu .it svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; }
+  .menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
+  .side .hd { position: relative; }
+  .sec .bg { margin-left: auto; } .sec .bg .sb { height: 22px; padding: 0 8px; font-size: 11px; }
+  .grp { display: flex; align-items: center; gap: 6px; padding: 18px 10px 6px; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted-foreground); }
+  .grp:first-child { padding-top: 6px; } .grp.dim, .grp.dim + li .trow { opacity: .6; }
+  .grp .cnt { background: var(--muted); color: var(--muted-foreground); }
+  .trow { display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
+  .trow + .trow, li + li > .trow { margin-top: 2px; }
+  .trow:hover { background: var(--muted); }
+  .trow .txt { flex: 1; min-width: 0; } .trow .txt b { display: block; font-weight: 500; font-size: 13px; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .trow .txt span { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--muted-foreground); }
+  .trow .txt span .tdot { width: 6px; height: 6px; }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <button class="sb outline" data-theme-btn="light" aria-pressed="true">Light</button>
+  <button class="sb outline" data-theme-btn="dark">Dark</button>
+  <span style="flex:1"></span>
+  <span style="font-size:12px;color:var(--muted-foreground)">Paleta:</span>
+  <button class="sb outline" data-tokens-btn="old">stávající</button>
+  <button class="sb outline" data-tokens-btn="new" aria-pressed="true">zesílená</button>
+</div>
+
+<!-- ========================================================= -->
+<h2>1 · Ovládací prvky = shadcn Button + zesílená paleta <small>přepínej „stávající / zesílená“ nahoře</small></h2>
+<p class="note">Dvě věci najednou. (a) Hlavičky přejdou z ručně psaných <code>&lt;button&gt;</code> (10–12 px, <code>text-dim</code>, bez rámečku) na <code>&lt;Button&gt;</code> z <code>components/ui/button.tsx</code> ve velikosti <code>sm</code> / <code>icon-sm</code> a <code>&lt;ButtonGroup&gt;</code>. (b) Samotné shadcn varianty na stávající paletě nestačí: <code>outline</code> má rámeček #e2e8f0 na bílé a <code>secondary</code> #f1f5f9 na bílé, obojí je neviditelné. Zesílená paleta posune v <code>index.css</code> jen pět hodnot: <code>--color-border</code> → slate-300, <code>--color-border-strong</code> → slate-400, <code>--color-surface-2</code> → slate-200, <code>--color-text-dim</code> → slate-600 (dark analogicky). Protože shadcn tokeny jsou na paletu namapované, zesílí se všechno včetně chatu, oddělovačů a inputů.</p>
+<div class="frame">
+  <div class="label">shadcn varianty (size sm) – porovnej obě palety</div>
+  <div class="row">
+    <button class="sb default"><svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>default</button>
+    <button class="sb outline">outline</button>
+    <button class="sb secondary">secondary</button>
+    <button class="sb ghost">ghost</button>
+    <button class="sb ghost dim">ghost (muted-fg)</button>
+    <button class="sb default" disabled>disabled</button>
+    <button class="sb ghost icon"><svg viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+    <span class="bg"><button class="sb outline" aria-pressed="true">Náhled</button><button class="sb outline">Editace</button></span>
+    <span class="cap">Použití v hlavičkách: Uložit = default (modré) · Náhled | Editace = ButtonGroup outline · Zpět / Upravit = ghost · ⤢ ⤡ × = ghost icon-sm · secondary se v hlavičkách nepoužije</span>
+  </div>
+</div>
+
+<!-- ========================================================= -->
+<h2>2 · Hlavička nodu <small>beze změny proti v1, jen tlačítka jsou shadcn</small></h2>
+<div class="frame">
+  <div class="bar">
+    <button class="sb ghost dim"><svg viewBox="0 0 24 24"><path d="m12 19-7-7 7-7M19 12H5"/></svg>Zpět</button>
+    <span class="right">
+      <button class="sb ghost"><svg viewBox="0 0 24 24"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>Upravit</button>
+      <button class="sb ghost dim icon"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </span>
+  </div>
+  <div class="nh">
+    <div class="type"><span class="dot"></span><span class="typ">project</span><span class="badge">in_progress</span><span class="badge">on_track</span></div>
+    <h1>Konektor – Asana adopce</h1>
+    <div class="idrow">
+      <span class="mono" title="Kliknutím zkopírujete ID">01KVYQVRGJBD7W6EGAAEDW423N <svg class="copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span>
+      <span class="sep">·</span>
+      <span class="mono path" title="/Users/honzapav/Workspaces/portuni/workflow/projects/konektor-projekt-asana-adopce – kliknutím zkopírujete cestu"><span>…/workflow/projects/konektor-projekt-asana-adopce</span> <svg class="copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span>
+      <span class="group">
+        <button class="sb ghost dim icon" title="Otevřít složku ve Finderu"><svg viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg></button>
+        <button class="sb ghost dim icon" title="Kopírovat odkaz na Google Drive"><svg viewBox="0 0 24 24" style="stroke-width:1.8"><path d="M8.5 3h7l6.5 11.5-3.5 6H5.5l-3.5-6Z"/><path d="M8.5 3 2 14.5M15.5 3 9 14.5h13"/></svg></button>
+        <button class="sb ghost dim icon" title="Otevřít na Google Drive"><svg viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></button>
+      </span>
+    </div>
+  </div>
+  <div class="callout">Pořadí: ID · cesta · složka · Drive (kopírovat odkaz) · otevřít na Drive. Celý řádek je zarovnaný vlevo, ikony stojí hned za cestou (nic se neroztahuje na šířku). Cesta zkrácená zleva, plná v tooltipu, klik kopíruje. Ikony Drive jen když node má routovaný Drive remote a složka na něm existuje. „i“ (meta debug) a „● active“ z hlavičky pryč.</div>
+</div>
+
+<!-- ========================================================= -->
+<h2>3 + 4 · Hlavička editoru <small>varianta B: Uložit jen v Editaci, vlevo od přepínače, stejná velikost, modré (default)</small></h2>
+<p class="note">Pravý blok: <b>[Uložit] [Náhled | Editace] [⤢ / ⤡] [×]</b>. Uložit se objeví jen v režimu Editace a stojí <b>vlevo</b> od přepínače, takže přepínač i ikona celé okno se nikdy nepohnou. Na celé okno je ⤡ na stejném místě jako ⤢ v panelu, × se přidá až za ni; vlevo zmizí „zpět“ (zmenšit vrací do panelu, panel má zpět na detail). Druhý řádek s přepínačem zaniká.</p>
+
+<div class="frame">
+  <div class="label ok">panel · Náhled</div>
+  <div class="bar">
+    <button class="sb ghost dim"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>zpět</button>
+    <span class="fname grow">260908-konektor-scenar-rozhovoru.md</span>
+    <span class="right">
+      <span class="bg"><button class="sb outline" aria-pressed="true"><svg viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>Náhled</button><button class="sb outline"><svg viewBox="0 0 24 24"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>Editace</button></span>
+      <button class="sb ghost dim icon" title="Na celé okno"><svg viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+    </span>
+  </div>
+  <div class="body"></div>
+</div>
+<div class="frame">
+  <div class="label ok">panel · Editace, neuložené změny</div>
+  <div class="bar">
+    <button class="sb ghost dim"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>zpět</button>
+    <span class="fname grow">260908-konektor-scenar-rozhovoru.md<span class="dirty">●</span></span>
+    <span class="right">
+      <button class="sb default" title="Uložit (Cmd/Ctrl+S)"><svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>Uložit</button>
+      <span class="bg"><button class="sb outline"><svg viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>Náhled</button><button class="sb outline" aria-pressed="true"><svg viewBox="0 0 24 24"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>Editace</button></span>
+      <button class="sb ghost dim icon" title="Na celé okno"><svg viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+    </span>
+  </div>
+  <div class="body"></div>
+</div>
+<div class="frame">
+  <div class="label ok">panel · Editace, bez změn (Uložit disabled)</div>
+  <div class="bar">
+    <button class="sb ghost dim"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>zpět</button>
+    <span class="fname grow">260908-konektor-scenar-rozhovoru.md</span>
+    <span class="right">
+      <button class="sb default" disabled><svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>Uložit</button>
+      <span class="bg"><button class="sb outline"><svg viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>Náhled</button><button class="sb outline" aria-pressed="true"><svg viewBox="0 0 24 24"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>Editace</button></span>
+      <button class="sb ghost dim icon" title="Na celé okno"><svg viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+    </span>
+  </div>
+  <div class="body"></div>
+</div>
+<div class="frame">
+  <div class="label ok">celé okno · Editace, neuložené změny</div>
+  <div class="bar">
+    <span class="fname grow">260908-konektor-scenar-rozhovoru.md<span class="dirty">●</span></span>
+    <span class="right">
+      <button class="sb default" title="Uložit (Cmd/Ctrl+S)"><svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>Uložit</button>
+      <span class="bg"><button class="sb outline"><svg viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>Náhled</button><button class="sb outline" aria-pressed="true"><svg viewBox="0 0 24 24"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>Editace</button></span>
+      <button class="sb ghost dim icon" title="Zmenšit do panelu"><svg viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg></button>
+      <button class="sb ghost dim icon" title="Zavřít editor"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </span>
+  </div>
+  <div class="body"></div>
+</div>
+<div class="frame">
+  <div class="label ok">celé okno · Náhled</div>
+  <div class="bar">
+    <span class="fname grow">260908-konektor-scenar-rozhovoru.md</span>
+    <span class="right">
+      <span class="bg"><button class="sb outline" aria-pressed="true"><svg viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>Náhled</button><button class="sb outline"><svg viewBox="0 0 24 24"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>Editace</button></span>
+      <button class="sb ghost dim icon" title="Zmenšit do panelu"><svg viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg></button>
+      <button class="sb ghost dim icon" title="Zavřít editor"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </span>
+  </div>
+  <div class="body"></div>
+</div>
+
+<!-- ========================================================= -->
+<h2>5 · Levý sloupec (Práce) <small>stávající vs. návrh, stejná data</small></h2>
+<p class="note">Společná část pro <b>všechny tři záložky</b> (Přehled, Graf, Práce), vždy na stejném místě a stejně vypadající: hlavička, přepínač pohledů (<code>ButtonGroup</code> outline, aktivní má výplň), tlačítko <b>„Hledat uzel… ⌘K“</b> a tlačítko <b>„Nový uzel“</b>. Hledání otevře jednu shadcn <code>CommandDialog</code> paletu (existující <code>ui/command.tsx</code>); ⌘K funguje z každé záložky, ⌘T zaniká. Výsledek hledání i „Nový uzel“ se chovají podle záložky stejně jako dnes (Graf vybere uzel v grafu, Práce ho otevře, Přehled přepne do Práce). Pod společnou částí je obsah záložky: v Práci strom otevřených nodů (řádky 32 / 28 px, typová tečka 8 px, vybraný node má výplň a modrou lištu vlevo, stavová tečka jen když úkol běží nebo čeká), v Grafu filtry jako dnes, v Přehledu nic.</p>
+<div class="cols">
+<div class="side old">
+  <div class="label">stávající</div>
+  <div class="hd"><div class="logo"><svg viewBox="0 0 24 24"><circle cx="12" cy="4.5" r="2.5"/><path d="m10.2 6.3-3.9 3.9"/><circle cx="4.5" cy="12" r="2.5"/><path d="M7 12h10"/><circle cx="19.5" cy="12" r="2.5"/><path d="m13.8 17.7 3.9-3.9"/><circle cx="12" cy="19.5" r="2.5"/></svg></div><div class="brand"><b>Portuni</b></div><span class="oi"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></span><span class="oi"><svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg></span></div>
+  <div class="vt"><span>Přehled</span><span>Graf</span><span class="on">Práce <span class="cnt">3</span></span></div>
+  <div class="search">Hledat a otevřít uzel…<kbd>⌘T</kbd></div>
+  <div class="newn">+ Nebo vytvoř nový uzel…</div>
+  <ul class="tree">
+    <li><div class="nrow sel"><span class="tdot" style="background:var(--color-node-project)"></span><span class="name">Konektor – Asana adopce</span><span class="sdot" style="background:#10b981"></span></div>
+      <ul class="sub"><li><div class="srow vis"><span class="sdot" style="background:#10b981"></span><span class="name" style="font-family:var(--font-mono)">#1</span></div></li><li><div class="srow"><span class="sdot" style="background:rgba(245,158,11,.7)"></span><span class="name">Scénář rozhovoru</span></div></li></ul>
+      <ul class="sub"><li><div class="srow"><span class="sdot" style="background:var(--color-node-process)"></span><span class="name">Přepis stakeholder rozhovorů</span></div></li></ul>
+    </li>
+    <li><div class="nrow"><span class="tdot" style="background:#0891b2"></span><span class="name">Workflow</span><span class="sdot" style="background:rgba(245,158,11,.7)"></span></div></li>
+    <li><div class="nrow"><span class="tdot" style="background:var(--color-node-process)"></span><span class="name">Onboarding klienta</span><span class="sdot" style="background:rgba(245,158,11,.7)"></span></div></li>
+  </ul>
+</div>
+<div class="side">
+  <div class="label ok">návrh · řazení podle uzlů</div>
+  <div class="hd"><div class="logo"><svg viewBox="0 0 24 24"><circle cx="12" cy="4.5" r="2.5"/><path d="m10.2 6.3-3.9 3.9"/><circle cx="4.5" cy="12" r="2.5"/><path d="M7 12h10"/><circle cx="19.5" cy="12" r="2.5"/><path d="m13.8 17.7 3.9-3.9"/><circle cx="12" cy="19.5" r="2.5"/></svg></div><div class="brand"><b>Portuni</b><span class="ws">Workflow <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span></div><button class="sb ghost dim icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button><button class="sb ghost dim icon"><svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg></button></div>
+  <div class="pad"><span class="bg full"><button class="sb outline">Přehled</button><button class="sb outline">Graf</button><button class="sb outline" aria-pressed="true">Práce<span class="cnt">3</span></button></span></div>
+  <div class="pad"><button class="sb outline trigger"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>Hledat uzel…<kbd>⌘K</kbd></button></div>
+  <div class="pad"><button class="sb outline" style="width:100%;justify-content:center"><svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></svg>Nový uzel</button></div>
+  <div class="sec">Otevřené <span class="bg"><button class="sb outline" aria-pressed="true">Uzly</button><button class="sb outline">Stav</button></span></div>
+  <ul class="tree">
+    <li><div class="nrow sel"><span class="tdot" style="background:var(--color-node-project)"></span><span class="name">Konektor – Asana adopce</span><span class="sdot pulse" style="background:var(--color-status-active)"></span><span class="acts"><button class="sb ghost icon" title="Zavřít uzel"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button></span></div>
+      <ul class="sub">
+        <li><div class="srow vis"><span class="sdot pulse" style="background:var(--color-status-active)"></span><span class="name">Scénář rozhovoru</span></div></li>
+        <li><div class="srow"><span class="sdot pulse" style="background:var(--color-node-process)"></span><span class="name">Přepis stakeholder rozhovorů</span></div></li>
+      </ul>
+    </li>
+    <li><div class="nrow"><span class="tdot" style="background:#0891b2"></span><span class="name">Workflow</span><span class="acts"><button class="sb ghost icon" title="Zavřít uzel"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button></span></div></li>
+    <li><div class="nrow"><span class="tdot" style="background:var(--color-node-process)"></span><span class="name">Onboarding klienta</span><span class="sdot" style="background:var(--color-node-process)"></span></div>
+      <ul class="sub"><li><div class="srow"><span class="sdot" style="background:var(--color-node-process)"></span><span class="name">Šablona onboardingu</span></div></li></ul>
+    </li>
+  </ul>
+</div>
+<div class="side">
+  <div class="label ok">návrh · jen úkoly podle stavu + otevřený přepínač workspace</div>
+  <div class="hd"><div class="logo"><svg viewBox="0 0 24 24"><circle cx="12" cy="4.5" r="2.5"/><path d="m10.2 6.3-3.9 3.9"/><circle cx="4.5" cy="12" r="2.5"/><path d="M7 12h10"/><circle cx="19.5" cy="12" r="2.5"/><path d="m13.8 17.7 3.9-3.9"/><circle cx="12" cy="19.5" r="2.5"/></svg></div><div class="brand"><b>Portuni</b><span class="ws">Workflow <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span></div><button class="sb ghost dim icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button><button class="sb ghost dim icon"><svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg></button><div class="menu">
+    <div class="it cur"><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>Workflow<span class="k">toto okno</span></div>
+    <div class="it"><svg viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>Tempo<span class="k">otevřeno</span></div>
+    <div class="it"><svg viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>Osobní</div>
+    <div class="it dis">JRD<span class="k">nedostupný</span></div>
+    <hr>
+    <div class="it"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Spravovat workspaces…</div>
+  </div></div>
+  <div class="pad"><span class="bg full"><button class="sb outline">Přehled</button><button class="sb outline">Graf</button><button class="sb outline" aria-pressed="true">Práce<span class="cnt">3</span></button></span></div>
+  <div class="pad"><button class="sb outline trigger"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>Hledat uzel…<kbd>⌘K</kbd></button></div>
+  <div class="pad"><button class="sb outline" style="width:100%;justify-content:center"><svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></svg>Nový uzel</button></div>
+  <div class="sec">Otevřené <span class="bg"><button class="sb outline">Uzly</button><button class="sb outline" aria-pressed="true">Stav</button></span></div>
+  <ul class="tree">
+    <li class="grp">Vyžadují pozornost <span class="cnt">1</span></li>
+    <li><div class="trow"><div class="txt"><b>Přepis stakeholder rozhovorů</b><span><i class="tdot" style="background:var(--color-node-project)"></i>Konektor – Asana adopce</span></div></div></li>
+    <li class="grp">Pracují <span class="cnt">2</span></li>
+    <li><div class="trow"><div class="txt"><b>Scénář rozhovoru</b><span><i class="tdot" style="background:var(--color-node-project)"></i>Konektor – Asana adopce</span></div></div></li>
+    <li><div class="trow"><div class="txt"><b>Aktualizace ceníku služeb</b><span><i class="tdot" style="background:#0891b2"></i>Workflow</span></div></div></li>
+    <li class="grp">Pozastavené <span class="cnt">1</span></li>
+    <li><div class="trow"><div class="txt"><b>Šablona onboardingu</b><span><i class="tdot" style="background:var(--color-node-process)"></i>Onboarding klienta</span></div></div></li>
+    <li class="grp dim">Hotové <span class="cnt">1</span></li>
+    <li><div class="trow"><div class="txt"><b>Souhrn z kickoffu</b><span><i class="tdot" style="background:var(--color-node-project)"></i>Konektor – Asana adopce</span></div></div></li>
+  </ul>
+</div>
+</div>
+<p class="note"><b>Přepínač workspace</b>: název workspace pod logem je dropdown (shadcn <code>Select</code> styl ghost). Položky: aktuální (zaškrtnuto, „toto okno“), ostatní s „otevřeno“ tam, kde už má okno, nedostupné šedě, dole „Spravovat workspaces…“ (Nastavení → Workspaces). Zobrazí se i s jediným workspace, aby bylo vidět, ve kterém jsem. Chování zůstává jako dnes: výběr otevře nebo zaostří okno daného workspace.<br><br>
+<b>Úkoly</b> jsou zarovnané pod název nodu (bez svislé linky a bez dalšího odsazení). <b>Řazení</b>: přepínač Uzly | Stav v hlavičce sekce. „Uzly“ = dnešní strom. „Stav“ = jen úkoly (automaticky pojmenované), bez řádků nodů, seskupené Vyžadují pozornost (čeká na mě) · Pracují (běží) · Pozastavené · Hotové (ztlumeně); skupina bez úkolu se nezobrazí. Stav vyjadřuje skupina, žádné stavové tečky – tečka u názvu nodu pod úkolem je jen typ nodu. Volba se pamatuje per workspace v localStorage.</p>
+
+<script>
+  const html = document.documentElement;
+  document.querySelectorAll('[data-tokens-btn]').forEach(b => b.addEventListener('click', () => {
+    html.dataset.tokens = b.dataset.tokensBtn;
+    document.querySelectorAll('[data-tokens-btn]').forEach(x => x.setAttribute('aria-pressed', x === b));
+  }));
+  document.querySelectorAll('[data-theme-btn]').forEach(b => b.addEventListener('click', () => {
+    html.dataset.theme = b.dataset.themeBtn;
+    document.querySelectorAll('[data-theme-btn]').forEach(x => x.setAttribute('aria-pressed', x === b));
+  }));
+</script>
+</body>
+</html>

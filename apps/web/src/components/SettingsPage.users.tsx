@@ -4,6 +4,10 @@
 // component assumes it's only ever rendered for an admin.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { fetchUsersAdmin, inviteUser, UserExistsError } from "../api";
 import type { UserAdmin } from "../types";
 
@@ -95,7 +99,7 @@ export default function SettingsUsersPanel() {
       </p>
 
       <div className="mb-4 flex items-center gap-2">
-        <input
+        <Input
           type="email"
           value={email}
           onChange={(e) => {
@@ -107,22 +111,22 @@ export default function SettingsUsersPanel() {
           }}
           placeholder="email@example.com"
           disabled={inviteBusy}
-          className="flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-[13.5px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] disabled:opacity-50"
+          className="flex-1"
         />
-        <button
+        <Button
           type="button"
           disabled={inviteBusy || !email.trim()}
           onClick={() => void handleInvite()}
-          className="shrink-0 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-4 py-2 text-[13.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] disabled:cursor-not-allowed disabled:opacity-50"
+          className="shrink-0"
         >
           {inviteBusy ? "Zvu…" : "Pozvat"}
-        </button>
+        </Button>
       </div>
 
       {inviteError && (
-        <div className="mb-4 rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
-          {inviteError}
-        </div>
+        <Alert variant="destructive" className="mb-4">
+          <AlertDescription>{inviteError}</AlertDescription>
+        </Alert>
       )}
 
       {state.kind === "loading" && (
@@ -132,16 +136,20 @@ export default function SettingsUsersPanel() {
       )}
 
       {state.kind === "error" && (
-        <div className="flex items-start justify-between gap-3 rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
-          <span className="min-w-0 break-words">{state.reason}</span>
-          <button
-            type="button"
-            onClick={() => void load()}
-            className="shrink-0 text-red-400 hover:text-red-200"
-          >
-            Zkusit znovu
-          </button>
-        </div>
+        <Alert variant="destructive">
+          <AlertDescription className="flex items-start justify-between gap-3">
+            <span className="min-w-0 break-words">{state.reason}</span>
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              onClick={() => void load()}
+              className="shrink-0 text-destructive"
+            >
+              Zkusit znovu
+            </Button>
+          </AlertDescription>
+        </Alert>
       )}
 
       {state.kind === "ok" && state.users.length === 0 && (
@@ -184,9 +192,12 @@ export default function SettingsUsersPanel() {
                         {u.name}
                       </span>
                       {u.invited && (
-                        <span className="rounded-sm border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[10.5px] uppercase tracking-wide text-[var(--color-text-dim)]">
+                        <Badge
+                          variant="outline"
+                          className="bg-[var(--color-bg)] font-mono uppercase tracking-wide text-[var(--color-text-dim)]"
+                        >
                           Pozvaný
-                        </span>
+                        </Badge>
                       )}
                     </div>
                   </td>

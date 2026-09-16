@@ -19,6 +19,10 @@ import {
 } from "../api";
 import { mergeLiveSessionStates, sessionRowAccess, sessionRowChip, type SessionRowAccess } from "../lib/session-views";
 import type { SessionStateMessage } from "../lib/sessions-client";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 // #329: labels for a session the server suspended (dropped connection,
 // idle GC, terminal exit, boot sweep) rather than the agent's own
@@ -168,14 +172,13 @@ export function SessionsSection({
   return (
     <div className="px-5 py-4">
       <div className="mb-3 flex items-center justify-between">
-        <label className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-text-dim)]">
-          <input
-            type="checkbox"
+        <Label className="gap-1.5 text-[12.5px] font-normal text-[var(--color-text-dim)]">
+          <Checkbox
             checked={includeArchived}
-            onChange={(e) => setIncludeArchived(e.target.checked)}
+            onCheckedChange={(checked) => setIncludeArchived(checked === true)}
           />
           Zobrazit archivované
-        </label>
+        </Label>
       </div>
 
       {error && (
@@ -292,44 +295,50 @@ function SessionRow({
         />
         {editing ? (
           <>
-            <input
+            <Input
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               autoFocus
-              className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[13.5px] text-[var(--color-text)]"
+              className="min-w-0 flex-1"
             />
-            <button
+            <Button
+              variant="ghost"
+              size="icon-xs"
               onClick={() => void save()}
               disabled={saving}
               title="Uložit název"
-              className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-accent)] hover:bg-[var(--color-accent-dim)]/15"
+              className="text-[var(--color-accent)]"
             >
-              <Check size={12} />
-            </button>
-            <button
+              <Check />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
               onClick={() => {
                 setDraft(session.name);
                 setEditing(false);
               }}
               disabled={saving}
               title="Zrušit"
-              className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-bg)]"
+              className="text-muted-foreground"
             >
-              <X size={12} />
-            </button>
+              <X />
+            </Button>
           </>
         ) : (
           <>
             <span className="min-w-0 flex-1 truncate text-[13.5px] text-[var(--color-text)]">
               {session.name}
             </span>
-            <button
+            <Button
+              variant="ghost"
+              size="icon-xs"
               onClick={() => setEditing(true)}
               title="Přejmenovat"
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
+              className="shrink-0 text-muted-foreground"
             >
-              <Pencil size={11} />
-            </button>
+              <Pencil />
+            </Button>
           </>
         )}
       </div>
@@ -395,12 +404,8 @@ function RowButton({
   disabled?: boolean;
 }) {
   return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[11.5px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
-    >
+    <Button variant="outline" size="sm" onClick={onClick} disabled={disabled}>
       {children}
-    </button>
+    </Button>
   );
 }

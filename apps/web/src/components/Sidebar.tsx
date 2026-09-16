@@ -1,14 +1,27 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Search, Sun, Moon, X, Settings, Waypoints, MessagesSquare, LayoutDashboard } from "lucide-react";
-import type { GraphPayload, GraphNode, SessionSummary } from "../types";
+import { memo, useEffect, useMemo, useState } from "react";
+import { Plus, Search, Sun, Moon, Settings, Waypoints, MessagesSquare, LayoutDashboard } from "lucide-react";
+import type { GraphPayload, SessionSummary } from "../types";
 import { RELATION_TYPES } from "../types";
 import { TYPE_ORDER } from "../lib/colors";
 import type { Theme } from "../lib/theme";
-import { foldForSearch } from "../lib/normalize";
 import type { WorkspaceNodeRow } from "../lib/sessions";
 import { isTauri } from "../lib/backend-url";
 import { listWorkspaces, openWorkspaceWindow, type WorkspaceInfo } from "../lib/workspaces";
+import { currentWorkspaceId } from "../lib/workspace-storage";
+import { Button } from "@/components/ui/button";
+import { ButtonGroup } from "@/components/ui/button-group";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import WorkspaceNodeList from "./WorkspaceNodeList";
+import NodeCommandPalette from "./NodeCommandPalette";
 
 // Shown on disabled create-node buttons (global scope below POST /nodes).
 const CREATE_NODE_DENIED_TITLE = "Vytváření uzlů vyžaduje vyšší roli";
@@ -27,6 +40,8 @@ type Props = {
   onToggleType: (type: string) => void;
   disabledStatuses: Set<string>;
   onToggleStatus: (status: string) => void;
+  // Still passed by App for the graph; the sidebar itself no longer
+  // highlights a hit list (the ⌘K palette replaced it).
   selectedId: string | null;
   onSelect: (id: string) => void;
   theme: Theme;
@@ -107,7 +122,6 @@ function Sidebar({
   onToggleType,
   disabledStatuses,
   onToggleStatus,
-  selectedId,
   onSelect,
   theme,
   onThemeToggle,
@@ -127,72 +141,137 @@ function Sidebar({
   workspaceOpenSessionsByNode,
   onWorkspaceOpenSessionChat,
 }: Props) {
+  const isMac =
+    typeof navigator !== "undefined" &&
+    /mac|iphone|ipad|ipod/i.test(navigator.platform || navigator.userAgent);
+  const shortcut = isMac ? "⌘K" : "Ctrl K";
+
+  // One palette for every tab. ⌘K / Ctrl+K opens it from anywhere (the old
+  // per-tab ⌘K graph search and ⌘T workspace picker both collapse into it).
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (mod && e.key.toLowerCase() === "k" && !isTypingTarget(e.target)) {
+        e.preventDefault();
+        setPaletteOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [isMac]);
+
+  // What picking and creating mean depends on the tab: Graf selects in the
+  // graph (and the live query keeps highlighting matches behind the dialog
+  // while it is open); every other tab opens the node in Práce, which is
+  // also where a freshly created node lands.
+  const pickNode = (id: string) => {
+    if (view === "graph") onSelect(id);
+    else onWorkspaceOpenNode(id);
+  };
+  const createNode = view === "graph" ? onCreateNode : onWorkspaceCreateNode;
+
   return (
     <aside className="flex h-full w-[300px] shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-bg)]">
       {/* Header */}
-      <div className="flex items-center gap-2.5 border-b border-[var(--color-border)] px-5 py-5">
+      <div className="flex items-center gap-3 border-b border-[var(--color-border)] px-4 py-4">
         <div
-          className="flex h-9 w-9 items-center justify-center rounded-md"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
           style={{ background: "var(--color-accent-soft)" }}
         >
-          <Waypoints size={18} className="text-[var(--color-accent)]" />
+          <Waypoints size={16} className="text-[var(--color-accent)]" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-[18px] font-semibold tracking-tight text-[var(--color-text)]">
+          <div className="text-[15px] font-semibold leading-tight tracking-tight text-[var(--color-text)]">
             Portuni
           </div>
-          <WorkspaceSwitcher />
+          <WorkspaceSwitcher onOpenSettings={onOpenSettings} />
         </div>
-        <button
-          onClick={onOpenSettings}
-          title="Nastavení"
-          className="flex h-7 w-7 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
-        >
-          <Settings size={13} />
-        </button>
-        <button
+        <Button variant="ghost" size="icon-sm" onClick={onOpenSettings} title="Nastavení" aria-label="Nastavení" className="text-muted-foreground">
+          <Settings />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
           onClick={onThemeToggle}
           title={theme === "dark" ? "Přepnout na světlý režim" : "Přepnout na tmavý režim"}
-          className="flex h-7 w-7 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
+          aria-label={theme === "dark" ? "Přepnout na světlý režim" : "Přepnout na tmavý režim"}
+          className="text-muted-foreground"
         >
-          {theme === "dark" ? <Sun size={13} /> : <Moon size={13} />}
-        </button>
+          {theme === "dark" ? <Sun /> : <Moon />}
+        </Button>
       </div>
 
-      {/* View toggle */}
-      <div className="px-4 pt-4">
-        <div className="flex rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-0.5">
+      {/* Common block: view toggle, search, create -- identical on every tab */}
+      <div className="flex flex-col gap-2.5 px-4 pt-4">
+        <ButtonGroup className="w-full" aria-label="Pohled">
           <ViewToggleButton
             label="Přehled"
-            icon={<LayoutDashboard size={12} />}
+            icon={<LayoutDashboard />}
             active={view === "overview"}
             onClick={() => onViewChange("overview")}
           />
           <ViewToggleButton
             label="Graf"
-            icon={<Waypoints size={12} />}
+            icon={<Waypoints />}
             active={view === "graph"}
             onClick={() => onViewChange("graph")}
           />
           <ViewToggleButton
             label="Práce"
-            icon={<MessagesSquare size={12} />}
+            icon={<MessagesSquare />}
             active={view === "workspace"}
             onClick={() => onViewChange("workspace")}
             badge={workspaceBadge}
           />
-        </div>
+        </ButtonGroup>
+        <Button
+          variant="outline"
+          onClick={() => setPaletteOpen(true)}
+          className="w-full justify-start font-normal text-muted-foreground"
+          title={`Hledat uzel (${shortcut})`}
+        >
+          <Search />
+          Hledat uzel…
+          <kbd className="ml-auto rounded border border-[var(--color-border)] bg-[var(--color-surface-2)] px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+            {shortcut}
+          </kbd>
+        </Button>
+        <Button
+          variant="outline"
+          onClick={createNode}
+          disabled={!canCreateNode}
+          title={
+            canCreateNode
+              ? view === "graph"
+                ? "Vytvořit nový uzel (organizace, projekt, proces, oblast, princip)"
+                : "Vytvoří nový uzel a otevře ho v Práci"
+              : CREATE_NODE_DENIED_TITLE
+          }
+          className="w-full"
+        >
+          <Plus />
+          Nový uzel
+        </Button>
       </div>
 
+      <NodeCommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        nodes={graph.nodes}
+        onPick={pickNode}
+        onQueryChange={view === "graph" ? onQuery : undefined}
+      />
+
       {view === "settings" && (
-        <div className="flex-1 px-5 py-5 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
+        <div className="flex-1 px-5 py-6 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
           Konfigurace Portuni: příkaz agenta pro spouštění z uzlů a
           parametry MCP serveru pro Claude Code a Codex.
         </div>
       )}
 
       {view === "overview" && (
-        <div className="flex-1 px-5 py-5 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
+        <div className="flex-1 px-5 py-6 text-[13px] leading-relaxed text-[var(--color-text-dim)]">
           Souhrn celého workspace: běžící relace, nody vyžadující pozornost,
           poslední aktivita a nově vytvořené nody.
         </div>
@@ -200,12 +279,6 @@ function Sidebar({
 
       {view === "workspace" && (
         <div className="flex min-h-0 flex-1 flex-col">
-          <WorkspaceActions
-            graph={graph}
-            onOpenNode={onWorkspaceOpenNode}
-            onCreateNode={onWorkspaceCreateNode}
-            canCreateNode={canCreateNode}
-          />
           <div className="flex-1 overflow-x-hidden overflow-y-auto scroll-thin">
             <WorkspaceNodeList
               rows={workspaceRows}
@@ -221,39 +294,18 @@ function Sidebar({
       )}
 
       {view === "graph" && (
-        <>
-          <div className="px-4 pt-4">
-            <button
-              type="button"
-              onClick={onCreateNode}
-              disabled={!canCreateNode}
-              title={
-                canCreateNode
-                  ? "Vytvořit nový uzel (organizace, projekt, proces, oblast, princip)"
-                  : CREATE_NODE_DENIED_TITLE
-              }
-              className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-3 py-2 text-[13px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-[var(--color-accent-soft)] disabled:hover:text-[var(--color-accent)]"
-            >
-              <Plus size={13} />
-              Nový uzel
-            </button>
-          </div>
-          <GraphSidebarContent
-            graph={graph}
-            query={query}
-            onQuery={onQuery}
-            disabledRelations={disabledRelations}
-            onToggleRelation={onToggleRelation}
-            disabledOrgs={disabledOrgs}
-            onToggleOrg={onToggleOrg}
-            disabledTypes={disabledTypes}
-            onToggleType={onToggleType}
-            disabledStatuses={disabledStatuses}
-            onToggleStatus={onToggleStatus}
-            selectedId={selectedId}
-            onSelect={onSelect}
-          />
-        </>
+        <GraphSidebarContent
+          graph={graph}
+          query={query}
+          disabledRelations={disabledRelations}
+          onToggleRelation={onToggleRelation}
+          disabledOrgs={disabledOrgs}
+          onToggleOrg={onToggleOrg}
+          disabledTypes={disabledTypes}
+          onToggleType={onToggleType}
+          disabledStatuses={disabledStatuses}
+          onToggleStatus={onToggleStatus}
+        />
       )}
 
       {(view === "graph" || view === "settings") && (
@@ -267,14 +319,16 @@ function Sidebar({
   );
 }
 
-// Workspace switcher in the brand row. Hidden (renders nothing, current
-// look unchanged) unless running in Tauri AND more than one workspace
-// exists -- a single-workspace install has nothing to switch between. A
-// jump target, not a selection (#226, one window per workspace): picking
-// an entry opens or focuses ITS OWN window and the select resets to the
-// placeholder, since there is no longer a single "current" workspace this
-// window's dropdown could reflect.
-function WorkspaceSwitcher() {
+const MANAGE_WORKSPACES = "__manage__";
+
+// Workspace switcher under the brand name: a shadcn Select styled as a
+// quiet ghost trigger showing THIS window's workspace. Rendered whenever the
+// Tauri workspace list is available -- with a single workspace too, so the
+// window always says which one it is. Still a jump target, not a selection
+// (#226, one window per workspace): picking an entry opens or focuses ITS
+// OWN window and the select stays on its placeholder, since no single
+// "current" value could reflect several windows at once.
+function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
 
   useEffect(() => {
@@ -294,8 +348,7 @@ function WorkspaceSwitcher() {
         const { listen } = await import("@tauri-apps/api/event");
         // Rust broadcasts this after every config mutation (create,
         // delete, enable/disable) and every window open/close, so a
-        // change made in ANY window -- including the 1 -> 2 transition
-        // where this switcher first becomes visible -- appears here.
+        // change made in ANY window appears here.
         unlisten = await listen("workspaces-changed", fetchWorkspaces);
       } catch {
         /* not running in Tauri */
@@ -311,185 +364,52 @@ function WorkspaceSwitcher() {
     };
   }, []);
 
-  if (!isTauri() || workspaces.length <= 1) return null;
+  if (!isTauri() || workspaces.length === 0) return null;
+  const currentId = currentWorkspaceId();
+  const current = workspaces.find((w) => w.id === currentId);
 
   return (
-    <select
+    <Select
       value=""
-      onChange={(e) => {
-        const id = e.target.value;
-        if (id) void openWorkspaceWindow(id);
-        e.target.value = "";
+      onValueChange={(id) => {
+        if (id === MANAGE_WORKSPACES) onOpenSettings();
+        else if (id) void openWorkspaceWindow(id);
       }}
-      title="Otevřít workspace"
-      className="mt-0.5 w-full max-w-full truncate rounded-sm border border-transparent bg-transparent text-[11px] text-[var(--color-text-dim)] outline-none transition-colors hover:border-[var(--color-border)] hover:text-[var(--color-text-muted)] focus:border-[var(--color-border)]"
     >
-      <option value="" disabled>
-        Otevřít workspace…
-      </option>
-      {workspaces.map((w) => (
-        <option key={w.id} value={w.id}>
-          {w.label}
-          {w.window_open ? " (otevřeno)" : ""}
-          {/* Deferred central agents are not "unavailable" -- in central
-              mode the webview talks straight to the server, so a workspace
-              can be fully switchable while its local sync agent still waits
-              on login. */}
-          {!w.running && !w.deferred && w.enabled ? " (nedostupný)" : ""}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-// Search-first workspace actions. The primary action is opening an EXISTING
-// node in the workspace: type a name, the list filters
-// inline, click (or Enter) opens the node. ⌘T focuses the field from anywhere
-// in the workspace. Creating a brand-new node is the secondary, quiet
-// "Nebo vytvoř nový uzel…" link below.
-function WorkspaceActions({
-  graph,
-  onOpenNode,
-  onCreateNode,
-  canCreateNode,
-}: {
-  graph: GraphPayload;
-  onOpenNode: (nodeId: string) => void;
-  onCreateNode: () => void;
-  canCreateNode: boolean;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [query, setQuery] = useState("");
-  const [focused, setFocused] = useState(false);
-
-  const isMac =
-    typeof navigator !== "undefined" &&
-    /mac|iphone|ipad|ipod/i.test(navigator.platform || navigator.userAgent);
-
-  // ⌘T (mac) / Ctrl+T elsewhere focuses the picker. preventDefault stops the
-  // browser's new-tab during Vite dev; in the Tauri shell there's no conflict.
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target)) return;
-      const mod = isMac ? e.metaKey : e.ctrlKey;
-      if (mod && e.key.toLowerCase() === "t") {
-        e.preventDefault();
-        inputRef.current?.focus();
-        inputRef.current?.select();
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [isMac]);
-
-  const q = foldForSearch(query.trim());
-  // Any node type can be opened in the workspace, organizations included.
-  const matches = q
-    ? graph.nodes
-        .filter(
-          (n) =>
-            foldForSearch(n.name).includes(q) ||
-            foldForSearch(n.description ?? "").includes(q) ||
-            foldForSearch(n.type).includes(q),
-        )
-        .slice(0, 30)
-    : [];
-
-  const pick = (id: string) => {
-    onOpenNode(id);
-    setQuery("");
-    inputRef.current?.blur();
-  };
-
-  return (
-    <div className="px-4 pt-4">
-      <div className="relative">
-        <Search
-          size={13}
-          className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-dim)]"
-        />
-        <input
-          ref={inputRef}
-          name="workspace-open-node"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") {
-              setQuery("");
-              inputRef.current?.blur();
-            } else if (e.key === "Enter" && matches.length > 0) {
-              pick(matches[0].id);
-            }
-          }}
-          placeholder="Hledat a otevřít uzel…"
-          className="w-full rounded-lg border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] py-2.5 pl-8 pr-12 text-[13px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] transition-colors focus:border-[var(--color-accent)] focus:bg-[var(--color-surface)]"
-        />
-        {query.length > 0 ? (
-          <button
-            onClick={() => {
-              setQuery("");
-              inputRef.current?.focus();
-            }}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-sm p-0.5 text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)]"
-            title="Vymazat"
-          >
-            <X size={12} />
-          </button>
-        ) : (
-          !focused && (
-            <kbd className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--color-text-dim)]">
-              {isMac ? "⌘T" : "Ctrl T"}
-            </kbd>
-          )
-        )}
-      </div>
-
-      {q.length > 0 && (
-        <ul className="scroll-thin mt-2 max-h-[280px] overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)]">
-          {matches.length === 0 ? (
-            <li className="px-3 py-4 text-center text-[12.5px] text-[var(--color-text-dim)]">
-              Žádné výsledky
-            </li>
-          ) : (
-            matches.map((n) => (
-              <li
-                key={n.id}
-                className="border-b border-[var(--color-border)] last:border-b-0"
-              >
-                <button
-                  type="button"
-                  onClick={() => pick(n.id)}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg)] hover:text-[var(--color-text)]"
-                >
-                  <span
-                    className="inline-block h-1.5 w-1.5 rounded-full"
-                    style={{ background: nodeTypeVar(n.type) }}
-                    aria-hidden
-                  />
-                  <span className="flex-1 truncate">{n.name}</span>
-                  <span className="font-mono text-[11px] text-[var(--color-text-dim)]">
-                    {n.type}
-                  </span>
-                </button>
-              </li>
-            ))
-          )}
-        </ul>
-      )}
-
-      <button
-        type="button"
-        onClick={onCreateNode}
-        disabled={!canCreateNode}
-        title={canCreateNode ? "Vytvoří nový uzel a otevře ho v Práci" : CREATE_NODE_DENIED_TITLE}
-        className="mt-2 flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-[12.5px] text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-[var(--color-text-dim)]"
+      <SelectTrigger
+        size="sm"
+        aria-label="Workspace"
+        title="Otevřít jiný workspace"
+        className="-ml-1.5 mt-0.5 h-6 max-w-full gap-1 border-transparent bg-transparent py-0 pr-1 pl-1.5 text-[12px] shadow-none hover:bg-muted data-placeholder:text-muted-foreground dark:bg-transparent dark:hover:bg-muted [&_svg]:size-3"
       >
-        <Plus size={13} />
-        Nebo vytvoř nový uzel…
-      </button>
-    </div>
+        <SelectValue placeholder={current?.label ?? "Workspace"} />
+      </SelectTrigger>
+      <SelectContent>
+        {workspaces.map((w) => {
+          const unavailable = !w.running && !w.deferred && w.enabled;
+          const hint = w.id === currentId
+            ? "toto okno"
+            : w.window_open
+              ? "otevřeno"
+              : unavailable
+                ? "nedostupný"
+                : !w.enabled
+                  ? "vypnutý"
+                  : null;
+          return (
+            <SelectItem key={w.id} value={w.id} disabled={!w.enabled}>
+              <span className="min-w-0 flex-1 truncate">{w.label}</span>
+              {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
+            </SelectItem>
+          );
+        })}
+        <SelectSeparator />
+        <SelectItem value={MANAGE_WORKSPACES}>
+          <Settings className="text-muted-foreground" />
+          Spravovat workspaces…
+        </SelectItem>
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -507,29 +427,27 @@ function ViewToggleButton({
   badge?: number;
 }) {
   return (
-    <button
+    <Button
+      variant="outline"
+      size="sm"
+      aria-pressed={active}
       onClick={onClick}
-      className={`flex flex-1 items-center justify-center gap-1.5 rounded-sm px-2 py-1.5 text-[13px] transition-colors ${
-        active
-          ? "bg-[var(--color-bg)] text-[var(--color-text)] shadow-sm"
-          : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-      }`}
+      className="flex-1 aria-pressed:bg-muted aria-pressed:text-foreground aria-pressed:font-medium dark:aria-pressed:bg-muted"
     >
       {icon}
       {label}
       {badge != null && badge > 0 && (
-        <span className="ml-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--color-accent-soft)] px-1 text-[10px] font-medium text-[var(--color-accent)]">
+        <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--color-accent-soft)] px-1 text-[10px] font-semibold text-[var(--color-accent)]">
           {badge}
         </span>
       )}
-    </button>
+    </Button>
   );
 }
 
 function GraphSidebarContent({
   graph,
   query,
-  onQuery,
   disabledRelations,
   onToggleRelation,
   disabledOrgs,
@@ -538,12 +456,11 @@ function GraphSidebarContent({
   onToggleType,
   disabledStatuses,
   onToggleStatus,
-  selectedId,
-  onSelect,
 }: {
   graph: GraphPayload;
+  // The live palette query, only so the filter list can step aside while
+  // the graph is being searched (matches are highlighted in the graph).
   query: string;
-  onQuery: (q: string) => void;
   disabledRelations: Set<string>;
   onToggleRelation: (relation: string) => void;
   disabledOrgs: Set<string>;
@@ -552,22 +469,8 @@ function GraphSidebarContent({
   onToggleType: (type: string) => void;
   disabledStatuses: Set<string>;
   onToggleStatus: (status: string) => void;
-  selectedId: string | null;
-  onSelect: (id: string) => void;
 }) {
-  const q = foldForSearch(query.trim());
-  const matches = q
-    ? graph.nodes
-        .filter((n) => {
-          if (n.type === "organization") return false;
-          return (
-            foldForSearch(n.name).includes(q) ||
-            foldForSearch(n.description ?? "").includes(q) ||
-            foldForSearch(n.type).includes(q)
-          );
-        })
-        .slice(0, 60)
-    : [];
+  const q = query.trim();
 
   const typeCounts = new Map<string, number>();
   for (const n of graph.nodes) {
@@ -596,34 +499,9 @@ function GraphSidebarContent({
 
   return (
     <>
-      {/* Search */}
-      <SearchBox query={query} onQuery={onQuery} />
-
-      {/* Search results (only when querying) */}
-      {q.length > 0 && (
-        <div className="border-b border-[var(--color-border)] px-2 py-2">
-          <div className="scroll-thin max-h-[280px] overflow-y-auto">
-            {matches.length === 0 ? (
-              <div className="px-3 py-4 text-center text-[13px] text-[var(--color-text-dim)]">
-                Žádné výsledky
-              </div>
-            ) : (
-              matches.map((n) => (
-                <SearchHit
-                  key={n.id}
-                  node={n}
-                  active={selectedId === n.id}
-                  onClick={() => onSelect(n.id)}
-                />
-              ))
-            )}
-          </div>
-        </div>
-      )}
-
       {/* Filters */}
       {q.length === 0 && (
-        <div className="flex-1 overflow-y-auto scroll-thin px-5 py-5">
+        <div className="flex-1 overflow-y-auto scroll-thin px-5 py-6">
           <Section title="Organizace">
             <div className="space-y-1.5">
               {graph.nodes
@@ -727,84 +605,6 @@ function GraphSidebarContent({
   );
 }
 
-// Search box with global Cmd+K (mac) / Ctrl+K (Windows/Linux) shortcut to
-// focus, plus Esc to clear+blur. Shows a small kbd hint inside the input
-// when empty and unfocused.
-function SearchBox({
-  query,
-  onQuery,
-}: {
-  query: string;
-  onQuery: (q: string) => void;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [focused, setFocused] = useState(false);
-
-  const isMac =
-    typeof navigator !== "undefined" &&
-    /mac|iphone|ipad|ipod/i.test(navigator.platform || navigator.userAgent);
-  const shortcut = isMac ? "⌘K" : "Ctrl K";
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target)) return;
-      const mod = isMac ? e.metaKey : e.ctrlKey;
-      if (mod && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        inputRef.current?.focus();
-        inputRef.current?.select();
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [isMac]);
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Escape") {
-      if (query) onQuery("");
-      inputRef.current?.blur();
-    }
-  };
-
-  return (
-    <div className="px-4 pt-4">
-      <div className="relative">
-        <Search
-          size={13}
-          className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-dim)]"
-        />
-        <input
-          ref={inputRef}
-          name="search"
-          value={query}
-          onChange={(e) => onQuery(e.target.value)}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-          onKeyDown={onKeyDown}
-          placeholder="Hledat uzly..."
-          className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] py-2 pl-8 pr-12 text-[13px] text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] transition-colors focus:border-[var(--color-accent-dim)]"
-        />
-        {query.length > 0 ? (
-          <button
-            onClick={() => onQuery("")}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-sm p-0.5 text-[var(--color-text-dim)] transition-colors hover:text-[var(--color-text)]"
-          >
-            <X size={12} />
-          </button>
-        ) : (
-          !focused && (
-            <kbd
-              className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--color-text-dim)]"
-            >
-              {shortcut}
-            </kbd>
-          )
-        )}
-      </div>
-    </div>
-  );
-}
-
 // Unified filter row. Used for all three filter groups (orgs, relations,
 // types) so every toggle in the sidebar shares the same shape and sizing.
 function FilterRow({
@@ -822,12 +622,28 @@ function FilterRow({
   dotColor?: string;
   dotGlow?: string;
 }) {
-  return (
-    <button
-      onClick={onClick}
-      className="group flex w-full items-center gap-2.5 rounded px-2 py-1 text-left transition-colors hover:bg-[var(--color-surface)]"
+  const text = (
+    <span
+      className={`flex-1 text-left text-[13px] transition-colors ${
+        enabled ? "text-[var(--color-text)]" : "text-[var(--color-text-dim)] line-through"
+      }`}
     >
-      {dotColor ? (
+      {label}
+    </span>
+  );
+  const counter =
+    count !== undefined ? (
+      <span className="font-mono text-[12px] text-[var(--color-text-dim)]">{count}</span>
+    ) : null;
+  if (dotColor) {
+    return (
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={onClick}
+        aria-pressed={enabled}
+        className="w-full justify-start gap-2.5 px-2 font-normal"
+      >
         <span
           className={`h-2.5 w-2.5 rounded-full transition-opacity ${enabled ? "" : "opacity-30"}`}
           style={{
@@ -835,30 +651,17 @@ function FilterRow({
             boxShadow: dotGlow ? `0 0 10px ${dotGlow}` : undefined,
           }}
         />
-      ) : (
-        <div
-          className={`h-3 w-3 rounded-sm border transition-all ${
-            enabled
-              ? "border-[var(--color-accent)] bg-[var(--color-accent-dim)]"
-              : "border-[var(--color-border-strong)] bg-transparent"
-          }`}
-        />
-      )}
-      <span
-        className={`flex-1 text-[13px] transition-colors ${
-          enabled
-            ? "text-[var(--color-text)]"
-            : "text-[var(--color-text-dim)] line-through"
-        }`}
-      >
-        {label}
-      </span>
-      {count !== undefined && (
-        <span className="font-mono text-[12px] text-[var(--color-text-dim)]">
-          {count}
-        </span>
-      )}
-    </button>
+        {text}
+        {counter}
+      </Button>
+    );
+  }
+  return (
+    <Label className="flex h-7 w-full cursor-pointer items-center gap-2.5 rounded-md px-2 font-normal hover:bg-muted">
+      <Checkbox checked={enabled} onCheckedChange={() => onClick()} />
+      {text}
+      {counter}
+    </Label>
   );
 }
 
@@ -876,42 +679,5 @@ function Section({
       </div>
       {children}
     </div>
-  );
-}
-
-function SearchHit({
-  node,
-  active,
-  onClick,
-}: {
-  node: GraphNode;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`flex w-full items-start gap-2.5 rounded px-3 py-2 text-left transition-colors ${
-        active
-          ? "bg-[var(--color-surface-2)]"
-          : "hover:bg-[var(--color-surface)]"
-      }`}
-    >
-      <span
-        className="mt-1.5 h-2 w-2 shrink-0 rounded-full"
-        style={{
-          background: nodeTypeVar(node.type),
-          boxShadow: `0 0 8px ${nodeTypeGlow(node.type, 0.4)}`,
-        }}
-      />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[13px] font-medium text-[var(--color-text)]">
-          {node.name}
-        </div>
-        <div className="truncate text-[11px] text-[var(--color-text-dim)]">
-          {node.type}
-        </div>
-      </div>
-    </button>
   );
 }

@@ -1,12 +1,23 @@
-// Left column of the workspace view. Lists every OPEN node in open-first
-// order (see deriveWorkspaceNodeRows); a node stays until it is explicitly
-// closed. Under each node, its running/suspended sessions (threads) are
-// sub-rows, so any live thread on any node is one click away without first
-// selecting its parent. The row's "+" starts a new task on that node.
+// Left column of the workspace view. Two arrangements of the same data,
+// switched by the Uzly | Stav toggle in the section header (remembered per
+// workspace in localStorage):
+//
+// - "Uzly": every OPEN node in open-first order (see deriveWorkspaceNodeRows)
+//   with its tasks (persistent runner sessions) as flush sub-rows under the
+//   node name, so any live thread on any node is one click away without
+//   first selecting its parent. A node stays until it is explicitly closed.
+//   The row's "+" starts a new task on that node.
+// - "Stav": tasks only, no node rows, grouped by what they need from the
+//   user -- waiting on an answer, working, suspended, done -- each with its
+//   node's name underneath. The group says the state; there are no state
+//   dots here, so the only dots in this view are node-type dots.
+import { useState } from "react";
 import { Plus, X } from "lucide-react";
 import type { WorkspaceNodeRow } from "../lib/sessions";
-import { sessionRowChip } from "../lib/session-views";
+import { scopedKey } from "../lib/workspace-storage";
 import type { SessionSummary } from "../types";
+import { Button } from "@/components/ui/button";
+import { ButtonGroup } from "@/components/ui/button-group";
 
 type Props = {
   rows: WorkspaceNodeRow[];
@@ -22,12 +33,105 @@ type Props = {
   onOpenSessionChat: (nodeId: string, sessionId: string) => void;
 };
 
+export type ListMode = "nodes" | "state";
+const LIST_MODE_KEY = "workspace.listMode";
+
+function readListMode(): ListMode {
+  try {
+    return localStorage.getItem(scopedKey(LIST_MODE_KEY)) === "state" ? "state" : "nodes";
+  } catch {
+    return "nodes";
+  }
+}
+
 function nodeTypeVar(type: string): string {
   const known = ["organization", "project", "process", "area", "principle"];
   return known.includes(type) ? `var(--color-node-${type})` : "var(--color-node-default)";
 }
 
-export default function WorkspaceNodeList({
+// The one state a node's dot summarises, highest first. `null` = nothing
+// is happening, so no dot at all (an idle node used to show an amber dot
+// that read as a warning).
+export type NodeActivity = "waiting" | "running" | "suspended" | null;
+
+export function summarizeNodeActivity(
+  tasks: readonly Pick<SessionSummary, "state" | "waiting_since">[],
+): NodeActivity {
+  if (tasks.some((t) => t.state === "running" && t.waiting_since !== null)) return "waiting";
+  if (tasks.some((t) => t.state === "running")) return "running";
+  if (tasks.some((t) => t.state === "suspended")) return "suspended";
+  return null;
+}
+
+const ACTIVITY_DOT: Record<Exclude<NodeActivity, null>, { color: string; title: string; pulse: boolean }> = {
+  waiting: { color: "var(--color-node-process)", title: "Úkol čeká na odpověď", pulse: true },
+  running: { color: "var(--color-status-active)", title: "Úkol běží", pulse: true },
+  suspended: { color: "var(--color-node-process)", title: "Úkol pozastaven", pulse: false },
+};
+
+export type TaskGroupKey = "waiting" | "running" | "suspended" | "done";
+export const TASK_GROUPS: { key: TaskGroupKey; label: string }[] = [
+  { key: "waiting", label: "Vyžadují pozornost" },
+  { key: "running", label: "Pracují" },
+  { key: "suspended", label: "Pozastavené" },
+  { key: "done", label: "Hotové" },
+];
+
+export function taskGroupOf(s: Pick<SessionSummary, "state" | "waiting_since">): TaskGroupKey {
+  if (s.state === "running") return s.waiting_since !== null ? "waiting" : "running";
+  if (s.state === "suspended") return "suspended";
+  return "done";
+}
+
+export default function WorkspaceNodeList(props: Props) {
+  const [mode, setMode] = useState<ListMode>(readListMode);
+  const changeMode = (m: ListMode) => {
+    setMode(m);
+    try {
+      localStorage.setItem(scopedKey(LIST_MODE_KEY), m);
+    } catch {
+      /* per-viewer convenience only */
+    }
+  };
+  const pressed = "aria-pressed:bg-muted aria-pressed:text-foreground dark:aria-pressed:bg-muted";
+
+  return (
+    <div className="flex flex-col">
+      <div className="flex items-center gap-2 px-4 pt-6 pb-1.5">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-dim)]">
+          Otevřené
+        </span>
+        <ButtonGroup className="ml-auto" aria-label="Řazení">
+          <Button
+            variant="outline"
+            size="xs"
+            aria-pressed={mode === "nodes"}
+            onClick={() => changeMode("nodes")}
+            className={pressed}
+            title="Seskupit podle uzlů"
+          >
+            Uzly
+          </Button>
+          <Button
+            variant="outline"
+            size="xs"
+            aria-pressed={mode === "state"}
+            onClick={() => changeMode("state")}
+            className={pressed}
+            title="Jen úkoly, podle stavu"
+          >
+            Stav
+          </Button>
+        </ButtonGroup>
+      </div>
+      {mode === "nodes" ? <NodeTree {...props} /> : <TaskList {...props} />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Uzly
+
+function NodeTree({
   rows,
   selectedNodeId,
   onSelectNode,
@@ -39,22 +143,22 @@ export default function WorkspaceNodeList({
   if (rows.length === 0) {
     return (
       <div className="px-4 py-6 text-[13px] text-[var(--color-text-dim)]">
-        Žádné otevřené uzly.
+        Žádné otevřené uzly. Otevři uzel přes Hledat uzel (⌘K) nebo vytvoř nový.
       </div>
     );
   }
 
   return (
-    <ul className="flex flex-col gap-0.5 px-2 py-2">
+    <ul className="flex flex-col gap-0.5 px-2.5 pb-4">
       {rows.map((r) => {
-        const persistentSessions = openSessionsByNode[r.id] ?? [];
-        const running = persistentSessions.some((s) => s.state === "running");
+        const tasks = openSessionsByNode[r.id] ?? [];
+        const activity = summarizeNodeActivity(tasks);
         const selected = r.id === selectedNodeId;
         return (
           <li key={r.id}>
-            {/* Node row. Outer element selects the node; the + / × controls
-                are role=button spans so we don't nest <button> (invalid). */}
-            {/* biome-ignore lint/a11y/useSemanticElements: nested <button> is invalid HTML; role+tabIndex is the documented workaround */}
+            {/* Node row. The row itself selects the node; the + / × controls
+                are real <Button>s (the row is a div, so no nested <button>). */}
+            {/* biome-ignore lint/a11y/useSemanticElements: the row hosts buttons, so it cannot be a <button> itself */}
             <div
               role="button"
               tabIndex={0}
@@ -65,112 +169,185 @@ export default function WorkspaceNodeList({
                   onSelectNode(r.id);
                 }
               }}
-              className={`group flex w-full cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors ${
+              className={`group relative flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-left text-[13px] transition-colors ${
                 selected
-                  ? "bg-[var(--color-surface)] text-[var(--color-text)]"
-                  : "text-[var(--color-text-muted)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
+                  ? "bg-[var(--color-surface-2)] font-medium text-[var(--color-text)]"
+                  : "text-[var(--color-text)] hover:bg-[var(--color-surface-2)]"
               }`}
             >
+              {selected && (
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute inset-y-1.5 -left-2.5 w-0.5 rounded-full bg-[var(--color-accent)]"
+                />
+              )}
               <span
-                className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+                className="inline-block h-2 w-2 shrink-0 rounded-full"
                 style={{ background: nodeTypeVar(r.type) }}
                 aria-hidden
               />
               <span className="min-w-0 flex-1 truncate" title={r.name}>
                 {r.name}
               </span>
-              {running && (
+              {activity && (
                 <span
                   role="img"
-                  className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500"
-                  title="Agent pracuje"
-                  aria-label="running"
+                  className={`inline-block h-[7px] w-[7px] shrink-0 rounded-full ${ACTIVITY_DOT[activity].pulse ? "animate-pulse" : ""}`}
+                  style={{ background: ACTIVITY_DOT[activity].color }}
+                  title={ACTIVITY_DOT[activity].title}
+                  aria-label={ACTIVITY_DOT[activity].title}
                 />
               )}
-              {/* No working folder on an organization, so no task either --
-                  same rule as DetailPane's NewTaskButton. */}
-              {r.type !== "organization" && (
-                // biome-ignore lint/a11y/useSemanticElements: see note above
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onNewTask(r.id);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
+              <span className="hidden shrink-0 items-center gap-0.5 group-focus-within:inline-flex group-hover:inline-flex">
+                {/* No working folder on an organization, so no task either --
+                    same rule as DetailPane's NewTaskButton. */}
+                {r.type !== "organization" && (
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={(e) => {
                       e.stopPropagation();
                       onNewTask(r.id);
-                    }
-                  }}
-                  title="Nový úkol pro tento uzel"
-                  aria-label="Nový úkol"
-                  className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--color-text-dim)] opacity-0 transition-opacity hover:bg-[var(--color-bg)] hover:text-[var(--color-text)] group-hover:opacity-100"
-                >
-                  <Plus size={11} />
-                </span>
-              )}
-              {/* biome-ignore lint/a11y/useSemanticElements: see note above */}
-              <span
-                role="button"
-                tabIndex={0}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onCloseNode(r.id);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
+                    }}
+                    title="Nový úkol pro tento uzel"
+                    aria-label="Nový úkol"
+                    className="text-muted-foreground"
+                  >
+                    <Plus />
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={(e) => {
                     e.stopPropagation();
                     onCloseNode(r.id);
-                  }
-                }}
-                title="Zavřít uzel"
-                aria-label="Zavřít uzel"
-                className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--color-text-dim)] opacity-0 transition-opacity hover:bg-[var(--color-bg)] hover:text-[var(--color-text)] group-hover:opacity-100"
-              >
-                <X size={11} />
+                  }}
+                  title="Zavřít uzel"
+                  aria-label="Zavřít uzel"
+                  className="text-muted-foreground"
+                >
+                  <X />
+                </Button>
               </span>
             </div>
 
-            {persistentSessions.length > 0 ? (
-              <ul className="ml-3 flex flex-col gap-0.5 border-l border-[var(--color-border)] py-0.5 pl-1">
-                {persistentSessions.map((s) => {
-                  const chip = sessionRowChip(s.state, s.waiting_since);
-                  return (
-                    <li key={s.id}>
-                      {/* biome-ignore lint/a11y/useSemanticElements: nested <button> is invalid HTML; role+tabIndex is the documented workaround */}
-                      <div
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => onOpenSessionChat(r.id, s.id)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            onOpenSessionChat(r.id, s.id);
-                          }
-                        }}
-                        title={chip.label}
-                        className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-[12.5px] text-[var(--color-text-dim)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
-                      >
-                        <span
-                          role="img"
-                          aria-label={chip.label}
-                          className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${chip.pulsing ? "animate-pulse" : ""}`}
-                          style={{ background: chip.color }}
-                        />
-                        <span className="min-w-0 flex-1 truncate text-[12px]">{s.name}</span>
-                      </div>
-                    </li>
-                  );
-                })}
+            {tasks.length > 0 && (
+              <ul className="mb-1 flex flex-col gap-px">
+                {tasks.map((s) => (
+                  <li key={s.id}>
+                    <TaskRow
+                      name={s.name}
+                      title={taskTitle(s)}
+                      onClick={() => onOpenSessionChat(r.id, s.id)}
+                    />
+                  </li>
+                ))}
               </ul>
-            ) : null}
+            )}
           </li>
         );
       })}
     </ul>
+  );
+}
+
+function taskTitle(s: Pick<SessionSummary, "state" | "waiting_since">): string {
+  switch (taskGroupOf(s)) {
+    case "waiting":
+      return "Čeká na odpověď";
+    case "running":
+      return "Běží";
+    case "suspended":
+      return "Pozastaveno";
+    default:
+      return "Hotovo";
+  }
+}
+
+// A task under its node: flush with the node name (no rail, no extra
+// indent -- the column is narrow). State is in the tooltip, not a dot, so
+// the only dots in a row are the node-type dot above and the node's own
+// summary dot.
+function TaskRow({ name, title, onClick }: { name: string; title: string; onClick: () => void }) {
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={onClick}
+      title={title}
+      className="w-full min-w-0 justify-start gap-2.5 pr-2 pl-7 font-normal text-[12.5px] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
+    >
+      <span className="min-w-0 flex-1 truncate text-left">{name}</span>
+    </Button>
+  );
+}
+
+// ---------------------------------------------------------------- Stav
+
+function TaskList({ rows, openSessionsByNode, onOpenSessionChat }: Props) {
+  const byGroup = new Map<TaskGroupKey, { node: WorkspaceNodeRow; task: SessionSummary }[]>();
+  for (const node of rows) {
+    for (const task of openSessionsByNode[node.id] ?? []) {
+      const key = taskGroupOf(task);
+      const list = byGroup.get(key) ?? [];
+      list.push({ node, task });
+      byGroup.set(key, list);
+    }
+  }
+
+  if (byGroup.size === 0) {
+    return (
+      <div className="px-4 py-6 text-[13px] text-[var(--color-text-dim)]">
+        Žádné úkoly. Spusť úkol z detailu uzlu tlačítkem Nový úkol.
+      </div>
+    );
+  }
+
+  return (
+    <ul className="flex flex-col px-2.5 pb-4">
+      {TASK_GROUPS.map(({ key, label }) => {
+        const items = byGroup.get(key);
+        if (!items || items.length === 0) return null;
+        const dim = key === "done";
+        return (
+          <li key={key} className={dim ? "opacity-60" : ""}>
+            <GroupHeader label={label} count={items.length} />
+            <ul className="flex flex-col gap-0.5">
+              {items.map(({ node, task }) => (
+                <li key={task.id}>
+                  <Button
+                    variant="ghost"
+                    onClick={() => onOpenSessionChat(node.id, task.id)}
+                    className="h-auto w-full min-w-0 flex-col items-stretch gap-0.5 px-2.5 py-1.5 text-left font-normal hover:bg-[var(--color-surface-2)]"
+                  >
+                    <span className="truncate text-[13px] font-medium text-[var(--color-text)]">{task.name}</span>
+                    <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-[var(--color-text-dim)]">
+                      <span
+                        className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+                        style={{ background: nodeTypeVar(node.type) }}
+                        aria-hidden
+                      />
+                      <span className="truncate">{node.name}</span>
+                    </span>
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function GroupHeader({ label, count }: { label: string; count: number }) {
+  return (
+    <div className="flex items-center gap-1.5 px-2.5 pt-4 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-dim)] first:pt-1">
+      {label}
+      <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--color-surface-2)] px-1 text-[10px] font-semibold text-[var(--color-text-dim)]">
+        {count}
+      </span>
+    </div>
   );
 }

@@ -10,6 +10,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { isTauri, getDataMode, authStatus, googleLogin } from "../lib/central";
 import { scopedKey } from "../lib/workspace-storage";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 
 type GateStatus =
   | { kind: "checking" }
@@ -100,13 +102,9 @@ export default function CentralLoginGate({ children }: { children: ReactNode }) 
             nebo na ikonu složky v hlavičce uzlu. Portuni založí lokální složku
             uzlu a stáhne soubory. Bez tohoto kroku zůstává obsah jen na serveru.
           </div>
-          <button
-            type="button"
-            onClick={handleFirstStepsDone}
-            className="self-end rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-5 py-2.5 text-[14px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]"
-          >
+          <Button type="button" onClick={handleFirstStepsDone} className="self-end">
             Rozumím, otevřít Portuni
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -132,19 +130,14 @@ export default function CentralLoginGate({ children }: { children: ReactNode }) 
               Pro přístup ke sdílenému grafu se přihlas přes Google.
             </div>
             {error && (
-              <div className="w-full break-words rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-left text-[12.5px] text-red-300">
-                {error}
-              </div>
+              <Alert variant="destructive" className="w-full">
+                <AlertDescription className="break-words">{error}</AlertDescription>
+              </Alert>
             )}
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void handleLogin()}
-              className="flex items-center gap-2 rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-5 py-2.5 text-[14px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] disabled:cursor-not-allowed disabled:opacity-50"
-            >
+            <Button type="button" disabled={busy} onClick={() => void handleLogin()}>
               <GoogleIcon />
               {busy ? "Přihlašuji…" : "Přihlásit přes Google"}
-            </button>
+            </Button>
           </>
         )}
       </div>

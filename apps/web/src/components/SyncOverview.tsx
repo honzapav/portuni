@@ -12,7 +12,6 @@
 // a job adds nothing but latency.
 import { useEffect, useRef, useState } from "react";
 import {
-  X,
   RefreshCw,
   Loader2,
   Check,
@@ -25,6 +24,14 @@ import {
 import type { SyncPendingResponse, SyncRunResponse, SyncJobSummary } from "../types";
 import { runNodeSync, startSyncJob, fetchSyncJob, fetchCurrentSyncJob } from "../api";
 import { useDataMode } from "../lib/central";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 const JOB_POLL_MS = 800;
 
@@ -142,20 +149,21 @@ export default function SyncOverview({
   const actionable = pending.nodes.filter((n) => n.total > 0);
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div
-        className="flex max-h-[80vh] w-[600px] flex-col rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <DialogContent className="flex max-h-[80vh] flex-col sm:max-w-[600px]">
         {/* Two rows, not one: title + actions above, counts below. Crammed
             onto a single line these wrapped mid-phrase ("Synchronizovat /
             vse", "+12 k / rozhodnuti") as soon as a decisions count was
-            present. */}
-        <div className="flex flex-col gap-1.5 border-b border-[var(--color-border)] px-4 py-3">
+            present. The right padding keeps the row clear of the dialog's
+            own close button. */}
+        <DialogHeader className="gap-1.5 pr-8">
           <div className="flex items-center gap-3">
-            <div className="text-[14.5px] font-semibold text-[var(--color-text)]">
-              Nesynchronizováno
-            </div>
+            <DialogTitle>Nesynchronizováno</DialogTitle>
             <span className="flex-1" />
             {allBusy && job && (
               <span className="whitespace-nowrap text-[11.5px] tabular-nums text-[var(--color-text-dim)]">
@@ -163,26 +171,19 @@ export default function SyncOverview({
               </span>
             )}
             {isCentralMode && actionable.length > 0 && (
-              <button
+              <Button
                 type="button"
+                size="sm"
                 onClick={syncAll}
                 disabled={allBusy}
-                className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-[var(--color-accent-dim)] px-3 py-1 text-[12.5px] text-[var(--color-accent)] hover:bg-[var(--color-surface)] disabled:opacity-50"
+                className="shrink-0"
               >
-                {allBusy ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                {allBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                 Synchronizovat vše
-              </button>
+              </Button>
             )}
-            <button
-              type="button"
-              onClick={onClose}
-              title="Zavřít"
-              className="shrink-0 rounded p-1 text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
-            >
-              <X size={14} />
-            </button>
           </div>
-          <div className="flex items-baseline gap-4 whitespace-nowrap text-[12px] text-[var(--color-text-dim)]">
+          <DialogDescription className="flex items-baseline gap-4 whitespace-nowrap text-[12px]">
             <span>
               <span className="tabular-nums text-[var(--color-text)]">{pending.total}</span>{" "}
               {fileWord(pending.total)} k synchronizaci
@@ -195,9 +196,9 @@ export default function SyncOverview({
                 <span className="tabular-nums">{pending.decisions}</span> k rozhodnutí
               </span>
             )}
-          </div>
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto p-2">
+          </DialogDescription>
+        </DialogHeader>
+        <div className="min-h-0 flex-1 overflow-auto">
           {pending.nodes.length === 0 ? (
             <div className="px-3 py-6 text-center text-[13px] text-[var(--color-text-dim)]">
               Všechno je synchronizované.
@@ -214,16 +215,18 @@ export default function SyncOverview({
               return (
                 <div
                   key={n.node_id}
-                  className="flex items-center gap-3 rounded-md px-3 py-2 hover:bg-[var(--color-surface)]"
+                  className="flex items-center gap-3 rounded-md px-1 py-1 hover:bg-[var(--color-surface)]"
                 >
-                  <button
+                  <Button
                     type="button"
+                    variant="link"
+                    size="sm"
                     onClick={() => onSelectNode(n.node_id)}
-                    className="min-w-0 flex-1 truncate text-left text-[13.5px] text-[var(--color-text)] hover:underline"
+                    className="min-w-0 flex-1 justify-start font-normal text-[var(--color-text)]"
                     title="Přejít na uzel"
                   >
-                    {n.node_name}
-                  </button>
+                    <span className="truncate">{n.node_name}</span>
+                  </Button>
                   {/* Icons, not literal glyphs: the old badges spelled the
                       counts with characters no bundled font covers, so
                       deleted_local rendered as a "DEL" tofu box. */}
@@ -253,25 +256,29 @@ export default function SyncOverview({
                     // instead of stepping in and out with each node name.
                     <span className="flex w-[124px] shrink-0 justify-end">
                       {decisionsOnly ? (
-                        <button
+                        <Button
                           type="button"
+                          variant="ghost"
+                          size="sm"
                           onClick={() => onSelectNode(n.node_id)}
                           title="Sync run konflikty neřeší — otevři uzel a rozhodni"
-                          className="whitespace-nowrap rounded px-2 py-1 text-[12px] text-[var(--color-danger)] hover:bg-[var(--color-surface)]"
+                          className="text-[var(--color-danger)]"
                         >
                           Rozhodnout
-                        </button>
+                        </Button>
                       ) : (
                         isCentralMode && (
-                          <button
+                          <Button
                             type="button"
+                            variant="ghost"
+                            size="sm"
                             onClick={() => syncOne(n.node_id)}
                             disabled={isBusy}
-                            className="flex items-center gap-1.5 whitespace-nowrap rounded px-2 py-1 text-[12px] text-[var(--color-text-dim)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text)] disabled:opacity-50"
+                            className="text-muted-foreground"
                           >
-                            {isBusy ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                            {isBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                             Synchronizovat
-                          </button>
+                          </Button>
                         )
                       )}
                     </span>
@@ -281,8 +288,8 @@ export default function SyncOverview({
             })
           )}
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

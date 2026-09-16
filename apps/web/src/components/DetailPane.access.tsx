@@ -26,6 +26,11 @@ import {
   GoogleModeOnlyError,
 } from "../api";
 import { AccessRequestList } from "./AccessRequests";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { ButtonGroup } from "@/components/ui/button-group";
+import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 // Local shape used for both the informational (read-only) entries coming
 // back from GET and the in-progress draft being edited. display_name is
@@ -533,22 +538,12 @@ export function AccessSection({
                 : `Přepnutím odebereš ${entries.length} sdílení.`}
           </p>
           <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={confirmSwitch}
-              disabled={saving}
-              className="rounded-md border border-[color:var(--color-danger-border)] bg-[var(--color-danger-bg)] px-3 py-1.5 text-[13px] font-medium text-[var(--color-danger)] transition-colors hover:bg-[var(--color-danger-bg-hover)] disabled:opacity-50"
-            >
+            <Button variant="destructive" size="sm" onClick={confirmSwitch} disabled={saving}>
               {saving ? "…" : "Potvrdit"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setConfirm(null)}
-              disabled={saving}
-              className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
-            >
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setConfirm(null)} disabled={saving}>
               Zrušit
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -617,14 +612,10 @@ function InheritedSummary({
         </div>
       )}
       {canManage && (
-        <button
-          type="button"
-          onClick={onStartOverride}
-          className="inline-flex items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-0.5 text-[12px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)]"
-        >
-          <Pencil size={10} />
+        <Button variant="outline" size="sm" onClick={onStartOverride} className="text-muted-foreground">
+          <Pencil />
           Nastavit vlastní sdílení pro tento uzel
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -691,14 +682,10 @@ function OwnAccessCard({
             onClose={onAddClose}
           />
         ) : (
-          <button
-            type="button"
-            onClick={onAddOpen}
-            className="inline-flex items-center gap-1 rounded-full border border-dashed border-[var(--color-border)] px-2 py-0.5 text-[12px] text-[var(--color-text-dim)] transition-colors hover:border-[var(--color-accent-dim)] hover:text-[var(--color-accent)]"
-          >
-            <Plus size={10} />
+          <Button variant="outline" size="sm" onClick={onAddOpen} className="text-muted-foreground">
+            <Plus />
             Přidat skupinu nebo uživatele…
-          </button>
+          </Button>
         )}
       </div>
       {!isPeek && draft.length === 0 && (
@@ -714,33 +701,24 @@ function OwnAccessCard({
       )}
       {isPeek ? (
         <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={onSave}
-            disabled={saving}
-            className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-dim)]/20 px-3 py-1.5 text-[13px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)]/30 disabled:opacity-50"
-          >
+          <Button size="sm" onClick={onSave} disabled={saving}>
             {saving ? "…" : "Uložit"}
-          </button>
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={saving}
-            className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[13px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:opacity-50"
-          >
+          </Button>
+          <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
             Zrušit
-          </button>
+          </Button>
         </div>
       ) : (
         showClearButton && (
-          <button
-            type="button"
+          <Button
+            variant="link"
+            size="sm"
             onClick={onClearOverride}
             disabled={saving}
-            className="text-[12px] text-[var(--color-text-dim)] underline decoration-dotted transition-colors hover:text-[var(--color-text)] disabled:opacity-50"
+            className="text-muted-foreground decoration-dotted"
           >
             Zrušit vlastní sdílení a přebírat z organizace
-          </button>
+          </Button>
         )
       )}
     </div>
@@ -770,33 +748,30 @@ function VisibilitySelector({
     { value: "private", label: "Soukromé", Icon: Lock },
     { value: "group", label: "Skupina", Icon: Users },
   ];
+  const pressed = "aria-pressed:bg-muted aria-pressed:text-foreground dark:aria-pressed:bg-muted";
   return (
-    <div className="inline-flex overflow-hidden rounded-md border border-[var(--color-border)]">
-      {options.map((opt, i) => {
+    <ButtonGroup aria-label="Sdílení">
+      {options.map((opt) => {
         const active = value === opt.value;
         const optReason = disabledOptions?.[opt.value];
         const optDisabled = disabled || optReason !== undefined;
         return (
-          <button
+          <Button
             key={opt.value}
-            type="button"
+            variant="outline"
+            size="sm"
+            aria-pressed={active}
             onClick={() => onChange(opt.value)}
             disabled={optDisabled}
             title={optReason}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-[13px] transition-colors disabled:opacity-50 ${
-              i > 0 ? "border-l border-[var(--color-border)]" : ""
-            } ${
-              active
-                ? "bg-[var(--color-accent-dim)]/20 font-medium text-[var(--color-accent)]"
-                : "bg-[var(--color-surface)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-            }`}
+            className={`${pressed} ${active ? "font-medium" : "text-muted-foreground"}`}
           >
-            <opt.Icon size={13} />
+            <opt.Icon />
             {opt.label}
-          </button>
+          </Button>
         );
       })}
-    </div>
+    </ButtonGroup>
   );
 }
 
@@ -818,30 +793,27 @@ function ModeToggle({
     { value: "private", label: "Skryté pro ostatní" },
     { value: "request", label: "Na vyžádání (ostatní vidí název a mohou požádat)" },
   ];
+  const pressed = "aria-pressed:bg-muted aria-pressed:text-foreground dark:aria-pressed:bg-muted";
   return (
     <div className="space-y-1">
-      <div className="inline-flex overflow-hidden rounded-md border border-[var(--color-border)]">
-        {options.map((opt, i) => {
+      <ButtonGroup aria-label="Režim omezení">
+        {options.map((opt) => {
           const active = value === opt.value;
           return (
-            <button
+            <Button
               key={opt.value}
-              type="button"
+              variant="outline"
+              size="sm"
+              aria-pressed={active}
               onClick={() => onChange(opt.value)}
               disabled={disabled}
-              className={`px-2.5 py-1 text-[12px] transition-colors disabled:opacity-50 ${
-                i > 0 ? "border-l border-[var(--color-border)]" : ""
-              } ${
-                active
-                  ? "bg-[var(--color-accent-dim)]/20 font-medium text-[var(--color-accent)]"
-                  : "bg-[var(--color-surface)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-              }`}
+              className={`${pressed} ${active ? "font-medium" : "text-muted-foreground"}`}
             >
               {opt.label}
-            </button>
+            </Button>
           );
         })}
-      </div>
+      </ButtonGroup>
       <p className="text-[11px] text-[var(--color-text-dim)]">
         {value === "request"
           ? "Ostatní vidí, že node existuje, a mohou požádat o přístup."
@@ -864,20 +836,24 @@ function Chip({
       : entry.display_name ?? entry.display_email ?? entry.principal;
   const Icon = entry.kind === "group" ? Users : User;
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-0.5 text-[12px] text-[var(--color-text)]">
-      <Icon size={10} className="shrink-0 text-[var(--color-text-dim)]" />
+    <Badge
+      variant="outline"
+      className={`border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] ${onRemove ? "h-6 overflow-visible pr-0.5" : ""}`}
+    >
+      <Icon className="shrink-0 text-[var(--color-text-dim)]" />
       <span className="max-w-[180px] truncate">{label}</span>
       {onRemove && (
-        <button
-          type="button"
+        <Button
+          variant="destructive"
+          size="icon-xs"
           onClick={onRemove}
           title="Odebrat"
-          className="ml-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full text-[var(--color-text-dim)] hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)]"
+          className="ml-0.5 shrink-0 rounded-full"
         >
-          <X size={9} />
-        </button>
+          <X />
+        </Button>
       )}
-    </span>
+    </Badge>
   );
 }
 
@@ -908,20 +884,9 @@ function EntryPicker({
   const [groupsAvailable, setGroupsAvailable] = useState(true);
   const [users, setUsers] = useState<AccountUser[]>([]);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<number | null>(null);
   const allUsersRef = useRef<AccountUser[] | null>(null);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        onClose();
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [onClose]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -980,16 +945,30 @@ function EntryPicker({
   const groupCandidates = groups.filter((g) => !existing.includes(g.id));
   const userCandidates = users.filter((u) => !existing.includes(u.id));
 
+  // Always open while mounted: OwnAccessCard mounts this picker in place of
+  // the "+ Přidat" button and unmounts it via onClose, which Radix fires on
+  // click-outside, Escape and a click on the trigger alike.
   return (
-    <div ref={containerRef} className="relative inline-block">
-      <span className="inline-flex items-center gap-1 rounded-full border border-dashed border-[var(--color-accent-dim)] px-2 py-0.5 text-[12px] text-[var(--color-accent)]">
-        <Plus size={10} />
-        Přidat skupinu nebo uživatele…
-      </span>
-      <div className="absolute left-0 top-full z-50 mt-1 w-[260px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] shadow-lg">
+    <Popover
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+    >
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          className="border-[var(--color-accent-dim)] text-[var(--color-accent)]"
+        >
+          <Plus />
+          Přidat skupinu nebo uživatele…
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[260px] gap-0 overflow-hidden p-0">
         <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-2.5 py-1.5">
-          <Search size={12} className="shrink-0 text-[var(--color-text-dim)]" />
-          <input
+          <Search className="size-3 shrink-0 text-[var(--color-text-dim)]" />
+          <Input
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -997,7 +976,7 @@ function EntryPicker({
               if (e.key === "Escape") onClose();
             }}
             placeholder="Hledat…"
-            className="flex-1 bg-transparent text-[12px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)]"
+            className="flex-1 border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent"
           />
         </div>
         <div className="scroll-thin max-h-[240px] overflow-y-auto py-1">
@@ -1008,9 +987,10 @@ function EntryPicker({
           ) : (
             <>
               {groupCandidates.map((g) => (
-                <button
+                <Button
                   key={`group-${g.id}`}
-                  type="button"
+                  variant="ghost"
+                  size="sm"
                   onClick={() =>
                     onPick({
                       kind: "group",
@@ -1019,19 +999,20 @@ function EntryPicker({
                       display_name: null,
                     })
                   }
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] transition-colors hover:bg-[var(--color-surface)]"
+                  className="w-full justify-start gap-2 rounded-none font-normal"
                 >
-                  <Users size={11} className="shrink-0 text-[var(--color-text-dim)]" />
-                  <span className="flex-1 truncate text-[var(--color-text)]">{g.name}</span>
+                  <Users className="shrink-0 text-[var(--color-text-dim)]" />
+                  <span className="min-w-0 flex-1 truncate text-left text-[var(--color-text)]">{g.name}</span>
                   <span className="shrink-0 text-[10.5px] text-[var(--color-text-dim)]">
                     {g.email}
                   </span>
-                </button>
+                </Button>
               ))}
               {userCandidates.map((u) => (
-                <button
+                <Button
                   key={`user-${u.id}`}
-                  type="button"
+                  variant="ghost"
+                  size="sm"
                   onClick={() =>
                     onPick({
                       kind: "user",
@@ -1040,14 +1021,14 @@ function EntryPicker({
                       display_name: u.name,
                     })
                   }
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] transition-colors hover:bg-[var(--color-surface)]"
+                  className="w-full justify-start gap-2 rounded-none font-normal"
                 >
-                  <User size={11} className="shrink-0 text-[var(--color-text-dim)]" />
-                  <span className="flex-1 truncate text-[var(--color-text)]">{u.name}</span>
+                  <User className="shrink-0 text-[var(--color-text-dim)]" />
+                  <span className="min-w-0 flex-1 truncate text-left text-[var(--color-text)]">{u.name}</span>
                   <span className="shrink-0 text-[10.5px] text-[var(--color-text-dim)]">
                     {u.email}
                   </span>
-                </button>
+                </Button>
               ))}
             </>
           )}
@@ -1057,7 +1038,7 @@ function EntryPicker({
             </div>
           )}
         </div>
-      </div>
-    </div>
+      </PopoverContent>
+    </Popover>
   );
 }

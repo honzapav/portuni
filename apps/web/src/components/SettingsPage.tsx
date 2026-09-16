@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { loadShowtimeEnabled, saveShowtimeEnabled } from "../lib/settings";
 import McpServerSection from "./McpServerSection";
 import SettingsActorsPanel from "./SettingsPage.actors";
@@ -124,97 +128,27 @@ export default function SettingsPage({ appUpdate }: Props) {
               Změny se ukládají automaticky.
             </p>
           )}
-          <div className="mt-3 flex w-max gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-0.5">
-            <button
-              onClick={() => setTab("general")}
-              className={`rounded px-3 py-1 text-[13px] transition-colors ${
-                tab === "general"
-                  ? "bg-[var(--color-bg)] text-[var(--color-text)]"
-                  : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-              }`}
-            >
-              Obecné
-            </button>
-            <button
-              onClick={() => setTab("actors")}
-              className={`rounded px-3 py-1 text-[13px] transition-colors ${
-                tab === "actors"
-                  ? "bg-[var(--color-bg)] text-[var(--color-text)]"
-                  : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-              }`}
-            >
-              Aktéři
-            </button>
-            <button
-              onClick={() => setTab("account")}
-              className={`rounded px-3 py-1 text-[13px] transition-colors ${
-                tab === "account"
-                  ? "bg-[var(--color-bg)] text-[var(--color-text)]"
-                  : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-              }`}
-            >
-              Účet
-            </button>
-            <button
-              onClick={() => setTab("workspaces")}
-              className={`rounded px-3 py-1 text-[13px] transition-colors ${
-                tab === "workspaces"
-                  ? "bg-[var(--color-bg)] text-[var(--color-text)]"
-                  : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-              }`}
-            >
-              Workspaces
-            </button>
-            <button
-              onClick={() => setTab("runners")}
-              className={`rounded px-3 py-1 text-[13px] transition-colors ${
-                tab === "runners"
-                  ? "bg-[var(--color-bg)] text-[var(--color-text)]"
-                  : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-              }`}
-            >
-              Runnery
-            </button>
-            <button
-              onClick={() => setTab("sync")}
-              className={`rounded px-3 py-1 text-[13px] transition-colors ${
-                tab === "sync"
-                  ? "bg-[var(--color-bg)] text-[var(--color-text)]"
-                  : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-              }`}
-            >
-              Synchronizace
-            </button>
-            {canManage && (
-              <button
-                onClick={() => setTab("access-requests")}
-                className={`flex items-center gap-1.5 rounded px-3 py-1 text-[13px] transition-colors ${
-                  tab === "access-requests"
-                    ? "bg-[var(--color-bg)] text-[var(--color-text)]"
-                    : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-                }`}
-              >
-                Žádosti o přístup
-                {pendingCount > 0 && (
-                  <span className="rounded-full bg-[var(--color-accent)] px-1.5 py-px font-mono text-[10.5px] font-semibold leading-tight text-[var(--color-bg)]">
-                    {pendingCount}
-                  </span>
-                )}
-              </button>
-            )}
-            {isAdmin && (
-              <button
-                onClick={() => setTab("users")}
-                className={`rounded px-3 py-1 text-[13px] transition-colors ${
-                  tab === "users"
-                    ? "bg-[var(--color-bg)] text-[var(--color-text)]"
-                    : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-                }`}
-              >
-                Uživatelé
-              </button>
-            )}
-          </div>
+          <Tabs value={tab} onValueChange={(v) => setTab(v as SubTab)} className="mt-3">
+            <TabsList>
+              <TabsTrigger value="general">Obecné</TabsTrigger>
+              <TabsTrigger value="actors">Aktéři</TabsTrigger>
+              <TabsTrigger value="account">Účet</TabsTrigger>
+              <TabsTrigger value="workspaces">Workspaces</TabsTrigger>
+              <TabsTrigger value="runners">Runnery</TabsTrigger>
+              <TabsTrigger value="sync">Synchronizace</TabsTrigger>
+              {canManage && (
+                <TabsTrigger value="access-requests">
+                  Žádosti o přístup
+                  {pendingCount > 0 && (
+                    <Badge className="bg-[var(--color-accent)] font-mono text-[var(--color-bg)]">
+                      {pendingCount}
+                    </Badge>
+                  )}
+                </TabsTrigger>
+              )}
+              {isAdmin && <TabsTrigger value="users">Uživatelé</TabsTrigger>}
+            </TabsList>
+          </Tabs>
         </header>
 
         {tab === "actors" && <SettingsActorsPanel />}
@@ -249,17 +183,20 @@ export default function SettingsPage({ appUpdate }: Props) {
               <div className="mb-2 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
                 Integrace
               </div>
-              <label className="flex cursor-pointer items-start gap-3">
-                <input
-                  type="checkbox"
+              <div className="flex items-start gap-3">
+                <Switch
+                  id="showtime-enabled"
                   checked={showtimeEnabled}
-                  onChange={(e) => toggleShowtime(e.target.checked)}
-                  className="mt-1 accent-[var(--color-accent)]"
+                  onCheckedChange={toggleShowtime}
+                  className="mt-0.5"
                 />
                 <span>
-                  <span className="block text-[13.5px] font-medium text-[var(--color-text)]">
+                  <Label
+                    htmlFor="showtime-enabled"
+                    className="cursor-pointer text-[13.5px] text-[var(--color-text)]"
+                  >
                     Showtime
-                  </span>
+                  </Label>
                   <span className="block text-[13px] leading-relaxed text-[var(--color-text-muted)]">
                     Soubor <code className="font-mono">.showtime</code> se otevře jako náhled
                     prezentace (náhled, který Showtime uloží do souboru při každém uložení).
@@ -278,7 +215,7 @@ export default function SettingsPage({ appUpdate }: Props) {
                           : "Otevření v Showtime je dostupné jen v desktopové aplikaci."}
                   </span>
                 </span>
-              </label>
+              </div>
             </section>
           </>
         )}

@@ -7,6 +7,19 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import {
   createRunnerInstance,
   deleteRunnerInstance,
@@ -31,6 +44,15 @@ type ListState =
 
 const DELETE_CONFIRM_MESSAGE =
   "Instance se smaže z registru a přestane se nabízet při zakládání úkolu. Výchozí volby organizací, které na ni mířily, se zruší.";
+
+// Radix Select refuses an empty-string item value, so "no default instance"
+// travels as this sentinel and is mapped back to null at the call site.
+const NO_INSTANCE = "__none__";
+
+const FIELD_LABEL =
+  "mb-1 text-[12.5px] uppercase tracking-wider text-[var(--color-text-dim)]";
+const ROW_FIELD_LABEL =
+  "mb-1 text-[11.5px] uppercase tracking-wider text-[var(--color-text-dim)]";
 
 // React 18 StrictMode double-invokes effects in dev (setup -> cleanup ->
 // setup again) synchronously, before any fetch can possibly resolve --
@@ -154,9 +176,9 @@ export default function RunnersSection() {
         </p>
 
         {runnersError && (
-          <div className="mb-3 rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
-            {runnersError}
-          </div>
+          <Alert variant="destructive" className="mb-3">
+            <AlertDescription>{runnersError}</AlertDescription>
+          </Alert>
         )}
         {runners === null && !runnersError && (
           <div className="text-[13px] text-[var(--color-text-dim)]">Zjišťuji dostupné runnery…</div>
@@ -193,15 +215,16 @@ export default function RunnersSection() {
                     </div>
                   )}
                 </div>
-                <span
-                  className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                <Badge
+                  variant="secondary"
+                  className={`shrink-0 ${
                     r.availability.installed && r.availability.logged_in
                       ? "bg-emerald-950/40 text-emerald-300"
                       : "bg-[var(--color-bg)] text-[var(--color-text-dim)]"
                   }`}
                 >
                   {r.availability.installed && r.availability.logged_in ? "připraveno" : "nedostupné"}
-                </span>
+                </Badge>
               </div>
             ))}
           </div>
@@ -220,16 +243,20 @@ export default function RunnersSection() {
         </p>
 
         {rowError && (
-          <div className="mb-4 flex items-start justify-between gap-3 rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
-            <span className="min-w-0 break-words">{rowError}</span>
-            <button
-              type="button"
-              onClick={() => setRowError(null)}
-              className="shrink-0 text-red-400 hover:text-red-200"
-            >
-              Zavřít
-            </button>
-          </div>
+          <Alert variant="destructive" className="mb-4">
+            <AlertDescription className="flex items-start justify-between gap-3">
+              <span className="min-w-0 break-words">{rowError}</span>
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                onClick={() => setRowError(null)}
+                className="shrink-0 text-destructive"
+              >
+                Zavřít
+              </Button>
+            </AlertDescription>
+          </Alert>
         )}
 
         {state.kind === "loading" && (
@@ -237,16 +264,20 @@ export default function RunnersSection() {
         )}
 
         {state.kind === "error" && (
-          <div className="flex items-start justify-between gap-3 rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
-            <span className="min-w-0 break-words">{state.reason}</span>
-            <button
-              type="button"
-              onClick={() => void load()}
-              className="shrink-0 text-red-400 hover:text-red-200"
-            >
-              Zkusit znovu
-            </button>
-          </div>
+          <Alert variant="destructive">
+            <AlertDescription className="flex items-start justify-between gap-3">
+              <span className="min-w-0 break-words">{state.reason}</span>
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                onClick={() => void load()}
+                className="shrink-0 text-destructive"
+              >
+                Zkusit znovu
+              </Button>
+            </AlertDescription>
+          </Alert>
         )}
 
         {state.kind === "ok" && instances.length === 0 && (
@@ -297,19 +328,25 @@ export default function RunnersSection() {
               return (
                 <div key={org.id} className="flex items-center justify-between gap-3">
                   <span className="text-[13.5px] text-[var(--color-text)]">{org.name}</span>
-                  <select
-                    value={current?.id ?? ""}
+                  <Select
+                    value={current?.id ?? NO_INSTANCE}
                     disabled={pending.has(org.id)}
-                    onChange={(e) => void handleSetDefault(org.id, e.target.value || null)}
-                    className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[13px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)] disabled:opacity-50"
+                    onValueChange={(v) =>
+                      void handleSetDefault(org.id, v === NO_INSTANCE ? null : v)
+                    }
                   >
-                    <option value="">(žádná)</option>
-                    {instances.map((i) => (
-                      <option key={i.id} value={i.id}>
-                        {i.name}
-                      </option>
-                    ))}
-                  </select>
+                    <SelectTrigger size="sm" aria-label={`Výchozí instance pro ${org.name}`}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={NO_INSTANCE}>(žádná)</SelectItem>
+                      {instances.map((i) => (
+                        <SelectItem key={i.id} value={i.id}>
+                          {i.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               );
             })}
@@ -387,34 +424,35 @@ function InstanceRow({
       <div className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-bg)] p-3">
         <div className="flex flex-col gap-2">
           <div>
-            <label className="mb-1 block text-[11.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+            <Label htmlFor={`instance-${instance.id}-name`} className={ROW_FIELD_LABEL}>
               Název
-            </label>
-            <input
+            </Label>
+            <Input
+              id={`instance-${instance.id}-name`}
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               disabled={saving}
-              className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-[13px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)] disabled:opacity-50"
             />
           </div>
           <div>
-            <label className="mb-1 block text-[11.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+            <Label htmlFor={`instance-${instance.id}-runner`} className={ROW_FIELD_LABEL}>
               Runner
-            </label>
-            <input
+            </Label>
+            <Input
+              id={`instance-${instance.id}-runner`}
               type="text"
               value={runner}
               onChange={(e) => setRunner(e.target.value)}
               disabled={saving}
               spellCheck={false}
-              className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 font-mono text-[12.5px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent-dim)] disabled:opacity-50"
+              className="font-mono"
             />
           </div>
           <div>
-            <label className="mb-1 block text-[11.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+            <Label htmlFor={`instance-${instance.id}-env`} className={ROW_FIELD_LABEL}>
               Proměnné prostředí (jedna na řádek, KLÍČ=hodnota)
-            </label>
+            </Label>
             {instance.env_keys.length > 0 && (
               <p className="mb-1 font-mono text-[11px] leading-snug text-[var(--color-text-dim)]">
                 {instance.env_keys.map((k) => `${k} (nastaveno)`).join(", ")}
@@ -425,33 +463,30 @@ function InstanceRow({
               existujícího klíče zůstane prázdná hodnota beze změny, zadej ji
               znovu jen pokud ji chceš přepsat.
             </p>
-            <textarea
+            <Textarea
+              id={`instance-${instance.id}-env`}
               value={envText}
               onChange={(e) => setEnvText(e.target.value)}
               disabled={saving}
               rows={3}
               spellCheck={false}
               placeholder="CLAUDE_CONFIG_DIR=/Users/vy/.claude-work"
-              className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 font-mono text-[12.5px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] disabled:opacity-50"
+              className="font-mono"
             />
           </div>
           <div className="flex gap-1.5">
-            <button
-              type="button"
-              disabled={saving}
-              onClick={() => void handleSave()}
-              className="rounded border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-2.5 py-1 text-[11.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] disabled:cursor-not-allowed disabled:opacity-50"
-            >
+            <Button type="button" size="sm" disabled={saving} onClick={() => void handleSave()}>
               {saving ? "Ukládám…" : "Uložit"}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
               disabled={saving}
               onClick={onCancelEdit}
-              className="rounded border border-[var(--color-border)] px-2.5 py-1 text-[11.5px] text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text)] disabled:opacity-50"
             >
               Zrušit
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -471,42 +506,40 @@ function InstanceRow({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onEdit}
-            className="rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-50"
-          >
+          <Button type="button" variant="outline" size="sm" disabled={busy} onClick={onEdit}>
             Upravit
-          </button>
+          </Button>
           {confirmDelete ? (
-            <button
+            <Button
               type="button"
+              variant="destructive"
+              size="sm"
               disabled={busy}
               onClick={onDelete}
-              className="rounded border border-red-900/50 bg-red-950/20 px-2 py-1 text-[11.5px] font-medium text-red-300 transition-colors hover:border-red-800 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Opravdu smazat
-            </button>
+            </Button>
           ) : (
-            <button
+            <Button
               type="button"
+              variant="destructive"
+              size="sm"
               disabled={busy}
               onClick={onAskDelete}
-              className="rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-dim)] transition-colors hover:border-red-900/50 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Smazat
-            </button>
+            </Button>
           )}
           {confirmDelete && (
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="sm"
               disabled={busy}
               onClick={onCancelDelete}
-              className="rounded border border-[var(--color-border)] px-2 py-1 text-[11.5px] text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text)] disabled:opacity-50"
             >
               Zrušit
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -573,24 +606,25 @@ function CreateInstanceForm({
       </div>
       <div className="flex flex-col gap-3">
         <div>
-          <label className="mb-1 block text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+          <Label htmlFor="instance-create-name" className={FIELD_LABEL}>
             Název
-          </label>
-          <input
+          </Label>
+          <Input
+            id="instance-create-name"
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
             disabled={busy}
             placeholder="Např. Práce"
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-[13.5px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] disabled:opacity-50"
           />
         </div>
 
         <div>
-          <label className="mb-1 block text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+          <Label htmlFor="instance-create-runner" className={FIELD_LABEL}>
             Runner
-          </label>
-          <input
+          </Label>
+          <Input
+            id="instance-create-runner"
             type="text"
             list="runners-known-ids"
             value={runner}
@@ -598,7 +632,7 @@ function CreateInstanceForm({
             disabled={busy}
             spellCheck={false}
             placeholder="claude"
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[13px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] disabled:opacity-50"
+            className="font-mono"
           />
           <datalist id="runners-known-ids">
             {runners.map((r) => (
@@ -608,35 +642,31 @@ function CreateInstanceForm({
         </div>
 
         <div>
-          <label className="mb-1 block text-[12.5px] font-medium uppercase tracking-wider text-[var(--color-text-dim)]">
+          <Label htmlFor="instance-create-env" className={FIELD_LABEL}>
             Proměnné prostředí (jedna na řádek, KLÍČ=hodnota)
-          </label>
-          <textarea
+          </Label>
+          <Textarea
+            id="instance-create-env"
             value={envText}
             onChange={(e) => setEnvText(e.target.value)}
             disabled={busy}
             rows={3}
             spellCheck={false}
             placeholder="CLAUDE_CONFIG_DIR=/Users/vy/.claude-work"
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[12.5px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-dim)] focus:border-[var(--color-accent-dim)] disabled:opacity-50"
+            className="font-mono"
           />
         </div>
 
         {error && (
-          <div className="rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-[12.5px] text-red-300">
-            {error}
-          </div>
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
         )}
 
         <div>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void handleCreate()}
-            className="rounded-md border border-[var(--color-accent-dim)] bg-[var(--color-accent-soft)] px-4 py-2 text-[13.5px] font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent-dim)] disabled:cursor-not-allowed disabled:opacity-50"
-          >
+          <Button type="button" disabled={busy} onClick={() => void handleCreate()}>
             {busy ? "Vytvářím…" : "Vytvořit instanci"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
