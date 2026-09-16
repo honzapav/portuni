@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.18.0](https://github.com/honzapav/portuni/compare/v0.17.0...v0.18.0) (2026-09-16)
+
+
+### Features
+
+* **web,runner,server:** the task canvas, thread lifecycle, model and effort ([#389](https://github.com/honzapav/portuni/issues/389)) ([97b9da1](https://github.com/honzapav/portuni/commit/97b9da1c2e94bae0dbc46d962e5b048198c75284))
+
+
+### Bug Fixes
+
+* **desktop,web:** sidecar TMPDIR race and dialog footer overflow ([#388](https://github.com/honzapav/portuni/issues/388)) ([121acdc](https://github.com/honzapav/portuni/commit/121acdcbe5b99f234b44c0f97809b398eca53864))
+
 ## [0.17.0](https://github.com/honzapav/portuni/compare/v0.16.1...v0.17.0) (2026-09-16)
 
 
