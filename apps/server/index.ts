@@ -8,9 +8,14 @@ import { startHttpServer } from "./http/server.js";
 import { startMirrorWatcher } from "./boot/mirror-watch.js";
 import { sweepStaleSessionProjectionsOnBoot } from "./boot/session-projection-sweep.js";
 import { sweepOrphanedRunsOnBoot } from "./boot/run-sweep.js";
-import { sweepStaleRunningSessionsOnBoot } from "./boot/session-sweep.js";
+import {
+  startIdleRunSweep,
+  sweepStaleDraftSessionsOnBoot,
+  sweepStaleRunningSessionsOnBoot,
+} from "./boot/session-sweep.js";
 import { warnIfLocalWorkspaceHasStaleRemotesOnBoot } from "./boot/local-mode-remote-warning.js";
 import { registerRunnerAdapters } from "./boot/register-runner-adapters.js";
+import { getSessionRuntime } from "./boot/session-runtime.js";
 
 async function main() {
   await ensureSchema();
@@ -27,7 +32,12 @@ async function main() {
   // sweep's own query for stale 'running' rows sees an already-correct
   // picture instead of racing it.
   void sweepOrphanedRunsOnBoot().then(() => sweepStaleRunningSessionsOnBoot());
+  void sweepStaleDraftSessionsOnBoot();
   void warnIfLocalWorkspaceHasStaleRemotesOnBoot();
+  // #378: a live run with no activity for PORTUNI_RUN_IDLE_MS gets ended
+  // and its summary written -- an interval outside the runtime itself,
+  // same shape as every other boot sweep here.
+  startIdleRunSweep(getSessionRuntime());
 }
 
 main().catch((err) => {

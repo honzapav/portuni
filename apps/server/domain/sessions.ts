@@ -29,6 +29,11 @@ const CreateSessionInput = z.object({
   brief: z.string().nullable().optional().describe("The task as given (runner batch): the first user message on a fresh run."),
   runner: z.string().nullable().optional().describe("Runner adapter id (e.g. 'claude') this session's task runs under."),
   host_id: z.string().nullable().optional().describe("The device/workspace running this session's task."),
+  // #375: the thread's own model/effort override. Resolution (session ->
+  // instance defaults -> unset) happens once at run start, in
+  // session-runtime.ts -- never here.
+  model: z.string().nullable().optional().describe("The thread's own model override, or null to use the instance/runner default."),
+  effort: z.string().nullable().optional().describe("The thread's own reasoning-effort override, or null to use the instance/runner default."),
 });
 type CreateSessionInput = z.infer<typeof CreateSessionInput>;
 
@@ -63,6 +68,27 @@ export function computeDefaultSessionName(nodeName: string | null, createdAtIso:
   return `${nodeName ?? "Chat"} · ${date} ${time}`;
 }
 
+const THREAD_NAME_MAX_LENGTH = 60;
+
+// A thread names itself from its first message (#374, "Naming"): first
+// line, trimmed, whitespace collapsed, cut at ~60 characters on a word
+// boundary with an ellipsis. Mirrors apps/web/src/lib/session-chat.ts's
+// threadNameFromFirstMessage exactly -- duplicated rather than imported
+// across the server/web boundary, same reason that file's CanonicalEvent
+// mirrors domain/runner/types.ts's own. Used only when promoting a draft
+// (session-runtime.ts's promoteDraftAndStart); computeDefaultSessionName
+// above stays the name for anything with no first message to derive one
+// from (interactive_chat).
+export function threadNameFromFirstMessage(text: string): string {
+  const firstLine = text.split("\n")[0] ?? "";
+  const collapsed = firstLine.trim().replace(/\s+/g, " ");
+  if (collapsed.length <= THREAD_NAME_MAX_LENGTH) return collapsed;
+  const truncated = collapsed.slice(0, THREAD_NAME_MAX_LENGTH);
+  const lastSpace = truncated.lastIndexOf(" ");
+  const cut = lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated;
+  return `${cut}…`;
+}
+
 // preassignedId (#208 follow-up, "kernel-level isolation between concurrent
 // sessions on the same node"): when the caller already minted this session's
 // id before the row existed -- the Seatbelt profile is frozen at spawn time,
@@ -93,8 +119,8 @@ export async function createSession(
   const name = computeDefaultSessionName(nodeName, now);
 
   await db.execute({
-    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, brief, runner, host_id, state, name, created_at, last_active_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
+    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, cli, instance_id, agent_session_id, terminal_id, brief, runner, host_id, model, effort, state, name, created_at, last_active_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
     args: [
       id,
       parsed.node_id,
@@ -107,6 +133,8 @@ export async function createSession(
       parsed.brief ?? null,
       parsed.runner ?? null,
       parsed.host_id ?? null,
+      parsed.model ?? null,
+      parsed.effort ?? null,
       name,
       now,
       now,
@@ -121,6 +149,64 @@ export async function createSession(
   const row = await loadSession(db, id);
   if (!row) throw new Error(`createSession: inserted row ${id} not found`);
   return row;
+}
+
+// A thread is a session row from the moment it opens (#374, "the session
+// row exists from the moment the thread opens"): no brief, no runner, no
+// run -- just a name, a node, an owner. The first message (session-
+// runtime.ts's sendMessage) promotes it to 'running' and starts the run.
+export async function createDraftSession(
+  db: DbClient,
+  userId: string,
+  nodeId: string,
+  overrides: { model?: string | null; effort?: string | null } = {},
+): Promise<SessionRow> {
+  const id = ulid();
+  const now = new Date().toISOString();
+  await db.execute({
+    sql: `INSERT INTO sessions (id, node_id, user_id, session_type, state, name, model, effort, created_at, last_active_at)
+          VALUES (?, ?, ?, 'interactive_task', 'draft', ?, ?, ?, ?, ?)`,
+    args: [id, nodeId, userId, "Nový úkol", overrides.model ?? null, overrides.effort ?? null, now, now],
+  });
+
+  await writeAudit(db, userId, "session_create", "session", id, { node_id: nodeId, draft: true });
+
+  const row = await loadSession(db, id);
+  if (!row) throw new Error(`createDraftSession: inserted row ${id} not found`);
+  return row;
+}
+
+// Prune (#374, "Storage: Prune"): a draft has no runs, no events and no
+// handoff, so removing it is a single DELETE, not an archive -- unlike
+// every other terminal state, which is a view filter. Refuses a
+// non-draft: closing a real thread goes through transitionSessionState,
+// never this.
+export async function deleteDraftSession(db: DbClient, actorUserId: string, sessionId: string): Promise<void> {
+  const existing = await loadSession(db, sessionId);
+  if (!existing) throw new Error(`deleteDraftSession: ${sessionId} not found`);
+  if (existing.state !== "draft") {
+    throw new Error(`deleteDraftSession: session ${sessionId} is not a draft (state: ${existing.state})`);
+  }
+  await db.execute({ sql: "DELETE FROM sessions WHERE id = ?", args: [sessionId] });
+  await writeAudit(db, actorUserId, "session_delete", "session", sessionId, { was_draft: true });
+}
+
+const DEFAULT_DRAFT_PRUNE_AFTER_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// Boot sweep (#374): a draft abandoned without ever sending a first message
+// (the thread's tab/window closed without an explicit Uzavřít, or simply
+// forgotten) has no other cleanup path -- Uzavřít-while-empty is the other
+// one, handled at the call site that already knows the thread is empty.
+export async function pruneStaleDraftSessions(
+  db: DbClient,
+  olderThanMs: number = DEFAULT_DRAFT_PRUNE_AFTER_MS,
+): Promise<number> {
+  const cutoff = new Date(Date.now() - olderThanMs).toISOString();
+  const res = await db.execute({
+    sql: "DELETE FROM sessions WHERE state = 'draft' AND created_at < ?",
+    args: [cutoff],
+  });
+  return res.rowsAffected;
 }
 
 // Rename a session -- spec: "always renamable". Marks name_is_custom so a
@@ -236,8 +322,13 @@ export async function setSessionCli(db: DbClient, id: string, cli: string): Prom
 // State machine. running/suspended are the live states (a session can
 // bounce between them via suspend/resume, #190); closed is terminal from the
 // user's point of view but auto-archives (a view filter, never a delete) as
-// the only way out of closed. archived itself is terminal.
+// the only way out of closed. archived itself is terminal. draft (#374) is
+// a thread before its first message: its only transition is to running (the
+// first message, session-runtime.ts's sendMessage), and its only other exit
+// is deletion (deleteDraftSession/pruneStaleDraftSessions), never a state
+// transition -- so draft has no terminal state to transition into here.
 const ALLOWED_TRANSITIONS: Record<SessionState, readonly SessionState[]> = {
+  draft: ["running"],
   running: ["suspended", "closed"],
   suspended: ["running", "closed"],
   closed: ["archived"],

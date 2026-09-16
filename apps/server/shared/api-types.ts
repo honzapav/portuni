@@ -432,7 +432,11 @@ export type AccessRequest = {
 // GET /nodes/:id/sessions -- node-detail sessions list (#192, "Naming &
 // UI"). One row per persistent session (apps/server/domain/sessions.ts),
 // enriched with what the row needs to render without a second round trip.
-export type SessionState = "running" | "suspended" | "closed" | "archived";
+// "draft" (#374): a thread from the moment it opens, before it has a brief
+// or a run -- created empty and never listed outside the open-thread view
+// itself (GET /overview, the WS snapshot and GET /nodes/:id/sessions all
+// exclude it). The first message promotes it to "running".
+export type SessionState = "running" | "suspended" | "closed" | "archived" | "draft";
 
 export type SessionSummary = {
   id: string;
@@ -470,6 +474,12 @@ export type SessionSummary = {
   name_is_custom: boolean;
   handoff_path: string | null;
   write_count: number;
+  // #375: the thread's own model/reasoning-effort choice, so the header
+  // renders it without a second fetch. null means unset (falls back to
+  // the runner instance's defaults, then the runner's own default) --
+  // never a resolved/effective value.
+  model: string | null;
+  effort: string | null;
   created_at: string;
   last_active_at: string;
   closed_at: string | null;
@@ -493,7 +503,21 @@ export type SessionResumeInfo = {
   // (a dropped connection, idle GC, terminal exit, or the boot sweep) --
   // lets the Relace row say e.g. "pozastaveno serverem (nečinnost 30 min)".
   generated_by: "server" | null;
-  reason: "disconnect" | "idle" | "terminal_exit" | "boot_sweep" | "suspend_timeout" | "host_lost" | null;
+  // Mirrors domain/session-handoff.ts's own ServerHandoffReason (shared has
+  // no domain imports, same precedent as RunEndReason below) -- #378 added
+  // "run_ended" (any non-close run end) and "continue"; "suspend_timeout"
+  // stays only so an old row's already-written reason marker still parses,
+  // no runtime code produces it anymore.
+  reason:
+    | "disconnect"
+    | "idle"
+    | "terminal_exit"
+    | "boot_sweep"
+    | "suspend_timeout"
+    | "host_lost"
+    | "run_ended"
+    | "continue"
+    | null;
 };
 
 // Runner batch (docs/superpowers/specs/2026-09-12-runner-and-session-design.md):
@@ -705,6 +729,17 @@ export type RunnerInfo = {
   };
 };
 
+// GET /runners/:runner/models -- the model picker's list (#376). Mirrors
+// domain/runner/types.ts's own RunnerModel, same "shared has no domain
+// imports" precedent as RunEndReason above.
+export type RunnerModel = {
+  id: string;
+  displayName: string;
+  description: string;
+  supportsEffort: boolean;
+  effortLevels: readonly string[];
+};
+
 // GET/POST/PATCH /runners/instances -- provider instances (today's desktop
 // CLI spawn profiles, moved server-side). env values never appear here --
 // env_keys only; the values live in runners.json and are read server-side
@@ -715,4 +750,7 @@ export type RunnerInstanceSummary = {
   runner: string;
   env_keys: string[];
   org_defaults: string[];
+  // #375: this instance's own model/effort defaults -- a thread that
+  // doesn't override them itself falls back to these.
+  defaults: { model?: string; effort?: string };
 };

@@ -1938,6 +1938,263 @@ symlink to this file.
   preview), untouched by this issue. New pinned-exact deps: `streamdown`,
   `@streamdown/{cjk,code,math,mermaid}`, `use-stick-to-bottom`, `nanoid`.
 
+- **A thread is a session row from the moment it opens (#374, phase 2 of
+  `docs/superpowers/specs/2026-09-15-task-surface-design.md`, umbrella
+  #387).** `sessions.state` gained **`draft`** (migration 036: SQLite is a
+  full table rebuild, same shape as migration 030's, since SQLite cannot
+  `ALTER` a CHECK constraint; `PG_BASELINE_DDL` in `schema.pg.ts` carries it
+  directly rather than a `pg-002` migration, since the Postgres cutover
+  (#335) has not run yet -- a later issue extending this same migration 036
+  (e.g. #375's model/effort columns) must check #335's state again before
+  picking which of those two applies). `domain/sessions.ts`'s
+  `ALLOWED_TRANSITIONS` gained `draft: ["running"]` -- a draft's only other
+  exit is deletion (`deleteDraftSession`), never a state transition.
+  **"Nový úkol" (`DetailPane.files.tsx`'s `NewTaskButton`, and the "+" on a
+  node's own row in `WorkspaceNodeList`) opens a thread with one click, no
+  dialog**: `POST /sessions` with no `brief` creates a draft (name „Nový
+  úkol", no runner, no run) instead of starting a task -- `NewTaskDialog.tsx`
+  is gone. **The first message is what promotes it**:
+  `session-runtime.ts`'s `sendMessage` falls through to
+  `promoteDraftAndStart` when the session has no live run and is a draft
+  (any other no-live-run session still refuses, unchanged -- #378 is what
+  teaches that case to resume-by-writing instead). Promotion resolves a
+  runner/instance itself, the exact rule `NewTaskDialog` used to apply
+  client-side before it was removed: the first `detectAll()`-reported
+  runner with `installed && logged_in`, and the calling node's
+  organization's default instance for it (`resolveTaskDefaults`,
+  `NoRunnerAvailableError` -> REST `400 NO_RUNNER_AVAILABLE` when nothing is
+  usable) -- there is no picker before the first message (spec rule 5: "no
+  modal, no required field"). The org lookup degrades to "no organization"
+  in agent mode (no local graph db there, same try/catch-degrade pattern
+  `readSessionScopeSize` already uses) rather than failing the promotion;
+  **draft creation itself is not yet wired up for central/agent mode**
+  (`agent-router.ts`'s `POST /sessions` answers `501 DRAFT_NOT_SUPPORTED`
+  for a briefless body) -- the central record half's draft would need its
+  own `CentralClient` method and REST shape, left as a follow-up. **Naming**:
+  `domain/sessions.ts`'s `threadNameFromFirstMessage` (mirrored, not
+  imported, as `apps/web/src/lib/session-chat.ts`'s own copy of the same
+  function -- the server/web boundary this codebase already keeps
+  elsewhere) derives the name from the first message's first line, and the
+  promotion sets `name_is_custom = 1` alongside it (a new
+  `PatchSessionInput.name_is_custom` field on `SessionStore.patchSession`)
+  so the handoff-title enrichment at suspend never overwrites it --
+  `computeDefaultSessionName`'s `node · date time` form stays for whatever
+  still has no first message (`interactive_chat`). A `state_changed
+  {from: "draft", to: "running"}` event is appended as part of the
+  promotion purely so the live channel's `session_state` broadcast fires
+  (`api/sessions-ws.ts` only reacts to `state_changed`/`question`/
+  `run_ended`) -- without it, a window that isn't the one driving the
+  promotion would never learn the draft became a real thread. **Every list
+  excludes a draft** (`GET /nodes/:id/sessions` now filters it out
+  explicitly, same as `GET /overview` and the WS snapshot already did by
+  construction, being scoped to `running`/`suspended`): a draft is visible
+  only as the open thread it is, in the window that created it, which
+  tracks its own locally-created drafts client-side (`App.tsx`'s
+  `localDrafts`, merged into `openSessionsByNode` and into
+  `pickOpenChatSession`'s candidate list -- widened to also accept `draft`)
+  precisely because the server will never hand it back on a refetch.
+  **Prune**: `boot/session-sweep.ts`'s new `sweepStaleDraftSessionsOnBoot`
+  (wired at the same two call sites as the existing stale-`running` sweep)
+  deletes any draft older than 24h; a thread's own `×` deletes an empty
+  draft immediately instead of going through Uzavřít. **Thread sub-rows
+  gained inline rename (double-click) and a hover-revealed `×`**
+  (`WorkspaceNodeList.tsx`'s `TaskRow`) -- a draft's `×` deletes outright,
+  anything else is a `window.confirm` stand-in for Uzavřít (`#378` replaces
+  it with a real confirmation carrying the session's summary; today's
+  `sessionsClient.close` is unchanged). `WorkspaceView.tsx`'s
+  `hasOpenSession` and `TaskGroupKey`/`taskGroupOf` (a new `"draft"` group,
+  labelled "Nové") both learned the new state; **mounting every open
+  thread simultaneously with `display:none`, instead of remounting
+  `SessionChat` per selection (`key={openSession.id}`), was not done in
+  this issue** -- switching threads still re-subscribes and replays,
+  correct but without the scroll-position continuity the full spec text
+  describes; a real gap, left for a follow-up since the layout itself is
+  macOS/visual verification, not gated.
+
+- **Model and reasoning effort are per-thread now (#375, phase 4 of the same
+  task-surface spec).** `sessions` gained `model TEXT` and `effort TEXT`
+  (nullable, `effort` CHECKed against the SDK's own five-value enum) --
+  added to the SAME migration 036 #374 introduced (both issues landed in
+  this batch, per the tracking rule), extended in **both dialects and both
+  places that rebuild the `sessions` table**: `PG_BASELINE_DDL` (still no
+  Postgres cutover, #335) and, less obviously, migration **030**'s own
+  rebuild -- that one predates 034/035/036 but is written to "always carry
+  the CURRENT full shape forward" (its own header comment), so a database
+  that has already been through 036 but still needs 030's fix must not have
+  its rebuild reject re-inserting a `draft` row or silently drop
+  model/effort; the same conditional-carry-forward pattern already used for
+  `terminal_id`/`handoff_inline` there now covers `model`/`effort` too, and
+  the `state` CHECK there gained `'draft'` for the identical reason (a
+  literal CHECK cannot be added "conditionally" the way a column can, so
+  it's simply always the current full set). `domain/runner/instances.ts`'s
+  `StoredInstance`/`PublicInstance` gained `defaults: { model?, effort? }`
+  (an unknown key or invalid `effort` value throws
+  `InstanceDefaultsKeyRefusedError`, mirroring `InstanceEnvKeyRefusedError`'s
+  own shape); `updateInstance` replaces `defaults` wholesale, unlike `env`'s
+  per-key merge. **Resolution is first-match-wins, resolved once**:
+  `session-runtime.ts`'s pure `resolveModelAndEffort(session, instanceDefaults)`
+  -- the thread's own `sessions.model`/`.effort`, else the instance's
+  `defaults`, else `null` (meaning "the runner's own default", not "off") --
+  called inside `startRun` (every call site: `startTask`,
+  `promoteDraftAndStart`, `resume`) and threaded onto the new
+  `RunStart.model`/`.effort` fields, so **the adapter never reads config
+  itself**. `domain/runner/types.ts`'s `EffortLevel`/`EFFORT_LEVELS` mirror
+  the SDK's own enum, duplicated rather than imported (same reasoning as
+  this file's other adapter-agnostic-types-file mirrors) since only the
+  Claude adapter currently reads it. The Claude adapter
+  (`adapters/claude.ts`) sets `Options.model`/`Options.effort` from
+  `RunStart` (omitted entirely, not passed as `undefined`, when null -- the
+  SDK's own "no override" shape) and implements the new
+  `RunHandle.setModel(model)` as `q.setModel(model ?? undefined)`, a no-op
+  once the run has ended. **`PATCH /sessions/:id` forwards a `model` change
+  to a LIVE run's Query** via a new `SessionRuntime.setModel(sessionId,
+  model)` (looks up `liveRuns`, no-ops if the session has none -- the
+  ordinary `DbSessionStore.patchSession` call right after is what persists
+  the column either way, for the next run or because there is no live one)
+  -- `effort` has no equivalent live setter (SDK limitation) and only ever
+  applies from the next run, so there is no `setEffort` anywhere. This only
+  ever reaches a live run on the device actually driving it: local mode
+  works end to end, but agent/central mode's `PATCH /sessions/:id` is
+  routed straight to central (`is_local_only_path` never matches the bare
+  `/sessions/:id`, unlike `/sessions/:id/interrupt` etc.), and central's own
+  `SessionRuntime` never runs a task itself -- a known, unaddressed gap for
+  that mode, same class as #374's own agent-mode draft-creation cut.
+  `SessionSummary` carries both fields (`SessionChat.tsx`'s header renders
+  them next to runner/instance/host) so the current choice needs no second
+  fetch.
+
+- **The model picker and its list (#376, phase 5, the last of the
+  task-surface spec).** `RunnerAdapter` gained `models(): Promise<RunnerModel[]>`
+  (`domain/runner/types.ts`'s new `RunnerModel`: `id`, `displayName`,
+  `description`, `supportsEffort`, `effortLevels`) -- `GET
+  /runners/:runner/models` (device-local, already covered by
+  `is_local_only_path`'s `/runners/` prefix match in both `lib.rs` and
+  `agent-router.ts`) just calls it. **No throwaway process is ever started
+  to answer this.** The Claude adapter's `models()` serves a process-wide
+  `modelsCache` (module-closure state in `createClaudeAdapter`, not
+  per-run) that starts `null` and is filled as a side effect of the FIRST
+  live run's own `Query.supportedModels()` -- deferred into the promise
+  chain itself (`Promise.resolve().then(() => q.supportedModels())`, not
+  called directly) so a `query` mock or SDK version missing the method
+  rejects into the existing `.catch` instead of throwing synchronously past
+  it. Before that first run (or if it ever fails -- `modelsCache` only ever
+  moves `null` -> populated, never back, and a failure leaves it `null` so
+  the NEXT run retries), `models()` answers a fixed fallback,
+  `CLAUDE_ALIAS_MODELS`: the three documented aliases (`sonnet` first as
+  the sensible default, then `opus`, `haiku`) the SDK accepts as a bare
+  `model` string, each with `supportsEffort: false` -- deliberately
+  conservative, since the real per-model answer only exists once
+  `supportedModels()` has actually answered. **The picker lives in
+  `SessionChat.tsx`'s composer** (`PromptInputTools`, using the
+  `PromptInputSelect*` pieces #373 already left there for this): a model
+  `Select` (`GET /runners/:runner/models` for `session.runner ?? "claude"`
+  -- a draft has no runner chosen yet, and "claude" is the only adapter
+  this codebase registers, so that's what a runner-less thread's picker
+  queries) and, only when the currently-selected model's `supportsEffort`
+  is true, a reasoning-effort `Select` offering that model's own
+  `effortLevels`, titled as applying from the next run (no live setter,
+  same as the REST behavior). Both gated on `access.canResume` (owner-only,
+  matching who may already message/resume the thread) and both just call
+  the existing `PATCH /sessions/:id` (`api.ts`'s new
+  `patchSessionModelEffort`) -- changing the model also reaches a live
+  run immediately via #375's `RunHandle.setModel` plumbing, already wired,
+  nothing new needed here. `FakeRunnerAdapter` gained a trivial
+  `models()` (returns whatever fixed list its `FakeRunnerAdapterOptions.models`
+  constructor option was given, `[]` by default) purely so it satisfies the
+  now-larger `RunnerAdapter` interface -- no test exercises it beyond that.
+- **The deterministic thread lifecycle (#378, phase 3 of the task-surface
+  spec) replaces the suspend handshake with a mechanical summary, and
+  narrows `interrupt()` to "cancel the current turn."** `adapters/claude.ts`'s
+  `interrupt()` now only calls `Query.interrupt()` -- no more ending the
+  prompt queue, no more waiting for the process to exit -- so the process,
+  the queue and the run all stay alive; `RunTranslationState.interrupting`
+  is gone entirely, and the natural completion path always reports
+  `"completed"`. `FakeRunnerAdapter.interrupt()` mirrors this: a no-op
+  (previously it stopped the script and emitted `run_ended {reason:
+  "interrupted"}`). **Ending a run other than via Uzavřít auto-writes a
+  summary and suspends the session** -- `session-runtime.ts`'s
+  `closingSessions: Set<string>` (renamed/repurposed from the old
+  suspend-tracking set) marks a run end as an explicit close
+  (`closeSession`/`continueSession`); `handleAdapterEvent`'s `run_ended`
+  branch checks it, and when a run ends WITHOUT that mark it calls
+  `suspendFallback` (default: `suspendSessionServerSide`, unchanged) with a
+  `pendingEndReason` (`"run_ended"` by default, `"idle"` for the idle sweep
+  below) and then appends the `handoff` canonical event itself (`{path,
+  hash}` off the now-suspended row) -- the same pattern `run-sweep.ts`'s
+  `host_lost` path already used, now shared. `withSuspendReason` rewrites
+  an adapter-reported `"completed"` to `"suspended"` unless
+  `closingSessions` has the session, so the run's own history matches the
+  session ending up suspended; an adapter-reported error/limit/host_lost
+  reason is untouched. **`SUSPEND_INSTRUCTION`, `pollUntilSuspended`, the
+  `suspend_timeout` poll/fallback, `POST /sessions/:id/suspend` and its WS
+  frame are gone** -- `SessionRuntime` lost `suspend`/`resume`, gained
+  `continueSession`/`checkIdleRunsOnce`. `portuni_session_suspend` (MCP)
+  is untouched -- it stays the only channel a hand-opened CLI has, and a
+  handoff it wrote is appended to the summary rather than waited for.
+  `HandoffEvent.payload` dropped `generated_by` (now just `{path, hash}` --
+  every runner-driven handoff event is server-written now, so the field
+  had nothing left to distinguish); `SessionResumeInfo.reason`/
+  `ServerHandoffReason` kept `generated_by`/`reason` and gained
+  `"run_ended"`/`"continue"` -- that machinery still labels a hand-opened
+  CLI's server-suspended row in Relace ("pozastaveno serverem"), a
+  narrower, unrelated survival, not a re-add of what was removed.
+  **Idle is the server's**: `boot/session-sweep.ts`'s `startIdleRunSweep`
+  (60s interval, unref'd, `PORTUNI_RUN_IDLE_MS` default 30 min) drives
+  `checkIdleRunsOnce(idleMs)`, wired in both `index.ts` and `desktop.ts`
+  (agent mode) right after `sweepOrphanedRunsOnBoot`. `endIdleRun` sets
+  `pendingEndReason: "idle"` and calls `close()` on the live handle --
+  the SAME `handleAdapterEvent` path as any other non-close end, just
+  tagged `"idle"` instead of the generic `"run_ended"`.
+  **Resume is writing**: `sendMessage`'s no-live-run branch now checks
+  session state -- `"draft"` still promotes (#374, unchanged), `"suspended"`
+  calls the new `resumeByWriting` (`checkConversationResumable` when the
+  CLI's own conversation is still valid, else reads `handoff_path`/
+  `handoff_inline` and starts a fresh run carrying it as orientation,
+  `resume: "handoff"` on the new `run_started` event, `resumed_from_run_id`
+  linking the two runs) -- there is no mode picker, the server decides.
+  `POST /sessions/:id/resume` and its dedicated web action are gone;
+  `api.ts`'s `resumeSession` was deleted outright (dead code once the route
+  went). **`POST /sessions/:id/continue`** (`continueSession`, wired in
+  `router.ts`, `agent-router.ts`, `sessions-ws.ts`'s new `continue` frame,
+  `min-scopes.ts`, `auth/session-access.ts`'s existing `"resume"` tier) is
+  "Pokračovat v nové session" (offered any time there's an open thread) and
+  "Navázat" (a closed thread, same call minus the prior close): closes
+  THIS session (`closingSessions`-gated, like `closeSession` -- its own
+  summary is not auto-written, since `continueSession` builds its own from
+  the log and seeds the NEW session with it as orientation) and starts a
+  fresh, running one on the same node, returning `{session, run}` for the
+  new one. The WS reply carries the curated `SessionSummary`
+  (`sessions.ts`'s `toSummary`, exported for this), not the raw row, to
+  match every REST session response.
+  **Web**: `SessionChat.tsx` lost Přerušit/Pozastavit/Pokračovat/Předat a
+  začít znovu and `handleRestartFromHandoff`; the composer's own
+  `PromptInputSubmit` doubles as the stop control (`status="streaming"` +
+  `onStop`) whenever `liveRunId` is set, and Esc in the textarea does the
+  same -- both just call `interrupt()`, a no-op when there's nothing to
+  cancel, so typing is never blocked. A suspended thread shows a
+  dismissible notice bar above the composer instead of disabling it
+  (`noticeDismissed`, reset whenever a NEW run starts -- `liveRunId` flips
+  non-null again -- so the next time it ends up here shows a fresh bar,
+  not a permanently-dismissed one); the composer stays enabled the whole
+  time, since sending is what resumes. Uzavřít opens a confirm dialog
+  (`closeConfirmOpen`, a real `Dialog` -- `window.confirm` is a no-op in
+  the Tauri webview) before calling `close()`. The same confirm-dialog
+  fix applies to `WorkspaceNodeList`'s thread-row `×` (`App.tsx`'s
+  `closeTaskConfirm` state replacing its own `window.confirm` stand-in) and
+  `DetailPane.sessions.tsx`'s row-level Uzavřít (`closeConfirm`) --
+  `DetailPane.sessions.tsx` also lost both Nahodit buttons (resuming is
+  no longer a picked action, the `resumeInfo` fetch is purely informational
+  now) and gained a `Navázat` button on a closed row (`continueSession`,
+  a new plain REST wrapper in `api.ts` since that tab has no
+  `sessionsClient` of its own) that jumps to the fresh thread via
+  `onOpenChat`. **No context-usage ring**: the spec's mockup shows
+  "Pokračovat v nové session" beside a context-percentage ring, emphasised
+  past 80% -- there is no token-usage tracking anywhere in this codebase to
+  drive that (`RunEndedEvent.payload.usage` is adapter-reported and
+  untyped), so the button is offered plainly, without the ring or the
+  80%-emphasis threshold; a real ring needs its own token-accounting work
+  first, out of scope here.
+
 ## Security rules (from the auth refactor post-mortem)
 
 1. **No secret in webview JS, ever.** If a JS module needs to know it, it

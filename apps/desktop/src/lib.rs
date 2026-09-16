@@ -1305,8 +1305,7 @@ pub(crate) fn is_local_only_path(path: &str) -> bool {
             let sub = &rest[slash + 1..];
             if sub == "messages"
                 || sub == "interrupt"
-                || sub == "suspend"
-                || sub == "resume"
+                || sub == "continue"
                 || sub == "close"
                 || sub == "events"
                 || sub == "signals"
@@ -4034,8 +4033,8 @@ mod local_only_path_tests {
     fn session_action_verbs_are_local_only() {
         assert!(is_local_only_path("/sessions/abc123/messages"));
         assert!(is_local_only_path("/sessions/abc123/interrupt"));
-        assert!(is_local_only_path("/sessions/abc123/suspend"));
-        assert!(is_local_only_path("/sessions/abc123/resume"));
+        // #378: closes this session and starts a new one on the same node.
+        assert!(is_local_only_path("/sessions/abc123/continue"));
         assert!(is_local_only_path("/sessions/abc123/close"));
         assert!(is_local_only_path("/sessions/abc123/events"));
         assert!(is_local_only_path("/sessions/abc123/events?after=5"));

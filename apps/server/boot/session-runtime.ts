@@ -45,20 +45,12 @@ export function setSessionRuntimeForTesting(rt: SessionRuntime | null): void {
 // builds exactly one CentralClient per agent-mode sidecar process. The
 // adapter registry is the SAME process-global one local mode uses --
 // adapters (Claude, the fake) are not mode-specific.
-export function createAgentSessionRuntime(
-  client: CentralClient,
-  // Test-only override for the suspend() poll loop, same reasoning as
-  // CreateSessionRuntimeDeps's own suspendPollIntervalMs/suspendTimeoutMs --
-  // production never sets this.
-  opts?: { suspendPollIntervalMs?: number; suspendTimeoutMs?: number },
-): SessionRuntime {
+export function createAgentSessionRuntime(client: CentralClient): SessionRuntime {
   const store = new CentralSessionStore(client);
   return createSessionRuntime({
     store,
     registry: { getAdapter },
     provision: createProvisionRunCentral(client),
     suspendFallback: createSuspendFallbackCentral(store),
-    suspendPollIntervalMs: opts?.suspendPollIntervalMs,
-    suspendTimeoutMs: opts?.suspendTimeoutMs,
   });
 }

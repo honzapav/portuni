@@ -199,6 +199,62 @@ describe("Postgres baseline (PGlite): sessions.terminal_id index and files uniqu
     assert.equal(res.rows.length, 1);
   });
 
+  // #374: sessions.state's CHECK gains 'draft' in the baseline itself
+  // (#335's cutover has not run yet -- see CLAUDE.md's "Migration 036 and
+  // Postgres" note).
+  it("accepts 'draft' as a sessions.state value", async () => {
+    const db = await freshPgDb();
+    const u = await seedUser(db);
+    const project = await seedNode(db, "project", u);
+    const sessionId = ulid();
+    await db.execute({
+      sql: "INSERT INTO sessions (id, node_id, user_id, session_type, state, name) VALUES (?, ?, ?, 'interactive_task', 'draft', 'Nový úkol')",
+      args: [sessionId, project, u],
+    });
+    const res = await db.execute({ sql: "SELECT state FROM sessions WHERE id = ?", args: [sessionId] });
+    assert.equal(res.rows[0]?.state, "draft");
+  });
+
+  it("still rejects an invalid sessions.state value", async () => {
+    const db = await freshPgDb();
+    const u = await seedUser(db);
+    const project = await seedNode(db, "project", u);
+    await assert.rejects(
+      db.execute({
+        sql: "INSERT INTO sessions (id, node_id, user_id, session_type, state, name) VALUES (?, ?, ?, 'interactive_task', 'bogus', 'x')",
+        args: [ulid(), project, u],
+      }),
+    );
+  });
+
+  // #375: sessions.model/effort, nullable, effort checked against the SDK's
+  // own enum.
+  it("has nullable sessions.model/effort accepting a valid effort level", async () => {
+    const db = await freshPgDb();
+    const u = await seedUser(db);
+    const project = await seedNode(db, "project", u);
+    const sessionId = ulid();
+    await db.execute({
+      sql: "INSERT INTO sessions (id, node_id, user_id, session_type, name, model, effort) VALUES (?, ?, ?, 'interactive_task', 'x', ?, ?)",
+      args: [sessionId, project, u, "claude-opus-4-8", "high"],
+    });
+    const res = await db.execute({ sql: "SELECT model, effort FROM sessions WHERE id = ?", args: [sessionId] });
+    assert.equal(res.rows[0]?.model, "claude-opus-4-8");
+    assert.equal(res.rows[0]?.effort, "high");
+  });
+
+  it("rejects an invalid sessions.effort value", async () => {
+    const db = await freshPgDb();
+    const u = await seedUser(db);
+    const project = await seedNode(db, "project", u);
+    await assert.rejects(
+      db.execute({
+        sql: "INSERT INTO sessions (id, node_id, user_id, session_type, name, effort) VALUES (?, ?, ?, 'interactive_task', 'x', 'extreme')",
+        args: [ulid(), project, u],
+      }),
+    );
+  });
+
   it("rejects a second file at the same (node_id, remote_path)", async () => {
     const db = await freshPgDb();
     const u = await seedUser(db);

@@ -13,11 +13,16 @@
 //   POST  /sessions/record                 write   -> central record half (#323): create the row
 //                                                      only, no run -- the agent-mode sidecar's own
 //                                                      CentralSessionStore is the only caller
-//   POST  /sessions/:id/messages           write   -> send a chat message (owner only)
+//   POST  /sessions/:id/messages           write   -> send a chat message (owner only) --
+//                                                      also what promotes a draft or resumes
+//                                                      a suspended thread; there is no
+//                                                      separate resume call (#378)
 //   POST  /sessions/:id/questions/:req_id  write   -> answer an open question (owner only)
-//   POST  /sessions/:id/interrupt          write   -> interrupt the live run (owner or manage)
-//   POST  /sessions/:id/suspend            write   -> suspend, up to a 30s poll (owner or manage)
-//   POST  /sessions/:id/resume             write   -> start a new run from handoff/conversation (owner only)
+//   POST  /sessions/:id/interrupt          write   -> cancel the current turn only (owner or
+//                                                      manage) -- the run stays live (#378)
+//   POST  /sessions/:id/continue           write   -> close this session, start a new one on
+//                                                      the same node seeded with its summary
+//                                                      (owner only; #378)
 //   POST  /sessions/:id/close              write   -> close the session (owner or manage)
 //   GET   /sessions/:id/events             read    -> canonical event log
 //   POST  /sessions/:id/events             write   -> central record half (#323): batch-append
@@ -56,6 +61,8 @@ import { nodeVisibleTo } from "../auth/node-access.js";
 import { sessionAccess, SessionAccessError, type SessionAccessAction } from "../auth/session-access.js";
 import {
   closeSessionsByTerminalId,
+  createDraftSession,
+  deleteDraftSession,
   getSession,
   getSessionWriteCount,
   listSessions,
@@ -66,14 +73,15 @@ import { getResumeInfo } from "../domain/session-handoff.js";
 import { getMirrorPath } from "../domain/sync/mirror-registry.js";
 import { logAudit } from "../infra/audit.js";
 import { getSessionRuntime } from "../boot/session-runtime.js";
+import { NoRunnerAvailableError } from "../domain/runner/session-runtime.js";
 import { getAdapter } from "../domain/runner/registry.js";
 import { getInstanceEnv } from "../domain/runner/instances.js";
 import { DbSessionStore } from "../domain/runner/store.js";
-import type { CanonicalEvent, QuestionDecision } from "../domain/runner/types.js";
+import { EFFORT_LEVELS, type CanonicalEvent, type QuestionDecision } from "../domain/runner/types.js";
 import { SESSION_STATES, type SessionRow, type SessionState } from "../shared/types.js";
-import type { SessionResumeInfo, SessionRunRow, SessionSummary } from "../shared/api-types.js";
+import type { SessionResumeInfo, SessionSummary } from "../shared/api-types.js";
 
-async function toSummary(row: SessionRow): Promise<SessionSummary> {
+export async function toSummary(row: SessionRow): Promise<SessionSummary> {
   return {
     id: row.id,
     node_id: row.node_id,
@@ -91,6 +99,8 @@ async function toSummary(row: SessionRow): Promise<SessionSummary> {
     name_is_custom: row.name_is_custom === 1,
     handoff_path: row.handoff_path,
     write_count: await getSessionWriteCount(getDb(), row.id),
+    model: row.model,
+    effort: row.effort,
     created_at: row.created_at,
     last_active_at: row.last_active_at,
     closed_at: row.closed_at,
@@ -174,6 +184,12 @@ export async function handleListNodeSessions(
     if (!includeArchived) {
       rows = rows.filter((r) => r.state !== "archived");
     }
+    // A draft (#374) is visible only as the open thread it is -- the window
+    // that created it already has the row from its own POST /sessions
+    // response and tracks it client-side; every list, this one included,
+    // excludes it so it never leaks into another window's sidebar or a
+    // reload of this same one.
+    rows = rows.filter((r) => r.state !== "draft");
     const sessions = await Promise.all(rows.map(toSummary));
     respondJson(res, 200, { sessions });
   } catch (err) {
@@ -249,6 +265,16 @@ const PatchSessionBody = z
     waiting_since: z.string().nullable().optional(),
     handoff_path: z.string().nullable().optional(),
     handoff_hash: z.string().nullable().optional(),
+    // Set together with state: "running" when a draft is promoted by its
+    // first message (#374's CentralSessionStore.patchSession, in agent
+    // mode, forwards these here).
+    brief: z.string().optional(),
+    runner: z.string().optional(),
+    instance_id: z.string().nullable().optional(),
+    name_is_custom: z.boolean().optional(),
+    // #375: the thread's own model/effort override.
+    model: z.string().nullable().optional(),
+    effort: z.enum(EFFORT_LEVELS).nullable().optional(),
   })
   .refine((b) => Object.keys(b).length > 0, "at least one field is required");
 
@@ -272,6 +298,14 @@ export async function handlePatchSession(
       respondJson(res, 200, await toSummary(updated));
       return;
     }
+    // #375: a model change reaches a LIVE run's Query directly (no
+    // restart) -- the column write below is what the NEXT run reads, and
+    // is the only effect for a session with no live run right now. This is
+    // local-process state (session-runtime.ts's in-memory liveRuns), so it
+    // only ever does something on the device actually driving the run.
+    if (body.model !== undefined) {
+      await getSessionRuntime().setModel(sessionId, body.model);
+    }
     // Central record half (#323): raw SessionRow, same reasoning as
     // handleGetSession above -- the caller is CentralSessionStore, which
     // needs every column back, not the curated summary.
@@ -281,6 +315,12 @@ export async function handlePatchSession(
       waiting_since: body.waiting_since,
       handoff_path: body.handoff_path,
       handoff_hash: body.handoff_hash,
+      brief: body.brief,
+      runner: body.runner,
+      instance_id: body.instance_id,
+      name_is_custom: body.name_is_custom,
+      model: body.model,
+      effort: body.effort,
     });
     respondJson(res, 200, updated);
   } catch (err) {
@@ -394,12 +434,19 @@ export async function handleGetSessionSignals(
 // --- Tasks (runner batch): starting a session's task and driving its run --
 
 // Shared with api/agent-router.ts's POST /sessions: one schema, both routers.
+// brief/runner optional (#374): a thread opens empty (spec rule 5, "no
+// modal, no required field") -- omitting brief creates a draft instead of
+// starting a task; runner is validated as required only in that case
+// (a plain zod .optional() cannot express "required together").
 export const StartSessionBody = z.object({
   node_id: z.string().min(1),
-  brief: z.string().trim().min(1),
-  runner: z.string().min(1),
+  brief: z.string().trim().min(1).optional(),
+  runner: z.string().min(1).optional(),
   instance_id: z.string().min(1).nullable().optional(),
   policy: z.enum(["default", "auto"]).optional(),
+  // #375: the thread's own model/effort override.
+  model: z.string().nullable().optional(),
+  effort: z.enum(EFFORT_LEVELS).nullable().optional(),
 });
 
 export async function handleStartSession(
@@ -415,6 +462,26 @@ export async function handleStartSession(
     const nodeRow = await db.execute({ sql: "SELECT id FROM nodes WHERE id = ?", args: [body.node_id] });
     if (nodeRow.rows.length === 0 || !(await nodeVisibleTo(db, identity, body.node_id))) {
       respondJson(res, 404, { error: "node not found" });
+      return;
+    }
+
+    if (body.brief === undefined) {
+      // No brief yet: a draft, not a task -- the first message
+      // (POST /sessions/:id/messages) promotes it and resolves runner/
+      // instance itself (session-runtime.ts's promoteDraftAndStart).
+      const session = await createDraftSession(db, identity.userId, body.node_id, {
+        model: body.model,
+        effort: body.effort,
+      });
+      await logAudit(identity.userId, "session_start", "session", session.id, {
+        node_id: body.node_id,
+        draft: true,
+      });
+      respondJson(res, 201, { session: await toSummary(session), run: null });
+      return;
+    }
+    if (!body.runner) {
+      respondJson(res, 400, { error: "runner is required when brief is given", code: "RUNNER_REQUIRED" });
       return;
     }
     if (!getAdapter(body.runner)) {
@@ -433,6 +500,8 @@ export async function handleStartSession(
       runner: body.runner,
       instanceId: body.instance_id ?? null,
       policy: body.policy,
+      model: body.model,
+      effort: body.effort,
     });
     await logAudit(identity.userId, "session_start", "session", session.id, {
       node_id: body.node_id,
@@ -446,6 +515,27 @@ export async function handleStartSession(
     respondJson(res, 201, { session: await toSummary(updated ?? session), run });
   } catch (err) {
     respondError(res, `${req.method} /sessions`, err);
+  }
+}
+
+export async function handleDeleteSession(
+  req: IncomingMessage,
+  res: ServerResponse,
+  identity: RequestIdentity,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const db = getDb();
+    const existing = await guardSessionAccess(res, db, identity, sessionId, "message");
+    if (!existing) return;
+    if (existing.state !== "draft") {
+      respondJson(res, 409, { error: "only a draft session can be deleted", code: "NOT_A_DRAFT" });
+      return;
+    }
+    await deleteDraftSession(db, identity.userId, sessionId);
+    respondJson(res, 200, { deleted: true });
+  } catch (err) {
+    respondError(res, `${req.method} /sessions/${sessionId}`, err);
   }
 }
 
@@ -469,6 +559,10 @@ export async function handleSendSessionMessage(
     try {
       await getSessionRuntime().sendMessage(sessionId, body.text);
     } catch (err) {
+      if (err instanceof NoRunnerAvailableError) {
+        respondJson(res, 400, { error: err.message, code: "NO_RUNNER_AVAILABLE" });
+        return;
+      }
       if (err instanceof Error && err.message.includes("has no live run")) {
         respondJson(res, 409, { error: err.message, code: "NO_LIVE_RUN" });
         return;
@@ -535,33 +629,13 @@ export async function handleInterruptSession(
   }
 }
 
-export async function handleSuspendSession(
-  req: IncomingMessage,
-  res: ServerResponse,
-  identity: RequestIdentity,
-  sessionId: string,
-): Promise<void> {
-  try {
-    const db = getDb();
-    const existing = await guardSessionAccess(res, db, identity, sessionId, "stop");
-    if (!existing) return;
-    // The runtime's own poll loop awaits up to 30s for the agent's
-    // portuni_session_suspend before falling back to a server-generated
-    // handoff -- this route's caller is expected to wait for it.
-    const updated = await getSessionRuntime().suspend(sessionId);
-    await logAudit(identity.userId, "session_suspend", "session", sessionId, {});
-    await noteIfNotOwner(existing, identity, sessionId);
-    respondJson(res, 200, { session: await toSummary(updated) });
-  } catch (err) {
-    respondError(res, `${req.method} /sessions/${sessionId}/suspend`, err);
-  }
-}
-
-const ResumeBody = z.object({
-  mode: z.enum(["conversation", "handoff"]),
-});
-
-export async function handleResumeSession(
+// #378: "Pokračovat v nové session" (offered any time, beside the context
+// ring) and "Navázat" (a closed thread, same call minus the prior close)
+// both call this -- closes the current session (its summary is what seeds
+// the new one, not the auto-summary/suspend path: this session ends up
+// closed, never suspended) and starts a fresh one, running, on the same
+// node. Owner-only, same tier resume used to be.
+export async function handleContinueSession(
   req: IncomingMessage,
   res: ServerResponse,
   identity: RequestIdentity,
@@ -571,28 +645,11 @@ export async function handleResumeSession(
     const db = getDb();
     const existing = await guardSessionAccess(res, db, identity, sessionId, "resume");
     if (!existing) return;
-    const body = await parseJsonBody(req, res, ResumeBody);
-    if (!body) return;
-
-    let run: SessionRunRow;
-    try {
-      run = await getSessionRuntime().resume(sessionId, body.mode);
-    } catch (err) {
-      if (err instanceof Error && err.message.includes("already has a live run")) {
-        respondJson(res, 409, { error: err.message, code: "ALREADY_RUNNING" });
-        return;
-      }
-      if (err instanceof Error && err.message.includes("no resumable conversation")) {
-        respondJson(res, 409, { error: err.message, code: "NOT_RESUMABLE" });
-        return;
-      }
-      throw err;
-    }
-    await logAudit(identity.userId, "session_resume", "session", sessionId, { mode: body.mode });
-    const updated = await getSession(db, sessionId);
-    respondJson(res, 200, { session: await toSummary(updated ?? existing), run });
+    const { session, run } = await getSessionRuntime().continueSession(sessionId);
+    await logAudit(identity.userId, "session_continue", "session", sessionId, { new_session_id: session.id });
+    respondJson(res, 200, { session: await toSummary(session), run });
   } catch (err) {
-    respondError(res, `${req.method} /sessions/${sessionId}/resume`, err);
+    respondError(res, `${req.method} /sessions/${sessionId}/continue`, err);
   }
 }
 

@@ -171,7 +171,7 @@ export const DDL_SESSIONS = `CREATE TABLE IF NOT EXISTS sessions (
     runner TEXT,
     host_id TEXT,
     waiting_since TEXT,
-    state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived')),
+    state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','suspended','closed','archived','draft')),
     handoff_path TEXT,
     handoff_hash TEXT,
     -- Server-generated handoff text (#329) for a session with no local
@@ -181,6 +181,11 @@ export const DDL_SESSIONS = `CREATE TABLE IF NOT EXISTS sessions (
     handoff_inline TEXT,
     name TEXT NOT NULL DEFAULT '',
     name_is_custom INTEGER NOT NULL DEFAULT 0 CHECK(name_is_custom IN (0,1)),
+    -- #375: the thread's own model/effort override (session -> instance
+    -- defaults -> unset). model is free text (a runner-defined id/alias);
+    -- effort is checked against the SDK's own enum.
+    model TEXT,
+    effort TEXT CHECK(effort IS NULL OR effort IN ('low','medium','high','xhigh','max')),
     created_at DATETIME NOT NULL DEFAULT (datetime('now')),
     last_active_at DATETIME NOT NULL DEFAULT (datetime('now')),
     closed_at DATETIME

@@ -89,8 +89,12 @@ describe("sweepOrphanedRuns (#325)", () => {
       events.map((e) => e.kind),
       ["run_ended", "handoff"],
     );
+    // #378: the handoff canonical event's payload is just {path, hash} now
+    // -- "who generated it" is no longer part of the event, only of the
+    // handoff CONTENT marker parseServerHandoffReason reads back off
+    // handoff_inline/handoff_path.
     const handoffPayload = JSON.parse(events[1].payload);
-    assert.equal(handoffPayload.generated_by, "server");
+    assert.ok("hash" in handoffPayload);
 
     assert.equal(await readPidFile(join(dataDir, "runs", `${run.id}.pid`)), null);
   });

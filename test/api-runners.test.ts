@@ -13,7 +13,7 @@ import { routeApiRequest } from "../apps/server/api/router.js";
 import { registerAdapter, clearRegistryForTests } from "../apps/server/domain/runner/registry.js";
 import { FakeRunnerAdapter } from "../apps/server/domain/runner/adapters/fake.js";
 import type { RequestIdentity } from "../apps/server/auth/request-identity.js";
-import type { RunnerInfo, RunnerInstanceSummary } from "../apps/server/shared/api-types.js";
+import type { RunnerInfo, RunnerInstanceSummary, RunnerModel } from "../apps/server/shared/api-types.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 function makeIdentity(scope: RequestIdentity["globalScope"]): RequestIdentity {
@@ -104,6 +104,28 @@ describe("runner registry REST endpoints", () => {
     assert.equal(body.runners[0].id, "fake");
     assert.equal(body.runners[0].availability.installed, true);
     assert.equal(body.runners[0].availability.logged_in, true);
+  });
+
+  // #376: the model picker's list.
+  test("GET /runners/:runner/models returns the fake adapter's models list", async () => {
+    registerAdapter(
+      new FakeRunnerAdapter({
+        script: [],
+        models: [{ id: "m1", displayName: "Model One", description: "d", supportsEffort: true, effortLevels: ["low", "high"] }],
+      }),
+    );
+    const res = await call(makeIdentity("read"), "GET", "/runners/fake/models");
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body) as { models: RunnerModel[] };
+    assert.deepEqual(body.models, [
+      { id: "m1", displayName: "Model One", description: "d", supportsEffort: true, effortLevels: ["low", "high"] },
+    ]);
+  });
+
+  test("GET /runners/:runner/models 404s for an unregistered runner", async () => {
+    const res = await call(makeIdentity("read"), "GET", "/runners/nonexistent/models");
+    assert.equal(res.statusCode, 404);
+    assert.equal(JSON.parse(res.body).code, "UNKNOWN_RUNNER");
   });
 
   test("POST /runners/instances creates, GET /runners/instances lists it without env values", async () => {

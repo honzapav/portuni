@@ -183,6 +183,18 @@ export function transitionPersistentSessionState(
   return jsonRequest<SessionSummary>("POST", `/sessions/${encodeURIComponent(id)}/state`, { state });
 }
 
+// #375/#376: sets the thread's own model/effort override. Not a plain
+// rename, so the server's raw-row PATCH branch answers (see
+// handlePatchSession's own comment) -- only the two fields this needs are
+// typed here. A model change also reaches a live run's Query immediately;
+// effort only ever applies from the next run.
+export function patchSessionModelEffort(
+  id: string,
+  patch: { model?: string | null; effort?: string | null },
+): Promise<{ model: string | null; effort: string | null }> {
+  return jsonRequest("PATCH", `/sessions/${encodeURIComponent(id)}`, patch);
+}
+
 // configDir: the resumed session's profile CLAUDE_CONFIG_DIR, when the
 // caller can resolve one from the desktop profiles registry (#204) --
 // lets the server check conversation-resumability at the right transcript
@@ -216,26 +228,44 @@ export function fetchSession(id: string): Promise<SessionSummary> {
   return jsonRequest<SessionSummary>("GET", `/sessions/${encodeURIComponent(id)}`);
 }
 
-// POST /sessions/:id/resume -- owner-only, not part of the live WS channel
-// (sessions-client.ts's ClientFrame union has no resume frame, matching the
-// server's own protocol -- resume starts a NEW run, it isn't an action on
-// the live one). "Nahodit": conversation-resume when the underlying CLI
-// transcript still exists, handoff-resume otherwise (GET /sessions/:id/
-// resume-info decides which is offered).
-export function resumeSession(id: string, mode: "conversation" | "handoff"): Promise<{ run: SessionRunRow }> {
-  return jsonRequest<{ run: SessionRunRow }>("POST", `/sessions/${encodeURIComponent(id)}/resume`, { mode });
-}
-
 // POST /sessions -- starts a task (session + first run) as a server-driven
-// run (#342, NewTaskDialog).
+// run. `brief` omitted creates a draft instead (#374, "a thread opens
+// empty"): no run, `run` comes back null; the first message
+// (sessionsClient.message) is what promotes it and starts the run.
 export function startSession(input: {
   node_id: string;
-  brief: string;
-  runner: string;
+  brief?: string;
+  runner?: string;
   instance_id?: string | null;
   policy?: "default" | "auto";
-}): Promise<{ session: SessionSummary; run: SessionRunRow }> {
-  return jsonRequest<{ session: SessionSummary; run: SessionRunRow }>("POST", "/sessions", input);
+}): Promise<{ session: SessionSummary; run: SessionRunRow | null }> {
+  return jsonRequest<{ session: SessionSummary; run: SessionRunRow | null }>("POST", "/sessions", input);
+}
+
+// Opens a new, empty thread on a node -- one click, no modal (#374). The
+// composer's first message resolves the runner/instance and names it.
+export function startDraftThread(nodeId: string): Promise<SessionSummary> {
+  return startSession({ node_id: nodeId }).then((r) => r.session);
+}
+
+// DELETE /sessions/:id -- removes a draft (and only a draft, #374); a real
+// thread is closed via sessionsClient.close, never deleted.
+export function deletePersistentSession(id: string): Promise<void> {
+  return jsonRequest<{ deleted: boolean }>("DELETE", `/sessions/${encodeURIComponent(id)}`).then(() => undefined);
+}
+
+// POST /sessions/:id/continue (#378) -- closes this session (its summary
+// seeds the new one, not a fresh suspend) and starts a new, running one on
+// the same node. "Pokračovat v nové session" (offered any time) and
+// "Navázat" (a closed thread, same call minus the prior close) both call
+// this; the new session becomes the active thread. Owner-only ("resume"
+// tier) -- a plain REST wrapper (not sessionsClient) so a caller with no
+// live-channel client (DetailPane.sessions.tsx's Relace tab) can use it too.
+export function continueSession(id: string): Promise<{ session: SessionSummary; run: SessionRunRow }> {
+  return jsonRequest<{ session: SessionSummary; run: SessionRunRow }>(
+    "POST",
+    `/sessions/${encodeURIComponent(id)}/continue`,
+  );
 }
 
 // GET /overview -- Přehled tab (#196). One aggregate, permission-filtered

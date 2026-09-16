@@ -18,19 +18,30 @@ import { scopedKey } from "../lib/workspace-storage";
 import type { SessionSummary } from "../types";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
+import { Input } from "@/components/ui/input";
 
 type Props = {
   rows: WorkspaceNodeRow[];
   selectedNodeId: string | null;
   onSelectNode: (id: string) => void;
   onCloseNode: (id: string) => void;
-  // "+" on a node row: start a new task there (opens NewTaskDialog).
+  // "+" on a node row: start a new task there (opens a thread directly,
+  // #374 -- no dialog, no required field).
   onNewTask: (id: string) => void;
   // #343: each open node's own running/suspended persistent (runner)
-  // sessions, already live-overlaid by the caller (mergeLiveSessionStates).
+  // sessions, already live-overlaid by the caller (mergeLiveSessionStates),
+  // plus (#374) any locally-opened draft not yet promoted -- every list the
+  // server serves excludes a draft, so the caller merges its own in.
   // Status comes from state/waiting_since (session_state frames).
   openSessionsByNode: Record<string, SessionSummary[]>;
   onOpenSessionChat: (nodeId: string, sessionId: string) => void;
+  // Inline rename (#374, "sub-rows ... inline rename").
+  onRenameTask: (session: SessionSummary, name: string) => void;
+  // The × on a thread's own row: a draft with no first message yet is
+  // deleted outright (nothing to lose); anything else is Uzavřít, which
+  // asks first -- #378 is what will replace this stand-in confirm() with
+  // a real dialog carrying the session's summary.
+  onCloseTask: (session: SessionSummary) => void;
 };
 
 export type ListMode = "nodes" | "state";
@@ -69,17 +80,19 @@ const ACTIVITY_DOT: Record<Exclude<NodeActivity, null>, { color: string; title: 
   suspended: { color: "var(--color-node-process)", title: "Úkol pozastaven", pulse: false },
 };
 
-export type TaskGroupKey = "waiting" | "running" | "suspended" | "done";
+export type TaskGroupKey = "waiting" | "running" | "suspended" | "draft" | "done";
 export const TASK_GROUPS: { key: TaskGroupKey; label: string }[] = [
   { key: "waiting", label: "Vyžadují pozornost" },
   { key: "running", label: "Pracují" },
   { key: "suspended", label: "Pozastavené" },
+  { key: "draft", label: "Nové" },
   { key: "done", label: "Hotové" },
 ];
 
 export function taskGroupOf(s: Pick<SessionSummary, "state" | "waiting_since">): TaskGroupKey {
   if (s.state === "running") return s.waiting_since !== null ? "waiting" : "running";
   if (s.state === "suspended") return "suspended";
+  if (s.state === "draft") return "draft";
   return "done";
 }
 
@@ -139,6 +152,8 @@ function NodeTree({
   onNewTask,
   openSessionsByNode,
   onOpenSessionChat,
+  onRenameTask,
+  onCloseTask,
 }: Props) {
   if (rows.length === 0) {
     return (
@@ -237,9 +252,11 @@ function NodeTree({
                 {tasks.map((s) => (
                   <li key={s.id}>
                     <TaskRow
-                      name={s.name}
+                      session={s}
                       title={taskTitle(s)}
                       onClick={() => onOpenSessionChat(r.id, s.id)}
+                      onRename={(name) => onRenameTask(s, name)}
+                      onClose={() => onCloseTask(s)}
                     />
                   </li>
                 ))}
@@ -260,6 +277,8 @@ function taskTitle(s: Pick<SessionSummary, "state" | "waiting_since">): string {
       return "Běží";
     case "suspended":
       return "Pozastaveno";
+    case "draft":
+      return "Nový úkol";
     default:
       return "Hotovo";
   }
@@ -268,18 +287,86 @@ function taskTitle(s: Pick<SessionSummary, "state" | "waiting_since">): string {
 // A task under its node: flush with the node name (no rail, no extra
 // indent -- the column is narrow). State is in the tooltip, not a dot, so
 // the only dots in a row are the node-type dot above and the node's own
-// summary dot.
-function TaskRow({ name, title, onClick }: { name: string; title: string; onClick: () => void }) {
+// summary dot. Double-click renames inline; the × (revealed on hover,
+// same pattern as the node row's own + / ×) closes the thread -- a draft
+// is deleted outright, anything else asks first (#374's stand-in for
+// #378's own confirmation).
+function TaskRow({
+  session,
+  title,
+  onClick,
+  onRename,
+  onClose,
+}: {
+  session: SessionSummary;
+  title: string;
+  onClick: () => void;
+  onRename: (name: string) => void;
+  onClose: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draftName, setDraftName] = useState(session.name);
+
+  const startEditing = () => {
+    setDraftName(session.name);
+    setEditing(true);
+  };
+  const commit = () => {
+    const trimmed = draftName.trim();
+    setEditing(false);
+    if (trimmed.length > 0 && trimmed !== session.name) onRename(trimmed);
+  };
+
+  if (editing) {
+    return (
+      <Input
+        autoFocus
+        value={draftName}
+        onChange={(e) => setDraftName(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            setEditing(false);
+          }
+        }}
+        className="h-7 w-full pl-7 text-[12.5px]"
+      />
+    );
+  }
+
   return (
-    <Button
-      variant="ghost"
-      size="sm"
-      onClick={onClick}
-      title={title}
-      className="w-full min-w-0 justify-start gap-2.5 pr-2 pl-7 font-normal text-[12.5px] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
-    >
-      <span className="min-w-0 flex-1 truncate text-left">{name}</span>
-    </Button>
+    <div className="group/task relative flex items-center">
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={onClick}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          startEditing();
+        }}
+        title={title}
+        className="w-full min-w-0 justify-start gap-2.5 pr-7 pl-7 font-normal text-[12.5px] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
+      >
+        <span className="min-w-0 flex-1 truncate text-left">{session.name}</span>
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        title="Uzavřít vlákno"
+        aria-label="Uzavřít vlákno"
+        className="absolute right-1 hidden text-muted-foreground group-hover/task:inline-flex group-focus-within/task:inline-flex"
+      >
+        <X />
+      </Button>
+    </div>
   );
 }
 

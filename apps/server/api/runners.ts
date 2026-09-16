@@ -2,6 +2,7 @@
 // docs/superpowers/specs/2026-09-12-runner-and-session-design.md):
 //
 //   GET    /runners                          read   -> detected adapters + availability
+//   GET    /runners/:runner/models            read   -> the picker's list (#376)
 //   GET    /runners/instances                read   -> provider instances (no env values)
 //   POST   /runners/instances                write  -> create an instance
 //   PATCH  /runners/instances/:id            write  -> update (partial; empty env value = unchanged)
@@ -18,8 +19,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { parseJsonBody, respondError, respondJson } from "../http/middleware.js";
-import { detectAll } from "../domain/runner/registry.js";
+import { detectAll, getAdapter } from "../domain/runner/registry.js";
+import { EFFORT_LEVELS } from "../domain/runner/types.js";
 import {
+  InstanceDefaultsKeyRefusedError,
   InstanceEnvKeyRefusedError,
   createInstance,
   deleteInstance,
@@ -30,7 +33,7 @@ import {
 import type { RunnerInfo, RunnerInstanceSummary } from "../shared/api-types.js";
 
 function respondInstanceError(res: ServerResponse, ctx: string, err: unknown): void {
-  if (err instanceof InstanceEnvKeyRefusedError) {
+  if (err instanceof InstanceEnvKeyRefusedError || err instanceof InstanceDefaultsKeyRefusedError) {
     respondJson(res, 400, { error: err.message, code: err.code });
     return;
   }
@@ -46,6 +49,28 @@ export async function handleListRunners(req: IncomingMessage, res: ServerRespons
   }
 }
 
+// #376: the model picker's list -- device-local like every other /runners*
+// route (lib.rs's is_local_only_path already matches on the /runners/
+// prefix). 404 for an unregistered runner id, same tier as the instance
+// routes below (no ownership model, read scope).
+export async function handleListRunnerModels(
+  req: IncomingMessage,
+  res: ServerResponse,
+  runnerId: string,
+): Promise<void> {
+  try {
+    const adapter = getAdapter(runnerId);
+    if (!adapter) {
+      respondJson(res, 404, { error: `unknown runner '${runnerId}'`, code: "UNKNOWN_RUNNER" });
+      return;
+    }
+    const models = await adapter.models();
+    respondJson(res, 200, { models });
+  } catch (err) {
+    respondError(res, `${req.method} /runners/${runnerId}/models`, err);
+  }
+}
+
 export async function handleListRunnerInstances(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     const instances: RunnerInstanceSummary[] = await listInstances();
@@ -56,18 +81,28 @@ export async function handleListRunnerInstances(req: IncomingMessage, res: Serve
 }
 
 const EnvMap = z.record(z.string(), z.string());
+const InstanceDefaults = z.object({
+  model: z.string().optional(),
+  effort: z.enum(EFFORT_LEVELS).optional(),
+});
 
 const CreateInstanceBody = z.object({
   name: z.string().trim().min(1).max(200),
   runner: z.string().trim().min(1),
   env: EnvMap.optional(),
+  defaults: InstanceDefaults.optional(),
 });
 
 export async function handleCreateRunnerInstance(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     const body = await parseJsonBody(req, res, CreateInstanceBody);
     if (!body) return;
-    const created = await createInstance({ name: body.name, runner: body.runner, env: body.env });
+    const created = await createInstance({
+      name: body.name,
+      runner: body.runner,
+      env: body.env,
+      defaults: body.defaults,
+    });
     respondJson(res, 201, created);
   } catch (err) {
     respondInstanceError(res, `${req.method} /runners/instances`, err);
@@ -83,6 +118,7 @@ const UpdateInstanceBody = z.object({
   name: z.string().trim().min(1).max(200).optional(),
   runner: z.string().trim().min(1).optional(),
   env: EnvMap.optional(),
+  defaults: InstanceDefaults.optional(),
 });
 
 export async function handleUpdateRunnerInstance(

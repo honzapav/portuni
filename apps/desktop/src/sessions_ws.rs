@@ -202,7 +202,7 @@ async fn run_connection_loop(
         headers.insert("Origin", HeaderValue::from_static("tauri://localhost"));
         // Same proof api_request attaches (#213): the upgrade originates in
         // this Tauri host, so the socket's mutating frames (message, answer,
-        // interrupt, suspend, close) are accepted; an external process that
+        // interrupt, close, continue) are accepted; an external process that
         // opens the same socket with the bearer alone can only watch.
         if let Some(secret) = crate::webview_proxy_secret(&app, &ws_id) {
             match HeaderValue::from_str(&secret) {
