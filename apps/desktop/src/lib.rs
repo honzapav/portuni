@@ -20,7 +20,8 @@ mod workspace;
 
 use log::{error, info, warn};
 use rand::distr::Alphanumeric;
-use rand::{Rng, TryRngCore};
+use rand::RngExt;
+use rand::rand_core::UnwrapErr;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -1113,8 +1114,7 @@ fn random_token() -> String {
     // userspace PRNG whose state survives process forks/coredumps; this
     // token is the bearer credential for the whole backend API, so take
     // the direct route.
-    rand::rngs::OsRng
-        .unwrap_err()
+    UnwrapErr(rand::rngs::SysRng)
         .sample_iter(Alphanumeric)
         .take(48)
         .map(char::from)
